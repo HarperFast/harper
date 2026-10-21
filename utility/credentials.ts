@@ -1,8 +1,4 @@
-/**
- * Credential detection shared by the code that keeps credential values out of somewhere they would
- * otherwise land: the models-config hash (`resources/models/decisionStore.ts`) and the built-in agent's
- * read-only reads (`agent/tools/fsTools.ts`, `agent/registryTools.ts`). See agent/DESIGN.md.
- */
+/** Credential detection shared by the models-config hash and the agent's read-only reads; see agent/DESIGN.md. */
 
 import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
 
@@ -15,7 +11,7 @@ export const CREDENTIAL_KEY =
 
 const MASK = '*';
 // The key's quote may itself be escaped, as in JSON logged inside a JSON string.
-const ASSIGNMENT = /(?<![\w$.-])(\\?["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
+const ASSIGNMENT = /(?<![\w$.-])(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
 
 type State =
@@ -26,12 +22,18 @@ type State =
 
 const NONE: State = { kind: 'none' };
 
-/**
- * `text` with the value of every credential-named key replaced by `*`, one per UTF-16 unit, so the result
- * has the same length and line breaks. `before` is what precedes `text` in its source, read only for the
- * state `text` starts in; `beforeAtSourceStart` says whether it begins where the source does.
- */
-export function maskCredentialValues(text: string, before = '', beforeAtSourceStart = true): string {
+export interface MaskOptions {
+	/** What precedes the text in its source, read only for the state the text starts in. */
+	before?: string;
+	/** Whether `before` begins where the source does. */
+	beforeAtSourceStart?: boolean;
+	/** The text is one log entry, so a quote left open runs to its end instead of to the next column-0 line. */
+	oneEntry?: boolean;
+}
+
+/** `text` with the value of every credential-named key replaced by `*`, one per UTF-16 unit. */
+export function maskCredentialValues(text: string, options: MaskOptions = {}): string {
+	const { before = '', beforeAtSourceStart = true, oneEntry = false } = options;
 	const start = stateStart(text, before, beforeAtSourceStart);
 	const source = start.index === before.length ? text : before.slice(start.index) + text;
 	const from = before.length - start.index;
@@ -41,7 +43,7 @@ export function maskCredentialValues(text: string, before = '', beforeAtSourceSt
 	for (let lineStart = 0; ;) {
 		const newline = source.indexOf('\n', lineStart);
 		const lineEnd = newline === -1 ? source.length : newline;
-		const step = maskInState(source.slice(lineStart, lineEnd), state, partial);
+		const step = maskInState(source.slice(lineStart, lineEnd), state, partial, oneEntry);
 		state = step.state;
 		partial = false;
 		if (lineEnd >= from) out.push(lineStart >= from ? step.text : step.text.slice(from - lineStart));
@@ -73,7 +75,7 @@ function resetsState(first: string | undefined): boolean {
 	);
 }
 
-function maskInState(line: string, state: State, partial: boolean): { text: string; state: State } {
+function maskInState(line: string, state: State, partial: boolean, oneEntry: boolean): { text: string; state: State } {
 	const end = line.endsWith('\r') ? line.length - 1 : line.length;
 	let indent = 0;
 	while (indent < end && (line[indent] === ' ' || line[indent] === '\t')) indent++;
@@ -81,7 +83,7 @@ function maskInState(line: string, state: State, partial: boolean): { text: stri
 	if (state.kind === 'unknown' && !resets) {
 		return { text: maskRange(line, partial ? 0 : indent, end), state };
 	}
-	if (state.kind === 'quote' && !resets) {
+	if (state.kind === 'quote' && (oneEntry || !resets)) {
 		const close = closingQuote(line, indent, end, state.quote);
 		if (close === -1) return { text: maskRange(line, indent, end), state };
 		const rest = maskLine(line, end, close + 1);
@@ -91,7 +93,9 @@ function maskInState(line: string, state: State, partial: boolean): { text: stri
 		const sequenceItem =
 			line[indent] === '-' && (indent + 1 === end || line[indent + 1] === ' ' || line[indent + 1] === '\t');
 		if (indent === end || indent > state.column || (state.empty && indent === state.column && sequenceItem)) {
-			return { text: maskRange(line, indent, end), state };
+			const quote = line[indent];
+			const opensQuote = (quote === '"' || quote === "'") && closingQuote(line, indent + 1, end, quote) === -1;
+			return { text: maskRange(line, indent, end), state: opensQuote ? { kind: 'quote', quote } : state };
 		}
 		if (line[indent] === '#') return { text: line, state };
 	}
@@ -113,18 +117,21 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 			state = { kind: 'block', column: prefix, empty: valueStart === end || comment };
 		}
 		if (valueStart === end || isPlaceholder(line.slice(valueStart, end).trimEnd())) continue;
+		let escapes = 0;
+		while (line[valueStart + escapes] === '\\') escapes++;
+		const quote = line[valueStart + escapes];
 		let maskStart = valueStart;
 		let maskEnd = end;
-		const quote = line[valueStart];
 		if (quote === '"' || quote === "'") {
-			maskStart++;
-			const close = closingQuote(line, maskStart, end, quote);
-			if (close === -1) state = { kind: 'quote', quote };
-			else maskEnd = close;
-		} else if (quote === '\\' && (line[valueStart + 1] === '"' || line[valueStart + 1] === "'")) {
-			maskStart += 2;
-			const close = closingEscapedQuote(line, maskStart, end, line[valueStart + 1]);
+			maskStart += escapes + 1;
+			const close =
+				escapes === 0
+					? closingQuote(line, maskStart, end, quote)
+					: escapes === 1
+						? closingEscapedQuote(line, maskStart, end, quote)
+						: -1;
 			if (close !== -1) maskEnd = close;
+			else if (escapes === 0) state = { kind: 'quote', quote };
 		}
 		text += line.slice(copied, maskStart) + MASK.repeat(maskEnd - maskStart);
 		copied = maskEnd;
@@ -147,17 +154,19 @@ function closingQuote(line: string, from: number, end: number, quote: string): n
 
 /**
  * Where a string quoted by `\<quote>` closes, or -1: the line's escapes are decoded first, then the string's
- * own, so a quote escaped inside the inner string (`\\\"`) does not close it.
+ * own, so a quote escaped inside the inner string (`\\\"`) does not close it. Deeper nesting masks to the end
+ * of the line instead.
  */
 function closingEscapedQuote(line: string, from: number, end: number, quote: string): number {
 	let innerEscape = false;
 	for (let index = from; index < end;) {
 		const at = index;
-		const decoded = line[index] === '\\' && index + 1 < end ? line[index + 1] : line[index];
-		index += line[index] === '\\' && index + 1 < end ? 2 : 1;
+		const escaped = line[index] === '\\' && index + 1 < end;
+		const decoded = escaped ? line[index + 1] : line[index];
+		index += escaped ? 2 : 1;
 		if (innerEscape) innerEscape = false;
 		else if (decoded === '\\') innerEscape = true;
-		else if (decoded === quote && line[at] === '\\') return at;
+		else if (decoded === quote && escaped) return at;
 	}
 	return -1;
 }

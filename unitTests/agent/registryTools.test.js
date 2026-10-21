@@ -333,6 +333,12 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 		]);
 	});
 
+	it('masks a quoted credential that an entry continues on a line of its own', async () => {
+		operations.set('read_log', async () => [{ timestamp: 't1', message: 'request {"apiKey":"sk-a\nsk-b"}' }]);
+		const { results } = await tool('read_log').handler({}, { sessionId: 's1' });
+		assert.deepEqual(results, [{ timestamp: 't1', message: 'request {"apiKey":"****\n****"}' }]);
+	});
+
 	it('refuses a filter before dispatch, since it matches unmasked text', async () => {
 		await assert.rejects(tool('read_log').handler({ filter: 'sk-' }, { sessionId: 's1' }), /filter is not available/);
 		assert.equal(dispatched, 0);

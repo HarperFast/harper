@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { CREDENTIAL_KEY, maskCredentialValues } = require('#src/utility/credentials');
 
 function masked(text, before, atSourceStart) {
-	const result = maskCredentialValues(text, before, atSourceStart);
+	const result = maskCredentialValues(text, { before, beforeAtSourceStart: atSourceStart });
 	assert.equal(result.length, text.length, 'masking keeps the text length');
 	return result;
 }
@@ -86,6 +86,10 @@ describe('utility/credentials', () => {
 			assert.equal(masked('x: {apiKey: "abc\n  def", model: m}\n'), 'x: {apiKey: "***\n  ***", model: m}\n');
 			assert.equal(masked('  apiKey: "abc\n  def"\n  model: m\n'), '  apiKey: "***\n  ***"\n  model: m\n');
 			assert.equal(masked("  token: 'a\n   b''c'\n  model: m\n"), "  token: '*\n   ****'\n  model: m\n");
+			assert.equal(
+				masked('models:\n  default:\n    apiKey:\n      "sk-a\n    sk-b"\n    model: m\n'),
+				'models:\n  default:\n    apiKey:\n      *****\n    ****"\n    model: m\n'
+			);
 		});
 
 		it('ends an unterminated quote at the next column-0 line, as the next log entry', () => {
@@ -93,6 +97,10 @@ describe('utility/credentials', () => {
 				masked('T [warn]: {"password":"abc\n  def\nT [info]: next\n'),
 				'T [warn]: {"password":"***\n  ***\nT [info]: next\n'
 			);
+		});
+
+		it('runs an unterminated quote to the end of a single log entry', () => {
+			assert.equal(maskCredentialValues('{"apiKey":"sk-a\nsk-b"}', { oneEntry: true }), '{"apiKey":"****\n****"}');
 		});
 
 		it('keeps masking a value across comment lines, which YAML exempts from indentation', () => {
@@ -116,6 +124,9 @@ describe('utility/credentials', () => {
 				masked('x "{\\"password\\":\\"a\\\\\\"b\\",\\"model\\":\\"m\\"}"'),
 				'x "{\\"password\\":\\"******\\",\\"model\\":\\"m\\"}"'
 			);
+			const deeper = String.raw`body={\\\"apiKey\\\":\\\"sk-deep\\\",\\\"model\\\":\\\"m\\\"}`;
+			const at = deeper.indexOf('sk-deep');
+			assert.equal(masked(deeper), deeper.slice(0, at) + '*'.repeat(deeper.length - at));
 		});
 
 		it('masks JSON, inspected and header forms inside a line', () => {

@@ -166,9 +166,8 @@ function assertOutsidePrivateKey(state: KeyState, path: string, insideMessage: s
 interface Window {
 	page: Buffer;
 	reachesEnd: boolean;
-	/** The look-back's text, up to the page. */
 	before: string;
-	/** The same, read on into the page far enough to hold an armor line that the page start cuts. */
+	/** `before`, read on into the page far enough to hold an armor line that the page start cuts. */
 	beforeWithOverlap: string;
 	beforeAtFileStart: boolean;
 }
@@ -336,7 +335,7 @@ export const readFileTool: AgentTool = {
 			);
 			// Masking never lengthens text, so the page still fits the budget it was cut to.
 			const content = masksCredentials(scope)
-				? maskCredentialValues(page.content, window.before, window.beforeAtFileStart)
+				? maskCredentialValues(page.content, { before: window.before, beforeAtSourceStart: window.beforeAtFileStart })
 				: page.content;
 			const result: Record<string, unknown> = { path, size, offset: start, content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
@@ -680,7 +679,10 @@ export const tailFileTool: AgentTool = {
 			const rawText = bytes.toString('utf8', firstChar);
 			const pageAt = Math.min(start - scanStart + firstChar, bytesRead);
 			const text = masksCredentials(scope)
-				? maskCredentialValues(rawText, scanned.toString('utf8', 0, pageAt), scanStart === 0)
+				? maskCredentialValues(rawText, {
+						before: scanned.toString('utf8', 0, pageAt),
+						beforeAtSourceStart: scanStart === 0,
+					})
 				: rawText;
 			// Masking keeps every line break, so the raw and masked lines pair up by index.
 			const all = text.split('\n');

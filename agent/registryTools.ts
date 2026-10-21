@@ -33,13 +33,13 @@ import type { AgentTool, AgentToolContext } from './types.ts';
 
 const log = harperLogger.loggerWithTag('agent');
 
-/** Applied to one operation's calls and results before they reach the model and the transcript. */
 interface ResultGuard {
 	checkArgs(args: object): void;
 	result(value: unknown): unknown;
 	error(text: string): string;
 }
 
+const ONE_ENTRY = { oneEntry: true };
 const UNMASKABLE_LOG = 'read_log returned a result the agent cannot mask, so it is withheld';
 
 /**
@@ -63,7 +63,7 @@ const READ_LOG_GUARD: ResultGuard = {
 	error(text) {
 		return PRIVATE_KEY_ARMOR.test(text)
 			? 'read_log failed, and its error text held a PEM private key, so it is withheld'
-			: maskCredentialValues(text);
+			: maskCredentialValues(text, ONE_ENTRY);
 	},
 };
 
@@ -76,10 +76,10 @@ function maskLogEntry(entry: unknown): Record<string, unknown> {
 	for (const [field, value] of Object.entries(entry)) {
 		if (typeof value === 'string') {
 			holdsKey ||= PRIVATE_KEY_ARMOR.test(value);
-			masked[field] = maskCredentialValues(value);
+			masked[field] = maskCredentialValues(value, ONE_ENTRY);
 		} else if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
 			holdsKey ||= value.some((item) => PRIVATE_KEY_ARMOR.test(item));
-			masked[field] = value.map((item) => maskCredentialValues(item));
+			masked[field] = value.map((item) => maskCredentialValues(item, ONE_ENTRY));
 		} else if (value == null || typeof value === 'number' || typeof value === 'boolean') {
 			masked[field] = value;
 		} else {
