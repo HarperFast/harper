@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792567404307,
+  "lastUpdate": 1792567407151,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18812,6 +18812,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 134.83,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "07568b1eda109876a3cc54f34e648c3695950e44",
+          "message": "test: pin that a purge waits for create_backup to publish its backup (#3319)\n\n* test: race a purge against create_backup's blob snapshot\n\n#2647 made the whole create (engine backup, blob snapshot, manifest) one\ncritical section under the backup-repository management lock, but no test\npinned the part after the engine call: moving finalizeBackup outside the\nlock, on either create path, left every existing test green. The online\ncreate_backup path had no lock coverage at all.\n\nRefs #2031\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* test: probe the lock during the copy and drain the purge on failure\n\nAsserting the lock is held inside the snapshot window makes the check\ndeterministic, so the non-event window can shrink to 250ms. A create that\nfails now awaits the purge it started, which would otherwise delete the\nnext test's backups.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T04:57:09Z",
+          "url": "https://github.com/HarperFast/harper/commit/07568b1eda109876a3cc54f34e648c3695950e44"
+        },
+        "date": 1792567406557,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 8.44,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 8.77,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 12.81,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 8.15,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 20.87,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 9.01,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 24.17,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 8.97,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 12.4,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 98.92,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 37.17,
             "unit": "ms"
           }
         ]
