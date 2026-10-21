@@ -11,6 +11,24 @@ describe('Concurrent source misses on one key', function () {
 	let CoalescingTable;
 	let sourceCalls = 0;
 	let respond;
+	let bursts = [];
+	let tryLock;
+	const burstFor = (id) => bursts.find((burst) => Object.is(burst.id, id));
+	// Holds the first source call for `id` until `waiters` other reads have parked on its record lock.
+	function holdFirstCall(id, waiters) {
+		let release;
+		const allParked = new Promise((resolve) => (release = resolve));
+		bursts = bursts.filter((burst) => !Object.is(burst.id, id));
+		bursts.push({
+			id,
+			parked: 0,
+			started: false,
+			allParked: Promise.race([allParked, delay(5000)]),
+			park() {
+				if (++this.parked >= waiters) release();
+			},
+		});
+	}
 	before(function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -22,15 +40,34 @@ describe('Concurrent source misses on one key', function () {
 		CoalescingTable.sourcedFrom({
 			get(id, context) {
 				const attempt = ++sourceCalls;
-				return delay(10).then(() => respond(id, attempt, context));
+				const burst = burstFor(id);
+				let held = delay(10);
+				if (burst && !burst.started) {
+					burst.started = true;
+					held = burst.allParked;
+				}
+				return held.then(() => respond(id, attempt, context));
 			},
 		});
+		const { primaryStore } = CoalescingTable;
+		tryLock = primaryStore.tryLock;
+		primaryStore.tryLock = function (key, onUnlocked) {
+			const acquired = tryLock.call(this, key, onUnlocked);
+			if (!acquired) burstFor(key)?.park();
+			return acquired;
+		};
+	});
+	after(function () {
+		CoalescingTable.primaryStore.tryLock = tryLock;
 	});
 	beforeEach(() => {
 		sourceCalls = 0;
+		bursts = [];
 	});
-	const concurrentGets = (Table, id, context) =>
-		Promise.allSettled(Array.from({ length: 20 }, () => Table.get(id, context && { ...context })));
+	const concurrentGets = (Table, id, context) => {
+		holdFirstCall(id, 19);
+		return Promise.allSettled(Array.from({ length: 20 }, () => Table.get(id, context && { ...context })));
+	};
 	const outcomes = (results, read = (value) => value) =>
 		results.map(({ status, value, reason }) => (status === 'fulfilled' ? read(value) : reason.message));
 	const settle = (id) => waitFor(() => !CoalescingTable.primaryStore.hasLock(id));
@@ -63,6 +100,7 @@ describe('Concurrent source misses on one key', function () {
 
 	it('fill the cache for a caching waiter behind a noCacheStore leader', async function () {
 		respond = (id) => ({ id, name: 'mixed ' + id });
+		holdFirstCall('mixed', 1);
 		const [uncached, cached] = await Promise.all([
 			CoalescingTable.get('mixed', { noCacheStore: true }),
 			CoalescingTable.get('mixed'),
