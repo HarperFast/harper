@@ -42,6 +42,7 @@ describe('Local replicas of residency stubs', function () {
 			],
 			audit: true,
 		});
+		Records.dbisDB.putSync([Symbol.for('residency_by_id'), RESIDENCY_ID], ['resident-a', 'resident-b']);
 		Records.dbisDB.putSync([Symbol.for('residency_by_id'), OTHER_RESIDENCY_ID], ['other-resident']);
 		Records.sourcedFrom(
 			class extends Resource {
@@ -157,11 +158,102 @@ describe('Local replicas of residency stubs', function () {
 		assert.equal(Records.primaryStore.getEntry(ID)?.value, null);
 	});
 
-	it('bounds the replica lifetime by the expiry the resident reports', async () => {
-		const residentExpiresAt = Date.now() + 500;
-		response = { ...response, expiresAt: residentExpiresAt };
+	it('keeps a replica for its own lifetime on a table with no record expiry, whatever the resident reports', async () => {
+		response = { ...response, expiresAt: Date.now() + 500 };
 		const entry = await replica();
-		assert.equal(entry.expiresAt, residentExpiresAt);
+		assert.ok(entry.expiresAt > Date.now() + DEFAULT_REPLICA_EXPIRATION_MS - 5000);
+	});
+
+	it('never outlives the record expiry on a table with its own, and does not slide there', async () => {
+		const Expiring = table({
+			database: 'test',
+			table: 'ResidencyReplicasExpiring',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+			audit: true,
+			expiration: 3600,
+			replicaExpiration: 2,
+		});
+		const loaded = [];
+		let residentExpiresAt = Date.now() + 400;
+		Expiring.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					loaded.push(entry.key);
+					const found = {
+						key: ID,
+						value: { id: ID, name: 'indexed', body: 'complete' },
+						version: entry.version,
+						expiresAt: residentExpiresAt,
+					};
+					await Expiring._storeReplica(entry, found);
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Expiring.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		const entry = Expiring.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA);
+		assert.equal(entry.expiresAt, residentExpiresAt, 'the resident expiry bounds the lifetime');
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(
+			Expiring.primaryStore.getEntry(ID).expiresAt,
+			residentExpiresAt,
+			'a read hit never extends a record expiry'
+		);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		residentExpiresAt = Date.now() + 3600_000;
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		assert.deepEqual(loaded, [ID, ID], 'an expired replica is answered by a resident again');
+	});
+
+	it('keeps committed computed index entries when the fetched body replaces a stub', async () => {
+		const Computed = table({
+			database: 'test',
+			table: 'ResidencyReplicasComputed',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'sku', indexed: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+			audit: true,
+		});
+		Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+		const results = [];
+		Computed.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = { key: ID, value: { id: ID, sku: 'A1', name: 'resident' }, version: entry.version };
+					results.push(await Computed._storeReplica(entry, found));
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		await Computed.put(ID, { id: ID, sku: 'A1', name: 'original' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Computed.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { id: ID, sku: 'A1', upper: 'ORIGINAL' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Computed.get(ID)).name, 'resident');
+		assert.deepEqual(results, [true], 'a computed index must not stop the replica from being kept');
+		assert.ok(Computed.primaryStore.getEntry(ID).metadataFlags & REPLICA);
+		const found = [];
+		for await (const record of Computed.search({
+			conditions: [{ attribute: 'upper', value: 'ORIGINAL' }],
+			select: ['id'],
+		}))
+			found.push(record);
+		assert.deepEqual(found, [{ id: ID }]);
 	});
 
 	for (const [label, apply, expectStub, expectBody, expectName = 'changed'] of [
@@ -171,7 +263,6 @@ describe('Local replicas of residency stubs', function () {
 			true,
 		],
 		[
-			// a relocate carries no values, so the stub keeps the indexed fields it already holds
 			'a relocation that excludes this node',
 			(resource, options) => resource._writeRelocate(ID, { ...options, residencyId: OTHER_RESIDENCY_ID }),
 			true,
@@ -188,13 +279,20 @@ describe('Local replicas of residency stubs', function () {
 			'replaced',
 		],
 		[
-			'a patch without residency',
+			'a patch, which keeps a non-resident a non-resident',
 			(resource, options) => {
 				resource._writeUpdate(ID, { name: 'changed' }, false, options);
 				resource.save();
 			},
-			false,
-			'complete',
+			true,
+		],
+		[
+			'a local patch with no residency of its own',
+			(resource, { version, nodeId }) => {
+				resource._writeUpdate(ID, { name: 'changed' }, false, { version, nodeId });
+				resource.save();
+			},
+			true,
 		],
 		['a delete', (resource, options) => resource._writeDelete(ID, options), null],
 	]) {
@@ -212,6 +310,7 @@ describe('Local replicas of residency stubs', function () {
 			}
 			assert.ok(!(after.metadataFlags & REPLICA), 'a newer write never leaves the replica flag behind');
 			assert.equal(Boolean(after.metadataFlags & INVALIDATED), expectStub);
+			if (expectStub) assert.equal(after.residencyId, label.includes('relocation') ? OTHER_RESIDENCY_ID : RESIDENCY_ID);
 			assert.equal(after.value.body, expectBody);
 			assert.equal(after.value.name, expectName);
 			for (const name of ['indexed', 'changed'])
@@ -257,7 +356,8 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('is swept back to a stub once its lifetime passes, without an audit entry', async () => {
-		Records.setTTLExpiration({ replicaExpiration: 0.001 });
+		// the combined form resets the record settings; the replica sweep must survive that
+		Records.setTTLExpiration({ expiration: 0, eviction: 0, replicaExpiration: 0.001 });
 		const before = await history();
 		await replica();
 		const stub = await waitFor(() => {
@@ -276,12 +376,9 @@ describe('Local replicas of residency stubs', function () {
 		calls = [];
 		stored = [];
 		response = { ...response, value: { id: ID, name: 'indexed', body: 'complete' } };
-		const entry = Records.primaryStore.getEntry(ID);
-		if (entry.metadataFlags & REPLICA) {
-			assert.equal((await Records.get(ID)).body, 'complete');
-			assert.deepEqual(calls, [ID], 'an expired replica is answered by a resident');
-			assert.deepEqual(stored, [true]);
-		}
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(calls, [ID], 'an expired replica is answered by a resident, never hidden');
+		assert.deepEqual(stored, [true]);
 		assert.deepEqual(await query(['id', 'body']), [{ id: ID, body: 'complete' }]);
 	});
 

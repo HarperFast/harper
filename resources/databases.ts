@@ -22,6 +22,7 @@ import {
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import {
 	makeTable,
+	validReplicaExpirationMs,
 	ignoreAlreadyDropped,
 	acquireUpdateAttributesLock,
 	releaseUpdateAttributesLock,
@@ -4547,7 +4548,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			if (expiration) primaryKeyAttribute.expiration = expiration;
 			if (eviction) primaryKeyAttribute.eviction = eviction;
-			if (replicaExpiration !== undefined) primaryKeyAttribute.replicaExpiration = +replicaExpiration;
+			if (replicaExpiration !== undefined) {
+				validReplicaExpirationMs(+replicaExpiration * 1000);
+				primaryKeyAttribute.replicaExpiration = +replicaExpiration;
+			}
 			// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
 			// a descriptor value carried by cluster schema events; null (schema has no directive)
 			// clears a stale value the carried descriptor may hold
@@ -4875,7 +4879,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
 					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
-					if (replicaExpiration !== undefined) updatedPrimaryAttribute.replicaExpiration = +replicaExpiration;
+					if (replicaExpiration !== undefined) {
+						validReplicaExpirationMs(+replicaExpiration * 1000);
+						updatedPrimaryAttribute.replicaExpiration = +replicaExpiration;
+					}
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
