@@ -48,6 +48,14 @@ When a query is executed, conditions are evaluated against the database. Indexed
 
 **Rule of thumb**: Use `equals`, range operators, and `starts_with` on indexed fields. Avoid `contains`, `ends_with`, and `not_equal` as the sole or first condition in large datasets.
 
+### Full-text search
+
+<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
+
+A condition using a `FullText` field declared with `@fullText` is executed by the native full-text engine and ranked with BM25. Compatible `and` filters narrow the matches. Harper loads current source records and removes stale or deleted candidates before returning them.
+
+Keep result pages bounded. Before v5.4, prefix and fuzzy-prefix expressions restrict `offset + limit` to 100. In v5.4, bounded queries can traverse beyond that window within request budgets; an unbounded query can still fail when it exceeds a native window or configured limit. See [paging and prefix result windows](../full-text-search/querying.md#paging-and-prefix-result-windows). Use source-field weights to tune ranking, and enable positions, surface terms, and highlighting only when their query features are needed. See [Full-Text Search](../full-text-search/overview.md).
+
 ### Indexed vs. Non-Indexed Fields
 
 Indexed fields provide `O(log n)` lookup — fast even as the dataset grows. Non-indexed fields require `O(n)` full table scans.
@@ -78,14 +86,6 @@ When a secondary index is still being built — for example, just after a new `@
 | Message   | `"<attribute>" is not indexed yet, can not search for this attribute` |
 
 This is a transient condition — the index finishes building in the background, after which the same query succeeds. Clients should retry (with backoff) rather than treating it as an empty result or a permanent failure. On the operations API the error body includes `code` and `retryable`, so callers can branch on `error.code === 'INDEX_REBUILDING'` or `error.retryable`.
-
-### Full-text search
-
-<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
-
-A condition using a `FullText` field declared with `@fullText` is executed by the native full-text engine and ranked with BM25. Compatible `and` filters are evaluated while accepting candidates so a selective structured filter can still fill the requested result page. Harper then loads the current source records and removes stale or deleted candidates.
-
-Keep result pages bounded. Any expression containing prefix or fuzzy-prefix matching has a 100-record native window and is intended for autocomplete-style record lookup. An unbounded query that exceeds the window fails instead of returning a partial result. Use source-field weights to tune ranking, and enable positions, surface terms, and highlighting only when their query features are needed. See [Full-Text Search](../full-text-search/overview.md).
 
 ## Relationships and Joins
 

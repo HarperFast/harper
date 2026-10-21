@@ -14,7 +14,7 @@ If you are looking for information on how to configure your Harper installation 
 :::
 
 :::tip
-For production credentials, prefer the encrypted, replicated [secrets store](../security/secrets.md) over a committed `.env` file. Secrets are stored as ciphertext, delivered to components via `process.env` or a per-component `secrets` accessor, and never appear in operation logs or replication payloads. The same `enc:v1:` envelope format also lets you encrypt individual `.env` values at rest.
+For production credentials, prefer the encrypted, replicated [secrets store](../security/secrets.md) over a committed `.env` file. Secrets are stored as ciphertext, delivered to components via `process.env` or a per-component `secrets` accessor, and never appear in operation logs or replication payloads. The same `enc:v1:` envelope format also lets you [encrypt individual `.env` values](./encrypted-values.md) at rest.
 :::
 
 ## Configuration
@@ -60,6 +60,14 @@ Harper's own instance-wide configuration is composed once at startup, **before**
 To change Harper's configuration, set it in the [configuration file](../configuration/overview.md) or export the variable in the real process/container environment **before** Harper starts — not through `loadEnv`.
 :::
 
+## Managing `.env` Files Remotely
+
+<VersionBadge version="v5.2.0" />
+
+A component's `.env` file can be edited through the Operations API without exposing the values already in it. `get_env_keys` lists key names only, `set_env_value` writes one or many keys while preserving every other line, and `delete_env_value` removes keys. `get_component_file` returns a `.env` file **masked** — key names and one `KEY=********` line per key, never a value. An edit to a file `loadEnv` has already loaded reaches running code only after the node's worker threads restart. See [Environment File Operations](../operations-api/operations.md#environment-file-operations).
+
+Individual values can also be stored encrypted, so the plaintext never reaches the API, the logs, the replication payload, or the file on disk. See [Encrypted Environment Values](./encrypted-values.md).
+
 ## Override Behavior
 
 By default, `loadEnv` follows the standard dotenv convention: **existing environment variables take precedence** over values in `.env` files. This means variables already set in the shell or container environment will not be overwritten.
@@ -94,5 +102,7 @@ Files are loaded in the order specified.
 
 ## Related
 
+- [Encrypted Environment Values](./encrypted-values.md)
+- [Secrets](../security/secrets.md)
 - [Components Overview](../components/overview.md)
 - [Configuration](../configuration/overview.md)

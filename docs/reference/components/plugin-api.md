@@ -98,7 +98,7 @@ import type { Scope, Config } from 'harper';
 
 ### Function: `handleApplication(scope: Scope): void | Promise<void>`
 
-The only required export from a plugin module. The component loader executes it sequentially across all worker threads. It can be async and is awaited.
+The only required export from a plugin module. The component loader executes it in each worker thread that loads the application, sequentially with other plugins in that worker. It can be async and is awaited.
 
 Avoid event-loop-blocking operations within `handleApplication()`.
 
@@ -405,7 +405,7 @@ Notes on the shutdown sequence:
 - **Async listeners are awaited.** Returning a promise from a `'close'` listener is supported: Harper awaits it before the worker exits, so cleanup completes rather than racing the process exit.
 - **Cleanup is bounded.** Shutdown has a backstop timer (10 seconds by default, longer under `harper dev`), after which the worker is force-exited even if a `'close'` listener is still running. Keep teardown short and avoid unbounded work such as retry loops without a deadline.
 - **A failed listener does not block shutdown.** If a `'close'` listener throws or rejects, Harper logs the error and continues shutting down. Because all listeners are awaited together, one that rejects also stops Harper from waiting on the others still in flight — so handle errors inside the listener rather than letting them escape.
-- **Each worker cleans up independently.** `handleApplication()` runs on every worker thread, so a `'close'` listener registered there runs once per worker. Cleanup that must happen only once for the whole instance needs its own coordination.
+- **Each worker cleans up independently.** `handleApplication()` runs on every worker thread that loads the application, so a `'close'` listener registered there runs once per worker. Cleanup that must happen only once for the whole instance needs its own coordination.
 
 Handlers created with [`scope.handleEntry()`](#scopehandleentry) and the [`scope.options`](#scopeoptions) watcher are closed by Harper automatically; a `'close'` listener is only needed for resources the plugin manages itself.
 

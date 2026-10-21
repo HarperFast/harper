@@ -193,11 +193,23 @@ If acceptable coverage is not reached before `waitForIndexMilliseconds` expires,
 
 The same code is also used when prolonged derived-index lag causes Harper to reject local writes. Query waits can be retried according to the caller's freshness needs; rejected writes should use backoff while the index catches up. See [Write backpressure](./overview.md#write-backpressure).
 
-## Prefix result window
+## Paging and prefix result windows
 
-`matches_prefix` and `matches_fuzzy_prefix` are autocomplete-style record searches. Any expression containing one of these modes uses a 100-record native result window, and `offset + limit` cannot exceed that window. If an unbounded query has more than 100 matches, Harper returns `400` and requires a limit instead of silently truncating the result. These modes return matching records, not a separate list of suggested terms.
+`matches_prefix` and `matches_fuzzy_prefix` are autocomplete-style record searches. These modes return matching records, not a separate list of suggested terms.
 
-Other match modes page through the native result window as needed.
+Before v5.4, any expression containing one of these modes uses a 100-record native result window, and `offset + limit` cannot exceed 100. An unbounded query with more than 100 matches returns `400` rather than silently truncating the result.
+
+### Paging in v5.4
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Full-text and autocomplete searches use Harper's existing `limit` and `offset`. Bounded queries can pass the ordinary native result window, including the earlier 100-record prefix boundary. Within one request, one native reader fetches ranked batches until Harper has enough eligible records for the offset and limit, exhausts the matches, or reaches a request budget. Source-version checks and record filters run before records count toward the requested page.
+
+For example, `offset: 100` and `limit: 10` skip the first 100 eligible records and return up to the next 10, even for prefix matching. A short or empty page means matches were exhausted; reaching a work budget while more matches remain raises an error instead. An unbounded query can still fail when it exceeds the native window or configured limits.
+
+`storage.fullText.maxRawHitsPerRequest`, `maxResultsPerRequest` and `requestBudgetMilliseconds` bound fetched work, retained results and execution time. Replayed or rejected hits consume raw work; a request can exhaust that budget before reaching its result target. See [storage configuration](../configuration/options.md#storage) for the controls and [REST paging and counts](../rest/querying.md#pagination-and-total-count) for URL syntax and count behavior.
+
+Each offset request runs a new query and can see changed records, permissions or index contents. Pages can therefore repeat or omit records during concurrent changes. There are no continuation tokens, close operations or retained searches across requests.
 
 ## REST
 

@@ -84,7 +84,7 @@ GET /Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather
 
 Use `Table.search()` or `search_by_conditions` when conditions need source-field selection, condition-level highlighting, or freshness controls. See [Querying Full-Text Indexes](../full-text-search/querying.md) for ranking, highlights, query combinations, and freshness controls.
 
-The REST URL syntax searches every source field in the index, so the caller must be allowed to read every source field. Prefix and fuzzy-prefix queries have a 100-record window; `offset + limit` cannot exceed 100. Full-text queries cannot provide an exact total count. On a REST interface with `exactCount: true`, a `Prefer: count=exact` request returns an unavailable total (`Content-Range: items <range>/*`). Without that opt-in, Harper applies `count=estimated` instead and can return an estimate.
+The REST URL syntax searches every source field in the index, so the caller must be allowed to read every source field. Before v5.4, prefix and fuzzy-prefix queries restrict `offset + limit` to 100. In v5.4, bounded full-text and autocomplete queries can pass that native window within request budgets; source-version checks and filters run before records count toward the offset and limit. Each page is a new query and can see concurrent changes. See [paging and prefix result windows](../full-text-search/querying.md#paging-and-prefix-result-windows). Full-text queries cannot provide an exact total count. On a REST interface with `exactCount: true`, a `Prefer: count=exact` request returns an unavailable total (`Content-Range: items <range>/*`). Without that opt-in, Harper applies `count=estimated` instead and can return an estimate.
 
 For date fields, colons must be URL-encoded as `%3A`:
 

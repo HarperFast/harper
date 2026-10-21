@@ -148,10 +148,9 @@ export HARPER_CLI_PASSWORD=password
 
 **Automatic `.env` Updates**:
 
-When you run `harper login <URL>`, the CLI will automatically update your `.env` file in your current directory and set `HARPER_CLI_TARGET` to the specified URL.
+When you run `harper login <URL>` in a directory that already has a `.env` file, the CLI appends `HARPER_CLI_TARGET` with the URL you logged in to. It does not create a `.env` file, and it leaves the file alone if the file, or your environment, already sets `HARPER_CLI_TARGET` or `CLI_TARGET`.
 
 ```bash
-# Automatically sets HARPER_CLI_TARGET in .env
 harper login https://my-project.harperdb.cloud
 ```
 
@@ -262,25 +261,41 @@ There is no operation that revokes a refresh token directly. To invalidate one, 
 
 On a runner that can prove its own identity, the CLI needs **no stored credential at all**. It asks the runtime for an identity token addressed to your instance and trades it for a one-hour operation token. Nothing durable is stored in your CI provider, and there is no 30-day token to rotate.
 
-Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust), then grant the token permission in the workflow.
+Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust). For a GitHub Actions workflow that deploys from a branch, [`harper deploy setup=true provider=github-actions`](./commands.md#github-actions-deploys-oidc) (v5.4.0) does it in one command: a deploy-only role and user, the policy, and the repository's `HARPER_CLI_TARGET` variable.
 
-The block below is **GitHub Actions** syntax — `permissions: id-token: write` is how Actions specifically opts a job into requesting an identity token. Other CI systems expose the same idea differently, and Harper currently detects GitHub Actions only; an unrecognized runtime is not an error, the CLI simply falls through to its other credential sources.
+###### Using it in a workflow
+
+**Nothing in the workflow names the policy, and no `harper` command takes an option for it.** Once the policy exists, every `harper` command in a job authenticates through it by itself — `harper deploy`, `harper get_job`, or any other operation — when all four of these hold. What each command may then do is up to the role of the user the policy names: one that lists only `deploy_component`, `get_job` and `registration_info`, like the role setup creates, refuses anything else with a `403`.
+
+1. **The job may request an identity token.** On GitHub Actions that is `permissions: id-token: write` on the job.
+2. **`HARPER_CLI_TARGET` is the policy's `audience`.** The CLI requests its token for the target it connects to, so the target must be the URL the policy names, with its port and trailing slash (`https://my-instance.harperdb.io:9925/`). It is not sensitive, so a repository variable (`vars`) rather than a secret.
+3. **The run matches the policy's claims**: its repository, its workflow file and branch, and its environment.
+4. **Nothing else is configured to authenticate.** `auth_username=`/`auth_password=`, credentials in the target URL, `HARPER_CLI_USERNAME`/`HARPER_CLI_PASSWORD`, `HARPER_CLI_REFRESH_TOKEN` or `HARPER_CLI_OPERATION_TOKEN` (or their `CLI_TARGET_` forms), and a saved `harper login` all outrank the exchange — see [Authentication Precedence](#authentication-precedence).
+
+For example, this job deploys with nothing but the target:
 
 ```yaml
-# .github/workflows/deploy.yml
-permissions:
-  id-token: write
-  contents: read
-environment: production
-steps:
-  - run: harper deploy by_ref=true restart=true replicated=true
-    env:
-      HARPER_CLI_TARGET: ${{ vars.HARPER_CLI_TARGET }} # a var, not a secret
+deploy:
+  runs-on: ubuntu-latest
+  environment: production
+  permissions:
+    contents: read
+    id-token: write
+  env:
+    HARPER_CLI_TARGET: ${{ vars.HARPER_CLI_TARGET }}
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - run: npm install --global harper@^5.3
+    - run: harper deploy project=my-app restart=rolling
 ```
 
-`HARPER_CLI_TARGET` is the only variable the step needs, and it is not sensitive — hence `vars` rather than `secrets`.
+It is one job, not a whole workflow. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#path-a-deploy-a-tagged-release-from-your-repository) has complete workflows that run as written, including the step that waits for a rolling deploy to reach every node.
 
-**With a trust policy in place you need nothing else** — no `HARPER_CLI_REFRESH_TOKEN`, no password, no credentials on the command. That is the point of it: the workflow holds no Harper secret at all.
+Every step in a job with `id-token: write` can request an identity token, not only `harper`: GitHub gives each one `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. So the job above runs none of the repository's code, and `persist-credentials: false` keeps the job's GitHub token out of `.git/config`, which `harper deploy` uploads with the rest of the checkout. A workflow that installs dependencies or builds should do that in a job without `id-token: write`, as [Path B](/learn/developers/deploying-from-ci#path-b-build-in-ci-publish-to-github-packages-deploy-the-artifact) does.
+
+Harper currently detects GitHub Actions only. Other CI systems expose the same idea differently; on one Harper does not recognize, the CLI falls through to its other credential sources rather than failing.
 
 If your pipeline already sets a token or password, remove it. Leaving it in place is not harmful but it does keep winning — a configured credential outranks the exchange, deliberately, so that enabling this does not silently re-point an existing pipeline at a different user. See [Authentication Precedence](#authentication-precedence) if you need the full order for a mixed setup.
 

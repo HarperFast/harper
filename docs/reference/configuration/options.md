@@ -34,7 +34,7 @@ http:
 ```
 
 - `sessionAffinity` — Route requests from same client to same worker thread (`ip` or header name)
-- `compressionThreshold` — Response size threshold for Brotli compression; _Default_: `1200` (bytes)
+- `compressionThreshold` — Response size threshold (bytes) for Brotli compression; `0` disables compression; _Default_: `0`
 - `cors` — Enable CORS; _Default_: `true`
 - `corsAccessList` — Allowed domains for CORS requests
 - `corsAccessControlAllowHeaders` — `Access-Control-Allow-Headers` value for OPTIONS preflight
@@ -62,11 +62,13 @@ threads:
 ```
 
 - `count` — Number of worker threads; _Default_: CPU count minus one
-- `maxHeapMemory` — Heap limit per thread (MB)
+- `maxHeapMemory` — Heap limit per thread (MB). When unset, each thread's limit is derived from available memory and the number of HTTP worker threads, including isolated applications' threads
+- `maxIsolated` <VersionBadge version="v5.3.0" /> — How many [isolated applications](../components/applications.md#isolated-applications) may run, each in a dedicated worker thread; _Default_: `8`. An isolated application past this limit is not loaded anywhere, and a `deploy_component` that would exceed it is refused with a `409`. `0` admits none. Dedicated threads are added to `count`, not taken from it, so a node runs up to `count` + `maxIsolated` HTTP worker threads. When `maxHeapMemory` is unset, they all count when Harper divides available memory into each thread's default heap limit. Each one lowers that limit for threads started afterward, until it reaches its 512 MB floor, after which more threads add to the total heap the node may use
 - `heapSnapshotNearLimit` — Write a `.heapsnapshot` file when a thread nears its heap limit (loadable in Chrome DevTools Memory tab); _Default_: `false`. See [Worker Thread Debugging](./debugging.md#heap-snapshots-near-the-limit)
 - `debug` — Enable Node.js inspector; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`. See [Worker Thread Debugging](./debugging.md)
 - `preload` <VersionBadge version="v5.2.0" /> — Module, or list of modules, to load via Node's `--import` before any Harper or application module on each worker thread. Intended for instrumentation and APM agents. Worker threads only (not under Bun).
 - `preloadRequire` <VersionBadge version="v5.2.0" /> — The same, but via Node's `--require` (CommonJS). Worker threads only (not under Bun).
+- `v8Flags` <VersionBadge version="v5.4.0" /> — V8 flag, or list of V8 flags, applied to the whole Harper process before its first worker thread starts. Each entry must start with `--`. Takes effect on process start. Not applied under Bun. See [Applying V8 flags](#applying-v8-flags)
 
 ### Preloading an instrumentation agent
 
@@ -103,6 +105,24 @@ threads:
 ```
 
 The dd-trace behavior described here was observed on 6.x. Check your agent's current documentation, and confirm your spans arrive at your collector.
+
+### Applying V8 flags
+
+Some V8 flags, such as `--optimize-for-size`, cannot be passed through `NODE_OPTIONS` (Node refuses them there) or to a worker thread. `v8Flags` applies them inside Harper instead: the main thread calls Node's [`v8.setFlagsFromString()`](https://nodejs.org/api/v8.html#v8setflagsfromstringflags) for each entry before the first worker thread starts, so every worker thread runs with them. V8 flags are process-wide, so they also affect the main thread from that point on. The main thread's isolate already exists, though, so flags V8 reads only when an isolate is created (such as heap sizing) do not change it. With `count: 0`, the main thread serves requests, so those creation-time flags do not affect request handling; flags V8 reads while running still apply.
+
+```yaml
+threads:
+  v8Flags:
+    - --optimize-for-size
+    - --max-semi-space-size=1
+```
+
+The value can also be set from the environment, for example `HARPER_SET_CONFIG='{"threads":{"v8Flags":["--optimize-for-size","--max-semi-space-size=1"]}}'`.
+
+- **Validation.** Surrounding whitespace is trimmed, and an empty entry is ignored. An entry that does not start with `--` is refused by `set_configuration`, and stops Harper at startup with an error naming `threads.v8Flags`. V8 skips a flag it does not recognize and only prints `Error: unrecognized flag` to standard error, so check the spelling against your Node version (`node --v8-options`).
+- **Implied flags are not applied.** On the command line, some flags turn on others; `--optimize-for-size` also caps the young-generation semi-space at 1 MB. Applied at runtime, a flag does not do that, so list the implied flags explicitly, as the example does with `--max-semi-space-size=1`.
+- **When it takes effect.** Flags are read once per process. A changed value takes effect when the whole process restarts: the [`restart`](../operations-api/operations.md#restart) operation, which restarts only the node that receives it, or a process or container restart. [`restart_service`](../operations-api/operations.md#restart_service) restarts only worker threads, which keep the process's flags, so it does not apply a change, even with `"replicated": true`. To roll back, remove the setting from `HARPER_SET_CONFIG` or `HARPER_CONFIG` if it came from there, and from `harper-config.yaml` (for example `set_configuration` with `"threads_v8Flags": null`), then restart the process. A `THREADS_V8FLAGS` environment variable is written into `harper-config.yaml` at every startup, so unset it as well; unsetting the variable alone leaves the flags in the file.
+- **Expert setting.** Flags change V8's behavior for the whole process and are not validated beyond the `--` prefix. A conflicting combination can stop the process at startup. Measure memory and throughput with your workload before relying on a flag in production.
 
 ---
 
@@ -167,6 +187,17 @@ tls:
 - `certificateAuthority` — Path to CA file; _Default_: `<rootPath>/keys/ca.pem`
 - `privateKey` — Path to private key; _Default_: `<rootPath>/keys/privateKey.pem`
 - `ciphers` — Allowed TLS cipher suites
+- `unixDomainSockets` <VersionBadge version="v5.1.0" /> — `true` makes each HTTP worker thread also listen on a Unix domain socket under `<rootPath>/sockets` for each secure port, for a proxy on the same host to forward to. [Isolated applications](../components/applications.md#isolated-applications) are reachable only this way, so they require it; _Default_: `false`
+
+With `tls` as a single object, put `unixDomainSockets: true` inside it. With an SNI certificate array, put `tls_unixDomainSockets: true` at the root of `harper-config.yaml`, alongside `tls`; placing `unixDomainSockets` inside an array entry does not enable the global setting. On v5.3.0, a standalone `TLS_UNIXDOMAINSOCKETS=true` environment variable does not enable this SNI configuration; use the root YAML setting:
+
+```yaml
+tls_unixDomainSockets: true
+tls:
+  - host: app.example.com
+    certificate: ~/hdb/keys/app-certificate.pem
+    privateKey: ~/hdb/keys/app-private-key.pem
+```
 
 ---
 
@@ -253,6 +284,7 @@ replication:
 - `routes` — Peer nodes; URL strings or `{hostname, port, startTime, revokedCertificates}` objects
 - `port` — Replication port
 - `securePort` — Secure replication port; _Default_: `9933` (changed from `9925` in v4.5.0)
+- `threads` — Worker threads dedicated to replication, which then own the replication port and every subscription and load no application code; requires `port` or `securePort`; see [Dedicated Replication Threads](../replication/overview.md#dedicated-replication-threads); _Default_: `0` (replication runs on the HTTP worker threads) (Added in: v5.4.0)
 - `enableRootCAs` — Verify against Node.js Mozilla CA store; _Default_: `true`
 - `blobTimeout` — Blob transfer timeout (ms); _Default_: `120000`
 - `blobGapReconnectMs` — Interval (ms) for the blob-gap watchdog: when a transient blob save failure pins a replication resume cursor, the connection is forced to reconnect on this cadence so the gapped blob is re-streamed and, during a bulk copy, the copy resumes from the last banked cursor. Lower values heal gaps faster at the cost of more reconnects on a link whose faults never heal; _Default_: the `blobTimeout` value
@@ -384,6 +416,8 @@ agent:
   enabled: true
   model: default
   maxTurns: 50
+  maxTokens: 16384
+  maxToolResultBytes: 65536
   autoApprove: false
   allowDestructive: false
   user: hdb_agent
@@ -393,29 +427,115 @@ agent:
 - `provider` — Recorded on the session but **not yet used to route the model call** — only `model` reaches the provider. Set the provider through the [`models`](../models/overview.md#configuration) configuration instead
 - `model` — Model id override, passed through to the model call; _Default_: the [`models`](../models/overview.md#configuration) generative default
 - `maxTurns` — Maximum tool-call iterations in a single run; _Default_: `50`
+- `maxTokens` <VersionBadge version="v5.4.0" /> — Output-token cap sent with every model request the agent makes. A reply cut off at this cap ends the run with status `error`, not `completed`, and `lastError` says it was cut off; raise the cap if replies keep hitting it. A cut-off reply can also mean the session's transcript filled the model's context window, which a higher cap does not fix; start a new session instead. Keep it within the model's own output limit: most providers reject a larger value on every request, and the run then ends `error` with the provider's message, so lower it for a model with a small output limit (some older models allow 4096 or 8192). Before v5.4.0 the agent sent no cap: Anthropic models, called directly or through Bedrock, then used 4096, and the other backends sent none; _Default_: `16384`
+- `maxToolResultBytes` <VersionBadge version="v5.4.0" /> — Largest tool result, in bytes of JSON, the agent adds to its conversation. A larger result is cut to this size, ending with a note that gives the original size and tells the model how to ask for less. The file-reading tools return pages of at most half this size, measured as JSON, so a page arrives whole unless the file's path alone takes up most of the cap. Lower it for a model with a small context window. It must be an integer from `1024` to `1048576`; at startup an invalid value is logged and the default is used. See [When a conversation outgrows the model's context window](../operations-api/operations.md#when-a-conversation-outgrows-the-models-context-window); _Default_: `65536`
 - `maxCostUsd` — Intended per-run cost ceiling. **Not enforced** — it is a stored setting only, and nothing checks spend against it; _Default_: `5.00`
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
 - `user` — Harper user the agent's **operations** tools run as; the filesystem, HTTP, schedule, and inspector tools always run at process privilege regardless. If it cannot be resolved and it is not the default, the agent fails closed and runs with no operations tools; _Default_: `hdb_agent`, which falls back to a `super_user` bootstrap identity
-- `componentsScope` — Filesystem write scope for component edits, relative to `rootPath`; _Default_: the full `componentsRoot`
+- `componentsScope` — The agent's `components` filesystem scope, which it reads and, with `allowDestructive`, writes; absolute or relative to `rootPath`. Read at startup only; _Default_: the full `componentsRoot`
+- `configScope` <VersionBadge version="v5.4.0" /> — The agent's read-only `config` filesystem scope: a file or a directory, absolute or relative to `rootPath`. Read at startup only. See [Filesystem scopes](#filesystem-scopes); _Default_: the Harper config file only
+- `httpFetch` <VersionBadge version="v5.4.0" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
-`enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all.
+`enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them.
+
+### Filesystem scopes
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+The agent's read tools (`read_file`, `list_dir`, `grep_files`, and `tail_file`) take a `root` naming one of three scopes. `write_file`, available when `allowDestructive` is on, takes no `root` and always writes to `components`.
+
+| Scope        | Reaches                                           | Access         |
+| ------------ | ------------------------------------------------- | -------------- |
+| `components` | `componentsRoot`, or `componentsScope` when set   | read and write |
+| `logs`       | the log directory                                 | read           |
+| `config`     | the Harper config file, or `configScope` when set | read           |
+
+Before v5.4.0, `config` was the directory holding `harper-config.yaml`. On a default install that is `rootPath` itself, so the agent could read `keys/`, `database/`, and the rest of the root. It is now the config file alone, and `list_dir` shows only that file.
+
+To point the agent somewhere else, such as a directory of extra configuration, set `configScope` to a file or a directory, absolute or relative to `rootPath`. It replaces the config file as the scope: the config file stays readable only if the new target contains it, as `rootPath` does. It is read at startup only. A path that names no file or directory at startup leaves the `config` scope unavailable and logs an error.
+
+```yaml
+agent:
+  enabled: true
+  configScope: /etc/harper/extra
+```
+
+Whatever `componentsScope` and `configScope` say, every scope refuses:
+
+- **Harper's key directories**, `<rootPath>/keys` (TLS and JWT keys) and `<rootPath>/ssh` (git deploy keys): nothing in them is read, listed, or written. Paths are compared after resolving symlinks.
+- **Key file names**, `*.pem`, `*.key`, and `.jwtPass`: not read. `list_dir` still shows the names, and `write_file` can still create such a file outside the key directories.
+- **Text holding a PEM private key** (`-----BEGIN ... PRIVATE KEY-----`), such as an inline `tls.privateKey` in the config file: `read_file` refuses a page that holds one or starts partway through one (it looks back 128 KiB for the BEGIN line, more than any PEM key spans, post-quantum ones included), `tail_file` refuses lines that hold one or a file that ends partway through one, and `grep_files` skips the file.
+
+A key with neither a key file name nor PEM armor, such as a `.p12` bundle or raw DER, is not recognized outside the key directories.
+
+The config file can still hold secrets that are not PEM keys, such as a model `apiKey` or storage credentials, and the agent reads it. Setting `configScope` to `rootPath` also restores read access to the raw database files and backups.
+
+### Restricting `http_fetch`
+
+<VersionBadge version="v5.4.0" />
+
+`http_fetch` lets the agent send HTTP requests from the Harper process: to its own REST endpoints while it builds an app, or to pull a reference page. The same agent reads table rows, logs, and component source, and text in any of them can steer it, so an enabled agent has a read path and an egress path in one toolset. `agent.httpFetch` bounds that tool. It is not a bound on every way the agent can reach the network: with `allowDestructive` on, for example, the agent can write component code, and the Harper process runs that code.
+
+Remove the tool when the agent has no reason to reach the network, for example an investigation or operations-assistant role:
+
+```yaml
+agent:
+  enabled: true
+  httpFetch: false
+```
+
+Or keep it and allow only named hosts:
+
+```yaml
+agent:
+  enabled: true
+  httpFetch:
+    allow:
+      - localhost:9926
+      - '*.example.com'
+```
+
+| Value              | Effect                                                                                                                                                   |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `true` (default)   | The tool is available. Cloud-metadata hosts and the IPv4 link-local range are refused.                                                                   |
+| `false`            | The tool is removed from the agent's toolset. The model never sees it, and the system prompt stops suggesting HTTP checks.                               |
+| `{ allow: [...] }` | The tool is available, and a request is refused unless its host matches an entry. Its description lists the entries, so the model knows where it can go. |
+
+Allow-list entries take these forms:
+
+- `api.example.com` — that host, on any port
+- `localhost:9926` — that host on that port only. A URL without a port uses 80 for `http` and 443 for `https`.
+- `*.example.com` — any subdomain, at any depth. It does not match `example.com` itself; list that separately.
+- `[::1]` or `[::1]:9926` — an IPv6 address, in brackets
+
+Entries and request URLs are compared in canonical form, so letter case, internationalized names, and shorthand spellings of an IPv4 address all match the same entry. An IPv4 entry does not admit the IPv4-mapped IPv6 form of its address (`[::ffff:...]`); list that separately if you need it.
+
+Some behavior worth knowing:
+
+- **Every redirect hop is checked.** A redirect to a host the policy refuses fails the request before that host is contacted. This applies in every mode, so with the default `true`, a redirect into the cloud-metadata range fails too.
+- **The metadata block comes first.** Listing a cloud-metadata or link-local address does not make it reachable.
+- **Matching is by host name, not address.** An allowed name whose DNS resolves to an internal address is still reached. List names whose DNS you control.
+- **An empty list removes the tool**, the same as `false`. A value Harper cannot read also removes the tool, and logs an error naming it, while the rest of the agent stays available.
+- **It is read at startup only.** Set it in `harper-config.yaml`, with `set_configuration`, through `HARPER_CONFIG`, or as an [environment variable](./overview.md#2-environment-variables) or [CLI argument](./overview.md#3-cli-arguments) (`AGENT_HTTPFETCH=false`, or `AGENT_HTTPFETCH_ALLOW='["localhost:9926"]'` as a JSON array), then restart. A comma-separated string is not a list: it is rejected, and the tool is removed. [`set_agent_config`](../operations-api/operations.md#set_agent_config) rejects it at runtime. Because `set_configuration` can write it and `restart` applies it, the policy only holds against the agent itself while those two operations stay out of its toolset (they are not in the default operations allow list) or behind [approval](../operations-api/operations.md#approve_agent_action).
 
 ---
 
 ## `deployment`
 
-Retention for what `deploy_component` leaves behind. See [`deploy_component`](../operations-api/operations.md#deploy_component).
+Retention for what `deploy_component` leaves behind, and how long startup waits for component installs. See [`deploy_component`](../operations-api/operations.md#deploy_component).
 
 ```yaml
 deployment:
+  startupInstallTimeout: 600000
   payloadRetention:
     maxSize: 10485760
   stagingRetention:
     maxCount: 5
 ```
 
+- `startupInstallTimeout` <VersionBadge version="v5.3.0" /> — Milliseconds. The longest startup waits for component installs before it opens listeners. While waiting, it logs every 60 seconds which ones remain outstanding — including throughout `0`'s unbounded wait — unless every install settles first, which always ends the wait before that first log, whatever the timeout; a failed install logs immediately regardless of the timeout. A component whose install is still running at the deadline keeps installing in the background, and the node serves the version already installed meanwhile, or nothing for a component that was never installed. When that install succeeds, the swap lands on disk immediately and Harper flags a restart as needed (`restartRequired` in [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status) called with no `id`) — any one component's late success sets it, even while others are still installing. Code already loaded keeps running until that restart, but some component plugins apply an added or changed file on their own rather than waiting for one; content served straight from disk, such as static files, can also reflect the new version before the restart. Outside `harper dev`, which restarts automatically soon after any restart request, Harper does not restart on its own. An install that fails after the deadline does not set the flag; Harper only logs an error naming the component. `0` waits indefinitely, which was the behavior before v5.3.0. An empty value uses the default. A negative, non-finite, or otherwise unparseable value also falls back to it, with a warning in the log; _Default_: `600000` (10 minutes)
 - `payloadRetention.maxSize` <VersionBadge version="v5.1.15" /> — Bytes. After a successful deploy, a payload larger than this has its stored tarball (`payload_blob`) dropped from the `hdb_deployment` row; the row and its metadata stay. Set it very high to retain every payload; _Default_: `10485760` (10 MiB)
 - `stagingRetention.maxCount` <VersionBadge version="v5.3.0" /> — How many complete builds that are not live may remain per component under `<componentsRoot>/.deploy-staging`: builds staged with `activate: false`, and [releases replaced by a later deploy](../operations-api/operations.md#going-back-to-a-previous-release), which `deployment_id` can make live again. The newest survive; older ones are removed when that component next deploys and at startup. `drop_component` removes all of them. Each is a full installed copy of the component, `node_modules` included. `0` keeps none, and no replaced release is kept. This bounds dormant builds only, not a disk quota: staging directories that belong to an in-flight or unsettled deploy are never touched; _Default_: `5`
 

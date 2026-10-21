@@ -238,14 +238,69 @@ Called for MQTT subscribe commands. Returns a `Subscription` — an `AsyncIterab
 
 All properties are optional:
 
-| Property             | Description                                                                                    |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| `includeDescendants` | Include all updates with an id prefixed by the subscribed id (e.g. `sub/*`)                    |
-| `startTime`          | Start from a past time (catch-up of historical messages). Cannot be used with `previousCount`. |
-| `previousCount`      | Return the last N updates/messages. Cannot be used with `startTime`.                           |
-| `omitCurrent`        | Do not send the current/retained record as the first update.                                   |
-| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                          |
-| `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.           |
+| Property             | Description                                                                                                                                                                                     |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `includeDescendants` | Include all updates with an id prefixed by the subscribed id (e.g. `sub/*`)                                                                                                                     |
+| `startTime`          | Resume after a local audit-log cursor; all events at that cursor are excluded. Cannot be used with `previousCount`.                                                                             |
+| `databaseGeneration` | Resume from `startTime` as a checked position. See [Resuming from a position](#resuming-from-a-position).                                                                                       |
+| `previousCount`      | Return up to the last N accepted updates/messages, capped at 1,000. Cannot be used with `startTime`.                                                                                            |
+| `includeSuperseded`  | Include record mutations superseded by a later version. Defaults to `false`, or `true` when `rawEvents` is enabled. An explicit value overrides that default. <VersionBadge version="v5.3.0" /> |
+| `rawEvents`          | Return raw audit events rather than reconstructing full records. Defaults to `false`.                                                                                                           |
+| `omitCurrent`        | Do not send the current/retained record as the first update.                                                                                                                                    |
+| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                                                                                                                           |
+| `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.                                                                                                            |
+
+#### Superseded record updates
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+By default, table subscriptions skip record mutations whose version differs from the current stored record's version. This applies both to catch-up with `startTime` or `previousCount` and to live delivery. If a record was updated at versions 2, 3, and 4 before catch-up begins, and version 4 is still current, the subscription delivers only version 4. Deletion events require a retained tombstone with a matching version; older updates or deletions superseded by a later write are skipped. If the record or its tombstone has been removed, record mutations are skipped because no current version remains to compare. Published messages are independent events and are not suppressed by this version check. The comparison uses the stored primary entry's metadata version, which publishing also advances. A publication can therefore cause a preceding record mutation to be skipped; this is the existing live-delivery rule, not a separate timestamp tracking only record mutations.
+
+`startTime` is a local audit-log cursor, not a record version. Audit events expose this cursor as `localTime`, which multiple events in a transaction can share. Resuming with `startTime` excludes all events at that cursor, so callers must account for shared cursors before checkpointing.
+
+`previousCount` counts accepted events: superseded or filtered events do not consume the requested count. The request is capped at 1,000 events, and scanning stops after 10,000 in-scope audit entries or the end of retained history, so fewer events may be returned.
+
+Before v5.3.0, non-raw catch-up could include superseded mutations even though non-raw live delivery suppressed them. Consumers that need historical transitions can opt in:
+
+```javascript
+const subscription = await Product.subscribe({
+	startTime: lastLocalTime,
+	includeSuperseded: true,
+});
+
+for await (const event of subscription) {
+	await processEvent(event);
+}
+```
+
+With `includeSuperseded: true`, record values are reconstructed for each historical version, unless `rawEvents` is enabled. This option applies to live delivery too. Delivery still depends on retained audit history and subscription filters; it does not provide an exactly-once guarantee.
+
+`rawEvents: true` preserves its existing default of including superseded events. Set `includeSuperseded: false` explicitly to apply the same version and missing-record checks while retaining raw event payloads.
+
+#### Resuming from a position
+
+<VersionBadge version="v5.4.0" />
+
+As of v5.4.0, a subscription on a RocksDB database can resume from a position that Harper checks against the database's history, instead of replaying whatever history is left.
+
+- Every subscription reports `databaseGeneration`, the generation of the database it reads (undefined on LMDB). A database gets a new generation when it is restored, branched or migrated from a copy.
+- To resume, pass back the generation with the `localTime` of an event you processed: `subscribe({ databaseGeneration, startTime })`. `startTime` must be a finite number, and `0` is a position (the start of the log) rather than "no start time". `previousCount` cannot be combined with it.
+- A position is exclusive, and the events of one transaction share a `localTime`, so a position is safe to record only once every event with that `localTime` has been processed.
+
+Harper refuses a position it cannot replay completely:
+
+| Error                            | Status | Code                          | When                                                                                                     |
+| -------------------------------- | ------ | ----------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `DatabaseGenerationChangedError` | 409    | `DATABASE_GENERATION_CHANGED` | The database was replaced by a restored or copied state after the position was recorded, or it is LMDB.  |
+| `ResumeHistoryUnavailableError`  | 410    | `RESUME_HISTORY_UNAVAILABLE`  | Audit retention pruned history after the position, or one record has more than 10,000 versions after it. |
+
+A subscription to one record is checked against that record's own history: it resumes as long as the record's retained version history still reaches back to the position, even when retention has pruned other history past it. A record first written after the position is checked against retention like a table subscription.
+
+A refusal found before the replay starts rejects `subscribe()`. A prune that lands while the replay runs ends the subscription instead, with the error as its last event. Either way, resynchronize by subscribing without a position.
+
+The returned subscription's `resumeVerified` promise resolves `true` once the replay after the position is complete and checked, and `false` if it was refused or ended first. It never rejects. Do not record a new position from replayed events until it resolves `true`.
+
+The check covers retention and database replacement, not ordering. A transaction's `localTime` is assigned when the transaction starts, so a transaction that commits after you recorded a position can carry a `localTime` below it, and a resume from that position does not replay it.
 
 ---
 

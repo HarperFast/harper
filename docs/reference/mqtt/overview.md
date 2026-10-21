@@ -53,9 +53,11 @@ Harper supports multi-level topics for both publishing and subscribing:
 
 ### Durable Sessions
 
-A durable session retains a client's subscription list and any unacknowledged messages across disconnects. When the client reconnects with the same client ID, it picks up from where it left off — including any messages published while it was offline.
+<VersionBadge type="changed" version="v5.4.0" />
 
-Durable sessions in Harper are persisted as records in the `hdb_durable_session` system table, indexed by client ID. The session record holds the list of subscriptions (topic + QoS) and the timestamp of the last delivered message per topic. Because durable sessions are records rather than in-memory state, an abandoned session sits idle with no runtime cost until the client reconnects or the record is deleted.
+A durable session retains a client's subscription list and any unacknowledged messages across disconnects. When the client reconnects with the same client ID, Harper catches up subscribed topics from retained audit history, picking up from where it left off.
+
+Durable sessions in Harper are persisted as records in the `hdb_durable_session` system table, indexed by client ID. The session record holds the list of subscriptions (topic + QoS) and, per topic, the position in the transaction log from which a reconnect catches up. Because durable sessions are records rather than in-memory state, an abandoned session sits idle with no runtime cost until the client reconnects or the record is deleted.
 
 **Establishing a durable session** — Connect with a stable client ID and `cleanSession: false` (MQTT v3.1.1) or `cleanStart: false` (MQTT v5):
 
@@ -71,7 +73,21 @@ mqtt.connect('mqtts://harper.example.com:8883', {
 });
 ```
 
-**Catch-up on reconnect** — When the client reconnects, Harper replays missed messages on subscribed topics by reading the audit log. For this to work, audit logging must be enabled on the tables backing the subscribed topics. See [Transaction Logging](../database/transaction.md) and [`logging.auditLog`](../logging/configuration.md#loggingauditlog).
+**Catch-up on reconnect** — When the client reconnects, Harper replays missed messages on subscribed topics by reading retained audit history. For this to work, audit logging must be enabled on the tables backing the subscribed topics. See [Transaction Logging](../database/transaction.md) and [`logging.auditLog`](../logging/configuration.md#loggingauditlog). Catch-up applies to QoS 1 and 2 subscriptions. A QoS 0 subscription is kept with the session and resumes live, without the messages published while the client was away.
+
+**When a session can no longer catch up** — As of v5.4.0, Harper checks each subscription's saved position against the database's history before replaying from it. When audit retention has since removed history the replay would need, Harper resets the session instead of replaying only part of what was missed:
+
+- **At connect** — If the check fails at connect time, Harper deletes the session record and answers `CONNACK` with `sessionPresent: false`. Resubscribe when you see it.
+- **After `CONNACK`** — If the problem is found after `CONNACK`, Harper deletes the session and closes the connection, sending an MQTT v5 client `DISCONNECT` with reason code `0x83` first. The next connect gets `sessionPresent: false`.
+- **Record and wildcard subscriptions** — A subscription to a single record resumes as long as that record's history back to the saved position is still retained, even when retention has removed other history. A wildcard subscription resumes as long as the database-wide log still covers its position.
+
+A position saved before the database was restored or copied, or saved on another cluster node, cannot be checked against this database's history. Harper resumes those subscriptions best-effort instead of resetting the session: it replays from the saved position without the check, as earlier versions did, and once the subscription has caught up, the positions it saves are checked again on later reconnects. A restore ends a connected session's subscriptions, so the connection closes with `0x83` and the client resumes the same session when it reconnects. Because a restore leaves no event in the history, a resumed client is not told that state was rolled back.
+
+Harper keeps a quiet topic's position current while the client is connected, and again when it disconnects, so a subscription that receives nothing is not reset merely because other tables' retention advanced. A position only moves past a message once that message, and every other message from the same transaction, has been acknowledged; an out-of-order acknowledgement can mean some messages are delivered again after a reconnect. A client that sends SUBSCRIBE again for a topic its session already holds, as many clients do on every connect, continues from the saved position, so resubscribing loses nothing. A new connection with the same client ID on the same Harper thread takes the session over, and the older connection is closed (MQTT v5 reason code `0x8E`); a clean-start connect closes it the same way. These checks apply to RocksDB databases; LMDB sessions catch up as before.
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+Durable subscriptions with QoS 1 or 2 explicitly include superseded record versions during both live delivery and reconnect catch-up. This preserves delivery of intermediate retained publications (`retain: true`), even though ordinary table subscriptions now default to current-state delivery. Non-retained publications remain independent messages. Catch-up is limited by audit-log retention. See [Superseded record updates](../resources/resource-api.md#superseded-record-updates).
 
 **Session expiry** — In MQTT v5, the `sessionExpiryInterval` property on `CONNECT` controls how long the session is retained after the client disconnects. With `sessionExpiryInterval: 0` (or a clean session connect), Harper deletes the session record at disconnect. Connecting with the same client ID and `clean: true` also explicitly deletes any existing durable session.
 
@@ -83,6 +99,8 @@ mqtt.connect('mqtts://harper.example.com:8883', {
 
 Harper supports the MQTT Last Will and Testament feature. If a client disconnects unexpectedly, the broker publishes the configured will message on its behalf. Will messages are persisted in the `hdb_session_will` system table at CONNECT time, so they survive a broker restart and fire reliably on unexpected disconnect.
 
+As of v5.4.0, each connection's will is kept separately, so a connection that closes after a newer one with the same client ID has connected publishes only its own will. When the newer connection takes a durable session over, the older connection is closed and publishes its will then, as MQTT v5 specifies.
+
 ## Content Negotiation
 
 Harper handles structured data natively. Messages can be published and received in any supported structured format — JSON, CBOR, or MessagePack — and Harper stores and delivers them as structured objects. Different clients can independently choose their preferred format: one client may publish in JSON while another subscribes and receives in CBOR.
@@ -93,7 +111,7 @@ Harper is designed for distributed, low-latency message delivery. Messages are d
 
 In a distributed cluster, messages may arrive out of order due to network topology. The behavior depends on whether the message is retained or non-retained:
 
-- **Retained messages** (published with `retain: true`, or written via PUT/upsert) maintain eventual consistency across the cluster. Harper keeps the message with the latest timestamp as the winning record state. An out-of-order earlier message will not be re-delivered to clients; the cluster converges to the most recent state.
+- **Retained messages** (published with `retain: true`, or written via PUT/upsert) maintain eventual consistency across the cluster. Harper keeps the message with the latest timestamp as the winning record state. Ordinary subscriptions skip superseded updates. Durable QoS 1/2 subscriptions include superseded versions, so their delivered history can include older updates even though the stored record converges to the most recent state.
 - **Non-retained messages** are always delivered to local subscribers when received, even if they arrive out of order. Every message is delivered, prioritizing completeness over strict ordering.
 
 **Non-retained messages** are suited for applications like chat where every message must be delivered. **Retained messages** are suited for sensor readings or state updates where only the latest value matters.

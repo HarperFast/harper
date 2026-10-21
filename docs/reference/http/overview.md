@@ -80,7 +80,7 @@ Handlers see the request with the mount already removed from the pathname, so ap
 
 A mount is a routing prefix, not an isolation boundary:
 
-- **It does not namespace resources.** Exported tables live in one instance-wide registry, so a table exported by one application is reachable through any mounted REST route, not only its own.
+- **It does not namespace resources within a worker.** Applications loaded in the shared workers use the same export registry, so a table exported by one is reachable through the others' mounted REST routes. An [isolated application](../components/applications.md#isolated-applications) has its own worker and export registry; its exports are not registered in the shared workers.
 - **It does not constrain legacy Fastify routes by host.** `fastifyRoutes` registers as a global fallback outside the routed middleware chain, so those routes answer on every hostname. A `urlPath` mount does apply (it becomes the Fastify route prefix); a `host` mount does not, and Harper refuses to load a host-mounted application that declares `fastifyRoutes` rather than silently serving it unconstrained. Port them to `server.http()` for host routing.
 
 Host matching ignores the port and is case-insensitive. IPv6 hosts are configured as a bare literal (`::1`), not bracketed.
@@ -111,7 +111,7 @@ HTTP/2 can be enabled with the `http2: true` option in `harper-config.yaml`. Whe
 
 ## Compression
 
-Harper automatically compresses HTTP responses using Brotli for clients that advertise `Accept-Encoding: br`. Compression applies when the response body exceeds the configured `compressionThreshold` (default 1200 bytes). Streaming query responses are always compressed for clients that support it (since their size is not known upfront).
+Response compression is off by default. Setting [`http.compressionThreshold`](./configuration#httpcompressionthreshold) to a non-zero byte count enables it: Harper then Brotli-compresses responses larger than the threshold for clients that advertise `Accept-Encoding: br`, and compresses streamed responses regardless of size (since their size is not known upfront). Server-Sent Events are never compressed.
 
 ## Logging
 
