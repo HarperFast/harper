@@ -10716,8 +10716,15 @@ export function makeTable(options): TableResourceClass {
 		const preCommit = startPreCommitBlobsForRecord(body, primaryStore.rootStore);
 		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
 		// the blob transfer is not a maintenance commit: closing maintenance waits for the row, not the stream
-		const releaseUnused = () =>
-			cleanupUnusedBlobs(preCommit.blobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
+		const releaseUnused = () => {
+			let retained: Set<string> | undefined;
+			try {
+				retained = collectRetainedFileIds(primaryStore.getEntry(id)?.value);
+			} catch {
+				// the store closed or dropped while the transfer ran: nothing of it can hold these files
+			}
+			cleanupUnusedBlobs(preCommit.blobs, retained);
+		};
 		return preCommit.complete().then(
 			() => {
 				let stored: Promise<boolean>;
@@ -10966,12 +10973,16 @@ export function makeTable(options): TableResourceClass {
 			return Promise.resolve();
 		}
 		const transaction = txnForContext({ transaction: new DatabaseTransaction() }).getReadTxn();
-		store.removeSync(key, { transaction });
-		if (primaryStore.getEntry(key)?.metadataFlags & REPLICA) {
+		try {
+			store.removeSync(key, { transaction });
+			if (!(primaryStore.getEntry(key)?.metadataFlags & REPLICA))
+				return commitRawTransaction(transaction as RocksTransaction);
+		} catch (error) {
 			(transaction as any).abort();
-			return Promise.resolve();
+			throw error;
 		}
-		return commitRawTransaction(transaction as RocksTransaction);
+		(transaction as any).abort();
+		return Promise.resolve();
 	}
 	function standDownReplicaSweep() {
 		if (!replicaEvictionArmed) return;
