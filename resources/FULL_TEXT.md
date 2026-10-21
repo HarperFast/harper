@@ -126,7 +126,7 @@ Search settings are under `storage.fullText`:
 
 | Setting                     | Default | Meaning                                                                                                           |
 | --------------------------- | ------: | ----------------------------------------------------------------------------------------------------------------- |
-| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits                                                                                               |
+| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits, including bounded prefix replay                                                              |
 | `maxResultsPerRequest`      |  10,000 | Maximum retained offset plus limit, independent of fetched-hit work                                               |
 | `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks and highlight tracing, capped by the native execution limit |
 
