@@ -49,7 +49,7 @@ describe('Local replicas of residency stubs', function () {
 			class extends Resource {
 				static async load(entry) {
 					calls.push(entry.key);
-					const found = typeof response === 'function' ? response() : response;
+					const found = typeof response === 'function' ? await response() : response;
 					if (found) stored.push(await Records._storeReplica(entry, found));
 					return found;
 				}
@@ -436,7 +436,7 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('refreshes the lifetime on a read hit once a quarter of it has elapsed, not on every read', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip(); // LMDB replicas never slide
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		Records.setTTLExpiration({ replicaExpiration: 2 });
 		const entry = await replica();
 		assert.equal((await Records.get(ID)).body, 'complete');
