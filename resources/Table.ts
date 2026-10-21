@@ -4641,7 +4641,13 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				before: writeToSource(),
-				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+				commit: (
+					txnTime: number,
+					existingEntry: Entry,
+					retry: boolean,
+					transaction: any,
+					committedBy?: DatabaseTransaction
+				) => {
 					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
 					// save(); log entries are not part of the aborted rocks transaction, so they survive).
 					// Only such a write can find its own orphaned entry in the dedup lookups below and must
@@ -4732,6 +4738,19 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							if (
+								stagedOwnAuditEntry &&
+								committedBy?.sourceApply &&
+								isRocksDB &&
+								!replaying &&
+								precedesExisting === 0 &&
+								txnLogKey === txnTime &&
+								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
+								!existingEntry.additionalAuditRefs?.length
+							) {
+								write.skipped = true;
+								return;
+							}
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
 							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up

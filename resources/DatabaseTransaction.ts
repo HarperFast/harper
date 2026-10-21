@@ -569,7 +569,13 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
+	commit?: (
+		txnTime: number,
+		existingEntry: Partial<Entry>,
+		retry: boolean,
+		transaction: any,
+		committedBy?: DatabaseTransaction
+	) => MaybePromise<void>;
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
@@ -586,12 +592,14 @@ export type TransactionWrite = {
 	result?: any;
 	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
 	savedBlobs?: Blob[];
-	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
-	// reset at the top of each commit-handler invocation so retries see a fresh state.
+	// this round staged neither a record nor an audit entry. An earlier durable audit entry may
+	// still own savedBlobs. Reset at the top of each commit-handler invocation.
 	skipped?: boolean;
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
+	// the native handle whose batch holds that audit entry (an iterator replay discards the original's batch)
+	appendedTo?: RocksTransaction;
 	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
 	// only its trigger, so it can be triggered after the context has moved on to another transaction;
 	// this is who commits it when the transaction current at that point is not a scope (#2292).
@@ -612,8 +620,8 @@ export type TransactionWrite = {
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.
 	superseded?: boolean;
-	// this write appended an audit entry, which references its saved blobs — they then belong to the
-	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
+	// Audit pruning owns blobs referenced by an appended audit entry once its handle commits or
+	// has a durable log; a staged entry in an unsubmitted handle owns none.
 	blobsAuditReferenced?: boolean;
 	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
 	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
@@ -2090,7 +2098,8 @@ export class DatabaseTransaction implements Transaction {
 					writeVersion,
 					operation.entry,
 					(wasSaved || this.isReplay) && txnRetries > 0,
-					transaction
+					transaction,
+					this
 				) as Promise<void>;
 			} finally {
 				closeWriteInstance(operation);
@@ -2122,6 +2131,7 @@ export class DatabaseTransaction implements Transaction {
 		// retries where a recommit round self-skips before a fresh-transaction replay.
 		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
 			operation.appendedAuditEntry = true;
+			operation.appendedTo = transaction;
 		}
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
@@ -2801,7 +2811,14 @@ export class DatabaseTransaction implements Transaction {
 										: Boolean(write.stagedOn) && write.stagedOn !== committedTransaction
 								)
 									continue;
-								if (write.skipped || (write.superseded && !write.blobsAuditReferenced))
+								if (
+									(write.skipped &&
+										!(
+											write.blobsAuditReferenced &&
+											(write.appendedTo === committedTransaction || hasDurableLog(write.appendedTo))
+										)) ||
+									(write.superseded && !write.blobsAuditReferenced)
+								)
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							const committedStagedTxnTime = this.getHandleStagedTxnTime(committedTransaction);
@@ -2990,7 +3007,12 @@ export class DatabaseTransaction implements Transaction {
 							: this.hasSiblingCommitInFlight(transaction) && Boolean(write.stagedOn) && write.stagedOn !== transaction
 					)
 						continue;
-					if (write.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
+					if (
+						write.savedBlobs &&
+						((write.skipped &&
+							!(write.blobsAuditReferenced && (write.appendedTo === transaction || hasDurableLog(write.appendedTo)))) ||
+							(write.superseded && !write.blobsAuditReferenced))
+					)
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
