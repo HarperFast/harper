@@ -93,7 +93,7 @@ Use a bounded `limit` for large result sets. An unbounded search that exceeds it
 
 The fetched-hit budget includes the initial batch replay when Harper switches to native traversal. It counts hits returned by the native library, not every record Tantivy visits while scoring. Exhausting that budget throws a 400 error; exhausting the execution budget throws 503. The adapter does not return a shortened result as if the search had completed. If a custom resource has already started streaming a response, a later query error ends that stream instead of changing its HTTP status. An exhausted search returns its remaining eligible records, which may be empty.
 
-Configure the three request limits and six native process budgets under [`storage.fullText`](../configuration/options.md#storage). Work-limit changes through `set_configuration` apply to new queries. The execution budget is not a hard response-time guarantee: reader acquisition, query construction and some native operations can take additional time. The full-text condition's `waitForIndexMilliseconds` controls freshness waiting separately.
+Configure the three request limits and six native process budgets under [`storage.fullText`](../configuration/options.md#storage). Work-limit changes through `set_configuration` apply to new queries. The execution budget is not a hard response-time guarantee: reader acquisition, query construction and some native operations can take additional time. Freshness waiting and reader acquisition use separate bounds.
 
 ### Native runtime configuration
 
@@ -105,9 +105,17 @@ Replacement workers keep the captured budgets after a live configuration change.
 
 Full-text indexes require audit logging. A format-incompatible native upgrade rebuilds the local index from stored records, and queries return 503 while it rebuilds. Harper 5.4 uses `@harperfast/fulltext` 0.6.0.
 
+| Failure                                            | HTTP status | Code and retry guidance                                                                                  |
+| -------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------- |
+| Raw-hit or retained-result budget                  | 400         | No readiness code. Narrow the query or adjust the named budget.                                          |
+| Execution budget                                   | 503         | No readiness code. Narrow the query; the same expensive query can fail again.                            |
+| Native busy                                        | 503         | No readiness code. Reduce concurrency or retry with backoff.                                             |
+| Index readiness or coverage                        | 503         | `INDEX_REBUILDING` or `DERIVED_INDEX_LAGGING`, with `retryable: true`.                                   |
+| Worker loaded native search before runtime capture | 500         | `FullTextWorkerInitializationError`, with `retryable: false`; recreate that worker after initialization. |
+
 `INDEX_REBUILDING` and `DERIVED_INDEX_LAGGING` identify retryable readiness or coverage failures. Retry with backoff while the index makes progress. Transaction history retained under [`logging.auditRetention`](../logging/configuration.md#loggingauditretention) (default `3d`) is used for catch-up. Lost history can require a rebuild; retries alone do not repair an index that cannot catch up. Check index readiness and logs if it stays unavailable. Budget and native-busy failures do not carry those readiness codes. A native busy response also returns 503; reduce concurrency or retry with backoff. For an execution-budget failure, narrow the query, reduce the offset or adjust the work budget instead of repeatedly submitting the same expensive query.
 
-Native page, response-byte and highlight limits still apply. Fulltext 0.6.0 also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those native limits.
+Native page, response-byte and highlight limits still apply. Fulltext 0.6.0 also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those native limits. See the [published native limits](https://github.com/HarperFast/fulltext/blob/v0.6.0/docs/limits.md) for page, byte and highlight bounds.
 
 ## Relationships and Joins
 

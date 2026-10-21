@@ -44,9 +44,11 @@ A replicated call sends the exact same values to every node. Do not include node
 
 ```json
 {
-	"message": "Configuration successfully set. You must restart HarperDB for new config settings to take effect."
+	"message": "Configuration successfully set. You must restart Harper for new config settings to take effect."
 }
 ```
+
+The response uses a generic restart message. The full-text request limits listed above apply to new searches without a restart.
 
 ### Replicated body
 
