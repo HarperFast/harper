@@ -10643,7 +10643,10 @@ export function makeTable(options): TableResourceClass {
 		const store = primaryStore.ifVersion ? replicaDeadlines : openReplicaDeadlines();
 		if (!store) return;
 		if (isRocksDB) store.removeSync(id, transaction ? { transaction } : undefined);
-		else void store.remove(id);
+		else
+			void Promise.resolve(store.remove(id)).catch((error) =>
+				logger.warn?.('Error clearing a replica deadline', id, error)
+			);
 	}
 	/**
 	 * A read hit renews a replica once `replicaRefreshFraction` of its lifetime has passed. The decision
@@ -10721,7 +10724,8 @@ export function makeTable(options): TableResourceClass {
 			try {
 				retained = collectRetainedFileIds(primaryStore.getEntry(id)?.value);
 			} catch {
-				// the store closed or dropped while the transfer ran: nothing of it can hold these files
+				// the store closed while the transfer ran; its rows may reopen holding these files
+				return;
 			}
 			cleanupUnusedBlobs(preCommit.blobs, retained);
 		};
@@ -10790,7 +10794,9 @@ export function makeTable(options): TableResourceClass {
 				const stored = updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
 				const indexUpdate = primaryStore.ifVersion(id, current.version, () => {
 					updateIndices(id, current.value, body, undefined, preserveComputed);
-					void store.put(id, deadline);
+					void Promise.resolve(store.put(id, deadline)).catch((error) =>
+						logger.warn?.('Error writing a replica deadline', id, error)
+					);
 				});
 				(databaseTransaction as any).commit();
 				completion = Promise.all([indexUpdate, stored]).then(([, result]) => (result as unknown) !== false);
@@ -11032,7 +11038,9 @@ export function makeTable(options): TableResourceClass {
 					null
 				);
 				updateIndices(entry.key, entry.value, stub, undefined, true);
-				void store?.remove(entry.key);
+				void Promise.resolve(store?.remove(entry.key)).catch((error) =>
+					logger.warn?.('Error clearing a replica deadline', entry.key, error)
+				);
 			});
 			return demotion.then((applied) => Promise.resolve(stored).then((result) => releaseBlobs(applied && result)));
 		}
