@@ -5,8 +5,9 @@ const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wri
 const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
+const { setTimeout: delay } = require('node:timers/promises');
 const { extract } = require('tar-stream');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, fileLockRelease, tryFileLock } = require('@harperfast/rocksdb-js');
 const {
 	backupDirForDatabase,
 	createBackup,
@@ -41,7 +42,13 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
-const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
+const {
+	managementLockPath,
+	pinBackup,
+	readBackupPins,
+	unpinBackup,
+	withBackupRepositoryLock,
+} = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases, table } = require('#src/resources/databases');
 const {
