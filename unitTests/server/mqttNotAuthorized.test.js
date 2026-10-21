@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { Resource } = require('#src/resources/Resource');
 const { handleApplication } = require('#src/server/mqtt');
+const { server } = require('#src/server/Server');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
@@ -43,8 +44,13 @@ function mqttListener() {
 	const mqtt = { sessions: new Set(), events: new EventEmitter() };
 	const server = { ws: (fn) => ((listener = fn), []), socket: () => ({}), mqtt };
 	handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
+<<<<<<< HEAD
 	return (user) => {
 		const socket = { sends: [], handlers: {}, closes: 0, _socket: { remoteAddress: '127.0.0.1' } };
+=======
+	const open = (user) => {
+		const socket = { sends: [], handlers: {}, closes: 0, terminations: 0, _socket: { remoteAddress: '127.0.0.1' } };
+>>>>>>> 93fb8eb3f (Send each MQTT client the CONNACK refusal code of its own protocol version)
 		socket.close = () => socket.closes++;
 		socket.terminate = () => {};
 		socket.send = (message) => socket.sends.push(message);
@@ -58,11 +64,21 @@ function mqttListener() {
 		);
 		return { socket, sessions: mqtt.sessions };
 	};
+	open.mqtt = mqtt;
+	return open;
 }
 
 async function connect(
 	open,
-	{ user = anonymous, protocolVersion = 5, properties, clientId = `not-authorized-${++sequence}`, clean = true } = {}
+	{
+		user = anonymous,
+		protocolVersion = 5,
+		properties,
+		clientId = `not-authorized-${++sequence}`,
+		clean = true,
+		username,
+		password,
+	} = {}
 ) {
 	const { socket, sessions } = open(user);
 	const registeredBefore = new Set(sessions);
@@ -81,6 +97,8 @@ async function connect(
 		clientId,
 		clean,
 		properties,
+		username,
+		password,
 	});
 	await waitFor(() => parse().find((packet) => packet.cmd === 'connack'), { message: 'no CONNACK' });
 	// the listener's registry is shared by every client of this suite, so a client is told apart by identity
@@ -91,6 +109,7 @@ async function connect(
 		sessions,
 		session,
 		parse,
+		connack: parse().find((packet) => packet.cmd === 'connack'),
 		async request(packet, answer) {
 			const id = ++messageId;
 			write({ messageId: id, ...packet });
@@ -385,6 +404,96 @@ describe('mqtt.ts reason codes for a refused request', () => {
 			} finally {
 				error.restore();
 			}
+		});
+	});
+
+	describe('CONNACK', () => {
+		const BAD_CREDENTIALS = 0x86;
+		const BAD_CREDENTIALS_311 = 4;
+		const NOT_AUTHORIZED_311 = 5;
+		const versions = [
+			{ name: 'v5', protocolVersion: 5, badCredentials: BAD_CREDENTIALS, notAuthorized: NOT_AUTHORIZED, other: 0x80 },
+			{
+				name: 'v3.1.1',
+				protocolVersion: 4,
+				badCredentials: BAD_CREDENTIALS_311,
+				notAuthorized: NOT_AUTHORIZED_311,
+				other: NOT_AUTHORIZED_311,
+			},
+		];
+		// mqtt-packet reads reasonCode from a v5 CONNACK and returnCode from a 3.1.1 one
+		const codeOf = (connack, protocolVersion) => (protocolVersion === 5 ? connack.reasonCode : connack.returnCode);
+		let originalGetUser;
+		before(() => {
+			originalGetUser = server.getUser;
+			server.getUser = async () => {
+				throw new Error('wrong password');
+			};
+		});
+		after(() => {
+			server.getUser = originalGetUser;
+			delete open.mqtt.authorizeClient;
+			delete open.mqtt.requireAuthentication;
+		});
+		afterEach(() => {
+			delete open.mqtt.authorizeClient;
+			delete open.mqtt.requireAuthentication;
+		});
+		const refuseWith = (error) => {
+			open.mqtt.authorizeClient = () => {
+				throw error;
+			};
+		};
+
+		for (const { name, protocolVersion, badCredentials, notAuthorized, other } of versions) {
+			describe(name, () => {
+				it('refuses a wrong password with the bad-credentials code', async () => {
+					const { connack } = await connect(open, { protocolVersion, username: 'someone', password: 'wrong' });
+					assert.strictEqual(codeOf(connack, protocolVersion), badCredentials);
+				});
+
+				it('refuses an anonymous client when authentication is required with the bad-credentials code', async () => {
+					open.mqtt.requireAuthentication = true;
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), badCredentials);
+				});
+
+				it('reports an authorizeClient refusal carrying an HTTP 403 statusCode as Not authorized', async () => {
+					refuseWith(Object.assign(new Error('denied'), { statusCode: 403 }));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
+				});
+
+				it('maps a numeric HTTP status in error.code instead of passing it through', async () => {
+					refuseWith(Object.assign(new Error('denied'), { code: 403 }));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
+				});
+
+				it('reports an error with no code as a generic refusal', async () => {
+					refuseWith(new Error('nope'));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), other);
+				});
+
+				it('sends no code outside the refusal range for an unrelated numeric error.code', async () => {
+					refuseWith(Object.assign(new Error('nope'), { code: 500 }));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), other);
+				});
+			});
+		}
+
+		it('passes on a v5 refusal code the error names, and not to a 3.1.1 client', async () => {
+			refuseWith(Object.assign(new Error('banned'), { code: 0x8a }));
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, 0x8a);
+			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, NOT_AUTHORIZED_311);
+		});
+
+		it('passes on a 3.1.1 refusal code the error names, and not to a v5 client', async () => {
+			refuseWith(Object.assign(new Error('unavailable'), { code: 3 }));
+			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, 3);
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, UNSPECIFIED_ERROR);
 		});
 	});
 });
