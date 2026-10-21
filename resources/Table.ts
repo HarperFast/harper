@@ -10258,7 +10258,7 @@ export function makeTable(options): TableResourceClass {
 				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
 			) {
 				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
-				if (outcome && (!heldFill.unstoredRecord || context?.noCacheStore || droppingTable || isReadOnlyMode())) {
+				if (outcome && (!heldFill.unstoredRecord || context?.noCacheStore)) {
 					setLoadedFromSource(target, false);
 					whenResolved(outcome);
 				}
@@ -10308,7 +10308,6 @@ export function makeTable(options): TableResourceClass {
 			expiresAt: undefined,
 			lastModified: undefined,
 		};
-		const presetNoCacheStore = sourceContext.noCacheStore;
 		const responseHeaders = (context as any)?.responseHeaders;
 		return new Promise((resolve, reject) => {
 			// we don't want to wait for the transaction because we want to return as fast as possible
@@ -10460,8 +10459,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					// a source that opts its own response out of the cache has marked it per-request
-					if (!sourceContext.noCacheStore || presetNoCacheStore) sharedEntry = resolvedEntry;
+					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself

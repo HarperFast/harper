@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, __setReadOnlyModeForTest } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 
@@ -82,6 +82,21 @@ describe('Concurrent source misses on one key', function () {
 		const results = outcomes(await concurrentGets(CoalescingTable, 'private'), (record) => record?.name);
 		assert.equal(sourceCalls, 20);
 		assert.equal(new Set(results).size, 20);
+	});
+
+	it('do not share a response the source opted out of the cache on a read-only node', async function () {
+		respond = (id, attempt, context) => {
+			context.noCacheStore = true;
+			return { id, name: 'private ' + attempt };
+		};
+		__setReadOnlyModeForTest(true);
+		try {
+			const results = outcomes(await concurrentGets(CoalescingTable, 'private-read-only'), (record) => record?.name);
+			assert.equal(sourceCalls, 20);
+			assert.equal(new Set(results).size, 20);
+		} finally {
+			__setReadOnlyModeForTest(undefined);
+		}
 	});
 
 	it('share one source call and cache the record when the source returns one', async function () {
