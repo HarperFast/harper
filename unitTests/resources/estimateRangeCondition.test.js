@@ -100,7 +100,12 @@ describe('estimateCondition range estimates', () => {
 
 		const table3 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
 		assert.strictEqual(estimate(table3, { attribute: 'attr', comparator: 'le', value: 5 }), 40);
-		assert.deepStrictEqual(table3.indices.attr.calls[0], { start: null, exclusiveStart: true, end: 5, inclusiveEnd: true });
+		assert.deepStrictEqual(table3.indices.attr.calls[0], {
+			start: null,
+			exclusiveStart: true,
+			end: 5,
+			inclusiveEnd: true,
+		});
 	});
 
 	it('estimates primary-key ranges against the primary store', () => {

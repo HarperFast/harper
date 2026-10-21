@@ -71,7 +71,10 @@ describe('searchByIndex over an indexed boolean attribute', () => {
 
 	it('sort ascending and descending include the false rows', async () => {
 		const withSort = (descending) =>
-			ids({ conditions: [{ attribute: 'flag', comparator: 'le', value: true }], sort: { attribute: 'flag', descending } });
+			ids({
+				conditions: [{ attribute: 'flag', comparator: 'le', value: true }],
+				sort: { attribute: 'flag', descending },
+			});
 		const ascending = await withSort(false);
 		assert.strictEqual(ascending.length, FALSE_ROWS + TRUE_ROWS);
 		assert.ok(ascending[0].startsWith('f') && ascending.at(-1).startsWith('t'), 'ascending order');
