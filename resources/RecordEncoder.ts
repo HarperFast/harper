@@ -1077,6 +1077,9 @@ export function recordUpdater(store, tableId, auditStore) {
 				}
 			}
 			if (audit) {
+				const write = options?.write;
+				if (write && write.stagedAudit !== 'replicable')
+					write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 				const username = typeof options?.user === 'string' ? options.user : options?.user?.username;
 				if (auditRecord) {
 					// The audit encodedRecord is durable record state too (it is the transaction log and the

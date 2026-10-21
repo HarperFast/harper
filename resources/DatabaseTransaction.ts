@@ -702,6 +702,12 @@ export type TransactionWrite = {
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
+	// the audit entry recordUpdater staged for this write in the current staging, if any (handlers pass
+	// the write as its `write` option); 'local' is a LOCAL_ONLY entry, which the sender never replicates
+	stagedAudit?: 'replicable' | 'local';
+	// the last staging ran and appended nothing a peer will receive, so there is nothing to confirm;
+	// derived per staging, since a runtime enableAuditing() changes the answer for a restaged write
+	replicatesNothing?: boolean;
 	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
 	// only its trigger, so it can be triggered after the context has moved on to another transaction;
 	// this is who commits it when the transaction current at that point is not a scope (#2292).
@@ -757,6 +763,10 @@ export type TransactionWrite = {
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
 };
+
+function confirmsNothing(write: TransactionWrite): boolean {
+	return write.skipReplicationConfirmation || write.replicatesNothing;
+}
 
 export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
 	if (operation && !operation.instanceClosed) {
@@ -1890,13 +1900,13 @@ export class DatabaseTransaction implements Transaction {
 		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
 		// when some later write replicates
 		let version = this.writes.some(
-			(write) => write?.saved && !write.skipReplicationConfirmation && write.appendedTo === committedTransaction
+			(write) => write?.saved && !confirmsNothing(write) && write.appendedTo === committedTransaction
 		)
 			? committedLogKey
 			: undefined;
 		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
 			const write = this.writes[i];
-			if (!write?.saved || write.skipReplicationConfirmation) continue;
+			if (!write?.saved || confirmsNothing(write)) continue;
 			version = write.store.getEntry(write.key)?.version;
 		}
 		if (version === undefined) return;
@@ -1911,8 +1921,7 @@ export class DatabaseTransaction implements Transaction {
 	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
 		let lists: Map<number, string[]> | undefined;
 		for (const write of this.writes) {
-			if (!write?.saved || !write.residencyId || write.skipReplicationConfirmation || lists?.has(write.residencyId))
-				continue;
+			if (!write?.saved || !write.residencyId || confirmsNothing(write) || lists?.has(write.residencyId)) continue;
 			// a residency recorded in a round whose batch an iterator replay discarded names no append
 			if (submitted && write.appendedTo !== submitted) continue;
 			(lists ??= new Map()).set(
@@ -1933,11 +1942,7 @@ export class DatabaseTransaction implements Transaction {
 		if ((transaction as RocksTransactionWithRetry).isRetry) return;
 		this.checkedResidentPeerLists = undefined;
 		this.checkedFor = transaction;
-		if (
-			!this.replicatedConfirmation ||
-			!this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation)
-		)
-			return;
+		if (!this.replicatedConfirmation || !this.writes.some((write) => write?.saved && !confirmsNothing(write))) return;
 		try {
 			const residentPeerLists = this.residentPeerLists(transaction);
 			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
@@ -2311,6 +2316,7 @@ export class DatabaseTransaction implements Transaction {
 			if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
+			if (!(transaction as RocksTransactionWithRetry).isRetry) operation.stagedAudit = undefined;
 			try {
 				completion = operation.commit(
 					writeVersion,
@@ -2347,11 +2353,14 @@ export class DatabaseTransaction implements Transaction {
 		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
 		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
 		// retries where a recommit round self-skips before a fresh-transaction replay.
-		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
-			operation.appendedAuditEntry = true;
-			// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
-			// recorded whether or not confirmation is requested yet, since it can be requested later
-			operation.appendedTo = transaction;
+		if (!(transaction as RocksTransactionWithRetry).isRetry) {
+			operation.replicatesNothing = !operation.skipped && operation.stagedAudit !== 'replicable';
+			if (!operation.skipped && operation.stagedAudit) {
+				operation.appendedAuditEntry = true;
+				// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
+				// recorded whether or not confirmation is requested yet, since it can be requested later
+				operation.appendedTo = transaction;
+			}
 		}
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
