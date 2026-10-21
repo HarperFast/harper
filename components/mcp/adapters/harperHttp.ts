@@ -71,7 +71,7 @@ export function createHarperHttpHandler(profile: McpProfile) {
 				return {
 					status: 413,
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ error: error.message }),
+					body: JSON.stringify({ error: 'payload_too_large', message: error.message }),
 				};
 			}
 			throw error;
@@ -116,18 +116,21 @@ function normalizeHeaders(headers: HarperHttpRequest['headers']): Record<string,
  */
 function readBody(body: BodyStream | undefined, maxBytes: number, declaredLength?: string): Promise<string> {
 	if (!body) return Promise.resolve('');
-	// A declared Content-Length over the limit is rejected without reading any of the body.
-	if (declaredLength !== undefined && Number(declaredLength) > maxBytes) return Promise.reject(bodyTooLarge(maxBytes));
 	return new Promise((resolve, reject) => {
 		let chunks: Buffer[] = [];
 		let size = 0;
 		let settled = false;
+		// Listeners are attached even for a declared oversize so the stream flows and discards: the uWS
+		// body is a paused Readable that otherwise buffers the whole upload.
+		if (declaredLength !== undefined && Number(declaredLength) > maxBytes) {
+			settled = true;
+			reject(bodyTooLarge(maxBytes));
+		}
 		body.on('data', (chunk) => {
 			if (settled) return;
 			const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
 			size += buffer.length;
 			if (size > maxBytes) {
-				// The body wrappers cannot pause the socket; later chunks are discarded by the `settled` guard.
 				settled = true;
 				chunks = [];
 				reject(bodyTooLarge(maxBytes));
@@ -138,7 +141,9 @@ function readBody(body: BodyStream | undefined, maxBytes: number, declaredLength
 		body.on('end', () => {
 			if (settled) return;
 			settled = true;
-			resolve(Buffer.concat(chunks).toString('utf8'));
+			const text = Buffer.concat(chunks).toString('utf8');
+			chunks = [];
+			resolve(text);
 		});
 		body.on('error', (err) => {
 			if (settled) return;
