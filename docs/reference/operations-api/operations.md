@@ -1679,14 +1679,14 @@ Operations for reading and updating Harper configuration.
 
 Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
-| Operation           | Description                                                      | Role Required |
-| ------------------- | ---------------------------------------------------------------- | ------------- |
-| `set_configuration` | Modifies Harper configuration file parameters (requires restart) | super_user    |
-| `get_configuration` | Returns the current Harper configuration                         | super_user    |
+| Operation           | Description                                   | Role Required |
+| ------------------- | --------------------------------------------- | ------------- |
+| `set_configuration` | Modifies Harper configuration file parameters | super_user    |
+| `get_configuration` | Returns the current Harper configuration      | super_user    |
 
 ### `set_configuration`
 
-Updates configuration parameters in `harper-config.yaml`. A restart (`restart` or `restart_service`) is required for changes to take effect.
+Updates configuration parameters in `harper-config.yaml`. Most changes require a restart (`restart` or `restart_service`) to take effect. Full-text request work limits apply to new searches without a restart; changes to the native process budgets require a full `restart`. See [Full-text paging](../resources/full-text-paging.md#configure-search-work).
 
 Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time); `restart_service` restarts only worker threads, though, so a change to [`threads.v8Flags`](../configuration/options.md#applying-v8-flags) takes effect only after a `restart` sent to each node in turn (`restart` does not replicate). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
 

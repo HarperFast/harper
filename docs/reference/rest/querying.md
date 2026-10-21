@@ -222,6 +222,8 @@ The response status is always `200` — `Content-Range` is informational (Harper
 
 The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that hits its guardrail (counting the tail past the requested page is bounded by a 1,000,000-row cap and a ~1-second budget, and abandons the total rather than truncating the page), or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
 
+Full-text and autocomplete queries cannot provide an exact total. An estimated count may use the planner estimate when the query has no opaque row or vector filter. See [Full-text paging](../resources/full-text-paging.md#request-a-page).
+
 ### Enabling exact counts
 
 Because an exact count scans the full matched set, it is **off by default**. Enable it in an application's REST configuration via the [`exactCount` option](./overview.md#configuration):
