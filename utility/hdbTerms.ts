@@ -742,7 +742,6 @@ export const CONFIG_PARAMS = {
 	REPLICATION_LOGGING_TAG: 'replication_logging_tag',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
-	STORAGE_FULL_TEXT: 'storage_fullText',
 	STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS: 'storage_fullText_requestBudgetMilliseconds',
 	STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST: 'storage_fullText_maxRawHitsPerRequest',
 	STORAGE_FULL_TEXT_MAX_RESULTS_PER_REQUEST: 'storage_fullText_maxResultsPerRequest',

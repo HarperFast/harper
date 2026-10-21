@@ -416,7 +416,6 @@ export class FullTextQueryIndex {
 				requestBudgetMilliseconds: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS),
 				maxRawHitsPerRequest: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST),
 				maxResultsPerRequest: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_MAX_RESULTS_PER_REQUEST),
-				runtime: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME),
 			});
 		} catch (error) {
 			throw new ServerError(

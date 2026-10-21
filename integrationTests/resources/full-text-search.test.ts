@@ -650,6 +650,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				await waitForReady('Product');
 			}
 			const original = (await operation({ operation: 'get_configuration' })).storage.fullText;
+			assert.ok(original, 'Installed configuration must include full-text defaults');
 			try {
 				await operation({
 					operation: 'set_configuration',
@@ -679,6 +680,21 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				} while (Date.now() < deadline);
 				assert.strictEqual(status, 400, body);
 				assert.match(body, /maxResultsPerRequest/);
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 1,
+					storage_fullText_maxResultsPerRequest: 500,
+				});
+				await restartWorkers();
+				const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
+					method: 'POST',
+					headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+					body: JSON.stringify(query('shoe', {}, { limit: 2 })),
+					signal: AbortSignal.timeout(5000),
+				});
+				body = await response.text();
+				assert.strictEqual(response.status, 400, body);
+				assert.match(body, /maxRawHitsPerRequest/);
 			} finally {
 				if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
 					await operation({
