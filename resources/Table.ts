@@ -4940,13 +4940,11 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
-							// Without explicit refs, the committed head's log key is its record version.
 							if (
 								stagedOwnAuditEntry &&
 								committedBy?.sourceApply &&
 								isRocksDB &&
 								!replaying &&
-								!write.priorWrite &&
 								precedesExisting === 0 &&
 								receivedLogKey === txnTime &&
 								appendedLogKey === receivedLogKey &&

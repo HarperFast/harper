@@ -45,6 +45,40 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		return { T, apply };
 	}
 
+	it('skips every same-key write when a competing delivery committed the source transaction', async function () {
+		if (isLMDB) return this.skip();
+		const version = Date.now() + 86400000;
+		const { T, apply } = await fixture('SameKeyBatch', version);
+		const options = { version, fullUpdate: true };
+		async function stageBatch(txn, context) {
+			await txn.save(txn.writes.find((write) => write.key === 'counter'));
+			const resource = await T.getResource('counter', context);
+			await resource._writeUpdate('counter', { count: { __op__: 'add', value: 1 } }, false, {
+				isNotification: true,
+				nodeId: getIdOfRemoteNode('duplicate-origin', T.auditStore),
+				version,
+			});
+			const writes = txn.writes.filter((write) => write.key === 'counter');
+			assert.equal(writes.length, 2);
+			await txn.save(writes[1]);
+			return writes;
+		}
+		let native, writes;
+		await apply({ id: 'counter', count: 0 }, options, async (txn, context) => {
+			writes = await stageBatch(txn, context);
+			native = txn.transaction;
+			assert.ok(writes.every((write) => write.appendedAuditEntry));
+			await apply({ id: 'counter', count: 0 }, options, stageBatch);
+			assert.equal(T.primaryStore.getEntry('counter').value.count, 1);
+		});
+		assert.ok(native.retries > 0, 'the duplicate source transactions must really conflict');
+		assert.equal((await T.get('counter')).count, 1, 'the committed increment must not be applied again');
+		assert.ok(
+			writes.every((write) => write.skipped),
+			'both writes belong to the committed duplicate'
+		);
+	});
+
 	async function conflict(
 		{ T, apply },
 		record,
@@ -111,19 +145,21 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		assert.equal((await state.T.get('counter')).count, 2, 'both distinct increments must survive');
 	});
 
-	it('preserves distinct log keys sharing a record version during a retry', async function () {
-		if (isLMDB) return this.skip();
-		const version = Date.now() + 86400000;
-		const state = await fixture('DistinctKeys', version);
-		const { write } = await conflict(
-			state,
-			{ count: { __op__: 'add', value: 1 } },
-			{ version, logKey: version + 20 },
-			{ version, logKey: version + 10 }
-		);
-		assert.equal(write.skipped, false, 'equal record versions alone do not prove write identity');
-		assert.equal((await state.T.get('counter')).count, 2);
-	});
+	for (const offset of [0, 20]) {
+		it(`preserves distinct log keys sharing a record version during a retry (offset ${offset})`, async function () {
+			if (isLMDB) return this.skip();
+			const version = Date.now() + 86400000;
+			const state = await fixture(`DistinctKeys${offset}`, version);
+			const { write } = await conflict(
+				state,
+				{ count: { __op__: 'add', value: 1 } },
+				{ version, logKey: version + offset },
+				{ version, logKey: version + 10 }
+			);
+			assert.equal(write.skipped, false, 'equal record versions alone do not prove write identity');
+			assert.equal((await state.T.get('counter')).count, 2);
+		});
+	}
 
 	it('does not deduplicate distinct unmapped origins that compare as a version tie', async function () {
 		if (isLMDB) return this.skip();
@@ -144,7 +180,7 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		const version = Date.now() + 86400000;
 		const { T, apply } = await fixture('OtherKey', version);
 		await T.put('other', { count: 0 });
-		let native, counterWrite;
+		let native, counterWrite, secondCounterWrite;
 		await apply({ count: { __op__: 'add', value: 1 } }, { version }, async (txn, context) => {
 			counterWrite = txn.writes.find((write) => write.key === 'counter');
 			await txn.save(counterWrite);
@@ -155,12 +191,21 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 				version,
 			});
 			await txn.save(txn.writes.find((write) => write.key === 'other'));
+			const counter = await T.getResource('counter', context);
+			await counter._writeUpdate('counter', { count: { __op__: 'add', value: 1 } }, false, {
+				isNotification: true,
+				nodeId: getIdOfRemoteNode('duplicate-origin', T.auditStore),
+				version,
+			});
+			secondCounterWrite = txn.writes.filter((write) => write.key === 'counter')[1];
+			await txn.save(secondCounterWrite);
 			native = txn.transaction;
 			await transaction({}, () => T.put('other', { count: 2 }));
 		});
 		assert.ok(native.retries > 0, 'the other key must cause a real native conflict');
 		assert.equal(counterWrite.skipped, false);
-		assert.equal((await T.get('counter')).count, 1);
+		assert.equal(secondCounterWrite.skipped, false);
+		assert.equal((await T.get('counter')).count, 2);
 	});
 
 	it('keeps the staged audit blob usable when a duplicate retry is skipped', async function () {
@@ -194,7 +239,52 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 			assert.doesNotThrow(() => saveBlob(blobs[0]), 'skip cleanup must not discard the audit-owned blob');
 		} finally {
 			release();
-			setDeletionDelay(50);
+			setDeletionDelay(undefined);
+		}
+	});
+
+	it('discards a skipped blob whose unsubmitted audit batch was abandoned for a retained read snapshot', async function () {
+		if (isLMDB) return this.skip();
+		const version = Date.now() + 86400000;
+		const { T } = await fixture('IteratorBlob', version);
+		await T.put('iterator-sentinel', { count: 0 });
+		const blobs = [
+			createBlob(Buffer.alloc(20000, 'a'), { saveBeforeCommit: true }),
+			createBlob(Buffer.alloc(20000, 'b')),
+		];
+		const context = { timestamp: version };
+		let readOwner, native, write, originalCommit, release;
+		let originalCommits = 0;
+		setDeletionDelay(0);
+		try {
+			await transaction(context, async () => {
+				await T.getResource('counter', context);
+				readOwner = context.transaction;
+				const readTxn = readOwner.useReadTxn();
+				assert.ok(T.primaryStore.getEntry('counter', { transaction: readTxn }));
+				await T.put('counter', { count: 1, blob: blobs[0] }, context);
+				const txn = context.transaction;
+				write = txn.writes.find((write) => write.key === 'counter');
+				await txn.save(write);
+				release = holdBlobFile(blobs[0]);
+				assert.equal(write.blobsAuditReferenced, true, 'the abandoned batch must have staged an audit reference');
+				native = txn.transaction;
+				originalCommit = native.commit;
+				native.commit = function (...args) {
+					originalCommits++;
+					return originalCommit.apply(this, args);
+				};
+				await transaction({ timestamp: version + 1 }, (other) => T.put('counter', { count: 2, blob: blobs[1] }, other));
+			});
+			assert.equal(originalCommits, 0, 'the original audit batch must never have been submitted');
+			assert.equal(write.skipped, true);
+			assert.equal(getFileId(T.primaryStore.getEntry('counter').value.blob), getFileId(blobs[1]));
+			assert.throws(() => saveBlob(blobs[0]), /Blob was discarded/, 'an unsubmitted audit batch owns no blob');
+		} finally {
+			if (native) native.commit = originalCommit;
+			readOwner?.doneReadTxn();
+			release?.();
+			setDeletionDelay(undefined);
 		}
 	});
 });

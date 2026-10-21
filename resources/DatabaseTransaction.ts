@@ -690,7 +690,8 @@ export type TransactionWrite = {
 	result?: any;
 	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
 	savedBlobs?: Blob[];
-	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
+	// the commit handler's most recent decision: true means it returned without storing a record.
+	// An earlier durable audit entry may still reference savedBlobs.
 	// reset at the top of each commit-handler invocation so retries see a fresh state.
 	skipped?: boolean;
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
@@ -716,8 +717,8 @@ export type TransactionWrite = {
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.
 	superseded?: boolean;
-	// this write appended an audit entry, which references its saved blobs — they then belong to the
-	// audit trail (audit pruning deletes them), so skipped/superseded cleanup must leave them alone
+	// this write staged an audit entry referencing its saved blobs; skipped-write cleanup also
+	// checks that the appending handle committed or has a durable log before retaining them
 	blobsAuditReferenced?: boolean;
 	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
 	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
@@ -3060,7 +3061,14 @@ export class DatabaseTransaction implements Transaction {
 										: Boolean(write.stagedOn) && write.stagedOn !== committedTransaction
 								)
 									continue;
-								if ((write.skipped || write.superseded) && !write.blobsAuditReferenced)
+								if (
+									(write.skipped &&
+										!(
+											write.blobsAuditReferenced &&
+											(write.appendedTo === committedTransaction || hasDurableLog(write.appendedTo))
+										)) ||
+									(write.superseded && !write.blobsAuditReferenced)
+								)
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							const committedStagedTxnTime = this.getHandleStagedTxnTime(committedTransaction);
@@ -3259,7 +3267,12 @@ export class DatabaseTransaction implements Transaction {
 							: this.hasSiblingCommitInFlight(transaction) && Boolean(write.stagedOn) && write.stagedOn !== transaction
 					)
 						continue;
-					if (write.savedBlobs && (write.skipped || write.superseded) && !write.blobsAuditReferenced)
+					if (
+						write.savedBlobs &&
+						((write.skipped &&
+							!(write.blobsAuditReferenced && (write.appendedTo === transaction || hasDurableLog(write.appendedTo)))) ||
+							(write.superseded && !write.blobsAuditReferenced))
+					)
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
