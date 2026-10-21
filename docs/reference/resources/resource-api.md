@@ -99,7 +99,7 @@ Performs a query on the resource or table. This is called by `get()` on collecti
 
 <VersionBadge version="v5.4.0" />
 
-Tables use `searchPage()` for full-text and autocomplete continuation. Supply a positive `limit` and omit `continuation` or set it to `true` to start; supply the returned token to resume. The result is an array with `continuation`, `complete`, and `expiresAt` properties. `search()` stays iterable and rejects continuation options.
+Tables use `searchPage()` for full-text and autocomplete continuation. Supply a positive `limit` and omit `continuation` or set it to `true` to start; supply the returned token to resume. `FullTextSearchPage` is an array of records with `continuation`, `complete`, and `expiresAt` properties; see the [result properties](./full-text-paging.md#page-through-tablesearchpage). `search()` stays iterable and rejects continuation options.
 
 When serving an authenticated caller, pass the caller's context and set `checkPermission: true` in the query. A custom `search()` override must explicitly implement `searchPage()` with the same filtering policy; otherwise paging returns 400. See [Full-Text Paging](./full-text-paging.md) for examples, supported queries, closing a search, and token expiry.
 
@@ -1044,6 +1044,8 @@ Use `true` with an existing continuation token to close the search early. See [C
 ### `checkPermission`
 
 Set `true` on every page when a direct table call acts for a caller, and pass that caller's context. Without it, the call does not request the caller's table and searched-source permission checks; context alone does not enable them. Automatic REST applies its permission checks. See [Full-Text Paging](./full-text-paging.md#page-through-tablesearchpage).
+
+Set this field in server code; never copy permission-control fields from client data.
 
 ### `conditions`
 

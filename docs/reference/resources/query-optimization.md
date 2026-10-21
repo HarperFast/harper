@@ -83,7 +83,7 @@ This is a transient condition — the index finishes building in the background,
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-Full-text queries have configurable work limits, including ordinary searches without continuation. A selective filter can reach a limit before filling the requested page. See [Full-Text Paging](./full-text-paging.md#configure-resource-limits) for the limits and the cost of increasing them.
+Full-text queries have configurable work limits, including ordinary searches without continuation. A selective filter can exhaust a work limit and fail the request instead of returning a partial page. See [Full-Text Paging](./full-text-paging.md#configure-resource-limits) for the limits, errors and cost of increasing them.
 
 ## Relationships and Joins
 

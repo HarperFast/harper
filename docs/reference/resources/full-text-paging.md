@@ -64,7 +64,9 @@ The returned array has three additional properties:
 | `expiresAt`    | Absolute expiry time in milliseconds since the Unix epoch           |
 
 These properties are not included when the array is serialized as JSON. Keep the same conditions
-and selected fields, and use the same authenticated caller when resuming. The page size may change. Use the default relevance order, or explicitly sort by descending
+and selected fields, and use the same authenticated caller when resuming. You may raise or lower
+the requested `limit` on later pages within `maxPageSize`. Each page contains at most its requested
+limit; a shorter page alone does not mean the search is complete. Use the default relevance order, or explicitly sort by descending
 `$score` alone. A nonzero `offset`, another sort, or a truthy `count`, `explain`, or `sync` option
 returns 400. In REST, the accepted explicit score order is `sort(-$score)` alone.
 
@@ -102,7 +104,7 @@ GET /Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score)&limit(
 ```
 
 The body stays a JSON array. Read the next token from `Harper-Continuation`, URL-encode it, and
-send it in `continuation(token)` with the same conditions and selected fields. The page size may change:
+send it in `continuation(token)` with the same conditions and selected fields. The requested page size may increase or decrease within `maxPageSize`:
 
 ```javascript
 const query = '/Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score)&limit(25)';
@@ -216,8 +218,6 @@ Ordinary searches can use secondary indexes to skip record reads and enlarge bat
 matches are filtered out. Continued searches do not yet use those optimizations; they fetch up to
 256 native hits per batch and check current records. A selective filter can therefore add many
 record reads and, when the snapshot belongs to another worker, many worker requests.
-Qualification and these optimizations are tracked in
-[Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
 
 The usual individual configuration names also work, such as
 `storage_fullText_maxRawHitsPerRequest` with `set_configuration`. Follow the
@@ -227,10 +227,11 @@ settings live under `storage.fullText.runtime` and require a full process restar
 are 128 resident indexes, 128 indexing threads, 256 search threads, 4 GiB configured writer memory,
 8 GiB configured queue capacity, and 8 concurrent expensive searches. All limits apply together.
 
-Application-created workers inherit the established native settings too. Create them after
-Harper initializes its full-text settings. A worker created before that point cannot initialize
-full-text search; recreate it after Harper initializes rather than retrying inside the same worker.
-This prevents a worker from applying different process-wide limits.
+Harper captures the native settings before loading application components, so workers created
+by a running application inherit them. In a standalone process, initialize Harper before creating
+workers that use full-text search. A worker created before capture cannot initialize full-text
+search; recreate it after Harper initializes rather than retrying inside the same worker.
+Its initialization failure is non-retryable, not a temporary capacity refusal.
 
 The runtime keys use integer counts or bytes:
 
@@ -250,6 +251,10 @@ The cursor pool is shared by all callers. Four unfinished searches fill the defa
 receives `503` until a search finishes, closes, or expires. Ordinary searches remain available.
 Configure `maxCursors` for the number of unfinished searches the application needs to retain.
 There is no per-caller reservation or eviction policy.
+
+Cursor-count and pending-response capacity refusals return 503 without `Retry-After`. Close unused
+searches or reduce concurrency, then retry with backoff while the token remains valid. An execution-budget
+503 calls for a smaller page or less expensive query; changing the query requires a new search.
 
 Cursor slots, pending-request counts, and response-byte allowances apply separately. Raising
 `maxCursors` does not raise `maxPendingRequests` or `maxPendingResponseBytes`. Across workers,
