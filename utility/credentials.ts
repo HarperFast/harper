@@ -29,19 +29,28 @@ export interface MaskOptions {
 	oneEntry?: boolean;
 }
 
+/** Larger files take the YAML parser too long to mask on the agent's thread; their reads are refused. */
+export const MAX_CREDENTIAL_FILE_BYTES = 256 * 1024;
+
 /**
- * `file` with every credential value masked byte for byte, line breaks kept, so offsets into the result are
- * offsets into the file. A file is parsed as YAML, which finds the keys a text scan cannot (an escaped key,
- * an anchor a credential key aliases), and also scanned as text, which finds `KEY=value` lines a YAML parse
- * reads as one string. Undefined when the bytes are not UTF-8, so offsets cannot be mapped.
+ * `file` with every credential value masked byte for byte, line breaks and indentation kept, so offsets into
+ * the result are offsets into the file. A file is parsed as YAML, which finds the keys a text scan cannot (an
+ * escaped key, an anchor a credential key aliases), and also scanned as text, which finds `KEY=value` lines a
+ * YAML parse reads as one string. A file that does not parse cleanly keeps only its keys: every value, item
+ * and comment is masked. Undefined when the bytes are not UTF-8, so offsets cannot be mapped.
  */
 export function maskCredentialFile(file: Buffer): Buffer | undefined {
 	const text = file.toString('utf8');
 	if (!Buffer.from(text, 'utf8').equals(file)) return undefined;
+	const ranges = yamlCredentialRanges(text);
 	const masked = new Uint8Array(text.length);
-	for (const [start, end] of yamlCredentialRanges(text)) masked.fill(1, start, end);
-	const scanned = maskCredentialValues(text);
-	for (let index = 0; index < text.length; index++) if (scanned[index] !== text[index]) masked[index] = 1;
+	if (ranges) {
+		for (const [start, end] of ranges) masked.fill(1, start, end);
+		const scanned = maskCredentialValues(text);
+		for (let index = 0; index < text.length; index++) if (scanned[index] !== text[index]) masked[index] = 1;
+	} else {
+		markAllValues(text, masked);
+	}
 	const out = Buffer.from(file);
 	let indenting = true;
 	for (let unit = 0, byte = 0; unit < text.length;) {
@@ -57,21 +66,41 @@ export function maskCredentialFile(file: Buffer): Buffer | undefined {
 	return out;
 }
 
-/** Source ranges of the values of credential keys, as YAML resolves the keys, and of the anchors they alias. */
-function yamlCredentialRanges(text: string): Array<[number, number]> {
+/** Undefined when the text does not parse cleanly, since a key in what failed to parse cannot be resolved. */
+function yamlCredentialRanges(text: string): Array<[number, number]> | undefined {
 	const ranges: Array<[number, number]> = [];
-	for (const document of parseAllDocuments(text)) {
-		visit(document, {
-			Pair(_, pair) {
-				const key = isScalar(pair.key) ? pair.key.value : undefined;
-				if (typeof key !== 'string' || !CREDENTIAL_KEY.test(key) || !isNode(pair.value)) return;
-				const target = isAlias(pair.value) ? pair.value.resolve(document) : pair.value;
-				if (isScalar(target) && isUnresolvedEnvVarPlaceholder(target.value)) return;
-				for (const node of [pair.value, target]) if (node?.range) ranges.push([node.range[0], node.range[1]]);
-			},
-		});
+	try {
+		for (const document of parseAllDocuments(text, { logLevel: 'silent' })) {
+			if (document.errors.length > 0) return undefined;
+			visit(document, {
+				Pair(_, pair) {
+					const key = isScalar(pair.key) ? pair.key.value : undefined;
+					if (typeof key !== 'string' || !CREDENTIAL_KEY.test(key) || !isNode(pair.value)) return;
+					const target = isAlias(pair.value) ? pair.value.resolve(document) : pair.value;
+					if (isScalar(target) && isUnresolvedEnvVarPlaceholder(target.value)) return;
+					for (const node of [pair.value, target]) if (node?.range) ranges.push([node.range[0], node.range[1]]);
+				},
+			});
+		}
+	} catch {
+		return undefined;
 	}
 	return ranges;
+}
+
+const KEY_LINE =
+	/^[ \t]*(?:-[ \t]+)*(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\n]|'')*'|[^\s#'"][^:\n]*?)[ \t]*:(?=[ \t]|\r?$)[ \t]*/;
+
+/** Marks everything but each line's key: values, list items, comments and continuation lines. */
+function markAllValues(text: string, masked: Uint8Array): void {
+	for (let lineStart = 0; lineStart <= text.length;) {
+		const newline = text.indexOf('\n', lineStart);
+		const lineEnd = newline === -1 ? text.length : newline;
+		const key = KEY_LINE.exec(text.slice(lineStart, lineEnd));
+		masked.fill(1, lineStart + (key ? key[0].length : 0), lineEnd);
+		if (newline === -1) return;
+		lineStart = newline + 1;
+	}
 }
 
 /** `text` with the value of every credential-named key replaced by `*`, one per UTF-16 unit. */

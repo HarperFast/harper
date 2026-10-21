@@ -903,15 +903,35 @@ describe('agent/fsTools credential values in the read-only scopes (harper#3097)'
 	it('masks credentials a YAML parse resolves but text cannot show: an escaped key and an aliased anchor', async () => {
 		writeFileSync(
 			join(root, 'harper-config.yaml'),
-			'common: &k sk-ANCHOR\nmodels:\n  d:\n    "api\\u004Bey": sk-ESCAPED\n    apiKey: *k\n'
+			'common: &k sk-ANCHOR\nmodels:\n  d:\n    "api\\u004Bey": sk-ESCAPED\n  e:\n    apiKey: *k\n    model: m\n'
 		);
 		const read = await readFileTool.handler({ root: 'config' }, ctx(scopes));
 		assert.doesNotMatch(read.content, /sk-/);
+		assert.match(read.content, /model: m\n/, 'a file that parses keeps its ordinary values');
 		const atAnchor = await readFileTool.handler({ root: 'config', offset: 11, lineCount: 1 }, ctx(scopes));
 		assert.equal(atAnchor.content, '*********\n');
 		const tail = await tailFileTool.handler({ root: 'config', path: 'harper-config.yaml' }, ctx(scopes));
 		assert.doesNotMatch(tail.lines.join('\n'), /sk-/);
 		const grep = await grepFilesTool.handler({ root: 'config', pattern: 'sk-' }, ctx(scopes));
 		assert.equal(grep.count, 0);
+	});
+
+	it('keeps only the keys of a config file that does not parse, so an escaped key in it cannot leak', async () => {
+		writeFileSync(join(root, 'harper-config.yaml'), 'a: [1\nmodels:\n  "api\\u004Bey": sk-BROKEN\n  model: m\n');
+		const read = await readFileTool.handler({ root: 'config' }, ctx(scopes));
+		assert.equal(read.content, 'a: **\nmodels:\n  "api\\u004Bey": *********\n  model: *\n');
+	});
+
+	it('refuses a config-scope file too large to parse, or not UTF-8, and grep_files counts it as skipped', async () => {
+		writeFileSync(join(root, 'harper-config.yaml'), `pad: ${'x'.repeat(300 * 1024)}\n`);
+		await assert.rejects(readFileTool.handler({ root: 'config' }, ctx(scopes)), /over 256 KiB cannot be checked/);
+		await assert.rejects(
+			tailFileTool.handler({ root: 'config', path: 'harper-config.yaml' }, ctx(scopes)),
+			/over 256 KiB cannot be checked/
+		);
+		assert.equal((await grepFilesTool.handler({ root: 'config', pattern: 'x' }, ctx(scopes))).skippedFiles, 1);
+		writeFileSync(join(root, 'harper-config.yaml'), Buffer.from([0x61, 0x3a, 0x20, 0xff, 0x0a]));
+		await assert.rejects(readFileTool.handler({ root: 'config' }, ctx(scopes)), /not UTF-8 text/);
+		assert.equal((await grepFilesTool.handler({ root: 'config', pattern: 'a' }, ctx(scopes))).skippedFiles, 1);
 	});
 });

@@ -21,6 +21,7 @@ const TOOL_CALLS = [
 	{ name: 'grep_files', arguments: { root: 'config', pattern: 'apiKey' } },
 	{ name: 'tail_file', arguments: { root: 'logs', path: 'hdb.log', lines: 50 } },
 	{ name: 'read_log', arguments: { limit: 50, order: 'desc' } },
+	{ name: 'grep_files', arguments: { root: 'logs', pattern: 'logged-3097' } },
 ];
 
 interface FakeModel {
@@ -130,12 +131,13 @@ suite('agent credential masking (#3097)', (ctx: any) => {
 
 		const results = session.messages.filter((message: any) => message.role === 'tool').map((m: any) => m.content);
 		strictEqual(results.length, TOOL_CALLS.length);
-		const [readConfig, grepConfig, tailLog, readLog] = results;
+		const [readConfig, grepConfig, tailLog, readLog, grepLogs] = results;
 		ok(readConfig.includes(`apiKey: ${'*'.repeat(CONFIG_SECRET.length)}`), readConfig);
 		ok(grepConfig.includes(`apiKey: ${'*'.repeat(CONFIG_SECRET.length)}`), grepConfig);
 		const maskedLogged = `\\"apiKey\\":\\"${'*'.repeat(LOGGED_SECRET.length)}\\"`;
 		ok(tailLog.includes(maskedLogged), tailLog);
 		ok(readLog.includes(maskedLogged), readLog);
+		ok(grepLogs.includes('"count":0'), grepLogs);
 
 		for (const secret of [CONFIG_SECRET, LOGGED_SECRET]) {
 			ok(!JSON.stringify(session).includes(secret), `the stored session holds ${secret}`);

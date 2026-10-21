@@ -203,10 +203,10 @@ describe('utility/credentials', () => {
 
 		it('masks the values of keys only a YAML parse resolves: an escaped key, and the anchor an alias points at', () => {
 			const config =
-				'common: &k sk-ANCHOR\nmodels:\n  d:\n    "api\\u004Bey": sk-ESCAPED\n    apiKey: *k\n    model: m\n';
+				'common: &k sk-ANCHOR\nmodels:\n  d:\n    "api\\u004Bey": sk-ESCAPED\n  e:\n    apiKey: *k\n    model: m\n';
 			assert.equal(
 				maskedFile(config),
-				'common: &k *********\nmodels:\n  d:\n    "api\\u004Bey": **********\n    apiKey: **\n    model: m\n'
+				'common: &k *********\nmodels:\n  d:\n    "api\\u004Bey": **********\n  e:\n    apiKey: **\n    model: m\n'
 			);
 		});
 

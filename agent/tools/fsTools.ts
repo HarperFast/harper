@@ -13,7 +13,7 @@
 
 import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
 import { resolve, dirname, relative, sep, isAbsolute, basename } from 'node:path';
-import { maskCredentialFile, maskCredentialValues } from '../../utility/credentials.ts';
+import { MAX_CREDENTIAL_FILE_BYTES, maskCredentialFile, maskCredentialValues } from '../../utility/credentials.ts';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
 const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB — grep skips larger files
@@ -174,22 +174,40 @@ interface Source {
 }
 
 /**
- * A config-scope file is read and masked whole, so the YAML parse sees every key; one too large to parse,
- * or not UTF-8, falls back to the per-page text scan the logs scope uses.
+ * A config-scope file is read and masked whole, so the YAML parse sees every key. One too large to parse
+ * on this thread, or not UTF-8, is refused: the per-page text scan cannot resolve a key YAML reads
+ * differently from how it is written.
  */
-async function openSource(fh: FileHandle, scope: Scope): Promise<Source> {
+async function openSource(fh: FileHandle, scope: Scope, requested: string): Promise<Source> {
 	const { size } = await fh.stat();
-	if (scope !== 'config' || size > MAX_READ_BYTES) return { reader: fh, size };
-	const whole = Buffer.alloc(size);
-	const file = whole.subarray(0, (await fh.read(whole, 0, size, 0)).bytesRead);
+	if (scope !== 'config') return { reader: fh, size };
+	if (size > MAX_CREDENTIAL_FILE_BYTES) {
+		throw new Error(
+			`Refusing to read ${requested}: a config-scope file over ${MAX_CREDENTIAL_FILE_BYTES / 1024} KiB cannot be checked for credentials`
+		);
+	}
+	const file = await readWhole(fh, size);
 	const masked = maskCredentialFile(file);
-	if (!masked) return { reader: fh, size };
+	if (!masked)
+		throw new Error(`Refusing to read ${requested}: it is not UTF-8 text, so it cannot be checked for credentials`);
 	const reader: Reader = {
 		read: async (buffer, offset, length, position) => ({
 			bytesRead: position >= file.length ? 0 : file.copy(buffer, offset, position, position + length),
 		}),
 	};
 	return { reader, size: file.length, masked };
+}
+
+/** Up to `size` bytes from the start, reading until they are all in or the file ends. */
+async function readWhole(fh: FileHandle, size: number): Promise<Buffer> {
+	const whole = Buffer.alloc(size);
+	let filled = 0;
+	while (filled < size) {
+		const { bytesRead } = await fh.read(whole, filled, size - filled, filled);
+		if (bytesRead === 0) break;
+		filled += bytesRead;
+	}
+	return whole.subarray(0, filled);
 }
 
 interface Window {
@@ -343,7 +361,7 @@ export const readFileTool: AgentTool = {
 		const startLine = offset === undefined ? (requestedLine ?? 1) : requestedLine;
 		const fh = await open(path, 'r');
 		try {
-			const source = await openSource(fh, scope);
+			const source = await openSource(fh, scope, requested);
 			const { size } = source;
 			if (offset !== undefined && offset > size) {
 				throw new Error(`offset ${offset} is past the end of the file (${size} bytes)`);
@@ -585,8 +603,8 @@ export const grepFilesTool: AgentTool = {
 		description:
 			'Search recursively within a scope for a regex pattern. Returns matched lines with line numbers ' +
 			`(each cut to ${MAX_GREP_LINE_CHARS} characters), up to one page of results; \`truncated: true\` ` +
-			'means the search stopped early, so narrow the pattern or path. Files over 5 MiB are not searched; ' +
-			'`skippedFiles` counts them, and read_file pages through them.',
+			'means the search stopped early, so narrow the pattern or path. Files over 5 MiB, and config-scope files over ' +
+			'256 KiB or not UTF-8, are not searched; `skippedFiles` counts them, and read_file pages through larger logs.',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -632,7 +650,7 @@ export const grepFilesTool: AgentTool = {
 			} catch {
 				return true;
 			}
-			if (size > MAX_READ_BYTES) {
+			if (size > (scope === 'config' ? MAX_CREDENTIAL_FILE_BYTES : MAX_READ_BYTES)) {
 				skippedFiles++;
 				return true;
 			}
@@ -642,11 +660,11 @@ export const grepFilesTool: AgentTool = {
 			if (!text || PRIVATE_KEY_ARMOR.test(text)) return true;
 			// Matched after masking, or whether a guessed value matches would tell the model what was masked.
 			const searched =
-				scope === 'config'
-					? (maskCredentialFile(bytes)?.toString('utf8') ?? maskCredentialValues(text))
-					: masks
-						? maskCredentialValues(text)
-						: text;
+				scope === 'config' ? maskCredentialFile(bytes)?.toString('utf8') : masks ? maskCredentialValues(text) : text;
+			if (searched === undefined) {
+				skippedFiles++;
+				return true;
+			}
 			const lines = searched.split('\n');
 			for (let i = 0; i < lines.length; i++) {
 				if (!pattern.test(lines[i])) continue;
@@ -709,7 +727,7 @@ export const tailFileTool: AgentTool = {
 		try {
 			// Read only the trailing page — a multi-GB log file otherwise OOMs the process — and the bytes
 			// before it that can hold the BEGIN line of a key the page ends inside.
-			const source = await openSource(fh, scope);
+			const source = await openSource(fh, scope, requested);
 			const { size } = source;
 			const start = Math.max(0, size - budget);
 			const scanStart = Math.max(0, start - KEY_LOOKBACK_BYTES);
