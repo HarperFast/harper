@@ -5671,7 +5671,6 @@ export function makeTable(options): TableResourceClass {
 							}
 						})()
 					);
-					// a stub stored here carries no inputs for computed indexes; their committed entries stay
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction }, omitLocalRecord);
 
 					// Preserve an addressable audit head when the record and log clocks diverge.
@@ -10746,7 +10745,6 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
-	/** A row's blobs stay until the write that replaces it is known to have committed. */
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
@@ -10808,7 +10806,6 @@ export function makeTable(options): TableResourceClass {
 		replicaBaseline = undefined;
 		cleanupInterval = expirationScanScheduled || evictionMs ? recordCleanupInterval : interval;
 		if (expirationScanScheduled || evictionMs || scheduled || awaited) return void scheduleCleanup();
-		// back to a table with no timer: the next delete or TTL call schedules one at this interval
 		if (cleanupTimer) clearTimeout(cleanupTimer);
 		cleanupTimer = undefined;
 		lastCleanupInterval = undefined;
