@@ -219,7 +219,7 @@ import {
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
-import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
+import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
@@ -565,7 +565,8 @@ export const INVALIDATED = 1;
 export const REPLICA = 4;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
-export const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
+const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
+const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
@@ -904,7 +905,7 @@ interface TableResourceClass {
 	 * This also informs the scheduling for record eviction.
 	 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 	 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-	 * eviction/scanInterval; object form replaces all three, unless it names only `replicaExpiration`. An internal schema ownership-only call with
+	 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 	 * none of those values preserves the settings already loaded from the catalog.
 	 */
 	setTTLExpiration(
@@ -1452,7 +1453,7 @@ export function makeTable(options): TableResourceClass {
 	let replicaSweepRunning = false;
 	let lastReplicaSweep: Promise<unknown> = Promise.resolve();
 	let replicaDeadlinesRepaired = false;
-	const replicaRefreshCheckedAt = new Map<string, number>();
+	const replicaRefreshCheckedAt = new Map<string | number, number>();
 	let replicaEvictionArmed = false;
 	let replicaTableKnown = false;
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
@@ -1460,7 +1461,7 @@ export function makeTable(options): TableResourceClass {
 	let replicaSweepState: Int32Array | undefined;
 	let recordScanInterval = 0;
 	let recordCleanupInterval = 86400000;
-	const replicaRefreshInFlight = new Set<string>();
+	const replicaRefreshInFlight = new Set<string | number>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
 	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
@@ -2920,7 +2921,7 @@ export function makeTable(options): TableResourceClass {
 		 * This also informs the scheduling for record eviction.
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-		 * eviction/scanInterval; object form replaces all three, unless it names only `replicaExpiration`. An internal schema ownership-only call with
+		 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 		 * none of those values preserves the settings already loaded from the catalog.
 		 */
 		static setTTLExpiration(
@@ -4227,7 +4228,6 @@ export function makeTable(options): TableResourceClass {
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
 				entry ??= primaryStore.getEntry(id, options);
-				// a sweep's demotion of a row that is no longer a replica is a no-op, never a removal
 				if (observedDeadline !== undefined && !(entry?.metadataFlags & REPLICA)) return Promise.resolve();
 				if (entry?.metadataFlags & REPLICA && entry.version === existingVersion) {
 					if (primaryStore.ifVersion) {
@@ -10581,7 +10581,11 @@ export function makeTable(options): TableResourceClass {
 	}
 	function needsResidentLoad(entry: Partial<Entry> | undefined, context: Context | undefined): boolean {
 		return Boolean(
-			entry?.residencyId && sourceLoad && context?.replicateFrom !== false && entry.metadataFlags & INVALIDATED
+			entry?.residencyId &&
+			sourceLoad &&
+			context?.replicateFrom !== false &&
+			entry.metadataFlags & INVALIDATED &&
+			!hasExpired(entry)
 		);
 	}
 	/**
@@ -10630,7 +10634,9 @@ export function makeTable(options): TableResourceClass {
 	/** A write that replaces a REPLICA row takes its deadline entry with it, in the same transaction where one exists. */
 	function dropReplicaDeadline(id: Id, replaced: Partial<Entry> | undefined, transaction: any) {
 		if (!(replaced?.metadataFlags & REPLICA)) return;
-		const store = openReplicaDeadlines();
+		// lmdb-js cannot open a sub-db inside the write batch this runs in; the arm message opens it on
+		// every thread, and an entry missed here is garbage the sweep removes once its deadline passes
+		const store = primaryStore.ifVersion ? replicaDeadlines : openReplicaDeadlines();
 		if (!store) return;
 		if (isRocksDB) store.removeSync(id, transaction ? { transaction } : undefined);
 		else void store.remove(id);
@@ -10641,29 +10647,31 @@ export function makeTable(options): TableResourceClass {
 	 * and keeps at most 50 checks in flight; the check itself is a point get and one small write.
 	 */
 	function refreshReplicaOnRead(entry: Entry) {
-		if (!sourceLoad || !replicaExpirationMs || replicaRefreshFraction >= 1) return;
-		const keyId = chainKeyForId(entry.key);
+		if (replicaRefreshFraction >= 1 || !replicaExpirationMs || !sourceLoad) return;
+		const key = entry.key;
+		const keyId = typeof key === 'string' || typeof key === 'number' ? key : chainKeyForId(key);
 		const now = Date.now();
 		const checked = replicaRefreshCheckedAt.get(keyId);
 		const throttle = Math.min(replicaRefreshFraction, 1 - replicaRefreshFraction) * replicaExpirationMs;
 		if (checked !== undefined && now - checked < throttle) return;
 		if (replicaRefreshInFlight.size >= MAX_REPLICA_REFRESHES_IN_FLIGHT || replicaRefreshInFlight.has(keyId)) return;
 		if (replicaRefreshCheckedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) {
-			for (const [key, at] of replicaRefreshCheckedAt) if (now - at >= throttle) replicaRefreshCheckedAt.delete(key);
+			for (const [checkedKey, at] of replicaRefreshCheckedAt)
+				if (now - at >= throttle) replicaRefreshCheckedAt.delete(checkedKey);
 			if (replicaRefreshCheckedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) replicaRefreshCheckedAt.clear();
 		}
 		replicaRefreshCheckedAt.set(keyId, now);
 		replicaRefreshInFlight.add(keyId);
 		let pending: Promise<boolean>;
 		try {
-			pending = refreshReplica(entry.key);
+			pending = refreshReplica(key);
 		} catch (error) {
 			replicaRefreshInFlight.delete(keyId);
-			logger.warn?.('Error refreshing replica', entry.key, error);
+			logger.warn?.('Error refreshing replica', key, error);
 			return;
 		}
 		pending
-			.catch((error) => logger.warn?.('Error refreshing replica', entry.key, error))
+			.catch((error) => logger.warn?.('Error refreshing replica', key, error))
 			.finally(() => replicaRefreshInFlight.delete(keyId));
 	}
 	/** Re-stamp a replica's deadline entry; the row is untouched, so this orders with nothing. */
@@ -10671,11 +10679,11 @@ export function makeTable(options): TableResourceClass {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
 		const store = openReplicaDeadlines();
 		if (!store) return Promise.resolve(false);
-		const current: Entry = primaryStore.getEntry(id);
-		if (!(current?.metadataFlags & REPLICA)) return Promise.resolve(false);
 		const stored = store.getSync(id);
 		if (typeof stored === 'number' && stored - Date.now() > replicaExpirationMs * (1 - replicaRefreshFraction))
 			return Promise.resolve(false);
+		const current: Entry = primaryStore.getEntry(id);
+		if (!(current?.metadataFlags & REPLICA)) return Promise.resolve(false);
 		const deadline = replicaDeadlineFor(current.expiresAt);
 		if (typeof stored === 'number' && deadline <= stored) return Promise.resolve(false);
 		return trackMaintenanceCommit(Promise.resolve(store.put(id, deadline)).then(() => true));
@@ -10704,7 +10712,6 @@ export function makeTable(options): TableResourceClass {
 			const current: Entry = primaryStore.getEntry(id, options);
 			if (!current?.residencyId || !(current.metadataFlags & (INVALIDATED | REPLICA))) return Promise.resolve(false);
 			if (responseVersion < current.version) return Promise.resolve(false);
-			// nothing to change on a replica already at this version
 			if (current.metadataFlags & REPLICA && responseVersion === current.version) return Promise.resolve(false);
 			// Two writers can share a timestamp; the stub holds the winner. An answer at that timestamp is
 			// kept only when it names the same writer: a loser's body would never be corrected, and an
@@ -10743,7 +10750,7 @@ export function makeTable(options): TableResourceClass {
 				updateIndices(id, current.value, body, options, preserveComputed);
 				updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
 				store.putSync(id, deadline, options);
-				completion = commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).then(() => true);
+				completion = commitRawTransaction(transaction as RocksTransaction);
 			}
 			committed = true;
 			return trackMaintenanceCommit(
@@ -10780,6 +10787,16 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
+	/** A raw handle's commit under coordinated retry resolves RETRY_NOW on a conflict; that is a loss, not a commit. */
+	function commitRawTransaction(transaction: RocksTransaction): Promise<boolean> {
+		return commitTrackedRocksTransaction(transaction, primaryStore).then((result) => {
+			if (result !== RETRY_NOW_VALUE) return true;
+			try {
+				transaction.abort();
+			} catch {}
+			return false;
+		});
+	}
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
@@ -10801,7 +10818,9 @@ export function makeTable(options): TableResourceClass {
 	// tables before it is worker 0), so the flag and the timer are settled on every wake
 	function armReplicaEviction() {
 		replicaTableKnown = true;
-		if (!replicaExpirationMs || disposed) return;
+		if (disposed) return;
+		openReplicaDeadlines();
+		if (!replicaExpirationMs) return;
 		replicaEvictionArmed = true;
 		if (!ownsCleanup()) return;
 		Atomics.store(replicaSweep(), 1, 1);
@@ -10834,8 +10853,8 @@ export function makeTable(options): TableResourceClass {
 			const store = openReplicaDeadlines();
 			if (!store) return;
 			if (!replicaDeadlinesRepaired) {
-				replicaDeadlinesRepaired = true;
-				complete = (await repairReplicaDeadlines(store)) && complete;
+				replicaDeadlinesRepaired = await repairReplicaDeadlines(store);
+				complete &&= replicaDeadlinesRepaired;
 			}
 			for (const { key, value: deadline } of store.getRange({})) {
 				if (disposed || maintenanceClosed) {
@@ -10843,11 +10862,10 @@ export function makeTable(options): TableResourceClass {
 					return;
 				}
 				seen++;
+				if (!(typeof deadline === 'number' && deadline <= Date.now())) continue;
 				const entry: Entry = primaryStore.getEntry(key);
-				if (!(entry?.metadataFlags & REPLICA)) {
-					if (typeof deadline === 'number' && deadline <= Date.now()) await dropOrphanDeadline(store, key);
-				} else if (typeof deadline === 'number' && deadline <= Date.now())
-					await TableResource.evict(key, entry.value, entry.version, deadline);
+				if (!(entry?.metadataFlags & REPLICA)) await dropOrphanDeadline(store, key);
+				else await TableResource.evict(key, entry.value, entry.version, deadline);
 				await rest();
 			}
 		})();
@@ -10899,7 +10917,7 @@ export function makeTable(options): TableResourceClass {
 			(transaction as any).abort();
 			return Promise.resolve();
 		}
-		return commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore);
+		return commitRawTransaction(transaction as RocksTransaction);
 	}
 	function standDownReplicaSweep() {
 		if (!replicaEvictionArmed) return;
@@ -10955,12 +10973,13 @@ export function makeTable(options): TableResourceClass {
 		}
 		store?.removeSync(entry.key, { transaction });
 		if (renewed()) {
+			releaseLocalKey(transaction as RocksTransaction);
 			(transaction as any).abort();
 			return Promise.resolve(false);
 		}
 		updateIndices(entry.key, entry.value, stub, { transaction }, true);
 		updateRecord(entry.key, stub, base, entry.version, INVALIDATED, false, writeOptions, 'invalidate', false, null);
-		return commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).then(releaseBlobs);
+		return commitRawTransaction(transaction as RocksTransaction).then(releaseBlobs);
 	}
 	function warnWriterKeptResident(residency: string[]) {
 		if (writerResidencyWarned) return;

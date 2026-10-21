@@ -193,6 +193,9 @@ describe('Local replicas of residency stubs', function () {
 		}, 'the expired replica to be demoted');
 		assert.equal(demoted.expiresAt, expiresAt, 'the stub keeps the record expiry');
 		assert.equal(deadlineOf(ID), undefined);
+		calls = [];
+		assert.equal(await Records.get(ID), undefined, 'an expired stub reads as absent');
+		assert.deepEqual(calls, [], 'an expired stub never fetches the expired record from a resident');
 	});
 
 	it('keeps an equal-version answer only from the stub writer, and a newer one from anyone', async () => {

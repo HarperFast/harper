@@ -919,13 +919,22 @@ export function onTableDropRecorded(listener: (databaseName: string, tableName: 
  * Whether a catalog row names its table's primary store: one flagged `isPrimaryKey`, or the nameless bare
  * `<table>/` row of a keyless table, which can lose the flag while its store still holds primary records.
  */
-/** The per-table store of replica deadlines (id → ms), catalogued beside the table's indexes so a drop removes it. */
+export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
+	if (value?.isPrimaryKey) return true;
+	// exactly one slash, at the end: initStores reads `<table>/<attribute>` by splitting on the first slash
+	return (
+		value != null &&
+		value.name == null &&
+		typeof key === 'string' &&
+		key.length > 1 &&
+		key.indexOf('/') === key.length - 1
+	);
+}
 export const REPLICA_DEADLINES_STORE = '@replicas';
 export function replicaDeadlinesCatalogKey(tableName: string): string {
 	return `${tableName}/${REPLICA_DEADLINES_STORE}`;
 }
-/** A catalog row under `<table>/` that names a store but no attribute. */
-export function isAuxiliaryCatalogRow(value: any): boolean {
+function isAuxiliaryCatalogRow(value: any): boolean {
 	return value?.auxiliary === REPLICA_DEADLINES_STORE;
 }
 /**
@@ -942,17 +951,6 @@ export function openReplicaDeadlineStore(rootStore: any, tableName: string, gene
 		ownedStoresFor(rootStore)?.push(store);
 	} else store = rootStore.openDB(key, dbiInit as any);
 	return markInternalDbiNonVersioned(store);
-}
-export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
-	if (value?.isPrimaryKey) return true;
-	// exactly one slash, at the end: initStores reads `<table>/<attribute>` by splitting on the first slash
-	return (
-		value != null &&
-		value.name == null &&
-		typeof key === 'string' &&
-		key.length > 1 &&
-		key.indexOf('/') === key.length - 1
-	);
 }
 /** The primary catalog row of a live table, under either key layout. */
 function primaryCatalogRowFor(table: {
