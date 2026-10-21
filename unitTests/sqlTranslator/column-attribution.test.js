@@ -117,11 +117,23 @@ describe('SQL column attribution for attribute permissions', () => {
 	});
 
 	describe('qualifiers', () => {
-		it('gives an effective alias precedence over a base table name', () => {
+		it('attributes a qualifier to the one table that has it as alias or base name', () => {
 			const bucket = bucketFor('SELECT A.ssn FROM data.L a JOIN data.R A ON a.id = A.id');
 			assert.ok(attributesOf(bucket, 'data', 'R').includes('ssn'));
 			assert.ok(!attributesOf(bucket, 'data', 'L').includes('ssn'));
 			assert.deepStrictEqual(bucket.getUnresolvedColumnRefs(), []);
+		});
+
+		it("reports a qualifier that is one table's alias and another's base name", () => {
+			// v2 would read R.ssn (alias first); legacy SQL would read L.ssn.
+			const bucket = bucketFor('SELECT L.ssn FROM data.L a JOIN data.R L ON a.id = L.id');
+			assert.ok(bucket.getUnresolvedColumnRefs().includes('L.ssn'));
+			assert.ok(!attributesOf(bucket, 'data', 'R').includes('ssn'));
+		});
+
+		it('reports a qualifier shared by same-named tables in different databases', () => {
+			const bucket = bucketFor('SELECT L.secret FROM data.L JOIN vault.L ON data.L.id = vault.L.id');
+			assert.ok(bucket.getUnresolvedColumnRefs().includes('L.secret'));
 		});
 
 		it('reports a qualifier that names no table in scope', () => {
@@ -142,6 +154,12 @@ describe('SQL column attribution for attribute permissions', () => {
 		});
 	});
 
+	it('records a column nested deeper than 100 levels', () => {
+		const nested = 'UPPER('.repeat(80) + 'ssn' + ')'.repeat(80);
+		const bucket = bucketFor(`SELECT label FROM data.L WHERE ${nested} = 'X'`);
+		assert.ok(attributesOf(bucket, 'data', 'L').includes('ssn'));
+	});
+
 	it('does not load the registry for a single-table SELECT', () => {
 		const bucket = bucketFor(`SELECT ssn FROM data.L WHERE label = 'x' ORDER BY id`);
 		assert.deepStrictEqual(attributesOf(bucket, 'data', 'L').sort(), ['id', 'label', 'ssn']);
@@ -155,6 +173,16 @@ describe('SQL column attribution for attribute permissions', () => {
 			assert.deepStrictEqual(bucketFor('UPDATE data.L SET label = ``1`` WHERE id = 1').getRowAccessors(), [
 				'JavaScript expression',
 			]);
+		});
+
+		it('finds an accessor nested deeper than 100 levels', () => {
+			const nested = 'UPPER('.repeat(80) + '_->id' + ')'.repeat(80);
+			assert.deepStrictEqual(bucketFor(`SELECT label FROM data.L WHERE ${nested} = 'X'`).getRowAccessors(), ['_']);
+		});
+
+		it('walks a subquery node AlaSQL shares between two fields', () => {
+			const bucket = bucketFor('SELECT label FROM data.L WHERE EXISTS (SELECT id FROM data.R)');
+			assert.deepStrictEqual(bucket.getRowAccessors(), []);
 		});
 
 		it('lists nothing for a statement that names its columns', () => {

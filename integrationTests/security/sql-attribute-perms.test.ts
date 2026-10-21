@@ -132,6 +132,17 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 				assertRefused(await asReader(sql), sql);
 			});
 
+			test('a read-denied column nested deep inside an expression is refused', async () => {
+				const nested = 'UPPER('.repeat(80) + 'ssn' + ')'.repeat(80);
+				const sql = `SELECT label FROM data.ColPermLeft WHERE id = 'l1' AND ${nested} = '111'`;
+				assertRefused(await asReader(sql), sql);
+			});
+
+			test("a qualifier that is one table's alias and another's base name is refused", async () => {
+				const sql = `SELECT ColPermRight.code FROM data.ColPermRight r JOIN data.ColPermLeft ColPermRight ON r.label = ColPermRight.label WHERE ColPermRight.id = 'l1'`;
+				assertRefused(await asReader(sql), sql);
+			});
+
 			test('row accessors that name no column are refused when the primary key is read-denied', async () => {
 				for (const sql of [
 					`SELECT VALUE FROM data.ColPermRight r WHERE r.label = 'shared'`,

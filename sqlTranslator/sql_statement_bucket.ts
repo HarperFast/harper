@@ -5,12 +5,11 @@
  **/
 
 import * as alasql from 'alasql';
-import RecursiveIterator from 'recursive-iterator';
 const harperLogger = require('../utility/logging/harper_logger').default || require('../utility/logging/harper_logger');
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { findDatabasesWithTable, loadDatabaseRegistry } from '../sqlEngine/binder/defaultDatabase.ts';
-import { declaringTables, matchQualifier, usingLeftOwner, type ScopeTable } from '../sqlEngine/binder/columnScope.ts';
+import { declaringTables, usingLeftOwner, type ScopeTable } from '../sqlEngine/binder/columnScope.ts';
 
 class sqlStatementBucket {
 	ast: any;
@@ -145,8 +144,8 @@ class sqlStatementBucket {
 	 */
 	getRowAccessors(): string[] {
 		const accessors = [];
-		for (const { node } of new RecursiveIterator(this.ast)) {
-			if (node?.columnid === '_') accessors.push('_');
+		for (const node of astNodes(this.ast)) {
+			if (node.columnid === '_') accessors.push('_');
 			else if (node instanceof (alasql as any).yy.JavaScript) accessors.push('JavaScript expression');
 		}
 		return accessors;
@@ -230,6 +229,22 @@ class sqlStatementBucket {
 
 function filterReadRestrictedAttrs(attrPerms: any[]) {
 	return attrPerms.filter((perm) => perm[terms.PERMS_CRUD_ENUM.READ]);
+}
+
+/**
+ * Every object node under `root`, each once. Iterative and unbounded: an expression nested arbitrarily
+ * deep must still be seen, and AlaSQL shares one subquery node between two fields (EXISTS).
+ */
+function* astNodes(root: any): Generator<any> {
+	const seen = new Set();
+	const pending = [root];
+	while (pending.length > 0) {
+		const node = pending.pop();
+		if (node === null || typeof node !== 'object' || seen.has(node)) continue;
+		seen.add(node);
+		yield node;
+		for (const child of Object.values(node)) pending.push(child);
+	}
 }
 
 // FIRST(*), ARRAY(*) and COUNT(DISTINCT *) read the value of an attribute literally named `*`, so they stay collected.
@@ -530,8 +545,12 @@ function getSelectAttributes(
 
 	const recordColumn = (node: any, clauseScope: AttributionTable[]) => {
 		if (node.tableid) {
-			const match = matchQualifier(node.tableid, clauseScope);
-			if (match && 'table' in match) record(match.table, node.columnid);
+			// v2 prefers an alias over a base table name; legacy SQL matches either. Only a qualifier
+			// exactly one table claims means the same table to both.
+			const claimants = clauseScope.filter(
+				(entry) => entry.effectiveAlias === node.tableid || entry.table === node.tableid
+			);
+			if (claimants.length === 1) record(claimants[0], node.columnid);
 			else unresolvedColumns.push(`${node.tableid}.${node.columnid}`);
 			return;
 		}
@@ -549,8 +568,8 @@ function getSelectAttributes(
 
 	const recordColumns = (tree: any, clauseScope: AttributionTable[]) => {
 		if (!tree) return;
-		for (const { node } of new RecursiveIterator(tree)) {
-			if (node?.columnid) recordColumn(node, clauseScope);
+		for (const node of astNodes(tree)) {
+			if (node.columnid) recordColumn(node, clauseScope);
 		}
 	};
 
@@ -585,13 +604,12 @@ function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any
 		harperLogger.info(`getUpdateAttributes: invalid SQL syntax tree`);
 		return;
 	}
-	let iterator = new RecursiveIterator(ast.columns);
 	let schema = ast.table.databaseid;
 
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (let { node } of iterator) {
-		if (node && node.columnid) {
+	for (const node of astNodes(ast.columns)) {
+		if (node.columnid) {
 			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 		}
 	}
@@ -608,13 +626,12 @@ function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any
 		harperLogger.info(`getDeleteAttributes: invalid SQL syntax tree`);
 		return;
 	}
-	let iterator = new RecursiveIterator(ast.where);
 	let schema = ast.table.databaseid;
 
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (let { node } of iterator) {
-		if (node && node.columnid) {
+	for (const node of astNodes(ast.where)) {
+		if (node.columnid) {
 			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 		}
 	}
@@ -631,13 +648,12 @@ function getInsertAttributes(ast: any, affectedAttributes: any, tableLookup: any
 		harperLogger.info(`getInsertAttributes: invalid SQL syntax tree`);
 		return;
 	}
-	let iterator = new RecursiveIterator(ast.columns);
 	let schema = ast.into.databaseid;
 
 	addSchemaTableToMap(ast.into, affectedAttributes, tableLookup);
 
-	for (let { node } of iterator) {
-		if (node && node.columnid) {
+	for (const node of astNodes(ast.columns)) {
+		if (node.columnid) {
 			pushAttribute(ast.into.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 		}
 	}

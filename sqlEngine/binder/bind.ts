@@ -28,7 +28,7 @@ import type {
 } from '../parser/ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { _setDatabasesLoader, loadDatabases, findDatabasesWithTable } from './defaultDatabase.ts';
-import { declaringTables, matchQualifier } from './columnScope.ts';
+import { declaringTables } from './columnScope.ts';
 
 interface AttributeInfo {
 	name: string;
@@ -234,15 +234,22 @@ function resolveColumnsInSelect(stmt: SelectNode, scope: BoundTable[]): void {
 
 /** Resolves a qualifier string (alias or table name) to the canonical alias. */
 function resolveQualifier(qualifier: string, scope: BoundTable[]): BoundTable | undefined {
-	const match = matchQualifier(qualifier, scope);
-	if (match && 'ambiguous' in match) {
+	// Exact effective-alias match always wins (it is unique — duplicates are
+	// rejected at bind time).
+	const byAlias = scope.find((t) => t.effectiveAlias === qualifier);
+	if (byAlias) return byAlias;
+	// Fall back to base-table-name qualification (e.g. `dev.user.col` where the
+	// table is unaliased). In a self-join the same base name appears more than
+	// once; matching the first silently mis-binds, so reject as ambiguous.
+	const byTable = scope.filter((t) => t.table === qualifier);
+	if (byTable.length > 1) {
 		throw new EngineUnsupportedError(
-			`table qualifier "${qualifier}" is ambiguous across ${match.ambiguous
+			`table qualifier "${qualifier}" is ambiguous across ${byTable
 				.map((t) => t.effectiveAlias)
 				.join(', ')}; qualify columns by alias`
 		);
 	}
-	return match && 'table' in match ? match.table : undefined;
+	return byTable[0];
 }
 
 function resolveColumns(expr: ExprNode, scope: BoundTable[]): void {
