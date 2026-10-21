@@ -1436,6 +1436,7 @@ export function makeTable(options): TableResourceClass {
 	let replicaExpirationMs = options.replicaExpirationMS ?? DEFAULT_REPLICA_EXPIRATION_MS;
 	let replicaEvictionArmed = false;
 	let replicaTableMarked = false;
+	let replicaTableKnown = false; // learned on this thread: a store, a thread message, or the catalog marker at load
 	let recordScanInterval = 0;
 	let recordCleanupInterval = expirationMs || evictionMs ? (expirationMs + evictionMs) / 4 : 0;
 	const replicaRefreshInFlight = new Set<string>();
@@ -2945,7 +2946,7 @@ export function makeTable(options): TableResourceClass {
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
-			if (replicaEvictionArmed || replicaTableMarked) {
+			if (replicaTableKnown) {
 				replicaEvictionArmed = false;
 				if (replicaExpirationMs) armReplicaEviction();
 				else cleanupInterval = recordCleanupInterval;
@@ -10580,12 +10581,12 @@ export function makeTable(options): TableResourceClass {
 		return deadline;
 	}
 	/**
-	 * A refresh is never decided within a scan interval of the deadline: LMDB's `ifVersion` cannot order
-	 * two writes to one replica (both carry the stub's version), so a refresh must not be able to land
-	 * after the sweep's demotion of the same row.
+	 * Only RocksDB slides: its optimistic commit refuses a refresh that raced any other write to the row,
+	 * while LMDB's `ifVersion` cannot order two writes that both carry the stub's version. A refresh is
+	 * also never decided within a scan interval of the deadline, clear of the sweep's demotion.
 	 */
 	function replicaNeedsRefresh(entry: Partial<Entry>): boolean {
-		if (expirationMs || expiresAtProperty || entry.expiresAt == undefined) return false;
+		if (!isRocksDB || expirationMs || expiresAtProperty || entry.expiresAt == undefined) return false;
 		const remaining = entry.expiresAt - Date.now();
 		return (
 			remaining > Math.max(cleanupInterval, MIN_REPLICA_SCAN_INTERVAL_MS) &&
@@ -10722,8 +10723,10 @@ export function makeTable(options): TableResourceClass {
 		if (!(dbisDb as any).getSync([REPLICA_TABLES_KEY, tableId]))
 			(dbisDb as any).putSync([REPLICA_TABLES_KEY, tableId], true);
 		replicaTableMarked = true;
+		replicaTableKnown = true;
 	}
 	function armReplicaEviction() {
+		replicaTableKnown = true;
 		if (replicaEvictionArmed || !replicaExpirationMs || disposed) return;
 		replicaEvictionArmed = true;
 		const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);

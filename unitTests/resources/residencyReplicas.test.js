@@ -429,7 +429,8 @@ describe('Local replicas of residency stubs', function () {
 		assert.deepEqual(await history(), before);
 	});
 
-	it('refreshes the lifetime on a read hit once a quarter of it has elapsed, not on every read', async () => {
+	it('refreshes the lifetime on a read hit once a quarter of it has elapsed, not on every read', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip(); // LMDB replicas never slide
 		Records.setTTLExpiration({ replicaExpiration: 2 });
 		const entry = await replica();
 		assert.equal((await Records.get(ID)).body, 'complete');
@@ -444,6 +445,31 @@ describe('Local replicas of residency stubs', function () {
 		assert.ok(refreshed.metadataFlags & REPLICA);
 		assert.equal(refreshed.version, entry.version);
 		assert.deepEqual(calls, [ID], 'a refresh is a local write');
+	});
+
+	it('never slides on LMDB', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
+		Records.setTTLExpiration({ replicaExpiration: 2 });
+		const entry = await replica();
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(Records.primaryStore.getEntry(ID).expiresAt, entry.expiresAt);
+	});
+
+	it('re-arms the sweep after replicas are disabled and enabled again', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0.001 });
+		await replica();
+		await Records.closeMaintenance();
+		Records.setTTLExpiration({ expiration: 0, eviction: 0, replicaExpiration: 0 });
+		Records.resumeMaintenance();
+		await new Promise((resolve) => setTimeout(resolve, 1200));
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & REPLICA, 'no sweep runs while replicas are disabled');
+		Records.setTTLExpiration({ replicaExpiration: 0.001 });
+		await waitFor(() => {
+			const entry = Records.primaryStore.getEntry(ID);
+			return entry.metadataFlags & INVALIDATED ? entry : undefined;
+		}, 'the re-armed sweep to demote the replica');
 	});
 
 	it('stores nothing when replicaExpiration is zero', async () => {
