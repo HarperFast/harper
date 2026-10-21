@@ -554,6 +554,36 @@ describe('Local replicas of residency stubs', function () {
 		await waitFor(() => (deadlineOf('ghost') === undefined ? true : undefined), 'the sweep to drop the orphan entry');
 	});
 
+	it('gives a replica row without a deadline entry a lifetime on the first sweep after load', async () => {
+		const Repaired = table({
+			database: 'test',
+			table: 'ResidencyReplicasRepaired',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+			replicaExpiration: 2,
+		});
+		Repaired.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = { key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: entry.version };
+					await Repaired._storeReplica(entry, { ...found, originNode: server.hostname });
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Repaired.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Repaired.get(ID)).body, 'complete');
+		assert.ok(deadlineOf(ID, Repaired) > Date.now());
+		await deadlines(Repaired).remove(ID); // a crash between column-family flushes, or a copy without this store
+		assert.equal(deadlineOf(ID, Repaired), undefined);
+		const restored = await waitFor(() => deadlineOf(ID, Repaired), 'the first sweep to restore the lifetime');
+		assert.ok(restored > Date.now() && restored <= Date.now() + 2000);
+	});
+
 	it('drops the deadline store with its table', async () => {
 		const Dropped = table({
 			database: 'test',

@@ -10868,7 +10868,7 @@ export function makeTable(options): TableResourceClass {
 				complete &&= replicaDeadlinesRepaired;
 			}
 			for (const { key, value: deadline } of store.getRange({})) {
-				if (disposed || maintenanceClosed) {
+				if (disposed || maintenanceClosed || !replicaEvictionArmed) {
 					complete = false;
 					return;
 				}
