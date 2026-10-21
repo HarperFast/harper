@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (59 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 60
+    # sum (60 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 62
     strategy:
       fail-fast: false
       matrix:
@@ -141,8 +141,8 @@ jobs:
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 10
         run: |
-          ulimit -c unlimited
-          sudo sysctl -w "kernel.core_pattern=$RUNNER_TEMP/harper-core.%p"
+          ulimit -c unlimited || echo '::warning::Could not enable native core dumps'
+          sudo sysctl -w "kernel.core_pattern=$RUNNER_TEMP/harper-core.%p" || echo '::warning::Could not configure native core dump path'
           lmdb_status=0
           npm run test:unit:lmdb || lmdb_status=$?
           if [ "$lmdb_status" -ne 0 ]; then
