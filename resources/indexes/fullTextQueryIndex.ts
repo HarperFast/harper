@@ -682,8 +682,6 @@ export class FullTextQueryIndex {
 
 	#currentSearchEntry(key: Id, version: string, transaction: any): any {
 		const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
-		if (typeof version !== 'string')
-			throw new ServerError('Full-text index returned a hit without a source version', 500);
 		if (!entry?.value || version !== String(entry.version)) return;
 		if (this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false) return;
 		if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) return;
