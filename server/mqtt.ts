@@ -208,6 +208,26 @@ const REASON_STRING_LIMIT = 256; // bytes
 const ACK_PACKET_OVERHEAD = 16;
 /** `AccessViolation` is 401 for a request with no user and 403 for a user lacking permission; an MQTT client sees both as "Not authorized". */
 const isNotAuthorized = (error: any) => error?.statusCode === 401 || error?.statusCode === 403;
+/** mqtt-packet writes `reasonCode` to a v5 client and `returnCode` to a 3.1/3.1.1 client, so a refusal carries both. */
+const CONNACK_REFUSALS = {
+	badCredentials: { reasonCode: 0x86, returnCode: 4 },
+	notAuthorized: { reasonCode: 0x87, returnCode: 5 },
+	unspecified: { reasonCode: 0x80, returnCode: 5 }, // 3.1.1 has no generic refusal
+};
+/**
+ * A code the thrown error names is passed on only when it is a refusal code in the client's own
+ * protocol version; an HTTP status (401/403 as `code` or `statusCode`) is "Not authorized", and
+ * anything else is unspecified.
+ */
+function connackRefusalFor(error: any, protocolVersion: number | undefined) {
+	const { code } = error ?? {};
+	const mqtt5 = protocolVersion === 5;
+	if (typeof code === 'number' && (mqtt5 ? code >= 0x80 && code <= 0x9f : code >= 1 && code <= 5)) {
+		return { reasonCode: code, returnCode: code };
+	}
+	if (isNotAuthorized(error) || code === 401 || code === 403) return CONNACK_REFUSALS.notAuthorized;
+	return CONNACK_REFUSALS.unspecified;
+}
 /** Only failures this layer maps to a code of their own are safe to describe: any other carries an internal message. */
 const hasClientSafeMessage = (error: any) => isNotAuthorized(error) || error?.statusCode === 404;
 /** REASON_STRING_LIMIT counts encoded bytes, and a character must not be cut in half. */
@@ -454,8 +474,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							return generateAndSendPacket({
 								// Send a connection acknowledgment with indication of auth failure
 								cmd: 'connack',
-								reasonCode: 0x04, // bad username or password, v3.1.1
-								returnCode: 0x86, // bad username or password, v5
+								...CONNACK_REFUSALS.badCredentials,
 							});
 						}
 					}
@@ -465,8 +484,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
-							reasonCode: 0x04, // bad username or password, v3.1.1
-							returnCode: 0x86, // bad username or password, v5
+							...CONNACK_REFUSALS.badCredentials,
 						});
 					}
 					try {
@@ -547,8 +565,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
-							reasonCode: error.code || 0x05,
-							returnCode: error.code || 0x80, // generic error
+							...connackRefusalFor(error, packet.protocolVersion),
 						});
 					}
 					emitEvent('connected', session, socket);
