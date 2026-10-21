@@ -381,6 +381,18 @@ describe('crdt getRecordAtTime', () => {
 			);
 		});
 
+		it('recovers a state older than an unlinked re-insert put when a delete follows it', () => {
+			const reinsert = { version: 30, type: 'put', value: frozen({ id: 'U', title: 'v3' }), previousVersion: 0 };
+			const del = { version: 40, type: 'delete', value: null, previousVersion: 30 };
+			const store = makeStore([base, patch, reinsert, del]);
+			assert.deepStrictEqual(getRecordAtTime(currentEntry(null, 40), 20, store, 1, 'U'), {
+				id: 'U',
+				title: 'v1',
+				count: 15,
+				extra: 'keep',
+			});
+		});
+
 		it('reports the record absent before a first put that has no earlier history', () => {
 			const store = makeStore([base]);
 			const current = currentEntry({ id: 'U', title: 'v1', count: 5, extra: 'keep' }, 10);

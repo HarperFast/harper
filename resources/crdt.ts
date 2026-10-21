@@ -269,23 +269,12 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		if (!auditEntry) break;
 		switch (auditEntry.type) {
 			case 'put':
+			case 'delete':
 				replaced = true;
 				break;
 			case 'patch':
 				if (!replaced) applyReverse(record, auditEntry.getValue(store), unknowns);
 				break;
-			case 'delete':
-				// The reverse walk reached a delete that is newer than `timestamp`. There is no
-				// base record to keep reversing patches against, so reconstruct the pre-delete
-				// state forward instead (issue #1330: a key deleted then re-inserted).
-				return reconstructForward(
-					auditStore,
-					store,
-					tableId,
-					recordId,
-					previousAuditPosition(auditStore, tableId, recordId, auditEntry),
-					timestamp
-				);
 		}
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
 		auditTime = previousPosition.txnLogKey;
