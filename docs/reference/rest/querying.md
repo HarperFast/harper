@@ -55,7 +55,7 @@ Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompu
 | `=`, `===`           | Strict equality (no type conversion)   |
 | `!==`                | Strict inequality (no type conversion) |
 
-Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. These use the full-text index rather than ordinary string comparisons. See [Full-text paging](../resources/full-text-paging.md).
+Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. These use the full-text index rather than ordinary string comparisons. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
 **Examples**:
 
@@ -177,7 +177,7 @@ GET /Product/?sort(+rating,-price)
 
 ## Pagination and Total Count
 
-Full-text and autocomplete queries use the same paging syntax. See [Full-text paging](../resources/full-text-paging.md) for search work limits and behavior when records change between requests.
+Full-text and autocomplete queries use the same paging syntax. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for search work limits and behavior when records change between requests.
 
 <VersionBadge version="v5.3.0" />
 
@@ -222,7 +222,7 @@ The response status is always `200` — `Content-Range` is informational (Harper
 
 The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that hits its guardrail (counting the tail past the requested page is bounded by a 1,000,000-row cap and a ~1-second budget, and abandons the total rather than truncating the page), or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
 
-Full-text and autocomplete queries cannot provide an exact total. An estimated count may use the planner estimate when the query has no opaque row or vector filter. See [Full-text paging](../resources/full-text-paging.md#request-a-page).
+Full-text and autocomplete queries cannot provide an exact total. An estimated count may use the planner estimate when the query has no opaque row or vector filter. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
 ### Enabling exact counts
 

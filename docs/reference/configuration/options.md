@@ -312,7 +312,18 @@ storage:
 ```
 
 - `engine` — The database storage engine to use for new databases. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`. Existing databases will use the engine that was used when they were created.
-- `fullText` <VersionBadge version="v5.4.0" /> — Full-text request work limits and native process budgets; see [search work limits](../resources/full-text-paging.md#configure-search-work) and [native process budgets](../resources/full-text-paging.md#configure-native-runtime-admission).
+- `fullText` <VersionBadge version="v5.4.0" /> — Full-text search work and native process limits. Sub-options:
+  - `maxRawHitsPerRequest` — Maximum fetched hits per request, including replay when switching to native traversal; default `10000`.
+  - `requestBudgetMilliseconds` — Execution budget across native batches, source checks and highlights, capped by the native execution limit; default `5000` ms. Reader acquisition and freshness waiting have separate bounds.
+  - `runtime.maxResidentIndexes` — Maximum resident native indexes; default `128`.
+  - `runtime.maxIndexingThreads` — Maximum native indexing threads; default `128`.
+  - `runtime.maxSearchThreads` — Maximum native search threads; default `256`.
+  - `runtime.maxWriterMemoryBytes` — Native writer-memory admission budget; default `4294967296` (4 GiB).
+  - `runtime.maxQueuedBytes` — Native queued-write admission budget; default `8589934592` (8 GiB).
+  - `runtime.maxExpensiveSearches` — Maximum concurrent expensive native searches; default `8`.
+
+  The runtime budgets apply together and are not hard bounds on total process memory. Work-limit changes through `set_configuration` apply to new searches; runtime-budget changes require a full Harper process restart. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs and failure recovery.
+
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
