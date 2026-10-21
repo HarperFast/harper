@@ -2,7 +2,9 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, __setReadOnlyModeForTest } = require('#src/resources/databases');
+const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { Resource } = require('#src/resources/Resource');
+const { waitFor } = require('../waitFor');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // harper#474. Runs on whichever engine HARPER_STORAGE_ENGINE selects.
@@ -110,6 +112,33 @@ describe('read-only mode rejects writes', () => {
 		__setReadOnlyModeForTest(true);
 		assert.strictEqual(await Custom.put('x', { a: 1 }), 'put handled');
 		assert.strictEqual(await Custom.post('x', { a: 1 }), 'post handled');
+	});
+
+	it('does not subscribe to a source whose notifications it could not apply', async function () {
+		const subscribed = [];
+		const source = (label) => ({
+			subscribe: () => {
+				subscribed.push(label);
+				return new IterableEventQueue();
+			},
+			subscribeOnThisThread: () => true,
+		});
+		const Writable = table({
+			table: 'ReadOnlySourceControl',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		Writable.sourcedFrom(source('writable'));
+		await waitFor(() => subscribed.includes('writable'));
+		const Guarded = table({
+			table: 'ReadOnlySourceGuarded',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		__setReadOnlyModeForTest(true);
+		Guarded.sourcedFrom(source('read-only'));
+		for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(subscribed, ['writable']);
 	});
 
 	it('still serves reads', async function () {

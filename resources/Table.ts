@@ -2093,7 +2093,12 @@ export function makeTable(options): TableResourceClass {
 					const subscribeOnThisThread = source.subscribeOnThisThread
 						? source.subscribeOnThisThread(applicationWorkerIndex(), subscriptionOptions)
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
-					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
+					// no notification can be applied on a read-only node
+					const subscription =
+						hasSubscribe &&
+						subscribeOnThisThread &&
+						!isReadOnlyMode() &&
+						(await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						const admitsOriginFloors = (event: any) =>
 							event.originFloors?.length > 0 && event.onFailure && event.txnStream !== undefined;
