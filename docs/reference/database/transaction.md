@@ -23,7 +23,7 @@ On RocksDB (the default storage engine) the transaction log is physically a sing
 
 The transaction log is **enabled by default**. To disable it, set [`logging.auditLog`](../logging/configuration.md) to `false` in `harper-config.yaml` and restart Harper.
 
-> The transaction log is required for real-time messaging (WebSocket and MQTT subscriptions) and replication. Do not disable it if real-time features or replication are in use.
+> The transaction log is required for real-time messaging (WebSocket and MQTT subscriptions), replication and full-text indexing. Do not disable it while any of these features are in use.
 
 ## Operations
 

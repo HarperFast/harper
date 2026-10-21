@@ -93,17 +93,17 @@ Use a bounded `limit` for large result sets. An unbounded search that exceeds it
 
 The fetched-hit budget includes the initial batch replay when Harper switches to native traversal. It counts hits returned by the native library, not every record Tantivy visits while scoring. Exhausting that budget throws a 400 error; exhausting the execution budget throws 503. The adapter does not return a shortened result as if the search had completed. If a custom resource has already started streaming a response, a later query error ends that stream instead of changing its HTTP status. When there are no further native matches, Harper returns the eligible records found, which may be an empty result. This differs from reaching a budget while more matches remain.
 
-Configure the three request limits and six native process budgets under [`storage.fullText`](../configuration/options.md#storage). After changing request limits through `set_configuration`, use `restart_service` or restart Harper to apply them to HTTP workers. The execution budget is not a hard response-time guarantee: reader acquisition, query construction and some native operations can take additional time. Freshness waiting and reader acquisition use separate bounds.
+Configure the three request limits and six native process budgets under [`storage.fullText`](../configuration/options.md#storage). See [Set Configuration](../configuration/operations.md#set-configuration) for restart requirements. The execution budget is not a hard response-time guarantee: reader acquisition, query construction and some native operations can take additional time. Freshness waiting and reader acquisition use separate bounds.
 
 ### Native runtime configuration
 
 Harper captures native process budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. Create workers from a Harper application component after initialization. A worker created before capture fails on its first native full-text load with `FullTextWorkerInitializationError` (500, non-retryable); recreate that worker after Harper initializes.
 
-Replacement workers keep the captured budgets after a live configuration change. Apply new native runtime budgets with a full Harper process restart; `restart_service` only replaces workers.
+Replacement workers keep the captured budgets after a configuration change. See [Set Configuration](../configuration/operations.md#set-configuration) before changing these budgets.
 
 ### Readiness and recovery
 
-Full-text indexes require audit logging. A format-incompatible native upgrade rebuilds the local index from stored records, and queries return 503 while it rebuilds. Harper 5.4 uses `@harperfast/fulltext` 0.6.0.
+Full-text indexes require audit logging; a table declared with `@table(audit: false)` cannot register a full-text index. A format-incompatible native upgrade rebuilds the local index from stored records, and queries return 503 while it rebuilds. Harper 5.4 uses `@harperfast/fulltext` 0.6.0.
 
 | Failure                                            | HTTP status | Code and retry guidance                                                                                  |
 | -------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------- |
@@ -112,6 +112,12 @@ Full-text indexes require audit logging. A format-incompatible native upgrade re
 | Native busy                                        | 503         | No readiness code. Reduce concurrency or retry with backoff.                                             |
 | Index readiness or coverage                        | 503         | `INDEX_REBUILDING` or `DERIVED_INDEX_LAGGING`, with `retryable: true`.                                   |
 | Worker loaded native search before runtime capture | 500         | `FullTextWorkerInitializationError`, with `retryable: false`; recreate that worker after initialization. |
+
+A native result that cannot fit even a single-hit response returns 413. Other native failures and invalid query configuration can return 500; inspect the error and server logs rather than assuming they are retryable. The table lists common failures, not every possible error.
+
+For read-after-write queries, `maxIndexLagMilliseconds: 0` requires current coverage. `waitForIndexMilliseconds` lets a query wait for coverage (default `0`, maximum `30000` ms); without an override, the allowed index lag is `3000` ms. These options belong to the full-text condition.
+
+Concurrent requests each have their own work budget. These limits do not cap the number of concurrent Harper queries or prevent brief event-loop delays during synchronous source reads. Measure deep offsets and selective filters under the expected concurrency before raising budgets.
 
 `INDEX_REBUILDING` and `DERIVED_INDEX_LAGGING` identify retryable readiness or coverage failures. Retry with backoff while the index makes progress. Transaction history retained under [`logging.auditRetention`](../logging/configuration.md#loggingauditretention) (default `3d`) is used for catch-up. Lost history can require a rebuild; retries alone do not repair an index that cannot catch up. Check index readiness and logs if it stays unavailable. Budget and native-busy failures do not carry those readiness codes. A native busy response also returns 503; reduce concurrency or retry with backoff. For an execution-budget failure, narrow the query, reduce the offset or adjust the work budget instead of repeatedly submitting the same expensive query.
 

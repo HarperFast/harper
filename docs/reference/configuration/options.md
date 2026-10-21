@@ -317,13 +317,13 @@ storage:
   - `maxResultsPerRequest` — Maximum retained offset plus limit. A request must also fit the separate raw-hit budget; default `10000`.
   - `requestBudgetMilliseconds` — Execution budget across native batches, source checks and highlights, capped by the native execution limit; default `5000` ms. Reader acquisition and freshness waiting have separate bounds.
   - `runtime.maxResidentIndexes` — Maximum resident native indexes; default `128`.
-  - `runtime.maxIndexingThreads` — Maximum native indexing threads; default `128`.
-  - `runtime.maxSearchThreads` — Maximum native search threads; default `256`.
-  - `runtime.maxWriterMemoryBytes` — Native writer-memory admission budget; default `4294967296` (4 GiB).
-  - `runtime.maxQueuedBytes` — Native queued-write admission budget; default `8589934592` (8 GiB).
+  - `runtime.maxIndexingThreads` — Maximum aggregate indexing-thread reservations across resident native indexes; default `128`.
+  - `runtime.maxSearchThreads` — Maximum aggregate search-thread reservations across resident native indexes; default `256`.
+  - `runtime.maxWriterMemoryBytes` — Aggregate writer-memory reservations across resident native indexes; default `4294967296` (4 GiB).
+  - `runtime.maxQueuedBytes` — Aggregate queued-write reservations across resident native indexes; default `8589934592` (8 GiB).
   - `runtime.maxExpensiveSearches` — Maximum concurrent expensive native searches; default `8`.
 
-  The runtime budgets apply together and are not hard bounds on total process memory. After changing request limits through `set_configuration`, use `restart_service` or restart Harper to apply them to HTTP workers. Native runtime-budget changes require a full Harper process restart. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs and failure recovery.
+  The runtime budgets apply together and are not hard bounds on total process memory. See [Set Configuration](./operations.md#set-configuration) for when request and native runtime changes take effect. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs and failure recovery.
 
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`

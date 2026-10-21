@@ -48,8 +48,6 @@ A replicated call sends the exact same values to every node. Do not include node
 }
 ```
 
-For full-text request limits, restarting the HTTP workers with `restart_service` is sufficient; the native process budgets require a full restart.
-
 ### Replicated body
 
 ```json
