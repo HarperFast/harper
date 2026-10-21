@@ -964,7 +964,7 @@ export function searchByIndex(
 	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
 	// The lowest bound that still covers every real entry. A primary store keeps symbol-keyed metadata
-	// (0x02) below `false`, which only `true` skips; a secondary index holds nothing between null and false.
+	// (0x02) below `false`, which only `true` skips; a secondary index starts just above its null block.
 	const openStart = isPrimaryKey ? true : null;
 	const openStartExclusive = !isPrimaryKey;
 	let start;
@@ -1895,14 +1895,15 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
 	let range;
-	const openLowerBound = isPrimaryKey ? { start: true } : { start: null, exclusiveStart: true };
 	switch (searchType) {
 		case 'lt':
 			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
-			range = { ...openLowerBound, end: value };
+			range = isPrimaryKey ? { start: true, end: value } : { start: null, exclusiveStart: true, end: value };
 			break;
 		case 'le':
-			range = { ...openLowerBound, end: value, inclusiveEnd: true };
+			range = isPrimaryKey
+				? { start: true, end: value, inclusiveEnd: true }
+				: { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };
