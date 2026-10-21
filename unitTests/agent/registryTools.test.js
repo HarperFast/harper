@@ -303,7 +303,7 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 				thread: 'http/1',
 				level: 'error',
 				tags: ['custom', 'apiKey=sk-tag'],
-				message: 'request failed {"apiKey":"sk-message"} for user bob',
+				message: 'request failed {"apiKey":"sk-message"} body="{\\"token\\":\\"sk-nested\\"}" for user bob',
 				node: 'node-a',
 			},
 		]);
@@ -314,7 +314,7 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 					thread: 'http/1',
 					level: 'error',
 					tags: ['custom', 'apiKey=******'],
-					message: 'request failed {"apiKey":"**********"} for user bob',
+					message: 'request failed {"apiKey":"**********"} body="{\\"token\\":\\"*********\\"}" for user bob',
 					node: 'node-a',
 				},
 			],

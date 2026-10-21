@@ -163,34 +163,42 @@ function assertOutsidePrivateKey(state: KeyState, path: string, insideMessage: s
 	}
 }
 
-interface Preceding {
-	/** The look-back's text, up to byte `start`. */
-	text: string;
-	/** The same, read on past `start` far enough to hold an armor line that `start` cuts. */
-	withOverlap: string;
-	atFileStart: boolean;
+interface Window {
+	page: Buffer;
+	reachesEnd: boolean;
+	/** The look-back's text, up to the page. */
+	before: string;
+	/** The same, read on into the page far enough to hold an armor line that the page start cuts. */
+	beforeWithOverlap: string;
+	beforeAtFileStart: boolean;
 }
 
-/** The look-back before byte `start` that the key-material and credential checks judge a window by. */
-async function readPreceding(fh: FileHandle, start: number): Promise<Preceding> {
-	if (start === 0) return { text: '', withOverlap: '', atFileStart: true };
+/**
+ * Up to `budget` bytes from `start`, and the look-back the key-material and credential checks judge them by,
+ * in one read so a file changed in place cannot give the two different contents.
+ */
+async function readWindow(fh: FileHandle, size: number, start: number, budget: number): Promise<Window> {
 	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);
-	const before = Buffer.alloc(start - from + ARMOR_LINE_OVERLAP_BYTES);
-	const { bytesRead } = await fh.read(before, 0, before.length, from);
+	const pageLength = Math.min(budget, size - start);
+	const buffer = Buffer.alloc(start - from + Math.max(pageLength, ARMOR_LINE_OVERLAP_BYTES));
+	const { bytesRead } = await fh.read(buffer, 0, buffer.length, from);
+	const pageStart = Math.min(start - from, bytesRead);
+	const page = buffer.subarray(pageStart, Math.min(bytesRead, start - from + pageLength));
 	return {
-		text: before.toString('utf8', 0, Math.min(start - from, bytesRead)),
-		withOverlap: before.toString('utf8', 0, bytesRead),
-		atFileStart: from === 0,
+		page,
+		reachesEnd: start + page.length >= size,
+		before: buffer.toString('utf8', 0, pageStart),
+		beforeWithOverlap: buffer.toString('utf8', 0, Math.min(bytesRead, start - from + ARMOR_LINE_OVERLAP_BYTES)),
+		beforeAtFileStart: from === 0,
 	};
 }
 
 /**
- * Where the window after `preceding` lies relative to a PEM private-key block. Only armor lines that begin
- * before the window count: an END line just after its start must not clear a page that starts on the key's
- * last body line.
+ * Where the page lies relative to a PEM private-key block. Only armor lines that begin before it count: an
+ * END line just after its start must not clear a page that starts on the key's last body line.
  */
-function keyStateAt(preceding: Preceding): KeyState {
-	return keyStateAfter(preceding.withOverlap, preceding.text.length, preceding.atFileStart);
+function keyStateAt(window: Window): KeyState {
+	return keyStateAfter(window.beforeWithOverlap, window.before.length, window.beforeAtFileStart);
 }
 
 /** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */
@@ -317,17 +325,18 @@ export const readFileTool: AgentTool = {
 				if ('totalLines' in located) return { path, size, startLine, content: '', totalLines: located.totalLines };
 				start = located.offset;
 			}
-			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx, path));
+			const budget = pageBytes(ctx, path);
+			const window = await readWindow(fh, size, start, budget);
+			const page = readPage(window.page, window.reachesEnd, start, lineCount, budget);
 			assertNoPrivateKey(page.content, requested);
-			const preceding = await readPreceding(fh, start);
 			assertOutsidePrivateKey(
-				keyStateAt(preceding),
+				keyStateAt(window),
 				requested,
 				`Refusing to read key material: ${requested} holds a PEM private key at that position`
 			);
 			// Masking never lengthens text, so the page still fits the budget it was cut to.
 			const content = masksCredentials(scope)
-				? maskCredentialValues(page.content, preceding.text, preceding.atFileStart)
+				? maskCredentialValues(page.content, window.before, window.beforeAtFileStart)
 				: page.content;
 			const result: Record<string, unknown> = { path, size, offset: start, content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
@@ -359,11 +368,7 @@ interface Page {
  * bytes; when not even one line fits, the part of it that does. `content` is the file's exact bytes
  * and `endOffset` always lands on a character boundary.
  */
-async function readPage(fh: FileHandle, size: number, start: number, lineCount: number, budget: number): Promise<Page> {
-	const window = Buffer.alloc(Math.min(budget, size - start));
-	const { bytesRead } = await fh.read(window, 0, window.length, start);
-	const bytes = window.subarray(0, bytesRead);
-	const reachesEnd = start + bytesRead >= size;
+function readPage(bytes: Buffer, reachesEnd: boolean, start: number, lineCount: number, budget: number): Page {
 	let end = 0;
 	let lines = 0;
 	let used = 0;

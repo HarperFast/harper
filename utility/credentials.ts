@@ -1,7 +1,7 @@
 /**
  * Credential detection shared by the code that keeps credential values out of somewhere they would
  * otherwise land: the models-config hash (`resources/models/decisionStore.ts`) and the built-in agent's
- * read-only reads (`agent/tools/fsTools.ts`, `agent/registryTools.ts`).
+ * read-only reads (`agent/tools/fsTools.ts`, `agent/registryTools.ts`). See agent/DESIGN.md.
  */
 
 import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
@@ -14,16 +14,10 @@ export const CREDENTIAL_KEY =
 	/^(?:.*(?:secret|passw(?:or)?d|passphrase|credential).*|.*(?:key|token|cookie)|(?:proxy[-_]?)?authorization|.*access[-_]?key[-_]?id)$/i;
 
 const MASK = '*';
-const ASSIGNMENT = /(?<![\w$.-])(["']?)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
+// The key's quote may itself be escaped, as in JSON logged inside a JSON string.
+const ASSIGNMENT = /(?<![\w$.-])(\\?["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
 
-/**
- * Where masking stands at the start of a line. `block`: the lines of a credential key's value, which in
- * YAML are every following line indented deeper than the key (blank lines included) and, when the key's
- * own line held no value, its same-column `- ` items. `quote`: inside a quoted credential value that
- * continues past its line. `unknown`: no line seen yet fixes the state. A line that starts in column 0
- * with anything but a space, tab or `-` ends every one of them, as it ends every YAML value.
- */
 type State =
 	| { kind: 'none' }
 	| { kind: 'unknown' }
@@ -34,11 +28,8 @@ const NONE: State = { kind: 'none' };
 
 /**
  * `text` with the value of every credential-named key replaced by `*`, one per UTF-16 unit, so the result
- * has the same length and line breaks. A value that is exactly a `${VAR}` placeholder is kept.
- *
- * `before` is what precedes `text` in its source, read only to find the state `text` starts in;
- * `beforeAtSourceStart` says whether it begins where the source does. With no state-ending line in it
- * and no source start, lines are masked until such a line appears.
+ * has the same length and line breaks. `before` is what precedes `text` in its source, read only for the
+ * state `text` starts in; `beforeAtSourceStart` says whether it begins where the source does.
  */
 export function maskCredentialValues(text: string, before = '', beforeAtSourceStart = true): string {
 	const start = stateStart(text, before, beforeAtSourceStart);
@@ -68,8 +59,18 @@ function stateStart(text: string, before: string, atSourceStart: boolean): { ind
 	}
 }
 
+// Every YAML value ends before a line that starts in column 0 with anything but a space, tab, `-` or a
+// comment, which YAML exempts from indentation.
 function resetsState(first: string | undefined): boolean {
-	return first !== undefined && first !== ' ' && first !== '\t' && first !== '\r' && first !== '\n' && first !== '-';
+	return (
+		first !== undefined &&
+		first !== ' ' &&
+		first !== '\t' &&
+		first !== '\r' &&
+		first !== '\n' &&
+		first !== '-' &&
+		first !== '#'
+	);
 }
 
 function maskInState(line: string, state: State, partial: boolean): { text: string; state: State } {
@@ -92,11 +93,11 @@ function maskInState(line: string, state: State, partial: boolean): { text: stri
 		if (indent === end || indent > state.column || (state.empty && indent === state.column && sequenceItem)) {
 			return { text: maskRange(line, indent, end), state };
 		}
+		if (line[indent] === '#') return { text: line, state };
 	}
 	return maskLine(line, end, 0);
 }
 
-/** Masks every credential assignment in `line` at or after `from`, leaving what precedes `from` as is. */
 function maskLine(line: string, end: number, from: number): { text: string; state: State } {
 	const prefix = LINE_PREFIX.exec(line)![0].length;
 	let state = NONE;
@@ -120,6 +121,10 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 			const close = closingQuote(line, maskStart, end, quote);
 			if (close === -1) state = { kind: 'quote', quote };
 			else maskEnd = close;
+		} else if (quote === '\\' && (line[valueStart + 1] === '"' || line[valueStart + 1] === "'")) {
+			maskStart += 2;
+			const close = closingEscapedQuote(line, maskStart, end, line[valueStart + 1]);
+			if (close !== -1) maskEnd = close;
 		}
 		text += line.slice(copied, maskStart) + MASK.repeat(maskEnd - maskStart);
 		copied = maskEnd;
@@ -136,6 +141,23 @@ function closingQuote(line: string, from: number, end: number, quote: string): n
 			if (quote === "'" && line[index + 1] === "'") index++;
 			else return index;
 		}
+	}
+	return -1;
+}
+
+/**
+ * Where a string quoted by `\<quote>` closes, or -1: the line's escapes are decoded first, then the string's
+ * own, so a quote escaped inside the inner string (`\\\"`) does not close it.
+ */
+function closingEscapedQuote(line: string, from: number, end: number, quote: string): number {
+	let innerEscape = false;
+	for (let index = from; index < end;) {
+		const at = index;
+		const decoded = line[index] === '\\' && index + 1 < end ? line[index + 1] : line[index];
+		index += line[index] === '\\' && index + 1 < end ? 2 : 1;
+		if (innerEscape) innerEscape = false;
+		else if (decoded === '\\') innerEscape = true;
+		else if (decoded === quote && line[at] === '\\') return at;
 	}
 	return -1;
 }

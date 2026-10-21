@@ -95,6 +95,29 @@ describe('utility/credentials', () => {
 			);
 		});
 
+		it('keeps masking a value across comment lines, which YAML exempts from indentation', () => {
+			assert.equal(
+				masked('  credentials:\n  # rotated\n  - sk-secret\n'),
+				'  credentials:\n  # rotated\n  ***********\n'
+			);
+			assert.equal(masked('credentials:\n- sk-1\n# c\n- sk-2\nb: 1\n'), 'credentials:\n******\n# c\n******\nb: 1\n');
+			assert.equal(masked('  apiKey:\n  # c\n    sk-secret\n'), '  apiKey:\n  # c\n    *********\n');
+			const before = 'models:\n  default:\n    apiKey: |-\n      sk-part-1\n# comment\n';
+			assert.equal(masked('      sk-part-2\n', before, true), '      *********\n');
+		});
+
+		it('masks JSON logged inside a JSON string, keeping the fields around it', () => {
+			assert.equal(
+				masked('body="{\\"apiKey\\":\\"sk-live\\",\\"model\\":\\"m\\"}"'),
+				'body="{\\"apiKey\\":\\"*******\\",\\"model\\":\\"m\\"}"'
+			);
+			// The inner string's own escaped quote is `\\\"` in the line, and does not close it.
+			assert.equal(
+				masked('x "{\\"password\\":\\"a\\\\\\"b\\",\\"model\\":\\"m\\"}"'),
+				'x "{\\"password\\":\\"******\\",\\"model\\":\\"m\\"}"'
+			);
+		});
+
 		it('masks JSON, inspected and header forms inside a line', () => {
 			assert.equal(masked('{"a":"x","apiKey":"sk-\\"q","model":"m"}'), '{"a":"x","apiKey":"******","model":"m"}');
 			assert.equal(masked("failed { apiKey: 'sk-a''b', model: 'gpt' }"), "failed { apiKey: '*******', model: 'gpt' }");
