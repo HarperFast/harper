@@ -14,6 +14,8 @@
 import { handleMcpRequest, type McpProfile, type NormRequest, type NormResponse } from '../transport.ts';
 import { settleDeferredCredentialRejection } from '../../../security/deferredAuthentication.ts';
 import { toSseStream, type SseFrameSource } from '../sse.ts';
+import { getMaxRequestBodySize } from '../../../server/serverHelpers/contentTypes.ts';
+import { ClientError } from '../../../utility/errors/hdbError.ts';
 
 /**
  * The inbound body as Harper hands it to a custom HTTP handler: a Node-stream
@@ -60,10 +62,25 @@ export function createHarperHttpHandler(profile: McpProfile) {
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
 
+		const headers = normalizeHeaders(request.headers);
+		let body: string;
+		try {
+			body = await readBody(request.body, getMaxRequestBodySize(), headers['content-length']);
+		} catch (error) {
+			if (error instanceof ClientError && error.statusCode === 413) {
+				return {
+					status: 413,
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ error: error.message }),
+				};
+			}
+			throw error;
+		}
+
 		const norm: NormRequest = {
 			method: request.method,
-			headers: normalizeHeaders(request.headers),
-			body: await readBody(request.body),
+			headers,
+			body,
 			user: request.user?.username ?? '',
 			userObject: request.user as NormRequest['userObject'],
 			profile,
@@ -97,17 +114,34 @@ function normalizeHeaders(headers: HarperHttpRequest['headers']): Record<string,
  * contract that every other inbound-body consumer uses — async iteration isn't
  * guaranteed on every body wrapper.
  */
-function readBody(body: BodyStream | undefined): Promise<string> {
+function readBody(body: BodyStream | undefined, maxBytes: number, declaredLength?: string): Promise<string> {
 	if (!body) return Promise.resolve('');
+	// A declared Content-Length over the limit is rejected without reading any of the body.
+	if (declaredLength !== undefined && Number(declaredLength) > maxBytes) return Promise.reject(bodyTooLarge(maxBytes));
 	return new Promise((resolve, reject) => {
-		const chunks: Buffer[] = [];
+		let chunks: Buffer[] = [];
+		let size = 0;
 		let settled = false;
-		body.on('data', (chunk) => chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk));
+		body.on('data', (chunk) => {
+			if (settled) return;
+			const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+			size += buffer.length;
+			if (size > maxBytes) {
+				// The body wrappers cannot pause the socket; later chunks are discarded by the `settled` guard.
+				settled = true;
+				chunks = [];
+				reject(bodyTooLarge(maxBytes));
+				return;
+			}
+			chunks.push(buffer);
+		});
 		body.on('end', () => {
+			if (settled) return;
 			settled = true;
 			resolve(Buffer.concat(chunks).toString('utf8'));
 		});
 		body.on('error', (err) => {
+			if (settled) return;
 			settled = true;
 			reject(err);
 		});
@@ -119,6 +153,10 @@ function readBody(body: BodyStream | undefined): Promise<string> {
 			if (!settled) reject(Object.assign(new Error('request aborted'), { code: 'ECONNRESET' }));
 		});
 	});
+}
+
+function bodyTooLarge(maxBytes: number): ClientError {
+	return new ClientError(`Request body too large, maximum size is ${maxBytes} bytes`, 413);
 }
 
 function toHarperResponse(res: NormResponse): HarperHttpResponse {

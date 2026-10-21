@@ -5,6 +5,8 @@ const { createHarperHttpHandler } = require('#src/components/mcp/adapters/harper
 const { credentialRejectionError, deferCredentialRejection } = require('#src/security/deferredAuthentication');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
 const { Headers } = require('#src/server/serverHelpers/Headers');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 function makeFakeTable() {
 	const store = new Map();
@@ -286,5 +288,110 @@ describe('mcp/adapters/harperHttp', () => {
 		);
 		assert.equal(notif.status, 202);
 		assert.equal(notif.body, undefined);
+	});
+
+	describe('request body size limit', () => {
+		const initializeBody = JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18' },
+		});
+		afterEach(() => env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, undefined));
+
+		// Emits chunks and never 'end', so only a handler that gives up at the limit can settle.
+		function endlessBody(chunkSize) {
+			const emitter = new EventEmitter();
+			const wrapper = {
+				emitted: 0,
+				on(event, listener) {
+					emitter.on(event, listener);
+					return wrapper;
+				},
+			};
+			setImmediate(() => {
+				for (let i = 0; i < 100; i++) {
+					wrapper.emitted++;
+					emitter.emit('data', Buffer.alloc(chunkSize, 0x61));
+				}
+			});
+			return wrapper;
+		}
+
+		it('answers 413 once the streamed body exceeds http.maxRequestBodySize, without waiting for the end', async () => {
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, 1000);
+			const handler = createHarperHttpHandler('application');
+			const body = endlessBody(400);
+
+			const result = await handler({ method: 'POST', headers: makeHeaders(), body, user: { username: 'alice' } }, next);
+
+			assert.equal(result.status, 413);
+			assert.match(JSON.parse(result.body).error, /Request body too large, maximum size is 1000 bytes/);
+			assert.equal(result.headers['Mcp-Session-Id'], undefined);
+		});
+
+		it('answers 413 from a declared Content-Length without reading the body', async () => {
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, 1000);
+			const handler = createHarperHttpHandler('application');
+			let bodyRead = false;
+			const body = {
+				on() {
+					bodyRead = true;
+					return body;
+				},
+			};
+
+			const result = await handler(
+				{ method: 'POST', headers: makeHeaders({ 'content-length': '1001' }), body, user: { username: 'alice' } },
+				next
+			);
+
+			assert.equal(result.status, 413);
+			assert.equal(bodyRead, false);
+		});
+
+		it('still serves a body under the limit', async () => {
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, initializeBody.length);
+			const handler = createHarperHttpHandler('application');
+
+			const result = await handler(
+				{
+					method: 'POST',
+					headers: makeHeaders({ 'content-length': String(initializeBody.length) }),
+					body: bodyStream(initializeBody),
+					user: { username: 'alice' },
+				},
+				next
+			);
+
+			assert.equal(result.status, 200);
+		});
+
+		it('rejects a body one byte over an overridden limit and honours a raised one', async () => {
+			const handler = createHarperHttpHandler('application');
+			const request = () => ({
+				method: 'POST',
+				headers: makeHeaders(),
+				body: bodyStream(initializeBody),
+				user: { username: 'alice' },
+			});
+
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, initializeBody.length - 1);
+			assert.equal((await handler(request(), next)).status, 413);
+
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, initializeBody.length);
+			assert.equal((await handler(request(), next)).status, 200);
+		});
+
+		it('applies the default 10 MB limit when the setting is unset', async () => {
+			const handler = createHarperHttpHandler('application');
+			const body = endlessBody(1_000_000);
+
+			const result = await handler({ method: 'POST', headers: makeHeaders(), body, user: { username: 'alice' } }, next);
+
+			assert.equal(result.status, 413);
+			assert.match(JSON.parse(result.body).error, /maximum size is 10000000 bytes/);
+			assert.equal(body.emitted > 10, true);
+		});
 	});
 });

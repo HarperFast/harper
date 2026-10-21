@@ -174,6 +174,34 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 		strictEqual(res.json.error.code, -32700);
 	});
 
+	test('a body over http.maxRequestBodySize gets 413 on the application endpoint, declared or chunked', async () => {
+		const headers = {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': authHeader(ctx),
+		};
+		const url = new URL('/mcp', ctx.harper.httpURL);
+		const chunk = Buffer.alloc(1_000_000, 0x20);
+
+		const declared = await fetch(url, { method: 'POST', headers, body: Buffer.alloc(11_000_000, 0x20) });
+		strictEqual(declared.status, 413);
+
+		// No Content-Length: the body is cut off as it streams in.
+		let sent = 0;
+		const chunked = await fetch(url, {
+			method: 'POST',
+			headers,
+			duplex: 'half',
+			body: new ReadableStream({
+				pull(controller) {
+					if (sent++ < 11) controller.enqueue(chunk);
+					else controller.close();
+				},
+			}),
+		} as RequestInit);
+		strictEqual(chunked.status, 413);
+	});
+
 	test('S1: malformed JSON on the operations profile returns Fastify HTTP 400 (spec-permitted)', async () => {
 		// Operations uses Fastify's JSON body parser, which rejects malformed JSON
 		// with an HTTP 400 before the handler runs. The Streamable HTTP transport
