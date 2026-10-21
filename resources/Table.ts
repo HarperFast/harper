@@ -570,6 +570,7 @@ const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
+const REPLICA_SWEEP_YIELD_EVERY = 1000;
 const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
 const replicaEvictionArmers = new Map<string, Set<() => void>>();
 onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: string; tableId: number }) => {
@@ -1453,7 +1454,8 @@ export function makeTable(options): TableResourceClass {
 	let replicaSweepRunning = false;
 	let lastReplicaSweep: Promise<unknown> = Promise.resolve();
 	let replicaDeadlinesRepaired = false;
-	const replicaRefreshCheckedAt = new Map<string | number, number>();
+	const replicaRefreshCheckedAt = new Map<Id, number>();
+	const replicaRefreshCheckedAtComposite = new Map<string, number>();
 	let replicaEvictionArmed = false;
 	let replicaTableKnown = false;
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
@@ -1461,7 +1463,8 @@ export function makeTable(options): TableResourceClass {
 	let replicaSweepState: Int32Array | undefined;
 	let recordScanInterval = 0;
 	let recordCleanupInterval = 86400000;
-	const replicaRefreshInFlight = new Set<string | number>();
+	const replicaRefreshInFlight = new Set<Id>();
+	const replicaRefreshInFlightComposite = new Set<string>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
 	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
@@ -10649,30 +10652,38 @@ export function makeTable(options): TableResourceClass {
 	function refreshReplicaOnRead(entry: Entry) {
 		if (replicaRefreshFraction >= 1 || !replicaExpirationMs || !sourceLoad) return;
 		const key = entry.key;
-		const keyId = typeof key === 'string' || typeof key === 'number' ? key : chainKeyForId(key);
+		// a primitive id is its own throttle key; a composite id is encoded, in maps of its own so an
+		// encoded form can never collide with a string id
+		const composite = typeof key === 'object';
+		const keyId = composite ? chainKeyForId(key) : key;
+		const checkedAt = composite ? replicaRefreshCheckedAtComposite : replicaRefreshCheckedAt;
+		const inFlight = composite ? replicaRefreshInFlightComposite : replicaRefreshInFlight;
 		const now = Date.now();
-		const checked = replicaRefreshCheckedAt.get(keyId);
+		const checked = checkedAt.get(keyId as any);
 		const throttle = Math.min(replicaRefreshFraction, 1 - replicaRefreshFraction) * replicaExpirationMs;
 		if (checked !== undefined && now - checked < throttle) return;
-		if (replicaRefreshInFlight.size >= MAX_REPLICA_REFRESHES_IN_FLIGHT || replicaRefreshInFlight.has(keyId)) return;
-		if (replicaRefreshCheckedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) {
-			for (const [checkedKey, at] of replicaRefreshCheckedAt)
-				if (now - at >= throttle) replicaRefreshCheckedAt.delete(checkedKey);
-			if (replicaRefreshCheckedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) replicaRefreshCheckedAt.clear();
+		if (
+			replicaRefreshInFlight.size + replicaRefreshInFlightComposite.size >= MAX_REPLICA_REFRESHES_IN_FLIGHT ||
+			inFlight.has(keyId as any)
+		)
+			return;
+		if (checkedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) {
+			for (const [checkedKey, at] of checkedAt) if (now - at >= throttle) checkedAt.delete(checkedKey as any);
+			if (checkedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) checkedAt.clear();
 		}
-		replicaRefreshCheckedAt.set(keyId, now);
-		replicaRefreshInFlight.add(keyId);
+		checkedAt.set(keyId as any, now);
+		inFlight.add(keyId as any);
 		let pending: Promise<boolean>;
 		try {
 			pending = refreshReplica(key);
 		} catch (error) {
-			replicaRefreshInFlight.delete(keyId);
+			inFlight.delete(keyId as any);
 			logger.warn?.('Error refreshing replica', key, error);
 			return;
 		}
 		pending
 			.catch((error) => logger.warn?.('Error refreshing replica', key, error))
-			.finally(() => replicaRefreshInFlight.delete(keyId));
+			.finally(() => inFlight.delete(keyId as any));
 	}
 	/** Re-stamp a replica's deadline entry; the row is untouched, so this orders with nothing. */
 	function refreshReplica(id: Id): Promise<boolean> {
@@ -10862,11 +10873,12 @@ export function makeTable(options): TableResourceClass {
 					return;
 				}
 				seen++;
-				if (!(typeof deadline === 'number' && deadline <= Date.now())) continue;
-				const entry: Entry = primaryStore.getEntry(key);
-				if (!(entry?.metadataFlags & REPLICA)) await dropOrphanDeadline(store, key);
-				else await TableResource.evict(key, entry.value, entry.version, deadline);
-				await rest();
+				if (typeof deadline === 'number' && deadline <= Date.now()) {
+					const entry: Entry = primaryStore.getEntry(key);
+					if (!(entry?.metadataFlags & REPLICA)) await dropOrphanDeadline(store, key);
+					else await TableResource.evict(key, entry.value, entry.version, deadline);
+					await rest();
+				} else if (seen % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
 			}
 		})();
 		lastReplicaSweep = trackMaintenanceCommit(
