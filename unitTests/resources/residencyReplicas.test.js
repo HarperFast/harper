@@ -7,7 +7,9 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { INVALIDATED, REPLICA, DEFAULT_REPLICA_EXPIRATION_MS } = require('#src/resources/Table');
 const { HAS_BLOBS } = require('#src/resources/auditStore');
-const { createBlob } = require('#src/resources/blob');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
 const { server } = require('#src/server/Server');
 
 const RESIDENCY_ID = 123;
@@ -185,7 +187,6 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('reloads an expired replica from a resident instead of hiding it', async () => {
-		// a lifetime the sweep cannot reach before maintenance is paused, then let it pass
 		Records.setTTLExpiration({ replicaExpiration: 0.2 });
 		await replica();
 		await Records.closeMaintenance();
@@ -415,12 +416,22 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('releases a replica body’s blobs only after its demotion commits', async () => {
-		const file = createBlob(Buffer.from('replica blob'));
+		const file = createBlob(randomBytes(25000)); // above the inline size, so the body owns a file
 		response = { ...response, value: { id: ID, name: 'indexed', body: 'complete', file } };
 		const entry = await replica();
 		assert.ok(entry.metadataFlags & HAS_BLOBS);
-		await Records.evict(ID, entry.value, entry.version);
-		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+		const filePath = getFilePathForBlob(entry.value.file);
+		assert.ok(existsSync(filePath));
+		setDeletionDelay(0);
+		try {
+			await Records.evict(ID, entry.value, entry.version);
+			const stub = Records.primaryStore.getEntry(ID);
+			assert.ok(stub.metadataFlags & INVALIDATED);
+			assert.ok(!(stub.metadataFlags & HAS_BLOBS));
+			await waitFor(() => (existsSync(filePath) ? undefined : true), 'the demoted body’s blob file to be released');
+		} finally {
+			setDeletionDelay(undefined);
+		}
 	});
 
 	it('is swept back to a stub once its lifetime passes, without an audit entry', async () => {

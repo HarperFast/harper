@@ -1441,6 +1441,7 @@ export function makeTable(options): TableResourceClass {
 	// replica cadence; a store on any thread wakes the sweep when [1] is 0
 	let replicaSweepState: Int32Array | undefined;
 	let replicaBaseline: { interval: number; scheduled: boolean } | undefined;
+	let armingReplicaSweep = false;
 	let recordScanInterval = 0;
 	let recordCleanupInterval = 86400000;
 	const replicaRefreshInFlight = new Set<string>();
@@ -8984,7 +8985,8 @@ export function makeTable(options): TableResourceClass {
 			if (disposed || !maintenanceClosed) return;
 			maintenanceClosed = false;
 			lastCleanupInterval = undefined;
-			if (expirationScanScheduled || evictionMs || replicaEvictionArmed) scheduleCleanup();
+			if (expirationScanScheduled || evictionMs) scheduleCleanup();
+			else if (replicaEvictionArmed) scheduleReplicaSweep();
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
 		static _readTxnForContext(context) {
@@ -10305,6 +10307,8 @@ export function makeTable(options): TableResourceClass {
 	function scheduleCleanup(priority?: number): Promise<void> | void {
 		// a reclamation run may still hold this class's handler after cleanup(); a promise here would never settle
 		if (disposed || maintenanceClosed) return;
+		// a delete, TTL or reclamation request while replicas hold the timer is owed its own pass after they leave
+		if (replicaEvictionArmed && !armingReplicaSweep) replicaBaseline.scheduled = true;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority
@@ -10446,8 +10450,7 @@ export function makeTable(options): TableResourceClass {
 									await Promise.all(outstandingCleanupOperations.filter(Boolean));
 									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
-									// only a complete pass that met no replica, with no admission since it began, proves
-									// the table idle; the next replica stored on any thread wakes the sweep again
+									// the next replica stored on any thread wakes the sweep again
 									if (
 										replicaEvictionArmed &&
 										completePass &&
@@ -10787,14 +10790,23 @@ export function makeTable(options): TableResourceClass {
 		// an already-armed thread may own the timer only now (the main thread under threads: 0 loads
 		// tables before it is worker 0), so the flag and the timer are settled on every wake
 		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 1);
-		scheduleCleanup();
+		scheduleReplicaSweep();
+	}
+	function scheduleReplicaSweep() {
+		armingReplicaSweep = true;
+		try {
+			scheduleCleanup();
+		} finally {
+			armingReplicaSweep = false;
+		}
 	}
 	function standDownReplicaSweep() {
 		if (!replicaEvictionArmed) return;
 		replicaEvictionArmed = false;
 		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 0);
 		cleanupInterval = expirationScanScheduled || evictionMs ? recordCleanupInterval : replicaBaseline.interval;
-		if (expirationScanScheduled || evictionMs || replicaBaseline.scheduled) return void scheduleCleanup();
+		if (expirationScanScheduled || evictionMs || replicaBaseline.scheduled || pendingCleanupResolvers.size > 0)
+			return void scheduleCleanup();
 		// back to a table with no timer: the next delete or TTL call schedules one at this interval
 		if (cleanupTimer) clearTimeout(cleanupTimer);
 		cleanupTimer = undefined;

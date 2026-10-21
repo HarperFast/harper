@@ -336,7 +336,7 @@ describe('Reads of residency stubs', function () {
 	}
 
 	it('retains stored vectors on invalidation and maintains their graph on replacement and deletion', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // Matches the existing HNSW suite's engine coverage.
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		const Vectors = table({
 			database: 'test',
 			table: 'ResidencyVectors',
