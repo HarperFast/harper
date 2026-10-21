@@ -84,7 +84,8 @@ If your table overrides `search()`, also implement `searchPage()` with the same 
 This applies to static and instance methods. Otherwise paging returns 400, including through REST,
 to avoid bypassing application filters.
 
-Return the original page array from a custom Resource. Copying it with `map()`, `filter()` or
+A custom Resource supporting the framework's QUERY paging route must implement `searchPage()`.
+Return the original page array. Copying it with `map()`, `filter()` or
 spread drops its paging metadata and a framework-serialized continuation response returns 400.
 Use the query's `select` and filters instead. A Resource returning an explicit HTTP `Response`
 owns its response headers, serialization and cache policy.
@@ -227,8 +228,9 @@ are 128 resident indexes, 128 indexing threads, 256 search threads, 4 GiB config
 8 GiB configured queue capacity, and 8 concurrent expensive searches. All limits apply together.
 
 Application-created workers inherit the established native settings too. Create them after
-Harper initializes its full-text settings; workers created before that point return 503 when
-they try to load full-text search. This prevents a worker from applying different process-wide limits.
+Harper initializes its full-text settings. A worker created before that point cannot initialize
+full-text search; recreate it after Harper initializes rather than retrying inside the same worker.
+This prevents a worker from applying different process-wide limits.
 
 The runtime keys use integer counts or bytes:
 
