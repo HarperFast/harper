@@ -204,6 +204,7 @@ import fs from 'node:fs';
 import {
 	Blob,
 	createBlob,
+	cleanupUnusedBlobs,
 	collectRetainedFileIds,
 	deleteBlobsInObject,
 	findBlobsInObject,
@@ -10707,6 +10708,32 @@ export function makeTable(options): TableResourceClass {
 	 * replica, or holds one as new as the response.
 	 */
 	function writeReplica(
+		id: Id,
+		body: any,
+		responseVersion: number,
+		residentExpiresAt?: number,
+		originNode?: string
+	): Promise<boolean> {
+		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
+		// as a committed write does: the body's blob files are complete before the row that references them
+		const preCommit = startPreCommitBlobsForRecord(body, primaryStore.rootStore);
+		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
+		return trackMaintenanceCommit(
+			preCommit.complete().then(
+				() =>
+					storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode).then((stored) => {
+						if (!stored) cleanupUnusedBlobs(preCommit.blobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
+						return stored;
+					}),
+				(error) => {
+					logger.warn?.('Error saving the blobs of a replica', id, error);
+					cleanupUnusedBlobs(preCommit.blobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
+					return false;
+				}
+			)
+		);
+	}
+	function storeReplicaRow(
 		id: Id,
 		body: any,
 		responseVersion: number,
