@@ -12,7 +12,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 // Conflict retries of writes that commit per write; the invariant is in resources/DESIGN.md.
 describe('ImmediateTransaction conflict retry', () => {
-	let Locked;
+	let Locked, UnlockedUnlogged;
 	let nextId = 1;
 	const id = () => `retry-${nextId++}`;
 	const pendingRestores = [];
@@ -28,6 +28,12 @@ describe('ImmediateTransaction conflict retry', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 			audit: true,
 		});
+		UnlockedUnlogged = table({
+			table: 'ImmediateConflictRetryUnlogged',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+			audit: false,
+		});
 		process.on('unhandledRejection', onUnhandled);
 	});
 	after(() => process.removeListener('unhandledRejection', onUnhandled));
@@ -40,10 +46,10 @@ describe('ImmediateTransaction conflict retry', () => {
 	// ERR_BUSY on the first `failFirst` native commits against the test table's db, then real commits;
 	// records the native transaction id of every attempt so the test can see which transaction each
 	// retry used. `beforeReject` runs before the first rejection, to age the holder's lease meanwhile.
-	function conflictCommits({ failFirst = 1, beforeReject } = {}) {
+	function conflictCommits({ failFirst = 1, beforeReject, targetTable = Locked } = {}) {
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const originalCommit = Transaction.prototype.commit;
-		const targetDb = Locked.primaryStore.store.db;
+		const targetDb = targetTable.primaryStore.store.db;
 		const attempts = [];
 		const aborted = [];
 		Transaction.prototype.commit = async function (...args) {
@@ -131,16 +137,16 @@ describe('ImmediateTransaction conflict retry', () => {
 		await holder.unlock();
 	});
 
-	it('rejects the awaited save once a persistent conflict spends the commit budget', async function () {
+	it('rejects the awaited unlogged save once a persistent conflict spends the commit budget', async function () {
 		if (isLMDB) return this.skip();
 		const recordId = id();
-		await Locked.put({ id: recordId, n: 0 });
-		const holder = await Locked.lock(recordId, { hold: true, lease: 5000 });
+		await UnlockedUnlogged.put({ id: recordId, n: 0 });
+		const holder = await UnlockedUnlogged.lock(recordId, { hold: true, lease: 5000 });
 		const immediate = holder.getContext().transaction;
 		// The budget clock is stamped at the first native submission only when unset, so a value
 		// planted here is what the retry site reads (the same device commitConflictDeadline.test.js uses).
 		immediate.commitStartedAt = performance.now() - 3600000;
-		const { attempts, aborted } = conflictCommits({ failFirst: Infinity });
+		const { attempts, aborted } = conflictCommits({ failFirst: Infinity, targetTable: UnlockedUnlogged });
 		holder.set('n', 7);
 		await assert.rejects(
 			() => holder.save(),
@@ -148,19 +154,24 @@ describe('ImmediateTransaction conflict retry', () => {
 		);
 		assert.deepStrictEqual(attempts, [attempts[0]], 'abandoned on the first conflict: no second transaction opened');
 		assert.ok(aborted.includes(attempts[0]), 'the abandoned native transaction was released');
-		assert.strictEqual(Locked.primaryStore.getEntry(recordId).value.n, 0, 'nothing landed');
+		assert.strictEqual(UnlockedUnlogged.primaryStore.getEntry(recordId).value.n, 0, 'nothing landed');
 		assert.strictEqual(immediate.isCommitting, false, 'the latch clears, so the next save on this context commits');
 		await assertNoUnhandledRejection();
 		await holder.unlock();
+		const nextHolder = await UnlockedUnlogged.lock(recordId, { lease: MIN_LOCK_LEASE_MS, timeout: 300 });
+		await nextHolder.unlock();
 	});
 
-	it('refuses the retry with 409 when the lease expires while the first attempt conflicts', async function () {
+	it('refuses an unlogged retry with 409 when the lease expires while the first attempt conflicts', async function () {
 		if (isLMDB) return this.skip();
 		const recordId = id();
-		await Locked.put({ id: recordId, n: 0 });
+		await UnlockedUnlogged.put({ id: recordId, n: 0 });
 		const lease = MIN_LOCK_LEASE_MS;
-		const holder = await Locked.lock(recordId, { hold: true, lease });
-		const { attempts, aborted } = conflictCommits({ beforeReject: () => delay(lease + 50) });
+		const holder = await UnlockedUnlogged.lock(recordId, { hold: true, lease });
+		const { attempts, aborted } = conflictCommits({
+			beforeReject: () => delay(lease + 50),
+			targetTable: UnlockedUnlogged,
+		});
 		holder.set('n', 7);
 		await assert.rejects(
 			() => holder.save(),
@@ -168,8 +179,29 @@ describe('ImmediateTransaction conflict retry', () => {
 		);
 		assert.deepStrictEqual(attempts, [attempts[0]], 'the retry was refused before a second commit');
 		assert.ok(aborted.includes(attempts[0]), 'the refused native transaction was released');
-		assert.strictEqual(Locked.primaryStore.getEntry(recordId).value.n, 0, 'a stale holder write never lands');
+		assert.strictEqual(UnlockedUnlogged.primaryStore.getEntry(recordId).value.n, 0, 'a stale holder write never lands');
 		await assertNoUnhandledRejection();
+		const nextHolder = await UnlockedUnlogged.lock(recordId, { lease: MIN_LOCK_LEASE_MS, timeout: 300 });
+		await nextHolder.unlock();
+	});
+
+	it('carries a durably logged hold-lock save to completion even if the lease expires during a conflict retry', async function () {
+		if (isLMDB) return this.skip();
+		const recordId = id();
+		await Locked.put({ id: recordId, n: 0 });
+		const lease = MIN_LOCK_LEASE_MS;
+		const auditBefore = auditEntriesFor(recordId);
+		const { attempts, aborted } = conflictCommits({ beforeReject: () => delay(lease + 50) });
+		const holder = await Locked.lock(recordId, { hold: true, lease });
+		holder.set('n', 7);
+		await holder.save();
+		assert.deepStrictEqual(attempts, [attempts[0], attempts[0]], 'the logged retry was allowed and succeeded');
+		assert.deepStrictEqual(aborted, [], 'no native transaction was aborted');
+		assert.strictEqual(Locked.primaryStore.getEntry(recordId).value.n, 7, 'the logged holder write landed');
+		assert.strictEqual(auditEntriesFor(recordId) - auditBefore, 1, 'exactly one audit entry matches the record');
+		await assertNoUnhandledRejection();
+		const nextHolder = await Locked.lock(recordId, { lease: MIN_LOCK_LEASE_MS, timeout: 300 });
+		await nextHolder.unlock();
 	});
 
 	it('releases the replay transaction when a lapsed lease refuses a re-save forced by an open iterator', async function () {
