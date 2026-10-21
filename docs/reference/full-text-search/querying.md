@@ -139,7 +139,7 @@ const products = Product.search({
 });
 ```
 
-Harper checks the structured conditions against current source records before returning them. Existing Harper secondary indexes can narrow candidate IDs or support point checks; no separate full-text filter metadata declaration is required. Rejected hits do not count toward a v5.4 page's offset and limit, but fetching them still consumes the raw-hit budget.
+Harper checks the structured conditions against current source records before returning them. Existing Harper secondary indexes can narrow candidate IDs or support point checks. Rejected hits do not count toward a v5.4 page's offset and limit, but fetching them still consumes the raw-hit budget.
 
 An `or` group may combine conditions from the same full-text index:
 

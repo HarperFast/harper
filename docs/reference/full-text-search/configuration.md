@@ -66,7 +66,7 @@ Source fields cannot use `@computed` or `@relationship`. Indexable source values
 
 ## Structured filters
 
-Combine full-text conditions with ordinary Harper conditions using `and`. Harper checks current source records and can use existing secondary indexes to narrow candidates. There is no `filterFields` option on `@fullText`; an unknown directive option returns `400`. See [combining conditions](./querying.md#combining-conditions).
+Combine full-text conditions with ordinary Harper conditions using `and`. Harper checks current source records and can use existing secondary indexes to narrow candidates. Only the directive options listed above are accepted; an unknown option returns `400`. See [combining conditions](./querying.md#combining-conditions).
 
 ## Phrase and prefix support
 
