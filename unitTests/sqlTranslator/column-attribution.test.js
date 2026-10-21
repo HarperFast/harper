@@ -185,6 +185,12 @@ describe('SQL column attribution for attribute permissions', () => {
 			assert.deepStrictEqual(bucket.getRowAccessors(), []);
 			// Nested queries are walked with the outer scope, which is safe only because they are refused.
 			assert.deepStrictEqual(bucket.getUnauthorizedTableRefs(), ['nested query in "exists"']);
+			for (const sql of [
+				'SELECT (SELECT ssn FROM data.R) AS s FROM data.L',
+				'SELECT label FROM data.L WHERE id IN (SELECT id FROM data.R)',
+			]) {
+				assert.deepStrictEqual(bucketFor(sql).getUnauthorizedTableRefs(), ['nested query in "queries"'], sql);
+			}
 		});
 
 		it('lists nothing for a statement that names its columns', () => {
