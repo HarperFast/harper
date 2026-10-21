@@ -162,20 +162,20 @@ export async function getReplicationCertAuth() {
 const sameConfigValue = (recordValue, configValue) =>
 	JSON.stringify(recordValue ?? null) === JSON.stringify(configValue ?? null);
 
-/**
- * Reconciles ciphers/uses onto a record the loader wrote, whose file is unchanged. API writes null
- * `from_config`, and a pre-marker record (undefined) is adopted only if it already matches config
- * because an operator edit looks the same. The first entry to reach a record claims it for the load.
- */
+/** Applies a config edit to ciphers/uses on a record whose file is unchanged; ownership rules are in security/DESIGN.md. */
 function reconcileConfiguredFields(certRecord, name, certificatePem, ciphers, uses, syncedNames: Set<string>) {
 	if (certRecord.certificate !== certificatePem || syncedNames.has(name)) return;
 	const owned = certRecord.from_config === true;
 	const adoptable = certRecord.from_config === undefined && certRecord.file_timestamp != null;
 	const matches = sameConfigValue(certRecord.ciphers, ciphers) && sameConfigValue(certRecord.uses, uses);
 	if (!owned && !(adoptable && matches)) {
-		if (!matches)
+		if (adoptable)
+			logger.warn?.(
+				`TLS config for certificate ${name} differs from its record, which predates config tracking; leaving the record unchanged — touch the certificate file to apply the config`
+			);
+		else if (!matches)
 			logger.info?.(
-				`TLS config for certificate ${name} differs from its record, which was not written from config; leaving the record unchanged`
+				`TLS config for certificate ${name} differs from its record, whose ciphers/uses were set outside the config; leaving the record unchanged`
 			);
 		return;
 	}
@@ -325,7 +325,6 @@ export function loadCertificates() {
 
 								// Returned so loadAndWatch can roll back its fingerprint latch if the write fails —
 								// assigned as well to preserve loadCertificates()'s awaited-return contract.
-								syncedNames.add(certCn);
 								return (promise = certificateTable.put({
 									name: certCn,
 									uses,
