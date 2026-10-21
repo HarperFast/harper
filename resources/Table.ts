@@ -9552,7 +9552,7 @@ export function makeTable(options): TableResourceClass {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
 			let resolved, sharedEntry: Entry;
-			let sourceWrite: any;
+			let stagedWrite: any;
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
@@ -9745,7 +9745,7 @@ export function makeTable(options): TableResourceClass {
 					return;
 				}
 				const dbTxn = txnForContext(sourceContext);
-				sourceWrite = {
+				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
 					entry: undefined,
@@ -9905,13 +9905,14 @@ export function makeTable(options): TableResourceClass {
 				}
 				sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 				dbTxn.addWrite(sourceWrite);
+				stagedWrite = sourceWrite;
 			});
 			when(
 				commitPromise,
 				() => {
-					if (sharedEntry && !sourceWrite?.skipped) {
+					if (sharedEntry && (!stagedWrite || stagedWrite.skipped === false)) {
 						fill.outcome = sharedEntry;
-						fill.unstoredRecord = !sourceWrite && sharedEntry.value != null;
+						fill.unstoredRecord = !stagedWrite && sharedEntry.value != null;
 					}
 					releaseFill();
 					if (removedRecordWithBlobs) {
