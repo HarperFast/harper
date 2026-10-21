@@ -1970,10 +1970,10 @@ export class DatabaseTransaction implements Transaction {
 	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
 	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
 	 * replicable writes staged earlier: writes that opt out or replicate nothing (unaudited or local-only
-	 * writes, and audit-only markers, which stage no record), and writes with no stored entry at all — a
-	 * delete leaves a readable tombstone on any audited or delete-tracking table, so only a delete on a
-	 * table with neither is entry-less. Such a `put(A); delete(B)` confirms on A's entry, whose version is
-	 * this transaction's (every write in a transaction is stamped with one version).
+	 * writes, and audit-only markers, which stage no record), and skipped writes whose key holds no stored
+	 * entry, such as a re-delivered delete of a key that is already gone. Such a `put(A); delete(B)`
+	 * confirms on A's entry, whose version is this transaction's (every write in a transaction is stamped
+	 * with one version).
 	 */
 	lastConfirmableEntry(): Partial<Entry> | undefined {
 		for (let i = this.writes.length - 1; i >= 0; i--) {
