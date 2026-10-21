@@ -87,7 +87,7 @@ This is a transient condition — the index finishes building in the background,
 
 Full-text and autocomplete queries use Harper's existing `limit` and `offset` options. Each page runs a new query: changed records, permissions or index contents can cause records to repeat or be omitted between pages. There is no retained search across requests. See [REST paging and counts](../rest/querying.md#pagination-and-total-count) for URL syntax and count behavior.
 
-Within one request, Harper uses one native reader to fetch ranked batches. It checks source versions and record filters before counting records toward the requested offset and limit. Prefix and fuzzy-prefix searches can return more than the native ordinary autocomplete window. The native search window is not a total-result cutoff for bounded Harper queries.
+Within one request, Harper uses one native reader to fetch ranked batches. It checks source versions and record filters before counting records toward the requested offset and limit. Prefix and fuzzy-prefix searches can return more than the native ordinary autocomplete window. Before v5.4, prefix and fuzzy-prefix queries restrict `offset + limit` to 100. In v5.4, the native search window is not a total-result cutoff for bounded Harper queries.
 
 For example, with `offset: 20` and `limit: 10`, Harper skips the first 20 eligible records and returns the next 10. Hits rejected by source-version checks or record filters do not count toward those 30 records, but fetching them still consumes the raw-hit budget. Harper fetches additional batches as needed until it fills the page, exhausts the matches or reaches a request limit.
 
