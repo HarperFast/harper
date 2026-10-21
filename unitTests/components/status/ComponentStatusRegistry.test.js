@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const sinon = require('sinon');
-const { ComponentStatusRegistry } = require('#src/components/status/ComponentStatusRegistry');
+const { ComponentStatusRegistry, serializeStatusError } = require('#src/components/status/ComponentStatusRegistry');
 const { ComponentStatus } = require('#src/components/status/ComponentStatus');
 const { COMPONENT_STATUS_LEVELS } = require('#src/components/status/types');
 const { StatusAggregator } = require('#src/components/status/crossThread');
@@ -1101,6 +1101,7 @@ describe('ComponentStatusRegistry', function () {
 					const message = registry.getStatus('my-app').message;
 					assert.equal(message, `connect failed: ${expected} (retrying)`);
 					assert(!message.includes('user:'));
+					assert.equal(serializeStatusError(`connect failed: ${raw}`), `connect failed: ${expected}`);
 				}
 			});
 

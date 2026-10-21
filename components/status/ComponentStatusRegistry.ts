@@ -259,13 +259,17 @@ export class ComponentStatusRegistry {
 	}
 }
 
-// Greedy to the last `@` in the token: a raw `/ ? #` in the password is indistinguishable from a path delimiter.
-const CREDENTIAL_URL_USERINFO_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)\S+@/gi;
+// A raw `/ ? #` in a password is indistinguishable from a path delimiter, so redact through the last `@` in the
+// token. The regex consumes the whole token and the replacer finds the `@`, keeping the scan linear.
+const CREDENTIAL_URL_TOKEN_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)\S+/gi;
 const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
 const LOADER_DIRECTORY_FAILURE_MESSAGE = /^Could not load \S+$/;
 
 function redactUrlCredentials(text: string): string {
-	return text.replace(CREDENTIAL_URL_USERINFO_PATTERN, '[REDACTED]@');
+	return text.replace(CREDENTIAL_URL_TOKEN_PATTERN, (token) => {
+		const at = token.lastIndexOf('@');
+		return at < 0 ? token : `[REDACTED]${token.slice(at)}`;
+	});
 }
 
 /**
@@ -278,7 +282,8 @@ function redactUrlCredentials(text: string): string {
  * the error class name and message are rendered (never stack traces or arbitrary
  * enumerable properties), and embedded URL userinfo credentials (`scheme://user:pass@host`)
  * are redacted in both status messages (`setStatus`) and serialized errors before
- * text leaves the status registry.
+ * text leaves the status registry. Redaction runs through the last `@` in the URL token, so an
+ * `@` later in a path or query also replaces the host.
  */
 export function serializeStatusError(error: unknown): string | undefined {
 	if (error === undefined || error === null) return undefined;
