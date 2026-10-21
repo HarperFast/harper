@@ -615,6 +615,18 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
+		// Attribute checks below only see attributes the bucket attributed to a table; a column it could
+		// not attribute, or a whole-row read that names no attribute, would go unchecked.
+		if (!isSuperUser) {
+			const unresolvedColumns = parsedAst.getUnresolvedColumnRefs();
+			if (unresolvedColumns.length > 0) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_COLUMN(unresolvedColumns));
+			}
+			if (parsedAst.getRowAccessors().length > 0) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_ROW_ACCESSOR);
+			}
+		}
+
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);
 		userObject.role.permission = fullRolePerms;
 

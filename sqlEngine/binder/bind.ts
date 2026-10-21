@@ -28,6 +28,7 @@ import type {
 } from '../parser/ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { _setDatabasesLoader, loadDatabases, findDatabasesWithTable } from './defaultDatabase.ts';
+import { declaringTables, matchQualifier } from './columnScope.ts';
 
 interface AttributeInfo {
 	name: string;
@@ -233,22 +234,15 @@ function resolveColumnsInSelect(stmt: SelectNode, scope: BoundTable[]): void {
 
 /** Resolves a qualifier string (alias or table name) to the canonical alias. */
 function resolveQualifier(qualifier: string, scope: BoundTable[]): BoundTable | undefined {
-	// Exact effective-alias match always wins (it is unique — duplicates are
-	// rejected at bind time).
-	const byAlias = scope.find((t) => t.effectiveAlias === qualifier);
-	if (byAlias) return byAlias;
-	// Fall back to base-table-name qualification (e.g. `dev.user.col` where the
-	// table is unaliased). In a self-join the same base name appears more than
-	// once; matching the first silently mis-binds, so reject as ambiguous.
-	const byTable = scope.filter((t) => t.table === qualifier);
-	if (byTable.length > 1) {
+	const match = matchQualifier(qualifier, scope);
+	if (match && 'ambiguous' in match) {
 		throw new EngineUnsupportedError(
-			`table qualifier "${qualifier}" is ambiguous across ${byTable
+			`table qualifier "${qualifier}" is ambiguous across ${match.ambiguous
 				.map((t) => t.effectiveAlias)
 				.join(', ')}; qualify columns by alias`
 		);
 	}
-	return byTable[0];
+	return match && 'table' in match ? match.table : undefined;
 }
 
 function resolveColumns(expr: ExprNode, scope: BoundTable[]): void {
@@ -263,7 +257,7 @@ function resolveColumns(expr: ExprNode, scope: BoundTable[]): void {
 				return;
 			}
 			// Unqualified: bind to the unique table that declares this attribute.
-			const owners = scope.filter((t) => t.attributes.some((a) => a.name === expr.name));
+			const owners = declaringTables(expr.name, scope);
 			if (owners.length === 1) {
 				expr.table = owners[0].effectiveAlias;
 			} else if (owners.length > 1) {

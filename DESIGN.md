@@ -220,6 +220,10 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)](dataLayer/DESIGN.md#rocksdb-managed-backups-blob-snapshots-datalayerblobbackupts) — Managed backups snapshot blob roots alongside engine data unless `exclude_blobs`.
 - [Legacy SQL pre-fetch narrows only by top-level AND conjuncts (`dataLayer/SQLSearch.ts`)](dataLayer/DESIGN.md#legacy-sql-pre-fetch-narrows-only-by-top-level-and-conjuncts-datalayersqlsearchts) — Only a predicate every result row satisfies may narrow a column's fetch; NOT, OR and self-joins see every row.
 
+## sqlTranslator/ — SQL authorization inventory
+
+- [SQL authorization attributes every column with the engine's own resolution rules (`sql_statement_bucket.ts`, `sqlEngine/binder/columnScope.ts`)](sqlTranslator/DESIGN.md#sql-authorization-attributes-every-column-with-the-engines-own-resolution-rules-sql_statement_bucketts-sqlenginebindercolumnscopets) — The bucket and the v2 binder share one column resolver; unresolved qualifiers and whole-row accessors are refused for non-super users.
+
 ## utility/
 
 - [Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)](utility/DESIGN.md#every-path-handed-to-a-native-file-watch-must-be-canonicalized-utilitywatchpathts) — Every native file-watch path is canonicalized first: libuv aborts the process on a Windows 8.3 short-path mismatch.
