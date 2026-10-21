@@ -89,6 +89,37 @@ describe('search key identity and the "..." between alias', () => {
 		}
 	});
 
+	it('pages an OR whose branches yield a composite key as an entry and as a bare key', async () => {
+		const conditions = [
+			{ attribute: 'id', value: ['tenant', 'item'] },
+			{ attribute: 'grp', value: 'or_a' },
+		];
+		const all = await collect(Keyed.search({ operator: 'or', conditions, select: ['id'] }));
+		assert.strictEqual(all.length, 2);
+		const page = await collect(Keyed.search({ operator: 'or', conditions, select: ['id'], offset: 1, limit: 5 }));
+		assert.strictEqual(page.length, 1);
+	});
+
+	for (const comparator of ['...', 'between']) {
+		it(`includes the upper bound of "${comparator}" on a reversed index scan and on the primary key`, async () => {
+			const reversed = await collect(
+				Ranged.search({
+					conditions: [{ attribute: 'indexedNum', comparator, value: [1, 5] }],
+					sort: { attribute: 'indexedNum', descending: true },
+					select: ['id'],
+				})
+			);
+			assert.deepStrictEqual(
+				reversed.map((record) => record.id),
+				['r5', 'r3', 'r1']
+			);
+			const byKey = await collect(
+				Ranged.search({ conditions: [{ attribute: 'id', comparator, value: ['r1', 'r5'] }], select: ['id'] })
+			);
+			assert.deepStrictEqual(byKey.map((record) => record.id).sort(), ['r1', 'r3', 'r5']);
+		});
+	}
+
 	for (const [label, attribute] of [
 		['indexed', 'indexedNum'],
 		['unindexed', 'plainNum'],

@@ -446,9 +446,7 @@ export class CandidateKeySet {
 	#zero = false;
 	#negativeZero = false;
 	#holdsBigInt = false;
-	#first: Id | undefined;
 	add(primaryKey: Id): void {
-		if (this.size === 0) this.#first = primaryKey;
 		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
 			this.#byValue.add(primaryKey);
 		else if (primaryKey === 0) {
@@ -471,19 +469,12 @@ export class CandidateKeySet {
 		}
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
-	/** The first key added, which is the sole member while `size` is 1. */
-	get onlyKey(): Id | undefined {
-		return this.#first;
-	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
 }
 
-/**
- * The entries of `entries` without repeats of a primary key, tracked per iteration so a second pass
- * over the result starts empty. Entries are keys or `{ key }` entries.
- */
+/** `entries` without repeated primary keys; the seen-set is per iteration. Entries are keys or `{ key }` entries. */
 function distinctKeys(entries: any): any {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
@@ -1691,7 +1682,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
 								searchCondition = {
 									attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-									value: nextFilter.idFilter.idSet.onlyKey,
+									value: nextFilter.idFilter.onlyId,
 								};
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
 								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
@@ -1875,9 +1866,15 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
 					const idSet = new CandidateKeySet();
-					for (const id of matchingIds) idSet.add(id);
+					let firstId: Id | undefined;
+					for (const id of matchingIds) {
+						if (idSet.size === 0) firstId = id;
+						idSet.add(id);
+					}
 					recordFilter.idFilter = (id) => idSet.has(id);
 					(recordFilter.idFilter as any).idSet = idSet;
+					// the set holds encoded identities, so a sole member is kept as the key itself
+					(recordFilter.idFilter as any).onlyId = firstId;
 				}
 			}
 			return matches;
