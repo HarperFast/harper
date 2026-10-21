@@ -169,7 +169,13 @@ async function searchTypes() {
 	const queriedRows: AsyncIterable<TrackRecord> = await querying;
 	const unawaitedSearch: AsyncIterable<TrackRecord> = searching;
 	const unawaitedQuery: AsyncIterable<TrackRecord> = querying;
-	const page = await Track.searchPage({ continuation: true });
+	const page = await Track.searchPage({ limit: 25, continuation: true });
+	// @ts-expect-error paging requires an explicit query with a limit
+	await Track.searchPage();
+	// @ts-expect-error paging requires an explicit limit
+	await Track.searchPage({ continuation: true });
+	// @ts-expect-error the page limit must be numeric
+	await Track.searchPage({ limit: '25', continuation: true });
 	const pageRows: TrackRecord[] = page;
 	const continuation: string | undefined = page.continuation;
 	return { searchedRows, queriedRows, unawaitedSearch, unawaitedQuery, pageRows, continuation };

@@ -241,7 +241,7 @@ interface TypedVerbs<S extends Shape> {
 	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<WritableRecord<InstanceOf<S>>>;
 	delete(id: IdOf<S>, context?: any): MaybePromise<unknown>;
 	search(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
-	searchPage(query?: any, context?: any): Promise<FullTextSearchPage<ReadVariant<S>>>;
+	searchPage(query: { limit: number; [key: string]: any }, context?: any): Promise<FullTextSearchPage<ReadVariant<S>>>;
 	query(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
 }
 
