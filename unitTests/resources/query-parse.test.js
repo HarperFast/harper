@@ -258,6 +258,16 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('select(a=1,b)'), /not allowed in a property list/);
 		assert.throws(() => parseQuery('select(a<1)'), /not allowed in a property list/);
 		assert.equal(parseQuery('(note=eq=select(id))').conditions[0].conditions[0].value, 'select(id)');
+		assert.throws(
+			() => parseQuery('a=gt=x{y}'),
+			(error) => error.statusCode === 400 && /in a value/.test(error.message)
+		);
+		assert.throws(() => parseQuery('p=ge=1&=5'), /chained condition needs a FIQL comparator/);
+	});
+	it('A character no tokenizer accepts ends the parse with an error instead of looping', function () {
+		for (const query of ['(?a=1)', 'a=gt=1&(?)', 'select(?)', 'a=gt=1&?b=2']) {
+			assert.throws(() => parseQuery(query), /unexpected character '\?'/, query);
+		}
 	});
 	it('Single-argument select forms', function () {
 		assert.equal(parseQuery('select(name)').select, 'name');
