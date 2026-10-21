@@ -672,6 +672,8 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
+	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
+	// as soon as it returns. A returned promise is only a completion to wait for.
 	commit?: (
 		txnTime: number,
 		existingEntry: Partial<Entry>,
@@ -764,8 +766,6 @@ export type TransactionWrite = {
 	instanceClosed?: boolean;
 };
 
-// read when confirmation is decided rather than when the handler returns, so an append after an awaited
-// dependency still counts
 function confirmsNothing(write: TransactionWrite): boolean {
 	return write.skipReplicationConfirmation || write.stagedAudit === 'none' || write.stagedAudit === 'local';
 }
