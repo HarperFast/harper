@@ -119,6 +119,12 @@ export class EnvelopedPagingProduct extends IgnoredPagingProduct {
 	}
 }
 
+export class ErrorEnvelopePagingResponse extends IgnoredPagingProduct {
+	get() {
+		return { status: 503, headers: {}, data: { error: 'Fixture unavailable' } };
+	}
+}
+
 export class TimestampedPagingProduct extends IgnoredPagingProduct {
 	async get(target) {
 		const context = this.getContext();

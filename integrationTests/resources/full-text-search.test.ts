@@ -326,6 +326,12 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 	});
 
 	test('carries paging metadata through envelopes and ignores cache validators for pages', async () => {
+		const failure = await fetch(`${ctx.harper.httpURL}/ErrorEnvelopePagingResponse/?continuation()`, {
+			headers: { Authorization: authorization },
+			signal: AbortSignal.timeout(15000),
+		});
+		assert.strictEqual(failure.status, 503);
+		assert.deepStrictEqual(await failure.json(), { error: 'Fixture unavailable' });
 		const query = '?catalogSearch=matches=pagination&limit(1000)&select(id,title)';
 		const headers = { Authorization: authorization };
 		const envelope = await fetch(`${ctx.harper.httpURL}/EnvelopedPagingProduct/${query}&continuation()`, {
