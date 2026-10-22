@@ -1213,7 +1213,6 @@ describe('static plugin entries whose file vanished before the watcher noticed',
 		return { appDir, state };
 	}
 
-	// `target` differs from the served path for a symlinked asset.
 	function indexFile(state, appDir, name, { target = join(appDir, 'web', name), content = 'content' } = {}) {
 		const absolutePath = join(appDir, 'web', name);
 		mkdirSync(join(target, '..'), { recursive: true });
@@ -1300,10 +1299,35 @@ describe('static plugin entries whose file vanished before the watcher noticed',
 		assert.equal(res.body, 'spa shell');
 	});
 
+	it('warns again when a restored notFound file goes missing a second time', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false, notFound: 'web/404.html' });
+		const notFoundFile = join(appDir, 'web', '404.html');
+
+		await fetchHttp(baseUrl, '/nothing-here');
+		writeFileSync(notFoundFile, 'back');
+		assert.equal((await fetchHttp(baseUrl, '/nothing-here')).body, 'back');
+		rmSync(notFoundFile);
+		await fetchHttp(baseUrl, '/nothing-here');
+
+		assert.equal(missingNotFoundWarnings(state).length, 2);
+	});
+
 	it('answers 404 rather than the configured status when the notFound file is missing', async () => {
 		serveApp({ fallthrough: false, notFound: { file: 'web/spa.html', statusCode: 200 } });
 
 		assertPlain404(await fetchHttp(baseUrl, '/nothing-here'));
+	});
+
+	it('settles failed credentials with 401 when resolving the file fails for another reason', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+		const loop = join(tempRoot, 'loop.js');
+		symlinkSync(loop, loop);
+		state.entryCallback({ eventType: 'add', urlPath: '/loop.js', absolutePath: loop });
+		const request = staticRequest('/loop.js', { authorization: 'Basic d29yZHByZXNzOmFwcC1wYXNzd29yZA==' });
+		deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+
+		assert.equal(state.listener(request, next).status, 401);
 	});
 
 	it('still reports a filesystem error that is not a missing file', async () => {

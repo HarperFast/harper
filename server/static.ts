@@ -387,9 +387,18 @@ export function handleApplication(scope: Scope) {
 				}
 			}
 
-			// If an entry matched, serve it. An entry whose file is gone is a miss, not an error: the
-			// watcher has not caught up, or a symlink target was removed outside the watched tree.
-			const resolvedFile = staticFile ? resolveExisting(staticFile) : undefined;
+			// Entries are watcher snapshots that can lag the disk, so a missing file is a miss, not an error.
+			let resolvedFile: string | undefined;
+			if (staticFile) {
+				try {
+					resolvedFile = resolveExisting(staticFile);
+				} catch (error) {
+					// Failed credentials answered 401 before the file was resolved; keep that over a path-bearing 500.
+					const settledCredentialRejection = settleDeferredCredentialRejection(req);
+					if (settledCredentialRejection) return settledCredentialRejection;
+					throw error;
+				}
+			}
 			if (resolvedFile) {
 				const settledCredentialRejection = settleDeferredCredentialRejection(req);
 				if (settledCredentialRejection) return settledCredentialRejection;
@@ -425,8 +434,8 @@ export function handleApplication(scope: Scope) {
 			const resolvedNotFound = resolveExisting(notFoundPath);
 			if (!resolvedNotFound) {
 				if (!missingNotFoundWarned.has(notFoundPath)) {
-					missingNotFoundWarned.add(notFoundPath);
 					scope.logger.warn(`The static \`notFound\` file does not exist: ${notFoundPath}`);
+					missingNotFoundWarned.add(notFoundPath);
 				}
 				return {
 					status: 404,
@@ -434,6 +443,7 @@ export function handleApplication(scope: Scope) {
 				};
 			}
 
+			missingNotFoundWarned.delete(notFoundPath);
 			return {
 				status: statusCode,
 				handlesHeaders: true,
@@ -449,7 +459,6 @@ export function handleApplication(scope: Scope) {
 	);
 }
 
-/** `realpathSync` that reports a file missing on disk as `undefined`; other failures propagate. */
 function resolveExisting(path: string): string | undefined {
 	try {
 		return realpathSync(path);
