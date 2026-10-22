@@ -1213,7 +1213,10 @@ export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
 	let subTransforms: Map<any, (object: any) => any>;
-	if (!resource && (select === '*' || (Array.isArray(select) && select.length === 1 && select[0] === '*')))
+	if (
+		select === '*' ||
+		(!resource && Array.isArray(select) && select.length === 1 && select[0] === '*' && !(select as any).asArray)
+	)
 		return function transform(object) {
 			return typeof object?.then === 'function' ? object.then(transform) : object;
 		};
@@ -1281,30 +1284,29 @@ export function transformForSelect(select, resource) {
 			return selectedData;
 		};
 	} else throw new ClientError('Invalid select, expected an attribute name or a list of attributes');
+	function projectNested(property, value) {
+		if (!value || typeof value !== 'object' || value instanceof Date) return value;
+		if (typeof value.then === 'function') return value.then((value) => projectNested(property, value));
+		if (!subTransforms) subTransforms = new Map();
+		let transform = subTransforms.get(property);
+		if (!transform) {
+			const resource =
+				propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+					? propertyResolvers[property.name]?.definition?.tableClass
+					: undefined;
+			transform = transformForSelect(property.select || property, resource);
+			subTransforms.set(property, transform);
+		}
+		return transform(value);
+	}
 	function handleProperty(getProperty) {
 		return (property) => {
 			if (typeof property === 'string') {
 				return getProperty(property);
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
-				if (property.name) {
-					const projectValue = (value) => {
-						if (!value || typeof value !== 'object' || value instanceof Date) return value;
-						if (typeof value.then === 'function') return value.then(projectValue);
-						if (!subTransforms) subTransforms = new Map();
-						let transform = subTransforms.get(property);
-						if (!transform) {
-							const resource =
-								propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
-									? propertyResolvers[property.name]?.definition?.tableClass
-									: undefined;
-							transform = transformForSelect(property.select || property, resource);
-							subTransforms.set(property, transform);
-						}
-						return transform(value);
-					};
-					return projectValue(getProperty(property.name));
-				} else return getProperty(property);
+				if (property.name) return projectNested(property, getProperty(property.name));
+				else return getProperty(property);
 			} else return property;
 		};
 	}

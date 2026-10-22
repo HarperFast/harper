@@ -410,6 +410,27 @@ describe('search select projection matches single-record projection', function (
 		assert.strictEqual(record.id, 'a1');
 	});
 
+	it('keeps a positional wildcard sub-select on plain JSON positional', async function () {
+		const positional = ['*'];
+		positional.asArray = true;
+		assert.deepStrictEqual(await projectBothWays(['id', nested('meta', positional)]), {
+			id: 'a1',
+			meta: [article.meta],
+		});
+	});
+
+	it('returns the whole record for a string wildcard select', async function () {
+		const target = new RequestTarget();
+		target.id = article.id;
+		target.select = '*';
+		const single = await Article.get(target);
+		const [searched] = await search('*');
+		for (const row of [single, searched]) {
+			assert.strictEqual(row.id, 'a1');
+			assert.deepStrictEqual(row.meta, article.meta);
+		}
+	});
+
 	it('keeps a Date resolved from an async @computed under a sub-select', async function () {
 		const row = await projectBothWays(['id', nested('asyncDate', ['x'])]);
 		assert.ok(row.asyncDate instanceof Date);
