@@ -1200,6 +1200,10 @@ function selectFromObject(object, propertyResolvers, context, selectsPrototype: 
 }
 // defines a `__proto__` own data property, so a selected `__proto__` key is data, not the object's prototype
 export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
+// an array of projections settles as one promise when any element is still pending
+function settleAll(results: any[]) {
+	return results.some((result) => typeof result?.then === 'function') ? Promise.all(results) : results;
+}
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
@@ -1209,7 +1213,7 @@ export function transformForSelect(select, resource) {
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
-			if (Array.isArray(object)) return object.map(transform);
+			if (Array.isArray(object)) return settleAll(object.map(transform));
 			return selectFromObject(object, propertyResolvers, context, select === '__proto__')(select);
 		};
 	else if (Array.isArray(select)) {
@@ -1219,13 +1223,13 @@ export function transformForSelect(select, resource) {
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
-				if (Array.isArray(object)) return object.map(transform);
+				if (Array.isArray(object)) return settleAll(object.map(transform));
 				const results = [];
 				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
 				for (const property of select) {
 					results.push(property === '*' ? object : getProperty(property));
 				}
-				return results;
+				return settleAll(results);
 			};
 		if (!resource && select.length === 1 && select[0] === '*')
 			return function transform(object) {
@@ -1237,9 +1241,10 @@ export function transformForSelect(select, resource) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
-				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
-			if (selectsWildcard && (ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob))
-				return object;
+				return settleAll(object.map((value) => (value && typeof value === 'object' ? transform(value) : value)));
+			// a Buffer, Blob or Date has no data keys for `*` to copy
+			const copiesKeys =
+				selectsWildcard && !(ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob);
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
@@ -1247,12 +1252,13 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				if (property === '*' && !resource) {
-					for (const key in object) {
-						const value = object[key];
-						if (typeof value === 'function') continue;
-						if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
-						else selectedData[key] = value;
-					}
+					if (copiesKeys)
+						for (const key in object) {
+							const value = object[key];
+							if (typeof value === 'function') continue;
+							if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
+							else selectedData[key] = value;
+						}
 					continue;
 				}
 				let value = getProperty(property);

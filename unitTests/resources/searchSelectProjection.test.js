@@ -356,24 +356,42 @@ describe('search select projection matches single-record projection', function (
 		assert.deepStrictEqual(single, searched);
 	});
 
-	it('a wildcard-only sub-select returns Date and binary values unchanged', async function () {
+	it('a wildcard sub-select keeps Date and binary values intact', async function () {
 		const createdAt = new Date('2026-01-01T00:00:00.000Z');
 		await Article.put({ id: 'a-binary', bin: Buffer.from([1, 2, 3]), dates: [createdAt] });
-		const select = ['id', nested('bin', ['*']), nested('dates', ['getTime', '*'])];
-		const target = new RequestTarget();
-		target.id = 'a-binary';
-		target.select = select;
-		const single = await Article.get(target);
-		const rows = [];
-		for await (const row of Article.search({ conditions: [{ attribute: 'id', value: 'a-binary' }], select }))
-			rows.push(row);
-		for (const row of [single, rows[0]]) {
-			assert.ok(Buffer.isBuffer(row.bin) || row.bin instanceof Uint8Array);
-			assert.deepStrictEqual([...row.bin], [1, 2, 3]);
-			assert.ok(row.dates[0] instanceof Date);
-			assert.strictEqual(row.dates[0].getTime(), createdAt.getTime());
+		const projectBinary = async (select) => {
+			const target = new RequestTarget();
+			target.id = 'a-binary';
+			target.select = select;
+			const single = await Article.get(target);
+			const rows = [];
+			for await (const row of Article.search({ conditions: [{ attribute: 'id', value: 'a-binary' }], select }))
+				rows.push(row);
+			return [single, rows[0]];
+		};
+		try {
+			for (const row of await projectBinary(['id', nested('bin', ['*']), nested('dates', ['*'])])) {
+				assert.ok(Buffer.isBuffer(row.bin) || row.bin instanceof Uint8Array);
+				assert.deepStrictEqual([...row.bin], [1, 2, 3]);
+				assert.ok(row.dates[0] instanceof Date);
+				assert.strictEqual(row.dates[0].getTime(), createdAt.getTime());
+			}
+			// mixed with names, `*` copies no keys from a native value and the names still project
+			for (const row of await projectBinary(['id', nested('bin', ['length', '*'])]))
+				assert.deepStrictEqual(row, { id: 'a-binary', bin: { length: 3 } });
+		} finally {
+			await Article.delete('a-binary');
 		}
-		await Article.delete('a-binary');
+	});
+
+	it('settles async values inside positional and array projections', async function () {
+		const positional = ['id', 'asyncDigest'];
+		positional.asArray = true;
+		assert.deepStrictEqual(await projectBothWays(positional), ['a1', 'ASYNC_DIGEST:Main Article']);
+		assert.deepStrictEqual(await projectBothWays(['id', nested('asyncComputedMeta', ['publicSummary'])]), {
+			id: 'a1',
+			asyncComputedMeta: { publicSummary: 'ASYNC_PUBLIC:Main Article' },
+		});
 	});
 
 	it('selecting __proto__ does not change the search row prototype', async function () {
