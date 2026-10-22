@@ -231,24 +231,19 @@ export class ComponentStatusRegistry {
 		const details: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }> = {};
 
 		if (overallStatus !== COMPONENT_STATUS_LEVELS.HEALTHY) {
-			const problemStatuses = allStatuses.filter((s) => s.status !== COMPONENT_STATUS_LEVELS.HEALTHY);
-			overallMessage = problemStatuses
-				.map((s) => {
-					const errorMessage = serializeStatusError(s.error);
-					const message = formatProblemMessage(s.latestMessage, errorMessage);
-					return `${s.key}: ${message || s.status}`;
-				})
-				.join('; ');
-
-			// Include details for debugging
-			for (const status of problemStatuses) {
+			const messages: string[] = [];
+			for (const status of allStatuses) {
+				if (status.status === COMPONENT_STATUS_LEVELS.HEALTHY) continue;
 				const errorMessage = serializeStatusError(status.error);
+				const message = formatProblemMessage(status.latestMessage, errorMessage) || status.status;
+				messages.push(`${status.key}: ${message}`);
 				details[status.key] = {
 					status: status.status,
-					message: formatProblemMessage(status.latestMessage, errorMessage),
+					message,
 					...(errorMessage !== undefined && { error: errorMessage }),
 				};
 			}
+			overallMessage = messages.join('; ');
 		}
 
 		return {

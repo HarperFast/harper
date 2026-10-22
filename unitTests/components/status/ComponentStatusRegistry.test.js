@@ -873,6 +873,7 @@ describe('ComponentStatusRegistry', function () {
 					assert.equal(result.status, level);
 					assert.equal(result.message, `app: ${level}`);
 					assert.equal(result.details.app.status, level);
+					assert.equal(result.details.app.message, level);
 				});
 			}
 
