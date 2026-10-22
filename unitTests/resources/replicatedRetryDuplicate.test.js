@@ -131,19 +131,161 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		}
 	}
 
-	it('recovers its own uncommitted increment after another write wins the conflict', async function () {
+	const add = (value) => ({ count: { __op__: 'add', value } });
+
+	for (const belowFloor of [false, true]) {
+		it(`skips a duplicate retry reached through a newer committed write ${belowFloor ? 'below' : 'above'} the floor`, async function () {
+			if (isLMDB) return this.skip();
+			const version = Date.now() + (belowFloor ? -86400000 : 86400000);
+			const state = await fixture(`NewerHead${belowFloor}`, version);
+			const { write } = await conflict(state, add(1), { version }, { version }, add(1), () =>
+				state.apply(add(10), { version: version + 1 })
+			);
+			assert.deepEqual(
+				{ skipped: write.skipped, count: (await state.T.get('counter')).count },
+				{ skipped: true, count: 11 },
+				'the committed increment must not be applied again'
+			);
+		});
+	}
+
+	it('skips a duplicate retry whose committed head carries an out-of-order sibling ref', async function () {
 		if (isLMDB) return this.skip();
 		const version = Date.now() + 86400000;
-		const state = await fixture('Orphan', version);
-		const { write } = await conflict(
-			state,
-			{ count: { __op__: 'add', value: 1 } },
-			{ version },
-			{ version: version + 1 }
+		const state = await fixture('SiblingRef', version);
+		const siblingOrigin = getIdOfRemoteNode('sibling-origin', state.T.auditStore);
+		const { write } = await conflict(state, add(1), { version }, { version }, add(1), () =>
+			state.apply(add(10), { version: version - 10, originId: siblingOrigin })
 		);
-		assert.equal(write.skipped, false, 'an orphan audit entry is not proof of a committed duplicate');
-		assert.equal((await state.T.get('counter')).count, 2, 'both distinct increments must survive');
+		const head = state.T.primaryStore.getEntry('counter');
+		assert.equal(head.version, version);
+		assert.ok(head.additionalAuditRefs?.some((ref) => ref.nodeId === siblingOrigin));
+		assert.deepEqual(
+			{ skipped: write.skipped, count: (await state.T.get('counter')).count },
+			{ skipped: true, count: 11 },
+			'the committed increment must not be applied again'
+		);
 	});
+
+	for (const replicated of [false, true]) {
+		it(`keeps a failed attempt's ${replicated ? 'replicated' : 'local'} log entry unreadable until its retry commits`, async function () {
+			if (isLMDB) return this.skip();
+			const version = Date.now() + 86400000;
+			const { T } = await fixture(`OrphanVisibility${replicated}`, version);
+			const log = replicated ? getIdOfRemoteNode('duplicate-origin', T.auditStore) : 0;
+			const patches = () => {
+				const versions = [];
+				for (const entry of T.auditStore.getRange({ start: 1, log })) {
+					if (entry.tableId === T.tableId && entry.recordId === 'counter' && entry.type === 'patch')
+						versions.push(entry.version);
+				}
+				return versions;
+			};
+			const commitToSameLog = async () => {
+				const context = replicated ? { source: {}, sourceApply: true, timestamp: version + 5 } : {};
+				await transaction(context, async () => {
+					const resource = await T.getResource('other', context);
+					await resource._writeUpdate(
+						'other',
+						{ id: 'other' },
+						true,
+						replicated ? { isNotification: true, nodeId: log, version: version + 5 } : {}
+					);
+				});
+			};
+			const context = replicated
+				? { source: {}, sourceApply: true, timestamp: version + 2 }
+				: { timestamp: version + 2 };
+			const options = replicated ? { isNotification: true, nodeId: log, version: version + 2 } : {};
+			let native, unreadable;
+			await transaction(context, async () => {
+				const resource = await T.getResource('counter', context);
+				await resource._writeUpdate('counter', add(1), false, options);
+				await context.transaction.save(context.transaction.writes.find((write) => write.key === 'counter'));
+				native = context.transaction.transaction;
+				const originalCommit = native.commit;
+				native.commit = function (...args) {
+					native.commit = originalCommit;
+					const settle = async () => {
+						await commitToSameLog();
+						unreadable = patches().length === 0;
+					};
+					return Promise.resolve(originalCommit.apply(this, args)).then(
+						async (result) => (await settle(), result),
+						async (error) => {
+							await settle();
+							throw error;
+						}
+					);
+				};
+				await transaction({ timestamp: version + 1 }, (other) => T.put('counter', { count: 10 }, other));
+			});
+			assert.ok(native.retries > 0, 'RocksDB must detect and retry the real conflict');
+			assert.equal((await T.get('counter')).count, 11);
+			assert.equal(unreadable, true, 'the failed attempt must not be readable before its retry commits');
+			assert.equal(patches().length, 1, 'the retry commits the entry');
+		});
+	}
+
+	for (const belowFloor of [false, true]) {
+		for (const duplicate of [true, false]) {
+			it(`${duplicate ? 'deduplicates' : 'applies once'} the first submission of a write replayed for a retained read snapshot ${belowFloor ? 'below' : 'above'} the floor`, async function () {
+				if (isLMDB) return this.skip();
+				const version = Date.now() + (belowFloor ? -86400000 : 86400000);
+				const { T, apply } = await fixture(`ReplayDuplicate${belowFloor}${duplicate}`, version);
+				const nodeId = getIdOfRemoteNode('duplicate-origin', T.auditStore);
+				const context = { source: {}, sourceApply: true, timestamp: version };
+				let readOwner, native, write;
+				let originalCommits = 0;
+				try {
+					await transaction(context, async () => {
+						const resource = await T.getResource('counter', context);
+						readOwner = context.transaction;
+						readOwner.useReadTxn();
+						await resource._writeUpdate('counter', add(1), false, { isNotification: true, nodeId, version });
+						const txn = context.transaction;
+						write = txn.writes.find((write) => write.key === 'counter');
+						await txn.save(write);
+						assert.equal(write.appendedAuditEntry, true);
+						native = txn.transaction;
+						const originalCommit = native.commit;
+						native.commit = function (...args) {
+							originalCommits++;
+							return originalCommit.apply(this, args);
+						};
+						if (duplicate) await apply(add(1), { version });
+						await apply(add(10), { version: version + 1 });
+					});
+				} finally {
+					readOwner?.doneReadTxn();
+				}
+				assert.equal(originalCommits, 0, 'the original batch must be abandoned, leaving no orphan entry');
+				assert.deepEqual(
+					{ skipped: write.skipped, count: (await T.get('counter')).count },
+					{ skipped: duplicate, count: 11 },
+					'the increment must be applied exactly once'
+				);
+				if (duplicate) assert.equal(write.appendedAuditEntry, false);
+				else assert.ok(write.appendedAuditEntry && write.appendedTo !== native, 'the replay handle owns the entry');
+			});
+		}
+	}
+
+	for (const belowFloor of [false, true]) {
+		it(`recovers its own uncommitted increment after another write wins the conflict ${belowFloor ? 'below' : 'above'} the floor`, async function () {
+			if (isLMDB) return this.skip();
+			const version = Date.now() + (belowFloor ? -86400000 : 86400000);
+			const state = await fixture(`Orphan${belowFloor}`, version);
+			const { write } = await conflict(
+				state,
+				{ count: { __op__: 'add', value: 1 } },
+				{ version },
+				{ version: version + 1 }
+			);
+			assert.equal(write.skipped, false, 'an orphan audit entry is not proof of a committed duplicate');
+			assert.equal((await state.T.get('counter')).count, 2, 'both distinct increments must survive');
+		});
+	}
 
 	for (const [offset, committedOffset] of [
 		[0, 10],

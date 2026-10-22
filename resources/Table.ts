@@ -4981,6 +4981,10 @@ export function makeTable(options): TableResourceClass {
 					// from the last attempt's skipped state launders when a recommit round self-skips
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
+					// The audit dedup lookups below need that shield only when another handle holds this write's
+					// entry: a handle's flushed entry stays unreadable while it is retrying, but an abandoned one
+					// publishes it.
+					const ownEntryMayBeReadable = stagedOwnAuditEntry && write.appendedTo !== transaction;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
@@ -5173,12 +5177,10 @@ export function makeTable(options): TableResourceClass {
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard. Never when this write staged in a prior
-							// failed attempt: that attempt already appended this write's own audit entry, so the lookup
-							// would find it and skip the write as "already applied" when the record was never committed.
-							// A recommit of the same transaction survived that skip only because the old write batch
-							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
-							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
+							// check above remains the read-your-writes guard. Never when this write's own audit entry may
+							// be readable (ownEntryMayBeReadable): the lookup would find it and skip the write as "already
+							// applied" when the record was never committed.
+							if (isRocksDB && !replaying && !ownEntryMayBeReadable && dedupVersionCouldBeRetained(receivedLogKey)) {
 								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -5279,11 +5281,9 @@ export function makeTable(options): TableResourceClass {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
-							// Never a duplicate for a write that staged in a prior failed attempt: that attempt already
-							// appended this write's own audit entry, so the lookup would match it while the record was
-							// never committed (see the up-front keyed dedup above).
+							// Not while this write's own audit entry may be readable (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
-								if (replaying || stagedOwnAuditEntry) return false;
+								if (replaying || ownEntryMayBeReadable) return false;
 								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								return (
@@ -5316,13 +5316,9 @@ export function makeTable(options): TableResourceClass {
 									if (
 										isRocksDB &&
 										!replaying &&
-										!stagedOwnAuditEntry &&
+										!ownEntryMayBeReadable &&
 										localTime === appendedLogKey &&
-										precedesExistingVersion(
-											txnTime,
-											{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: auditRecord.nodeId },
-											options?.nodeId
-										) === 0
+										(auditRecord.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))
 									) {
 										write.skipped = true;
 										return;
@@ -5342,9 +5338,9 @@ export function makeTable(options): TableResourceClass {
 													// Not for a write the floor rekeyed: its received identity is no longer addressable,
 													// so an equal version from the same origin is its re-delivery, as it was before.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
-												} else if (replaying || stagedOwnAuditEntry) {
-													// The log entry being replayed (or staged by this write's failed attempt) is
-													// the write itself, not proof that its primary-store mutation committed.
+												} else if (replaying || ownEntryMayBeReadable) {
+													// The log entry being replayed (or possibly staged by this write's failed attempt)
+													// is the write itself, not proof that its primary-store mutation committed.
 													precedesExisting = 1;
 												} else {
 													logger.debug?.(

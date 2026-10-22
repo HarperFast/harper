@@ -2801,10 +2801,18 @@ export class DatabaseTransaction implements Transaction {
 							if (transaction) this.releaseActiveCommitHandle(transaction);
 							this.trackActiveCommitHandle(replayTransaction);
 							if (prevStagedTxnTime) this.setHandleStagedTxnTime(replayTransaction, prevStagedTxnTime);
+							const abandoned = transaction;
+							const abandonedLogged = hasDurableLog(abandoned);
 							transaction = replayTransaction;
 							try {
 								for (const operation of this.writes) {
 									if (!operation?.saved) continue;
+									// a staging into the abandoned handle left no entry behind, so this first submission
+									// must not be treated as a retry over its own orphan
+									if (operation.appendedTo === abandoned && !abandonedLogged) {
+										operation.appendedAuditEntry = false;
+										operation.appendedTo = undefined;
+									}
 									this.save(operation, replayTransaction, true, options);
 								}
 							} catch (error) {
