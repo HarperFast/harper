@@ -843,7 +843,6 @@ function transactional(
 					query.conditions = data.conditions;
 				} else if (data instanceof URLSearchParams) query.conditions = Array.from(data);
 				else if (data[Symbol.iterator]) {
-					// an iterable body (an array, or a Set from CBOR tag 258) is the condition list
 					if (!Array.isArray(data)) data = Array.from(data);
 					query.conditions = data;
 				}
@@ -1243,10 +1242,8 @@ export function transformForSelect(select, resource) {
 				});
 			let promises;
 			for (const property of select) {
-				if (property === '*') {
-					if (select[RELATIONSHIPS_LISTED] && resource?._copyUnlistedAttributes)
-						resource._copyUnlistedAttributes(object, selectedData);
-					else for (const key in object) selectedData[key] = object[key];
+				if (property === '*' && select[RELATIONSHIPS_LISTED] && resource?._copyUnlistedAttributes) {
+					resource._copyUnlistedAttributes(object, selectedData);
 					continue;
 				}
 				let value = getProperty(property);

@@ -919,8 +919,10 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		}
 	}
 
-	if (!isSuperUser && table != undefined && SEARCH_OPS.has(op))
-		checkRelationshipReads(requestJson, operationSchema, table, permsResponse);
+	const rootAttributesDenied =
+		!isSuperUser && table != undefined && SEARCH_OPS.has(op)
+			? checkRelationshipReads(requestJson, operationSchema, table, permsResponse)
+			: undefined;
 
 	const tableClass =
 		(requestJson.conditions || Array.isArray(requestJson.search_attribute ?? requestJson.attribute)) &&
@@ -929,6 +931,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 			? getDatabases()[operationSchema]?.[table]
 			: undefined;
 	const recordAttrs = getRecordAttributes(requestJson, op, tableClass?.hasRelationships ? tableClass : undefined);
+	if (rootAttributesDenied) for (const attribute of rootAttributesDenied) recordAttrs.add(attribute);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
 	// A `put` replaces the whole record, so it REMOVES every attribute the request omits — and
 	// `checkAttributePerms` below only sees the attributes a request SUPPLIES, so it cannot police
@@ -981,26 +984,72 @@ interface RelationshipReadCheck {
 	denials?: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
 }
 
-function checkRelationshipReads(requestJson: any, operationSchema: string, table: string, permsResponse) {
+// Returns the root table's denied attributes, which the root attribute check reports
+function checkRelationshipReads(
+	requestJson: any,
+	operationSchema: string,
+	table: string,
+	permsResponse
+): Set<string> | undefined {
 	const tableClass = getDatabases()[operationSchema]?.[table];
 	if (!tableClass?.hasRelationships) return;
+	// search_by_value runs one condition from these, preferring search_attribute; a `*` value runs none
+	let valueAttribute = requestJson.search_attribute ?? requestJson.attribute;
+	if ((requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value) === '*')
+		valueAttribute = undefined;
+	if (
+		requestJson.get_attributes == null &&
+		requestJson.conditions == null &&
+		requestJson.sort == null &&
+		valueAttribute === undefined
+	)
+		return;
 	const state: RelationshipReadCheck = { tableClass, user: requestJson.hdb_user };
 	checkSelectPaths(state, requestJson.get_attributes, undefined, tableClass, false);
 	checkConditionPaths(state, requestJson.conditions);
 	checkSortPaths(state, requestJson.sort, undefined);
-	// search_by_value runs one condition from these, preferring search_attribute; a `*` value runs none
-	const valueAttribute = requestJson.search_attribute ?? requestJson.attribute;
-	const value = requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value;
-	if (valueAttribute !== undefined && value !== '*') checkRelationshipPath(state, valueAttribute);
+	if (valueAttribute !== undefined) checkRelationshipPath(state, valueAttribute);
 	if (!state.denials) return;
+	// reported like a root reference: what the role cannot describe does not exist for it
+	const permission = requestJson.hdb_user?.role?.permission;
+	let rootAttributes: Set<string> | undefined;
 	for (const { denial, attributes } of state.denials.values()) {
-		if (denial.attribute === undefined) permsResponse.addUnauthorizedTable(denial.database, denial.table, [READ_PERM]);
-		else {
-			const required = {};
-			for (const attribute of attributes) required[attribute] = [READ_PERM];
-			permsResponse.addUnauthorizedAttributes([...attributes], denial.database, denial.table, required);
+		const { database, table: deniedTable } = denial;
+		if (database === operationSchema && deniedTable === table) {
+			rootAttributes = attributes;
+			continue;
 		}
+		const databasePermission = permission?.[database];
+		if (!databasePermission || databasePermission[DESCRIBE_PERM] === false) {
+			permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(database));
+			continue;
+		}
+		const tablePermission = databasePermission.tables?.[deniedTable];
+		if (!tablePermission || tablePermission[DESCRIBE_PERM] === false) {
+			permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(database, deniedTable));
+			continue;
+		}
+		if (denial.attribute === undefined) {
+			permsResponse.addUnauthorizedTable(database, deniedTable, [READ_PERM]);
+			continue;
+		}
+		const required = {};
+		for (const attribute of attributes) {
+			const attributePermission = tablePermission.attribute_permissions?.find(
+				(entry) => entry.attribute_name === attribute
+			);
+			if (!attributePermission || attributePermission[DESCRIBE_PERM] === false)
+				permsResponse.addInvalidItem(
+					HDB_ERROR_MSGS.ATTR_NOT_FOUND(database, deniedTable, attribute),
+					database,
+					deniedTable
+				);
+			else required[attribute] = [READ_PERM];
+		}
+		const unauthorized = Object.keys(required);
+		if (unauthorized.length > 0) permsResponse.addUnauthorizedAttributes(unauthorized, database, deniedTable, required);
 	}
+	return rootAttributes;
 }
 
 function relatedTableOf(currentTable: any, name: any) {
@@ -1027,9 +1076,8 @@ function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[] |
 	}
 }
 
-// `prefix` is the relationship path from the root to `currentTable`, undefined at the root. A plain JSON sub-selection is
-// projected with the resolvers of the table it belongs to, so it keeps that prefix, and its own
-// fields are data rather than attributes.
+// A plain JSON sub-selection is projected with the resolvers of the table it belongs to, so it keeps `prefix`, and its
+// own fields are data rather than attributes.
 function checkSelectPaths(
 	state: RelationshipReadCheck,
 	select: any,

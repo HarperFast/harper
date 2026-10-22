@@ -37,6 +37,20 @@ const ROLES = {
 			],
 		},
 	},
+	deptWriter: { Emp: EMP_READ, Seat: EMP_READ, Dept: { ...EMP_READ, read: false, insert: true } },
+	budgetWriter: {
+		Emp: EMP_READ,
+		Seat: EMP_READ,
+		Dept: {
+			...EMP_READ,
+			insert: true,
+			attribute_permissions: [
+				{ attribute_name: 'id', read: true, insert: false, update: false },
+				{ attribute_name: 'name', read: true, insert: false, update: false },
+				{ attribute_name: 'budget', read: false, insert: true, update: false },
+			],
+		},
+	},
 };
 type RoleName = keyof typeof ROLES;
 const PASSWORD = 'Rel-perm-pw-3301!';
@@ -74,12 +88,25 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 	const deptName = [{ search_attribute: ['dept', 'name'], search_type: 'equals', search_value: DEPT.name }];
 	const deptBudget = [{ search_attribute: ['dept', 'budget'], search_type: 'equals', search_value: DEPT.budget }];
 
-	function assertRefused(response: { status: number; body: any }, context: string) {
+	function assertRefused(response: { status: number; body: any }, context: string, denied?: 'Dept' | 'Dept.budget') {
 		strictEqual(
 			response.status,
 			403,
 			`${context}: expected 403, got ${response.status} ${JSON.stringify(response.body)}`
 		);
+		if (!denied) return;
+		// the operations API answers for what the role cannot describe as it does for a root reference
+		const [table, attribute] = denied.split('.');
+		deepStrictEqual(
+			response.body?.invalid_schema_items,
+			[
+				attribute
+					? `Attribute '${attribute}' does not exist on 'data.${table}'`
+					: `Table 'data.${table}' does not exist`,
+			],
+			`${context}: ${JSON.stringify(response.body)}`
+		);
+		deepStrictEqual(response.body.unauthorized_access, [], context);
 	}
 
 	before(async () => {
@@ -127,7 +154,7 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		});
 
 		test('naming the relationship is refused when the role cannot read the related table', async () => {
-			assertRefused(await byHash('empOnly', ['id', 'dept']), 'search_by_hash');
+			assertRefused(await byHash('empOnly', ['id', 'dept']), 'search_by_hash', 'Dept');
 			assertRefused(
 				await op('empOnly', {
 					operation: 'search_by_value',
@@ -136,13 +163,15 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 					search_value: EMP.id,
 					get_attributes: ['id', 'dept'],
 				}),
-				'search_by_value'
+				'search_by_value',
+				'Dept'
 			);
 			assertRefused(
 				await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 					get_attributes: ['id', { name: 'dept', select: ['name'] }],
 				}),
-				'search_by_conditions sub-select'
+				'search_by_conditions sub-select',
+				'Dept'
 			);
 		});
 
@@ -157,13 +186,15 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				await byConditions('restricted', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 					get_attributes: ['id', { name: 'dept', select: 'budget' }],
 				}),
-				'scalar sub-select of budget'
+				'scalar sub-select of budget',
+				'Dept.budget'
 			);
 			assertRefused(
 				await byConditions('restricted', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 					get_attributes: ['id', { name: 'dept', select: ['budget'] }],
 				}),
-				'sub-select of budget'
+				'sub-select of budget',
+				'Dept.budget'
 			);
 		});
 
@@ -192,7 +223,8 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 					get_attributes: ['id'],
 					select: ['id', 'dept'],
 				}),
-				'relationship via select'
+				'relationship via select',
+				'Dept'
 			);
 			assertRefused(
 				await op('restricted', {
@@ -202,7 +234,8 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 					get_attributes: ['id'],
 					select: ['id', 'budget'],
 				}),
-				'unreadable attribute via select'
+				'unreadable attribute via select',
+				'Dept.budget'
 			);
 		});
 		test('a selection cannot carry its own permissions or sort by an unreadable related attribute', async () => {
@@ -217,7 +250,8 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				await byConditions('restricted', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 					get_attributes: ['id', { name: 'dept', select: ['name'], sort: { attribute: 'budget' } }],
 				}),
-				'nested sort'
+				'nested sort',
+				'Dept.budget'
 			);
 		});
 		test('a plain JSON selection object without a sub-selection returns the value', async () => {
@@ -236,14 +270,16 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 					await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 						get_attributes: ['id', { name: 'payload', select }],
 					}),
-					`payload select ${JSON.stringify(select)}`
+					`payload select ${JSON.stringify(select)}`,
+					'Dept'
 				);
 			}
 			assertRefused(
 				await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 					get_attributes: ['id', { name: 'payload', select: ['dept'] }],
 				}),
-				'payload.dept'
+				'payload.dept',
+				'Dept'
 			);
 			const restricted = await byConditions(
 				'restricted',
@@ -300,8 +336,32 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		});
 
 		test('operations API refuses a condition or sort on a table the role cannot read', async () => {
-			assertRefused(await byConditions('empOnly', deptName), 'condition');
-			assertRefused(await byConditions('empOnly', idCondition, { sort: { attribute: ['dept', 'name'] } }), 'sort');
+			assertRefused(await byConditions('empOnly', deptName), 'condition', 'Dept');
+			assertRefused(
+				await byConditions('empOnly', idCondition, { sort: { attribute: ['dept', 'name'] } }),
+				'sort',
+				'Dept'
+			);
+		});
+
+		test('operations API names a related table or attribute the role can see but not read', async () => {
+			const table = await byConditions('deptWriter', deptName);
+			strictEqual(table.status, 403, JSON.stringify(table.body));
+			deepStrictEqual(table.body.invalid_schema_items, []);
+			deepStrictEqual(table.body.unauthorized_access, [
+				{ schema: 'data', table: 'Dept', required_table_permissions: ['read'], required_attribute_permissions: [] },
+			]);
+			const attribute = await byConditions('budgetWriter', deptBudget);
+			strictEqual(attribute.status, 403, JSON.stringify(attribute.body));
+			deepStrictEqual(attribute.body.invalid_schema_items, []);
+			deepStrictEqual(attribute.body.unauthorized_access, [
+				{
+					schema: 'data',
+					table: 'Dept',
+					required_table_permissions: [],
+					required_attribute_permissions: [{ attribute_name: 'budget', required_permissions: ['read'] }],
+				},
+			]);
 		});
 
 		test('operations API refuses a value search through an unreadable relationship', async () => {
@@ -310,19 +370,24 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			const allowed = await valueSearch('full', ['dept', 'budget'], DEPT.budget);
 			strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
 			deepStrictEqual(allowed.body, [{ id: EMP.id }]);
-			assertRefused(await valueSearch('empOnly', ['dept', 'name'], DEPT.name), 'unreadable table');
-			assertRefused(await valueSearch('restricted', ['dept', 'budget'], DEPT.budget), 'unreadable attribute');
+			assertRefused(await valueSearch('empOnly', ['dept', 'name'], DEPT.name), 'unreadable table', 'Dept');
+			assertRefused(
+				await valueSearch('restricted', ['dept', 'budget'], DEPT.budget),
+				'unreadable attribute',
+				'Dept.budget'
+			);
 		});
 
 		test('operations API refuses a grouped condition through an unreadable relationship', async () => {
 			assertRefused(
 				await byConditions('empOnly', [{ operator: 'or', conditions: [...idCondition, ...deptName] }]),
-				'grouped condition'
+				'grouped condition',
+				'Dept'
 			);
 		});
 
 		test('operations API refuses a condition on a related attribute the role cannot read', async () => {
-			assertRefused(await byConditions('restricted', deptBudget), 'condition');
+			assertRefused(await byConditions('restricted', deptBudget), 'condition', 'Dept.budget');
 		});
 
 		test('operations API authorizes the condition attribute that executes', async () => {
@@ -330,7 +395,8 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				await byConditions('restricted', [
 					{ attribute: ['dept', 'budget'], search_attribute: 'id', search_type: 'equals', search_value: DEPT.budget },
 				]),
-				'attribute with a search_attribute decoy'
+				'attribute with a search_attribute decoy',
+				'Dept.budget'
 			);
 		});
 
