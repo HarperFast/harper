@@ -1091,16 +1091,16 @@ export function allowedMethods(resource: any) {
 	return allow;
 }
 
+// an inherited `__proto__` is the object's prototype (a table record's carries accessors), not data
+export function readSelectedProperty(object: any, property: string) {
+	return property === '__proto__' && !Object.hasOwn(object, property) ? undefined : object[property];
+}
 /**
  * This is responsible for handling a select query parameter/call that selects specific
  * properties from the returned record(s).
  * @param object
  * @returns
  */
-// an inherited `__proto__` is the object's prototype (a table record's carries accessors), not data
-export function readSelectedProperty(object: any, property: string) {
-	return property === '__proto__' && !Object.hasOwn(object, property) ? undefined : object[property];
-}
 function selectFromObject(object, propertyResolvers, context) {
 	// TODO: eventually we will do aggregate functions here
 	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
@@ -1112,7 +1112,7 @@ function selectFromObject(object, propertyResolvers, context) {
 				return value;
 			}
 			if (ownData && property in ownData) {
-				return ownData[property];
+				return readSelectedProperty(ownData, property);
 			} else if (
 				propertyResolvers &&
 				Object.hasOwn(propertyResolvers, property) &&
@@ -1130,7 +1130,7 @@ function selectFromObject(object, propertyResolvers, context) {
 		};
 	} else
 		return (property) => {
-			const value = object[property];
+			const value = readSelectedProperty(object, property);
 			return typeof value === 'function' ? undefined : value;
 		};
 }
@@ -1180,6 +1180,7 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				if (property === '*' && !resource) {
+					if (ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob) return object;
 					for (const key in object) {
 						const value = object[key];
 						if (typeof value === 'function') continue;
