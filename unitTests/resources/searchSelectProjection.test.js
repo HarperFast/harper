@@ -332,6 +332,10 @@ describe('search select projection matches single-record projection', function (
 
 	it('selecting __proto__ on a table record yields no data', async function () {
 		assert.deepStrictEqual(JSON.stringify(await projectBothWays(['id', '__proto__'])), '{"id":"a1"}');
+		assert.deepStrictEqual(
+			JSON.stringify(await projectBothWays(['id', nested('meta', ['note', '__proto__', nested('__proto__', ['x'])])])),
+			'{"id":"a1","meta":{"note":"keep-meta"}}'
+		);
 	});
 
 	it('a positional select with a wildcard keeps the selector intact across rows', async function () {
@@ -353,7 +357,7 @@ describe('search select projection matches single-record projection', function (
 	it('a wildcard-only sub-select returns Date and binary values unchanged', async function () {
 		const createdAt = new Date('2026-01-01T00:00:00.000Z');
 		await Article.put({ id: 'a-binary', bin: Buffer.from([1, 2, 3]), dates: [createdAt] });
-		const select = ['id', nested('bin', ['*']), nested('dates', ['*'])];
+		const select = ['id', nested('bin', ['*']), nested('dates', ['*', 'getTime'])];
 		const target = new RequestTarget();
 		target.id = 'a-binary';
 		target.select = select;

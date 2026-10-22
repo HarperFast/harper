@@ -396,14 +396,13 @@ suite(
 									: unpack(Buffer.from(await response.arrayBuffer()));
 							const storedPrototype =
 								path.startsWith('/OrderItem/') && selection === 'metadata{constructor{city},__proto__{city}}';
-							const jsonExpected = storedPrototype
-								? { metadata: { constructor: { city: 'Denver' }, ['__proto__']: {} } }
-								: expected;
+							// a stored record's `__proto__` key decodes renamed (`__proto_`), so selecting `__proto__` finds no data
+							const jsonExpected = storedPrototype ? { metadata: { constructor: { city: 'Denver' } } } : expected;
 							const binaryExpectations = {
 								'metadata{constructor{city},__proto__{city}}': {
 									metadata: {
 										constructor: { city: 'Denver' },
-										__proto_: { city: storedPrototype ? undefined : 'Denver' },
+										__proto_: storedPrototype ? undefined : { city: 'Denver' },
 									},
 								},
 								'notes{city}': { notes: [{ city: 'Denver' }, null, 'literal', { city: undefined }] },
