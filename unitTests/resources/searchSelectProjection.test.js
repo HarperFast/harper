@@ -24,6 +24,7 @@ describe('search select projection matches single-record projection', function (
 			hidden: 'omit',
 		},
 		citation: { authorId: 'u-bob', author: 'Citation Label Only' },
+		wrapper: { citation: { authorId: 'u-bob', author: 'Citation Label Only' } },
 		sections: [
 			{ heading: 'One', summary: 'Section 1 plain summary', asyncDigest: 'sec-1-digest', hidden: 'omit' },
 			{ heading: 'Two', summary: 'Section 2 plain summary', asyncDigest: 'sec-2-digest', hidden: 'omit' },
@@ -64,6 +65,7 @@ describe('search select projection matches single-record projection', function (
 				{ name: 'authorId', type: 'String' },
 				{ name: 'meta', type: 'Any' },
 				{ name: 'citation', type: 'Any' },
+				{ name: 'wrapper', type: 'Any' },
 				{ name: 'sections', elements: { type: 'Any' } },
 				{ name: 'protoKeys', type: 'Any' },
 				{ name: 'summary', computed: true },
@@ -283,6 +285,14 @@ describe('search select projection matches single-record projection', function (
 		const select = [nested('meta', ['note']), nested('meta', ['summary'])];
 		select.asArray = true;
 		assert.deepStrictEqual(await search(select), [[{ note: 'keep-meta' }, { summary: 'Nested plain summary' }]]);
+	});
+
+	it('keeps repeated selections inside a plain sub-object distinct', async function () {
+		const inner = [nested('citation', ['authorId']), nested('citation', ['author'])];
+		inner.asArray = true;
+		assert.deepStrictEqual(await projectBothWays([nested('wrapper', inner)]), {
+			wrapper: [{ authorId: 'u-bob' }, { author: 'Citation Label Only' }],
+		});
 	});
 
 	it('keeps repeated selections of one relationship distinct', async function () {
