@@ -57,7 +57,7 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
@@ -115,7 +115,7 @@ function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
 // replaced by the automatic success status.
 function markLoadedUnlessReported(componentStatusName: string, message: string): void {
 	const current = statusForComponent(componentStatusName).get()?.status;
-	if (current === undefined || current === 'loading') componentLifecycle.loaded(componentStatusName, message);
+	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
 }
 
 /**

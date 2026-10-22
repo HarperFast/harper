@@ -220,7 +220,7 @@ describe('ComponentLoader Status Integration', function () {
 				writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${name}Plugin: {}`);
 				componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`] = plugin;
 				try {
-					await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+					await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
 				} finally {
 					delete componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`];
 				}
@@ -738,7 +738,7 @@ describe('ComponentLoader Status Integration', function () {
 				},
 			});
 
-			await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+			await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
 
 			assert.equal(started, true, 'the deprecated start hook should have run');
 		});
