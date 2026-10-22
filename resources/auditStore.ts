@@ -496,7 +496,8 @@ export function openAuditStore(rootStore) {
 /**
  * Whether `entry` is the very write `auditRecord` describes. Write identity is (origin node, log key),
  * never the record version: a version is legitimately non-unique, so a version match can name a
- * different write and authorize destroying live state (a tombstone, a still-referenced blob).
+ * different write and authorize destroying live state (a tombstone). It does not mean the record holds the
+ * write's blobs: an out-of-order merge keeps the newer blob on the record, so blob scans never gate on it.
  *
  * On LMDB this is exact — the audit-store key IS the record's `txnLogKey`. On RocksDB a record stores
  * its version in the compatibility word and keeps a divergent log key in `additionalAuditRefs`.

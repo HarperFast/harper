@@ -1290,14 +1290,12 @@ describe('Blob test', () => {
 		}
 	});
 
-	// harper#2412: the orphan sweep skips scanning an audit entry's value only when the primary record
-	// IS that entry's write, because the table pass already scanned it. Identifying that write by record
-	// version instead of log position deletes blobs a retained audit entry still references, since a
-	// version is legitimately non-unique.
+	// harper#2412: the orphan sweep scans every audit value, including the entry whose write the
+	// primary record carries. A record whose version equals the entry's must never stand in for the
+	// entry's own blobs, since a version is legitimately non-unique.
 	it('scans an audit value whose record version matches a different write', async () => {
 		// A file on disk that only an audit entry references, and a live record for the same id whose
-		// version happens to equal that entry's. Identifying the entry's write by version would treat
-		// the live record as its output, skip scanning the entry, and unlink a referenced blob.
+		// version happens to equal that entry's.
 		const { blob, filePath } = await makeDiskBackedBlob(4096);
 		const id = 'orphan-identity';
 		await BlobTest.put(id, { id, other: 'no blob here' });

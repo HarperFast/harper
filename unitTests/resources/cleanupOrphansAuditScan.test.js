@@ -33,7 +33,6 @@ describe('cleanupOrphans scans audit values the record no longer holds', () => {
 		return createBlob(randomBytes(20_000));
 	}
 
-	// The blob files the stored audit records of `id` reference.
 	function auditBlobPaths(id) {
 		const paths = [];
 		for (const record of OrderTest.auditStore.getRange({ start: 0, end: Infinity })) {
@@ -44,12 +43,14 @@ describe('cleanupOrphans scans audit values the record no longer holds', () => {
 		return paths;
 	}
 
+	function recordBlobPath(id) {
+		return getFilePathForBlob(OrderTest.primaryStore.getEntry(id).value.data);
+	}
+
 	async function sweep() {
 		return cleanupOrphans(getDatabases()[DATABASE], DATABASE);
 	}
 
-	// The audit entry of the older write keeps its own blob while the record keeps the newer one, so the
-	// superseded blob is referenced by nothing except that retained audit entry.
 	it('keeps the blob of an out-of-order patch that a newer patch superseded', async () => {
 		const id = 'ooo-patch';
 		const base = Date.now() + 10_000;
@@ -57,6 +58,8 @@ describe('cleanupOrphans scans audit values the record no longer holds', () => {
 		await OrderTest.patch(id, { extra: 'older', data: await blobWithFile() }, { timestamp: base });
 		const paths = auditBlobPaths(id);
 		assert.equal(paths.length, 2, 'both audit entries should reference a blob');
+		const live = recordBlobPath(id);
+		assert(paths.includes(live) && paths.some((path) => path !== live), 'the record should hold only the newer blob');
 		await sweep();
 		for (const path of paths) assert(existsSync(path), `blob ${path} referenced by a live audit entry was unlinked`);
 		assert.equal(auditBlobPaths(id).length, 2);
@@ -78,6 +81,8 @@ describe('cleanupOrphans scans audit values the record no longer holds', () => {
 		);
 		const paths = auditBlobPaths(id);
 		assert.equal(paths.length, 2, 'both audit entries should reference a blob');
+		const live = recordBlobPath(id);
+		assert(paths.includes(live) && paths.some((path) => path !== live), 'the record should hold only the newer blob');
 		await sweep();
 		for (const path of paths) assert(existsSync(path), `blob ${path} referenced by a live audit entry was unlinked`);
 		for (const record of OrderTest.auditStore.getRange({ start: 0, end: Infinity })) {
