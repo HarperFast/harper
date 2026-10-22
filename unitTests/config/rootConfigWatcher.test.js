@@ -144,20 +144,30 @@ describe('RootConfigWatcher', function () {
 
 		it('polls under Bun, so watchers sharing the file see every atomic replacement', async () => {
 			Object.defineProperty(process.versions, 'bun', { value: '1.4.3', configurable: true, enumerable: true });
+			// Distinct sizes: the poller reports a change only on a size change or a newer mtime.
+			let size = 0;
+			const replace = (config) => {
+				const content = { ...config, padding: 'x'.repeat(++size) };
+				writeFileSync(`${this.configFilePath}.tmp`, stringify(content));
+				renameSync(`${this.configFilePath}.tmp`, this.configFilePath);
+				return content;
+			};
 			writeFileSync(this.configFilePath, stringify({ write: 0 }));
 			const watchers = [new RootConfigWatcher(), new RootConfigWatcher()];
 			try {
 				await Promise.all(watchers.map((watcher) => watcher.ready));
 				for (const watcher of watchers) assert.equal(watcher._usingPollingForTests, true);
-				// fs.watchFile takes its baseline stat asynchronously after `ready`; a replacement landing
-				// before it becomes the baseline and is never reported.
-				await delay(200);
+				// fs.watchFile takes its baseline stat asynchronously after `ready`, and a replacement that
+				// lands first becomes the baseline. Replace until both report one, so a baseline exists.
+				await waitFor(
+					() => {
+						if (watchers.every((watcher) => watcher.config?.warmup)) return true;
+						replace({ warmup: true });
+					},
+					{ timeout: 10000, interval: 1500 }
+				);
 				for (const write of [1, 2]) {
-					// Distinct sizes: the poller reports a change only on a size change or a newer mtime.
-					const expected = { write, padding: 'x'.repeat(write) };
-					const tempPath = `${this.configFilePath}.${write}.tmp`;
-					writeFileSync(tempPath, stringify(expected));
-					renameSync(tempPath, this.configFilePath);
+					const expected = replace({ write });
 					await waitFor(() => watchers.every((watcher) => watcher.config?.write === write), {
 						timeout: 5000,
 						interval: 50,
