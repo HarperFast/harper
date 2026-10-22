@@ -6619,7 +6619,10 @@ export function makeTable(options): TableResourceClass {
 							for (const attribute of select) {
 								if (attribute === '*')
 									for (const key in record) {
-										selected[key] = record[key];
+										const value = record[key];
+										if (typeof value === 'function') continue;
+										if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
+										else selected[key] = value;
 									}
 								else
 									selectAttribute(attribute, (value, attribute_name) => {
