@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792654423572,
+  "lastUpdate": 1792660812282,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -24693,6 +24693,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1295,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec",
+          "message": "fix: propagate residency read failures and refresh stub indexes (#3322)\n\n* Preserve residency read errors and keep stub indexes current\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation projections and adopt loaded absence\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve indexes across staged residency invalidations\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation payloads through staged writes\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: advance request freshness after loading a resident\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: load resolver inputs for computed query projections\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-10-21T23:53:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec"
+        },
+        "date": 1792660808838,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 17393,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 12971,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 12406,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 21761472,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 6976,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1471,
             "unit": "ops"
           }
         ]
