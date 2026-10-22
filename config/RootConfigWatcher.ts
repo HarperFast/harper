@@ -61,8 +61,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#configFilePath = configFilePath;
 		const watchTarget = resolveWatchTarget(this.#configFilePath);
 		this.#watchPath = watchTarget.path;
-		// Bun's native watches on this file go deaf after its first atomic replacement while another
-		// watch shares the path, which every thread's watcher does (config/DESIGN.md).
+		// config/DESIGN.md: `RootConfigWatcher` polls under Bun
 		this.#usingPolling = watchTarget.mustPoll || Boolean(process.versions.bun);
 		this.#closed = false;
 		this.ready = once(this, 'ready');
