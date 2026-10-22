@@ -160,6 +160,16 @@ describe('SQL column attribution for attribute permissions', () => {
 		assert.ok(attributesOf(bucket, 'data', 'L').includes('ssn'));
 	});
 
+	it('treats objects inside a JSON literal as data, but a column inside one as a column', () => {
+		const literal = bucketFor(`SELECT {columnid:'id',tableid:'bogus'} AS obj FROM data.L WHERE id = 'x'`);
+		assert.deepStrictEqual(literal.getUnresolvedColumnRefs(), []);
+		assert.deepStrictEqual(attributesOf(literal, 'data', 'L'), ['id']);
+		const update = bucketFor(`UPDATE data.L SET label = {columnid:'ssn'} WHERE id = 1`);
+		assert.ok(!attributesOf(update, 'data', 'L').includes('ssn'));
+		const wrapped = bucketFor(`SELECT {a: ssn} AS obj FROM data.L WHERE id = 'x'`);
+		assert.ok(attributesOf(wrapped, 'data', 'L').includes('ssn'));
+	});
+
 	it('does not load the registry for a single-table SELECT', () => {
 		const bucket = bucketFor(`SELECT ssn FROM data.L WHERE label = 'x' ORDER BY id`);
 		assert.deepStrictEqual(attributesOf(bucket, 'data', 'L').sort(), ['id', 'label', 'ssn']);

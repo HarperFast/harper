@@ -250,6 +250,20 @@ function* astNodes(root: any): Generator<any> {
 	}
 }
 
+/** Column references under `root`. Inside a JSON literal only real Column nodes count; its own objects are data. */
+function* columnNodes(root: any): Generator<any> {
+	const literalData = new Set();
+	for (const node of astNodes(root)) {
+		if (node instanceof (alasql as any).yy.Json) {
+			for (const inner of astNodes(node.value)) {
+				if (!(inner instanceof (alasql as any).yy.Column)) literalData.add(inner);
+			}
+		} else if (node.columnid && !literalData.has(node)) {
+			yield node;
+		}
+	}
+}
+
 // FIRST(*), ARRAY(*) and COUNT(DISTINCT *) read the value of an attribute literally named `*`, so they stay collected.
 function isRowCountWildcard(parent: any, node: any): boolean {
 	return node.columnid === '*' && parent?.aggregatorid === 'COUNT' && parent.expression === node && !parent.distinct;
@@ -560,10 +574,7 @@ function getSelectAttributes(
 	};
 
 	const recordColumns = (tree: any, clauseScope: AttributionTable[]) => {
-		if (!tree) return;
-		for (const node of astNodes(tree)) {
-			if (node.columnid) recordColumn(node, clauseScope);
-		}
+		for (const node of columnNodes(tree)) recordColumn(node, clauseScope);
 	};
 
 	recordColumns(ast.columns, scope);
@@ -600,10 +611,8 @@ function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any
 
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (const node of astNodes(ast.columns)) {
-		if (node.columnid) {
-			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
-		}
+	for (const node of columnNodes(ast.columns)) {
+		pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 	}
 }
 
@@ -622,10 +631,8 @@ function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any
 
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (const node of astNodes(ast.where)) {
-		if (node.columnid) {
-			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
-		}
+	for (const node of columnNodes(ast.where)) {
+		pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 	}
 }
 
@@ -644,10 +651,8 @@ function getInsertAttributes(ast: any, affectedAttributes: any, tableLookup: any
 
 	addSchemaTableToMap(ast.into, affectedAttributes, tableLookup);
 
-	for (const node of astNodes(ast.columns)) {
-		if (node.columnid) {
-			pushAttribute(ast.into.tableid, schema, node.columnid, affectedAttributes, tableLookup);
-		}
+	for (const node of columnNodes(ast.columns)) {
+		pushAttribute(ast.into.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 	}
 }
 

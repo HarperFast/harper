@@ -615,7 +615,6 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
-		// Neither reaches the attribute checks below.
 		if (!isSuperUser) {
 			const unresolvedColumns = parsedAst.getUnresolvedColumnRefs();
 			if (unresolvedColumns.length > 0) {
