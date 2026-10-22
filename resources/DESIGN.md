@@ -125,22 +125,19 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 carry the surviving version instead. `AuditRecord.txnLogKey` is that
 entry's key in the per-origin transaction log: write identity, the record→log lookup
 (`auditStore.get(logKey, tableId, id, nodeId)`), and every resume cursor. On LMDB these have always
-been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and
-`#2409`'s `recordVersion` alias is now absorbed back into `version`.
+been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and `#2409`'s `recordVersion` alias is now absorbed back into `version`.
 
 They hold the same value for every write whose record version is its own commit timestamp, which is
 every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
 (`getFromSource`, core #2065): the record is stored at the source-reported version while its log
 entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
-when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that
-compatibility pointer with a dedicated log-key word.
+when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that compatibility pointer with a dedicated log-key word.
 
 Consequences worth knowing:
 
 - **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the
   single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on
-  it, and both retain rather than delete when identity is unknown. A version compare there would let
-  one write authorize destroying another's tombstone or blob.
+  it, and both retain rather than delete when identity is unknown. A version compare there would let one write authorize destroying another's tombstone or blob.
 - **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from
   `options.version` by every `_write*` builder and read in `save()` only when the transaction is
   `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
@@ -148,15 +145,12 @@ Consequences worth knowing:
   origin's clock. New audit entries persist that write version even when an out-of-order merge leaves
   a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical
   overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this
-  cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply
-  behavior.
+  cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
 - **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
   into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order
   branches and, when a RocksDB record version differs from its log key, the record's own audit head —
-  and, for a write the origin-closed floor rekeyed, the identity a re-delivery carries, which addresses
-  no entry (readers already tolerate a ref whose entry aged out).
-  Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record
-  version silently unaddresses the entry it points at.
+  and, for a write the origin-closed floor rekeyed, the identity a re-delivery carries, which addresses no entry (readers already tolerate a ref whose entry aged out).
+  Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record version silently unaddresses the entry it points at.
 - **Retried duplicates use committed identity before audit I/O ([#3361](https://github.com/HarperFast/harper/issues/3361)).** `Table._writeUpdate` recognizes an implicit head only when origin, version and received log key match and no explicit refs exist; `replicatedRetryDuplicate.test.js` covers real conflicts, including multiple writes to the same key.
 - **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a
   replayed record at its log key would move its version forward and make a later legitimate write
