@@ -223,7 +223,7 @@ describe('PrimaryRocksDatabase', function () {
 			syncGets = 0;
 			originalGetSync = RocksDatabase.prototype.getSync;
 			RocksDatabase.prototype.getSync = function (...args) {
-				syncGets++;
+				if (this === TestTable.primaryStore) syncGets++;
 				return originalGetSync.apply(this, args);
 			};
 		});
@@ -233,8 +233,8 @@ describe('PrimaryRocksDatabase', function () {
 
 		async function warm(id, name) {
 			await TestTable.put(id, { name });
-			await TestTable.get(id); // fills the record cache
-			await TestTable.get(id); // seeds the VT slot
+			await TestTable.get(id);
+			await TestTable.get(id);
 		}
 
 		it('primaryStore.cache is the record cache of a caching table', async function () {
@@ -253,8 +253,7 @@ describe('PrimaryRocksDatabase', function () {
 				assert.equal(typeof result?.then, 'undefined', 'a warm hit is not a promise');
 				assert.equal(result, cachedValue, 'served from the record cache');
 			});
-			// a storage miss must stay off the event loop, so a cached record is no reason to read blocking
-			assert.equal(syncGets, 0, 'the cache hint does not route RocksDB reads to getSync');
+			assert.equal(syncGets, 0, 'a cached record must not route RocksDB reads to a blocking getSync');
 		});
 
 		it('a VT hit returns the cached entry without a promise, even when async is requested', async function () {

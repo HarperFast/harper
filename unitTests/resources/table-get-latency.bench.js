@@ -1,5 +1,5 @@
-// Table.get latency and CPU on RocksDB across record-cache states. Run on its own:
-//   npx mocha unitTests/resources/table-get-latency.bench.js
+// Table.get latency and CPU on RocksDB across record-cache states. Run on its own (it shrinks the
+// process-wide block cache): npx mocha unitTests/resources/table-get-latency.bench.js
 require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -53,17 +53,19 @@ async function main() {
 	const hotIds = [];
 	for (let i = 0; i < 1000; i++) hotIds.push(i);
 	for (const id of hotIds) await TestTable.put(id, { name: `hot ${id}`, payload: payload.slice(0, 200) });
-	// first read fills the record cache, second seeds the verification-table slot
 	for (const id of hotIds) await TestTable.get(id);
 	for (const id of hotIds) await TestTable.get(id);
 	await measure('warm', hotIds, 20_000, null);
 	await measure('warm', hotIds, 200_000 * SCALE, null);
 
-	// another thread's write: the cached value is still held, but the VT no longer vouches for it
+	// the record cache still holds the value but the VT no longer vouches for it, as after another
+	// thread's write; populateVersion runs outside the latency sample but inside cpu/ops
 	await measure('vt-miss', hotIds, 50_000 * SCALE, (id) => store.populateVersion(id, 1));
 
 	const spreadIds = [];
 	for (let i = 0; i < 20_000; i++) spreadIds.push(100_000 + i);
+	// read in a strided order so neighbouring reads do not share a data block
+	const stridedIds = spreadIds.map((_, i) => spreadIds[(i * 7919) % spreadIds.length]);
 	const coldIds = [];
 	for (let i = 0; i < 50_000 * SCALE; i++) coldIds.push(1_000_000 + i);
 	const writes = [];
@@ -76,8 +78,8 @@ async function main() {
 	store.flushSync();
 	RocksDatabase.config({ blockCacheSize: 1 << 20 });
 	// cached value, VT miss, and its block evicted from RocksDB's block cache (still in the OS page cache)
-	await measure('block-cache-miss', spreadIds, spreadIds.length, (id) => store.populateVersion(id, 1));
-	// never read before: no record-cache entry, so no sync hint on either side
+	await measure('block-cache-miss', stridedIds, stridedIds.length, (id) => store.populateVersion(id, 1));
+	// never read before, so no record-cache entry
 	await measure('cold', coldIds, coldIds.length, null);
 	if (held.length !== spreadIds.length) throw new Error('unreachable');
 }
