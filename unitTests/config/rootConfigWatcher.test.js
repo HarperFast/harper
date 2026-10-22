@@ -134,6 +134,49 @@ describe('RootConfigWatcher', function () {
 		configWatcher.close();
 	});
 
+	describe('under Bun', () => {
+		const bunDescriptor = Object.getOwnPropertyDescriptor(process.versions, 'bun');
+		beforeEach(() => {
+			Object.defineProperty(process.versions, 'bun', { value: '1.4.3', configurable: true, enumerable: true });
+		});
+		afterEach(() => {
+			if (bunDescriptor) Object.defineProperty(process.versions, 'bun', bunDescriptor);
+			else delete process.versions.bun;
+		});
+
+		it('polls, so watchers sharing the file see every atomic replacement', async () => {
+			writeFileSync(this.configFilePath, stringify({ write: 0 }));
+			const watchers = [new RootConfigWatcher(), new RootConfigWatcher()];
+			try {
+				await Promise.all(watchers.map((watcher) => watcher.ready));
+				for (const watcher of watchers) assert.equal(watcher._usingPollingForTests, true);
+				for (const write of [1, 2]) {
+					const tempPath = `${this.configFilePath}.${write}.tmp`;
+					writeFileSync(tempPath, stringify({ write }));
+					renameSync(tempPath, this.configFilePath);
+					for (let waited = 0; waited < 5000; waited += 50) {
+						if (watchers.every((watcher) => watcher.config?.write === write)) break;
+						await delay(50);
+					}
+					assert.deepEqual(
+						watchers.map((watcher) => watcher.config),
+						[{ write }, { write }]
+					);
+				}
+			} finally {
+				for (const watcher of watchers) watcher.close();
+			}
+		}).timeout(15000);
+	});
+
+	it('watches natively outside Bun', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+		assert.equal(configWatcher._usingPollingForTests, false);
+		configWatcher.close();
+	});
+
 	it('finishes reading the config before its change callback returns', async () => {
 		const initial = { foo: 'bar' };
 		writeFileSync(this.configFilePath, stringify(initial));
