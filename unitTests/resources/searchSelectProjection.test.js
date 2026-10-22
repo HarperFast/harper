@@ -71,6 +71,7 @@ describe('search select projection matches single-record projection', function (
 				{ name: 'computedMeta', computed: true },
 				{ name: 'asyncComputedMeta', computed: true },
 				{ name: 'failingComputed', computed: true },
+				{ name: 'thenableShapedMeta', computed: true },
 				{ name: 'author', type: 'Author', relationship: { from: 'authorId' }, definition: { tableClass: Author } },
 				{
 					name: 'comments',
@@ -89,6 +90,7 @@ describe('search select projection matches single-record projection', function (
 			publicSummary: 'ASYNC_PUBLIC:' + record.title,
 			internalSecret: 'DO_NOT_LEAK',
 		}));
+		Article.setComputedAttribute('thenableShapedMeta', () => ({ label: 'kept', then: 'next-step', hidden: 'omit' }));
 		Article.setComputedAttribute('failingComputed', async () => {
 			throw new Error('computed failure');
 		});
@@ -192,6 +194,20 @@ describe('search select projection matches single-record projection', function (
 			expected: { id: 'a1', asyncComputedMeta: { publicSummary: 'ASYNC_PUBLIC:Main Article' } },
 		},
 		{
+			name: 'nested wildcard returns the whole plain sub-object',
+			select: ['id', nested('meta', ['*']), nested('sections', ['*'])],
+			expected: { id: 'a1', meta: article.meta, sections: article.sections },
+		},
+		{
+			name: 'non-callable then fields are data',
+			select: ['id', 'thenableShapedMeta', nested('computedMeta', ['publicSummary', 'then'])],
+			expected: {
+				id: 'a1',
+				thenableShapedMeta: { label: 'kept', then: 'next-step', hidden: 'omit' },
+				computedMeta: { publicSummary: 'PUBLIC:Main Article', then: undefined },
+			},
+		},
+		{
 			name: 'top-level Object.prototype member names with a sub-select',
 			select: ['id', nested('constructor', ['city']), nested('toString', ['city'])],
 			expected: { id: 'a1', constructor: undefined, toString: undefined },
@@ -267,6 +283,24 @@ describe('search select projection matches single-record projection', function (
 		const select = [nested('meta', ['note']), nested('meta', ['summary'])];
 		select.asArray = true;
 		assert.deepStrictEqual(await search(select), [[{ note: 'keep-meta' }, { summary: 'Nested plain summary' }]]);
+	});
+
+	it('keeps repeated selections of one relationship distinct', async function () {
+		const select = [nested('author', ['id']), nested('author', ['name'])];
+		select.asArray = true;
+		assert.deepStrictEqual(await search(select), [[{ id: 'u-alice' }, { name: 'Alice' }]]);
+	});
+
+	it('rejects a nested selector without a select list as a client error', async function () {
+		const select = ['id', { name: 'meta' }];
+		await assert.rejects(search(select), { statusCode: 400 });
+		const target = new RequestTarget();
+		target.id = article.id;
+		target.select = select;
+		await assert.rejects(
+			Promise.resolve().then(() => Article.get(target)),
+			{ statusCode: 400 }
+		);
 	});
 
 	it('applies forceNulls inside a plain nested projection', async function () {

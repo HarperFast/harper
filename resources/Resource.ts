@@ -1194,6 +1194,8 @@ function selectFromObject(object, propertyResolvers, context) {
 			return typeof value === 'function' ? undefined : value;
 		};
 }
+// defines a `__proto__` own data property, so a selected `__proto__` key is data, not the object's prototype
+export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
@@ -1206,9 +1208,9 @@ export function transformForSelect(select, resource) {
 			if (Array.isArray(object)) return object.map(transform);
 			return selectFromObject(object, propertyResolvers, context)(select);
 		};
-	else if (typeof select === 'object') {
+	else if (Array.isArray(select)) {
 		// if it is an array, return an array
-		if (select.asArray)
+		if ((select as any).asArray)
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
@@ -1220,7 +1222,7 @@ export function transformForSelect(select, resource) {
 				}
 				return results;
 			};
-		const forceNulls = select.forceNulls;
+		const forceNulls = (select as any).forceNulls;
 		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
@@ -1230,15 +1232,18 @@ export function transformForSelect(select, resource) {
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
-			if (selectsPrototype)
-				Object.defineProperty(selectedData, '__proto__', {
-					value: undefined,
-					writable: true,
-					enumerable: true,
-					configurable: true,
-				});
+			if (selectsPrototype) Object.defineProperty(selectedData, '__proto__', ownDataProperty);
 			let promises;
 			for (const property of select) {
+				if (property === '*' && !resource) {
+					for (const key in object) {
+						const value = object[key];
+						if (typeof value === 'function') continue;
+						if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
+						else selectedData[key] = value;
+					}
+					continue;
+				}
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {
@@ -1249,7 +1254,7 @@ export function transformForSelect(select, resource) {
 			if (promises) return Promise.all(promises).then(() => selectedData);
 			return selectedData;
 		};
-	} else throw new Error('Invalid select argument type ' + typeof select);
+	} else throw new ClientError('Invalid select, expected an attribute name or a list of attributes');
 	function handleProperty(getProperty) {
 		return (property) => {
 			if (typeof property === 'string') {

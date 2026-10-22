@@ -460,6 +460,7 @@ suite(
 					deepStrictEqual(row.metadata.order, { id: 'json-order', name: 'Plain JSON Order' }, accept);
 					strictEqual(row.metadata.$updatedtime, 'nested-updated');
 					strictEqual(row.metadata.hasOwnProperty, 'ordinary data');
+					strictEqual(Object.getPrototypeOf(row.metadata), Object.prototype, accept);
 					for (const inherited of ['valueOf', 'toString', 'constructor'])
 						strictEqual(
 							Object.hasOwn(row.metadata, inherited) ? row.metadata[inherited] : undefined,

@@ -30,7 +30,7 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads } from './Resource.ts';
+import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads, ownDataProperty } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -1376,6 +1376,16 @@ function resumeRefusal(auditStore: any, generationId: string, cursor: number): E
 		: new DatabaseGenerationChangedError();
 }
 
+// Plain JSON values and directReturn resolver results carry no table of their own, so their sub-select runs
+// through the resolver-free transform; an outer table's resolvers must not run against nested data.
+function projectPlainValue(transformCache: Map<any, (value: any) => any>, attribute: any, value: any) {
+	let transform = transformCache.get(attribute);
+	if (!transform) {
+		transform = transformForSelect(attribute.select || attribute, undefined);
+		transformCache.set(attribute, transform);
+	}
+	return transform(value);
+}
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -6795,19 +6805,10 @@ export function makeTable(options): TableResourceClass {
 			) {
 				checkLoaded = true;
 			}
-			let transformCache;
-			let plainTransforms: Map<any, (value: any) => any>;
-			// Plain JSON values and directReturn resolver results carry no table of their own, so they project
-			// through the resolver-free transform, keyed by selector descriptor (one name can be selected twice).
-			const projectPlainValue = (attribute: any, value: any) => {
-				if (!plainTransforms) plainTransforms = new Map();
-				let plainTransform = plainTransforms.get(attribute);
-				if (!plainTransform) {
-					plainTransform = transformForSelect(attribute.select || attribute, undefined);
-					plainTransforms.set(attribute, plainTransform);
-				}
-				return plainTransform(value);
-			};
+			// keyed by selector descriptor, not name: one name can be selected twice with different sub-selects
+			let transformCache: Map<any, (value: any) => any>;
+			const selectsPrototype =
+				Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__');
 			const source = this.source;
 			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
@@ -6897,11 +6898,10 @@ export function makeTable(options): TableResourceClass {
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
-							// returns a promise when projecting the resolved value is still pending
 							const handleResolvedValue = (value: any): Promise<void> | void => {
 								if (resolver.directReturn) {
 									if (attribute_name !== attribute && value && typeof value === 'object' && !(value instanceof Date)) {
-										value = projectPlainValue(attribute, value);
+										value = projectPlainValue((transformCache ??= new Map()), attribute, value);
 										if (typeof value?.then === 'function')
 											return value.then((value: any) => callback(value, attribute_name));
 									}
@@ -6910,14 +6910,14 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
-									if (!transformCache) transformCache = {};
+									if (!transformCache) transformCache = new Map();
 									// Use the target table's own read transaction; each table's readTxn is
 									// scoped to its RocksDB column family and cannot read another table's store.
 									const targetReadTxn =
 										targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
-									const transform =
-										transformCache[attribute_name] ||
-										(transformCache[attribute_name] = targetTable.transformEntryForSelect(
+									let transform = transformCache.get(attribute);
+									if (!transform) {
+										transform = targetTable.transformEntryForSelect(
 											// if it is a simple string, there is no select for the next level,
 											// otherwise pass along the nested selected
 											attribute_name === attribute
@@ -6931,7 +6931,9 @@ export function makeTable(options): TableResourceClass {
 											undefined,
 											undefined,
 											typeof attribute.sort === 'object' && attribute.sort
-										));
+										);
+										transformCache.set(attribute, transform);
+									}
 									if (Array.isArray(value)) {
 										const results = [];
 										const iterator = targetTable
@@ -6946,7 +6948,7 @@ export function makeTable(options): TableResourceClass {
 											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
 										const nextValue = (iteration: IteratorResult<any> & Promise<any>) => {
 											while (!iteration.done) {
-												if (iteration?.then) return iteration.then(nextValue);
+												if (typeof iteration?.then === 'function') return iteration.then(nextValue);
 												results.push(iteration.value);
 												iteration = iterator.next();
 											}
@@ -6955,12 +6957,14 @@ export function makeTable(options): TableResourceClass {
 										return nextValue(iterator.next());
 									} else {
 										value = transform.call(this, value);
-										if (value?.then) return value.then((value: any) => callback(value, attribute_name));
+										if (typeof value?.then === 'function')
+											return value.then((value: any) => callback(value, attribute_name));
 									}
 								}
 								callback(value, attribute_name);
 							};
-							const pending = value?.then ? value.then(handleResolvedValue) : handleResolvedValue(value);
+							const pending =
+								typeof value?.then === 'function' ? value.then(handleResolvedValue) : handleResolvedValue(value);
 							if (pending) {
 								if (!promises) promises = [];
 								promises.push(pending);
@@ -6970,7 +6974,7 @@ export function makeTable(options): TableResourceClass {
 							value = record[attribute_name];
 							if (typeof value === 'function') value = undefined;
 							else if (value && typeof value === 'object' && attribute_name !== attribute && !(value instanceof Date)) {
-								value = projectPlainValue(attribute, value);
+								value = projectPlainValue((transformCache ??= new Map()), attribute, value);
 								if (typeof value?.then === 'function') {
 									if (!promises) promises = [];
 									promises.push(value.then((value: any) => callback(value, attribute_name)));
@@ -6994,6 +6998,7 @@ export function makeTable(options): TableResourceClass {
 							});
 						} else {
 							selected = {};
+							if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
 							const forceNulls = (select as any).forceNulls;
 							for (const attribute of select) {
 								if (attribute === '*')
@@ -7003,14 +7008,7 @@ export function makeTable(options): TableResourceClass {
 								else
 									selectAttribute(attribute, (value, attribute_name) => {
 										if (value === undefined && forceNulls) value = null;
-										if (attribute_name === '__proto__')
-											Object.defineProperty(selected, attribute_name, {
-												value,
-												writable: true,
-												enumerable: true,
-												configurable: true,
-											});
-										else selected[attribute_name] = value;
+										selected[attribute_name] = value;
 									});
 							}
 						}
@@ -8352,34 +8350,38 @@ export function makeTable(options): TableResourceClass {
 			for (const name of Object.keys(this.userDeciders)) if (!decideNames.has(name)) delete this.userDeciders[name];
 			for (const name of this.userSetDeciders) if (!decideNames.has(name)) this.userSetDeciders.delete(name);
 			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
-			propertyResolvers = this.propertyResolvers = Object.assign(Object.create(null), {
-				$id: (object, context, entry) => ({ value: entry.key }),
-				$updatedtime: (object, context, entry) => entry.version,
-				$updatedTime: (object, context, entry) => entry.version,
-				$expiresAt: (object, context, entry) => entry.expiresAt,
-				$record: (object, context, entry) => (entry ? { value: object } : object),
-				$score: (object, context, entry) => entry?.$score,
-				$highlights: (object, context, entry) => entry?.$highlights,
-				$distance: (object, context, entry, returnEntry, sort) => {
-					if (!entry) return;
-					if (entry.distance !== undefined) return entry.distance;
-					let distanceSort = sort;
-					while (
-						distanceSort &&
-						(typeof distanceSort.attribute !== 'string' ||
-							!Array.isArray(distanceSort.target) ||
-							!indices[distanceSort.attribute]?.customIndex?.propertyResolver)
-					)
-						distanceSort = distanceSort.next;
-					if (!distanceSort) return;
-					const customIndex = indices[distanceSort.attribute].customIndex;
-					const vector = object[distanceSort.attribute];
-					const distanceCache = context?.vectorDistanceCaches?.get(distanceSort);
-					const cachedDistance = distanceCache?.get(entry) ?? distanceCache?.get(vector);
-					if (cachedDistance !== undefined) return cachedDistance;
-					return customIndex.propertyResolver(vector, context, entry, distanceSort);
+			// (setPrototypeOf keeps fast properties; Object.create(null) starts in dictionary mode)
+			propertyResolvers = this.propertyResolvers = Object.setPrototypeOf(
+				{
+					$id: (object, context, entry) => ({ value: entry.key }),
+					$updatedtime: (object, context, entry) => entry.version,
+					$updatedTime: (object, context, entry) => entry.version,
+					$expiresAt: (object, context, entry) => entry.expiresAt,
+					$record: (object, context, entry) => (entry ? { value: object } : object),
+					$score: (object, context, entry) => entry?.$score,
+					$highlights: (object, context, entry) => entry?.$highlights,
+					$distance: (object, context, entry, returnEntry, sort) => {
+						if (!entry) return;
+						if (entry.distance !== undefined) return entry.distance;
+						let distanceSort = sort;
+						while (
+							distanceSort &&
+							(typeof distanceSort.attribute !== 'string' ||
+								!Array.isArray(distanceSort.target) ||
+								!indices[distanceSort.attribute]?.customIndex?.propertyResolver)
+						)
+							distanceSort = distanceSort.next;
+						if (!distanceSort) return;
+						const customIndex = indices[distanceSort.attribute].customIndex;
+						const vector = object[distanceSort.attribute];
+						const distanceCache = context?.vectorDistanceCaches?.get(distanceSort);
+						const cachedDistance = distanceCache?.get(entry) ?? distanceCache?.get(vector);
+						if (cachedDistance !== undefined) return cachedDistance;
+						return customIndex.propertyResolver(vector, context, entry, distanceSort);
+					},
 				},
-			});
+				null
+			);
 			propertyResolvers.$highlights.directReturn = true;
 			primaryKeyAttribute = undefined;
 			for (const attribute of this.attributes) {
