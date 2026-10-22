@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792574332809,
+  "lastUpdate": 1792654419550,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8033,6 +8033,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1938.57,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec",
+          "message": "fix: propagate residency read failures and refresh stub indexes (#3322)\n\n* Preserve residency read errors and keep stub indexes current\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation projections and adopt loaded absence\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve indexes across staged residency invalidations\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation payloads through staged writes\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: advance request freshness after loading a resident\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: load resolver inputs for computed query projections\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-10-21T23:53:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec"
+        },
+        "date": 1792654417398,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5783.15,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 7938.47,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7787.36,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6149.55,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4359.5,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7802.11,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 895.04,
             "unit": "ops/sec"
           }
         ]
