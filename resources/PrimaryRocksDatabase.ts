@@ -30,6 +30,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	declare rootStore: any;
 	declare decoder: any;
 
+	get cache(): WeakLRUCache | undefined {
+		return this.#cache;
+	}
+
 	get #enc(): any {
 		return (this as any).encoder;
 	}
@@ -158,7 +162,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			getOptions = options;
 		}
 		const raw = options?.async ? super.get(id, getOptions) : super.getSync(id, getOptions);
-
+		if (raw === FRESH_VERSION_FLAG) return cached;
 		return when(raw, (result) => {
 			if (result === FRESH_VERSION_FLAG) return cached;
 			const entry = this.#processEntry(result, id);
