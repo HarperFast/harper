@@ -342,7 +342,7 @@ describe('mqtt.ts reason codes for a refused request', () => {
 
 	const publishesSent = (client) => client.parse().filter((packet) => packet.cmd === 'publish');
 
-	describe('a delivery of a message that carries its own content type', () => {
+	describe('a delivery to a connected session', () => {
 		for (const protocolVersion of [4, 5]) {
 			it(`sends a plain Uint8Array view as a valid PUBLISH (protocol ${protocolVersion})`, async () => {
 				const { name, feed, client } = await subscribed(superUser, protocolVersion);
@@ -354,6 +354,24 @@ describe('mqtt.ts reason codes for a refused request', () => {
 				assert.strictEqual(publish.topic, `${name}/k`);
 				assert.strictEqual(publish.payload.toString(), 'hi');
 				assert.strictEqual(client.socket.terminations, 0);
+			});
+
+			it(`closes the connection when a message cannot be serialized (protocol ${protocolVersion})`, async () => {
+				const { feed, client } = await subscribed(superUser, protocolVersion);
+				const error = captureLog('error');
+				try {
+					const value = {
+						toJSON() {
+							throw new Error('unserializable');
+						},
+					};
+					feed.deliver({ type: 'message', id: 'k', value });
+					await waitFor(() => !client.sessions.has(client.session), { message: 'the session was left registered' });
+					assert.strictEqual(client.socket.terminations, 1, 'the connection was left open');
+					assert.ok(error.lines.some((line) => line[0]?.message === 'unserializable'));
+				} finally {
+					error.restore();
+				}
 			});
 		}
 	});
