@@ -17,7 +17,7 @@ engine may read. A column the bucket misses, or records against the wrong table,
 So the bucket attributes columns with the binder's own rules, which live in `columnScope.ts` and are
 called by `bind.ts`, `logical/build.ts` and the bucket alike:
 
-- A qualified column is attributed only when exactly one table in scope has the qualifier as its
+- A qualified column is attributed only when exactly one table in the statement (not only the tables an ON has joined so far) has the qualifier as its
   alias or base name. v2 prefers an alias over a base name, while legacy SQL matches either, so
   only then do both engines read the same table. Any other qualifier is reported by
   `getUnresolvedColumnRefs()`, and non-super statements are refused.

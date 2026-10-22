@@ -552,11 +552,9 @@ function getSelectAttributes(
 
 	const recordColumn = (node: any, clauseScope: AttributionTable[]) => {
 		if (node.tableid) {
-			// v2 prefers an alias over a base table name; legacy SQL matches either. Only a qualifier
-			// exactly one table claims means the same table to both.
-			const claimants = clauseScope.filter(
-				(entry) => entry.effectiveAlias === node.tableid || entry.table === node.tableid
-			);
+			// v2 prefers an alias over a base table name; legacy SQL matches either, against every table in
+			// the statement. Only a qualifier exactly one table claims means the same table to both.
+			const claimants = scope.filter((entry) => entry.effectiveAlias === node.tableid || entry.table === node.tableid);
 			if (claimants.length === 1) record(claimants[0], node.columnid);
 			else unresolvedColumns.add(`${node.tableid}.${node.columnid}`);
 			return;

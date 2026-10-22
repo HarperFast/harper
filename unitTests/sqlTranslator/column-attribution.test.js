@@ -125,10 +125,16 @@ describe('SQL column attribution for attribute permissions', () => {
 		});
 
 		it("reports a qualifier that is one table's alias and another's base name", () => {
-			// v2 would read R.ssn (alias first); legacy SQL matches both tables.
 			const bucket = bucketFor('SELECT L.ssn FROM data.L a JOIN data.R L ON a.id = L.id');
 			assert.ok(bucket.getUnresolvedColumnRefs().includes('L.ssn'));
 			assert.ok(!attributesOf(bucket, 'data', 'R').includes('ssn'));
+		});
+
+		it('counts claimants across the whole statement, not just the tables an ON has joined so far', () => {
+			const bucket = bucketFor(
+				'SELECT a.id FROM data.L a JOIN data.R b ON a.id = b.id AND L.ssn = 1 JOIN data.C L ON b.id = L.id'
+			);
+			assert.ok(bucket.getUnresolvedColumnRefs().includes('L.ssn'));
 		});
 
 		it('reports a qualifier shared by same-named tables in different databases', () => {
