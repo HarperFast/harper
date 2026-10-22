@@ -221,7 +221,7 @@ GraphQL `@relationship` attributes are live objects in component workers, but th
 
 The primary-descriptor update shares the `update-attributes` serialization boundary with `dropTable()`, re-reads the row after locking, and refuses to replace a drop tombstone. Missing or malformed targets are skipped rather than installed without authorization metadata.
 
-Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Tightening the operations API's object/nested `get_attributes` form to reject names it cannot resolve is NOT an option: `Table.transformEntryForSelect` projects undeclared JSON sub-objects through that same form, so `validation/searchValidator.ts` deliberately leaves it unchecked.
+Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Tightening the operations API's object/nested `get_attributes` form to reject names it cannot resolve is NOT an option: a search projects undeclared JSON sub-objects through that same form (`Table.transformEntryForSelect` hands them to the resolver-free `Resource.transformForSelect`), so `validation/searchValidator.ts` deliberately leaves it unchecked.
 
 Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior) and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
 
@@ -252,6 +252,7 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 ## Conventions
 
+<<<<<<< HEAD
 - Single-record nested selections use `Resource.transformForSelect`; searches use
   `Table.transformEntryForSelect`. Generic recursion needs no target table for plain JSON;
   classless primitive array items and whole selected Dates keep their values; Date-array
@@ -260,6 +261,11 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
   `getRecord` detection requires callable values; ordinary method-like JSON keys are data.
   Generic fallback projections treat function values as absent while retaining inherited data and getters;
   registered resolver results stay unchanged.
+=======
+- Single-record nested selections use `Resource.transformForSelect`; searches use `Table.transformEntryForSelect`, which runs only table records and `@relationship` targets through a table's resolvers. A plain JSON sub-object, or the object a `directReturn` resolver (`@computed`) returns, has no table, so its sub-select goes through the resolver-free `transformForSelect(select, undefined)`: an outer resolver must never run against nested data that shares its name. Search `propertyResolvers` has a null prototype, so no lookup finds an `Object.prototype` member. Search/single-record parity is pinned by `../unitTests/resources/searchSelectProjection.test.js`.
+  Plain JSON needs no target table; classless primitive array items and whole selected Dates keep their values (Date-array subselects keep the search projection policy). Missing targets preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object projection. Only callable values count as a Promise or `getRecord`, so method-like JSON keys are data; generic fallbacks treat function values as absent but keep inherited data and getters, and registered resolver results pass through unchanged.
+  `Resource.transformForSelect` resolver dictionaries are read by own entries, its private transform cache has no prototype, and a selected own `__proto__` is a data property on a normal response object.
+>>>>>>> dc9f55995 (fix: project search select() sub-objects without the outer table's resolvers)
 - The native missing-value contract is pinned by
   `../unitTests/resources/nestedSelectMissingValues.test.js` and
   `../integrationTests/resources/relationship-and-status-contract.test.ts`.
