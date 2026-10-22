@@ -288,6 +288,78 @@ describe('Default reads authorize @enumerable relationships against the related 
 		}
 	});
 
+	it('checks a readable cycle shared by selected sibling relationships once per read', async () => {
+		const length = 10;
+		const first = {};
+		let next = first;
+		const tables = {};
+		for (let i = length; i >= 0; i--) {
+			const name = 'EnumCycle' + i;
+			next = table({
+				table: name,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'nextId' },
+					{
+						name: 'next',
+						relationship: { from: 'nextId' },
+						definition: i === length ? first : { tableClass: next },
+						enumerable: true,
+					},
+				],
+			});
+			tables[name] = READ;
+		}
+		first.tableClass = next;
+		const siblings = 10;
+		const rootAttributes = [{ name: 'id', isPrimaryKey: true }];
+		const selection = ['id'];
+		for (let b = 0; b < siblings; b++) {
+			const sibling = table({
+				table: 'EnumCycleSibling' + b,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'cycleId' },
+					{ name: 'cycle', relationship: { from: 'cycleId' }, definition: { tableClass: next }, enumerable: true },
+				],
+			});
+			tables['EnumCycleSibling' + b] = READ;
+			rootAttributes.push({ name: 'c' + b + 'Id' });
+			rootAttributes.push({
+				name: 'c' + b,
+				relationship: { from: 'c' + b + 'Id' },
+				definition: { tableClass: sibling },
+			});
+			selection.push('c' + b);
+		}
+		const Root = table({ table: 'EnumCycleRoot', database: 'test', attributes: rootAttributes });
+		tables.EnumCycleRoot = READ;
+		const user = countingUser(tables);
+		assert.deepStrictEqual(await searchAs(Root, user, selection), []);
+		const tableCount = length + 1 + siblings + 1;
+		assert.ok(user.lookups <= 2 * tableCount, `${user.lookups} permission lookups for ${tableCount} tables`);
+	});
+
+	it('does not reuse a closure proof for another principal within one admission', () => {
+		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ });
+		const empOnly = roleWith({ EnumEmp: READ });
+		const admit = (user, checkPermission = true) => {
+			const target = new RequestTarget('/');
+			target.checkPermission = checkPermission;
+			assert.ok(new EnumEmp(undefined, {}).allowRead(user, target, {}));
+			return target.select && [...target.select];
+		};
+		EnumEmp._inReadAdmission(() => {
+			assert.equal(admit(readAll), undefined);
+			assert.deepStrictEqual(admit(empOnly), ['*']);
+			assert.equal(admit(readAll), undefined);
+			assert.deepStrictEqual(admit(readAll, empOnly.role.permission), ['*']);
+			assert.equal(admit(readAll, readAll.role.permission), undefined);
+		});
+	});
+
 	it('admits consecutive principals independently, also after a failed permission lookup', async () => {
 		const restricted = roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'name') });
 		const noOrg = roleWith({ EnumEmp: READ, EnumDept: READ });
