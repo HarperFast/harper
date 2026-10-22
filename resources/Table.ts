@@ -2538,7 +2538,9 @@ export function makeTable(options): TableResourceClass {
 				if (typeof id === 'object' && id && !Array.isArray(id)) {
 					throw new Error(`Invalid id ${JSON.stringify(id)}`);
 				}
-				const sync = target?.sync || primaryStore.cache?.get?.(id);
+				// RocksDB's async get already returns in-memory reads synchronously; a cached record does not
+				// mean its block is still resident, so the hint would only turn a storage miss into a blocking read
+				const sync = target?.sync || (!isRocksDB && primaryStore.cache?.get?.(id));
 				const txn = txnForContext(request);
 				const readTxn = txn.getReadTxn();
 				if (readTxn?.isDone) {
