@@ -6813,10 +6813,11 @@ export function makeTable(options): TableResourceClass {
 			) {
 				checkLoaded = true;
 			}
-			// keyed by selector descriptor, not name: one name can be selected twice with different sub-selects
+			// keyed by selector descriptor: one name can be selected twice with different sub-selects
 			let transformCache: Map<any, (value: any) => any>;
 			const selectsPrototype =
-				Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__');
+				select === '__proto__' ||
+				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
 			const source = this.source;
 			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
@@ -6979,7 +6980,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							return;
 						} else {
-							value = readSelectedProperty(record, attribute_name);
+							value = selectsPrototype ? readSelectedProperty(record, attribute_name) : record[attribute_name];
 							if (typeof value === 'function') value = undefined;
 							else if (value && typeof value === 'object' && attribute_name !== attribute && !(value instanceof Date)) {
 								value = projectPlainValue((transformCache ??= new Map()), attribute, value);
