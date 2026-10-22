@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792654419550,
+  "lastUpdate": 1792654423572,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18946,6 +18946,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 37.17,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec",
+          "message": "fix: propagate residency read failures and refresh stub indexes (#3322)\n\n* Preserve residency read errors and keep stub indexes current\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation projections and adopt loaded absence\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve indexes across staged residency invalidations\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation payloads through staged writes\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: advance request freshness after loading a resident\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: load resolver inputs for computed query projections\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-10-21T23:53:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec"
+        },
+        "date": 1792654422976,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 17.19,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 17.78,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 24.05,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.99,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 28.07,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 19.5,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 40.03,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 17.74,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 22.94,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 43.97,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 214.54,
             "unit": "ms"
           }
         ]
