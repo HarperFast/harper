@@ -909,11 +909,12 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 				finalGetAttrs = global.hdb_schema[operationSchema][table].attributes.map((obj) => obj.attribute);
 			}
 			const tableClass = getDatabases()[operationSchema]?.[table];
-			finalGetAttrs = finalGetAttrs.filter(
-				(name) =>
-					!tableClass?.propertyResolvers?.[name]?.definition?.tableClass ||
-					!tableClass._readDenial([name], requestJson.hdb_user)
-			);
+			if (tableClass?.hasRelationships)
+				finalGetAttrs = finalGetAttrs.filter(
+					(name) =>
+						!tableClass.propertyResolvers[name]?.definition?.tableClass ||
+						!tableClass._readDenial([name], requestJson.hdb_user)
+				);
 
 			requestJson.get_attributes = [...new Set([...finalGetAttrs, ...requestedMetadata])];
 		}
@@ -984,7 +985,6 @@ interface RelationshipReadCheck {
 	denials?: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
 }
 
-// Returns the root table's denied attributes, which the root attribute check reports
 function checkRelationshipReads(
 	requestJson: any,
 	operationSchema: string,
@@ -1009,11 +1009,27 @@ function checkRelationshipReads(
 	checkConditionPaths(state, requestJson.conditions);
 	checkSortPaths(state, requestJson.sort, undefined);
 	if (valueAttribute !== undefined) checkRelationshipPath(state, valueAttribute);
-	if (!state.denials) return;
-	// reported like a root reference: what the role cannot describe does not exist for it
-	const permission = requestJson.hdb_user?.role?.permission;
+	if (state.denials)
+		return reportRelationshipDenials(
+			state.denials,
+			requestJson.hdb_user?.role?.permission,
+			operationSchema,
+			table,
+			permsResponse
+		);
+}
+
+// Reported like a root reference: what the role cannot describe does not exist for it. The root table's own denied
+// attributes are returned for the root attribute check to report.
+function reportRelationshipDenials(
+	denials: RelationshipReadCheck['denials'],
+	permission: any,
+	operationSchema: string,
+	table: string,
+	permsResponse
+): Set<string> | undefined {
 	let rootAttributes: Set<string> | undefined;
-	for (const { denial, attributes } of state.denials.values()) {
+	for (const { denial, attributes } of denials.values()) {
 		const { database, table: deniedTable } = denial;
 		if (database === operationSchema && deniedTable === table) {
 			rootAttributes = attributes;
@@ -1033,7 +1049,7 @@ function checkRelationshipReads(
 			permsResponse.addUnauthorizedTable(database, deniedTable, [READ_PERM]);
 			continue;
 		}
-		const required = {};
+		const required = Object.create(null);
 		for (const attribute of attributes) {
 			const attributePermission = tablePermission.attribute_permissions?.find(
 				(entry) => entry.attribute_name === attribute

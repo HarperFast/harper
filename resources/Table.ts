@@ -3650,7 +3650,6 @@ export function makeTable(options): TableResourceClass {
 					return true;
 				}
 				let select: any = target?.select;
-				// a default read and '*' serialize @enumerable relationships
 				const listRelationships =
 					enumerableRelationshipNames.length > 0 &&
 					!(attribute_permissions?.length > 0) &&
@@ -8325,6 +8324,8 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			propertyResolvers.$highlights.directReturn = true;
+			// a selected $record is this table's record, so it is authorized and projected like one
+			propertyResolvers.$record.definition = { tableClass: TableResource };
 			primaryKeyAttribute = undefined;
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;

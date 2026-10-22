@@ -701,6 +701,36 @@ describe('Test operation_authorization', function () {
 			assert.equal(result.unauthorized_access.length, 0);
 		});
 
+		it('reports a denied related attribute named __proto__', function () {
+			const reportRelationshipDenials = op_auth_rewire.__get__('reportRelationshipDenials');
+			const denial = { database: 'dev', table: 'owner', attribute: '__proto__' };
+			const denials = new Map([['dev_owner', { denial, attributes: new Set(['__proto__']) }]]);
+			const permission = {
+				dev: {
+					describe: true,
+					tables: {
+						owner: {
+							describe: true,
+							read: true,
+							attribute_permissions: [
+								{ attribute_name: '__proto__', describe: true, read: false, insert: true, update: false },
+							],
+						},
+					},
+				},
+			};
+			const response = new PermissionResponseObject();
+			assert.equal(reportRelationshipDenials(denials, permission, 'dev', 'dog', response), undefined);
+			assert.deepStrictEqual(JSON.parse(JSON.stringify(response.getPermsResponse().unauthorized_access)), [
+				{
+					schema: 'dev',
+					table: 'owner',
+					required_table_permissions: [],
+					required_attribute_permissions: [{ attribute_name: '__proto__', required_permissions: ['read'] }],
+				},
+			]);
+		});
+
 		it('checks a path or sub-selection by its root attribute', function () {
 			const verifyRoot = (breedReadable) => {
 				let req_json = getRequestJson(TEST_JSON);
