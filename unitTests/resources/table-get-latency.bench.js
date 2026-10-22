@@ -84,9 +84,10 @@ async function main() {
 		// cached value, VT miss, and its block evicted from RocksDB's block cache (still in the OS page cache)
 		await measure('block-cache-miss', stridedIds, stridedIds.length, (id) => store.populateVersion(id, 1));
 	} finally {
-		RocksDatabase.config(
-			resolveRocksMemoryConfig({ availableMemory: Math.min(process.constrainedMemory?.() || Infinity, totalmem()) })
-		);
+		const { blockCacheSize } = resolveRocksMemoryConfig({
+			availableMemory: Math.min(process.constrainedMemory?.() || Infinity, totalmem()),
+		});
+		RocksDatabase.config({ blockCacheSize });
 	}
 	await measure('cold', coldIds, coldIds.length, null);
 	if (held.length !== spreadIds.length) throw new Error('unreachable');
