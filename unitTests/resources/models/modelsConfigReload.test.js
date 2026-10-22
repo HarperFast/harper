@@ -794,9 +794,17 @@ describe('models config hot reload (#2344)', () => {
 				// The compatibility gate: an orchestrator still injecting models through an env layer
 				// keeps today's restart behavior; the file is not authoritative for the block. Each
 				// layer is asserted independently — a typo in one name would silently un-gate it.
-				process.env[layer] = JSON.stringify({ models: { embedding: {} } });
+				process.env[layer] = JSON.stringify({ models: { embedding: { default: { backend: 'ollama' } } } });
 
 				assert.equal(startModelsConfigHotReload(), false);
+			});
+
+			it(`starts when ${layer} has only empty model maps`, () => {
+				for (const empty of [{ models: { embedding: {} } }, { 'models.embedding': {} }]) {
+					process.env[layer] = JSON.stringify(empty);
+					assert.equal(startModelsConfigHotReload(), true);
+					stopModelsConfigHotReload();
+				}
 			});
 		}
 

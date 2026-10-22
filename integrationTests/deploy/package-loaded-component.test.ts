@@ -1,10 +1,12 @@
 /**
- * `package_component` on a component a worker has LOADED — harper#2487.
+ * `package_component` on a component a worker has LOADED — harper#2487, harper#3207.
  *
  * Pins: `symlinkHarperModule` links the running install into `<component>/node_modules/harper` on every
  * non-root component load, and the packer dereferences symlinks and recurses into linked directories. So
  * packaging a component that has actually been loaded used to walk the entire Harper install: observed as
- * ~46s of tarring followed by `Maximum response size reached`.
+ * ~46s of tarring followed by `Maximum response size reached`. A sub-component the application loads from its
+ * own `node_modules` (a config.yaml `package:` entry) gets the same link one level down, which the packer
+ * followed once per such sub-component until harper#3207.
  *
  * The unit test in `unitTests/components/packageComponent.test.js` plants the link directly; this one earns
  * it the way production does — deploy with `restart: true` so a serving worker loads the component — which
@@ -16,14 +18,19 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
 
 import { setTimeout as sleep } from 'node:timers/promises';
+import tar from 'tar-fs';
 
 import { startHarper, teardownHarper, targz, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const PROJECT = 'pkg-loaded-probe';
+const PLUGIN = 'pkg-loaded-plugin';
 
 // Skipped on Windows for the same reason as the sibling `deploy-dangling-symlink` suite: `restart: true`
 // restarts there consistently miss even a 45s readiness deadline (harper#1813 — `canPreStartReplacement` is
@@ -44,18 +51,29 @@ async function operation(ctx: ContextWithHarper, body: Record<string, unknown>):
 	return response.json();
 }
 
-/** A component with a loadable resource, so a worker actually loads it and plants the link. */
+/** A component with a loadable resource, so a worker actually loads it and plants the links. */
 async function buildPayload(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), 'pkg-loaded-fixture-'));
 	try {
 		await writeFile(join(dir, 'package.json'), JSON.stringify({ name: PROJECT, version: '1.0.0' }));
-		await writeFile(join(dir, 'config.yaml'), 'rest: true\njsResource:\n  files: resource.js\n');
+		await writeFile(
+			join(dir, 'config.yaml'),
+			`rest: true\njsResource:\n  files: resource.js\n${PLUGIN}:\n  package: ${PLUGIN}\n`
+		);
 		await writeFile(
 			join(dir, 'resource.js'),
 			'export class PkgLoadedProbe extends Resource {\n\tget() {\n\t\treturn { ok: true };\n\t}\n}\n'
 		);
 		await mkdir(join(dir, 'web'), { recursive: true });
 		await writeFile(join(dir, 'web', 'index.html'), '<!doctype html><title>probe</title>\n');
+		const pluginDir = join(dir, 'node_modules', PLUGIN);
+		await mkdir(pluginDir, { recursive: true });
+		await writeFile(join(pluginDir, 'package.json'), JSON.stringify({ name: PLUGIN, version: '1.0.0' }));
+		await writeFile(join(pluginDir, 'config.yaml'), 'jsResource:\n  files: plugin.js\n');
+		await writeFile(
+			join(pluginDir, 'plugin.js'),
+			'export class PkgLoadedPlugin extends Resource {\n\tget() {\n\t\treturn { ok: true };\n\t}\n}\n'
+		);
 		return await targz(dir);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
@@ -104,6 +122,13 @@ suite(
 			// preventing it. If a future change stops creating it, this test stops proving anything, so assert
 			// its presence rather than silently passing.
 			ok(existsSync(join(livePath, 'node_modules', 'harper')), 'a worker load planted the harper link');
+			// The route can answer before the loader reaches the sub-component's entry, so wait for its link as well.
+			const nestedLink = join(livePath, 'node_modules', PLUGIN, 'node_modules', 'harper');
+			const nestedDeadline = Date.now() + 10_000;
+			while (!existsSync(nestedLink)) {
+				if (Date.now() > nestedDeadline) throw new Error('the sub-component load did not plant its harper link');
+				await sleep(100);
+			}
 
 			const estimate = await operation(ctx, { operation: 'package_component', project: PROJECT, estimate: true });
 			ok(
@@ -115,6 +140,20 @@ suite(
 			const packaged = await operation(ctx, { operation: 'package_component', project: PROJECT });
 			ok(typeof packaged.payload === 'string' && packaged.payload.length > 0, 'a payload was produced');
 			ok(packaged.payload.length < 2_000_000, `payload carries the install (${packaged.payload.length} base64 chars)`);
+
+			const extractDir = await mkdtemp(join(tmpdir(), 'pkg-loaded-extract-'));
+			try {
+				await pipeline(Readable.from(Buffer.from(packaged.payload, 'base64')), createGunzip(), tar.extract(extractDir));
+				const extractedPlugin = join(extractDir, 'node_modules', PLUGIN);
+				strictEqual(
+					await readFile(join(extractedPlugin, 'plugin.js'), 'utf8'),
+					await readFile(join(livePath, 'node_modules', PLUGIN, 'plugin.js'), 'utf8'),
+					'the sub-component ships'
+				);
+				ok(!existsSync(join(extractedPlugin, 'node_modules', 'harper')), 'the sub-component shipped the install');
+			} finally {
+				await rm(extractDir, { recursive: true, force: true });
+			}
 		});
 	}
 );

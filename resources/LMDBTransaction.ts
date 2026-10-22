@@ -7,12 +7,14 @@ import {
 	shouldSpareCommitPhase,
 	requestAbortedError,
 	transactionOpenTooLongError,
+	confirmReplicationAfterCommit,
+	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
 	type CommitResolution,
 } from './DatabaseTransaction';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
-import { ServerError } from '../utility/errors/hdbError.ts';
+import { ServerError, withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
@@ -71,6 +73,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
+		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 		trackedTxns.add(this as any);
@@ -90,8 +93,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 		return this.readTxn;
 	}
 
-	doneReadTxn() {
-		if (!this.readTxn) return;
+	doneReadTxn(generation = this.readTxnGeneration) {
+		if (!this.readTxn || generation !== this.readTxnGeneration) return;
 		if (this.readTxn instanceof RocksTransaction) {
 			// TODO: Implement this for RocksDB
 		} else {
@@ -336,13 +339,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 						const store = this.writes[0]?.store;
 						if (store) completions.push(store.flushed);
 					}
+					let confirmation: Promise<void>;
 					if (this.replicatedConfirmation) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
 						const lastEntry = this.lastConfirmableEntry();
 						if (confirmReplication && databaseName && lastEntry)
-							completions.push(
+							confirmation = confirmReplicationAfterCommit(() =>
 								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
 							);
 					}
@@ -359,7 +363,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.clearWrites();
 					this.timestamp = 0;
 					this.next = null;
-					return Promise.all(completions).then(() => {
+					const completed =
+						confirmation || (this.root ?? this).replicatedConfirmation
+							? settleCommitCompletions(completions, confirmation)
+							: Promise.all(completions);
+					return completed.then(() => {
 						return {
 							txnTime,
 						};
@@ -394,6 +402,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	private abortCommitFailure(error, next: DatabaseTransaction | undefined): never {
+		try {
+			if (error?.replicationUnconfirmed === true && (this.hasPendingWrites() || (this.root ?? this).writesRolledBack))
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
+		if (!this.saveCommits && this.writes.some((write) => write)) (this.root ?? this).writesRolledBack = true;
 		const nextWasAttached = Boolean(next && this.next === next);
 		try {
 			this.abort(true);
@@ -422,6 +435,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	abort(retainReadTransaction = false, cascade = true): void {
+		if (
+			this.writes.length > 0 &&
+			!this.saveCommits &&
+			!this.nativeCommitSubmitted &&
+			this.writes.some((write) => write)
+		)
+			(this.root ?? this).writesRolledBack = true;
 		const next = cascade ? this.next : undefined;
 		if (cascade && !retainReadTransaction) this.next = null;
 		try {
@@ -435,7 +455,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.baseReadRefConsumed = true;
 				}
 			} else {
-				while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+				while (this.readTxn && this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 			}
 			this.open = TRANSACTION_STATE.CLOSED;
 			this.drainCompletions();

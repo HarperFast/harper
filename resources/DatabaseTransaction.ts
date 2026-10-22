@@ -5,6 +5,8 @@ import {
 	ClientError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
+	ReplicationConfirmationError,
+	withoutReplicationUnconfirmed,
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
@@ -487,6 +489,39 @@ export function replicationConfirmation(callback, feasibility?: typeof confirmat
 	confirmReplication = callback;
 	confirmationFeasibility = feasibility;
 }
+
+export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
+	let result;
+	try {
+		result = callback();
+	} catch (error) {
+		result = Promise.reject(error);
+	}
+	const confirmation = Promise.resolve(result).then(
+		() => {},
+		(error) => {
+			throw new ReplicationConfirmationError(error);
+		}
+	);
+	confirmation.catch(() => {});
+	return confirmation;
+}
+
+export function settleCommitCompletions(completions: unknown[], confirmation?: Promise<void>): Promise<void> {
+	if (completions.length === 0) return confirmation ?? Promise.resolve();
+	let deferredConfirmationError: ReplicationConfirmationError;
+	const localCompletions = completions.map((completion) =>
+		Promise.resolve(completion).catch((error) => {
+			if (error instanceof ReplicationConfirmationError) deferredConfirmationError ??= error;
+			else throw error;
+		})
+	);
+	// A confirmation failure must not abort a chained local commit that has yet to land.
+	return Promise.all(localCompletions).then(() => {
+		if (deferredConfirmationError) throw deferredConfirmationError;
+		return confirmation;
+	});
+}
 let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 
 class StartedTransaction extends Error {}
@@ -655,8 +690,8 @@ export type TransactionWrite = {
 	result?: any;
 	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
 	savedBlobs?: Blob[];
-	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
-	// reset at the top of each commit-handler invocation so retries see a fresh state.
+	// this round staged neither a record nor an audit entry. An earlier durable audit entry may
+	// still own savedBlobs. Reset at the top of each commit-handler invocation.
 	skipped?: boolean;
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
@@ -681,8 +716,8 @@ export type TransactionWrite = {
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.
 	superseded?: boolean;
-	// this write appended an audit entry, which references its saved blobs — they then belong to the
-	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
+	// Audit pruning owns blobs referenced by an appended audit entry once its handle commits or
+	// has a durable log; a staged entry in an unsubmitted handle owns none.
 	blobsAuditReferenced?: boolean;
 	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
 	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
@@ -829,6 +864,10 @@ export class DatabaseTransaction implements Transaction {
 	readTxn: ReadTransaction;
 	readTxnRefCount: number;
 	readTxnsUsed: number;
+	// Bumped each time this instance acquires a read handle, so a reference can be returned to the
+	// acquisition it came from (doneReadTxn()). Not the handle's identity: lmdb-js hands back the same
+	// read Txn object for a new snapshot.
+	readTxnGeneration = 0;
 	timeout: number;
 	// Write recency, tracked separately from `timeout`: set only by addWrite, never by a read. `timeout`
 	// is re-armed by reads too (on a link with no pending writes of its own, see the fast path in
@@ -1000,6 +1039,8 @@ export class DatabaseTransaction implements Transaction {
 	declare scopeAbandoned?: boolean;
 	declare abandonedLinks?: DatabaseTransaction[];
 	committingWrites = false;
+	// Root-scoped history survives abort cleanup until the logical scope ends.
+	declare writesRolledBack?: boolean;
 
 	rangeReadActive = false;
 
@@ -1073,6 +1114,7 @@ export class DatabaseTransaction implements Transaction {
 		readTransactionOwners.set(transaction, this);
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
+		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		this.handleOpenedAt = performance.now();
 	}
@@ -1173,12 +1215,12 @@ export class DatabaseTransaction implements Transaction {
 		// the array it never got threw (issue #2222). Capturing an Error per read that nothing can dump
 		// is not worth doing either, so those reads stay untraced.
 		if (DEBUG_LONG_TXNS && this.stackTraces) this.stackTraces.push(new StartedTransaction());
-		this.readTxnsUsed++;
+		if (readTxn) this.readTxnsUsed++;
 		return readTxn;
 	}
 
-	doneReadTxn() {
-		if (!this.transaction) return;
+	doneReadTxn(generation = this.readTxnGeneration) {
+		if (!this.transaction || generation !== this.readTxnGeneration) return;
 		if (--this.readTxnsUsed === 0) {
 			// The native handle was only being held open for the read iterators: any writes staged
 			// through it were already committed at commit() time by replaying them onto a fresh
@@ -1627,6 +1669,25 @@ export class DatabaseTransaction implements Transaction {
 	private hasSavedWrite(): boolean {
 		for (let i = 0; i < this.writes.length; i++) {
 			if (this.writes[i]?.saved) return true;
+		}
+		return false;
+	}
+
+	private hasWriteToDiscard(
+		nativeTxn: RocksTransaction | null | undefined,
+		targetTransaction: RocksTransaction | undefined,
+		hasSiblingInFlight: boolean,
+		preserveActiveWrites: boolean
+	): boolean {
+		for (let i = 0; i < this.writes.length; i++) {
+			const write = this.writes[i];
+			if (
+				!write ||
+				(preserveActiveWrites && this.isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight, true))
+			)
+				continue;
+			const owner = write.stagedOn ?? this.activeCommitHandle ?? nativeTxn;
+			if (!this.isHandleCommitted(owner) && !hasDurableLog(owner)) return true;
 		}
 		return false;
 	}
@@ -2964,6 +3025,7 @@ export class DatabaseTransaction implements Transaction {
 								const store = this.writes[0]?.store;
 								if (store) completions.push(store.flushed);
 							}
+							let confirmation: Promise<void>;
 							if (this.replicatedConfirmation) {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
@@ -2975,7 +3037,7 @@ export class DatabaseTransaction implements Transaction {
 											? this.confirmationTarget(committedLogKey, committedTransaction)
 											: undefined;
 									if (target) {
-										completions.push(
+										confirmation = confirmReplicationAfterCommit(() =>
 											confirmReplication(
 												databaseName,
 												target.version,
@@ -2986,7 +3048,7 @@ export class DatabaseTransaction implements Transaction {
 									}
 								} catch (error) {
 									const refusal = Promise.reject(error);
-									refusal.catch(() => {}); // surfaces through Promise.all(completions), even if bookkeeping throws first
+									refusal.catch(() => {}); // surfaces through local completions, even if bookkeeping throws first
 									completions.push(refusal);
 								}
 							}
@@ -3003,7 +3065,14 @@ export class DatabaseTransaction implements Transaction {
 										: Boolean(write.stagedOn) && write.stagedOn !== committedTransaction
 								)
 									continue;
-								if (write.skipped || (write.superseded && !write.blobsAuditReferenced))
+								if (
+									(write.skipped &&
+										!(
+											write.blobsAuditReferenced &&
+											(write.appendedTo === committedTransaction || hasDurableLog(write.appendedTo))
+										)) ||
+									(write.superseded && !write.blobsAuditReferenced)
+								)
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							const committedStagedTxnTime = this.getHandleStagedTxnTime(committedTransaction);
@@ -3021,7 +3090,11 @@ export class DatabaseTransaction implements Transaction {
 								!this.hasActiveCommitHandle()
 							)
 								this.timestamp = 0; // reset the timestamp as well
-							return Promise.all(completions).then(
+							const completed =
+								confirmation || (this.root ?? this).replicatedConfirmation
+									? settleCommitCompletions(completions, confirmation)
+									: Promise.all(completions);
+							return completed.then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
 									// partially failed mid-scope commit must not leave the scope resumable.
@@ -3146,6 +3219,12 @@ export class DatabaseTransaction implements Transaction {
 									this.releaseContext(!!options.doneWriting);
 								}
 								if (!hasDurableLog(transaction, error as any)) {
+									if (
+										!isImmediateCommit &&
+										!this.saveCommits &&
+										this.writes.some((write) => write && (!write.stagedOn || write.stagedOn === transaction))
+									)
+										(this.root ?? this).writesRolledBack = true;
 									for (const write of this.writes) {
 										if (
 											!write?.saved ||
@@ -3192,7 +3271,12 @@ export class DatabaseTransaction implements Transaction {
 							: this.hasSiblingCommitInFlight(transaction) && Boolean(write.stagedOn) && write.stagedOn !== transaction
 					)
 						continue;
-					if (write.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
+					if (
+						write.savedBlobs &&
+						((write.skipped &&
+							!(write.blobsAuditReferenced && (write.appendedTo === transaction || hasDurableLog(write.appendedTo)))) ||
+							(write.superseded && !write.blobsAuditReferenced))
+					)
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
@@ -3340,6 +3424,10 @@ export class DatabaseTransaction implements Transaction {
 
 	protected abortAfterCommitError(error, targetTransaction?: RocksTransaction): never {
 		try {
+			if (error?.replicationUnconfirmed === true && (this.hasPendingWrites() || (this.root ?? this).writesRolledBack))
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
+		try {
 			const retryTxn = targetTransaction as RocksTransactionWithRetry | undefined;
 			const retryTxnCommitted = this.isHandleCommitted(retryTxn);
 			const retryTxnInFlight = this.isHandleCommitInFlight(retryTxn);
@@ -3371,6 +3459,13 @@ export class DatabaseTransaction implements Transaction {
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true);
 		const preserveNonImmediateActiveWrites =
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true, true);
+		if (
+			this.writes.length > 0 &&
+			!isImmediateTarget &&
+			!this.saveCommits &&
+			this.hasWriteToDiscard(nativeTxn, targetTransaction, hasSiblingInFlight, preserveActiveWrites)
+		)
+			(this.root ?? this).writesRolledBack = true;
 		const cascadeNext = cascade && !preserveNonImmediateActiveWrites;
 		const next = cascadeNext ? this.next : undefined;
 		if (cascadeNext && !retainReadTransaction) this.next = null;
@@ -3398,7 +3493,7 @@ export class DatabaseTransaction implements Transaction {
 						this.baseReadRefConsumed = true;
 					}
 				} else {
-					while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+					while (this.transaction && this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 				}
 				// A write-only transaction never took a read reference (getReadTxn was never called), so the
 				// loop above releases nothing even though save() created a native handle. Keep an iterator's

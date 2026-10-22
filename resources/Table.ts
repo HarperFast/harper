@@ -2626,9 +2626,7 @@ export function makeTable(options): TableResourceClass {
 			);
 			if (loadedFromSource) {
 				return when(loadedFromSource as Promise<Entry>, (entry) => {
-					this.#entry = entry;
-					this.#record = entry.value;
-					this.#version = entry.version;
+					TableResource._updateResource(this, entry);
 				});
 			}
 		}
@@ -3593,7 +3591,7 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 				}
-				return checkContextPermissions(this.getContext());
+				return true;
 			}
 		}
 
@@ -3613,10 +3611,8 @@ export function makeTable(options): TableResourceClass {
 						for (const key in newData) {
 							if (!attrsForType[key]) return false;
 						}
-						return checkContextPermissions(this.getContext());
-					} else {
-						return checkContextPermissions(this.getContext());
 					}
+					return true;
 				}
 			} else {
 				// creating *within* a record resource just means we are adding some data to a current record, which is
@@ -3630,9 +3626,10 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to delete from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
+		// eslint-disable-next-line no-unused-vars
 		allowDelete(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
-			return !!tablePermission?.delete && checkContextPermissions(context);
+			return !!tablePermission?.delete;
 		}
 
 		// #section: write-path-public
@@ -3895,6 +3892,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			this.#assertLiveHandle(id);
+			const incomingRecord = partialRecord;
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
@@ -3908,24 +3906,50 @@ export function makeTable(options): TableResourceClass {
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				chainsStagedState: true,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					write.stagedEntry = undefined;
+					write.superseded = false;
+					const priorStagedOp = priorStagedWrite(write);
+					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					// A base copy from a stub holder must not downgrade the same full record at a resident.
+					if (
+						precedesExisting < 0 ||
+						(!priorStagedOp &&
+							precedesExisting === 0 &&
+							existingEntry?.value &&
+							!(existingEntry.metadataFlags & INVALIDATED) &&
+							options?.residencyId &&
+							TableResource.getResidencyRecord(options.residencyId)?.includes(server.hostname))
+					) {
 						write.skipped = true;
 						return;
 					}
-					partialRecord ??= null;
+					// Received projections can be frozen. Missing fields in a residency projection are removals;
+					// only a local/cache invalidation carries forward the committed indexed fields.
+					partialRecord = incomingRecord
+						? Object.create(null)
+						: options?.residencyId && primaryKey
+							? { [primaryKey]: id }
+							: null;
+					if (incomingRecord) for (const name in incomingRecord) partialRecord[name] = incomingRecord[name];
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
+						if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-						if (partialRecord[name] === undefined) {
-							partialRecord[name] = this.getProperty(name);
-						}
+						const incomingValue = incomingRecord?.[name];
+						partialRecord[name] =
+							incomingValue === undefined && !options?.residencyId ? existingRecord?.[name] : incomingValue;
 					}
+					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
+					// Computed indexes need the full record's inputs; keep them as committed until a full write.
+					updateIndices(id, existingRecord, partialRecord, transaction && { transaction }, true);
 					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					updateRecord(
 						id,
@@ -3950,6 +3974,9 @@ export function makeTable(options): TableResourceClass {
 						},
 						'invalidate'
 					);
+					write.stagedEntry = { value: partialRecord, metadataFlags: INVALIDATED, residencyId: options?.residencyId };
+					write.blobsAuditReferenced = Boolean(audit);
+					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
 				},
@@ -4073,8 +4100,12 @@ export function makeTable(options): TableResourceClass {
 		static evict(id, existingRecord, existingVersion) {
 			if (maintenanceClosed) return Promise.resolve();
 			let entry;
-			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
-			let transaction = lmdbTransaction.getReadTxn();
+			// Raw on RocksDB: this method commits or aborts the handle itself, and its catch expects a conflict
+			// to reject with ERR_BUSY (resources/DESIGN.md, over-time transactions).
+			const lmdbTransaction = primaryStore.ifVersion
+				? txnForContext({ transaction: new DatabaseTransaction() })
+				: undefined;
+			let transaction = lmdbTransaction ? lmdbTransaction.getReadTxn() : new RocksTransaction(primaryStore.store);
 			let options = { transaction };
 			let committed = false;
 			try {
@@ -4126,9 +4157,8 @@ export function makeTable(options): TableResourceClass {
 						})
 					);
 				}
-				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly,
-				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
-				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
+				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly.
+				// The raw commit has no retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
 				return trackMaintenanceCommit(
 					commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).catch((error) => {
@@ -4940,6 +4970,20 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							if (
+								stagedOwnAuditEntry &&
+								committedBy?.sourceApply &&
+								isRocksDB &&
+								!replaying &&
+								precedesExisting === 0 &&
+								receivedLogKey === txnTime &&
+								appendedLogKey === receivedLogKey &&
+								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
+								!existingEntry.additionalAuditRefs?.length
+							) {
+								write.skipped = true;
+								return;
+							}
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
 							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
@@ -5399,13 +5443,11 @@ export function makeTable(options): TableResourceClass {
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
-					// A patch onto a stub has no complete base, so it can't decide placement; the stub's list names the
-					// nodes holding the complete record.
+					// A patch onto an incomplete base must stay invalidated; any residency list still names
+					// the nodes holding the complete record.
 					const baseEntry = priorStaged ?? existingEntry;
 					const patchesStub =
-						!fullUpdate &&
-						!TableResource.getResidencyById &&
-						Boolean(baseEntry?.residencyId && baseEntry.metadataFlags & INVALIDATED);
+						!fullUpdate && !TableResource.getResidencyById && Boolean(baseEntry?.metadataFlags & INVALIDATED);
 					if (patchesStub) {
 						omitLocalRecord = true;
 						residencyId ??= baseEntry.residencyId;
@@ -6200,6 +6242,7 @@ export function makeTable(options): TableResourceClass {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
+			const readTxnGeneration = txn.readTxnGeneration;
 			// The explicit row filter participates in query execution: it is pushed into HNSW
 			// traversal for vector sorts, applied after conditions otherwise, and checked again after
 			// cache/source materialization below. A policy error aborts the query instead of silently
@@ -6342,7 +6385,7 @@ export function makeTable(options): TableResourceClass {
 						} finally {
 							// We own the iteration here (no results.onDone consumer), so release the read
 							// transaction unconditionally — including when the drain throws — or the snapshot leaks.
-							txn.doneReadTxn();
+							if (readTxn) txn.doneReadTxn(readTxnGeneration);
 						}
 						let total: number | null;
 						if (wantExact) {
@@ -6382,7 +6425,7 @@ export function makeTable(options): TableResourceClass {
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
 					txn.unregisterReadIterator(results);
-					txn.doneReadTxn();
+					if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				};
 				// Recorded ownership: if the request dies before anything consumes these results, the
 				// transaction closes them itself rather than leaving its read snapshot pinned.
@@ -6391,7 +6434,7 @@ export function makeTable(options): TableResourceClass {
 				results.getColumns = getColumns;
 				return results;
 			} catch (error) {
-				txn.doneReadTxn();
+				if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				throw error;
 			}
 		}
@@ -6613,7 +6656,7 @@ export function makeTable(options): TableResourceClass {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
-				hasSourceGet &&
+				(hasSourceGet || sourceLoad) &&
 				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
 				!(typeof select === 'string' ? [select] : select)?.every((attribute) => {
 					let attribute_name;
@@ -6621,7 +6664,10 @@ export function makeTable(options): TableResourceClass {
 						attribute_name = attribute.name;
 					} else attribute_name = attribute;
 					// TODO: Resolvers may not need a full record, either because they are not using the record, or because they are a redirected property
-					return indices[attribute_name] || attribute_name === primaryKey;
+					return (
+						(indices[attribute_name] && !primaryStore.encoder.resolvedAttributeNames?.has(attribute_name)) ||
+						attribute_name === primaryKey
+					);
 				})
 			) {
 				checkLoaded = true;
@@ -6647,7 +6693,7 @@ export function makeTable(options): TableResourceClass {
 							{
 								transaction: readTxn,
 								lazy: select?.length < 4,
-								ensureLoaded: ensure_loaded,
+								ensureLoaded: checkLoaded,
 							},
 							this?.isSync,
 							(entry: Entry) => entry
@@ -7169,11 +7215,12 @@ export function makeTable(options): TableResourceClass {
 						// The latest record-time the cursor saw, tombstones included; only includeSuperseded
 						// subscribers without progress reporting gate on it (audit-log time domain).
 						let cursorMaxTime = 0;
+						let now = Date.now();
 						// Retained-message semantics: subscriber may legitimately receive a record twice
 						// if a post-subscribe write hits a key the cursor also visits. This is
 						// idempotent for "current state then live updates" — both deliveries land at
 						// the same final state. We don't dedupe.
-						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+						for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 							start: thisId ?? false,
 							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 							versions: true,
@@ -7183,18 +7230,21 @@ export function makeTable(options): TableResourceClass {
 								recordsSinceYield = 0;
 								await rest();
 								if (!isActive()) return;
+								now = Date.now();
 							}
-							// Update cursorMaxTime BEFORE the !value check so deletion tombstones
-							// (which have null value but a real localTime/version) still raise the gate.
+							// Update cursorMaxTime BEFORE the !value / expiresAt checks so deletion tombstones
+							// (which have null value but a real localTime/version) and expired rows still raise the gate.
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
+							if (isHiddenExpiry(expiresAt, now)) continue;
 							const scanned: any = { id, localTime, value, version, type: 'put', size };
 							if (reportingProgress) scanned.fromScan = true;
 							if (!send(scanned)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
+								now = Date.now();
 							}
 						}
 						if (includeSuperseded && !reportingProgress) {
@@ -7293,7 +7343,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						// with no entry, a pruned tombstone may have taken the history with it
 					} else if (checkResume && !entry && !checkResume()) return;
-					if (!request.omitCurrent && entry?.value) {
+					if (!request.omitCurrent && entry?.value && !isHiddenExpiry(entry.expiresAt)) {
 						// if retain and it exists, send the current value first
 						const current: any = { id: thisId, ...entry, type: 'put' };
 						if (reportingProgress) current.fromScan = true;
@@ -7400,7 +7450,8 @@ export function makeTable(options): TableResourceClass {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
 					let sinceYield = 0;
-					for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+					let now = Date.now();
+					for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 						start: thisId ?? false,
 						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 						versions: true,
@@ -7410,13 +7461,19 @@ export function makeTable(options): TableResourceClass {
 							sinceYield = 0;
 							await rest();
 							if (!isActive()) return;
+							now = Date.now();
 						}
 						if (!value) continue; // skip tombstones
+						if (isHiddenExpiry(expiresAt, now)) continue;
 						yield { id, localTime, value, version, type: 'put', size };
+						if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+							if ((await subscription.waitForDrain()) === false) return;
+							now = Date.now();
+						}
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield { id: thisId, ...entry, type: 'put' };
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
@@ -7438,9 +7495,6 @@ export function makeTable(options): TableResourceClass {
 						for await (const record of currentScopeRecords()) {
 							if (!subscription.subscriptions) return;
 							if (!send(record)) return;
-							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-								if ((await subscription.waitForDrain()) === false) return;
-							}
 						}
 					}
 				} catch (error) {
@@ -8810,7 +8864,7 @@ export function makeTable(options): TableResourceClass {
 		throw error;
 	}
 	return TableResource;
-	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
+	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
 		let hasChanges;
 		// iterate the entries from the record
 		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
@@ -8820,6 +8874,7 @@ export function makeTable(options): TableResourceClass {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
+			if (preserveComputed && primaryStore.encoder.resolvedAttributeNames?.has(key)) continue;
 			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
 			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
 			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
@@ -8963,13 +9018,7 @@ export function makeTable(options): TableResourceClass {
 				context?.replicateFrom !== false
 			) {
 				// load from other node
-				return sourceLoad(entry).then(
-					(entry) => withEntry(entry, id),
-					(error) => {
-						logger.error?.('Error loading remote record', id, entry, options, error);
-						return withEntry(null, id);
-					}
-				);
+				return sourceLoad(entry).then((entry) => withEntry(entry, id));
 			}
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
@@ -9149,11 +9198,19 @@ export function makeTable(options): TableResourceClass {
 		// target may be a primitive id on instance-API calls, which can't hold the flag
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 	}
+	function isHiddenExpiry(expiresAt: number | undefined, now = Date.now()) {
+		return !hasSourceGet && expiresAt != undefined && expiresAt < now;
+	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 			return;
 		}
+		if (entry?.residencyId && entry.metadataFlags & INVALIDATED && sourceLoad && context?.replicateFrom !== false)
+			return sourceLoad(entry).then((loaded) => {
+				if (context && loaded?.version > (context.lastModified || 0)) context.lastModified = loaded.version;
+				return loaded;
+			});
 		if (hasSourceGet) {
 			let needsSourceData = false;
 			if (context.noCache) needsSourceData = true;
@@ -9389,7 +9446,7 @@ export function makeTable(options): TableResourceClass {
 	/**
 	 * What left a delete's key without a record, for the re-delivery check (resources/DESIGN.md): the
 	 * nearest earlier write in the transaction that staged state, else the stored entry. Only writes marked
-	 * skipped are passed over, because an invalidate or relocate stores a null stub without staging it.
+	 * skipped are passed over, because a relocate can store a null stub without staging it.
 	 */
 	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
@@ -9884,19 +9941,6 @@ export function makeTable(options): TableResourceClass {
 		});
 	}
 
-	/**
-	 * Verify that the context does not have any replication parameters that are not allowed
-	 * @param context
-	 */
-	function checkContextPermissions(context: Context): boolean {
-		if (!context) return true;
-		if (context.user?.role?.permission?.super_user) return true;
-		if (context.replicateTo)
-			throw new ClientError('Can not specify replication parameters without super user permissions', 403);
-		if (context.replicatedConfirmation)
-			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
-		return true;
-	}
 	function trackMaintenanceCommit<T>(commit: Promise<T>): Promise<T> {
 		const tracked = commit.finally(() => maintenanceCommits.delete(tracked));
 		maintenanceCommits.add(tracked);
