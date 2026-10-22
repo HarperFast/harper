@@ -6408,7 +6408,7 @@ export function makeTable(options): TableResourceClass {
 				ensure_loaded &&
 				hasSourceGet &&
 				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
-				!(typeof select === 'string' ? [select] : select)?.every((attribute) => {
+				!(typeof select === 'string' ? [select] : Array.isArray(select) ? select : null)?.every((attribute) => {
 					let attribute_name;
 					if (typeof attribute === 'object') {
 						attribute_name = attribute.name;
