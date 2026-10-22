@@ -2010,6 +2010,17 @@ describe('MQTT durable record topics on resume', function () {
 		});
 	}
 
+	it('sends no current value to a request that asks to omit it, whatever its retain handling', async () => {
+		const { T, name } = topicTable();
+		await T.put('r', { value: 0 });
+		const { session, received } = await connect(`omit-current-${name}`);
+		await session.addSubscription({ topic: `${name}/r`, qos: 1, omitCurrent: true }, true);
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		assert.deepStrictEqual(values(received), [1]);
+		session.disconnect(true);
+	});
+
 	it('delivers only the newest version once when the record changed while away', async () => {
 		const { T, name } = topicTable();
 		const topic = `${name}/r`;
