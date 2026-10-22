@@ -113,6 +113,13 @@ function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
 	return { key, name: 'Error', message: String(error) };
 }
 
+// A plugin may report its own warning/unknown/error while loading; only the loader's own `loading` is
+// replaced by the automatic success status.
+function markLoadedUnlessReported(componentStatusName: string, message: string): void {
+	const current = statusForComponent(componentStatusName).get()?.status;
+	if (current === undefined || current === 'loading') componentLifecycle.loaded(componentStatusName, message);
+}
+
 /**
  * What a failed load reports, under `describe`'s message: the error thrown, when it can take that message, or one that
  * carries it, since a component can throw a primitive or a frozen error.
@@ -1086,10 +1093,8 @@ export async function loadComponent(
 
 				if (!extensionModule) {
 					// This is an application-only component (no extension module)
-					// Mark it as loaded since it exists in the config, unless loading its tree just failed it
-					if (statusForComponent(componentStatusName).get()?.status !== 'error') {
-						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
-					}
+					// Mark it as loaded since it exists in the config, unless loading its tree reported otherwise
+					markLoadedUnlessReported(componentStatusName, `Application component '${componentStatusName}' processed`);
 					continue;
 				}
 				if (isRoot && subApplicationScope.branches?.size) {
@@ -1155,7 +1160,7 @@ export async function loadComponent(
 					await sequentiallyHandleApplication(scope, extensionModule);
 
 					// Mark component as loaded after successful handleApplication call
-					componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+					markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 					noteBootExecuted(entryApplication);
 
 					continue;
@@ -1251,7 +1256,7 @@ export async function loadComponent(
 				}
 
 				// Mark component as healthy after successful loading
-				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+				markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 				noteBootExecuted(entryApplication);
 			} catch (thrown) {
 				const error = loadFailure(
