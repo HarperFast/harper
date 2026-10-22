@@ -275,9 +275,9 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
   projection. Only callable values count as a Promise or `getRecord`, so method-like JSON keys are data;
   generic fallbacks treat function values as absent but keep inherited data and getters, and registered
   resolver results pass through unchanged. Resolver dictionaries are read by own entries, the private
-  transform cache has no prototype, and a selected own `__proto__` is a data property. Pinned by
+  transform cache has no prototype, and a selected own `__proto__` is a data property on a normal response object. Pinned by
   `../unitTests/resources/nestedSelectMissingValues.test.js` and
-  `../integrationTests/resources/relationship-and-status-contract.test.ts`. Still open: [singleton-selector parsing and invalid subselects](https://github.com/HarperFast/harper/issues/1415), [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168), and [table-wide `__proto__` keys](https://github.com/HarperFast/harper/issues/1295).
+  `../integrationTests/resources/relationship-and-status-contract.test.ts`. Still open, outside these helpers: [singleton-selector parsing and invalid-subselect policy](https://github.com/HarperFast/harper/issues/1415); separately, [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168) and [a `__proto__` key poisoning a table, and proto-named attributes rejected at insert](https://github.com/HarperFast/harper/issues/1295).
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
@@ -924,11 +924,11 @@ again afterward for a declaration that resolved the root mid-close. A wrapper wh
 (including a custom index's cleanup close after its setup threw) is held strongly, since collection may
 not release it; the record is keyed by path because a lenient close discards the root object even after
 a failure. A wrapper is never closed when the graph stops pointing at it: a query that took it before
-the redeclare still opens ranges through it, and a closed wrapper would refuse them. Short-lived wrappers
-(column-family drops, the blob sweep) close themselves and are not recorded; `destroy()` closes every
-wrapper on the root, so a drop only forgets the record. Enforced by the redeclare and close-failure
-cases in `unitTests/resources/closeLoadedDatabases.test.js` and, end to end,
-`integrationTests/database/restore-backup-online.test.ts`.
+the redeclare still opens ranges through it, and a closed wrapper would refuse them (a range already open
+keeps reading either way). Short-lived wrappers (column-family drops, the blob sweep) close themselves
+and are not recorded; `destroy()` closes every wrapper on the root, so a drop only forgets the record.
+Enforced by the redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.test.js`
+and, end to end, `integrationTests/database/restore-backup-online.test.ts`.
 
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
 
