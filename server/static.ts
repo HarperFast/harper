@@ -196,6 +196,7 @@ export function handleApplication(scope: Scope) {
 	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
 	let urlPathRestartPending = false;
 	let fileSelectionChangePending = false;
+	const missingNotFoundWarned = new Set<string>();
 	let entryHandler: ReturnType<Scope['handleEntry']>;
 
 	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
@@ -386,14 +387,16 @@ export function handleApplication(scope: Scope) {
 				}
 			}
 
-			// If an entry matched, serve it
-			if (staticFile) {
+			// If an entry matched, serve it. An entry whose file is gone is a miss, not an error: the
+			// watcher has not caught up, or a symlink target was removed outside the watched tree.
+			const resolvedFile = staticFile ? resolveExisting(staticFile) : undefined;
+			if (resolvedFile) {
 				const settledCredentialRejection = settleDeferredCredentialRejection(req);
 				if (settledCredentialRejection) return settledCredentialRejection;
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
 				return {
 					handlesHeaders: true,
-					body: serveFile(req, realpathSync(staticFile), scope),
+					body: serveFile(req, resolvedFile, scope),
 				};
 			}
 
@@ -419,11 +422,18 @@ export function handleApplication(scope: Scope) {
 			const notFoundPath = join(scope.directory, typeof notFound === 'string' ? notFound : notFound.file);
 			const statusCode = typeof notFound === 'object' ? notFound.statusCode : 404;
 
-			if (!existsSync(notFoundPath)) {
-				throw new Error(`Not found file does not exist: ${notFoundPath}`);
+			const resolvedNotFound = resolveExisting(notFoundPath);
+			if (!resolvedNotFound) {
+				if (!missingNotFoundWarned.has(notFoundPath)) {
+					missingNotFoundWarned.add(notFoundPath);
+					scope.logger.warn(`The static \`notFound\` file does not exist: ${notFoundPath}`);
+				}
+				return {
+					status: 404,
+					body: 'File not found',
+				};
 			}
 
-			const resolvedNotFound = realpathSync(notFoundPath);
 			return {
 				status: statusCode,
 				handlesHeaders: true,
@@ -437,6 +447,16 @@ export function handleApplication(scope: Scope) {
 			after: after as string | undefined,
 		}
 	);
+}
+
+/** `realpathSync` that reports a file missing on disk as `undefined`; other failures propagate. */
+function resolveExisting(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch (error) {
+		if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined;
+		throw error;
+	}
 }
 
 function validateOrderingOption(
