@@ -3584,7 +3584,6 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 			try {
 				const primaryStore = (auditStore as any).tableStores[(auditRecord as any).tableId];
 				if (!primaryStore) continue;
-				// resources/DESIGN.md: identity is not blob equivalence, so no entry is skipped.
 				checkObjectForReferences((auditRecord as any).getValue(primaryStore));
 				// slow this down a bit to reduce excessive load, this runs approximately at 10k per second
 				if (i++ % perMS === 0)

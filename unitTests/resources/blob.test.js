@@ -1294,8 +1294,6 @@ describe('Blob test', () => {
 	// primary record carries. A record whose version equals the entry's must never stand in for the
 	// entry's own blobs, since a version is legitimately non-unique.
 	it('scans an audit value whose record version matches a different write', async () => {
-		// A file on disk that only an audit entry references, and a live record for the same id whose
-		// version happens to equal that entry's.
 		const { blob, filePath } = await makeDiskBackedBlob(4096);
 		const id = 'orphan-identity';
 		await BlobTest.put(id, { id, other: 'no blob here' });
