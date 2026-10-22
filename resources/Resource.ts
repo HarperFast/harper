@@ -1199,7 +1199,7 @@ export const ownDataProperty = { value: undefined, writable: true, enumerable: t
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
-	let subTransforms;
+	let subTransforms: Map<any, (object: any) => any>;
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
@@ -1264,15 +1264,16 @@ export function transformForSelect(select, resource) {
 				if (property.name) {
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
-					if (!subTransforms) subTransforms = Object.create(null);
+					if (!subTransforms) subTransforms = new Map();
 					// TODO: Get the resource, cache this transform, and apply above
-					let transform = subTransforms[property.name];
+					let transform = subTransforms.get(property);
 					if (!transform) {
 						const resource =
 							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
 								? propertyResolvers[property.name]?.definition?.tableClass
 								: undefined;
-						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
+						transform = transformForSelect(property.select || property, resource);
+						subTransforms.set(property, transform);
 					}
 					return transform(value);
 				} else return getProperty(property);
