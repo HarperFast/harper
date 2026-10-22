@@ -75,12 +75,13 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 >
 > This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
 > pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
->
-> A message that carries its own `{ contentType, data }` is passed through, but `serializeMessage` still
-> returns a `Buffer`: on a worker other than the publisher's, the record is decoded from the transaction
-> log and `data` is a plain `Uint8Array`, which mqtt-packet cannot encode. A delivery the MQTT listener
-> cannot send aborts the connection (`destroy`/`terminate`), so the client reconnects instead of staying
-> connected to an ended session. Pinned by `integrationTests/mqtt/opaque-payload-across-workers.test.ts`.
+
+> **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
+> is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
+> than the publisher's, the record is decoded from the transaction log and `data` is a plain `Uint8Array`,
+> which mqtt-packet cannot encode. Separately, a delivery the MQTT listener cannot send aborts the
+> connection (`destroy`/`terminate`) so the client reconnects, rather than leaving it connected to an
+> ended session. Pinned by `integrationTests/mqtt/opaque-payload-across-workers.test.ts`.
 
 ### Threads
 

@@ -26,9 +26,12 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'opaque-payload-across-workers
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const THREADS = 4;
-const SUBSCRIBERS_PER_TRANSPORT = 6;
+const MIN_SUBSCRIBERS_PER_TRANSPORT = 4;
+// the kernel picks a worker by hashing the connection, so a few more may be needed to reach a second one
+const MAX_SUBSCRIBERS_PER_TRANSPORT = 16;
 const TOPIC = 'Feed/stream';
-// The kernel spreads connections across workers only where every worker binds the port (reusePort).
+const OPERATION_TIMEOUT_MS = 10_000;
+// Only where every worker binds the port (reusePort) does the kernel spread connections across them.
 const spreadAcrossWorkers = process.platform === 'linux';
 
 interface Subscriber {
@@ -66,15 +69,25 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 		});
 	}
 
+	// with reconnect off, mqtt.js leaves these callbacks pending forever once the connection drops
+	function withDeadline(what: string, operation: (done: (error?: Error) => void) => void): Promise<void> {
+		return new Promise((resolvePromise, reject) => {
+			const timer = setTimeout(() => reject(new Error(`${what} timed out`)), OPERATION_TIMEOUT_MS);
+			operation((error) => {
+				clearTimeout(timer);
+				if (error) reject(error);
+				else resolvePromise();
+			});
+		});
+	}
+
 	function subscribe(client: MqttClient, topic: string): Promise<void> {
-		return new Promise((resolvePromise, reject) =>
-			client.subscribe(topic, { qos: 0 }, (error) => (error ? reject(error) : resolvePromise()))
-		);
+		return withDeadline(`subscribe to ${topic}`, (done) => client.subscribe(topic, { qos: 0 }, (error) => done(error)));
 	}
 
 	function publish(client: MqttClient, payload: string): Promise<void> {
-		return new Promise((resolvePromise, reject) =>
-			client.publish(TOPIC, payload, { qos: 1, retain: false }, (error) => (error ? reject(error) : resolvePromise()))
+		return withDeadline(`publish ${payload}`, (done) =>
+			client.publish(TOPIC, payload, { qos: 1, retain: false }, (error) => done(error))
 		);
 	}
 
@@ -98,7 +111,7 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 		return predicate();
 	}
 
-	/** Connects, then reads which worker serves the connection off the WorkerProbe subscription. */
+	/** The worker thread serving this connection, as reported by the WorkerProbe subscription. */
 	async function workerOf(client: MqttClient): Promise<number> {
 		let threadId: number | undefined;
 		const onMessage = (topic: string, payload: Buffer) => {
@@ -125,7 +138,7 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 		await teardownHarper(ctx);
 	});
 
-	test('text, JSON array, JSON string, declared opaque type and JSON object reach every subscriber on every worker', async () => {
+	test('text, JSON array, JSON string, declared opaque type and JSON object reach every subscriber on every worker', async (t) => {
 		const clients: MqttClient[] = [];
 		const subscribers: Subscriber[] = [];
 		try {
@@ -141,7 +154,9 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 			const publisherThreads = [await workerOf(tcpPublisher), await workerOf(typedPublisher)];
 
 			for (const transport of ['tcp', 'ws'] as const) {
-				for (let i = 0; i < SUBSCRIBERS_PER_TRANSPORT; i++) {
+				const threads = new Set<number>();
+				for (let i = 0; i < MAX_SUBSCRIBERS_PER_TRANSPORT; i++) {
+					if (i >= MIN_SUBSCRIBERS_PER_TRANSPORT && threads.size >= 2) break;
 					const client = await connect(transport === 'tcp' ? tcpURL : wsURL);
 					clients.push(client);
 					const subscriber: Subscriber = { transport, client, threadId: await workerOf(client), payloads: [] };
@@ -150,21 +165,17 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 					});
 					await subscribe(client, TOPIC);
 					subscribers.push(subscriber);
+					threads.add(subscriber.threadId);
+				}
+				// with two subscriber workers, at least one subscriber is off each publisher's worker
+				if (threads.size < 2) {
+					const message = `${transport} subscribers all landed on worker ${[...threads]}`;
+					ok(!spreadAcrossWorkers, message);
+					t.skip(`${message}; this platform does not spread connections across workers`);
+					return;
 				}
 			}
-
 			const layout = subscribers.map((s) => `${s.transport}@${s.threadId}`).join(' ');
-			if (spreadAcrossWorkers) {
-				for (const transport of ['tcp', 'ws'] as const) {
-					const threads = new Set(subscribers.filter((s) => s.transport === transport).map((s) => s.threadId));
-					ok(threads.size >= 2, `${transport} subscribers all landed on one worker: ${layout}`);
-				}
-				for (const publisherThread of publisherThreads)
-					ok(
-						subscribers.some((s) => s.threadId !== publisherThread),
-						`no subscriber is on a different worker from the publisher on ${publisherThread}: ${layout}`
-					);
-			}
 
 			const expected = ['plain text', '[1,2,3]', '"a JSON string"', 'declared opaque type', '{"n":4}'];
 			await publish(tcpPublisher, expected[0]);
@@ -192,7 +203,7 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 			try {
 				let closed = false;
 				client.on('close', () => (closed = true));
-				// the failing delivery can abort the connection before the SUBACK is written
+				// the abort can come before the SUBACK
 				client.subscribe('Unserializable/#', { qos: 0 }, () => {});
 				ok(await waitFor(() => closed), `${url}: the connection stayed open after its delivery failed`);
 			} finally {
