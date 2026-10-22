@@ -30,7 +30,15 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads, ownDataProperty } from './Resource.ts';
+import {
+	Resource,
+	SEARCH_AUTHORIZATION,
+	WRITE_CONDITION,
+	transformForSelect,
+	defaultAllowReads,
+	ownDataProperty,
+	readSelectedProperty,
+} from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -6971,7 +6979,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							return;
 						} else {
-							value = record[attribute_name];
+							value = readSelectedProperty(record, attribute_name);
 							if (typeof value === 'function') value = undefined;
 							else if (value && typeof value === 'object' && attribute_name !== attribute && !(value instanceof Date)) {
 								value = projectPlainValue((transformCache ??= new Map()), attribute, value);
@@ -6993,7 +7001,7 @@ export function makeTable(options): TableResourceClass {
 						if ((select as any).asArray) {
 							selected = [];
 							select.forEach((attribute, index) => {
-								if (attribute === '*') select[index] = record;
+								if (attribute === '*') selected[index] = record;
 								else selectAttribute(attribute, (value) => (selected[index] = value));
 							});
 						} else {

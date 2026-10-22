@@ -4,8 +4,6 @@ const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// Search/collection select() projects rows through Table.transformEntryForSelect, while a single-record
-// get projects through Resource.transformForSelect. These cases pin the two to the same result.
 describe('search select projection matches single-record projection', function () {
 	let Article, Author, Comment, previousMainIsWorker;
 	const article = {
@@ -66,6 +64,8 @@ describe('search select projection matches single-record projection', function (
 				{ name: 'meta', type: 'Any' },
 				{ name: 'citation', type: 'Any' },
 				{ name: 'wrapper', type: 'Any' },
+				{ name: 'bin', type: 'Bytes' },
+				{ name: 'dates', elements: { type: 'Date' } },
 				{ name: 'sections', elements: { type: 'Any' } },
 				{ name: 'protoKeys', type: 'Any' },
 				{ name: 'summary', computed: true },
@@ -328,6 +328,46 @@ describe('search select projection matches single-record projection', function (
 			id: 'a1',
 			computedMeta: { publicSummary: 'PUBLIC:Main Article' },
 		});
+	});
+
+	it('selecting __proto__ on a table record yields no data', async function () {
+		assert.deepStrictEqual(JSON.stringify(await projectBothWays(['id', '__proto__'])), '{"id":"a1"}');
+	});
+
+	it('a positional select with a wildcard keeps the selector intact across rows', async function () {
+		const select = ['id', '*'];
+		select.asArray = true;
+		const rows = [];
+		for await (const row of Article.search({
+			conditions: [{ attribute: 'id', comparator: 'starts_with', value: 'a' }],
+			select,
+		}))
+			rows.push(row);
+		assert.deepStrictEqual(select, Object.assign(['id', '*'], { asArray: true }));
+		assert.deepStrictEqual(rows.map((row) => [row[0], row[1].id]).sort(), [
+			['a1', 'a1'],
+			['a2', 'a2'],
+		]);
+	});
+
+	it('a wildcard-only sub-select returns Date and binary values unchanged', async function () {
+		const createdAt = new Date('2026-01-01T00:00:00.000Z');
+		await Article.put({ id: 'a-binary', bin: Buffer.from([1, 2, 3]), dates: [createdAt] });
+		const select = ['id', nested('bin', ['*']), nested('dates', ['*'])];
+		const target = new RequestTarget();
+		target.id = 'a-binary';
+		target.select = select;
+		const single = await Article.get(target);
+		const rows = [];
+		for await (const row of Article.search({ conditions: [{ attribute: 'id', value: 'a-binary' }], select }))
+			rows.push(row);
+		for (const row of [single, rows[0]]) {
+			assert.ok(Buffer.isBuffer(row.bin) || row.bin instanceof Uint8Array);
+			assert.deepStrictEqual([...row.bin], [1, 2, 3]);
+			assert.ok(row.dates[0] instanceof Date);
+			assert.strictEqual(row.dates[0].getTime(), createdAt.getTime());
+		}
+		await Article.delete('a-binary');
 	});
 
 	it('selecting __proto__ does not change the search row prototype', async function () {
