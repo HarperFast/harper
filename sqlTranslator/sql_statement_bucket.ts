@@ -255,8 +255,15 @@ function* columnNodes(root: any): Generator<any> {
 	const literalData = new Set();
 	for (const node of astNodes(root)) {
 		if (node instanceof (alasql as any).yy.Json) {
-			for (const inner of astNodes(node.value)) {
-				if (!(inner instanceof (alasql as any).yy.Column)) literalData.add(inner);
+			// Only the literal's own plain objects and arrays: nested AST nodes, a nested JSON literal
+			// included, are reached by the outer walk, so each is marked once.
+			const pending = [node.value];
+			while (pending.length > 0) {
+				const value = pending.pop();
+				if (value === null || typeof value !== 'object' || literalData.has(value)) continue;
+				if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) continue;
+				literalData.add(value);
+				for (const child of Object.values(value)) pending.push(child);
 			}
 		} else if (node.columnid && !literalData.has(node)) {
 			yield node;

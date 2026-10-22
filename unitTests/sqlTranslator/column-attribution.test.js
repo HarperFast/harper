@@ -172,6 +172,9 @@ describe('SQL column attribution for attribute permissions', () => {
 		assert.deepStrictEqual(attributesOf(literal, 'data', 'L'), ['id']);
 		const update = bucketFor(`UPDATE data.L SET label = {columnid:'ssn'} WHERE id = 1`);
 		assert.ok(!attributesOf(update, 'data', 'L').includes('ssn'));
+		const nested = bucketFor(`SELECT {a: {columnid:'x', tableid:'zz'}, b: {c: {columnid:'y'}}} AS obj FROM data.L`);
+		assert.deepStrictEqual(nested.getUnresolvedColumnRefs(), []);
+		assert.ok(!attributesOf(nested, 'data', 'L').includes('y'));
 		const wrapped = bucketFor(`SELECT {a: ssn} AS obj FROM data.L WHERE id = 'x'`);
 		assert.ok(attributesOf(wrapped, 'data', 'L').includes('ssn'));
 	});
