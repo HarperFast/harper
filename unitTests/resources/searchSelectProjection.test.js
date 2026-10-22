@@ -75,6 +75,7 @@ describe('search select projection matches single-record projection', function (
 				{ name: 'asyncComputedMeta', computed: true },
 				{ name: 'failingComputed', computed: true },
 				{ name: 'thenableShapedMeta', computed: true },
+				{ name: 'asyncDate', computed: true },
 				{ name: 'author', type: 'Author', relationship: { from: 'authorId' }, definition: { tableClass: Author } },
 				{
 					name: 'comments',
@@ -94,6 +95,7 @@ describe('search select projection matches single-record projection', function (
 			internalSecret: 'DO_NOT_LEAK',
 		}));
 		Article.setComputedAttribute('thenableShapedMeta', () => ({ label: 'kept', then: 'next-step', hidden: 'omit' }));
+		Article.setComputedAttribute('asyncDate', async () => new Date('2026-01-01T00:00:00.000Z'));
 		Article.setComputedAttribute('failingComputed', async () => {
 			throw new Error('computed failure');
 		});
@@ -381,6 +383,51 @@ describe('search select projection matches single-record projection', function (
 				assert.deepStrictEqual(row, { id: 'a-binary', bin: { length: 3 }, dates: [{ getTime: undefined }] });
 		} finally {
 			await Article.delete('a-binary');
+		}
+	});
+
+	it('treats a string wildcard sub-select like a wildcard list', async function () {
+		assert.deepStrictEqual(await projectBothWays(['id', { name: 'meta', select: '*' }]), {
+			id: 'a1',
+			meta: article.meta,
+		});
+	});
+
+	it('projects a wildcard alongside names on table records and relationships', async function () {
+		const select = ['id', '*', nested('author', ['*'])];
+		const target = new RequestTarget();
+		target.id = article.id;
+		target.select = select;
+		const [searched] = await search(select);
+		for (const row of [await Article.get(target), searched]) {
+			assert.strictEqual(row.title, 'Main Article');
+			assert.deepStrictEqual(row.meta, article.meta);
+			assert.deepStrictEqual({ ...row.author }, { id: 'u-alice', name: 'Alice', clearance: 'public' });
+		}
+		const positional = ['*'];
+		positional.asArray = true;
+		const [record] = await projectBothWays(positional);
+		assert.strictEqual(record.id, 'a1');
+	});
+
+	it('keeps a Date resolved from an async @computed under a sub-select', async function () {
+		const row = await projectBothWays(['id', nested('asyncDate', ['x'])]);
+		assert.ok(row.asyncDate instanceof Date);
+		assert.strictEqual(row.asyncDate.toISOString(), '2026-01-01T00:00:00.000Z');
+	});
+
+	it('omits Object.prototype methods when projecting a mutable resource instance', async function () {
+		const loadAsInstance = Article.loadAsInstance;
+		Article.loadAsInstance = true;
+		Article.getReturnMutable = true;
+		try {
+			const target = new RequestTarget();
+			target.id = article.id;
+			target.select = ['id', 'toString', 'constructor'];
+			assert.deepStrictEqual(await Article.get(target), { id: 'a1', toString: undefined, constructor: undefined });
+		} finally {
+			Article.getReturnMutable = false;
+			Article.loadAsInstance = loadAsInstance;
 		}
 	});
 
