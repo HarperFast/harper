@@ -556,6 +556,10 @@ describe('analytics aggregation cycle', () => {
 
 	it('drops actions recorded before a disable instead of reporting them after re-enable', async function () {
 		this.timeout(30000);
+		const flushedPaths = [];
+		analytics.addAnalyticsListener((metrics) => {
+			for (const entry of metrics) if (entry.metric === 'db-write') flushedPaths.push(entry.path);
+		});
 		analytics.setAnalyticsEnabled(true);
 		analytics.recordAction(1, 'db-write', 'ReenableStale');
 		await delay(400);
@@ -576,6 +580,7 @@ describe('analytics aggregation cycle', () => {
 		);
 		const paths = report.metrics.filter((entry) => entry.metric === 'db-write').map((entry) => entry.path);
 		assert.deepStrictEqual(paths, ['ReenableFresh']);
+		assert.ok(!flushedPaths.includes('ReenableStale'), 'no flush reported the pre-disable action');
 		assert.ok(report.period <= performance.now() - enabledAt, `period ${report.period} covers only the new window`);
 	});
 });
