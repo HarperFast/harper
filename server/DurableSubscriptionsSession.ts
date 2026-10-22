@@ -877,11 +877,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const { qos, topic, startTime, databaseGeneration } = state.entry;
 			const durable = qos > 0;
 			try {
-				// retain handling, not omitCurrent, decides whether a subscription starts with current values
+				// addSubscription reads retain handling, not omitCurrent: 2 resumes with history, never retained values
 				await this.resumeSubscription(
-					durable
-						? { omitCurrent: true, topic, qos, startTime, databaseGeneration, reportProgress: true }
-						: { topic, qos, rh: 2 },
+					durable ? { topic, qos, rh: 2, startTime, databaseGeneration, reportProgress: true } : { topic, qos, rh: 2 },
 					durable
 				);
 			} catch (error) {
