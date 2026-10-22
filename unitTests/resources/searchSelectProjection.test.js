@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { Resource } = require('#src/resources/Resource');
 const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 describe('search select projection matches single-record projection', function () {
@@ -376,12 +377,24 @@ describe('search select projection matches single-record projection', function (
 				assert.ok(row.dates[0] instanceof Date);
 				assert.strictEqual(row.dates[0].getTime(), createdAt.getTime());
 			}
-			// mixed with names, `*` copies no keys from a native value and the names still project
-			for (const row of await projectBinary(['id', nested('bin', ['length', '*'])]))
-				assert.deepStrictEqual(row, { id: 'a-binary', bin: { length: 3 } });
+			for (const row of await projectBinary(['id', nested('bin', ['length', '*']), nested('dates', ['getTime', '*'])]))
+				assert.deepStrictEqual(row, { id: 'a-binary', bin: { length: 3 }, dates: [{ getTime: undefined }] });
 		} finally {
 			await Article.delete('a-binary');
 		}
+	});
+
+	it('settles async rows of a custom Resource array result', async function () {
+		class AsyncRows extends Resource {
+			static loadAsInstance = true;
+			get() {
+				return [{ label: 'first', later: Promise.resolve('resolved'), hidden: 'omit' }];
+			}
+		}
+		const target = new RequestTarget();
+		target.id = 'rows';
+		target.select = ['label', 'later'];
+		assert.deepStrictEqual(await AsyncRows.get(target), [{ label: 'first', later: 'resolved' }]);
 	});
 
 	it('settles async values inside positional and array projections', async function () {
