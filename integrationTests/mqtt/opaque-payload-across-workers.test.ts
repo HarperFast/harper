@@ -115,7 +115,6 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 		return predicate();
 	}
 
-	/** The worker thread serving this connection, as reported by the WorkerProbe subscription. */
 	async function workerOf(client: MqttClient): Promise<number> {
 		let threadId: number | undefined;
 		const onMessage = (topic: string, payload: Buffer) => {

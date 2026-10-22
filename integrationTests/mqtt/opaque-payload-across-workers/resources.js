@@ -17,7 +17,6 @@ export class WorkerProbe extends Resource {
 	}
 }
 
-// No serializer can encode this message.
 export class Unserializable extends Resource {
 	subscribe() {
 		return yielding({

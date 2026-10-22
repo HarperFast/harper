@@ -308,7 +308,7 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		});
 	});
 
-	/** A subscription the test feeds by hand, so an update can arrive after the client has left. */
+	/** A subscription the test feeds by hand, so it controls when, and after what, each update arrives. */
 	function handFedTopic() {
 		const name = `HandFed${++sequence}`;
 		const feed = { nexts: 0, returned: 0, deliver: undefined };

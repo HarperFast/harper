@@ -329,6 +329,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 	}
 	let disconnected;
+	// set by a failed delivery, so sibling subscriptions stop writing before the aborted socket's 'close' arrives
+	let aborted = false;
 	numberOfConnections++;
 	const connection = {
 		protocolVersion: () => mqttOptions.protocolVersion,
@@ -561,7 +563,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					});
 					const listener = async (topic, message, messageId, subscription, version, dup) => {
 						try {
-							if (disconnected) {
+							if (disconnected || aborted) {
 								// a delivery already past the subscription when the client left; the disconnect has ended the session
 								mqttLog.debug?.(`Session ${session?.sessionId} disconnected while trying to send message to ${topic}`);
 								return false;
@@ -616,6 +618,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							mqttLog.error?.(error);
 							// Ending only the session would leave the client connected and receiving nothing. An abort,
 							// unlike a graceful end, closes without waiting on the peer, and onClose ends the session.
+							aborted = true;
 							if (socket.destroy) socket.destroy();
 							else socket.terminate();
 							return false;
