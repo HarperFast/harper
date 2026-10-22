@@ -1137,7 +1137,6 @@ function selectFromObject(object, propertyResolvers, context, selectsPrototype: 
 			return typeof value === 'function' ? undefined : value;
 		};
 }
-// defines a `__proto__` own data property, so a selected `__proto__` key is data, not the object's prototype
 export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
 function settleAll(results: any[]) {
 	for (let i = 0, l = results.length; i < l; i++) {

@@ -1356,8 +1356,7 @@ function resumeRefusal(auditStore: any, generationId: string, cursor: number): E
 		: new DatabaseGenerationChangedError();
 }
 
-// Plain JSON values and directReturn resolver results carry no table of their own, so their sub-select runs
-// through the resolver-free transform; an outer table's resolvers must not run against nested data.
+// an outer table's resolvers must never run against nested data that merely shares a name with them
 function projectPlainValue(transformCache: Map<any, (value: any) => any>, attribute: any, value: any) {
 	let transform = transformCache.get(attribute);
 	if (!transform) {
