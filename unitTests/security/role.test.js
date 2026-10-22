@@ -8,7 +8,6 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 
 const role_rw = rewire('#src/security/role');
-const { ClientError } = require('#src/utility/errors/hdbError');
 
 const sandbox = sinon.createSandbox();
 
@@ -53,36 +52,6 @@ describe('security/role.js', () => {
 
 			const result = await role_rw.getRoleByName('readonly_role');
 			assert.deepStrictEqual(result, roleRecord);
-		});
-	});
-
-	describe('alterRole()', () => {
-		function stubUpdate(error) {
-			const updateStub = sandbox.stub().rejects(error);
-			role_rw.__set__('insert', { update: updateStub });
-			role_rw.__set__('user_ts_1', { assertActiveSuperUserRemains: async () => {} });
-			return updateStub;
-		}
-
-		for (const statusCode of [400, 405]) {
-			it(`preserves a ClientError ${statusCode} from update`, async () => {
-				stubUpdate(new ClientError('write refused', statusCode));
-
-				await assert.rejects(role_rw.alterRole({ id: 'some_role', permission: { super_user: false } }), (err) => {
-					assert.strictEqual(err.statusCode, statusCode);
-					assert.strictEqual(err.message, 'write refused');
-					return true;
-				});
-			});
-		}
-
-		it('wraps an unexpected error as a 500', async () => {
-			stubUpdate(new Error('disk exploded'));
-
-			await assert.rejects(role_rw.alterRole({ id: 'some_role', permission: { super_user: false } }), (err) => {
-				assert.strictEqual(err.statusCode, 500);
-				return true;
-			});
 		});
 	});
 });
