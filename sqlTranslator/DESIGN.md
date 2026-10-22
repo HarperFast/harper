@@ -35,6 +35,8 @@ called by `bind.ts`, `logical/build.ts` and the bucket alike:
 Row accessors that name no column, AlaSQL's `_` and JavaScript expressions, are refused for
 non-super users by `getRowAccessors()`. Legacy SQL's row container always carries the primary key
 (`dataLayer/SQLSearch.ts` keys rows by it), so a whole-row read would expose it whatever the role allows.
+The JavaScript refusal must hold for every non-super user, whatever their attribute permissions:
+AlaSQL compiles a JavaScript expression's text into the query function as code.
 
 Enforced by `unitTests/sqlTranslator/column-attribution.test.js`,
 `unitTests/sqlEngine/columnScope.test.js` and `integrationTests/security/sql-attribute-perms.test.ts`.

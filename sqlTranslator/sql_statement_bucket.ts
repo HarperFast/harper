@@ -138,9 +138,10 @@ class sqlStatementBucket {
 
 	/**
 	 * Expressions that read a whole row instead of naming a column: AlaSQL's `_` (`SELECT VALUE`,
-	 * `ROW`, `x._`, `_->attr`) and JavaScript expressions. Neither names an attribute, so attribute
-	 * permissions cannot be applied to them — and legacy SQL's row container always carries the
-	 * primary key.
+	 * `ROW`, `x._`, `_->attr`) and JavaScript expressions. Attribute permissions cannot apply to them,
+	 * and legacy SQL's row container always carries the primary key. JavaScript expressions must stay
+	 * refused for every non-super user regardless: AlaSQL compiles their text into the query function
+	 * as code.
 	 */
 	getRowAccessors(): string[] {
 		const accessors = [];
@@ -237,13 +238,17 @@ function filterReadRestrictedAttrs(attrPerms: any[]) {
  */
 function* astNodes(root: any): Generator<any> {
 	const seen = new Set();
-	const pending = [root];
+	const pending = root !== null && typeof root === 'object' ? [root] : [];
 	while (pending.length > 0) {
 		const node = pending.pop();
-		if (node === null || typeof node !== 'object' || seen.has(node)) continue;
+		if (seen.has(node)) continue;
 		seen.add(node);
 		yield node;
-		for (const child of Object.values(node)) pending.push(child);
+		for (const key in node) {
+			if (!Object.hasOwn(node, key)) continue;
+			const child = node[key];
+			if (child !== null && typeof child === 'object') pending.push(child);
+		}
 	}
 }
 
@@ -472,7 +477,6 @@ function getAttributionScope(ast: any): AttributionTable[] {
 		attributes: [],
 		attributesKnown: false,
 	}));
-	// A single table needs no declarations: every column attributes to it.
 	if (scope.length < 2) return scope;
 	const databases = loadDatabaseRegistry();
 	for (const entry of scope) {

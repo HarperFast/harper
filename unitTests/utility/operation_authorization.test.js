@@ -607,6 +607,32 @@ describe('Test operation_authorization', function () {
 			assert.equal(result, null);
 		});
 
+		it('refuses a non-super whole-row accessor or unresolved column qualifier, but not a super user', function () {
+			for (const sql of [
+				'SELECT VALUE FROM dev.dog',
+				'SELECT ``1`` AS one FROM dev.dog',
+				'SELECT bogus.name FROM dev.dog',
+			]) {
+				const req_json = getRequestJson(TEST_JSON);
+				req_json.hdb_user.role.permission.dev.tables.dog.read = true;
+				const result = op_auth_rewire.verifyPermsAST(
+					alasql.parse(sql).statements[0],
+					req_json.hdb_user,
+					search.search.name
+				);
+				assert.equal(result instanceof PermissionResponseObject, true, sql);
+				assert.equal(result.unauthorized_access.length, 1, sql);
+
+				const super_json = getRequestJson(TEST_JSON);
+				super_json.hdb_user.role.permission.super_user = true;
+				assert.equal(
+					op_auth_rewire.verifyPermsAST(alasql.parse(sql).statements[0], super_json.hdb_user, search.search.name),
+					null,
+					sql
+				);
+			}
+		});
+
 		it('Test cannot delete from system table error returned', () => {
 			let ast_test = {
 				table: {
