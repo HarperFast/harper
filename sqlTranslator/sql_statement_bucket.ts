@@ -250,9 +250,12 @@ function* astNodes(root: any): Generator<any> {
 	}
 }
 
-/** Column references under `root`. Inside a JSON literal only real Column nodes count; its own objects are data. */
+/**
+ * Column references under `root`. Inside a JSON literal only real Column nodes count; its own objects are
+ * data. The `*` of a plain COUNT(*) names no attribute.
+ */
 function* columnNodes(root: any): Generator<any> {
-	const literalData = new Set();
+	const notColumns = new Set();
 	for (const node of astNodes(root)) {
 		if (node instanceof (alasql as any).yy.Json) {
 			// Only the literal's own plain objects and arrays: nested AST nodes, a nested JSON literal
@@ -260,12 +263,14 @@ function* columnNodes(root: any): Generator<any> {
 			const pending = [node.value];
 			while (pending.length > 0) {
 				const value = pending.pop();
-				if (value === null || typeof value !== 'object' || literalData.has(value)) continue;
+				if (value === null || typeof value !== 'object' || notColumns.has(value)) continue;
 				if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) continue;
-				literalData.add(value);
+				notColumns.add(value);
 				for (const child of Object.values(value)) pending.push(child);
 			}
-		} else if (node.columnid && !literalData.has(node)) {
+		} else if (node.expression && isRowCountWildcard(node, node.expression)) {
+			notColumns.add(node.expression);
+		} else if (node.columnid && !notColumns.has(node)) {
 			yield node;
 		}
 	}
