@@ -132,14 +132,9 @@ They match for every ordinary local write (its record version is its own commit 
 Consequences worth knowing:
 
 - **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the
-  single predicate; `removeAuditEntry`'s tombstone removal gates on it and retains rather than deletes
-  when identity is unknown. A version compare there would let one write authorize destroying another's
-  tombstone.
-- **Identity is not blob equivalence.** `cleanupOrphans` (`blob.ts`) scans every audit value and never
-  skips the entry's own write: an out-of-order merge keeps the newer blob on the record while the audit
-  entry keeps the original update's blob, and `isAuditEntryWrite` is true for both engines
-  (`additionalAuditRefs` on RocksDB, the overwritten `localTime` on LMDB). Covered by
-  `unitTests/resources/cleanupOrphansAuditScan.test.js`.
+  single predicate; `removeAuditEntry`'s tombstone removal gates on it and retains when identity is
+  unknown. It is not blob equivalence: an out-of-order merge keeps the newer blob on the record and the
+  original update's blob on the audit entry, so `cleanupOrphans` scans every audit value.
 - **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from
   `options.version` by every `_write*` builder and read in `save()` only when the transaction is
   `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
