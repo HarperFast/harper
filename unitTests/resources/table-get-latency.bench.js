@@ -1,10 +1,12 @@
-// Table.get latency and CPU on RocksDB across record-cache states. Run on its own (it shrinks the
-// process-wide block cache): npx mocha unitTests/resources/table-get-latency.bench.js
+// Table.get latency and CPU on RocksDB across record-cache states. Run on its own:
+//   npx mocha unitTests/resources/table-get-latency.bench.js
 require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { totalmem } = require('node:os');
+const { resolveRocksMemoryConfig } = require('#src/utility/rocksMemoryConfig');
 
 const SCALE = Number(process.env.BENCH_SCALE ?? 1);
 
@@ -58,8 +60,8 @@ async function main() {
 	await measure('warm', hotIds, 20_000, null);
 	await measure('warm', hotIds, 200_000 * SCALE, null);
 
-	// the record cache still holds the value but the VT no longer vouches for it, as after another
-	// thread's write; populateVersion runs outside the latency sample but inside cpu/ops
+	// the record cache still holds the value but its VT slot no longer vouches for it, as after a slot
+	// collision; this and block-cache-miss charge populateVersion to cpu/ops, not to latency
 	await measure('vt-miss', hotIds, 50_000 * SCALE, (id) => store.populateVersion(id, 1));
 
 	const spreadIds = [];
@@ -76,10 +78,16 @@ async function main() {
 	const held = [];
 	for (const id of spreadIds) held.push(await TestTable.get(id));
 	store.flushSync();
+	// the block cache is process-wide, so put back the default size afterwards
 	RocksDatabase.config({ blockCacheSize: 1 << 20 });
-	// cached value, VT miss, and its block evicted from RocksDB's block cache (still in the OS page cache)
-	await measure('block-cache-miss', stridedIds, stridedIds.length, (id) => store.populateVersion(id, 1));
-	// never read before, so no record-cache entry
+	try {
+		// cached value, VT miss, and its block evicted from RocksDB's block cache (still in the OS page cache)
+		await measure('block-cache-miss', stridedIds, stridedIds.length, (id) => store.populateVersion(id, 1));
+	} finally {
+		RocksDatabase.config(
+			resolveRocksMemoryConfig({ availableMemory: Math.min(process.constrainedMemory?.() || Infinity, totalmem()) })
+		);
+	}
 	await measure('cold', coldIds, coldIds.length, null);
 	if (held.length !== spreadIds.length) throw new Error('unreachable');
 }
