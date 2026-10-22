@@ -1252,11 +1252,15 @@ export function transformForSelect(select, resource) {
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
 				return settleAll(object.map((value) => (value && typeof value === 'object' ? transform(value) : value)));
-			// a resource instance's current values are its record overlaid with its pending changes
-			const wildcardSources =
+			// a tracked instance's toJSON() is its current view: record, folded pending changes and own fields
+			const wildcardSource =
 				selectsWildcard &&
 				!(ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob) &&
-				(typeof object.getRecord === 'function' ? [object.getRecord(), object.getChanges?.()] : [object]);
+				(typeof object.getRecord !== 'function'
+					? object
+					: typeof object.toJSON === 'function'
+						? object.toJSON()
+						: object.getRecord());
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
@@ -1264,15 +1268,12 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				if (property === '*') {
-					if (wildcardSources)
-						for (const source of wildcardSources) {
-							if (!source) continue;
-							for (const key in source) {
-								const value = source[key];
-								if (typeof value === 'function') continue;
-								if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
-								else selectedData[key] = value;
-							}
+					if (wildcardSource)
+						for (const key in wildcardSource) {
+							const value = wildcardSource[key];
+							if (typeof value === 'function') continue;
+							if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
+							else selectedData[key] = value;
 						}
 					continue;
 				}
