@@ -269,7 +269,7 @@ suite(
 			}
 		});
 
-		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. Packets are kept from the CONNECT on. */
+		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. */
 		async function rawConnect(clientId: string, clean = false) {
 			const credentials = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
 			const socket = new WebSocket(mqttURL, 'mqtt', { headers: { Authorization: `Basic ${credentials}` } });
@@ -277,13 +277,17 @@ suite(
 			const parse = packetParser({ protocolVersion: 5 });
 			parse.on('packet', (packet) => packets.push(packet));
 			socket.on('message', (data) => parse.parse(data as Buffer));
+			const closed = new Promise((resolvePromise) => socket.once('close', resolvePromise));
 			await new Promise((resolvePromise, reject) => {
 				socket.once('open', resolvePromise);
 				socket.once('error', reject);
 			});
 			const send = (packet: any) => socket.send(generate(packet, { protocolVersion: 5 }));
 			send({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean });
-			ok(await waitFor(() => packets.some((packet) => packet.cmd === 'connack')), 'CONNACK arrives');
+			if (!(await waitFor(() => packets.some((packet) => packet.cmd === 'connack')))) {
+				socket.terminate();
+				throw new Error(`no CONNACK for ${clientId}`);
+			}
 			let nextId = 1;
 			async function subscribeRaw(topic: string, qos: 1 | 2) {
 				const messageId = nextId++;
@@ -295,7 +299,6 @@ suite(
 			}
 			const publishes = (topic: string) =>
 				packets.filter((packet) => packet.cmd === 'publish' && packet.topic === topic);
-			const closed = new Promise((resolvePromise) => socket.once('close', resolvePromise));
 			return {
 				packets,
 				send,
@@ -332,14 +335,18 @@ suite(
 			await put('Readings', id, 0);
 			await cleanStart(clientId);
 			const first = await rawConnect(clientId);
-			await first.subscribe(topic, 2);
-			await put('Readings', id, 1);
-			ok(await waitFor(() => first.publishes(topic).length > 0), 'the update is published');
-			const [published] = first.publishes(topic);
-			strictEqual(valueOf(published), 1);
-			first.send({ cmd: 'pubrec', messageId: published.messageId });
-			ok(await waitFor(() => first.packets.some((packet) => packet.cmd === 'pubrel')), 'PUBREL answers the PUBREC');
-			await first.drop();
+			let published;
+			try {
+				await first.subscribe(topic, 2);
+				await put('Readings', id, 1);
+				ok(await waitFor(() => first.publishes(topic).length > 0), 'the update is published');
+				[published] = first.publishes(topic);
+				strictEqual(valueOf(published), 1);
+				first.send({ cmd: 'pubrec', messageId: published.messageId });
+				ok(await waitFor(() => first.packets.some((packet) => packet.cmd === 'pubrel')), 'PUBREL answers the PUBREC');
+			} finally {
+				await first.drop();
+			}
 			const saved = await settledEntry(clientId);
 			deepStrictEqual((await storedSession(clientId)).awaitingCompletion, [published.messageId]);
 			ok(saved.databaseGeneration !== undefined, 'the PUBREC moved the position to a certified key');
@@ -370,11 +377,15 @@ suite(
 			await put('Readings', id, 0);
 			await cleanStart(clientId);
 			const first = await rawConnect(clientId);
-			await first.subscribe(topic, 2);
-			await put('Readings', id, 1);
-			ok(await waitFor(() => first.publishes(topic).length > 0), 'the update is published');
-			const [published] = first.publishes(topic);
-			await first.drop();
+			let published;
+			try {
+				await first.subscribe(topic, 2);
+				await put('Readings', id, 1);
+				ok(await waitFor(() => first.publishes(topic).length > 0), 'the update is published');
+				[published] = first.publishes(topic);
+			} finally {
+				await first.drop();
+			}
 			ok(
 				await waitFor(async () => (await storedSession(clientId)).subscriptions[0].inFlight?.length === 1),
 				'the closing save keeps the delivery in flight'
@@ -390,6 +401,10 @@ suite(
 					[[1, published.messageId, true]],
 					'exactly one resend, under the original packet id with DUP'
 				);
+				second.send({ cmd: 'pubrec', messageId: published.messageId });
+				await put('Readings', id, 2);
+				ok(await waitFor(() => second.publishes(topic).length > 1), 'a later update is published');
+				deepStrictEqual(second.publishes(topic).map(valueOf), [1, 2]);
 			} finally {
 				await second.drop();
 			}
@@ -430,6 +445,9 @@ suite(
 				strictEqual(sessionPresent, true);
 				await resumed((barrier) => subscribe(mqttClient, barrier, 1));
 				deepStrictEqual(received, [2], 'only the version written while away is delivered');
+				await put('Readings', id, 3);
+				ok(await waitFor(() => received.includes(3)), `a later update arrives: ${received}`);
+				deepStrictEqual(received, [2, 3]);
 			} finally {
 				await end(mqttClient);
 			}
