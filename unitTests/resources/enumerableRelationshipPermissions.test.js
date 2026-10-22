@@ -289,6 +289,20 @@ describe('Default reads authorize @enumerable relationships against the related 
 		}
 	});
 
+	it('authorizes a selected $record like the record itself', async () => {
+		const empOnly = { id: 'e1', name: 'Ann', deptId: 'd1', extra: 'x' };
+		const narrowed = { ...empOnly, dept: { id: 'd1', name: 'Eng' } };
+		const cases = [
+			[roleWith({ EnumEmp: READ }), empOnly],
+			[roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'name') }), narrowed],
+			[roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ }), fullEmp],
+		];
+		for (const [user, record] of cases) {
+			assert.deepStrictEqual(await searchAs(EnumEmp, user, ['id', '$record']), [{ id: 'e1', $record: record }]);
+			assert.deepStrictEqual(await getAs(EnumEmp, user, 'e1', ['$record']), { $record: record });
+		}
+	});
+
 	it('expands * only in a select written by authorization', async () => {
 		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ, EnumPublisher: READ });
 		const superUser = { role: { permission: { super_user: true } } };

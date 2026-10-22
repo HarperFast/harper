@@ -500,6 +500,9 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				const collection = await rest(as, '/Seat/');
 				strictEqual(collection.status, 200, `${as}: ${JSON.stringify(collection.body)}`);
 				deepStrictEqual(collection.body, [seat], as);
+				const whole = await rest(as, '/Seat/?select(id,$record)');
+				strictEqual(whole.status, 200, `${as}: ${JSON.stringify(whole.body)}`);
+				deepStrictEqual(whole.body, [{ id: SEAT.id, $record: seat }], `${as} $record`);
 				const search = await op(as, {
 					operation: 'search_by_conditions',
 					table: 'Seat',
