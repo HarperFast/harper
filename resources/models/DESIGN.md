@@ -4,7 +4,7 @@ Notes on invariants the models layer relies on that the code cannot state itself
 
 ## Embedding prefixes belong to the serving entry
 
-OpenAI embedding entries apply `inputPrefixes.document` or `.query` only for an explicit matching `inputType`, after routing, so fallback entries format the original input independently. Strings are concatenated verbatim; absent or empty prefixes preserve input bytes. A config reload applies prefix changes immediately without re-embedding stored vectors; set them before ingest or re-embed existing documents unless their previous input bytes already match. Enforced by `unitTests/resources/models/inputPrefixes.test.js` and `unitTests/components/openai/index.test.js`. Ollama retains its existing Nomic model-name mapping.
+OpenAI embedding entries apply `inputPrefixes.document` or `.query` only for an explicit matching `inputType`, after routing, so fallback entries format the original input independently. Strings are concatenated verbatim; absent or empty prefixes preserve input bytes. A config reload applies prefix changes immediately without re-embedding stored vectors; set them before ingest or rewrite existing source fields to re-embed documents unless their previous input bytes already match. The `/v1/embeddings` gateway has no `inputType` and leaves text unchanged, so its callers supply any task prefixes themselves. Enforced by `unitTests/resources/models/inputPrefixes.test.js` and `unitTests/components/openai/index.test.js`. Ollama retains its existing Nomic model-name mapping.
 
 ## Decision outputs are validated at the facade
 

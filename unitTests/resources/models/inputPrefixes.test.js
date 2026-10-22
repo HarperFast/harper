@@ -56,7 +56,8 @@ describe('OpenAI entry inputPrefixes through bootstrap, hooks and HTTP', () => {
 	});
 
 	after(async () => {
-		await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		if (server?.listening)
+			await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 	});
 
 	function entry(extra = {}) {
