@@ -845,6 +845,66 @@ describe('ComponentStatusRegistry', function () {
 				assert.equal(result.details['mixed.sub2'].status, COMPONENT_STATUS_LEVELS.LOADING);
 				assert.equal(result.details['mixed.sub3'], undefined); // Healthy component not in details
 			});
+
+			const entry = (key, status, latestMessage) => [
+				key,
+				{ componentName: key, status, latestMessage, lastChecked: { workers: { 0: 1000 } } },
+			];
+
+			for (const level of [COMPONENT_STATUS_LEVELS.WARNING, COMPONENT_STATUS_LEVELS.UNKNOWN]) {
+				it(`should report a lone ${level} sub-component with details`, async function () {
+					const consolidatedStatuses = new Map([
+						entry('app.ok', COMPONENT_STATUS_LEVELS.HEALTHY, 'fine'),
+						entry('app.odd', level, 'needs attention'),
+					]);
+
+					const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+					assert.equal(result.status, level);
+					assert.equal(result.message, 'app.odd: needs attention');
+					assert.deepEqual(result.details, { 'app.odd': { status: level, message: 'needs attention' } });
+				});
+
+				it(`should report a lone ${level} exact match, falling back to the level without a message`, async function () {
+					const consolidatedStatuses = new Map([entry('app', level, undefined)]);
+
+					const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+					assert.equal(result.status, level);
+					assert.equal(result.message, `app: ${level}`);
+					assert.equal(result.details.app.status, level);
+				});
+			}
+
+			it('should rank warning above loading above unknown regardless of insertion order', async function () {
+				const expected = [
+					[COMPONENT_STATUS_LEVELS.UNKNOWN, COMPONENT_STATUS_LEVELS.LOADING, COMPONENT_STATUS_LEVELS.LOADING],
+					[COMPONENT_STATUS_LEVELS.LOADING, COMPONENT_STATUS_LEVELS.WARNING, COMPONENT_STATUS_LEVELS.WARNING],
+					[COMPONENT_STATUS_LEVELS.UNKNOWN, COMPONENT_STATUS_LEVELS.WARNING, COMPONENT_STATUS_LEVELS.WARNING],
+				];
+				for (const [a, b, winner] of expected) {
+					for (const order of [
+						[a, b],
+						[b, a],
+					]) {
+						const consolidatedStatuses = new Map(order.map((level, i) => entry(`app.c${i}`, level, level)));
+						const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+						assert.equal(result.status, winner, `${order.join('+')} should aggregate to ${winner}`);
+						assert.equal(Object.keys(result.details).length, 2);
+					}
+				}
+			});
+
+			it('should let error outrank warning', async function () {
+				const consolidatedStatuses = new Map([
+					entry('app.a', COMPONENT_STATUS_LEVELS.WARNING, 'warn'),
+					entry('app.b', COMPONENT_STATUS_LEVELS.ERROR, 'broke'),
+				]);
+
+				const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+			});
 		});
 
 		describe('details and message generation', function () {

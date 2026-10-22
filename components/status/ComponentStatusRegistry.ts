@@ -10,6 +10,7 @@ import {
 	type ComponentStatusLevel,
 	type ComponentStatusSource,
 	COMPONENT_STATUS_LEVELS,
+	STATUS_PRIORITY,
 	type AggregatedComponentStatus,
 	type ComponentApplicationStatus,
 } from './types.ts';
@@ -222,24 +223,15 @@ export class ComponentStatusRegistry {
 			};
 		}
 
-		// Aggregate all statuses
-		const hasErrors = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.ERROR);
-		const hasLoading = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.LOADING);
-
-		const overallStatus = hasErrors
-			? COMPONENT_STATUS_LEVELS.ERROR
-			: hasLoading
-				? COMPONENT_STATUS_LEVELS.LOADING
-				: COMPONENT_STATUS_LEVELS.HEALTHY;
+		const overallStatus =
+			STATUS_PRIORITY.find((level) => allStatuses.some((s) => s.status === level)) ?? COMPONENT_STATUS_LEVELS.UNKNOWN;
 
 		// Show details if anything is not healthy
 		let overallMessage = 'All components loaded successfully';
 		const details: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }> = {};
 
-		if (hasErrors || hasLoading) {
-			const problemStatuses = allStatuses.filter(
-				(s) => s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
-			);
+		if (overallStatus !== COMPONENT_STATUS_LEVELS.HEALTHY) {
+			const problemStatuses = allStatuses.filter((s) => s.status !== COMPONENT_STATUS_LEVELS.HEALTHY);
 			overallMessage = problemStatuses
 				.map((s) => {
 					const errorMessage = serializeStatusError(s.error);
@@ -249,15 +241,13 @@ export class ComponentStatusRegistry {
 				.join('; ');
 
 			// Include details for debugging
-			for (const status of allStatuses) {
-				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
-					const errorMessage = serializeStatusError(status.error);
-					details[status.key] = {
-						status: status.status,
-						message: formatProblemMessage(status.latestMessage, errorMessage),
-						...(errorMessage !== undefined && { error: errorMessage }),
-					};
-				}
+			for (const status of problemStatuses) {
+				const errorMessage = serializeStatusError(status.error);
+				details[status.key] = {
+					status: status.status,
+					message: formatProblemMessage(status.latestMessage, errorMessage),
+					...(errorMessage !== undefined && { error: errorMessage }),
+				};
 			}
 		}
 
