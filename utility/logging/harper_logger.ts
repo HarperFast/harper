@@ -254,27 +254,34 @@ function applyLogSettings(rootConfigObject: any) {
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
-	const externalLogOptions = normalizeLogOptions(logOptions.external);
-	if (externalLogOptions) {
-		updateLogger(externalLogger, externalLogOptions);
-		for (let [name, component] of mainLogger.components) {
-			if (!normalizeLogOptions(rootConfigObject[name]?.logging) && component.isExternal)
-				updateLogger(component, externalLogOptions, name);
-		}
-	}
+	logLevel = logOptions.level ?? logLevel;
 	for (const name in rootConfigObject) {
-		// we now scan each component to see if it has logging individual configured
-		const component = rootConfigObject[name];
 		// `myComponent:` with nothing under it parses to null, and an async listener's TypeError
 		// escapes the watcher's emit guard as an unhandled rejection.
-		const componentLogging = normalizeLogOptions(component?.logging);
-		if (componentLogging) {
-			updateLogger(mainLogger.forComponent(name), componentLogging, name);
-		} else if (mainLogger.hasComponent(name)) {
-			const componentLogger = mainLogger.forComponent(name);
-			updateLogger(componentLogger, (componentLogger.isExternal && externalLogOptions) ?? logOptions, name);
+		if (normalizeLogOptions(rootConfigObject[name]?.logging)) mainLogger.forComponent(name);
+	}
+	updateComponentLoggers(rootConfigObject, normalizeLogOptions(logOptions.external));
+}
+
+/**
+ * Rebinds every registered component logger, including those the config never names (`tls`,
+ * plugin loggers, `external`): own `logging` block, else the external options for external ones,
+ * else inherit from the main logger.
+ */
+function updateComponentLoggers(configObject: any, externalLogOptions: any) {
+	for (const [name, componentLogger] of mainLogger.components) {
+		const componentLogOptions =
+			normalizeLogOptions(configObject?.[name]?.logging) ??
+			(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
+			{};
+		try {
+			updateLogger(componentLogger, componentLogOptions, name);
+		} catch (err) {
+			console.error(err);
+			updateLogger(componentLogger, {}, name);
 		}
 	}
+	if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
 }
 
 /**
@@ -610,19 +617,7 @@ export function initLogSettings(forceInit = false) {
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
 			const externalLogOptions = normalizeLogOptions(configObject?.logging?.external);
-			for (const [name, componentLogger] of mainLogger.components) {
-				const componentLogOptions =
-					normalizeLogOptions(configObject?.[name]?.logging) ??
-					(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
-					{};
-				try {
-					updateLogger(componentLogger, componentLogOptions, name);
-				} catch (err) {
-					console.error(err);
-					updateLogger(componentLogger, {}, name);
-				}
-			}
-			if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
+			updateComponentLoggers(configObject, externalLogOptions);
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
 				// Bun will crash with the segfault handler, ironically.
 				// Dynamic import works in both CJS and ESM (type-strip); require() is not
