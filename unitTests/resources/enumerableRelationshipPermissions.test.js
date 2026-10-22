@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { toCsvStream } = require('#src/server/serverHelpers/contentTypes');
 
 const READ = { read: true, insert: false, update: false, delete: false, attribute_permissions: [] };
 const roleWith = (tables) => ({ role: { permission: { test: { tables } } } });
@@ -178,5 +179,57 @@ describe('Default reads authorize @enumerable relationships against the related 
 		const expected = { id: 'a1', name: 'Ada', books: [{ ...book, author: { id: 'a1' } }] };
 		assert.deepStrictEqual(await getAs(EnumAuthor, noPublisher, 'a1'), expected);
 		assert.deepStrictEqual(await searchAs(EnumAuthor, noPublisher), [expected]);
+	});
+
+	it('leaves out or narrows the relationship columns of a CSV default read', async () => {
+		async function csvAs(user) {
+			const target = new RequestTarget('/');
+			target.checkPermission = true;
+			const results = EnumEmp.search(target, { user });
+			let csv = '';
+			for await (const chunk of toCsvStream(results, results.getColumns())) csv += chunk;
+			return csv;
+		}
+		assert.strictEqual(await csvAs(roleWith({ EnumEmp: READ })), '"id","name","deptId"\n"e1","Ann","d1"\n');
+		assert.strictEqual(
+			await csvAs(roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'name') })),
+			'"id","name","deptId","dept"\n"e1","Ann","d1","{""id"":""d1"",""name"":""Eng""}"\n'
+		);
+	});
+
+	it('checks each table of a long restricted enumerable chain a bounded number of times', async () => {
+		const length = 40;
+		let next;
+		const chain = [];
+		for (let i = length; i >= 0; i--) {
+			const attributes = [{ name: 'id', isPrimaryKey: true }];
+			if (next) {
+				attributes.push({ name: 'nextId' });
+				attributes.push({
+					name: 'next',
+					relationship: { from: 'nextId' },
+					definition: { tableClass: next },
+					enumerable: true,
+				});
+			}
+			next = table({ table: 'EnumChain' + i, database: 'test', attributes });
+			chain.unshift(next);
+		}
+		const tables = {};
+		for (let i = 0; i < length; i++) tables['EnumChain' + i] = READ;
+		let lookups = 0;
+		const user = {
+			role: {
+				permission: {
+					get test() {
+						lookups++;
+						return { tables };
+					},
+				},
+			},
+		};
+		assert.deepStrictEqual(await searchAs(chain[0], user), []);
+		// the last table is unreadable, so every table writes a select; rechecking each suffix would be quadratic
+		assert.ok(lookups <= 3 * length, `${lookups} permission lookups for a chain of ${length}`);
 	});
 });

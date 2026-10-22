@@ -830,13 +830,12 @@ function transactional(
 			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
 		}
 		if (options.method === 'query' && data && typeof data === 'object') {
-			// QUERY executes the independently parsed body target. Make its requested projection part of
-			// the operation admission target, but remove framework-owned permission controls before either
-			// target reaches application or table code.
+			// QUERY executes the independently parsed body target. Make its requested projection (and, for an
+			// instance resource, its conditions and sort) part of the operation admission target, but remove
+			// framework-owned permission controls before either target reaches application or table code.
+			// Iterables are materialized once: admission and execution both read them.
 			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
 			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
-			// An instance resource executes the body, so allowRead must see the body's conditions and
-			// sort. Iterables are materialized first: admission and execution both read them.
 			if (this.loadAsInstance !== false) {
 				if (Object.prototype.hasOwnProperty.call(data, 'conditions')) {
 					if (data.conditions && !Array.isArray(data.conditions) && data.conditions[Symbol.iterator])

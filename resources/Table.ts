@@ -1242,6 +1242,9 @@ let implicitProjectionPath: Set<any> | null = null;
 // Identifies the current _readableInFull walk; a table marked with it is on the walk's path or found readable
 let readableInFullWalk = 0;
 let readableInFullDepth = 0;
+// Identifies the current admission: one request's synchronous allowRead, including the related allowRead calls that
+// write its projection. A table marked with it is known not readable in full by that request's principal.
+let readableInFullAdmission = 0;
 // Resolve Harper records within a guarded serialization, so none escape back to an encoder that would call
 // their toJSON after our path-scoped unwind and miss the cycle. Native values (Date, Buffer/typed arrays,
 // ArrayBuffer, etc.) stay intact for CBOR/MessagePack.
@@ -1499,6 +1502,7 @@ export function makeTable(options): TableResourceClass {
 	const enumerableRelationDefs = new Set<any>();
 	let enumerableRelationshipNames: string[] = [];
 	let readableInFullMark = 0;
+	let notReadableInFullMark = 0;
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
@@ -1849,9 +1853,14 @@ export function makeTable(options): TableResourceClass {
 			return hasRelationships;
 		}
 		static _readableInFull(user: User, target?: RequestTarget): boolean {
+			if (readableInFullDepth === 0 && implicitProjectionPath === null) readableInFullAdmission++;
+			else if (notReadableInFullMark === readableInFullAdmission) return false;
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return true;
-			if (!permission?.read || permission.attribute_permissions?.length > 0) return false;
+			if (!permission?.read || permission.attribute_permissions?.length > 0) {
+				notReadableInFullMark = readableInFullAdmission;
+				return false;
+			}
 			if (enumerableRelationshipNames.length === 0) return true;
 			if (readableInFullDepth === 0) readableInFullWalk++;
 			else if (readableInFullMark === readableInFullWalk) return true;
@@ -1860,7 +1869,11 @@ export function makeTable(options): TableResourceClass {
 			try {
 				for (const name of enumerableRelationshipNames) {
 					const relatedTable = propertyResolvers[name]?.definition?.tableClass;
-					if (relatedTable && !relatedTable._readableInFull(user, target)) return false;
+					if (relatedTable && !relatedTable._readableInFull(user, target)) {
+						// only a real permission failure returns false, so unlike a cyclic success it holds for the whole admission
+						notReadableInFullMark = readableInFullAdmission;
+						return false;
+					}
 				}
 				return true;
 			} finally {
@@ -3623,7 +3636,6 @@ export function makeTable(options): TableResourceClass {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				const property = target?.property;
 				if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
-					// `/Table/id.relationship` returns the related record, so it is authorized as that selection, in scalar form
 					if (attribute_permissions?.length > 0 && !attributesAsObject(attribute_permissions, 'read')[property])
 						return false;
 					const selection = TableResource._authorizeRelatedSelection(
@@ -3639,7 +3651,7 @@ export function makeTable(options): TableResourceClass {
 					return true;
 				}
 				let select: any = target?.select;
-				// a default read and '*' serialize @enumerable relationships, so the related tables' permissions apply
+				// a default read and '*' serialize @enumerable relationships
 				const listRelationships =
 					enumerableRelationshipNames.length > 0 &&
 					!(attribute_permissions?.length > 0) &&
