@@ -926,7 +926,6 @@ function transactional(
 					query.conditions = data.conditions;
 				} else if (data instanceof URLSearchParams) query.conditions = Array.from(data);
 				else if (data[Symbol.iterator]) {
-					// an iterable body (an array, or a Set from CBOR tag 258) is the condition list
 					if (!Array.isArray(data)) data = Array.from(data);
 					query.conditions = data;
 				}

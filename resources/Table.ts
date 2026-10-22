@@ -1504,12 +1504,13 @@ function conditionsContainFullText(entries: any[], definitions: readonly FullTex
 let structSerializationVisited: Map<any, Set<any>> | null = null;
 // Tables whose default projection allowRead is writing; an @enumerable edge back to one stops at its key.
 let implicitProjectionPath: Set<any> | null = null;
-// Identifies the current _readableInFull walk; a table marked with it is on the walk's path or found readable
+// _readableInFull state. An admission is one request's synchronous allowRead, including the related allowRead calls
+// that write its projection; results proven in it hold only for its principal. A table marked with the current walk is
+// on that walk's path or already found readable there, so a revisit is a provisional success.
+let readableInFullAdmission = 0;
 let readableInFullWalk = 0;
 let readableInFullDepth = 0;
-// Identifies the current admission: one request's synchronous allowRead, including the related allowRead calls that
-// write its projection. A table marked with it is known not readable in full by that request's principal.
-let readableInFullAdmission = 0;
+let readableInFullRevisits = 0;
 // Resolve Harper records within a guarded serialization, so none escape back to an encoder that would call
 // their toJSON after our path-scoped unwind and miss the cycle. Native values (Date, Buffer/typed arrays,
 // ArrayBuffer, etc.) stay intact for CBOR/MessagePack.
@@ -1804,7 +1805,8 @@ export function makeTable(options): TableResourceClass {
 	const enumerableRelationDefs = new Set<any>();
 	let enumerableRelationshipNames: string[] = [];
 	let readableInFullMark = 0;
-	let notReadableInFullMark = 0;
+	let readableInFullProvenMark = 0;
+	let readableInFullProven = false;
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
@@ -2205,28 +2207,25 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _readableInFull(user: User, target?: RequestTarget): boolean {
 			if (readableInFullDepth === 0 && implicitProjectionPath === null) readableInFullAdmission++;
-			else if (notReadableInFullMark === readableInFullAdmission) return false;
+			else if (readableInFullProvenMark === readableInFullAdmission) return readableInFullProven;
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return true;
-			if (!permission?.read || permission.attribute_permissions?.length > 0) {
-				notReadableInFullMark = readableInFullAdmission;
-				return false;
-			}
+			if (!permission?.read || permission.attribute_permissions?.length > 0) return proveReadableInFull(false);
 			if (enumerableRelationshipNames.length === 0) return true;
 			if (readableInFullDepth === 0) readableInFullWalk++;
-			else if (readableInFullMark === readableInFullWalk) return true;
+			else if (readableInFullMark === readableInFullWalk) {
+				readableInFullRevisits++;
+				return true;
+			}
 			readableInFullMark = readableInFullWalk;
+			const revisits = readableInFullRevisits;
 			readableInFullDepth++;
 			try {
 				for (const name of enumerableRelationshipNames) {
 					const relatedTable = propertyResolvers[name]?.definition?.tableClass;
-					if (relatedTable && !relatedTable._readableInFull(user, target)) {
-						// only a real permission failure returns false, so unlike a cyclic success it holds for the whole admission
-						notReadableInFullMark = readableInFullAdmission;
-						return false;
-					}
+					if (relatedTable && !relatedTable._readableInFull(user, target)) return proveReadableInFull(false);
 				}
-				return true;
+				return readableInFullRevisits === revisits ? proveReadableInFull(true) : true;
 			} finally {
 				readableInFullDepth--;
 			}
@@ -11737,6 +11736,11 @@ export function makeTable(options): TableResourceClass {
 			return table;
 		}
 	}
+	function proveReadableInFull(readable: boolean): boolean {
+		readableInFullProvenMark = readableInFullAdmission;
+		readableInFullProven = readable;
+		return readable;
+	}
 	function listEnumerableRelationships(select: any[], user: User, checkPermission: any, context: Context): void {
 		const outermost = implicitProjectionPath === null;
 		implicitProjectionPath ??= new Set();
@@ -11788,11 +11792,10 @@ export function makeTable(options): TableResourceClass {
 				(target as any).name === undefined
 			) {
 				conditions = searchConditions(target);
-				// search reads a one-shot iterator target again
 				if (!Array.isArray(target) && !(target instanceof URLSearchParams)) (target as any).conditions = conditions;
 			}
 		} else {
-			// search reads the conditions again
+			// search reads the conditions again, so a one-shot iterator is materialized
 			if (!Array.isArray(conditions) && conditions[Symbol.iterator]) target.conditions = Array.from(conditions);
 			conditions = searchConditions(target);
 		}

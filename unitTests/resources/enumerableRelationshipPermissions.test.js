@@ -197,6 +197,114 @@ describe('Default reads authorize @enumerable relationships against the related 
 		);
 	});
 
+	function countingUser(tables, failAt) {
+		const user = {
+			lookups: 0,
+			role: {
+				permission: {
+					get test() {
+						if (++user.lookups === failAt) throw new Error('permission lookup failed');
+						return { tables };
+					},
+				},
+			},
+		};
+		return user;
+	}
+
+	it('checks a readable subgraph shared by sibling relationships once per read', async () => {
+		const length = 10;
+		let shared;
+		for (let i = length; i >= 0; i--) {
+			const attributes = [{ name: 'id', isPrimaryKey: true }];
+			if (shared) {
+				attributes.push({ name: 'nextId' });
+				attributes.push({
+					name: 'next',
+					relationship: { from: 'nextId' },
+					definition: { tableClass: shared },
+					enumerable: true,
+				});
+			}
+			shared = table({ table: 'EnumShared' + i, database: 'test', attributes });
+		}
+		const tables = {};
+		for (let i = 0; i <= length; i++) tables['EnumShared' + i] = READ;
+		const rootAttributes = [{ name: 'id', isPrimaryKey: true }];
+		const siblings = 10;
+		for (let b = 0; b < siblings; b++) {
+			const sibling = table({
+				table: 'EnumSibling' + b,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'sharedId' },
+					{ name: 'shared', relationship: { from: 'sharedId' }, definition: { tableClass: shared }, enumerable: true },
+				],
+			});
+			tables['EnumSibling' + b] = READ;
+			rootAttributes.push({ name: 's' + b + 'Id' });
+			rootAttributes.push({
+				name: 's' + b,
+				relationship: { from: 's' + b + 'Id' },
+				definition: { tableClass: sibling },
+				enumerable: true,
+			});
+		}
+		rootAttributes.push({ name: 'deptId' });
+		rootAttributes.push({
+			name: 'dept',
+			relationship: { from: 'deptId' },
+			definition: { tableClass: EnumDept },
+			enumerable: true,
+		});
+		const Root = table({ table: 'EnumSharedRoot', database: 'test', attributes: rootAttributes });
+		tables.EnumSharedRoot = READ;
+		const user = countingUser(tables);
+		assert.deepStrictEqual(await searchAs(Root, user), []);
+		const tableCount = length + 1 + siblings + 3;
+		assert.ok(user.lookups <= 2 * tableCount, `${user.lookups} permission lookups for ${tableCount} tables`);
+	});
+
+	it('admits consecutive principals independently, also after a failed permission lookup', async () => {
+		const restricted = roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'name') });
+		const noOrg = roleWith({ EnumEmp: READ, EnumDept: READ });
+		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ });
+		const narrowed = { id: 'e1', name: 'Ann', deptId: 'd1', extra: 'x', dept: { id: 'd1', name: 'Eng' } };
+		const withoutOrg = { ...fullEmp, dept: { id: 'd1', name: 'Eng', budget: 100, orgId: 'o1' } };
+		assert.deepStrictEqual(await getAs(EnumEmp, restricted, 'e1'), narrowed);
+		assert.deepStrictEqual(await getAs(EnumEmp, readAll, 'e1'), fullEmp);
+		assert.deepStrictEqual(await getAs(EnumEmp, noOrg, 'e1'), withoutOrg);
+		for (let failAt = 1; failAt <= 4; failAt++) {
+			const failing = countingUser({ EnumEmp: READ, EnumDept: READ }, failAt);
+			await assert.rejects(getAs(EnumEmp, failing, 'e1'));
+			assert.deepStrictEqual(await getAs(EnumEmp, readAll, 'e1'), fullEmp);
+			assert.deepStrictEqual(await getAs(EnumEmp, noOrg, 'e1'), withoutOrg);
+			assert.deepStrictEqual(await getAs(EnumEmp, roleWith({ EnumEmp: READ }), 'e1'), {
+				id: 'e1',
+				name: 'Ann',
+				deptId: 'd1',
+				extra: 'x',
+			});
+		}
+	});
+
+	it('expands * only in a select written by authorization', async () => {
+		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ, EnumPublisher: READ });
+		const superUser = { role: { permission: { super_user: true } } };
+		assert.deepStrictEqual(await getAs(EnumEmp, readAll, 'e1', ['*']), await getAs(EnumEmp, superUser, 'e1', ['*']));
+		assert.deepStrictEqual(
+			await getAs(EnumPublisher, readAll, 'p1', ['*']),
+			await getAs(EnumPublisher, superUser, 'p1', ['*'])
+		);
+		assert.deepStrictEqual(await getAs(EnumEmp, roleWith({ EnumEmp: READ }), 'e1', ['*']), {
+			id: 'e1',
+			name: 'Ann',
+			deptId: 'd1',
+			extra: 'x',
+		});
+	});
+
 	it('checks each table of a long restricted enumerable chain a bounded number of times', async () => {
 		const length = 40;
 		let next;
@@ -229,7 +337,6 @@ describe('Default reads authorize @enumerable relationships against the related 
 			},
 		};
 		assert.deepStrictEqual(await searchAs(chain[0], user), []);
-		// the last table is unreadable, so every table writes a select; rechecking each suffix would be quadratic
 		assert.ok(lookups <= 3 * length, `${lookups} permission lookups for a chain of ${length}`);
 	});
 });
