@@ -88,7 +88,7 @@ REST supports `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `mat
 GET /Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather
 ```
 
-In v5.4, REST's `limit(start,end)` uses an exclusive end. This prefix query skips 100 eligible products and requests the next 10, within request budgets:
+REST's `limit(start,end)` uses an exclusive end. In v5.4, this prefix query skips 100 eligible products and requests the next 10, within request budgets:
 
 ```http
 GET /Product/?catalogSearch=matches_prefix=waterproof%20tra&limit(100,110)

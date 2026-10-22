@@ -47,7 +47,7 @@ Detailed documentation: [Database Overview](../database/overview.md)
 
 ### `describe_all`
 
-Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#describe_table) described for `describe_table`.
+Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
 
 ```json
 { "operation": "describe_all" }
@@ -55,7 +55,7 @@ Returns the definitions of all databases and tables within the database. Record 
 
 ### `describe_database`
 
-Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#describe_table) described for `describe_table`.
+Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
 
 ```json
 { "operation": "describe_database", "database": "dev" }
