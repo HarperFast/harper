@@ -40,9 +40,13 @@ function mqttListener() {
 	const server = { ws: (fn) => ((listener = fn), []), socket: () => ({}), mqtt };
 	handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
 	return (user) => {
-		const socket = { sends: [], handlers: {}, closes: 0, _socket: { remoteAddress: '127.0.0.1' } };
+		const socket = { sends: [], handlers: {}, closes: 0, terminations: 0, _socket: { remoteAddress: '127.0.0.1' } };
 		socket.close = () => socket.closes++;
-		socket.terminate = () => {};
+		// a terminated ws emits 'close' straight away, without waiting on the peer
+		socket.terminate = () => {
+			socket.terminations++;
+			setImmediate(() => socket.handlers.close?.());
+		};
 		socket.send = (message) => socket.sends.push(message);
 		socket.on = (event, handler) => (socket.handlers[event] = handler);
 		const headers = { 'sec-websocket-protocol': 'mqtt' };
@@ -377,7 +381,8 @@ describe('mqtt.ts reason codes for a refused request', () => {
 					message: 'the send failure was not logged',
 				});
 				await waitFor(() => feed.returned === 1, { message: 'the delivery loop did not stop' });
-				assert.strictEqual(client.sessions.has(client.session), false, 'the session was left registered');
+				await waitFor(() => !client.sessions.has(client.session), { message: 'the session was left registered' });
+				assert.strictEqual(client.socket.terminations, 1, 'the connection was left open');
 			} finally {
 				error.restore();
 			}
