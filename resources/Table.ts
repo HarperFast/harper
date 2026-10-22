@@ -8324,7 +8324,6 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			propertyResolvers.$highlights.directReturn = true;
-			// a selected $record is this table's record, so it is authorized and projected like one
 			propertyResolvers.$record.definition = { tableClass: TableResource };
 			primaryKeyAttribute = undefined;
 			for (const attribute of this.attributes) {
@@ -9213,12 +9212,14 @@ export function makeTable(options): TableResourceClass {
 		return readable;
 	}
 	function listEnumerableRelationships(select: any[], user: User, checkPermission: any, context: Context): void {
+		let named: Set<string> | undefined;
+		for (const property of select) if (property !== '*') (named ??= new Set()).add(property?.name ?? property);
 		const outermost = implicitProjectionPath === null;
 		implicitProjectionPath ??= new Set();
 		implicitProjectionPath.add(TableResource);
 		try {
 			for (const name of enumerableRelationshipNames) {
-				if (select.some((property) => (property?.name ?? property) === name)) continue;
+				if (named?.has(name)) continue;
 				const relatedTable = propertyResolvers[name]?.definition?.tableClass;
 				if (!relatedTable) continue;
 				const property = implicitProjectionPath.has(relatedTable) ? { name, select: [relatedTable.primaryKey] } : name;

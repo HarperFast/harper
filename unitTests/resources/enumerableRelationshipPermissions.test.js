@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { toCsvStream } = require('#src/server/serverHelpers/contentTypes');
+const { verifyPerms } = require('#src/utility/operation_authorization');
 
 const READ = { read: true, insert: false, update: false, delete: false, attribute_permissions: [] };
 const roleWith = (tables) => ({ role: { permission: { test: { tables } } } });
@@ -301,6 +302,66 @@ describe('Default reads authorize @enumerable relationships against the related 
 			assert.deepStrictEqual(await searchAs(EnumEmp, user, ['id', '$record']), [{ id: 'e1', $record: record }]);
 			assert.deepStrictEqual(await getAs(EnumEmp, user, 'e1', ['$record']), { $record: record });
 		}
+	});
+
+	it('operations API reports a denied related attribute named __proto__', () => {
+		const writeOnly = { attribute_name: '__proto__', read: false, insert: true, update: false };
+		const priorSchema = global.hdb_schema;
+		const schemaOf = (name, attributes) => ({
+			name,
+			schema: 'test',
+			hash_attribute: 'id',
+			attributes: attributes.map((attribute) => ({ attribute })),
+		});
+		global.hdb_schema = {
+			test: {
+				EnumEmp: schemaOf('EnumEmp', ['id', 'name', 'deptId', 'dept']),
+				EnumDept: schemaOf('EnumDept', ['id', 'name', 'budget', 'orgId', 'org', '__proto__']),
+			},
+		};
+		const request = {
+			operation: 'search_by_conditions',
+			schema: 'test',
+			table: 'EnumEmp',
+			get_attributes: ['id'],
+			conditions: [{ search_attribute: ['dept', '__proto__'], search_type: 'equals', search_value: 1 }],
+			hdb_user: {
+				username: 'proto-reader',
+				role: {
+					id: 'proto-reader',
+					role: 'proto-reader',
+					__updatedtime__: Date.now(),
+					permission: {
+						super_user: false,
+						test: {
+							tables: {
+								EnumEmp: READ,
+								EnumDept: {
+									...readOnly('id', 'name'),
+									insert: true,
+									attribute_permissions: [...readOnly('id').attribute_permissions, writeOnly],
+								},
+							},
+						},
+					},
+				},
+			},
+		};
+		let response;
+		try {
+			response = verifyPerms(request, 'searchByConditions');
+		} finally {
+			global.hdb_schema = priorSchema;
+		}
+		assert.deepStrictEqual(response.invalid_schema_items, []);
+		assert.deepStrictEqual(JSON.parse(JSON.stringify(response.unauthorized_access)), [
+			{
+				schema: 'test',
+				table: 'EnumDept',
+				required_table_permissions: [],
+				required_attribute_permissions: [{ attribute_name: '__proto__', required_permissions: ['read'] }],
+			},
+		]);
 	});
 
 	it('expands * only in a select written by authorization', async () => {
