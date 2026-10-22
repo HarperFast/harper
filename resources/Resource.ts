@@ -1171,9 +1171,8 @@ function registerLiveSubscriptionForContext(
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
-	// A select written by authorization only narrows or omits relationships, so the default allowRead's
-	// result still reads only the role's table permission; a caller's select, or a condition or sort
-	// through a relationship, also reads related tables' permissions.
+	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
+	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
 		!selectedByCaller &&
 		defaultAllowReads.has(resource.allowRead) &&

@@ -1008,6 +1008,7 @@ interface TableResourceClass {
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
 	_referencesRelationship(target: RequestTarget): boolean;
 	_readableInFull(user: User, target?: RequestTarget): boolean;
+	_inReadAdmission<T>(authorize: () => T): T;
 	_copyUnlistedAttributes(record: any, selected: any): void;
 	readonly hasRelationships: boolean;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
@@ -1504,9 +1505,11 @@ function conditionsContainFullText(entries: any[], definitions: readonly FullTex
 let structSerializationVisited: Map<any, Set<any>> | null = null;
 // Tables whose default projection allowRead is writing; an @enumerable edge back to one stops at its key.
 let implicitProjectionPath: Set<any> | null = null;
-// _readableInFull state. An admission is one request's synchronous allowRead, including the related allowRead calls
-// that write its projection; results proven in it hold only for its principal. A table marked with the current walk is
-// on that walk's path or already found readable there, so a revisit is a provisional success.
+// _readableInFull state. An admission is one request's synchronous authorization of a read, including the related
+// allowRead calls for its selections and projection; results proven in it hold only for its principal. A table marked
+// with the current walk is on that walk's path or already found readable there, so a revisit is a provisional success.
+let readAdmissionDepth = 0;
+let readAdmissionPrincipal: any;
 let readableInFullAdmission = 0;
 let readableInFullWalk = 0;
 let readableInFullDepth = 0;
@@ -2206,8 +2209,11 @@ export function makeTable(options): TableResourceClass {
 			return hasRelationships;
 		}
 		static _readableInFull(user: User, target?: RequestTarget): boolean {
-			if (readableInFullDepth === 0 && implicitProjectionPath === null) readableInFullAdmission++;
-			else if (readableInFullProvenMark === readableInFullAdmission) return readableInFullProven;
+			const principal = typeof target?.checkPermission === 'object' ? target.checkPermission : user;
+			if (readAdmissionDepth === 0 || principal !== readAdmissionPrincipal) {
+				readableInFullAdmission++;
+				readAdmissionPrincipal = principal;
+			} else if (readableInFullProvenMark === readableInFullAdmission) return readableInFullProven;
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return true;
 			if (!permission?.read || permission.attribute_permissions?.length > 0) return proveReadableInFull(false);
@@ -2236,6 +2242,14 @@ export function makeTable(options): TableResourceClass {
 				if (name in selected || propertyResolvers[name]?.definition?.tableClass) continue;
 				const value = record[name];
 				if (value !== undefined) selected[name] = value;
+			}
+		}
+		static _inReadAdmission<T>(authorize: () => T): T {
+			if (readAdmissionDepth++ === 0) readableInFullAdmission++;
+			try {
+				return authorize();
+			} finally {
+				readAdmissionDepth--;
 			}
 		}
 		static _referencesRelationship(target: RequestTarget): boolean {
@@ -4209,74 +4223,13 @@ export function makeTable(options): TableResourceClass {
 				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
-				if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
-				const attribute_permissions = tablePermission.attribute_permissions;
-				const property = target?.property;
-				if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
-					if (attribute_permissions?.length > 0 && !attributesAsObject(attribute_permissions, 'read')[property])
-						return false;
-					const selection = TableResource._authorizeRelatedSelection(
-						target.select == null ? property : { name: property, select: target.select },
-						user,
-						(target as any).checkPermission,
-						context
-					);
-					if (!selection) return false;
-					target.select = selection;
-					delete target.property;
-					(target as any)[AUTHORIZATION_SELECT] = true;
-					return true;
-				}
-				let select: any = target?.select;
-				const listRelationships =
-					enumerableRelationshipNames.length > 0 &&
-					!(attribute_permissions?.length > 0) &&
-					(select == null || select === '*' || (Array.isArray(select) && select.includes('*'))) &&
-					!TableResource._readableInFull(user, target);
-				if (listRelationships && select == null) select = '*';
-				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
-					// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-					// or if there are relationships, we need to ensure that the user has permission to read from the related table
-					if (!target) target = {} as any;
-					if (select) {
-						const selectArray = Array.isArray(select) ? select : [select];
-						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-						const authorizedSelect = selectArray
-							.map((property: any) => {
-								const propertyName = property.name || property;
-								if (
-									!attrsForType ||
-									attrsForType[propertyName] ||
-									fullTextFieldNames?.has(propertyName) ||
-									propertyName === '$score' ||
-									propertyName === '$highlights'
-								) {
-									return TableResource._authorizeRelatedSelection(
-										property,
-										user,
-										(target as any).checkPermission,
-										context
-									);
-								}
-							})
-							.filter(Boolean);
-						if (listRelationships)
-							listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
-						(target as any).select = authorizedSelect;
-					} else {
-						target.select = attribute_permissions
-							.filter(
-								(attribute) =>
-									attribute.read &&
-									!fullTextFieldNames?.has(attribute.attribute_name) &&
-									!propertyResolvers[attribute.attribute_name]
-							)
-							.map((attribute) => attribute.attribute_name);
-					}
-					(target as any)[AUTHORIZATION_SELECT] = true;
-					return true;
-				} else {
-					return true;
+				if (!hasRelationships) return authorizeRead(tablePermission, user, target, context);
+				// one admission: a closure proven while authorizing any of this read's selections holds for the others
+				if (readAdmissionDepth++ === 0) readableInFullAdmission++;
+				try {
+					return authorizeRead(tablePermission, user, target, context);
+				} finally {
+					readAdmissionDepth--;
 				}
 			}
 		}
@@ -11734,6 +11687,72 @@ export function makeTable(options): TableResourceClass {
 			return tables[tableName];
 		} else if (databaseName === 'data' && (table = permission[tableName]) && !table.tables) {
 			return table;
+		}
+	}
+	function authorizeRead(tablePermission: any, user: User, target: RequestTarget, context: Context): boolean {
+		if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
+		const attribute_permissions = tablePermission.attribute_permissions;
+		const property = target?.property;
+		if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
+			if (attribute_permissions?.length > 0 && !attributesAsObject(attribute_permissions, 'read')[property])
+				return false;
+			const selection = TableResource._authorizeRelatedSelection(
+				target.select == null ? property : { name: property, select: target.select },
+				user,
+				(target as any).checkPermission,
+				context
+			);
+			if (!selection) return false;
+			target.select = selection;
+			delete target.property;
+			(target as any)[AUTHORIZATION_SELECT] = true;
+			return true;
+		}
+		let select: any = target?.select;
+		const listRelationships =
+			enumerableRelationshipNames.length > 0 &&
+			!(attribute_permissions?.length > 0) &&
+			(select == null || select === '*' || (Array.isArray(select) && select.includes('*'))) &&
+			!TableResource._readableInFull(user, target);
+		if (listRelationships && select == null) select = '*';
+		if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
+			// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+			// or if there are relationships, we need to ensure that the user has permission to read from the related table
+			if (!target) target = {} as any;
+			if (select) {
+				const selectArray = Array.isArray(select) ? select : [select];
+				const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+				const authorizedSelect = selectArray
+					.map((property: any) => {
+						const propertyName = property.name || property;
+						if (
+							!attrsForType ||
+							attrsForType[propertyName] ||
+							fullTextFieldNames?.has(propertyName) ||
+							propertyName === '$score' ||
+							propertyName === '$highlights'
+						) {
+							return TableResource._authorizeRelatedSelection(property, user, (target as any).checkPermission, context);
+						}
+					})
+					.filter(Boolean);
+				if (listRelationships)
+					listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
+				(target as any).select = authorizedSelect;
+			} else {
+				target.select = attribute_permissions
+					.filter(
+						(attribute) =>
+							attribute.read &&
+							!fullTextFieldNames?.has(attribute.attribute_name) &&
+							!propertyResolvers[attribute.attribute_name]
+					)
+					.map((attribute) => attribute.attribute_name);
+			}
+			(target as any)[AUTHORIZATION_SELECT] = true;
+			return true;
+		} else {
+			return true;
 		}
 	}
 	function proveReadableInFull(readable: boolean): boolean {
