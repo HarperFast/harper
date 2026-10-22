@@ -674,7 +674,7 @@ describe('Test sql_statement_bucket Class', () => {
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
 			let table_to_schema_lookup = new Map();
-			const unresolved = [];
+			const unresolved = new Set();
 			getRecordAttributesAST(
 				temp_select,
 				affected_attributes,
@@ -683,7 +683,7 @@ describe('Test sql_statement_bucket Class', () => {
 				table_to_schema_lookup,
 				unresolved
 			);
-			assert.deepEqual(unresolved, [`${invalid_table}.${test_copy.where.expression.left.left.columnid}`]);
+			assert.deepEqual([...unresolved], [`${invalid_table}.${test_copy.where.expression.left.left.columnid}`]);
 		});
 	});
 

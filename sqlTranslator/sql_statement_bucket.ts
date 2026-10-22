@@ -17,7 +17,7 @@ class sqlStatementBucket {
 	table_lookup: any;
 	schema_lookup: any;
 	table_to_schema_lookup: any;
-	unresolved_columns: string[];
+	unresolved_columns: Set<string>;
 	constructor(ast) {
 		this.ast = ast;
 		// affectedAttributes stores a table and it's attributes as a Map [schema, Map[table, [attributesArray]]].
@@ -25,7 +25,7 @@ class sqlStatementBucket {
 		this.table_lookup = new Map();
 		this.schema_lookup = new Map();
 		this.table_to_schema_lookup = new Map();
-		this.unresolved_columns = [];
+		this.unresolved_columns = new Set();
 		interpretAST(
 			this.ast,
 			this.affected_attributes,
@@ -133,7 +133,7 @@ class sqlStatementBucket {
 	 * attributed to any table, so the caller must refuse the statement.
 	 */
 	getUnresolvedColumnRefs(): string[] {
-		return this.unresolved_columns;
+		return [...this.unresolved_columns];
 	}
 
 	/**
@@ -261,7 +261,7 @@ function interpretAST(
 	tableLookup: any,
 	schemaLookup: any,
 	tableToSchemaLookup: any,
-	unresolvedColumns: string[]
+	unresolvedColumns: Set<string>
 ) {
 	qualifyBareTableRefs(ast);
 	getRecordAttributesAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup, unresolvedColumns);
@@ -435,7 +435,7 @@ function getRecordAttributesAST(
 	tableLookup: any,
 	schemaLookup: any,
 	tableToSchemaLookup: any,
-	unresolvedColumns?: string[]
+	unresolvedColumns?: Set<string>
 ) {
 	if (!ast) {
 		harperLogger.info(`getRecordAttributesAST: invalid SQL syntax tree`);
@@ -498,7 +498,7 @@ function getSelectAttributes(
 	tableLookup: any,
 	schemaLookup: any,
 	tableToSchemaLookup: any,
-	unresolvedColumns: string[] = []
+	unresolvedColumns: Set<string> = new Set()
 ) {
 	if (!ast) {
 		harperLogger.info(`getSelectAttributes: invalid SQL syntax tree`);
@@ -543,9 +543,8 @@ function getSelectAttributes(
 			const claimants = clauseScope.filter(
 				(entry) => entry.effectiveAlias === node.tableid || entry.table === node.tableid
 			);
-			const reference = `${node.tableid}.${node.columnid}`;
 			if (claimants.length === 1) record(claimants[0], node.columnid);
-			else if (!unresolvedColumns.includes(reference)) unresolvedColumns.push(reference);
+			else unresolvedColumns.add(`${node.tableid}.${node.columnid}`);
 			return;
 		}
 		// Wildcards stay with the FROM table; updateAttributeWildcardsForRolePerms() expands them there.
