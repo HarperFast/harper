@@ -81,7 +81,7 @@ const products = Product.search({
 
 Full-text results use descending relevance order. The only explicit full-text sort is `$score` descending; other sort keys and reverse iteration are rejected because they would discard the native ranking.
 
-An exact count requested through `Table.search()` does not report a full-text total after authorization, structured filtering, and current-record validation. It returns `recordCount: null` and `recordCountExact: false`. REST behaves the same when its interface enables `exactCount`; otherwise `Prefer: count=exact` is downgraded to an estimated count.
+Full-text queries cannot provide an exact total after authorization, structured filtering, and current-record validation. On a REST interface with `exactCount` enabled, `Prefer: count=exact` reports an unavailable total; otherwise it is downgraded to an estimated count. See [pagination and total count](../rest/querying.md#pagination-and-total-count). `Table.getRecordCount()` counts table records, not matches for a full-text query.
 
 ## Highlights
 

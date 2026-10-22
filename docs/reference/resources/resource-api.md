@@ -1088,9 +1088,9 @@ Properties to include in each returned record. Can be:
 
 Special properties:
 
-- `$id`: Returns the primary key regardless of its name
-- `$updatedtime`: Returns the last-updated timestamp
-- `$distance`: When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
+- `$id` — Returns the primary key regardless of its name
+- `$updatedtime` — Returns the last-updated timestamp
+- `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
 
 <VersionBadge version="v5.3.0" />
 
