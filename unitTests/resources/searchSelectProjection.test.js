@@ -441,8 +441,10 @@ describe('search select projection matches single-record projection', function (
 		const instance = new Article(article.id, {});
 		instance.setRecord({ id: 'a1', title: 'Stored', constructor: 'stored-data' });
 		instance._setChanges({ title: 'Changed' });
+		instance.undeclared = 'own field';
 		const projected = transformForSelect(['id', 'constructor', 'title', '*'], Article)(instance);
 		assert.strictEqual(projected.title, 'Changed');
+		assert.strictEqual(projected.undeclared, 'own field');
 		assert.strictEqual(projected.constructor, 'stored-data');
 		assert.strictEqual(projected.id, 'a1');
 	});
