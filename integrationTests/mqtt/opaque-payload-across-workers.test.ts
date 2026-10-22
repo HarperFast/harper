@@ -38,7 +38,7 @@ interface Subscriber {
 	transport: 'tcp' | 'ws';
 	client: MqttClient;
 	threadId: number;
-	payloads: string[];
+	payloads: Buffer[];
 }
 
 suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite }, (ctx: ContextWithHarper) => {
@@ -57,12 +57,16 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 				...opts,
 			});
 			const onError = (error: Error) => {
+				client.removeListener('close', onClose);
 				client.end(true);
 				reject(error);
 			};
+			const onClose = () => onError(new Error(`${url} closed before CONNACK`));
 			client.once('error', onError);
+			client.once('close', onClose);
 			client.once('connect', () => {
 				client.removeListener('error', onError);
+				client.removeListener('close', onClose);
 				client.on('error', () => {});
 				resolvePromise(client);
 			});
@@ -85,8 +89,8 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 		return withDeadline(`subscribe to ${topic}`, (done) => client.subscribe(topic, { qos: 0 }, (error) => done(error)));
 	}
 
-	function publish(client: MqttClient, payload: string): Promise<void> {
-		return withDeadline(`publish ${payload}`, (done) =>
+	function publish(client: MqttClient, payload: Buffer): Promise<void> {
+		return withDeadline(`publish ${payload.toString('hex')}`, (done) =>
 			client.publish(TOPIC, payload, { qos: 1, retain: false }, (error) => done(error))
 		);
 	}
@@ -138,7 +142,7 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 		await teardownHarper(ctx);
 	});
 
-	test('text, JSON array, JSON string, declared opaque type and JSON object reach every subscriber on every worker', async (t) => {
+	test('text, JSON array, JSON string, binary, declared opaque type and JSON object reach every subscriber on every worker', async (t) => {
 		const clients: MqttClient[] = [];
 		const subscribers: Subscriber[] = [];
 		try {
@@ -161,7 +165,7 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 					clients.push(client);
 					const subscriber: Subscriber = { transport, client, threadId: await workerOf(client), payloads: [] };
 					client.on('message', (topic, payload) => {
-						if (topic === TOPIC) subscriber.payloads.push(payload.toString());
+						if (topic === TOPIC) subscriber.payloads.push(payload);
 					});
 					await subscribe(client, TOPIC);
 					subscribers.push(subscriber);
@@ -171,24 +175,29 @@ suite('MQTT opaque payloads delivered across worker threads', { skip: skipSuite 
 				if (threads.size < 2) {
 					const message = `${transport} subscribers all landed on worker ${[...threads]}`;
 					ok(!spreadAcrossWorkers, message);
-					t.skip(`${message}; this platform does not spread connections across workers`);
-					return;
+					t.diagnostic(`${message}; this platform does not spread connections, so delivery stays on one worker`);
 				}
 			}
 			const layout = subscribers.map((s) => `${s.transport}@${s.threadId}`).join(' ');
 
-			const expected = ['plain text', '[1,2,3]', '"a JSON string"', 'declared opaque type', '{"n":4}'];
-			await publish(tcpPublisher, expected[0]);
-			await publish(tcpPublisher, expected[1]);
-			await publish(tcpPublisher, expected[2]);
-			await publish(typedPublisher, expected[3]);
-			await publish(tcpPublisher, expected[4]);
+			const opaque = [
+				[tcpPublisher, 'plain text'],
+				[tcpPublisher, '[1,2,3]'],
+				[tcpPublisher, '"a JSON string"'],
+				[tcpPublisher, Buffer.from([0xff, 0x00, 0x80, 0xfe])],
+				[typedPublisher, 'declared opaque type'],
+			] as const;
+			const expected = [...opaque.map(([, payload]) => Buffer.from(payload).toString('hex')), { n: 4 }];
+			for (const [publisher, payload] of opaque) await publish(publisher, Buffer.from(payload));
+			await publish(tcpPublisher, Buffer.from('{"n":4}'));
 
 			const complete = await waitFor(() => subscribers.every((s) => s.payloads.length >= expected.length));
 			for (const subscriber of subscribers)
 				deepStrictEqual(
-					subscriber.payloads.map((payload) => (payload.startsWith('{') ? JSON.parse(payload) : payload)),
-					[...expected.slice(0, 4), { n: 4 }],
+					subscriber.payloads.map((payload) =>
+						payload[0] === 0x7b ? JSON.parse(payload.toString()) : payload.toString('hex')
+					),
+					expected,
 					`${subscriber.transport} subscriber on worker ${subscriber.threadId} (publishers on ${publisherThreads}) ` +
 						`did not receive every message${complete ? '' : ' before the timeout'}; layout: ${layout}`
 				);
