@@ -352,12 +352,14 @@ describe('search select projection matches single-record projection', function (
 			['a1', 'a1'],
 			['a2', 'a2'],
 		]);
+		const [single, searched] = [await projectBothWays(select), rows.find((row) => row[0] === 'a1')];
+		assert.deepStrictEqual(single, searched);
 	});
 
 	it('a wildcard-only sub-select returns Date and binary values unchanged', async function () {
 		const createdAt = new Date('2026-01-01T00:00:00.000Z');
 		await Article.put({ id: 'a-binary', bin: Buffer.from([1, 2, 3]), dates: [createdAt] });
-		const select = ['id', nested('bin', ['*']), nested('dates', ['*', 'getTime'])];
+		const select = ['id', nested('bin', ['*']), nested('dates', ['getTime', '*'])];
 		const target = new RequestTarget();
 		target.id = 'a-binary';
 		target.select = select;

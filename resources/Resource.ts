@@ -1158,7 +1158,7 @@ export function transformForSelect(select, resource) {
 				const results = [];
 				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
 				for (const property of select) {
-					results.push(getProperty(property));
+					results.push(property === '*' ? object : getProperty(property));
 				}
 				return results;
 			};
@@ -1168,11 +1168,14 @@ export function transformForSelect(select, resource) {
 			};
 		const forceNulls = (select as any).forceNulls;
 		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
+		const selectsWildcard = !resource && select.includes('*');
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
 				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
+			if (selectsWildcard && (ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob))
+				return object;
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
@@ -1180,7 +1183,6 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				if (property === '*' && !resource) {
-					if (ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob) return object;
 					for (const key in object) {
 						const value = object[key];
 						if (typeof value === 'function') continue;

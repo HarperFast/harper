@@ -459,7 +459,6 @@ suite(
 					deepStrictEqual(row.metadata.order, { id: 'json-order', name: 'Plain JSON Order' }, accept);
 					strictEqual(row.metadata.$updatedtime, 'nested-updated');
 					strictEqual(row.metadata.hasOwnProperty, 'ordinary data');
-					// msgpackr decodes a `__proto__` key as `__proto_`
 					for (const inherited of ['valueOf', 'toString', 'constructor', '__proto__', '__proto_'])
 						strictEqual(
 							Object.hasOwn(row.metadata, inherited) ? row.metadata[inherited] : undefined,
