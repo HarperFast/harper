@@ -139,9 +139,7 @@ class sqlStatementBucket {
 	/**
 	 * Expressions that read a whole row instead of naming a column: AlaSQL's `_` (`SELECT VALUE`,
 	 * `ROW`, `x._`, `_->attr`) and JavaScript expressions. Attribute permissions cannot apply to them,
-	 * and legacy SQL's row container always carries the primary key. JavaScript expressions must stay
-	 * refused for every non-super user regardless: AlaSQL compiles their text into the query function
-	 * as code.
+	 * and legacy SQL's row container always carries the primary key.
 	 */
 	getRowAccessors(): string[] {
 		const accessors = [];
