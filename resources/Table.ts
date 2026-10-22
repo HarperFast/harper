@@ -2626,9 +2626,7 @@ export function makeTable(options): TableResourceClass {
 			);
 			if (loadedFromSource) {
 				return when(loadedFromSource as Promise<Entry>, (entry) => {
-					this.#entry = entry;
-					this.#record = entry.value;
-					this.#version = entry.version;
+					TableResource._updateResource(this, entry);
 				});
 			}
 		}
@@ -3895,6 +3893,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			this.#assertLiveHandle(id);
+			const incomingRecord = partialRecord;
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
@@ -3908,24 +3907,50 @@ export function makeTable(options): TableResourceClass {
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				chainsStagedState: true,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					write.stagedEntry = undefined;
+					write.superseded = false;
+					const priorStagedOp = priorStagedWrite(write);
+					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					// A base copy from a stub holder must not downgrade the same full record at a resident.
+					if (
+						precedesExisting < 0 ||
+						(!priorStagedOp &&
+							precedesExisting === 0 &&
+							existingEntry?.value &&
+							!(existingEntry.metadataFlags & INVALIDATED) &&
+							options?.residencyId &&
+							TableResource.getResidencyRecord(options.residencyId)?.includes(server.hostname))
+					) {
 						write.skipped = true;
 						return;
 					}
-					partialRecord ??= null;
+					// Received projections can be frozen. Missing fields in a residency projection are removals;
+					// only a local/cache invalidation carries forward the committed indexed fields.
+					partialRecord = incomingRecord
+						? Object.create(null)
+						: options?.residencyId && primaryKey
+							? { [primaryKey]: id }
+							: null;
+					if (incomingRecord) for (const name in incomingRecord) partialRecord[name] = incomingRecord[name];
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
+						if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-						if (partialRecord[name] === undefined) {
-							partialRecord[name] = this.getProperty(name);
-						}
+						const incomingValue = incomingRecord?.[name];
+						partialRecord[name] =
+							incomingValue === undefined && !options?.residencyId ? existingRecord?.[name] : incomingValue;
 					}
+					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
+					// Computed indexes need the full record's inputs; keep them as committed until a full write.
+					updateIndices(id, existingRecord, partialRecord, transaction && { transaction }, true);
 					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					updateRecord(
 						id,
@@ -3950,6 +3975,9 @@ export function makeTable(options): TableResourceClass {
 						},
 						'invalidate'
 					);
+					write.stagedEntry = { value: partialRecord, metadataFlags: INVALIDATED, residencyId: options?.residencyId };
+					write.blobsAuditReferenced = Boolean(audit);
+					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
 				},
@@ -5416,13 +5444,11 @@ export function makeTable(options): TableResourceClass {
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
-					// A patch onto a stub has no complete base, so it can't decide placement; the stub's list names the
-					// nodes holding the complete record.
+					// A patch onto an incomplete base must stay invalidated; any residency list still names
+					// the nodes holding the complete record.
 					const baseEntry = priorStaged ?? existingEntry;
 					const patchesStub =
-						!fullUpdate &&
-						!TableResource.getResidencyById &&
-						Boolean(baseEntry?.residencyId && baseEntry.metadataFlags & INVALIDATED);
+						!fullUpdate && !TableResource.getResidencyById && Boolean(baseEntry?.metadataFlags & INVALIDATED);
 					if (patchesStub) {
 						omitLocalRecord = true;
 						residencyId ??= baseEntry.residencyId;
@@ -6630,7 +6656,7 @@ export function makeTable(options): TableResourceClass {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
-				hasSourceGet &&
+				(hasSourceGet || sourceLoad) &&
 				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
 				!(typeof select === 'string' ? [select] : select)?.every((attribute) => {
 					let attribute_name;
@@ -6638,7 +6664,10 @@ export function makeTable(options): TableResourceClass {
 						attribute_name = attribute.name;
 					} else attribute_name = attribute;
 					// TODO: Resolvers may not need a full record, either because they are not using the record, or because they are a redirected property
-					return indices[attribute_name] || attribute_name === primaryKey;
+					return (
+						(indices[attribute_name] && !primaryStore.encoder.resolvedAttributeNames?.has(attribute_name)) ||
+						attribute_name === primaryKey
+					);
 				})
 			) {
 				checkLoaded = true;
@@ -6664,7 +6693,7 @@ export function makeTable(options): TableResourceClass {
 							{
 								transaction: readTxn,
 								lazy: select?.length < 4,
-								ensureLoaded: ensure_loaded,
+								ensureLoaded: checkLoaded,
 							},
 							this?.isSync,
 							(entry: Entry) => entry
@@ -8835,7 +8864,7 @@ export function makeTable(options): TableResourceClass {
 		throw error;
 	}
 	return TableResource;
-	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
+	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
 		let hasChanges;
 		// iterate the entries from the record
 		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
@@ -8845,6 +8874,7 @@ export function makeTable(options): TableResourceClass {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
+			if (preserveComputed && primaryStore.encoder.resolvedAttributeNames?.has(key)) continue;
 			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
 			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
 			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
@@ -8988,13 +9018,7 @@ export function makeTable(options): TableResourceClass {
 				context?.replicateFrom !== false
 			) {
 				// load from other node
-				return sourceLoad(entry).then(
-					(entry) => withEntry(entry, id),
-					(error) => {
-						logger.error?.('Error loading remote record', id, entry, options, error);
-						return withEntry(null, id);
-					}
-				);
+				return sourceLoad(entry).then((entry) => withEntry(entry, id));
 			}
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
@@ -9182,6 +9206,11 @@ export function makeTable(options): TableResourceClass {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 			return;
 		}
+		if (entry?.residencyId && entry.metadataFlags & INVALIDATED && sourceLoad && context?.replicateFrom !== false)
+			return sourceLoad(entry).then((loaded) => {
+				if (context && loaded?.version > (context.lastModified || 0)) context.lastModified = loaded.version;
+				return loaded;
+			});
 		if (hasSourceGet) {
 			let needsSourceData = false;
 			if (context.noCache) needsSourceData = true;
@@ -9417,7 +9446,7 @@ export function makeTable(options): TableResourceClass {
 	/**
 	 * What left a delete's key without a record, for the re-delivery check (resources/DESIGN.md): the
 	 * nearest earlier write in the transaction that staged state, else the stored entry. Only writes marked
-	 * skipped are passed over, because an invalidate or relocate stores a null stub without staging it.
+	 * skipped are passed over, because a relocate can store a null stub without staging it.
 	 */
 	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
