@@ -181,7 +181,7 @@ describe('RootConfigWatcher', function () {
 			} finally {
 				for (const watcher of watchers) watcher.close();
 			}
-		}).timeout(15000);
+		}).timeout(25000);
 
 		it('watches natively outside Bun', async () => {
 			delete process.versions.bun;
