@@ -121,7 +121,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
-					if (typeof result?.map === 'function') {
+					if (Array.isArray(result)) {
+						return settleAll(result.map(transform));
+					} else if (typeof result?.map === 'function') {
 						return result.map(transform);
 					} else {
 						return transform(result);
@@ -343,7 +345,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return result.map(transform);
+						return Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
 					}
 					return result;
 				})
@@ -1136,9 +1138,11 @@ function selectFromObject(object, propertyResolvers, context, selectsPrototype: 
 }
 // defines a `__proto__` own data property, so a selected `__proto__` key is data, not the object's prototype
 export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
-// an array of projections settles as one promise when any element is still pending
 function settleAll(results: any[]) {
-	return results.some((result) => typeof result?.then === 'function') ? Promise.all(results) : results;
+	for (let i = 0, l = results.length; i < l; i++) {
+		if (typeof results[i]?.then === 'function') return Promise.all(results);
+	}
+	return results;
 }
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
@@ -1162,10 +1166,13 @@ export function transformForSelect(select, resource) {
 				if (Array.isArray(object)) return settleAll(object.map(transform));
 				const results = [];
 				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
+				let pending = false;
 				for (const property of select) {
-					results.push(property === '*' ? object : getProperty(property));
+					const value = property === '*' ? object : getProperty(property);
+					if (typeof value?.then === 'function') pending = true;
+					results.push(value);
 				}
-				return settleAll(results);
+				return pending ? Promise.all(results) : results;
 			};
 		if (!resource && select.length === 1 && select[0] === '*')
 			return function transform(object) {
