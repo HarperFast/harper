@@ -564,8 +564,11 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					const listener = async (topic, message, messageId, subscription, version, dup) => {
 						try {
 							if (disconnected || aborted) {
-								// a delivery already past the subscription when the client left; the disconnect has ended the session
-								mqttLog.debug?.(`Session ${session?.sessionId} disconnected while trying to send message to ${topic}`);
+								// a delivery already past the subscription when the client left or a failed delivery aborted
+								// the connection; onClose ends the session
+								mqttLog.debug?.(
+									`Session ${session?.sessionId} ${aborted ? 'aborted' : 'disconnected'} while trying to send message to ${topic}`
+								);
 								return false;
 							}
 							const slashIndex = topic.indexOf('/', 1);
@@ -575,11 +578,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							// payload is encoded once per (message, content type) and reused across all of them.
 							const encoding = getSharedMessageEncoding(message, request, version);
 							const encoded = encoding.payload;
+							let payload: Buffer | string;
 							// only pay for a microtask when the serialization is genuinely still pending
-							const payload =
-								typeof (encoded as any)?.then === 'function'
-									? await resolveSharedPayload(encoding, message, request, version)
-									: (encoded as Buffer | string);
+							if (typeof (encoded as any)?.then === 'function') {
+								payload = await resolveSharedPayload(encoding, message, request, version);
+								if (disconnected || aborted) return false;
+							} else payload = encoded as Buffer | string;
 							if (qos > 0) {
 								// mqtt-packet requires a numeric message identifier once qos is non-zero
 								const packetData: any = {
