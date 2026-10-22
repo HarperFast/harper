@@ -327,9 +327,7 @@ To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `Reco
 
 ## getFromSource() timing: promise resolves before commit runs
 
-In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution.
-
-Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
+In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution. Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
@@ -441,9 +439,7 @@ RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them wh
 Worker threads in a process share one id counter (`getUserSharedBuffer('id')`), but each thread decides on its own when the range in the `id_allocation` record is exhausted, so two threads can extend or re-allocate it at the same moment. `replaceIdAllocation` lets exactly one of them install the new range: it writes only while the stored allocation still equals the one the caller read (or none is stored), and a loser bounds its ids by the stored range instead of its own proposal. A losing re-allocation (`alreadyUpdated`) leaves the counter for the winner to move, so between the winner's commit and its `Atomics.store` the loser's limit and the counter can briefly name different ranges. Two properties make this hold on RocksDB:
 
 - **The comparison token is the allocation value, not `entry.version`.** The record is a bare `putSync` with no Harper record metadata, so RocksDB returns no version for it; a version check compares `undefined` with `undefined` and always passes.
-- **The read and the write take `{ transaction }` from the `transactionSync` callback, with `retryOnBusy`.** rocksdb-js only joins operations that are given the transaction. When a sibling thread commits between the read and the commit, the commit fails with an optimistic conflict, and the retry reads the sibling's allocation. lmdb-js serializes write transactions and passes no transaction to the callback; its second argument is numeric flags, so the options are passed only on RocksDB.
-
-`unitTests/resources/idAllocation.test.js` commits a sibling write between the read and the commit, for both re-allocation and extension.
+- **The read and the write take `{ transaction }` from the `transactionSync` callback, with `retryOnBusy`.** rocksdb-js only joins operations that are given the transaction. When a sibling thread commits between the read and the commit, the commit fails with an optimistic conflict, and the retry reads the sibling's allocation. lmdb-js serializes write transactions and passes no transaction to the callback; its second argument is numeric flags, so the options are passed only on RocksDB. `unitTests/resources/idAllocation.test.js` commits a sibling write between the read and the commit, for both re-allocation and extension.
 
 ## Replicated apply failure listeners (`resources/replicatedApplyFailure.ts`)
 
@@ -706,7 +702,7 @@ reader of a drop time skips that row (`getTableDrops`, `pendingOrRecordedDropTim
 and the create checks), so peers never learn of the drop, and a timed drop overwrites it.
 
 The rule is enforced where a generation becomes or stops being live, under the lock that publishes the primary
-row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed:
+row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed (`unitTests/resources/dropTableLifecycle.test.js`):
 
 - A create carrying a peer's generation (`origin: 'cluster'`, or a supplied `createdTime`) throws
   `TableGenerationDroppedError` (409) when a marker here retires it, and so does a stamped one for a name live here,
@@ -729,8 +725,6 @@ row or writes the tombstone, so no peer path can check it and then act on a cata
   anything to decide. A table created during a rollback to such a build gets its own bound at the next load.
 - The legacy per-table layout (`databasePath` is not the database name) has no database catalog for a marker,
   so its drops leave none.
-
-`unitTests/resources/dropTableLifecycle.test.js`.
 
 **Store names and 5.2 rollback (harper#3102).** A RocksDB table's store names are distinct from its `createdTime`
 stamp: a generation suffix (`T/@<generation>`) on the primary row, which `writeTombstone` also checks as identity.
@@ -899,18 +893,15 @@ envelope format, key model and client flow are user-facing and belong in HarperF
 
 ## Closing an LMDB database closes its environment, never its dbis (`databases.ts` `closeDatabase`)
 
-Database aliases that resolve to one path share one LMDB root store, but each alias opens its own
-dbi handles. `mdb_env_close` releases every dbi, while lmdb-js's native `DbiWrap.close()` calls
-`mdb_dbi_close` on the `MDB_env*` it captured at open, so closing a dbi after another alias closed the
-environment is a use-after-free (an intermittent segfault in the lmdb unit run). `closeDatabase` closes
-an LMDB root once, through one shared close completion, skips its dbis, and closes every alias sharing it. RocksDB
-column families are independently refcounted handles, so they are still closed one by one. Enforced by
-the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
-
-An awaited LMDB root `close()` means the environment is closed; only `closed` counts. lmdb (through 3.5.8) resolves it
-early while a read is in flight on an environment that never wrote, so a drop unlinked an open `.mdb`. `openLmdb` gives
-each root one close completion, resolved by lmdb's close callback; a close finding `closing` awaits it, and the drop
-removes the file regardless. Drop the wrapper once lmdb returns its deferred close (`lmdbCloseCompletion.test.js`).
+Aliases that resolve to one path share one LMDB root store but open their own dbis. `mdb_env_close` releases
+every dbi, while lmdb-js's `DbiWrap.close()` calls `mdb_dbi_close` on the `MDB_env*` captured at open, so closing a
+dbi after another alias closed the environment is a use-after-free (an intermittent segfault in the lmdb unit run).
+`closeDatabase` closes an LMDB root once, skips its dbis, and closes every alias sharing it; RocksDB column families
+are refcounted and still close one by one (shared-store cases in `databaseAliasIdentity.test.js`). Only `closed`
+counts as closed: lmdb (through 3.5.8) resolves `close()` early while a read is in flight on an environment that
+never wrote, so a drop unlinked an open `.mdb`. `openLmdb` gives each root one close completion, resolved by lmdb's
+close callback; a close finding `closing` awaits it, and a drop removes the file after it even when an earlier close
+finished. Remove the wrapper once lmdb returns its deferred close (`lmdbCloseCompletion.test.js`).
 
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 
@@ -938,14 +929,12 @@ redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.t
 
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
 
-A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` file at the top level
-of the storage path and of every configured database path, and each one a directory below the storage
-path as a legacy `<schema>/<table>.mdb` table. lmdb-js (3.5.6, and still 3.5.7) crashes the process
-when `mdb_env_open` fails: the failure path in `EnvWrap::openEnv` frees its `ExtendedEnv`, then
-`closeEnv` frees it again. A file there that is not an LMDB environment therefore takes the process
-down with SIGSEGV and no stack, at whatever moment the next rescan runs. Until lmdb-js returns the
-open error instead, tests keep non-database fixtures outside those paths;
-`unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists (harper#2669).
+A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` at the top level of the storage
+path and of every configured database path, and one directory below the storage path as a legacy
+`<schema>/<table>.mdb` table. lmdb-js (3.5.6, and still 3.5.7) frees its `ExtendedEnv` twice when `mdb_env_open`
+fails (`EnvWrap::openEnv`, then `closeEnv`), so a non-LMDB file there takes the process down with SIGSEGV and no
+stack at the next rescan. Until lmdb-js returns the open error, tests keep non-database fixtures outside those
+paths; `unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists (harper#2669).
 
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
