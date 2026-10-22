@@ -243,8 +243,13 @@ export interface Sort<Record extends object = any> {
 	next?: Sort<Record>;
 }
 export interface SubSelect {
+	conditions?: Conditions;
+	operator?: string;
+	limit?: number;
+	offset?: number;
+	sort?: Sort;
 	name: string;
-	select: (string | SubSelect)[];
+	select?: (string | SubSelect)[];
 }
 export type Select = (string | SubSelect)[];
 

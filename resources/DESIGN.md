@@ -267,6 +267,8 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 ## Conventions
 
+- Nested relationship `conditions`, `sort`, `offset`, and `limit` share `Table._prepareRelationshipSelection` across search and single-record GET. Predicates keep parent inclusion and inherited relationship candidates; only unsorted eligible pagination bounds reads (sorting or unmatched predicates can scan every candidate). Nested predicates qualify only the immediate selected children; descendant narrowing requires its own subselect, while outer-join candidate restrictions remain inherited. Predicate compilation must not mutate projection maps. Candidates and sort keys retain top-level cache-local semantics; predicates are rechecked after source refresh before offset/limit counts a returned child. Cancellation must terminate the raw source before an upstream mapper reads again. Lazy resolver mode is per-call so ordinary property access stays synchronous. Unsorted FK pagination preserves missing slots; sorting drops them. `unitTests/resources/nestedRelationshipConstraints.test.js` pins authorization, iterator cleanup, missing-value behavior, and bounded entry reads.
+
 - Single-record nested selections use `Resource.transformForSelect`; searches use
   `Table.transformEntryForSelect`. Generic recursion needs no target table for plain JSON;
   classless primitive array items and whole selected Dates keep their values; Date-array
