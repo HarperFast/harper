@@ -609,9 +609,10 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							return !rawSocket.closed;
 						} catch (error) {
 							mqttLog.error?.(error);
-							session?.disconnect(false);
-							mqttSettings.sessions.delete(session);
-							releaseClientSession(session);
+							// Ending only the session would leave the client connected and receiving nothing. An abort,
+							// unlike a graceful end, closes without waiting on the peer, and onClose ends the session.
+							if (socket.destroy) socket.destroy();
+							else socket.terminate();
 							return false;
 						}
 					};

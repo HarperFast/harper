@@ -72,6 +72,18 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 > version is therefore correct, not merely disallowed; one that supplies no version is not shared at
 > all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
 > indistinguishable from re-sending the same message.
+<<<<<<< HEAD
+=======
+>
+> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
+> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
+>
+> A message that carries its own `{ contentType, data }` is passed through, but `serializeMessage` still
+> returns a `Buffer`: on a worker other than the publisher's, the record is decoded from the transaction
+> log and `data` is a plain `Uint8Array`, which mqtt-packet cannot encode. A delivery the MQTT listener
+> cannot send aborts the connection (`destroy`/`terminate`), so the client reconnects instead of staying
+> connected to an ended session. Pinned by `integrationTests/mqtt/opaque-payload-across-workers.test.ts`.
+>>>>>>> af8d26b05 (fix(mqtt): deliver opaque payloads across worker threads and close the connection on a failed delivery)
 
 ### Threads
 
