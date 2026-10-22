@@ -1246,6 +1246,9 @@ let implicitProjectionPath: Set<any> | null = null;
 let readAdmissionDepth = 0;
 let readAdmissionPrincipal: any;
 let readableInFullAdmission = 0;
+// a walk that completed successfully proves every table it marked, cycle members included
+let readableInFullCompletedWalk = 0;
+let readableInFullCompletedAdmission = 0;
 let readableInFullWalk = 0;
 let readableInFullDepth = 0;
 let readableInFullRevisits = 0;
@@ -1863,11 +1866,17 @@ export function makeTable(options): TableResourceClass {
 				readableInFullAdmission++;
 				readAdmissionPrincipal = principal;
 			} else if (readableInFullProvenMark === readableInFullAdmission) return readableInFullProven;
+			else if (
+				readableInFullMark === readableInFullCompletedWalk &&
+				readableInFullCompletedAdmission === readableInFullAdmission
+			)
+				return proveReadableInFull(true);
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return true;
 			if (!permission?.read || permission.attribute_permissions?.length > 0) return proveReadableInFull(false);
 			if (enumerableRelationshipNames.length === 0) return true;
-			if (readableInFullDepth === 0) readableInFullWalk++;
+			const outermost = readableInFullDepth === 0;
+			if (outermost) readableInFullWalk++;
 			else if (readableInFullMark === readableInFullWalk) {
 				readableInFullRevisits++;
 				return true;
@@ -1880,7 +1889,11 @@ export function makeTable(options): TableResourceClass {
 					const relatedTable = propertyResolvers[name]?.definition?.tableClass;
 					if (relatedTable && !relatedTable._readableInFull(user, target)) return proveReadableInFull(false);
 				}
-				return readableInFullRevisits === revisits ? proveReadableInFull(true) : true;
+				if (outermost) {
+					readableInFullCompletedWalk = readableInFullWalk;
+					readableInFullCompletedAdmission = readableInFullAdmission;
+				}
+				return outermost || readableInFullRevisits === revisits ? proveReadableInFull(true) : true;
 			} finally {
 				readableInFullDepth--;
 			}
@@ -3646,7 +3659,6 @@ export function makeTable(options): TableResourceClass {
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
 				if (!hasRelationships) return authorizeRead(tablePermission, user, target, context);
-				// one admission: a closure proven while authorizing any of this read's selections holds for the others
 				if (readAdmissionDepth++ === 0) readableInFullAdmission++;
 				try {
 					return authorizeRead(tablePermission, user, target, context);
