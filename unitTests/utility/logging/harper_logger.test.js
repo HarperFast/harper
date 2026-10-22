@@ -3282,10 +3282,19 @@ describe('Test harper_logger module', () => {
 				assert.equal(named.level, 1);
 			});
 
+			it('registers and levels a config-named component that has no logger yet', () => {
+				_applyLogSettingsForTests({
+					logging: { level: 'warn' },
+					applyLogSettingsFresh: { logging: { level: 'trace' } },
+				});
+				assert.equal(forComponent('applyLogSettingsFresh').level, 1);
+			});
+
 			it('keeps the exported logLevel in sync', () => {
 				_applyLogSettingsForTests({ logging: { level: 'error' } });
 				assert.equal(logsAtLevel('error'), true);
 				assert.equal(logsAtLevel('warn'), false);
+				assert.equal(harperLoggerModule.logLevel, 'error');
 			});
 		});
 	});

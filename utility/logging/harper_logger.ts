@@ -263,11 +263,6 @@ function applyLogSettings(rootConfigObject: any) {
 	updateComponentLoggers(rootConfigObject, normalizeLogOptions(logOptions.external));
 }
 
-/**
- * Rebinds every registered component logger, including those the config never names (`tls`,
- * plugin loggers, `external`): own `logging` block, else the external options for external ones,
- * else inherit from the main logger.
- */
 function updateComponentLoggers(configObject: any, externalLogOptions: any) {
 	for (const [name, componentLogger] of mainLogger.components) {
 		const componentLogOptions =
@@ -463,7 +458,9 @@ if (typeof module !== 'undefined') {
 		info,
 		debug,
 		trace,
-		logLevel,
+		get logLevel() {
+			return logLevel;
+		},
 		loggerWithTag,
 		suppressLogging,
 		initLogSettings,
@@ -668,10 +665,7 @@ export function initLogSettings(forceInit = false) {
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
-			for (const [name, componentLogger] of mainLogger.components) {
-				updateLogger(componentLogger, {}, name);
-			}
-			externalLogger.tag = null; // don't tag by default
+			updateComponentLoggers(undefined, undefined);
 			// The streams are this branch's only sink, so it needs the same EPIPE/EIO listeners the
 			// configured path installs below: `harper install | head -1` closes the reader, and the
 			// async error would otherwise land on a stream with none and take the install down. The
