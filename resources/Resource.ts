@@ -1217,7 +1217,11 @@ export function transformForSelect(select, resource) {
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {
 					if (!promises) promises = [];
-					promises.push(value.then((value) => (selectedData[property.name || property] = value)));
+					promises.push(
+						value.then(
+							(value) => (selectedData[property.name || property] = value === undefined && forceNulls ? null : value)
+						)
+					);
 				} else selectedData[property.name || property] = value;
 			}
 			if (promises) return Promise.all(promises).then(() => selectedData);

@@ -477,6 +477,27 @@ describe('search select projection matches single-record projection', function (
 		assert.deepStrictEqual(await AsyncRows.get(target), [{ label: 'first', later: 'resolved' }]);
 	});
 
+	it('settles async child selections and applies forceNulls after settlement in a custom Resource', async function () {
+		class AsyncChildren extends Resource {
+			static loadAsInstance = true;
+			get() {
+				return {
+					children: [{ name: Promise.resolve('first') }, { name: Promise.resolve('second') }],
+					missing: Promise.resolve(undefined),
+				};
+			}
+		}
+		const select = [nested('children', ['name']), 'missing'];
+		select.forceNulls = true;
+		const target = new RequestTarget();
+		target.id = 'children';
+		target.select = select;
+		assert.deepStrictEqual(await AsyncChildren.get(target), {
+			children: [{ name: 'first' }, { name: 'second' }],
+			missing: null,
+		});
+	});
+
 	it('settles async values inside positional and array projections', async function () {
 		const positional = ['id', 'asyncDigest'];
 		positional.asArray = true;
