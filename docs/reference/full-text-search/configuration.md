@@ -33,13 +33,9 @@ type Product @table(database: "catalog", audit: true) {
 
 The declaration must use nullable `FullText` exactly and carry one `@fullText` directive. Lists, non-null forms, a bare `FullText` field, and additional directives such as `@computed`, `@indexed`, or `@allow` are rejected. `@fullText` is not valid on a table type or any other field type.
 
-New schema tables must explicitly set `@table(audit: true)`; omitting it or setting `audit: false` returns `400`. An existing table that already has persisted audit logging can add the field without restating `audit`. A previously unaudited table can enable `audit: true` in the same schema change that adds its first full-text field; the initial build scans current records and does not require older transaction history. Disabling audit logging while a full-text field exists is rejected.
+Ordinary tables inherit `logging.auditLog`, which defaults to `true`. New tables with `@fullText` instead require an explicit `@table(audit: true)`; omitting it or setting `audit: false` returns `400`, even when the global default is enabled. This table-level requirement makes transaction logging an explicit recovery prerequisite for the derived index rather than relying on the ambient default. An existing table that already has persisted audit logging can add the field without restating `audit`. A previously unaudited table can enable `audit: true` in the same schema change that adds its first full-text field; the initial build scans current records and does not require older transaction history. Disabling audit logging while a full-text field exists is rejected.
 
 Writing the declaration-only field or selecting it as record data returns an error, including on unsealed tables. A read-through source response containing that name fails with `502` and is not cached, indexed, or audited. For HTTP-sourced caching tables, avoid index names that collide with response wrapper fields such as `data`, `headers`, `body`, and `status`.
-
-:::warning Prerelease schema declarations
-Earlier prerelease type-level `@fullText(name: ...)` declarations are not supported. Move the directive to a nullable `FullText` field and use that field's name as the index identity.
-:::
 
 ## Directive options
 

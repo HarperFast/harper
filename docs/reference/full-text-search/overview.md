@@ -20,7 +20,7 @@ See [Configuration](./configuration.md) for the complete schema contract, [Query
 
 ## How it works
 
-Full-text indexes are derived local state. The table records and schema remain the source of truth.
+Full-text indexes are derived local state. Harper uses Tantivy, a native text-search library, for term indexing and BM25 ranking. The table records and schema remain the source of truth.
 
 ```mermaid
 flowchart LR

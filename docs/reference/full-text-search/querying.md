@@ -167,7 +167,6 @@ A full-text index is derived from committed table changes. Each condition accept
 For read-after-write behavior, require current coverage and allow a bounded wait:
 
 ```javascript
-const products = [];
 for await (const product of Product.search({
 	conditions: [
 		{
@@ -179,7 +178,7 @@ for await (const product of Product.search({
 		},
 	],
 })) {
-	products.push(product);
+	console.log(product);
 }
 ```
 
