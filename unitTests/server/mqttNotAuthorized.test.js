@@ -312,41 +312,57 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		});
 	});
 
-	describe('a delivery that reaches a disconnected session', () => {
-		/** A subscription the test feeds by hand, so an update can arrive after the client has left. */
-		function handFedTopic() {
-			const name = `HandFed${++sequence}`;
-			const feed = { nexts: 0, returned: 0, deliver: undefined };
-			class HandFed extends Resource {
-				static subscribe() {
-					const iterator = {
-						next: () => {
-							feed.nexts++;
-							return new Promise((resolve) => (feed.deliver = (update) => resolve({ value: update, done: false })));
-						},
-						return: () => {
-							feed.returned++;
-							return Promise.resolve({ done: true });
-						},
-					};
-					return { [Symbol.asyncIterator]: () => iterator, end() {} };
-				}
+	/** A subscription the test feeds by hand, so an update can arrive after the client has left. */
+	function handFedTopic() {
+		const name = `HandFed${++sequence}`;
+		const feed = { nexts: 0, returned: 0, deliver: undefined };
+		class HandFed extends Resource {
+			static subscribe() {
+				const iterator = {
+					next: () => {
+						feed.nexts++;
+						return new Promise((resolve) => (feed.deliver = (update) => resolve({ value: update, done: false })));
+					},
+					return: () => {
+						feed.returned++;
+						return Promise.resolve({ done: true });
+					},
+				};
+				return { [Symbol.asyncIterator]: () => iterator, end() {} };
 			}
-			Resources.resources.set(name, HandFed, { mqtt: true });
-			return { name, feed };
 		}
+		Resources.resources.set(name, HandFed, { mqtt: true });
+		return { name, feed };
+	}
 
-		async function subscribed(user = superUser) {
-			const { name, feed } = handFedTopic();
-			const client = await connect(open, { user });
-			assert.ok(client.sessions.has(client.session), 'the CONNECT did not register a session');
-			await client.subscribe(`${name}/#`);
-			await waitFor(() => feed.deliver, { message: 'the session never read its subscription' });
-			return { name, feed, client };
+	async function subscribed(user = superUser, protocolVersion = 5) {
+		const { name, feed } = handFedTopic();
+		const client = await connect(open, { user, protocolVersion });
+		assert.ok(client.sessions.has(client.session), 'the CONNECT did not register a session');
+		await client.subscribe(`${name}/#`);
+		await waitFor(() => feed.deliver, { message: 'the session never read its subscription' });
+		return { name, feed, client };
+	}
+
+	const publishesSent = (client) => client.parse().filter((packet) => packet.cmd === 'publish');
+
+	describe('a delivery of a message that carries its own content type', () => {
+		for (const protocolVersion of [4, 5]) {
+			it(`sends a plain Uint8Array view as a valid PUBLISH (protocol ${protocolVersion})`, async () => {
+				const { name, feed, client } = await subscribed(superUser, protocolVersion);
+				// as decoded from the transaction log on a worker other than the publisher's
+				const view = new Uint8Array([0xee, 104, 105, 0xee]).subarray(1, 3);
+				feed.deliver({ type: 'message', id: 'k', value: { contentType: 'application/octet-stream', data: view } });
+				await waitFor(() => publishesSent(client).length === 1, { message: 'no PUBLISH was sent' });
+				const [publish] = publishesSent(client);
+				assert.strictEqual(publish.topic, `${name}/k`);
+				assert.strictEqual(publish.payload.toString(), 'hi');
+				assert.strictEqual(client.socket.terminations, 0);
+			});
 		}
+	});
 
-		const publishesSent = (client) => client.parse().filter((packet) => packet.cmd === 'publish');
-
+	describe('a delivery that reaches a disconnected session', () => {
 		it('stops delivering and names the topic at debug level, not as an error', async () => {
 			const { name, feed, client } = await subscribed();
 			const debug = captureLog('debug');

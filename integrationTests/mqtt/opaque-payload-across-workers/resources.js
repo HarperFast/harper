@@ -10,14 +10,14 @@ function yielding(value) {
 	};
 }
 
-// A subscription runs on the worker that owns the connection, so its one message names that worker.
+// A subscription runs on the worker serving the connection.
 export class WorkerProbe extends Resource {
 	subscribe() {
 		return yielding({ threadId });
 	}
 }
 
-// A message no serializer can encode, so its delivery fails.
+// No serializer can encode this message.
 export class Unserializable extends Resource {
 	subscribe() {
 		return yielding({
