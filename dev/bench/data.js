@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792660812282,
+  "lastUpdate": 1792660817086,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -29870,6 +29870,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 581,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec",
+          "message": "fix: propagate residency read failures and refresh stub indexes (#3322)\n\n* Preserve residency read errors and keep stub indexes current\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation projections and adopt loaded absence\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve indexes across staged residency invalidations\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: preserve invalidation payloads through staged writes\n\nDispatch-Task: hp-residency-read-correctness\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: advance request freshness after loading a resident\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix: load resolver inputs for computed query projections\n\nDispatch-Task: hp-residency-read-correctness\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-10-21T23:53:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/d97dc51f4164f7e2afca1c0f4c45f8cdabcdbfec"
+        },
+        "date": 1792660815681,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4181.35,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4181.35,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 226.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 584.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 764.8,
             "unit": "ms"
           }
         ]
