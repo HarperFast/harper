@@ -432,6 +432,10 @@ Opt-in deflate compression for file-backed blobs (harper#2443) has three load-be
 
 RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them when that transaction ends. An abandoned range is still bounded by the idle monitor. Resuming after its snapshot has been released throws an `ReadSnapshotExpiredError` (503) before accessing the native iterator; retry only the read, without replaying previously committed writes. A poisoned write-bearing transaction retains its existing 422 error and rollback behavior. Early iterator return remains a cleanup operation, including after expiration.
 
+## A read reference belongs to the handle acquisition it was taken on (`DatabaseTransaction.useReadTxn`/`doneReadTxn`, harper#3308)
+
+`readTxnsUsed` is never positive without a read handle, and `doneReadTxn(generation)` ignores a return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot). Enforced by `unitTests/resources/detachedReadRefs.test.js`.
+
 ## Auto-increment id ranges are claimed by compare-and-replace (`Table.getNewId`)
 
 Worker threads in a process share one id counter (`getUserSharedBuffer('id')`), but each thread decides on its own when the range in the `id_allocation` record is exhausted, so two threads can extend or re-allocate it at the same moment. `replaceIdAllocation` lets exactly one of them install the new range: it writes only while the stored allocation still equals the one the caller read (or none is stored), and a loser bounds its ids by the stored range instead of its own proposal. A losing re-allocation (`alreadyUpdated`) leaves the counter for the winner to move, so between the winner's commit and its `Atomics.store` the loser's limit and the counter can briefly name different ranges. Two properties make this hold on RocksDB:
