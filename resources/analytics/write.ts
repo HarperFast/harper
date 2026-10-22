@@ -69,6 +69,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	// The cancelled window must not stretch the next one's period or skip its histogram reset.
 	analyticsStart = 0;
 	lastFlushAt = 0;
+	activeActions = new Map();
 }
 
 function recordExistingAction(value: Value, action: Action) {
