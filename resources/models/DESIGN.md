@@ -2,6 +2,10 @@
 
 Notes on invariants the models layer relies on that the code cannot state itself. User-facing behavior is documented in HarperFast/documentation.
 
+## Embedding prefixes belong to the serving entry
+
+OpenAI embedding entries apply `inputPrefixes.document` or `.query` only for an explicit matching `inputType`, after routing, so fallback entries format the original input independently. Strings are concatenated verbatim; absent or empty prefixes preserve input bytes. A config reload applies prefix changes immediately without re-embedding stored vectors; set them before ingest or rewrite existing source fields to re-embed documents unless their previous input bytes already match. The `/v1/embeddings` gateway has no `inputType` and leaves text unchanged, so its callers supply any task prefixes themselves. Enforced by `unitTests/resources/models/inputPrefixes.test.js` and `unitTests/components/openai/index.test.js`. Ollama retains its existing Nomic model-name mapping.
+
 ## Decision outputs are validated at the facade
 
 A `Decision` returned by `models.decide` names a value from the schema's allowed set, and its distribution has exactly one entry per allowed value, with finite probabilities in [0, 1] that sum to one (within 1e-3), sorted descending with ties in schema order unless the backend chose one of the tied values, which then leads. `normalizeDecision` (`decision.ts`) enforces this on every backend output, so no backend's arithmetic is trusted; a violation is a `DecisionContractError`, which `Models.decide` treats like any backend error (recorded against that backend, next candidate tried). A malformed schema or state rejects before routing and writes no analytics row, because nothing was called. Object schemas are marginal-only: `value` is assembled from each field's argmax and may be a combination no single sample produced. Enforced by `unitTests/resources/models/decision.test.js` and `decide.test.js`.
