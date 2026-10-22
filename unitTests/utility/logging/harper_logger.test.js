@@ -3295,6 +3295,8 @@ describe('Test harper_logger module', () => {
 				assert.equal(logsAtLevel('error'), true);
 				assert.equal(logsAtLevel('warn'), false);
 				assert.equal(harperLoggerModule.logLevel, 'error');
+				_applyLogSettingsForTests({ logging: { level: 'verbose' } });
+				assert.equal(harperLoggerModule.logLevel, 'error');
 			});
 		});
 	});

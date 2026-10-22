@@ -254,7 +254,8 @@ function applyLogSettings(rootConfigObject: any) {
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
-	logLevel = logOptions.level ?? logLevel;
+	// an unrecognized level leaves the main logger unchanged, so it must not reach logLevel either
+	if (LOG_LEVEL_HIERARCHY[logOptions.level]) logLevel = logOptions.level;
 	for (const name in rootConfigObject) {
 		// `myComponent:` with nothing under it parses to null, and an async listener's TypeError
 		// escapes the watcher's emit guard as an unhandled rejection.
@@ -460,6 +461,9 @@ if (typeof module !== 'undefined') {
 		trace,
 		get logLevel() {
 			return logLevel;
+		},
+		set logLevel(level) {
+			logLevel = level;
 		},
 		loggerWithTag,
 		suppressLogging,
@@ -2466,6 +2470,9 @@ const loggerExports = {
 	trace,
 	get logLevel() {
 		return logLevel;
+	},
+	set logLevel(level) {
+		logLevel = level;
 	},
 	loggerWithTag,
 	suppressLogging,
