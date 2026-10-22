@@ -6796,6 +6796,18 @@ export function makeTable(options): TableResourceClass {
 				checkLoaded = true;
 			}
 			let transformCache;
+			let plainTransforms: Map<any, (value: any) => any>;
+			// Plain JSON values and directReturn resolver results carry no table of their own, so they project
+			// through the resolver-free transform, keyed by selector descriptor (one name can be selected twice).
+			const projectPlainValue = (attribute: any, value: any) => {
+				if (!plainTransforms) plainTransforms = new Map();
+				let plainTransform = plainTransforms.get(attribute);
+				if (!plainTransform) {
+					plainTransform = transformForSelect(attribute.select || attribute, undefined);
+					plainTransforms.set(attribute, plainTransform);
+				}
+				return plainTransform(value);
+			};
 			const source = this.source;
 			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
@@ -6885,8 +6897,17 @@ export function makeTable(options): TableResourceClass {
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
-							const handleResolvedValue = (value: any) => {
-								if (resolver.directReturn) return callback(value, attribute_name);
+							// returns a promise when projecting the resolved value is still pending
+							const handleResolvedValue = (value: any): Promise<void> | void => {
+								if (resolver.directReturn) {
+									if (attribute_name !== attribute && value && typeof value === 'object' && !(value instanceof Date)) {
+										value = projectPlainValue(attribute, value);
+										if (typeof value?.then === 'function')
+											return value.then((value: any) => callback(value, attribute_name));
+									}
+									callback(value, attribute_name);
+									return;
+								}
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
@@ -6931,46 +6952,29 @@ export function makeTable(options): TableResourceClass {
 											}
 											callback(results, attribute_name);
 										};
-										const promised = nextValue(iterator.next());
-										if (promised) {
-											if (!promises) promises = [];
-											promises.push(promised);
-										}
-										return;
+										return nextValue(iterator.next());
 									} else {
 										value = transform.call(this, value);
-										if (value?.then) {
-											if (!promises) promises = [];
-											promises.push(value.then((value: any) => callback(value, attribute_name)));
-											return;
-										}
+										if (value?.then) return value.then((value: any) => callback(value, attribute_name));
 									}
 								}
 								callback(value, attribute_name);
 							};
-							if (value?.then) {
+							const pending = value?.then ? value.then(handleResolvedValue) : handleResolvedValue(value);
+							if (pending) {
 								if (!promises) promises = [];
-								promises.push(value.then(handleResolvedValue));
-							} else handleResolvedValue(value);
+								promises.push(pending);
+							}
 							return;
 						} else {
 							value = record[attribute_name];
-							if (value && typeof value === 'object' && attribute_name !== attribute) {
-								const subTransform = TableResource.transformEntryForSelect(
-									attribute.select || attribute,
-									context,
-									readTxn,
-									null
-								);
-								// Plain JSON nested values: arrays project per-element so that
-								// `select: [{ name: 'addresses', select: ['city'] }]` returns
-								// `addresses: [{ city }, { city }]` rather than a single object.
-								if (Array.isArray(value)) {
-									value = value.map((item) =>
-										item && typeof item === 'object' ? subTransform({ value: item } as any) : item
-									);
-								} else if (!(value instanceof Date)) {
-									value = subTransform({ value } as any);
+							if (typeof value === 'function') value = undefined;
+							else if (value && typeof value === 'object' && attribute_name !== attribute && !(value instanceof Date)) {
+								value = projectPlainValue(attribute, value);
+								if (typeof value?.then === 'function') {
+									if (!promises) promises = [];
+									promises.push(value.then((value: any) => callback(value, attribute_name)));
+									return;
 								}
 							}
 						}
@@ -6999,7 +7003,14 @@ export function makeTable(options): TableResourceClass {
 								else
 									selectAttribute(attribute, (value, attribute_name) => {
 										if (value === undefined && forceNulls) value = null;
-										selected[attribute_name] = value;
+										if (attribute_name === '__proto__')
+											Object.defineProperty(selected, attribute_name, {
+												value,
+												writable: true,
+												enumerable: true,
+												configurable: true,
+											});
+										else selected[attribute_name] = value;
 									});
 							}
 						}
@@ -8340,7 +8351,8 @@ export function makeTable(options): TableResourceClass {
 			const decideNames = new Set(this.decideAttributes.map((a) => a.name));
 			for (const name of Object.keys(this.userDeciders)) if (!decideNames.has(name)) delete this.userDeciders[name];
 			for (const name of this.userSetDeciders) if (!decideNames.has(name)) this.userSetDeciders.delete(name);
-			propertyResolvers = this.propertyResolvers = {
+			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
+			propertyResolvers = this.propertyResolvers = Object.assign(Object.create(null), {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
 				$updatedTime: (object, context, entry) => entry.version,
@@ -8367,7 +8379,7 @@ export function makeTable(options): TableResourceClass {
 					if (cachedDistance !== undefined) return cachedDistance;
 					return customIndex.propertyResolver(vector, context, entry, distanceSort);
 				},
-			};
+			});
 			propertyResolvers.$highlights.directReturn = true;
 			primaryKeyAttribute = undefined;
 			for (const attribute of this.attributes) {

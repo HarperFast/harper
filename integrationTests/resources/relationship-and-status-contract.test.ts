@@ -41,7 +41,8 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
-import { unpack } from 'msgpackr';
+import { unpack, unpackMultiple } from 'msgpackr';
+import { decode as decodeCbor } from 'cbor-x';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -416,6 +417,55 @@ suite(
 							);
 						}
 					}
+				}
+			});
+
+			test('filtered REST select projects plain JSON like the single-record URL', async () => {
+				await clearAll();
+				strictEqual((await restPut('/Order/ord-collide', { id: 'ord-collide', total: 5 })).status, 204);
+				const metadata = {
+					label: 'kept',
+					orderId: 'ord-collide',
+					order: { id: 'json-order', name: 'Plain JSON Order', hidden: 'omit' },
+					$updatedtime: 'nested-updated',
+					hasOwnProperty: 'ordinary data',
+				};
+				strictEqual((await restPut('/OrderItem/json-collide', { id: 'json-collide', metadata })).status, 204);
+				const selection =
+					'id,metadata{label,order{id,name},$updatedtime,hasOwnProperty,valueOf,toString,constructor,__proto__{x}}';
+				for (const accept of ['application/json', 'application/cbor', 'application/x-msgpack']) {
+					// a streamed msgpack collection is a sequence of values, not one array
+					const decode = async (response: Response, collection = false) =>
+						accept === 'application/json'
+							? response.json()
+							: accept === 'application/cbor'
+								? decodeCbor(Buffer.from(await response.arrayBuffer()))
+								: (collection ? unpackMultiple : unpack)(Buffer.from(await response.arrayBuffer()));
+					const single = await fetch(`${httpURL}/OrderItem/json-collide?select(${selection})`, {
+						headers: { Accept: accept, Authorization: auth },
+					});
+					const collection = await fetch(`${httpURL}/OrderItem/?id=json-collide&select(${selection})`, {
+						headers: { Accept: accept, Authorization: auth },
+					});
+					strictEqual(single.status, 200, accept);
+					strictEqual(collection.status, 200, accept);
+					const singleBody = await decode(single);
+					const rows = await decode(collection, true);
+					strictEqual(rows.length, 1, accept);
+					const row = rows[0];
+					deepStrictEqual(row, singleBody, `collection row equals single-record projection (${accept})`);
+					strictEqual(row.error, undefined, accept);
+					strictEqual(row.id, 'json-collide');
+					strictEqual(row.metadata.label, 'kept');
+					deepStrictEqual(row.metadata.order, { id: 'json-order', name: 'Plain JSON Order' }, accept);
+					strictEqual(row.metadata.$updatedtime, 'nested-updated');
+					strictEqual(row.metadata.hasOwnProperty, 'ordinary data');
+					for (const inherited of ['valueOf', 'toString', 'constructor'])
+						strictEqual(
+							Object.hasOwn(row.metadata, inherited) ? row.metadata[inherited] : undefined,
+							undefined,
+							`${inherited} (${accept})`
+						);
 				}
 			});
 
