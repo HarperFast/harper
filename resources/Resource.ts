@@ -1097,6 +1097,10 @@ export function allowedMethods(resource: any) {
  * @param object
  * @returns
  */
+// an inherited `__proto__` is the object's prototype (a table record's carries accessors), not data
+export function readSelectedProperty(object: any, property: string) {
+	return property === '__proto__' && !Object.hasOwn(object, property) ? undefined : object[property];
+}
 function selectFromObject(object, propertyResolvers, context) {
 	// TODO: eventually we will do aggregate functions here
 	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
@@ -1115,13 +1119,13 @@ function selectFromObject(object, propertyResolvers, context) {
 				(resolver = propertyResolvers[property])
 			) {
 				return resolver(object, context);
-			} else return record[property];
+			} else return readSelectedProperty(record, property);
 		};
 	} else if (propertyResolvers) {
 		return (property) => {
 			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
 			if (resolver) return resolver(object, context);
-			const value = object[property];
+			const value = readSelectedProperty(object, property);
 			return typeof value === 'function' ? undefined : value;
 		};
 	} else
@@ -1157,6 +1161,10 @@ export function transformForSelect(select, resource) {
 					results.push(getProperty(property));
 				}
 				return results;
+			};
+		if (!resource && select.length === 1 && select[0] === '*')
+			return function transform(object) {
+				return typeof object?.then === 'function' ? object.then(transform) : object;
 			};
 		const forceNulls = (select as any).forceNulls;
 		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');

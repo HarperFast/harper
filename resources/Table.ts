@@ -31,10 +31,22 @@ import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 <<<<<<< HEAD
+<<<<<<< HEAD
 import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
 =======
 import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads, ownDataProperty } from './Resource.ts';
 >>>>>>> 39659eb14 (fix: keep wildcard, repeated and thenable-shaped selections intact in search projection)
+=======
+import {
+	Resource,
+	SEARCH_AUTHORIZATION,
+	WRITE_CONDITION,
+	transformForSelect,
+	defaultAllowReads,
+	ownDataProperty,
+	readSelectedProperty,
+} from './Resource.ts';
+>>>>>>> 1730d5956 (fix: return wildcard-only sub-selects unchanged and never emit a record prototype)
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -6574,7 +6586,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							return;
 						} else {
-							value = record[attribute_name];
+							value = readSelectedProperty(record, attribute_name);
 							if (typeof value === 'function') value = undefined;
 							else if (value && typeof value === 'object' && attribute_name !== attribute && !(value instanceof Date)) {
 								value = projectPlainValue((transformCache ??= new Map()), attribute, value);
@@ -6596,7 +6608,7 @@ export function makeTable(options): TableResourceClass {
 						if ((select as any).asArray) {
 							selected = [];
 							select.forEach((attribute, index) => {
-								if (attribute === '*') select[index] = record;
+								if (attribute === '*') selected[index] = record;
 								else selectAttribute(attribute, (value) => (selected[index] = value));
 							});
 						} else {
