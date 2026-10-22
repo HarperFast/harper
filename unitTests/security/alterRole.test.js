@@ -42,6 +42,7 @@ describe('security/role alterRole() error status', () => {
 	it('keeps the 400 the real update pipeline raises for a reserved role id', async () => {
 		await assert.rejects(alterRole({ id: 'null', permission: PERMISSION }), (err) => {
 			assert.strictEqual(err.statusCode, 400);
+			assert.match(err.message, /Invalid hash value/);
 			return true;
 		});
 	});
