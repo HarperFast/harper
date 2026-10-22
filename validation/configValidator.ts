@@ -214,6 +214,10 @@ const pricingSchema = Joi.object({
 }).unknown(false);
 const withPricingFor = (kind, schema) =>
 	schema.keys({ pricing: kind === 'generative' ? pricingSchema.optional() : Joi.forbidden() });
+const inputPrefixesSchema = Joi.object({
+	document: string.allow('').optional(),
+	query: string.allow('').optional(),
+}).unknown(false);
 // A built-in that cannot serve the kind it is listed under fails here, with the kind named, rather
 // than passing as a module specifier and failing at boot.
 function rejectWrongKind(kind) {
@@ -225,7 +229,15 @@ const providerEntrySchema = (kind) =>
 	Joi.alternatives().conditional('.backend', {
 		switch: [
 			{ is: 'ollama', then: withPricingFor(kind, ollamaEntrySchema) },
-			{ is: 'openai', then: withPricingFor(kind, openaiEntrySchema) },
+			{
+				is: 'openai',
+				then: withPricingFor(
+					kind,
+					openaiEntrySchema.keys({
+						inputPrefixes: kind === 'embedding' ? inputPrefixesSchema.optional() : Joi.forbidden(),
+					})
+				),
+			},
 			{ is: 'anthropic', then: withPricingFor(kind, anthropicEntrySchema) },
 			{ is: 'bedrock', then: withPricingFor(kind, bedrockEntrySchema) },
 			{ is: 'generative', then: wrongKindEntrySchema(kind) },

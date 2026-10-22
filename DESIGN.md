@@ -113,6 +113,8 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## resources/models/ — model facade, backends, decisions
 
+- [Embedding prefixes belong to the serving entry](resources/models/DESIGN.md#embedding-prefixes-belong-to-the-serving-entry) — OpenAI embedding prefixes are opt-in per entry; fallback formats original input, and reload never re-embeds stored vectors.
+
 - [Decision outputs are validated at the facade](resources/models/DESIGN.md#decision-outputs-are-validated-at-the-facade) — `normalizeDecision` checks every backend's distribution (complete, in-set, sums to one) before a `Decision` is returned; a violation is a backend error, so fallback applies.
 - [The generative adapter reports no usage of its own](resources/models/DESIGN.md#the-generative-adapter-reports-no-usage-of-its-own) — Each vote sample is its own `generate` row; the decide row reports no tokens, and samples settle before the adapter throws.
 - [Required capabilities are checked on the candidate about to be invoked](resources/models/DESIGN.md#required-capabilities-are-checked-on-the-candidate-about-to-be-invoked) — The router's list is advisory; `assertCapabilities` re-checks `requires` immediately before each candidate is invoked, fallbacks included and a stream's first candidate both up front and on its first `next()`, so a custom router cannot slip an incapable backend through.

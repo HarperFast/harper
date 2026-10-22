@@ -30,6 +30,7 @@ import {
 	requireModel,
 } from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
+import { isUnresolvedEnvVarPlaceholder } from '../../utility/expandEnvVar.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import type {
 	BackendOpts,
@@ -99,6 +100,8 @@ export interface OpenAIBackendConfig {
 	requestTimeoutMs?: number;
 	/** Forwarded as `OpenAI-Organization` header when set. */
 	organization?: string;
+	/** Exact text prepended for an explicit embedding inputType; omitted keys leave inputs unchanged. */
+	inputPrefixes?: { document?: string; query?: string };
 }
 
 /**
@@ -139,6 +142,8 @@ export class OpenAIBackend implements ModelBackend {
 	readonly #organization?: string;
 	readonly #requestTimeoutMs?: number;
 	readonly #fetch: typeof fetch;
+	readonly #documentPrefix?: string;
+	readonly #queryPrefix?: string;
 	// True only when talking to api.openai.com itself. OpenAI's reasoning models
 	// (o-series, gpt-5 family) reject `max_tokens` in favour of `max_completion_tokens`;
 	// OpenAI-compatible shims (vLLM, Ollama-compat, older gateways) only know `max_tokens`.
@@ -162,6 +167,19 @@ export class OpenAIBackend implements ModelBackend {
 		this.#organization = config.organization;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
 		this.#fetch = fetchImpl;
+		const prefixes = config.inputPrefixes;
+		if (prefixes !== undefined) {
+			if (!prefixes || typeof prefixes !== 'object' || Array.isArray(prefixes))
+				throw new OpenAIBackendError('OpenAI inputPrefixes must be an object');
+			for (const [key, value] of Object.entries(prefixes)) {
+				if (key !== 'document' && key !== 'query')
+					throw new OpenAIBackendError('OpenAI inputPrefixes accepts only document and query');
+				if (value !== undefined && (typeof value !== 'string' || isUnresolvedEnvVarPlaceholder(value)))
+					throw new OpenAIBackendError(`OpenAI inputPrefixes.${key} must be a resolved string`);
+			}
+			this.#documentPrefix = prefixes.document;
+			this.#queryPrefix = prefixes.query;
+		}
 	}
 
 	capabilities(): ModelCapabilities {
@@ -173,10 +191,10 @@ export class OpenAIBackend implements ModelBackend {
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'embed', OpenAIBackendError);
-		// inputType is honored as a hint but OpenAI's embedding models don't
-		// currently differentiate by it on the wire — pass through unchanged.
 		const texts = Array.isArray(input) ? input : [input];
-		const body: Record<string, unknown> = { model, input: texts };
+		const prefix =
+			opts.inputType === 'document' ? this.#documentPrefix : opts.inputType === 'query' ? this.#queryPrefix : undefined;
+		const body: Record<string, unknown> = { model, input: prefix ? texts.map((text) => prefix + text) : texts };
 		const res = await this.#post('/embeddings', body, opts.signal);
 		const data = await parseJsonResponse<OpenAIEmbedResponse>(res, 'OpenAI /embeddings', OpenAIBackendError);
 		if (!Array.isArray(data.data)) {
