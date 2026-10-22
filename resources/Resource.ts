@@ -1101,7 +1101,7 @@ export function readSelectedProperty(object: any, property: string) {
  * @param object
  * @returns
  */
-function selectFromObject(object, propertyResolvers, context) {
+function selectFromObject(object, propertyResolvers, context, selectsPrototype: boolean) {
 	// TODO: eventually we will do aggregate functions here
 	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
 	if (record) {
@@ -1112,25 +1112,25 @@ function selectFromObject(object, propertyResolvers, context) {
 				return value;
 			}
 			if (ownData && property in ownData) {
-				return readSelectedProperty(ownData, property);
+				return selectsPrototype ? readSelectedProperty(ownData, property) : ownData[property];
 			} else if (
 				propertyResolvers &&
 				Object.hasOwn(propertyResolvers, property) &&
 				(resolver = propertyResolvers[property])
 			) {
 				return resolver(object, context);
-			} else return readSelectedProperty(record, property);
+			} else return selectsPrototype ? readSelectedProperty(record, property) : record[property];
 		};
 	} else if (propertyResolvers) {
 		return (property) => {
 			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
 			if (resolver) return resolver(object, context);
-			const value = readSelectedProperty(object, property);
+			const value = selectsPrototype ? readSelectedProperty(object, property) : object[property];
 			return typeof value === 'function' ? undefined : value;
 		};
 	} else
 		return (property) => {
-			const value = readSelectedProperty(object, property);
+			const value = selectsPrototype ? readSelectedProperty(object, property) : object[property];
 			return typeof value === 'function' ? undefined : value;
 		};
 }
@@ -1146,17 +1146,18 @@ export function transformForSelect(select, resource) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return object.map(transform);
-			return selectFromObject(object, propertyResolvers, context)(select);
+			return selectFromObject(object, propertyResolvers, context, select === '__proto__')(select);
 		};
 	else if (Array.isArray(select)) {
 		// if it is an array, return an array
+		const selectsPrototype = select.some((property) => (property?.name ?? property) === '__proto__');
 		if ((select as any).asArray)
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
 				if (Array.isArray(object)) return object.map(transform);
 				const results = [];
-				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
 				for (const property of select) {
 					results.push(property === '*' ? object : getProperty(property));
 				}
@@ -1167,7 +1168,6 @@ export function transformForSelect(select, resource) {
 				return typeof object?.then === 'function' ? object.then(transform) : object;
 			};
 		const forceNulls = (select as any).forceNulls;
-		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
 		const selectsWildcard = !resource && select.includes('*');
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
@@ -1178,7 +1178,7 @@ export function transformForSelect(select, resource) {
 				return object;
 			// finally the case of returning objects
 			const selectedData = {};
-			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
 			if (selectsPrototype) Object.defineProperty(selectedData, '__proto__', ownDataProperty);
 			let promises;
 			for (const property of select) {
