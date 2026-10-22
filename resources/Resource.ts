@@ -1113,7 +1113,7 @@ function selectFromObject(object, propertyResolvers, context, selectsPrototype: 
 			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
 				return value;
 			}
-			if (ownData && property in ownData) {
+			if (ownData && Object.hasOwn(ownData, property)) {
 				value = selectsPrototype ? readSelectedProperty(ownData, property) : ownData[property];
 			} else if (
 				propertyResolvers &&
@@ -1188,10 +1188,11 @@ export function transformForSelect(select, resource) {
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
 				return settleAll(object.map((value) => (value && typeof value === 'object' ? transform(value) : value)));
-			const wildcardSource =
+			// a resource instance's current values are its record overlaid with its pending changes
+			const wildcardSources =
 				selectsWildcard &&
 				!(ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob) &&
-				(typeof object.getRecord === 'function' ? object.getRecord() : object);
+				(typeof object.getRecord === 'function' ? [object.getRecord(), object.getChanges?.()] : [object]);
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
@@ -1199,12 +1200,15 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				if (property === '*') {
-					if (wildcardSource)
-						for (const key in wildcardSource) {
-							const value = wildcardSource[key];
-							if (typeof value === 'function') continue;
-							if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
-							else selectedData[key] = value;
+					if (wildcardSources)
+						for (const source of wildcardSources) {
+							if (!source) continue;
+							for (const key in source) {
+								const value = source[key];
+								if (typeof value === 'function') continue;
+								if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
+								else selectedData[key] = value;
+							}
 						}
 					continue;
 				}

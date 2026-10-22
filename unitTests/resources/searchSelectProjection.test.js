@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { Resource } = require('#src/resources/Resource');
+const { Resource, transformForSelect } = require('#src/resources/Resource');
 const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 describe('search select projection matches single-record projection', function () {
@@ -435,6 +435,16 @@ describe('search select projection matches single-record projection', function (
 		const row = await projectBothWays(['id', nested('asyncDate', ['x'])]);
 		assert.ok(row.asyncDate instanceof Date);
 		assert.strictEqual(row.asyncDate.toISOString(), '2026-01-01T00:00:00.000Z');
+	});
+
+	it('projects a mutable instance with pending changes through a wildcard and prototype-named keys', function () {
+		const instance = new Article(article.id, {});
+		instance.setRecord({ id: 'a1', title: 'Stored', constructor: 'stored-data' });
+		instance._setChanges({ title: 'Changed' });
+		const projected = transformForSelect(['id', 'constructor', 'title', '*'], Article)(instance);
+		assert.strictEqual(projected.title, 'Changed');
+		assert.strictEqual(projected.constructor, 'stored-data');
+		assert.strictEqual(projected.id, 'a1');
 	});
 
 	it('omits Object.prototype methods when projecting a mutable resource instance', async function () {
