@@ -759,11 +759,13 @@ function getSelect({ get_attributes, hdb_user }: any, table: any) {
 			)
 		) {
 			const context = { user: hdb_user };
-			get_attributes = get_attributes.map((property) => {
-				const authorized = table._authorizeRelatedSelection(property, hdb_user, permission, context);
-				if (authorized === false) throw new AccessViolation(hdb_user);
-				return authorized;
-			});
+			get_attributes = table._inReadAdmission(() =>
+				get_attributes.map((property) => {
+					const authorized = table._authorizeRelatedSelection(property, hdb_user, permission, context);
+					if (authorized === false) throw new AccessViolation(hdb_user);
+					return authorized;
+				})
+			);
 		}
 		get_attributes.forceNulls = true;
 		return get_attributes;

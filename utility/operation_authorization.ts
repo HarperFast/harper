@@ -993,7 +993,6 @@ function checkRelationshipReads(
 ): Set<string> | undefined {
 	const tableClass = getDatabases()[operationSchema]?.[table];
 	if (!tableClass?.hasRelationships) return;
-	// search_by_value runs one condition from these, preferring search_attribute; a `*` value runs none
 	let valueAttribute = requestJson.search_attribute ?? requestJson.attribute;
 	if ((requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value) === '*')
 		valueAttribute = undefined;

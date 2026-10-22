@@ -265,6 +265,27 @@ describe('Default reads authorize @enumerable relationships against the related 
 		assert.deepStrictEqual(await searchAs(Root, user), []);
 		const tableCount = length + 1 + siblings + 3;
 		assert.ok(user.lookups <= 2 * tableCount, `${user.lookups} permission lookups for ${tableCount} tables`);
+		const selection = ['id'];
+		for (let b = 0; b < siblings; b++) selection.push('s' + b);
+		const withoutLeaf = { ...tables };
+		delete withoutLeaf['EnumShared' + length];
+		for (const [permissions, failAt] of [
+			[tables],
+			[withoutLeaf],
+			[tables, 15],
+			[tables],
+			[withoutLeaf, 15],
+			[withoutLeaf],
+		]) {
+			const explicit = countingUser(permissions, failAt);
+			if (failAt) await assert.rejects(searchAs(Root, explicit, selection));
+			else {
+				assert.deepStrictEqual(await searchAs(Root, explicit, selection), []);
+				// a restricted sibling writes its own select over the shared chain, so the bound is the projection's size
+				const bound = permissions === tables ? tableCount : tableCount + siblings * (length + 1);
+				assert.ok(explicit.lookups <= 2 * bound, `${explicit.lookups} lookups selecting ${siblings} siblings`);
+			}
+		}
 	});
 
 	it('admits consecutive principals independently, also after a failed permission lookup', async () => {
