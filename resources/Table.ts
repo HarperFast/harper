@@ -5958,6 +5958,7 @@ export function makeTable(options): TableResourceClass {
 						Boolean(baseEntry?.metadataFlags & (residencyPolicy ? INVALIDATED : INVALIDATED | REPLICA)) &&
 						!(residencyPolicy && writtenHere && existingRecord === loadedEntry?.value);
 					if (residencyPolicy) {
+						write.requiresOwnerConfirmation = false;
 						const slot =
 							residencyPolicy.byAttribute && patchesStub
 								? (options?.residencySlot ?? baseEntry.residencySlot)
@@ -5974,7 +5975,8 @@ export function makeTable(options): TableResourceClass {
 							if (writtenHere && omitLocalRecord) {
 								requireConnectedResidencyOwner(databaseName, owners);
 								const committer = committedBy ?? transaction;
-								committer.replicatedConfirmation = Math.max(committer.replicatedConfirmation || 0, 1);
+								write.requiresOwnerConfirmation = true;
+								committer.requiresOwnerConfirmation = true;
 								const checkOwners = write.checkResidency;
 								write.checkResidency = () => {
 									checkOwners();
@@ -6000,11 +6002,15 @@ export function makeTable(options): TableResourceClass {
 						residencyId = getResidencyId(residency);
 					}
 					// a caller that catches the refusal must not be able to commit it, even on a retry
-					if ((residencyId || write.residencyOwners) && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
+					if (
+						(residencyId || write.residencyOwners) &&
+						committedBy?.requestedConfirmationCount &&
+						!transaction?.isRetry
+					) {
 						try {
 							if (write.residencyOwners)
-								confirmingOwnerNames(primaryStore, write.residencyOwners, committedBy.replicatedConfirmation, id);
-							else confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
+								confirmingOwnerNames(primaryStore, write.residencyOwners, committedBy.requestedConfirmationCount, id);
+							else confirmingResidents(primaryStore, residencyId, committedBy.requestedConfirmationCount, id);
 						} catch (error) {
 							write.skipped = true;
 							write.skipReplicationConfirmation = true;
@@ -6141,7 +6147,9 @@ export function makeTable(options): TableResourceClass {
 						if (storeRecord) {
 							write.stagedEntry = omitLocalRecord
 								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId, residencySlot }
-								: { value: recordToStore, ...(residencySlot === undefined ? {} : { residencySlot }) };
+								: residencySlot === undefined
+									? { value: recordToStore }
+									: { value: recordToStore, residencySlot };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
 							// then owns their lifetime; and any record an earlier write in this transaction
 							// stored is now replaced, so mark those writes for the superseded-blob cleanup
@@ -11332,7 +11340,7 @@ export function makeTable(options): TableResourceClass {
 			(residencyPolicy || entry?.residencyId) &&
 			sourceLoad &&
 			context?.replicateFrom !== false &&
-			entry.metadataFlags & INVALIDATED &&
+			entry?.metadataFlags & INVALIDATED &&
 			!hasExpired(entry)
 		);
 	}

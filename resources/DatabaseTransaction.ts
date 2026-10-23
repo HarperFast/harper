@@ -684,6 +684,7 @@ export type TransactionWrite = {
 	store: any; // using any here because of circular dependency and complex RootDatabaseKind
 	invalidated?: boolean;
 	residencyOwners?: readonly string[];
+	requiresOwnerConfirmation?: boolean;
 	checkResidency?: () => unknown;
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
@@ -950,6 +951,21 @@ export class DatabaseTransaction implements Transaction {
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
+	declare requiresOwnerConfirmation?: boolean;
+	get requestedConfirmationCount(): number {
+		return this.replicatedConfirmation || 0;
+	}
+	get confirmationCount(): number {
+		return Math.max(
+			this.requestedConfirmationCount,
+			this.requiresOwnerConfirmation &&
+				this.writes.some(
+					(write) => write?.saved && !write.skipReplicationConfirmation && write.requiresOwnerConfirmation
+				)
+				? 1
+				: 0
+		);
+	}
 	checkedResidentPeerLists?: string[][] | null;
 	checkedFor?: RocksTransaction;
 	// Set when this transaction is applying data from a canonical source of truth (replication peer
@@ -1811,6 +1827,7 @@ export class DatabaseTransaction implements Transaction {
 			if (write) this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
+		if (this.requiresOwnerConfirmation) this.requiresOwnerConfirmation = false;
 		this.validated = 0;
 		this.writesByKey = undefined;
 		// The commit-fence latch belongs to the discarded batch. A reused transaction that once staged
@@ -1915,6 +1932,7 @@ export class DatabaseTransaction implements Transaction {
 				? this.residentPeerLists(committedTransaction)
 				: (this.checkedResidentPeerLists ?? undefined);
 		this.checkedResidentPeerLists = undefined;
+		if (!this.requestedConfirmationCount && !residentPeerLists) return;
 		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
 		// when some later write replicates
 		let version = this.writes.some(
@@ -1937,14 +1955,16 @@ export class DatabaseTransaction implements Transaction {
 	 * adds no list: N confirmations from any list already come from N distinct peers.
 	 */
 	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
+		const count = this.confirmationCount;
 		let lists: Map<number | readonly string[], string[]> | undefined;
 		for (const write of this.writes) {
 			if (!write?.saved || write.skipReplicationConfirmation) continue;
+			if (!this.requestedConfirmationCount && !write.requiresOwnerConfirmation) continue;
 			if (write.residencyOwners) {
 				if (submitted && write.appendedTo !== submitted) continue;
 				(lists ??= new Map()).set(
 					write.residencyOwners,
-					confirmingOwnerNames(write.store, write.residencyOwners, this.replicatedConfirmation, write.key)
+					confirmingOwnerNames(write.store, write.residencyOwners, count, write.key)
 				);
 				continue;
 			}
@@ -1953,7 +1973,7 @@ export class DatabaseTransaction implements Transaction {
 			if (submitted && write.appendedTo !== submitted) continue;
 			(lists ??= new Map()).set(
 				write.residencyId,
-				confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key)
+				confirmingResidents(write.store, write.residencyId, count, write.key)
 			);
 		}
 		return lists && Array.from(lists.values());
@@ -1971,16 +1991,14 @@ export class DatabaseTransaction implements Transaction {
 		this.checkedFor = transaction;
 		try {
 			for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
-			if (
-				!this.replicatedConfirmation ||
-				!this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation)
-			)
+			if (!this.confirmationCount || !this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation))
 				return;
 
 			const residentPeerLists = this.residentPeerLists(transaction);
+			if (!this.requestedConfirmationCount && !residentPeerLists) return;
 			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
 			if (databaseName) {
-				const result: any = confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
+				const result: any = confirmationFeasibility?.(databaseName, this.confirmationCount, residentPeerLists);
 				if (result?.then) {
 					result.then(null, () => {});
 					throw new TypeError('A replication confirmation feasibility check must be synchronous');
@@ -3016,7 +3034,7 @@ export class DatabaseTransaction implements Transaction {
 								return this.commit({ ...options, transaction });
 							}
 							const committedTxnKey = reservedLocalKey(transaction);
-							const committedLogKey = this.replicatedConfirmation ? committedTxnKey : undefined;
+							const committedLogKey = this.confirmationCount ? committedTxnKey : undefined;
 							const committedTransaction = transaction;
 							const committedImmediate = Boolean(
 								(committedTransaction as RocksTransactionWithRetry | undefined)?.immediateCommit
@@ -3059,7 +3077,7 @@ export class DatabaseTransaction implements Transaction {
 								if (store) completions.push(store.flushed);
 							}
 							let confirmation: Promise<void>;
-							if (this.replicatedConfirmation) {
+							if (this.confirmationCount) {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0]?.store.rootStore.databaseName;
@@ -3071,12 +3089,7 @@ export class DatabaseTransaction implements Transaction {
 											: undefined;
 									if (target) {
 										confirmation = confirmReplicationAfterCommit(() =>
-											confirmReplication(
-												databaseName,
-												target.version,
-												this.replicatedConfirmation,
-												target.residentPeerLists
-											)
+											confirmReplication(databaseName, target.version, this.confirmationCount, target.residentPeerLists)
 										);
 									}
 								} catch (error) {
@@ -3124,7 +3137,7 @@ export class DatabaseTransaction implements Transaction {
 							)
 								this.timestamp = 0; // reset the timestamp as well
 							const completed =
-								confirmation || (this.root ?? this).replicatedConfirmation
+								confirmation || (this.root ?? this).confirmationCount
 									? settleCommitCompletions(completions, confirmation)
 									: Promise.all(completions);
 							return completed.then(
