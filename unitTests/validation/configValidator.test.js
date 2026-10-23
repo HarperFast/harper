@@ -150,7 +150,7 @@ describe('Test configValidator module', () => {
 			const required = error.details
 				.filter((detail) => detail.type === 'any.required' && detail.path.length === 1)
 				.map((detail) => detail.path[0]);
-			expect([...required, 'rootPath'].sort()).to.eql([...REQUIRED_ROOT_CONFIG_KEYS].sort());
+			assert.deepStrictEqual([...required, 'rootPath'].sort(), [...REQUIRED_ROOT_CONFIG_KEYS].sort());
 		});
 
 		it('Test itc and localStudio in config_schema with bad values', () => {
