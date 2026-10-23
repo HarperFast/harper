@@ -261,6 +261,8 @@ const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
 const EVICTION_BATCH_SIZE = 100;
+const COMMITTED_READ = { uncachedRead: true };
+const UNRESOLVED = Symbol('unresolved');
 // Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
@@ -3796,10 +3798,23 @@ export function makeTable(options): TableResourceClass {
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
-				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+				commit: (txnTime, existingEntry, _retry, transaction: any, committedBy?: DatabaseTransaction) => {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
+					write.skipped = false;
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (precedesExisting < 0) return;
+					if (
+						// a re-delivered relocate would restamp the committed head, which can be another write of its transaction
+						precedesExisting === 0 &&
+						committedBy?.sourceApply &&
+						isRocksDB &&
+						txnLogKey === txnTime &&
+						isHeadIdentity(identityBase(write, existingEntry, committedBy), txnTime, options?.nodeId)
+					) {
+						write.skipped = true;
+						return;
+					}
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
@@ -4738,15 +4753,18 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
 							if (
-								stagedOwnAuditEntry &&
 								committedBy?.sourceApply &&
 								isRocksDB &&
 								!replaying &&
 								precedesExisting === 0 &&
 								txnLogKey === txnTime &&
-								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
-								!existingEntry.additionalAuditRefs?.length
+								isHeadIdentity(
+									(identityRecord = identityBase(write, existingEntry, committedBy)),
+									txnTime,
+									options?.nodeId
+								)
 							) {
 								write.skipped = true;
 								return;
@@ -4764,7 +4782,10 @@ export function makeTable(options): TableResourceClass {
 							// === 0 is the identity tie: same version AND same node (the local node is id 0, so an undefined
 							// options?.nodeId resolves to the same 0 the ref stored).
 							if (
-								existingEntry.additionalAuditRefs?.some(
+								(identityRecord === UNRESOLVED
+									? identityBase(write, existingEntry, committedBy)
+									: identityRecord
+								)?.additionalAuditRefs?.some(
 									(ref) =>
 										ref.version === txnLogKey &&
 										precedesExistingVersion(
@@ -9123,6 +9144,27 @@ export function makeTable(options): TableResourceClass {
 			if (!prior.skipped) return;
 		}
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
+	}
+
+	// The commit base is the committed record unless another write to the key already saved without being
+	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
+	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
+		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
+			if (other !== write && other.saved && !other.skipped) return committedEntry(write.key);
+		}
+		return existingEntry;
+	}
+
+	function committedEntry(id: Id): Entry | undefined {
+		return primaryStore.getEntry(id, COMMITTED_READ);
+	}
+
+	function isHeadIdentity(entry: Partial<Entry> | undefined, version: number, nodeId?: number): boolean {
+		return (
+			entry?.version === version &&
+			(entry.nodeId ?? 0) === (nodeId ?? getThisNodeId(auditStore)) &&
+			!entry.additionalAuditRefs?.length
+		);
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {
