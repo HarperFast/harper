@@ -396,6 +396,33 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		assert.deepStrictEqual(rows, { a: 1, b: 2, c: 3, d: 4 });
 	});
 
+	it('recovers an explicit-timestamp write with the pointer to its minted log key', async function () {
+		const crashDir = path.join(dbPath, 'replay-explicit-crash');
+		rmSync(crashDir, { recursive: true, force: true });
+		const childArgs = (root) => [
+			path.join(crashDir, root),
+			path.join(crashDir, 'shared'),
+			'explicitreplay',
+			'Rows',
+			path.join(crashDir, 'marker'),
+		];
+		const written = await runCrashChild([...childArgs('writer-root'), 'write-explicit']);
+		assert.strictEqual(
+			written.signal,
+			'SIGKILL',
+			`the writer should kill itself (exit ${written.code}): ${written.stderr}`
+		);
+		const version = readFileSync(path.join(crashDir, 'marker'), 'utf8');
+
+		const replayed = await runCrashChild([...childArgs('replayer-root'), 'replay-explicit', version]);
+		assert.strictEqual(replayed.code, 0, replayed.stderr);
+		assert.deepStrictEqual(JSON.parse(readFileSync(path.join(crashDir, 'marker'), 'utf8')), {
+			version: true,
+			headRef: true,
+			n: 1,
+		});
+	});
+
 	it('discards only the torn commit, keeping a complete commit at the same key', async function () {
 		const { groups } = await replayStream(
 			[

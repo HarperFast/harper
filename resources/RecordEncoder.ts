@@ -409,13 +409,14 @@ export class RecordEncoder extends StructonEncoder {
 						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
 						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
 						// count is one byte too. Refs are best-effort — a later in-order write drops them outright —
-						// so over budget the oldest are dropped, never the first log key (the addressable audit head
-						// when the record and log clocks diverge) nor the last of either kind (the newest receipt the
-						// re-delivery guard matches, whichever kind it is). (harper#2642)
+						// so over budget the oldest are dropped, identities first (they only answer a re-delivery, a
+						// log key also leads the walk to a branch), and never the first log key (the addressable audit
+						// head when the record and log clocks diverge) nor the last of either kind (the newest receipt
+						// the re-delivery guard matches, whichever kind it is). (harper#2642)
 						const budget = Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12);
 						const excess = Math.max(0, logKeyRefCount + identityRefCount - budget);
-						logKeyRefsToDrop = Math.min(excess, Math.max(0, logKeyRefCount - 2));
-						identityRefsToDrop = excess - logKeyRefsToDrop;
+						identityRefsToDrop = Math.min(excess, Math.max(0, identityRefCount - 1));
+						logKeyRefsToDrop = excess - identityRefsToDrop;
 						auditRefsToEncode = logKeyRefCount + identityRefCount - excess;
 						valueStart += 1 + auditRefsToEncode * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
 						additionalAuditRefsNextEncoding = undefined;

@@ -75,6 +75,15 @@ if (require.main === module) {
 			process.kill(process.pid, 'SIGKILL');
 			return;
 		}
+		if (mode === 'write-explicit') {
+			await Tbl.put({ id: 'x', n: 0 });
+			const version = Date.now() + 60_000;
+			await Tbl.patch('x', { n: 1 }, { timestamp: version });
+			writeFileSync(markerPath, String(version));
+			// no flush: the explicit-timestamp patch, minted a key below its version, is recovered by replay
+			process.kill(process.pid, 'SIGKILL');
+			return;
+		}
 		// Several native commits at one log key in an origin's log, as a replication receiver writes
 		// re-deliveries (the node's own `local` log never repeats a key).
 		const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -124,6 +133,23 @@ if (require.main === module) {
 				rowCount++;
 			}
 			writeFileSync(markerPath, JSON.stringify({ commits: replayCommits.length, heapSamples, rowCount }));
+			process.exit(0);
+		}
+		if (mode === 'replay-explicit') {
+			const version = Number(logKeyArg);
+			const entry = Tbl.primaryStore.getEntry('x');
+			let headKey;
+			for (const auditEntry of Tbl.auditStore.getRange({ start: 1, log: 0 }))
+				if (auditEntry.recordId === 'x' && auditEntry.version === version) headKey = auditEntry.txnLogKey;
+			await Tbl.patch('x', { n: 2 }, { timestamp: version - 1000 });
+			writeFileSync(
+				markerPath,
+				JSON.stringify({
+					version: entry.version === version,
+					headRef: entry.additionalAuditRefs?.some((ref) => ref.version === headKey) ?? false,
+					n: (await Tbl.get('x')).n,
+				})
+			);
 			process.exit(0);
 		}
 		const logKey = Number(logKeyArg);

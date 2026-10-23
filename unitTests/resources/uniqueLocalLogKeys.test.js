@@ -124,14 +124,13 @@ describe('Every local-origin transaction has a unique log key', () => {
 		assert.equal(record.name, 'latest');
 	});
 
-	it('resequences out-of-order patches when the head shares its timestamp with another record (transaction.test.js:507)', async () => {
+	it('resequences out-of-order patches when the head shares its timestamp with another record', async () => {
 		const base = futureTimestamp();
 		const [other, between, id] = [newId(), newId(), newId()];
 		await Tbl.put(other, { name: 'other' });
 		await Tbl.patch(other, { name: 'other-newer' }, { timestamp: base + 100 });
 		await Tbl.put(between, { name: 'between' });
 		await Tbl.put(id, { name: 'original', count: 0 });
-		// update4 shares its timestamp with the other record's head
 		await Tbl.patch(id, { name: 'update4', prop4: true }, { timestamp: base + 100 });
 		await Tbl.patch(id, { prop2: true }, { timestamp: base + 40 });
 		await Tbl.patch(id, { prop1: true, count: { __op__: 'add', value: 1 } }, { timestamp: base + 20 });
@@ -147,9 +146,6 @@ describe('Every local-origin transaction has a unique log key', () => {
 	});
 
 	it('a lock holder whose save is retried after a native conflict still lands its next save', async () => {
-		// the retry reads back the record its own first attempt staged, whose head and identity refs
-		// are this write's: they prove nothing, and taking them as a receipt skipped the write, left
-		// the holder's version unstepped, and made the next save look like a re-delivery
 		const id = newId();
 		await Tbl.put(id, { name: 'seed' });
 		const targetDb = Tbl.primaryStore.store.db;

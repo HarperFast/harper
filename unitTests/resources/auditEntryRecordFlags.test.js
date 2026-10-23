@@ -128,7 +128,6 @@ describe('Audit entry record flags match the body (#2153)', () => {
 
 			let loser;
 			for (const entry of T.auditStore.getRange({ start: 1 })) {
-				// the entry keeps the superseded write's own version under a minted log key
 				if (entry.recordId === id && entry.version === loserVersion) loser = entry;
 				// every minted entry must be internally consistent: record flags imply a body
 				if (entry.extendedType & (HAS_RECORD | HAS_PARTIAL_RECORD)) {

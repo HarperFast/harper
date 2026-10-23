@@ -13,6 +13,7 @@ const {
 	HAS_ADDITIONAL_AUDIT_REFS,
 } = require('#src/resources/auditStore');
 const { RECEIVED_IDENTITY_REF } = require('#src/resources/RecordEncoder');
+const { Transaction } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -76,13 +77,48 @@ describe('Audit references state their kind', () => {
 		assert.equal(patch?.txnLogKey, K(7));
 	});
 
+	it('a retried save whose minted key equals its caller’s value recognizes its own staging', async () => {
+		const T = tableInOwnDatabase();
+		const floor = Date.now() + 600_000;
+		publishOriginFloor(T.primaryStore.rootStore, floor);
+		const K = (n) => ulpsAbove(floor, n);
+		await T.put('held', { name: 'seed' });
+		const targetDb = T.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		let conflicted;
+		let holder;
+		try {
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db === targetDb && conflicted === undefined) {
+					conflicted = this.id;
+					throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: true });
+				}
+				return originalCommit.apply(this, args);
+			};
+			// the holder's first stamp is K(2), which is also the next key minted
+			holder = await T.lock('held', { hold: true, lease: 15_000 }, { timestamp: K(2) });
+			holder.set('name', 'first');
+			await holder.save();
+			assert.ok(conflicted, 'the first save must have been retried');
+			const first = T.primaryStore.getEntry('held');
+			assert.deepEqual([first.version, entriesFor(T, 'held').at(-1).txnLogKey], [K(2), K(2)]);
+			holder.set('name', 'second');
+			await holder.save();
+			const second = T.primaryStore.getEntry('held');
+			assert.equal(second.value.name, 'second');
+			assert(second.version > first.version, 'each save of a holder steps the record version');
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+			await holder?.unlock();
+		}
+	});
+
 	it('walks a branch whose log key equals the record version', async () => {
 		const T = tableInOwnDatabase();
 		const origin = getIdOfRemoteNode('audit-ref-kinds-origin', T.auditStore);
 		const B = Date.now() + 3_600_000;
 		await applyFromOrigin(T, 'r', { id: 'r', count: 0 }, { logKey: B, version: B, nodeId: origin, fullUpdate: true });
 		await applyFromOrigin(T, 'r', { name: 'A' }, { logKey: B + 100, version: B + 200, nodeId: origin });
-		// out of order: its log key B+200 is the surviving version
 		await applyFromOrigin(T, 'r', { count: 1 }, { logKey: B + 200, version: B + 100, nodeId: origin });
 		assert.equal(T.primaryStore.getEntry('r').version, B + 200);
 
@@ -129,23 +165,26 @@ describe('Audit references state their kind', () => {
 		assert.deepEqual(readAuditEntry(encoded).previousAdditionalAuditRefs, [{ version: now - 1000, nodeId: 2 }]);
 	});
 
-	it('keeps the newest log-key receipt when identities fill the persisted ref budget', async () => {
+	it('keeps every remote receipt when identities fill the persisted ref budget', async () => {
 		const T = tableInOwnDatabase();
 		const origin = getIdOfRemoteNode('audit-ref-kinds-budget', T.auditStore);
 		await T.put('many', { name: 'newer', count: 0 });
 		const stale = Date.now() - 86_400_000;
-		// the origin's log starts above the stale key, so no keyed lookup reaches it: only the record's refs can
+		// the origin's log starts above the stale keys, so no keyed lookup reaches them: only the record's refs can
 		await applyFromOrigin(T, 'other', { id: 'other' }, { logKey: stale + 1000, version: stale + 1000, nodeId: origin });
 		raiseAuditFloor(T.auditStore, Date.now());
-		for (let n = 1; n <= 30; n++)
-			await T.patch('many', { count: { __op__: 'add', value: 1 } }, { timestamp: stale - n });
-		const fromOrigin = { logKey: stale, version: stale, nodeId: origin };
-		await applyFromOrigin(T, 'many', { count: { __op__: 'add', value: 1 } }, fromOrigin);
+		const increment = { count: { __op__: 'add', value: 1 } };
+		const older = { logKey: stale - 100, version: stale - 100, nodeId: origin };
+		const newer = { logKey: stale, version: stale, nodeId: origin };
+		await applyFromOrigin(T, 'many', increment, older);
+		for (let n = 1; n <= 30; n++) await T.patch('many', increment, { timestamp: stale - n });
+		await applyFromOrigin(T, 'many', increment, newer);
 		const entry = T.primaryStore.getEntry('many');
 		assert.ok(entry.additionalAuditRefs.length + entry.receivedIdentityRefs.length < 20, 'the budget bound held');
 		assert.equal(entry.receivedIdentityRefs.at(-1).version, stale - 30);
 
-		await applyFromOrigin(T, 'many', { count: { __op__: 'add', value: 1 } }, fromOrigin);
-		assert.equal((await T.get('many')).count, 31, 'the re-delivery matched the newest log-key receipt');
+		await applyFromOrigin(T, 'many', increment, older);
+		await applyFromOrigin(T, 'many', increment, newer);
+		assert.equal((await T.get('many')).count, 32, 'each re-delivery matched its receipt');
 	});
 });

@@ -566,8 +566,6 @@ describe('Transactions', () => {
 			assert.equal(record.prop2, 'value2');
 
 			let entry2 = TxnTest.primaryStore.getEntry(65);
-			// The explicit timestamp is the record version; the entry sits at its minted key, which the
-			// record's first ref addresses.
 			assert.equal(entry2.version, now + 150);
 			let auditRecord = TxnTest.auditStore.getSync(entry2.additionalAuditRefs[0].version, TxnTest.tableId, 65);
 			assert.equal(auditRecord?.version, now + 150, 'the head ref addresses the latest entry');

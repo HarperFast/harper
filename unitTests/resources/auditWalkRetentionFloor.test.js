@@ -57,7 +57,6 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		await T.put(id, { name: 'original' });
 		const headVersion = Date.now() + 1000;
 		await T.patch(id, record, { timestamp: headVersion });
-		// the explicit timestamp is the version; the key is minted, and the record's first ref addresses it
 		const headKey = T.primaryStore.getEntry(id).additionalAuditRefs[0].version;
 		assert.notEqual(headKey, headVersion);
 		assert.equal(T.auditStore.getSync(headKey, T.tableId, id, 0)?.version, headVersion);

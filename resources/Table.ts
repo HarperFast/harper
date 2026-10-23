@@ -5086,8 +5086,6 @@ export function makeTable(options): TableResourceClass {
 							// and stages nothing. Nor when a retry reads back its own prior staging, recognized by its head
 							// ref being the key minted for this handle (a committed competitor carries another minted head;
 							// in an origin's log a competing delivery shares the key, so only a minted key can tell).
-							// Each kind of ref is matched only against this write's value of the same kind: log keys
-							// against the key it appended under, received identities against the identity it carries.
 							let refBase: Partial<Entry> | undefined;
 							let readsOwnStaging = false;
 							if (!priorStaged) {
@@ -5663,8 +5661,9 @@ export function makeTable(options): TableResourceClass {
 					);
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
-					// Preserve an addressable audit head when the record and log clocks diverge.
-					if (isRocksDB && audit && !isCopyApply && appendedLogKey !== txnTime) {
+					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
+					// whose identity is not its key, so a retry finds its own minted key here (`readsOwnStaging`).
+					if (isRocksDB && audit && !isCopyApply && (appendedLogKey !== txnTime || identityIsNotKey)) {
 						const headIndex = auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId);
 						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
