@@ -1,4 +1,4 @@
-# Per-record expiresAt, with an eviction window, keeps the expired row resident for the test to find.
+# eviction: 3600 holds the cleanup scan back, but the expiresAt sweep ignores it, so the test seeds a row that expires after the restart.
 type Session @table(database: "readonlyttl", expiration: 3600, eviction: 3600) @export {
 	id: ID @primaryKey
 	name: String @indexed
