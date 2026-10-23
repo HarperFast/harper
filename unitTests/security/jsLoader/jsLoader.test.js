@@ -375,12 +375,7 @@ const EXPORTS_CONFORMANCE_CASES = [
 		expected: 'ERR_MODULE_NOT_FOUND',
 	},
 	{ title: 'resolves a root array', exports: [{ import: './a.js' }], expected: 'a' },
-	{
-		title: "keeps a target's query string",
-		exports: { '.': { import: './a.js?variant=1' } },
-		expected: 'a',
-		url: /\/a\.js\?variant=1$/,
-	},
+	{ title: 'loads a target with a query string', exports: { '.': { import: './a.js?variant=1' } }, expected: 'a' },
 ];
 
 function writeProbePackage(exports) {
@@ -388,7 +383,7 @@ function writeProbePackage(exports) {
 	const packageRoot = join(runtimeRoot, 'node_modules', 'exports-probe');
 	for (const [file, value] of Object.entries(PROBE_PACKAGE_FILES)) {
 		mkdirSync(dirname(join(packageRoot, file)), { recursive: true });
-		writeFileSync(join(packageRoot, file), `export const value = '${value}';\nexport const url = import.meta.url;\n`);
+		writeFileSync(join(packageRoot, file), `export const value = '${value}';\n`);
 	}
 	writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'exports-probe', type: 'module', exports }));
 	writeFileSync(join(runtimeRoot, 'outside.js'), "export const value = 'outside';\n");
@@ -412,10 +407,9 @@ function errorCode(error) {
 
 async function loadOutcome(load) {
 	try {
-		const namespace = await load();
-		return { value: namespace.value, url: namespace.url };
+		return (await load()).value;
 	} catch (error) {
-		return { value: errorCode(error) };
+		return errorCode(error);
 	}
 }
 
@@ -518,7 +512,7 @@ for (const mode of ['vm-current-context', 'compartment']) {
 		});
 
 		describe('resolves package exports as native Node import does', () => {
-			for (const { title, exports, subpath = '', expected, url } of EXPORTS_CONFORMANCE_CASES) {
+			for (const { title, exports, subpath = '', expected } of EXPORTS_CONFORMANCE_CASES) {
 				it(title, async () => {
 					const runtimeRoot = writeProbePackage(exports);
 					try {
@@ -526,12 +520,8 @@ for (const mode of ['vm-current-context', 'compartment']) {
 						writeFileSync(entry, `export * from 'exports-probe${subpath}';\n`);
 						const native = await loadOutcome(() => import(pathToFileURL(entry).href));
 						const loaded = await loadOutcome(() => scopedImport(entry, loaderScope(runtimeRoot)));
-						assert.strictEqual(native.value, expected, 'native Node import');
-						assert.strictEqual(loaded.value, expected);
-						if (url) {
-							assert.match(native.url, url);
-							assert.strictEqual(loaded.url, native.url);
-						}
+						assert.strictEqual(native, expected, 'native Node import');
+						assert.strictEqual(loaded, expected);
 					} finally {
 						rmSync(runtimeRoot, { recursive: true, force: true });
 					}
@@ -590,9 +580,9 @@ describe('application require() of package exports (vm-current-context)', () => 
 				`globalThis[Symbol.for('harper.jsLoader.test.requireRejection')] = (globalThis[Symbol.for('harper.jsLoader.test.requireRejection')] ?? 0) + 1;\nmodule.exports = require('exports-probe');\n`
 			);
 			const scope = { ...vmScope(), runtimeRoot };
-			assert.strictEqual((await loadOutcome(() => scopedImport(entry, scope))).value, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(await loadOutcome(() => scopedImport(entry, scope)), 'ERR_PACKAGE_PATH_NOT_EXPORTED');
 			assert.strictEqual(globalThis[counter], 1);
-			assert.strictEqual((await loadOutcome(() => scopedImport(entry, scope))).value, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(await loadOutcome(() => scopedImport(entry, scope)), 'ERR_PACKAGE_PATH_NOT_EXPORTED');
 			assert.strictEqual(globalThis[counter], 2);
 		} finally {
 			delete globalThis[counter];

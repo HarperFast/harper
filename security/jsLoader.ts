@@ -316,10 +316,8 @@ function finalizePackageResolution(resolved: URL, referrer: string): string {
 			`Directory import '${path}' is not supported resolving ES modules imported from ${referrer}`
 		);
 	}
-	const moduleUrl = pathToFileURL(realpathSync(path));
-	moduleUrl.search = resolved.search;
-	moduleUrl.hash = resolved.hash;
-	return moduleUrl.href;
+	// Unlike Node, this drops the target's query and fragment: the loaders pick a module's format from the end of its URL
+	return pathToFileURL(realpathSync(path)).href;
 }
 
 function resolveESMPackageExports(
