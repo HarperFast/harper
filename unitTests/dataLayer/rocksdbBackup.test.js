@@ -13,6 +13,7 @@ const {
 } = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
+const { writeUnsupportedTableFormat: sharedWriteUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
 const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const { extract } = require('tar-stream');
@@ -102,6 +103,7 @@ describe('rocksdbBackup', function () {
 			`${DB_NAME}-blobs`,
 			`${DB_NAME}-interrupted`,
 			`${DB_NAME}-foreign`,
+			`${DB_NAME}-unsupported`,
 		]) {
 			for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
 			rmSync(backupDirForDatabase(name), { recursive: true, force: true });
@@ -244,6 +246,26 @@ describe('rocksdbBackup', function () {
 
 			const purged = await purgeBackupsOffline(DB_NAME, 0);
 			assert.deepStrictEqual(purged, { deleted: 1, remaining: 0 });
+		});
+
+		it('verifyBackupOffline fails naming a table file this build cannot open', async function () {
+			this.timeout(30000);
+			const name = `${DB_NAME}-unsupported`;
+			const dir = join(storageDir, name);
+			const database = RocksDatabase.open(dir);
+			try {
+				for (let i = 0; i < 200; i++) database.putSync(`k${i}`, { i });
+				await database.flush();
+			} finally {
+				database.close();
+			}
+			const { backup_id: backupId } = await createBackupOffline(name);
+			await verifyBackupOffline(name, backupId, false);
+			const sst = sharedWriteUnsupportedTableFormat(backupDirForDatabase(name), backupId);
+			await assert.rejects(
+				verifyBackupOffline(name, backupId, false),
+				(error) => error.message.includes(sst) && /format_version 99/.test(error.message)
+			);
 		});
 
 		it('errors with 404 for unknown backup ids and empty repositories', async function () {
@@ -405,33 +427,8 @@ describe('rocksdbBackup', function () {
 			}
 		}
 
-		// RocksDB's backup meta records a crc32c per file, verified as the file is copied out.
-		function crc32c(buffer) {
-			let crc = 0xffffffff;
-			for (const byte of buffer) {
-				crc ^= byte;
-				for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0x82f63b78 : crc >>> 1;
-			}
-			return (crc ^ 0xffffffff) >>> 0;
-		}
-
-		// A table whose footer declares a format_version this build does not know — what a newer
-		// binding's table format looks like to this one — with its checksum re-recorded, so only a
-		// check that opens the table can refuse it.
-		function writeUnsupportedTableFormat(backupId) {
-			const backupDir = backupDirForDatabase(VERIFIED);
-			const sst = readdirSync(join(backupDir, 'shared_checksum')).find((name) => name.endsWith('.sst'));
-			assert.ok(sst, 'precondition: the backup holds a table file');
-			const sstPath = join(backupDir, 'shared_checksum', sst);
-			const contents = readFileSync(sstPath);
-			contents.writeUInt32LE(99, contents.length - 12);
-			writeFileSync(sstPath, contents);
-			const metaPath = join(backupDir, 'meta', String(backupId));
-			const meta = readFileSync(metaPath, 'utf8');
-			const entry = new RegExp(`^(shared_checksum/${sst} crc32 )\\d+$`, 'm');
-			assert.match(meta, entry);
-			writeFileSync(metaPath, meta.replace(entry, `$1${crc32c(contents)}`));
-		}
+		const writeUnsupportedTableFormat = (backupId) =>
+			sharedWriteUnsupportedTableFormat(backupDirForDatabase(VERIFIED), backupId);
 
 		function writeUnsupportedLogVersion(backupId) {
 			const store = join(backupDirForDatabase(VERIFIED), 'transaction_logs', String(backupId), 'audit');

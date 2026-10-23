@@ -1454,7 +1454,7 @@ export async function verifyBackupOffline(databaseName: string, backupId: number
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
 	const manifest = await requireBackupComplete(backupDir, backupId, databaseName);
-	await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum);
+	await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum, true);
 	return { database: databaseName, backup_id: backupId, ok: true, blobs: manifest.blobs };
 }
 
