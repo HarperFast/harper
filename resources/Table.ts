@@ -584,6 +584,8 @@ function isSameIdAllocation(a: any, b: any): boolean {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
+// set beside AUTHORIZATION_SELECT only when attribute permissions (not just relationships) narrowed the select
+const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
@@ -621,6 +623,33 @@ function isRecordRoot(value: unknown): boolean {
 		!ArrayBuffer.isView(value) &&
 		!(value instanceof ArrayBuffer)
 	);
+}
+function selectedNames(select: any): string[] {
+	return (Array.isArray(select) ? select : [select])
+		.map((property: any) => property?.name ?? property)
+		.filter((name: unknown) => typeof name === 'string');
+}
+// Own properties only: a record's stored attributes are its own, while its computed and relationship attributes
+// are prototype getters whose read runs a resolver. An own `undefined` is a patch removing the attribute.
+function selectOwnAttributes(value: any, names: readonly string[]): any {
+	if (Array.isArray(value))
+		return value.map((element) =>
+			element !== null && typeof element === 'object' ? selectOwnAttributes(element, names) : element
+		);
+	if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
+	const selected: any = {};
+	for (const name of names) {
+		if (!Object.hasOwn(value, name)) continue;
+		if (name === '__proto__')
+			Object.defineProperty(selected, name, {
+				value: value[name],
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
+		else selected[name] = value[name];
+	}
+	return selected;
 }
 const FULL_PERMISSIONS = {
 	read: true,
@@ -3652,6 +3681,7 @@ export function makeTable(options): TableResourceClass {
 							.map((attribute) => attribute.attribute_name);
 					}
 					(target as any)[AUTHORIZATION_SELECT] = true;
+					if (attribute_permissions?.length > 0) (target as any)[ATTRIBUTE_PERMISSION_SELECT] = true;
 					return true;
 				} else {
 					return true;
@@ -7081,6 +7111,10 @@ export function makeTable(options): TableResourceClass {
 				if (!allowed) throw new AccessViolation(context?.user);
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
+			// a caller's own select is not applied to deliveries, only the one attribute permissions narrowed
+			const deliveredAttributes = (request as any)[ATTRIBUTE_PERMISSION_SELECT]
+				? selectedNames(request.select)
+				: undefined;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const resumeGeneration = request.databaseGeneration;
 			const resuming = resumeGeneration !== undefined;
@@ -7190,6 +7224,14 @@ export function makeTable(options): TableResourceClass {
 				request.startTime || 0,
 				request
 			);
+			if (deliveredAttributes) {
+				const sendSelected = subscription.send;
+				subscription.send = function (event) {
+					if (event?.value !== null && typeof event?.value === 'object')
+						event.value = selectOwnAttributes(event.value, deliveredAttributes);
+					return sendSelected.call(this, event);
+				};
+			}
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
 			let progressLive = false;
 			let progressFloor: number | undefined;
@@ -7481,10 +7523,9 @@ export function makeTable(options): TableResourceClass {
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
-									const historyEntry = event && { ...auditRecord, ...event };
-									if (historyEntry && (!allowsEvent || allowsEvent(historyEntry))) {
+									if (event && (!allowsEvent || allowsEvent(event))) {
 										request.omitCurrent = true;
-										history.push(historyEntry);
+										history.push(event);
 										if (count) count--;
 									} else if (!isActive()) return;
 								}
@@ -7519,7 +7560,7 @@ export function makeTable(options): TableResourceClass {
 					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value && !isHiddenExpiry(entry.expiresAt)) {
 						// if retain and it exists, send the current value first
-						const current: any = { id: thisId, ...entry, type: 'put' };
+						const current: any = currentRecordEvent(thisId, entry);
 						if (reportingProgress) current.fromScan = true;
 						if (!send(current)) return;
 					}
@@ -7558,6 +7599,16 @@ export function makeTable(options): TableResourceClass {
 							ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
 					)
 				);
+			}
+			function currentRecordEvent(id: Id, entry: any) {
+				return {
+					id,
+					localTime: entry.localTime,
+					value: entry.value,
+					version: entry.version,
+					type: 'put',
+					size: entry.size,
+				};
 			}
 			function keepCurrentRecordEvent(event: any) {
 				const type = event.type;
@@ -7647,7 +7698,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield currentRecordEvent(thisId, entry);
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
