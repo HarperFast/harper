@@ -9124,19 +9124,19 @@ export function makeTable(options): TableResourceClass {
 	 * nearest earlier write in the transaction that staged state, else the stored entry. Only writes marked
 	 * skipped are passed over, because an invalidate or relocate stores a null stub without staging it.
 	 */
-	function priorWritesSkipped(write: any): boolean {
-		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
-			if (!prior.skipped) return false;
-		}
-		return true;
-	}
-
 	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
 			if (prior.stagedEntry) return prior.stagedEntry;
 			if (!prior.skipped) return;
 		}
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
+	}
+
+	function priorWritesSkipped(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return false;
+		}
+		return true;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {
