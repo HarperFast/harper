@@ -3,13 +3,16 @@
 const assert = require('node:assert');
 const { createHash } = require('node:crypto');
 const dnsPromises = require('node:dns/promises');
-const { existsSync, mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync } = require('node:fs');
 const https = require('node:https');
 const { tmpdir } = require('node:os');
 const { syncBuiltinESMExports } = require('node:module');
 const { join } = require('node:path');
+const { getDefaultHighWaterMark } = require('node:stream');
 const { inspect } = require('node:util');
 const mkcert = require('mkcert');
+const { waitFor } = require('../waitFor.js');
 const { SAFE_FETCH_TEST_TRANSPORT, isDeniedAddress, redactUrl, safeFetchToFile } = require('#src/utility/safeFetch');
 
 const SECRET = 'X-Amz-Signature=sekrit-token-value';
@@ -303,6 +306,68 @@ describe('safeFetch', function () {
 				504,
 				/within 300 ms/
 			);
+		});
+
+		// The destination is a FIFO nobody reads yet, so its open blocks and every write is buffered: the
+		// write that brings the buffer to the high-water mark is the one that asks for a drain, and the
+		// server sends exactly that much, so that write is the last chunk before the stall.
+		(process.platform === 'win32' ? it.skip : it)(
+			'fails at the idle timeout when the body stalls right after a backpressure drain',
+			async function () {
+				const highWaterMark = getDefaultHighWaterMark(false);
+				handler = (req, res) => {
+					res.writeHead(200, { 'content-length': highWaterMark * 4 });
+					res.write(Buffer.alloc(highWaterMark, 'd'));
+				};
+				execFileSync('mkfifo', [dest]);
+				let received = 0;
+				const pending = safeFetchToFile(
+					url('/a'),
+					dest,
+					options({ idleTimeoutMs: 300, totalTimeoutMs: 5000, onBytes: (n) => (received += n) })
+				);
+				let reader;
+				try {
+					await waitFor(() => received === highWaterMark, { timeout: 5000, message: 'the body never arrived' });
+					// the drain: the output opens and flushes, and then no more data ever comes
+					reader = createReadStream(dest).resume();
+					await assertFails(pending, 504, /received no data for 300 ms/);
+				} finally {
+					// an unread FIFO would hold a libuv thread in its open forever
+					reader ??= createReadStream(dest).resume();
+					await pending.catch(() => {});
+					reader.destroy();
+				}
+			}
+		);
+
+		it("fails with the signal's reason when the signal aborts mid-transfer", async function () {
+			handler = (req, res) => {
+				res.writeHead(200, { 'content-length': BODY.length });
+				res.write(BODY.subarray(0, 100));
+			};
+			const controller = new AbortController();
+			const reason = Object.assign(new Error('the staging device is full'), { statusCode: 507 });
+			const error = await assertFails(
+				safeFetchToFile(
+					url('/a'),
+					dest,
+					options({ signal: controller.signal, onBytes: () => controller.abort(reason) })
+				),
+				507,
+				/staging device is full/
+			);
+			assert.strictEqual(error, reason);
+		});
+
+		it('fails with the reason of a signal aborted before it starts', async function () {
+			const reason = Object.assign(new Error('refused before the first byte'), { statusCode: 507 });
+			const error = await assertFails(
+				safeFetchToFile(url('/a'), dest, options({ signal: AbortSignal.abort(reason) })),
+				507,
+				/refused before the first byte/
+			);
+			assert.strictEqual(error, reason);
 		});
 
 		it('fails with 502 on a non-200 answer', async function () {
