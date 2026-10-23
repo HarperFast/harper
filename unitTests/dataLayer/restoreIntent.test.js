@@ -5,13 +5,22 @@ testUtils.preTestPrep();
 
 const assert = require('node:assert');
 const { randomBytes, randomUUID } = require('node:crypto');
-const { readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
-const { join } = require('node:path');
+const { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join, resolve } = require('node:path');
 const sinon = require('sinon');
 const { writeUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
-const { closeDatabase, getDatabases, resetDatabases, resolveDatabasePath, table } = require('#src/resources/databases');
+const {
+	closeDatabase,
+	database,
+	databaseRoots,
+	getDatabases,
+	resetDatabases,
+	resolveDatabasePath,
+	table,
+} = require('#src/resources/databases');
 const { createBlob, getBlobPathsForDatabaseName } = require('#src/resources/blob');
 const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -43,6 +52,7 @@ const {
 	finishCommittedRestoresBeforeStartup,
 	recoverRestoresAtStartup,
 	resetStartupRecoveryForTesting,
+	scanRestoreReceipts,
 	terminalRestoreExists,
 } = require('#src/dataLayer/restoreIntent');
 const { reconcileInterruptedJobs } = require('#src/server/jobs/jobOwnership');
@@ -224,6 +234,20 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		return () => {
 			for (const [path, contents] of saved) writeFileSync(path, contents);
 		};
+	}
+
+	/**
+	 * A backup whose catalogue declares an index it has no column family for: it verifies, so the restore
+	 * gets past its purge, and the proof refuses it there. The live database keeps its sound catalogue.
+	 */
+	async function unprovableBackup(fixture) {
+		const catalogue = database({ database: fixture.name, table: 'Items' }).dbisDb;
+		catalogue.putSync('Items/unbacked', { name: 'unbacked', indexed: true });
+		try {
+			return (await createBackup({ database: fixture.name })).backup_id;
+		} finally {
+			catalogue.removeSync('Items/unbacked');
+		}
 	}
 
 	/** The receipt as a crash at a later transition would have left it, written under the target's lock. */
@@ -446,8 +470,9 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(failed.state, 'applying');
 			assert.strictEqual(failed.attempts, 1);
 			assert.match(failed.last_error, /failed verification/);
-			assert.strictEqual(restoreMarkerPresent(fixture.dir), true);
-			assert.strictEqual(checkRestoreState(fixture.dir), 'incomplete');
+			// refused before the purge, so nothing marks the target: the receipt alone keeps it blocked
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.strictEqual(checkRestoreState(fixture.dir), 'pending');
 			assert.strictEqual(loadedItems(fixture.name), undefined, 'the name stays blocked');
 			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: restorePinId(fixture.dir), backup_id: backupId }]);
 			// the interrupted-job sweep that follows the hook leaves the job to its receipt
@@ -663,7 +688,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 		});
 
-		it('from applying: removes the receipt but says the marker keeps the database blocked', async function () {
+		it('from applying before the purge: removes the receipt and unblocks the untouched database', async function () {
 			const fixture = await seededDatabase();
 			const [backupId] = fixture.backupIds;
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
@@ -671,18 +696,60 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await boot(fixture.name);
 			repair();
 			assert.strictEqual(receiptOf(fixture.dir).state, 'applying');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'verification refused before the purge');
+
+			const result = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+
+			assert.strictEqual(result.still_blocked, false);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.ERROR);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
+		});
+
+		it('from applying after the purge: keeps the marker, the source pin and the rollback copy pin until a restore succeeds', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			const unprovable = await unprovableBackup(fixture);
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, backup_id: unprovable });
+			await boot(fixture.name);
+			const failed = receiptOf(fixture.dir);
+			assert.strictEqual(failed.state, 'applying');
+			assert.match(failed.last_error, /Items\/unbacked/);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'precondition: the purge began');
+			const preRestoreId = failed.pre_restore_backup_id;
+			assert.ok(Number.isInteger(preRestoreId), 'precondition: a rollback copy was taken');
 
 			const result = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 
 			assert.strictEqual(result.still_blocked, true);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(checkRestoreState(fixture.dir), 'incomplete');
-			assert.deepStrictEqual(pinsOf(fixture), []);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.ERROR);
+			const pins = readBackupPins(fixture.backupDir);
+			assert.deepStrictEqual(
+				pins
+					.map(({ pin_id, backup_id, database_path }) => ({ pin_id, backup_id, database_path }))
+					.sort((a, b) => a.backup_id - b.backup_id),
+				[
+					{ pin_id: restorePinId(fixture.dir), backup_id: unprovable, database_path: fixture.dir },
+					{ pin_id: failed.pre_restore_pin_id, backup_id: preRestoreId, database_path: fixture.dir },
+				].sort((a, b) => a.backup_id - b.backup_id)
+			);
+			for (const id of [unprovable, preRestoreId]) {
+				await assert.rejects(
+					deleteBackupOffline(fixture.name, id),
+					(error) => error.statusCode === 409,
+					`backup ${id}`
+				);
+			}
 
-			// an ordinary restore still recovers it
+			// an ordinary restore still recovers it, and the cancelled restore's pins lapse with the marker
 			await restoreBackupOffline(fixture.name, backupId);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+			await deleteBackupOffline(fixture.name, preRestoreId);
+			await deleteBackupOffline(fixture.name, unprovable);
 		});
 
 		it('refuses a committed receipt, which only needs finishing', async function () {
@@ -714,6 +781,49 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(result.still_blocked, false);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
+		});
+	});
+
+	describe('startup discovery', function () {
+		// SCHEMAS_DATA_PATH places the data database where getDatabases looks for it; recovery must look there too
+		it('scans SCHEMAS_DATA_PATH for receipts, so a terminal restore of data there is found', function () {
+			const dataRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.schemas-data-path-'));
+			const savedDataPath = process.env.SCHEMAS_DATA_PATH;
+			const savedDatabases = env.get(CONFIG_PARAMS.DATABASES);
+			process.env.SCHEMAS_DATA_PATH = dataRoot;
+			try {
+				assert.ok(databaseRoots().includes(resolve(dataRoot)), JSON.stringify(databaseRoots()));
+				const dataDir = join(dataRoot, 'data');
+				const lock = acquireRestoreLock(dataDir);
+				try {
+					writeRestoreReceipt(lock, {
+						...restoreReceiptModule.newRestoreReceipt({
+							route: 'on_restart',
+							state: 'terminal',
+							database: 'data',
+							database_path: dataDir,
+							source_database: 'data',
+							backup_dir: join(dataRoot, 'backups'),
+							backup_id: 1,
+							options: {},
+						}),
+					});
+				} finally {
+					releaseRestoreLock(lock);
+				}
+				assert.ok(
+					scanRestoreReceipts().some(
+						({ file, read }) => file.startsWith(dataRoot) && read.receipt?.state === 'terminal'
+					)
+				);
+				assert.strictEqual(terminalRestoreExists(), true, 'the next boot would start in safe mode');
+			} finally {
+				if (savedDataPath === undefined) delete process.env.SCHEMAS_DATA_PATH;
+				else process.env.SCHEMAS_DATA_PATH = savedDataPath;
+				env.setProperty(CONFIG_PARAMS.DATABASES, savedDatabases);
+				rmSync(dataRoot, { recursive: true, force: true });
+			}
+			assert.ok(!databaseRoots().includes(resolve(dataRoot)));
 		});
 	});
 

@@ -23,6 +23,7 @@ const { pipeline } = require('node:stream/promises');
 const { gunzipSync } = require('node:zlib');
 const sinon = require('sinon');
 const { pack: tarPack } = require('tar-stream');
+const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { closeDatabase, getDatabases, table } = require('#src/resources/databases');
 const { createBlob, getBlobPathsForDatabaseName, getFilePathForBlob } = require('#src/resources/blob');
@@ -524,6 +525,88 @@ describeUnlessLmdb('import_backup', function () {
 			rmSync(backupDirForDatabase(IMPORTED), { recursive: true, force: true });
 		});
 
+		// What the child runs, in-process: the pull is capped at the staging device's room before a byte
+		// lands, and what it fetched is charged to the ledger the tally and extraction reserve against.
+		describe('bounded by the disk ledger', function () {
+			const safeFetch = require('#src/utility/safeFetch');
+			const { DiskLedger } = require('#src/dataLayer/diskLedger');
+			const { importArchive } = require('#src/dataLayer/importChildCommands');
+			const SHA = 'a'.repeat(64);
+			let sandbox;
+			let root;
+
+			beforeEach(function () {
+				sandbox = sinon.createSandbox();
+				root = mkdtempSync(join(tmpdir(), 'harper.unit-test.import-pull-'));
+			});
+
+			afterEach(function () {
+				sandbox.restore();
+				rmSync(root, { recursive: true, force: true });
+			});
+
+			const pull = () =>
+				importArchive({
+					databaseName: IMPORTED,
+					backupDir: join(root, 'backups'),
+					stagingDir: join(root, 'staging'),
+					url: 'https://backups.example.com/db.tar.gz',
+					sha256: SHA,
+				});
+
+			for (const [room, maxBytes] of [
+				[123_456_789, 123_456_789],
+				[-4096, 0],
+			]) {
+				it(`passes maxBytes ${maxBytes} when the staging device has ${room} bytes of room`, async function () {
+					sandbox.stub(DiskLedger.prototype, 'remaining').resolves({ bytes: room, inodes: 1000, basis: 'quota' });
+					const fetch = sandbox.stub(safeFetch, 'safeFetchToFile').rejects(new Error('no network in a unit test'));
+					await assert.rejects(pull(), /no network/);
+					assert.strictEqual(fetch.callCount, 1);
+					const [url, destination, options] = fetch.firstCall.args;
+					assert.strictEqual(url, 'https://backups.example.com/db.tar.gz');
+					assert.strictEqual(destination, join(root, 'staging', 'archive'));
+					assert.strictEqual(options.maxBytes, maxBytes);
+					assert.strictEqual(options.sha256, SHA, 'the pinned digest is checked as the bytes arrive');
+				});
+			}
+
+			it('meters an S3 pull into the ledger as it lands', async function () {
+				const aws = require('#js/utility/AWS/AWSConnector');
+				sandbox
+					.stub(aws, 'getFileStreamFromS3')
+					.resolves(Readable.from([Buffer.from('not '), Buffer.from('an archive')]));
+				const debit = sandbox.stub(DiskLedger.prototype, 'debit').resolves();
+				await assert.rejects(
+					importArchive({
+						databaseName: IMPORTED,
+						backupDir: join(root, 'backups'),
+						stagingDir: join(root, 'staging'),
+						s3: {
+							bucket: 'b',
+							key: 'k',
+							region: 'r',
+							credentials: { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' },
+						},
+						sha256: SHA,
+					})
+				);
+				assert.strictEqual(readFileSync(join(root, 'staging', 'archive'), 'utf8'), 'not an archive');
+				assert.deepStrictEqual(debit.firstCall?.args.slice(0, 2), [join(root, 'staging', 'archive'), 14]);
+			});
+
+			it('charges the fetched bytes to the staging device before reading them', async function () {
+				sandbox.stub(DiskLedger.prototype, 'remaining').resolves({ bytes: 1e9, inodes: 1000, basis: 'quota' });
+				const debit = sandbox.stub(DiskLedger.prototype, 'debit').resolves();
+				sandbox.stub(safeFetch, 'safeFetchToFile').callsFake(async (_url, destination) => {
+					writeFileSync(destination, 'not an archive');
+					return { bytes: 14 };
+				});
+				await assert.rejects(pull());
+				assert.deepStrictEqual(debit.firstCall?.args, [join(root, 'staging'), 14]);
+			});
+		});
+
 		// An end-to-end https pull needs safeFetch's Symbol-keyed test transport to trust loopback, which a
 		// JSON operation (and so the child's IPC arguments) cannot carry; safeFetch.test.js covers the fetch.
 		for (const host of ['127.0.0.1', 'localhost']) {
@@ -622,6 +705,57 @@ describeUnlessLmdb('import_backup', function () {
 			assert.strictEqual(child.callCount, 0);
 		});
 
+		// A job worker without custody asks the main thread; a reply that never comes must not leave the
+		// job IN_PROGRESS forever. Fake timers stand in for the 30s deadline.
+		it('fails the job with 504 when the main thread never answers the secret request', async function () {
+			const { Worker } = require('node:worker_threads');
+			const worker = new Worker(
+				`
+				const { workerData, parentPort } = require('node:worker_threads');
+				const sinon = require(workerData.sinon);
+				const { importBackupJob } = require(workerData.backupImport);
+				const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+				parentPort.on('message', (message) => {
+					if (message?.type === 'advance') clock.tick(message.ms);
+				});
+				importBackupJob(workerData.request).then(
+					() => parentPort.postMessage({ type: 'outcome' }),
+					(error) => parentPort.postMessage({ type: 'outcome', message: error.message, statusCode: error.statusCode })
+				);
+				`,
+				{
+					eval: true,
+					workerData: {
+						sinon: require.resolve('sinon'),
+						backupImport: require.resolve('#src/dataLayer/backupImport'),
+						request: { ...SU, database: IMPORTED, s3: s3('S3_CREDS') },
+					},
+				}
+			);
+			const requests = [];
+			let outcome;
+			worker.on('message', (message) => {
+				if (message?.type === 'import_secret_request') requests.push(message);
+				else if (message?.type === 'outcome') outcome = message;
+			});
+			try {
+				await waitFor(() => requests.length === 1, {
+					timeout: 30000,
+					message: 'the worker never asked for the secret',
+				});
+				assert.strictEqual(requests[0].name, 'S3_CREDS');
+				worker.postMessage({ type: 'advance', ms: 29_999 });
+				await delay(200);
+				assert.strictEqual(outcome, undefined, 'still waiting just inside the deadline');
+				worker.postMessage({ type: 'advance', ms: 1 });
+				await waitFor(() => outcome, { timeout: 5000, message: 'the secret request never timed out' });
+				assert.strictEqual(outcome.statusCode, 504);
+				assert.match(outcome.message, /did not resolve secret 'S3_CREDS' in time/);
+			} finally {
+				await worker.terminate();
+			}
+		});
+
 		it('persists only the secret name in the job row', async function () {
 			sandbox.stub(jobRunner, 'parseMessage').resolves(undefined);
 			const { job_id } = await importBackup({
@@ -703,7 +837,7 @@ describe('import_backup validation', function () {
 		{ source_file: 'archive.tar.gz' },
 		{ url: 'https://example.com/a.tar.gz?X-Amz-Signature=x' },
 		{ s3 },
-		{ s3: { bucket: 'b', key: 'k' } },
+		{ s3: { bucket: 'b', key: 'k', credentials: { secret: 'S3_CREDS' } } },
 		{ source_file: 'a.tar', declared_size: 0, sha256: 'A'.repeat(64), accept_incompatible_backup: true },
 		{ staging_id: randomUUID() },
 	];
@@ -725,6 +859,9 @@ describe('import_backup validation', function () {
 		['a non-string url', { url: 7 }, /https/],
 		['an s3 that is not an object', { s3: 'bucket/key' }, /bucket and a key/],
 		['an s3 with no key', { s3: { bucket: 'b' } }, /bucket and a key/],
+		// the job could only refuse it after its row exists
+		['an s3 with no credentials', { s3: { bucket: 'b', key: 'k' } }, /credentials: \{ secret/],
+		['an s3 with null credentials', { s3: { bucket: 'b', key: 'k', credentials: null } }, /credentials: \{ secret/],
 		['an s3 with an endpoint', { s3: { ...s3, endpoint: 'http://169.254.169.254' } }, /inline keys are refused/],
 		['inline s3 keys', { s3: { ...s3, aws_access_key_id: 'AK', aws_secret_access_key: 'SK' } }, /inline keys/],
 		[
@@ -941,14 +1078,34 @@ describe('import_backup CLI', function () {
 		assert.ok(file.bytes.equals(readFileSync(archive)));
 	});
 
-	it('does not declare a size for a compressed archive, whose size only bounds its contents from below', async function () {
+	// the server compares declared_size with the bytes it spools, which for a compressed archive are its own
+	it("declares a compressed archive's own size, the bytes the server spools", async function () {
 		const archive = join(tempDir, 'db.tar.gz');
 		writeFileSync(archive, Buffer.alloc(100, 'g'));
 		await send(archive);
-		const fields = received.parts.filter((part) => part.kind === 'field').map((part) => part.name);
-		assert.ok(!fields.includes('declared_size'), fields.join());
+		const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
+		assert.strictEqual(fields.declared_size, '100');
 		const [file] = received.parts.filter((part) => part.kind === 'file');
 		assert.strictEqual(file.info.mimeType, 'application/gzip');
 		assert.ok(file.bytes.equals(readFileSync(archive)));
+	});
+
+	it('keeps a declared_size the operator passed', async function () {
+		const archive = join(tempDir, 'db.tar.gz');
+		writeFileSync(archive, Buffer.alloc(100, 'g'));
+		await cliOperations.cliOperations(
+			{
+				operation: 'import_backup',
+				database: 'db',
+				file: archive,
+				declared_size: 4096,
+				target,
+				auth_username: 'admin',
+				auth_password: 'pw',
+			},
+			true
+		);
+		const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
+		assert.strictEqual(fields.declared_size, '4096');
 	});
 });
