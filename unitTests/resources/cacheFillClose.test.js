@@ -130,7 +130,6 @@ describe('Cache fill across database close', function () {
 		try {
 			const fill = SlowTable.get('k2');
 			while (sourceCalls() === 0) await delay(1);
-			// queues an unlock callback on the fill's lock instead of calling the source again
 			const waiter = SlowTable.get('k2');
 			await delay(5);
 			assert.equal(sourceCalls(), 1);
