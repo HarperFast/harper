@@ -430,6 +430,7 @@ export const SERVICE_ACTIONS_ENUM = {
 	MCP: 'mcp',
 	AGENT: 'agent',
 	CHAT: 'chat',
+	PREVIEW: 'preview',
 } as const;
 
 /** describes the Geo Conversion types */
