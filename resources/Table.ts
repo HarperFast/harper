@@ -795,6 +795,7 @@ interface TableResourceClass {
 	_referencesRelationship(target: RequestTarget): boolean;
 	_readableInFull(user: User, target?: RequestTarget): boolean;
 	_inReadAdmission<T>(authorize: () => T): T;
+	_proveReadableInFull(): any;
 	_copyUnlistedAttributes(record: any, selected: any): void;
 	readonly hasRelationships: boolean;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
@@ -1246,9 +1247,8 @@ let implicitProjectionPath: Set<any> | null = null;
 let readAdmissionDepth = 0;
 let readAdmissionPrincipal: any;
 let readableInFullAdmission = 0;
-// a walk that completed successfully proves every table it marked, cycle members included
-let readableInFullCompletedWalk = 0;
-let readableInFullCompletedAdmission = 0;
+// tables whose success in the current walk rests on a table still being walked; proven once the walk succeeds
+let readableInFullProvisional: any = null;
 let readableInFullWalk = 0;
 let readableInFullDepth = 0;
 let readableInFullRevisits = 0;
@@ -1511,6 +1511,7 @@ export function makeTable(options): TableResourceClass {
 	let readableInFullMark = 0;
 	let readableInFullProvenMark = 0;
 	let readableInFullProven = false;
+	let nextProvisional: any = null;
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
@@ -1866,18 +1867,15 @@ export function makeTable(options): TableResourceClass {
 				readableInFullAdmission++;
 				readAdmissionPrincipal = principal;
 			} else if (readableInFullProvenMark === readableInFullAdmission) return readableInFullProven;
-			else if (
-				readableInFullMark === readableInFullCompletedWalk &&
-				readableInFullCompletedAdmission === readableInFullAdmission
-			)
-				return proveReadableInFull(true);
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return true;
 			if (!permission?.read || permission.attribute_permissions?.length > 0) return proveReadableInFull(false);
 			if (enumerableRelationshipNames.length === 0) return true;
 			const outermost = readableInFullDepth === 0;
-			if (outermost) readableInFullWalk++;
-			else if (readableInFullMark === readableInFullWalk) {
+			if (outermost) {
+				readableInFullWalk++;
+				readableInFullProvisional = null;
+			} else if (readableInFullMark === readableInFullWalk) {
 				readableInFullRevisits++;
 				return true;
 			}
@@ -1890,10 +1888,14 @@ export function makeTable(options): TableResourceClass {
 					if (relatedTable && !relatedTable._readableInFull(user, target)) return proveReadableInFull(false);
 				}
 				if (outermost) {
-					readableInFullCompletedWalk = readableInFullWalk;
-					readableInFullCompletedAdmission = readableInFullAdmission;
+					for (let table = readableInFullProvisional; table; table = table._proveReadableInFull());
+					readableInFullProvisional = null;
+				} else if (readableInFullRevisits !== revisits) {
+					nextProvisional = readableInFullProvisional;
+					readableInFullProvisional = TableResource;
+					return true;
 				}
-				return outermost || readableInFullRevisits === revisits ? proveReadableInFull(true) : true;
+				return proveReadableInFull(true);
 			} finally {
 				readableInFullDepth--;
 			}
@@ -1905,6 +1907,12 @@ export function makeTable(options): TableResourceClass {
 				const value = record[name];
 				if (value !== undefined) selected[name] = value;
 			}
+		}
+		static _proveReadableInFull(): any {
+			proveReadableInFull(true);
+			const next = nextProvisional;
+			nextProvisional = null;
+			return next;
 		}
 		static _inReadAdmission<T>(authorize: () => T): T {
 			if (readAdmissionDepth++ === 0) readableInFullAdmission++;
