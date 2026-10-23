@@ -744,44 +744,51 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 		});
 
-		it('fails the attempt, pinning nothing, when its rollback copy is removed before it is pinned', async function () {
-			const fixture = await seededDatabase();
-			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
-			let removed;
-			// nothing pins the copy between its child finishing and the pin; the removal is placed in that window
-			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, ...args) => {
-				const result = await runRestoreChild(command, ...args);
-				if (command === 'pre-restore-backup') {
-					removed = result.backupId;
-					await deleteBackupOffline(fixture.name, removed);
+		for (const [what, remove] of [
+			['removed', (fixture, backupId) => deleteBackupOffline(fixture.name, backupId)],
+			[
+				'left with a manifest but no engine backup',
+				(fixture, backupId) => rmSync(join(fixture.backupDir, 'meta', String(backupId))),
+			],
+		]) {
+			it(`fails the attempt, pinning nothing, when its rollback copy is ${what} before it is pinned`, async function () {
+				const fixture = await seededDatabase();
+				const { jobId } = await requestRestore(fixture.name, { on_restart: true });
+				let removed;
+				// nothing pins the copy between its child finishing and the pin; the removal is placed in that window
+				const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, ...args) => {
+					const result = await runRestoreChild(command, ...args);
+					if (command === 'pre-restore-backup') {
+						removed = result.backupId;
+						await remove(fixture, removed);
+					}
+					return result;
+				});
+				let owned;
+				try {
+					owned = await boot(fixture.name);
+				} finally {
+					restoreRunner();
 				}
-				return result;
+
+				assert.ok(Number.isInteger(removed), 'precondition: the attempt took a rollback copy');
+				assert.deepStrictEqual([...owned], [jobId]);
+				const failed = receiptOf(fixture.dir);
+				assert.strictEqual(failed.attempts, 1);
+				assert.match(
+					failed.last_error,
+					new RegExp(`pre-restore backup ${removed} .* was removed before it could be pinned`)
+				);
+				assert.strictEqual(failed.pre_restore_backup_id, undefined);
+				assert.strictEqual(failed.pre_restore_pin_id, undefined);
+				assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: failed.source_pin_id, backup_id: fixture.backupIds[0] }]);
+				assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'refused before the purge');
+				assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
+
+				await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+				assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 			});
-			let owned;
-			try {
-				owned = await boot(fixture.name);
-			} finally {
-				restoreRunner();
-			}
-
-			assert.ok(Number.isInteger(removed), 'precondition: the attempt took a rollback copy');
-			assert.strictEqual(await readBackupManifest(fixture.backupDir, removed), null);
-			assert.deepStrictEqual([...owned], [jobId]);
-			const failed = receiptOf(fixture.dir);
-			assert.strictEqual(failed.attempts, 1);
-			assert.match(
-				failed.last_error,
-				new RegExp(`pre-restore backup ${removed} .* was removed before it could be pinned`)
-			);
-			assert.strictEqual(failed.pre_restore_backup_id, undefined);
-			assert.strictEqual(failed.pre_restore_pin_id, undefined);
-			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: failed.source_pin_id, backup_id: fixture.backupIds[0] }]);
-			assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'refused before the purge');
-			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
-
-			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
-			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
-		});
+		}
 
 		for (const [scenario, prepare] of [
 			[
@@ -1231,9 +1238,38 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				releaseRestoreLock(running);
 			}
 
-			await finishCommittedRestoresBeforeStartup();
-			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent', 'dropped once nothing holds it');
+			await boot(fixture.name);
+			assert.strictEqual(
+				readRestoreReceipt(fixture.dir).kind,
+				'absent',
+				'the startup hook drops it once nothing holds it'
+			);
 			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'loads as it was');
+		});
+
+		it('settles every other receipt when one cannot be settled', async function () {
+			const blocked = await seededDatabase();
+			const abandoned = await seededDatabase();
+			await restoreBackup({ ...SU, database: blocked.name, on_restart: true, retain_previous: false });
+			await closeDatabase(blocked.name);
+			rewriteReceipt(blocked.dir, { state: 'committed', attempts: 1 }, { marker: true });
+			await abandonClaim(abandoned, 'offline');
+
+			const holder = acquireRestoreLock(blocked.dir);
+			try {
+				await finishCommittedRestoresBeforeStartup();
+			} finally {
+				releaseRestoreLock(holder);
+			}
+
+			assert.strictEqual(receiptOf(blocked.dir).state, 'committed', 'precondition: its lock was held');
+			assert.strictEqual(readRestoreReceipt(abandoned.dir).kind, 'absent');
+			assert.deepStrictEqual(pinsOf(abandoned), []);
+
+			await finishCommittedRestoresBeforeStartup();
+			assert.strictEqual(readRestoreReceipt(blocked.dir).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(blocked.dir), false);
 		});
 	});
 });

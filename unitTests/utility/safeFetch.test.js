@@ -360,6 +360,32 @@ describe('safeFetch', function () {
 			assert.strictEqual(error, reason);
 		});
 
+		it('sends nothing when the signal aborts while the host resolves', async function () {
+			const realLookup = dnsPromises.lookup;
+			const controller = new AbortController();
+			const reason = Object.assign(new Error('aborted during resolution'), { statusCode: 507 });
+			dnsPromises.lookup = async (hostname, lookupOptions) => {
+				if (hostname !== 'archive.test') return realLookup(hostname, lookupOptions);
+				controller.abort(reason);
+				return [{ address: '127.0.0.1', family: 4 }];
+			};
+			syncBuiltinESMExports();
+			try {
+				const port = server.address().port;
+				const error = await assertFails(
+					safeFetchToFile(`https://archive.test:${port}/a?${SECRET}`, dest, options({ signal: controller.signal })),
+					507,
+					/aborted during resolution/
+				);
+				assert.strictEqual(error, reason);
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				assert.deepStrictEqual(requests, [], 'no request was sent after the failure');
+			} finally {
+				dnsPromises.lookup = realLookup;
+				syncBuiltinESMExports();
+			}
+		});
+
 		it('fails with the reason of a signal aborted before it starts', async function () {
 			const reason = Object.assign(new Error('refused before the first byte'), { statusCode: 507 });
 			const error = await assertFails(

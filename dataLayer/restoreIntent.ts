@@ -52,7 +52,7 @@ import {
 	preRestorePinId,
 	settleRestoreJob,
 } from './restorePublication.ts';
-import { resolveCompleteBackup, restorePinId } from './rocksdbBackup.ts';
+import { listBackupsInDir, resolveCompleteBackup, restorePinId } from './rocksdbBackup.ts';
 
 export const RESTORE_INTENT_OWNER = 'restore-intent';
 // room beyond the live size, since a backup also writes its transaction logs and blob snapshot
@@ -333,8 +333,12 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 export async function finishCommittedRestoresBeforeStartup(roots?: string[]): Promise<void> {
 	for (const { read } of scanRestoreReceipts(roots)) {
 		if (read.kind !== 'valid') continue;
-		if (read.receipt.state === 'committed' && !read.receipt.job_id) await finishWithLock(read.receipt);
-		else if (claimAbandonedBeforeDestruction(read.receipt)) dropAbandonedClaim(read.receipt);
+		try {
+			if (read.receipt.state === 'committed' && !read.receipt.job_id) await finishWithLock(read.receipt);
+			else if (claimAbandonedBeforeDestruction(read.receipt)) dropAbandonedClaim(read.receipt);
+		} catch (error) {
+			logger.error(`Could not settle the restore record of '${read.receipt.database}' before startup`, error);
+		}
 	}
 }
 
@@ -347,12 +351,12 @@ function claimAbandonedBeforeDestruction(receipt: RestoreReceipt): boolean {
 	return receipt.route !== 'on_restart' && receipt.state === 'applying' && !restoreMarkerPresent(receipt.database_path);
 }
 
-function dropAbandonedClaim(receipt: RestoreReceipt): void {
+function dropAbandonedClaim(receipt: RestoreReceipt): boolean {
 	let lock: RestoreLock;
 	try {
 		lock = acquireRestoreLock(receipt.database_path);
 	} catch {
-		return; // held: a restore is running, so this is not an abandoned claim
+		return false; // held: a restore is running, so this is not an abandoned claim
 	}
 	try {
 		const again = readRestoreReceipt(receipt.database_path);
@@ -361,12 +365,13 @@ function dropAbandonedClaim(receipt: RestoreReceipt): void {
 			again.receipt.operation_id !== receipt.operation_id ||
 			!claimAbandonedBeforeDestruction(again.receipt)
 		)
-			return;
+			return false;
 		removeRestoreReceipt(lock, receipt.operation_id);
 		releaseReceiptPins(receipt);
 		logger.warn(
 			`Dropped the claim of a restore of '${receipt.database}' that stopped before replacing anything; the database loads as it was`
 		);
+		return true;
 	} finally {
 		releaseRestoreLock(lock);
 	}
@@ -418,6 +423,9 @@ export async function recoverRestoresAtStartup(): Promise<Set<string>> {
 			} else if (receipt.route === 'on_restart' && receipt.state !== 'terminal') {
 				if (await runRestartAttempt(receipt)) published = true;
 				else if (receipt.job_id) owned.add(receipt.job_id);
+			} else if (claimAbandonedBeforeDestruction(receipt) && dropAbandonedClaim(receipt)) {
+				// the pre-startup pass can find the lock still held by an exiting predecessor or orphaned child
+				published = true;
 			}
 		} catch (error) {
 			logger.error(`Could not recover the restore of '${receipt.database}'`, error);
@@ -462,7 +470,10 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 	const pinId = preRestorePinId(receipt.operation_id);
 	await withBackupRepositoryLock(receipt.backup_dir, receipt.database, async () => {
 		// deletable until it is pinned, so the pin and the check that it still exists are one step
-		if (!(await readBackupManifest(receipt.backup_dir, backupId!))) {
+		const engineBackupListed = (await listBackupsInDir(receipt.backup_dir)).some(
+			(backup) => backup.backupId === backupId
+		);
+		if (!engineBackupListed || !(await readBackupManifest(receipt.backup_dir, backupId!))) {
 			throw new Error(
 				`The pre-restore backup ${backupId} of '${receipt.database}' was removed before it could be pinned`
 			);
