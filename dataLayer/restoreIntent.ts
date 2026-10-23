@@ -116,7 +116,7 @@ function claimTarget(databaseName: string, databaseDir: string): RestoreLock {
 
 function requestDrainedRestart(): void {
 	// required lazily: bin/restart pulls in the thread fabric, which a CLI or test caller may not have
-	const { restart } = require('../bin/restart.ts');
+	const { restart } = require('../bin/restart');
 	restart({ operation: 'restart', drain: true }).catch((error: unknown) =>
 		logger.error('Could not restart Harper for the pending restore', error)
 	);

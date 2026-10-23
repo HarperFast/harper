@@ -47,6 +47,7 @@ const {
 } = require('#src/dataLayer/restoreIntent');
 const { reconcileInterruptedJobs } = require('#src/server/jobs/jobOwnership');
 const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletion');
+const restartModule = require('#src/bin/restart');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 const SU = { hdb_user: { username: 'admin', role: { permission: { super_user: true } } } };
@@ -281,6 +282,18 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await assert.rejects(purgeBackupsOffline(fixture.name, 0), (error) => error.statusCode === 409);
 			assert.ok((await listBackupsInDir(fixture.backupDir)).some((backup) => backup.backupId === backupId));
 
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
+		it('asks for a drained restart once the job row records the deferral', async function () {
+			const fixture = await seededDatabase();
+			const restart = sinon.stub(restartModule, 'restart').resolves();
+			const { result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			assert.ok(restart.notCalled, 'not before the job row says where the job went');
+
+			result.afterRecorded();
+
+			assert.ok(restart.calledOnceWithExactly({ operation: 'restart', drain: true }));
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
