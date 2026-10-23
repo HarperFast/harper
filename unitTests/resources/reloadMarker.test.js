@@ -349,15 +349,18 @@ describe('a replay that crosses a reload marker', () => {
 		const live = await T.subscribe({ omitCurrent: true, listener: (event) => witness.push(event.value?.value) });
 		await T.put('zz', { value: 'buffered' });
 		await waitFor(() => witness.includes('buffered'));
-		// committed before one notify pass, the publish has taken the row's version by the time the put's event is built
+		// when the publish commits before the put is broadcast, the put's own live event is dropped
 		await Promise.all([T.put('zz', { value: 'current' }), T.publish('zz', { value: 'message' })]);
 		await waitFor(() => witness.includes('message'));
 		live.end();
 		const events = [];
 		subscription.on('data', (event) => events.push(event));
 		await waitFor(() => delivered(events).includes('message'), { message: saw(events) });
-		const forRow = events.filter((event) => event.id === 'zz' && event.type !== 'message');
-		assert.strictEqual(forRow.at(-1)?.value?.value, (await T.get('zz')).value, saw(events)());
+		const current = (await T.get('zz')).value;
+		const rowValues = events
+			.filter((event) => event.id === 'zz' && event.type !== 'message')
+			.map((event) => event.value?.value);
+		assert.ok(rowValues.length > 0 && rowValues.every((value) => value === current), `deliveries: ${rowValues}`);
 		subscription.end();
 	});
 
