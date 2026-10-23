@@ -504,8 +504,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url, scope);
 				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
-				// Bun resolves import() to the vm.Module itself when this hook returns a promise of one; a namespace works in both runtimes
-				return dynamicModule.namespace;
+				// Bun resolves import() to the vm.Module itself when this hook returns a promise of one
+				return process.versions.bun ? dynamicModule.namespace : dynamicModule;
 			},
 		};
 

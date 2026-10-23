@@ -16,6 +16,7 @@ import { authHeader } from '../deploy/redeploy-restart-flag-helpers.ts';
 
 type ProbeResult = {
 	vmLoaded: boolean;
+	failedDependency: string;
 	sameInstanceAsImport: boolean;
 	markerFromAppRealm: boolean;
 	typed: string;
@@ -48,6 +49,8 @@ async function writeFixture(parentDirectory: string): Promise<string> {
 		join(appDirectory, 'typed.ts'),
 		"interface Shape { value: string }\nconst shape: Shape = { value: 'stripped' };\nmodule.exports = shape;\n"
 	);
+	await writeFile(join(appDirectory, 'imports-failing.mjs'), "import './failing.mjs';\n");
+	await writeFile(join(appDirectory, 'failing.mjs'), "throw new Error('failing.mjs threw');\n");
 	await writeFile(
 		join(appDirectory, 'sibling.mjs'),
 		"import { fileURLToPath } from 'node:url';\nexport const filename = fileURLToPath(import.meta.url);\n"
@@ -68,9 +71,12 @@ class CjsRequireProbe extends Resource {
 	static loadAsInstance = false;
 	async get() {
 		const imported = await import('loader-probe');
+		await import('./imports-failing.mjs').catch(() => {});
+		const failedDependency = await import('./failing.mjs').then(() => 'loaded', (error) => error.message);
 		const sibling = await import('./sibling.mjs');
 		return {
 			vmLoaded: require.cache === undefined,
+			failedDependency,
 			sameInstanceAsImport: imported.default === probe,
 			markerFromAppRealm: probe.marker instanceof Object,
 			typed: outcome(() => require('./typed.ts').value),
@@ -150,6 +156,10 @@ for (const [moduleLoader, dependencyLoader] of [
 
 			test('loads the component through the VM loader', () => {
 				strictEqual(probe.vmLoaded, true);
+			});
+
+			test('rejects import() of a module that already threw as a dependency', () => {
+				strictEqual(probe.failedDependency, 'failing.mjs threw');
 			});
 
 			test('requires a dependency natively, sharing the instance import() returns', () => {
