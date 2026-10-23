@@ -134,14 +134,7 @@ Consequences worth knowing:
 - **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the
   single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on
   it, and both retain rather than delete when identity is unknown. A version compare there would let one write authorize destroying another's tombstone or blob.
-- **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from
-  `options.version` by every `_write*` builder and read in `save()` only when the transaction is
-  `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
-  transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the
-  origin's clock. New audit entries persist that write version even when an out-of-order merge leaves
-  a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical
-  overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this
-  cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
+- **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from `options.version` by every `_write*` builder and read in `save()` only when the transaction is `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the origin's clock. New audit entries persist that write version even when an out-of-order merge leaves a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
 - **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
   into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order
   branches and, when a RocksDB record version differs from its log key, the record's own audit head —
@@ -173,6 +166,10 @@ Consequences worth knowing:
 **The batch cannot settle while an element is outstanding.** `settleElements` — not `Promise.all` — closes the fan-out. `Promise.all` rejects the batch on the first failing element, which lets `transactional` unwind the transaction while a slower element is still resolving its resource; that element then stages its write against no live batch and commits on its own, leaving a _partially applied_ array PUT. It is only reachable once the async branch passes the target rather than the context — before that the late write failed for its own reasons and hid the hole — so the two fixes belong together. Every element has to stage or fail its write before the transaction may unwind. When several elements fail, the batch reports the **earliest-index** failure rather than whichever rejected first in wall-clock time, so the error a client sees does not move with scheduling. Only that one failure is reported: the framework does not attach a `cause` onto it, because the thrown value belongs to application code and may be a primitive, frozen, or a shared singleton that a per-request mutation would contaminate for every later request.
 
 ---
+
+## Full PUT resequencing
+
+`Table._writeUpdate` replays retained newer patches onto the PUT body and stores a replacement. Inspect nonterminal frames even when their first same-key entry is a message or an older version. Collect all newer same-key mutations, then order by record version, origin-name tie-break and same-origin log/program order. The RocksDB walk/frame budget counts all scanned entries; LMDB bounds each equal-version cohort. A tied pending head from an earlier same-key write in this transaction is not missing retained history. A floor-rekeyed receipt needs no entry when its origin/version was already collected and the retention floor is known not to exceed the incoming version; genuinely missing entries, unreadable IDs or clocks, unavailable patch bodies or bounded walks keep the previous fallback: merge, or skip the PUT when no newer patch was collected and the stored head is strictly newer. The merge can retain omitted fields or overwrite an uncollected newer value. Unresolved mixed-version audit heads and a pruned predecessor below the incoming version keep this approximation, even if all newer patches remain. `outOfOrderFullPut.test.js` covers both engines, omissions, additions, indexes, metadata, blobs, transaction siblings and history boundaries ([#3404](https://github.com/HarperFast/harper/issues/3404)).
 
 ## Database generation and resumable positions
 
