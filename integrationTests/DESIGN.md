@@ -15,8 +15,8 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 ships no `node_modules`, putting the public npm registry on a test's critical path. A stalled
 registry socket outlives every deadline the test can set: Harper's own spawn bound is
 `DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000` (`components/Application.ts`), so the client gives up
-first — `main` went red this way at 576d33330 on one leg of 36, five minutes of silence and
-`UND_ERR_HEADERS_TIMEOUT`.
+first ([harper#2752](https://github.com/HarperFast/harper/pull/2752): a stalled install surfaced as
+`UND_ERR_HEADERS_TIMEOUT`).
 
 A fixture therefore declares no production dependencies, resolves them from local files the archive
 carries (`deploy/redeploy-runtime-equivalence.test.ts` builds a `file:vendor/...` dependency, which
