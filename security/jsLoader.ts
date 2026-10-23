@@ -500,7 +500,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 
 		const runOptions = {
 			filename: url,
-			async importModuleDynamically(specifier: string, script) {
+			async importModuleDynamically(specifier: string, script): Promise<any> {
 				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url, scope);
 				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
