@@ -192,7 +192,7 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 		const empty = valueStart === end || comment;
 		if (match.index === prefix && match[3] === ':') {
 			state = { kind: 'block', column: prefix, empty };
-		} else if (match[3] === ':' && (empty || BLOCK_SCALAR.test(line.slice(valueStart, end)))) {
+		} else if (match[3] === ':' && line[prefix] !== '#' && (empty || BLOCK_SCALAR.test(line.slice(valueStart, end)))) {
 			// After a log prefix or prose, the value's lines are indented relative to the message, not the key.
 			state = { kind: 'block', column: 0, empty };
 		}
@@ -202,7 +202,8 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 		const quote = line[valueStart + escapes];
 		let maskStart = valueStart;
 		let maskEnd = end;
-		if (quote === '"' || quote === "'") {
+		const quoted = quote === '"' || quote === "'";
+		if (quoted) {
 			maskStart += escapes + 1;
 			const close =
 				escapes === 0
@@ -213,9 +214,12 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 			if (close !== -1) maskEnd = close;
 			else if (escapes === 0) state = { kind: 'quote', quote };
 		}
-		text += line.slice(copied, maskStart) + MASK.repeat(maskEnd - maskStart);
-		copied = maskEnd;
-		ASSIGNMENT.lastIndex = maskEnd;
+		if (maskStart >= copied) {
+			text += line.slice(copied, maskStart) + MASK.repeat(maskEnd - maskStart);
+			copied = maskEnd;
+		}
+		// An unquoted value masks the rest of the line, but a later key in it can still continue onto the next.
+		ASSIGNMENT.lastIndex = quoted ? maskEnd : valueStart;
 	}
 	return { text: copied === 0 ? line : text + line.slice(copied), state };
 }

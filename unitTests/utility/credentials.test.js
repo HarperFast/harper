@@ -112,6 +112,25 @@ describe('utility/credentials', () => {
 			);
 		});
 
+		it('follows a later credential key that continues past a line an earlier value masked to its end', () => {
+			const stars = (text) => '*'.repeat(text.length);
+			const block = 'abc config: apiKey: |-';
+			assert.equal(
+				masked(`T [warn]: GET /v1?api_key=${block}\n  sk-SENTINEL\nT [info]: next\n`),
+				`T [warn]: GET /v1?api_key=${stars(block)}\n  ***********\nT [info]: next\n`
+			);
+			const quote = 'abc body={"apiKey":"sk-a';
+			assert.equal(
+				maskCredentialValues(`token: ${quote}\nsk-b"}`, { oneEntry: true }),
+				`token: ${stars(quote)}\n****"}`
+			);
+		});
+
+		it('does not open a block from a commented-out credential key', () => {
+			const config = 'models:\n  default:\n    # apiKey:\n    backend: openai\n    model: gpt-5\n';
+			assert.equal(masked(config), config);
+		});
+
 		it('leaves the stack after an inline credential value readable', () => {
 			assert.equal(
 				masked('T [error]: Error: bad token: abc\n    at foo (a.js:1:1)\n'),
