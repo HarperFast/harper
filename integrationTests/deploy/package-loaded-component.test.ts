@@ -55,10 +55,7 @@ async function operation(ctx: ContextWithHarper, body: Record<string, unknown>):
 	return response.json();
 }
 
-/**
- * A legacy component's real, npm-installed `harperdb` at the root and under its sub-component. The loader repairs
- * a `harperdb` that exists into a link to the install, which is what gives the packer a link to deal with.
- */
+/** A real `harperdb` at the root and under the sub-component: the loader turns an existing one into the install link. */
 async function seedLegacyHarperdb(dir: string): Promise<void> {
 	for (const base of [dir, join(dir, 'node_modules', PLUGIN)]) {
 		const legacy = join(base, 'node_modules', 'harperdb');
@@ -67,7 +64,6 @@ async function seedLegacyHarperdb(dir: string): Promise<void> {
 	}
 }
 
-/** Whether `path` is a link to the same place as the install link `node_modules/harper` beside it. */
 async function linksToInstall(path: string, siblingInstallLink: string): Promise<boolean> {
 	try {
 		return (await lstat(path)).isSymbolicLink() && (await realpath(path)) === (await realpath(siblingInstallLink));
@@ -127,6 +123,40 @@ async function buildPayload(): Promise<string> {
 	}
 }
 
+/** Deploys the fixture and returns its live path once a worker has loaded it and planted every link under test. */
+async function deployLoaded(ctx: ContextWithHarper): Promise<string> {
+	// `restart: true` is the whole point: it makes a serving worker load the component, which is what
+	// creates the link. Without the restart nothing has loaded it and the bug is unreachable.
+	await operation(ctx, {
+		operation: 'deploy_component',
+		project: PROJECT,
+		payload: await buildPayload(),
+		restart: true,
+	});
+
+	// `deploy_component` returns before the replacement worker has finished loading, so the link this
+	// test depends on may not exist yet. Wait for the component's own route to answer — that is the
+	// signal a worker completed the load that plants it.
+	await waitForRoute(ctx, '/PkgLoadedProbe/', (status) => status < 500);
+
+	const livePath = join(ctx.harper.dataRootDir, 'components', PROJECT);
+	ok(existsSync(join(livePath, 'resource.js')), 'the component is live');
+	// The link is expected to be here — the tests are about the packer not following it, not about
+	// preventing it. If a future change stops creating it, they stop proving anything, so assert
+	// its presence rather than silently passing.
+	const installLink = join(livePath, 'node_modules', 'harper');
+	ok(existsSync(installLink), 'a worker load planted the harper link');
+	// The route can answer before the loader reaches the sub-component's entry, so wait for its links as well.
+	await waitFor('the sub-component harper link', async () =>
+		existsSync(join(livePath, 'node_modules', PLUGIN, 'node_modules', 'harper'))
+	);
+	for (const base of [livePath, join(livePath, 'node_modules', PLUGIN)]) {
+		const legacy = join(base, 'node_modules', 'harperdb');
+		await waitFor(`${legacy} to be linked`, () => linksToInstall(legacy, installLink));
+	}
+	return livePath;
+}
+
 suite(
 	'package_component does not follow a loaded component into the install',
 	{ skip: skipSuite },
@@ -139,41 +169,7 @@ suite(
 		});
 
 		test('a component a worker has loaded packages as itself, not as Harper', async () => {
-			// `restart: true` is the whole point: it makes a serving worker load the component, which is what
-			// creates the link. Without the restart nothing has loaded it and the bug is unreachable.
-			await operation(ctx, {
-				operation: 'deploy_component',
-				project: PROJECT,
-				payload: await buildPayload(),
-				restart: true,
-			});
-
-			// `deploy_component` returns before the replacement worker has finished loading, so the link this
-			// test depends on may not exist yet. Wait for the component's own route to answer — that is the
-			// signal a worker completed the load that plants it.
-			await waitForRoute(ctx, '/PkgLoadedProbe/', (status) => status < 500);
-
-			const livePath = join(ctx.harper.dataRootDir, 'components', PROJECT);
-			ok(existsSync(join(livePath, 'resource.js')), 'the component is live');
-			// The link is expected to be here — this test is about the packer not following it, not about
-			// preventing it. If a future change stops creating it, this test stops proving anything, so assert
-			// its presence rather than silently passing.
-			ok(existsSync(join(livePath, 'node_modules', 'harper')), 'a worker load planted the harper link');
-			// The route can answer before the loader reaches the sub-component's entry, so wait for its link as well.
-			const nestedLink = join(livePath, 'node_modules', PLUGIN, 'node_modules', 'harper');
-			const nestedDeadline = Date.now() + 10_000;
-			while (!existsSync(nestedLink)) {
-				if (Date.now() > nestedDeadline) throw new Error('the sub-component load did not plant its harper link');
-				await sleep(100);
-			}
-
-			// The legacy harperdb directories the component shipped were replaced by links the same way, and the
-			// packer walks them like any other link unless it knows they are the install.
-			const installLink = join(livePath, 'node_modules', 'harper');
-			for (const base of [livePath, join(livePath, 'node_modules', PLUGIN)]) {
-				const legacy = join(base, 'node_modules', 'harperdb');
-				await waitFor(`${legacy} to be linked`, () => linksToInstall(legacy, installLink));
-			}
+			const livePath = await deployLoaded(ctx);
 
 			const estimate = await operation(ctx, { operation: 'package_component', project: PROJECT, estimate: true });
 			ok(
@@ -208,16 +204,14 @@ suite(
 		});
 
 		test('deploying that package to a fresh component relinks the legacy harperdb', async () => {
+			const livePath = await deployLoaded(ctx);
 			const { payload } = await operation(ctx, { operation: 'package_component', project: PROJECT });
-			const livePath = join(ctx.harper.dataRootDir, 'components', PROJECT);
 
 			await operation(ctx, { operation: 'drop_component', project: PROJECT, restart: true });
 			ok(!existsSync(livePath), 'the component was dropped');
 			await operation(ctx, { operation: 'deploy_component', project: PROJECT, payload, restart: true });
 
-			// `installApplication` skipped installing because `node_modules` shipped, so only the loader can
-			// have put the link back. A VM-loaded `import 'harperdb'` would resolve through an alias and prove
-			// nothing, hence the filesystem check.
+			// The filesystem, not an `import 'harperdb'`: a VM-loaded import resolves through an alias either way.
 			await waitForRoute(ctx, '/PkgLoadedProbe/', (status) => status === 200);
 			await waitForRoute(ctx, '/PkgLoadedPlugin/', (status) => status === 200);
 			const installLink = join(livePath, 'node_modules', 'harper');
