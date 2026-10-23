@@ -143,6 +143,7 @@ import {
 	raiseAuditFloor,
 	boundedAuditPruneEnd,
 	isLockControlType,
+	isNonHistoryType,
 	isAuditEntryWrite,
 	isResumablePosition,
 	getDatabaseGeneration,
@@ -7259,7 +7260,8 @@ export function makeTable(options): TableResourceClass {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
-								if (thisId == null || isDescendantId(thisId, id)) {
+								// a reload marker is whole-table: it has no id to scope by, and reaches every subscriber live
+								if (thisId == null || auditRecord.type === 'reload' || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										if (!send(event)) return;
@@ -7293,8 +7295,7 @@ export function makeTable(options): TableResourceClass {
 								if (!isActive()) return;
 							}
 							try {
-								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
-								if (isLockControlType(auditRecord.type)) continue;
+								if (auditRecord.tableId !== tableId || isNonHistoryType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
@@ -8765,8 +8766,7 @@ export function makeTable(options): TableResourceClass {
 				end: endTime,
 			})) {
 				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict' || isLockControlType(auditRecord.type))
-					continue;
+				if (auditRecord.tableId !== tableId || isNonHistoryType(auditRecord.type)) continue;
 				let value;
 				try {
 					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
@@ -8796,7 +8796,7 @@ export function makeTable(options): TableResourceClass {
 			let nextVersion = isRocksDB
 				? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
 				: entry.localTime;
-			if (!nextVersion) throw new Error('The entry does not have a local audit time');
+			if (!nextVersion) return history; // written without an audit entry (e.g. a base copy): no history to walk
 			const count = 0;
 			const auditWindow = 100;
 			let loggedEntryError = false;
@@ -8808,8 +8808,7 @@ export function makeTable(options): TableResourceClass {
 				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
 					if (
 						auditRecord.tableId === tableId &&
-						auditRecord.type !== 'evict' &&
-						!isLockControlType(auditRecord.type) &&
+						!isNonHistoryType(auditRecord.type) &&
 						compareKeys(auditRecord.recordId, id) === 0
 					) {
 						let value;

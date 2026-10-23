@@ -1291,6 +1291,16 @@ function isDecodableAction(action: number) {
 export function isLockControlType(type: unknown): boolean {
 	return type === 'lockRelease' || type === 'lockBarrier';
 }
+
+/**
+ * Entries that are not a record's history: eviction, lock control, and the whole-table `reload`
+ * marker (`recordId: null`). The history readers — `getHistory`, `getHistoryOfRecord`, the
+ * `previousCount` backfill — skip them. The `startTime` replay does not use this: it refuses on a
+ * `reload` when resuming checked and delivers it otherwise.
+ */
+export function isNonHistoryType(type: unknown): boolean {
+	return type === 'evict' || type === 'reload' || isLockControlType(type);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
