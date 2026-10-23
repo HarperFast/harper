@@ -37,6 +37,23 @@ for (const mode of ['compiled', 'typestrip']) {
 			await teardownHarper(ctx);
 		});
 
+		test('exposes the opt-in status hierarchy through the operations API', async () => {
+			const response = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: {
+					'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify({ operation: 'get_status', components: true }),
+				signal: AbortSignal.timeout(30000),
+			});
+			strictEqual(response.status, 200);
+			const status = await response.json();
+			ok(Array.isArray(status.componentStatus));
+			strictEqual(typeof status.components, 'object');
+			ok(status.components && !Array.isArray(status.components));
+		});
+
 		test('loads cold SQL for date searches, direct queries and export jobs, preserving authorization', async () => {
 			const headers = {
 				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
@@ -417,13 +434,16 @@ if (process.env.HARPER_RUNTIME === 'bun') {
 					const key = '127.0.0.1:0';
 					http.bunServeConfigs[key] = { fetch: () => new Response('ready'), reusePort: true };
 					const first = listenOnPorts();
-					assert.strictEqual(listenOnPorts(), first);
-					await first;
+					const firstServer = SERVERS[key];
+					const repeated = listenOnPorts();
+					assert.strictEqual(typeof first.then, 'function');
+					assert.strictEqual(typeof repeated.then, 'function');
+					await Promise.all([first, repeated]);
 					server = SERVERS[key];
+					assert.strictEqual(server, firstServer, 'concurrent calls must keep the first native server');
 					assert.strictEqual(typeof server.stop, 'function');
 					const port = server.port;
 					await Promise.all([listenOnPorts(), listenOnPorts()]);
-					assert.strictEqual(listenOnPorts(), first);
 					assert.strictEqual(SERVERS[key], server);
 					assert.strictEqual(server.port, port);
 					assert.strictEqual(await (await fetch('http://127.0.0.1:' + port)).text(), 'ready');

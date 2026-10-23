@@ -82,7 +82,7 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 				on() {},
 			},
 			routeFor() {
-				return this;
+				return { urlPath: '/blob-msgpack-fixture' };
 			},
 			server: {
 				http(handler) {

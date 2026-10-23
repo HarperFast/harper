@@ -258,6 +258,60 @@ describe('TypeStrip runtime boundaries', () => {
 		}
 	});
 
+	it('dispatches logger status through both runtime facades', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const runtimeUrl = pathToFileURL(
+				resolve(
+					root,
+					`${mode === 'compiled' ? 'dist/' : ''}utility/logging/harper_logger.${mode === 'compiled' ? 'js' : 'ts'}`
+				)
+			).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert')).default;
+				const { readFileSync, writeFileSync } = await import('node:fs');
+				const YAML = require('yaml');
+				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+				const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+				config.setIn(['status', 'healthChecks', 'enabled'], true);
+				writeFileSync(configPath, config.toString());
+				const logger = await import(${JSON.stringify(runtimeUrl)});
+				const messages = [];
+				const reports = [];
+				logger.setMainLogger(logger.createLogger({ level: 'error', writeToLog: text => messages.push(text) }));
+				logger.setStatusHandler((options, level, tag, args) => reports.push({ options, level, tag, args }));
+				for (const facade of [logger, logger.default]) {
+					assert.strictEqual(typeof facade.status, 'function');
+					assert.strictEqual(typeof facade.setStatusHandler, 'function');
+					facade.status({ problem: 'fixture.status' }).error('status event');
+					await Promise.resolve();
+					assert.strictEqual(reports.at(-1).level, 'error');
+					assert.deepStrictEqual(reports.at(-1).args, ['status event']);
+				}
+				assert.strictEqual(messages.length, 2);
+				assert.strictEqual(reports.length, 2);
+				assert.strictEqual(typeof logger.default.start, 'function');
+				assert.strictEqual(typeof logger.default.startOnMainThread, 'function');
+				logger.default.status({ resolves: 'fixture.status' });
+				await Promise.resolve();
+				assert.strictEqual(reports.length, 3);
+				assert.strictEqual(reports[2].level, null);
+				logger.loggerWithTag('fixture-tag', true).status({ problem: 'fixture.filtered' }).debug('filtered');
+				await Promise.resolve();
+				assert.strictEqual(messages.length, 2);
+				assert.strictEqual(reports.length, 4);
+				assert.strictEqual(reports[3].tag, 'fixture-tag');
+				assert.strictEqual(reports[3].level, 'debug');
+				logger.setStatusHandler(() => { throw new Error('instrumentation failure'); });
+				assert.doesNotThrow(() => logger.status({ problem: 'fixture.handler' }).error('still logged'));
+				console.log('status facades preserved');
+				`
+			);
+			assert.strictEqual(output, 'status facades preserved', mode);
+		}
+	});
+
 	it('keeps rotation disabled after rapid cold reconfiguration', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			const runtimeUrl = pathToFileURL(

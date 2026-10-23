@@ -106,6 +106,9 @@ export let externalLogger: any = {
 	forComponent(name: string) {
 		return externalLogger.forComponent(name);
 	},
+	status(options) {
+		return externalLogger.status(options);
+	},
 };
 _assignPackageExport('logger', externalLogger);
 // default logger used for the global used by external components
@@ -194,6 +197,11 @@ function updateConditional(logger: any) {
 	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
+	Object.defineProperty(conditional, 'status', {
+		value: logger.status.bind(logger),
+		writable: true,
+		configurable: true,
+	});
 }
 /**
  * Resolve a config path value against rootPath if it is relative.
@@ -424,6 +432,9 @@ class HarperLogger extends Console {
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
 	}
+	status(options) {
+		return statusLogger(options, this);
+	}
 	forComponent(_name) {
 		// to be replaced
 		return this;
@@ -475,6 +486,8 @@ if (typeof module !== 'undefined') {
 		externalLogger,
 		conditional: mainLogger.conditional,
 		updateLogger,
+		setStatusHandler,
+		status,
 	};
 }
 
@@ -513,6 +526,11 @@ const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED'
  */
 export function isStdioBrokenError(error: any): boolean {
 	return STDIO_BROKEN_ERROR_CODES.has(error?.code);
+}
+
+export function status(options: any) {
+	// Use the public facade so status calls also observe replaced log methods.
+	return statusLogger(options, typeof module !== 'undefined' ? module.exports : loggerExports);
 }
 
 /**
@@ -717,6 +735,45 @@ function stdioLogging() {
 	installStdioGuard(process.stderr);
 }
 
+let statusHandler: any;
+export function setStatusHandler(handler: any) {
+	statusHandler = handler;
+}
+function dispatchStatus(options: any, level: string | null, tag: string, args: any[]) {
+	try {
+		statusHandler?.(options, level, tag, args);
+	} catch {
+		// Status instrumentation must not interrupt the caller's recovery or cleanup.
+	}
+}
+function statusLogger(options: any, logger: any, tag?: string) {
+	// A chained log method (.error(), .warn(), etc.) fires synchronously if the caller chains
+	// one, before this microtask runs. Deferring the options-only dispatch lets us skip it when
+	// a chained call already reported the same logical event, avoiding a double dispatch.
+	let chained = false;
+	if (statusHandler) {
+		queueMicrotask(() => {
+			if (!chained && statusHandler) {
+				dispatchStatus(options, null, tag || logger.tag || currentTag, []);
+			}
+		});
+	}
+	const wrapper: any = {};
+	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
+		wrapper[level] = function (...args: any[]) {
+			chained = true;
+			try {
+				logger[level]?.(...args);
+			} finally {
+				if (statusHandler) {
+					dispatchStatus(options, level, tag || logger.tag || currentTag, args);
+				}
+			}
+		};
+	}
+	return wrapper;
+}
+
 export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) {
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
 	const methods = {
@@ -728,32 +785,37 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) 
 		debug: logWithTag('debug'),
 		trace: logWithTag('trace'),
 	};
-	if (!conditional) {
-		return methods;
-	}
-	return {
-		get notify() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+	const taggedLogger = !conditional
+		? methods
+		: {
+				get notify() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+				},
+				get fatal() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
+				},
+				get error() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
+				},
+				get warn() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
+				},
+				get info() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
+				},
+				get debug() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
+				},
+				get trace() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
+				},
+			};
+	Object.defineProperty(taggedLogger, 'status', {
+		value(options) {
+			return statusLogger(options, taggedLogger, tag);
 		},
-		get fatal() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
-		},
-		get error() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
-		},
-		get warn() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
-		},
-		get info() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
-		},
-		get debug() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
-		},
-		get trace() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
-		},
-	};
+	});
+	return taggedLogger;
 	function logWithTag(level) {
 		return function (...args) {
 			const targetLogger = logger ?? mainLogger;
@@ -2405,7 +2467,7 @@ export function AuthAuditLog(
 export const getLogFilePath = () => logFilePath;
 export const forComponent = (name: string, isExternal?: boolean) => mainLogger.forComponent(name, isExternal);
 export const conditional = mainLogger.conditional;
-export default {
+const loggerExports = {
 	notify,
 	fatal,
 	error,
@@ -2441,4 +2503,8 @@ export default {
 	updateLogger,
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
+	setStatusHandler,
+	status,
 };
+
+export default loggerExports;

@@ -267,6 +267,12 @@ describe('mcp/tools/operations — registration', () => {
 		assert.ok(tool.inputSchema.required.includes('table'));
 	});
 
+	it('advertises the get_status components opt-in', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['get_status', null]]));
+		registerOperationsTools();
+		assert.equal(getTool('get_status').inputSchema.properties.components.type, 'boolean');
+	});
+
 	it('visibleTo predicate uses canRoleInvokeOperation (super_user sees everything)', () => {
 		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
 		registerOperationsTools();

@@ -1,8 +1,6 @@
 # DESIGN.md
 
-Index of the design notes for the harper core: one line per note, grouped by the `DESIGN.md` that holds it. A note records an invariant the code cannot state itself and why it holds. Complements [AGENTS.md](AGENTS.md) (architecture map) and [CONTRIBUTING.md](CONTRIBUTING.md).
-
-A note lives in the `DESIGN.md` of the directory that owns the code it describes. This file is an index only: one line per note, no bodies. A note states the invariant, why it holds (the failure that motivated it, linked to its issue or PR) and where the code enforces it. Review rounds, verdicts, CI run ids, measurement logs and the process that produced a decision belong in the PR or issue, not here. Once the code enforces the invariant itself (a type, an assertion, a named test), shrink the note to one line that names the enforcement. Budget, checked by `npm run check:design-docs`: this index stays under 250 lines and each per-directory `DESIGN.md` under 1000. Adding to a file near its ceiling means pruning that file first. User-facing behavior is documented in [HarperFast/documentation](https://github.com/HarperFast/documentation), never here.
+A note lives in the `DESIGN.md` of the directory that owns the code it describes. This file is an index only: one line per note grouped by its owning directory, no bodies. A note states an invariant the code cannot express, why it holds (the failure that motivated it, linked to its issue or PR) and where the code enforces it. Review rounds, verdicts, CI run ids, measurement logs and the process that produced a decision belong in the PR or issue, not here. Once the code enforces the invariant itself (a type, an assertion, a named test), shrink the note to one line that names the enforcement. Budget, checked by `npm run check:design-docs`: this index stays under 250 lines and each per-directory `DESIGN.md` under 1000. Adding to a file near its ceiling means pruning that file first. User-facing behavior is documented in [HarperFast/documentation](https://github.com/HarperFast/documentation), never here. Complements [AGENTS.md](AGENTS.md) (architecture map) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## unitTests/ — test runtimes
 
@@ -181,6 +179,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## components/ — deploys and the load lifecycle
 
+- [Runtime health checks](components/DESIGN.md#runtime-health-checks-statushealthchecksts) — Explicit main-thread startup, quota-aware disk usage, constrained-memory working sets, bounded polling and expiry tests.
 - [A deploy builds off to the side, is certified, and only then goes live](components/DESIGN.md#a-deploy-builds-off-to-the-side-is-certified-and-only-then-goes-live) — A deploy builds in `.deploy-staging`, certifies that tree, then swaps live to `.deploy-aside` and the candidate in, waiting out handle holders with the old version in place; the component's root-config entry is journaled with the activation and published durably, under one lock, only after the swap commits; a deploy that restarts workers is decided by a canary worker held out of traffic until it reports its load, and a rejection restores the release it replaced or fails the component closed; the release a swap displaces goes back under its own deployment id, which `deployment_id` activates again, and activating the id already live answers without a swap.
 - [Component preparation is serialized across worker threads](components/DESIGN.md#component-preparation-is-serialized-across-worker-threads) — One component transaction at a time across workers; the lifecycle broadcast sits outside the lock; the load lock is keyed by application and plugin.
 - [Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation](components/DESIGN.md#peer-side-deploy_component-payload-read-retryable-blob-stalls-and-readablefrom-cancellation) — Retry a `BLOB_UNAVAILABLE` read only before any byte reached the consumer; use `Readable.from()` for cancellation, not a hand-rolled `ReadableStream`.
@@ -231,6 +230,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## utility/
 
+- [Logger status dispatch uses the active runtime facade](utility/DESIGN.md#logger-status-dispatch-uses-the-active-runtime-facade) — Read CommonJS exports per call and reuse the source default facade.
 - [Core runtime and product paths (`packageUtils.js`)](utility/DESIGN.md#core-runtime-and-product-paths-packageutilsjs) — Core files and schema assets follow the module tree; metadata, product startup and public relative-worker paths retain their package owner.
 
 - [Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)](utility/DESIGN.md#every-path-handed-to-a-native-file-watch-must-be-canonicalized-utilitywatchpathts) — Every native file-watch path is canonicalized first: libuv aborts the process on a Windows 8.3 short-path mismatch.
