@@ -198,6 +198,7 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
 	Blob,
+	createBlob,
 	collectRetainedFileIds,
 	deleteBlobsInObject,
 	findBlobsInObject,
