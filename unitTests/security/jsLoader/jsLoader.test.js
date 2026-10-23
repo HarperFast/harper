@@ -478,6 +478,21 @@ for (const mode of ['vm-current-context', 'vm']) {
 			expect(loadedModules.get(loadedUrl(join(runtimeRoot, 'typed.ts')))).to.equal(typedSource);
 		});
 
+		it('imports a required module as the instance require() evaluated, reading it once', async () => {
+			let typedReads = 0;
+			writeFileSync(join(runtimeRoot, 'typed.ts'), "const value: string = 'stripped';\nmodule.exports = { value };\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.viaRequire = require('./typed.ts');\nexports.viaImport = () => import('./typed.ts');\n"
+			);
+			const result = await scopedImport(
+				join(runtimeRoot, 'entry.cjs'),
+				loaderScope({ recordLoadedModule: (url) => url.endsWith('/typed.ts') && typedReads++ })
+			);
+			expect((await result.viaImport()).default).to.equal(result.viaRequire);
+			expect(typedReads).to.equal(1);
+		});
+
 		it('still strips TypeScript types from an imported ESM .ts file', async () => {
 			writeFileSync(join(runtimeRoot, 'typed.ts'), "export const value: string = 'stripped';\n");
 			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from './typed.ts';\n");
@@ -508,7 +523,7 @@ for (const mode of ['vm-current-context', 'vm']) {
 				join(runtimeRoot, 'entry.cjs'),
 				"exports.plain = require('plain-probe');\nexports.harperDependent = require('@scoped/harper-probe');\n"
 			);
-			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'auto' }));
 			expect(result.plain).to.equal(require(plainPath));
 			expect(loadedModules.has(loadedUrl(plainPath))).to.equal(false);
 			expect(loadedModules.has(loadedUrl(harperDependentPath))).to.equal(true);
