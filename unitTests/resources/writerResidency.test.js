@@ -254,7 +254,7 @@ describe('Writer residency (harper#2257)', () => {
 
 	describe('when replication worker pool is active', () => {
 		const { setActiveWorkerPools } = require('#src/server/threads/workerPools');
-		const harperLogger = require('#src/utility/logging/harper_logger');
+		const harperLogger = require('#js/utility/logging/harper_logger');
 
 		function capturingErrors(run) {
 			const errors = [];
