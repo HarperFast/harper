@@ -516,9 +516,13 @@ describeUnlessLmdb('import_backup', function () {
 	});
 
 	describe('a pull from a URL', function () {
+		const { SAFE_FETCH_TEST_TRANSPORT } = require('#src/utility/safeFetch');
+		const serveArchive = (req, res) => res.end(readFileSync(gzArchive));
 		let server;
 		let port;
 		let requests;
+		let caCert;
+		let handler;
 
 		before(async function () {
 			const mkcert = require('mkcert');
@@ -534,16 +538,24 @@ describeUnlessLmdb('import_backup', function () {
 				domains: ['127.0.0.1', 'localhost'],
 				validity: 1,
 			});
+			caCert = ca.cert;
 			requests = 0;
 			server = require('node:https').createServer({ key: cert.key, cert: cert.cert }, (req, res) => {
 				requests++;
-				res.end(readFileSync(gzArchive));
+				handler(req, res);
 			});
 			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 			port = server.address().port;
 		});
 
-		after(() => new Promise((resolve) => server.close(resolve)));
+		after(() => {
+			server.closeAllConnections();
+			return new Promise((resolve) => server.close(resolve));
+		});
+
+		beforeEach(function () {
+			handler = serveArchive;
+		});
 
 		afterEach(function () {
 			rmSync(backupDirForDatabase(IMPORTED), { recursive: true, force: true });
@@ -642,13 +654,220 @@ describeUnlessLmdb('import_backup', function () {
 					'debit',
 					recordingCalls(async () => {})
 				);
-				replace(safeFetch, 'safeFetchToFile', async (_url, destination) => {
+				replace(safeFetch, 'safeFetchToFile', async (_url, destination, options) => {
 					writeFileSync(destination, 'not an archive');
+					options.onBytes(14);
 					return { bytes: 14 };
 				});
 				await assert.rejects(pull());
-				assert.deepStrictEqual(debit.calls[0], [join(root, 'staging'), 14]);
+				assert.deepStrictEqual(debit.calls, [[join(root, 'staging'), 14]]);
 			});
+
+			// A real https transfer from the local server; only the ledger's refusal stands in for a full device.
+			it('charges a pull as it lands, and stops it once the staging device refuses a charge', async function () {
+				const BATCH = 8 * 1024 * 1024;
+				const ROOM = 12 * 1024 * 1024;
+				const TOTAL = 64 * 1024 * 1024;
+				let served = 0;
+				let servedAll = false;
+				handler = (req, res) => {
+					res.writeHead(200, { 'content-length': TOTAL });
+					const chunk = Buffer.alloc(1024 * 1024, 'p');
+					const pump = () => {
+						while (served < TOTAL) {
+							served += chunk.length;
+							if (!res.write(chunk)) return res.once('drain', pump);
+						}
+						servedAll = true;
+						res.end();
+					};
+					pump();
+				};
+				const realFetch = safeFetch.safeFetchToFile;
+				replace(safeFetch, 'safeFetchToFile', (url, destination, options) =>
+					realFetch(url, destination, {
+						...options,
+						[SAFE_FETCH_TEST_TRANSPORT]: { trustedAddresses: ['127.0.0.1'], ca: caCert },
+					})
+				);
+				let charged = 0;
+				const debit = replace(
+					DiskLedger.prototype,
+					'debit',
+					recordingCalls(async (_path, bytes) => {
+						if (charged + bytes > ROOM) {
+							throw Object.assign(new Error('Insufficient storage on the staging volume'), { statusCode: 507 });
+						}
+						charged += bytes;
+					})
+				);
+
+				await assert.rejects(
+					importArchive({
+						databaseName: IMPORTED,
+						backupDir: join(root, 'backups'),
+						stagingDir: join(root, 'staging'),
+						url: `https://127.0.0.1:${port}/db.tar.gz`,
+					}),
+					(error) => error.statusCode === 507 && /Insufficient storage/.test(error.message)
+				);
+				// a batch closes on the chunk that reaches it
+				const inBatches = debit.calls.every(
+					([path, bytes]) => path === join(root, 'staging') && bytes >= BATCH && bytes < BATCH + 1024 * 1024
+				);
+				assert.ok(
+					inBatches && debit.calls.length === 2,
+					`charged in batches as the bytes land, the second refused: ${JSON.stringify(debit.calls)}`
+				);
+				assert.strictEqual(servedAll, false, `the transfer was cut short, not finished (${served} of ${TOTAL} served)`);
+			});
+
+			// S3's header wait is bounded by the 5 minute idle timeout: a manual clock in a worker stands in for it.
+			it('fails an S3 pull with 504 when S3 never answers', async function () {
+				const { Worker } = require('node:worker_threads');
+				const IDLE_MS = 5 * 60 * 1000;
+				const worker = new Worker(
+					`
+					const { workerData, parentPort } = require('node:worker_threads');
+					require(workerData.aws).getFileStreamFromS3 = () => new Promise(() => {});
+					const { importArchive } = require(workerData.importChildCommands);
+					const pending = new Map();
+					let now = 0;
+					globalThis.setTimeout = (callback, ms = 0, ...args) => {
+						const handle = { ref: () => handle, unref: () => handle, hasRef: () => true };
+						pending.set(handle, { at: now + ms, callback, args });
+						parentPort.postMessage({ type: 'timer', ms });
+						return handle;
+					};
+					globalThis.clearTimeout = (handle) => pending.delete(handle);
+					parentPort.on('message', (message) => {
+						if (message?.type !== 'advance') return;
+						now += message.ms;
+						for (const [handle, timer] of [...pending].sort((a, b) => a[1].at - b[1].at)) {
+							if (timer.at > now || !pending.delete(handle)) continue;
+							timer.callback(...timer.args);
+						}
+					});
+					importArchive(workerData.args).then(
+						() => parentPort.postMessage({ type: 'outcome' }),
+						(error) => parentPort.postMessage({ type: 'outcome', message: error.message, statusCode: error.statusCode })
+					);
+					`,
+					{
+						eval: true,
+						workerData: {
+							aws: require.resolve('#js/utility/AWS/AWSConnector'),
+							importChildCommands: require.resolve('#src/dataLayer/importChildCommands'),
+							args: {
+								databaseName: IMPORTED,
+								backupDir: join(root, 'backups'),
+								stagingDir: join(root, 'staging'),
+								s3: {
+									bucket: 'b',
+									key: 'k',
+									region: 'r',
+									credentials: { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' },
+								},
+							},
+						},
+					}
+				);
+				const timers = [];
+				let outcome;
+				worker.on('message', (message) => {
+					if (message?.type === 'timer') timers.push(message.ms);
+					else if (message?.type === 'outcome') outcome = message;
+				});
+				try {
+					await waitFor(() => timers.includes(IDLE_MS), {
+						timeout: 30000,
+						message: () => `the S3 request was never bounded: ${JSON.stringify({ timers, outcome })}`,
+					});
+					worker.postMessage({ type: 'advance', ms: IDLE_MS - 1 });
+					await delay(200);
+					assert.strictEqual(outcome, undefined, 'still waiting just inside the bound');
+					worker.postMessage({ type: 'advance', ms: 1 });
+					await waitFor(() => outcome, { timeout: 5000, message: 'the S3 wait never timed out' });
+					assert.strictEqual(outcome.statusCode, 504);
+					assert.match(outcome.message, /S3 did not answer for b\/k/);
+				} finally {
+					await worker.terminate();
+				}
+			});
+		});
+
+		it('keeps a presigned URL out of the job row, and hands it whole to the job worker', async function () {
+			const { Worker } = require('node:worker_threads');
+			const { JOB_TRANSIENT_ENV } = require('#src/server/jobs/jobRunner');
+			const manageThreads = require('#js/server/threads/manageThreads');
+			const signed = 'https://backups.example.com/exports/db.tar.gz?X-Amz-Signature=sekrit-token';
+			// no job worker is started from this thread: what runJob would start it with is recorded, and the
+			// real job worker is then run below with exactly that
+			const started = [];
+			const restoreStart = replaceProperty(manageThreads, 'startWorker', (path, options) =>
+				started.push({ path, options })
+			);
+			let queued;
+			try {
+				queued = await importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, url: signed });
+			} finally {
+				restoreStart();
+			}
+
+			const row = JSON.parse(JSON.stringify(await getDatabases().system.hdb_job.get(queued.job_id)));
+			assert.strictEqual(row.request.url, 'https://backups.example.com/exports/db.tar.gz');
+			assert.ok(!JSON.stringify(row).includes('sekrit'), 'nothing of the query is persisted');
+			assert.strictEqual(started.length, 1);
+			const { env } = started[0].options;
+			assert.deepStrictEqual(JSON.parse(env[JOB_TRANSIENT_ENV]), { url: signed });
+
+			// The job worker, reading that row, with its dispatch stubbed to report the request it would run.
+			const worker = new Worker(
+				`
+				const { workerData, parentPort } = require('node:worker_threads');
+				const jobs = require(workerData.jobs);
+				const serverUtilities = require(workerData.serverUtilities);
+				const application = require(workerData.application);
+				jobs.getJobById = async () => [workerData.row];
+				jobs.updateJob = async () => {};
+				application.getEnvBuiltInComponents = () => [];
+				serverUtilities.getOperationFunction = () => ({
+					job_operation_function: async (request) =>
+						parentPort.postMessage({
+							type: 'ran',
+							url: request.url,
+							transientLeft: process.env[workerData.transientEnv],
+						}),
+				});
+				require(workerData.jobProcess);
+				`,
+				{
+					eval: true,
+					env,
+					workerData: {
+						row,
+						transientEnv: JOB_TRANSIENT_ENV,
+						jobs: require.resolve('#src/server/jobs/jobs'),
+						serverUtilities: require.resolve('#src/server/serverHelpers/serverUtilities'),
+						application: require.resolve('#src/components/Application'),
+						jobProcess: require.resolve('#src/server/jobs/jobProcess'),
+					},
+				}
+			);
+			let ran;
+			const errors = [];
+			worker.on('message', (message) => {
+				if (message?.type === 'ran') ran = message;
+			});
+			worker.on('error', (error) => errors.push(error));
+			try {
+				await waitFor(() => ran || errors.length > 0, { timeout: 30000, message: 'the job worker never ran the job' });
+			} finally {
+				await worker.terminate();
+			}
+			assert.deepStrictEqual(errors, []);
+			assert.strictEqual(ran.url, signed, 'the job runs with the URL the operator sent');
+			assert.strictEqual(ran.transientLeft, undefined, 'and drops it from its environment once read');
 		});
 
 		// An end-to-end https pull needs safeFetch's Symbol-keyed test transport to trust loopback, which a
@@ -739,6 +958,20 @@ describeUnlessLmdb('import_backup', function () {
 			});
 			assert.strictEqual(childArgs.importedFrom, 's3://backups/db/archive.tar.gz');
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
+		});
+
+		it('gives the import child 30 hours, past the day a pull alone may take', async function () {
+			const child = replace(
+				restoreChildRunner,
+				'runRestoreChild',
+				recordingCalls(async (_command, args) => {
+					mkdirSync(args.stagingDir, { recursive: true });
+					throw new Error('no child in a unit test');
+				})
+			);
+			await assert.rejects(importBackupJob({ ...SU, database: IMPORTED, s3: s3('S3_CREDS') }), /no child/);
+			assert.strictEqual(child.calls.length, 1);
+			assert.strictEqual(child.calls[0][2]?.timeoutMs, 30 * 60 * 60 * 1000);
 		});
 
 		it('refuses a scoped secret or one that is not a key pair, without echoing its value', async function () {
