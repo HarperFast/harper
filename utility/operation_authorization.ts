@@ -922,7 +922,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 
 	const rootAttributesDenied =
 		!isSuperUser && table != undefined && SEARCH_OPS.has(op)
-			? checkRelationshipReads(requestJson, operationSchema, table, permsResponse)
+			? checkRelationshipReads(requestJson, operationSchema, table, op === search.searchByValue.name, permsResponse)
 			: undefined;
 
 	const tableClass =
@@ -989,11 +989,12 @@ function checkRelationshipReads(
 	requestJson: any,
 	operationSchema: string,
 	table: string,
+	valueSearch: boolean,
 	permsResponse
 ): Set<string> | undefined {
 	const tableClass = getDatabases()[operationSchema]?.[table];
 	if (!tableClass?.hasRelationships) return;
-	let valueAttribute = requestJson.search_attribute ?? requestJson.attribute;
+	let valueAttribute = valueSearch ? (requestJson.search_attribute ?? requestJson.attribute) : undefined;
 	if ((requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value) === '*')
 		valueAttribute = undefined;
 	if (
