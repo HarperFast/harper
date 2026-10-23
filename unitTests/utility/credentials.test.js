@@ -124,6 +124,19 @@ describe('utility/credentials', () => {
 				maskCredentialValues(`token: ${quote}\nsk-b"}`, { oneEntry: true }),
 				`token: ${stars(quote)}\n****"}`
 			);
+			const escaped = "'sk-\\' password: |-";
+			assert.equal(
+				masked(`T [warn]: apiKey: ${escaped}\n  sk-SENTINEL\n`),
+				`T [warn]: apiKey: '${stars(escaped.slice(1))}\n  ***********\n`
+			);
+		});
+
+		it('keeps masking the deeper lines of a key after a quote opened in its value closes', () => {
+			const value = 'foo key="bar';
+			assert.equal(
+				masked(`    password: ${value}\n      baz"\n      secret-line-3\nnext: 1\n`),
+				`    password: ${'*'.repeat(value.length)}\n      ***"\n      *************\nnext: 1\n`
+			);
 		});
 
 		it('does not open a block from a commented-out credential key', () => {

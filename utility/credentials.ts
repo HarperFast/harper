@@ -14,13 +14,12 @@ const MASK = '*';
 // such as `\n`. A match never starts inside a run of backslashes, so a run is scanned once.
 const ASSIGNMENT = /(?<!(?<!\\)[\w$.-])(?!(?<=\\)\\)(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
-const BLOCK_SCALAR = /^[|>][-+0-9]*[ \t]*(?:#.*)?$/;
+const BLOCK_SCALAR = /^[|>][-+0-9]*(?:[ \t]+#|[ \t]*$)/;
 
 type State =
-	| { kind: 'none' }
-	| { kind: 'unknown' }
-	| { kind: 'block'; column: number; empty: boolean }
-	| { kind: 'quote'; quote: string };
+	{ kind: 'none' } | { kind: 'unknown' } | BlockState | { kind: 'quote'; quote: string; within?: BlockState };
+
+type BlockState = { kind: 'block'; column: number; empty: boolean };
 
 const NONE: State = { kind: 'none' };
 
@@ -165,6 +164,13 @@ function maskInState(line: string, state: State, partial: boolean, oneEntry: boo
 		const close = closingQuote(line, indent, end, state.quote);
 		if (close === -1) return { text: maskRange(line, indent, end), state };
 		const rest = maskLine(line, end, close + 1);
+		// The quote opened inside a credential key's value, so a line deeper than that key is still its value.
+		if (state.within && indent > state.within.column) {
+			return {
+				text: maskRange(maskRange(line, indent, close), close + 1, end),
+				state: rest.state.kind === 'none' ? state.within : rest.state,
+			};
+		}
 		return { text: maskRange(rest.text, indent, close), state: rest.state };
 	}
 	if (state.kind === 'block') {
@@ -196,14 +202,15 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 			// After a log prefix or prose, the value's lines are indented relative to the message, not the key.
 			state = { kind: 'block', column: 0, empty };
 		}
-		if (valueStart === end || isPlaceholder(line.slice(valueStart, end).trimEnd())) continue;
+		const masked = valueStart < copied;
+		if (valueStart === end || (!masked && isPlaceholder(line.slice(valueStart, end).trimEnd()))) continue;
 		let escapes = 0;
 		while (line[valueStart + escapes] === '\\') escapes++;
 		const quote = line[valueStart + escapes];
 		let maskStart = valueStart;
 		let maskEnd = end;
-		const quoted = quote === '"' || quote === "'";
-		if (quoted) {
+		let open = false;
+		if (quote === '"' || quote === "'") {
 			maskStart += escapes + 1;
 			const close =
 				escapes === 0
@@ -212,14 +219,18 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 						? closingEscapedQuote(line, maskStart, end, quote)
 						: -1;
 			if (close !== -1) maskEnd = close;
-			else if (escapes === 0) state = { kind: 'quote', quote };
+			else if (escapes === 0) {
+				open = true;
+				state = { kind: 'quote', quote, within: state.kind === 'block' ? state : undefined };
+			}
 		}
-		if (maskStart >= copied) {
+		if (!masked) {
 			text += line.slice(copied, maskStart) + MASK.repeat(maskEnd - maskStart);
 			copied = maskEnd;
 		}
-		// An unquoted value masks the rest of the line, but a later key in it can still continue onto the next.
-		ASSIGNMENT.lastIndex = quoted ? maskEnd : valueStart;
+		// A value masked to the end of the line can hold a later key whose value continues onto the next; an open
+		// quote's text is all string.
+		ASSIGNMENT.lastIndex = maskEnd === end && !open ? valueStart : maskEnd;
 	}
 	return { text: copied === 0 ? line : text + line.slice(copied), state };
 }
