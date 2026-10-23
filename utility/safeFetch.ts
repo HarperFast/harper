@@ -298,6 +298,7 @@ async function openFollowingRedirects(
 ): Promise<IncomingMessage> {
 	let current = url;
 	for (let hop = 0; ; hop++) {
+		transfer.throwIfFailed();
 		const validated = await resolveHop(current, transfer, options);
 		logger.trace?.(`GET ${redactUrl(current)} via ${validated.addresses.map(({ address }) => address).join(', ')}`);
 		const response = await sendRequest(current, validated, headers, transfer, options);

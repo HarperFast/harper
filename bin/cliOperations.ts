@@ -583,7 +583,6 @@ const PREPARE_OPERATION: any = {
 		if (req.file === undefined) return;
 		const archivePath = path.resolve(String(req.file));
 		const archiveSize = (await fs.promises.stat(archivePath)).size;
-		// the server compares this with the bytes it spools, which are the file's own
 		req.declared_size ??= archiveSize;
 		delete req.file;
 		req._uploadFile = archivePath;

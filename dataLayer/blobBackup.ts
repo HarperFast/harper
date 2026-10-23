@@ -435,6 +435,7 @@ export async function fsyncTree(root: string): Promise<void> {
 			directories.add(directory);
 		}
 	}
+	if (existsSync(root)) directories.add(root);
 	for (const directory of directories) fsyncDirectory(directory);
 	if (existsSync(root)) fsyncDirectory(dirname(root));
 }

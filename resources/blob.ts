@@ -1876,20 +1876,6 @@ export async function blockBlobSavesForRestore(databaseName: string, restoreToke
 	await drainBlobUnlinks(databaseName);
 }
 
-/**
- * Release one restore's fence. Only the current owner's token lifts it, so an earlier restore's late
- * `reload` cannot unfence a database another restore has since taken over.
- */
-export function resumeBlobSavesAfterRestore(
-	databaseName: string,
-	restoreToken: string,
-	generationReplaced = true
-): void {
-	// Only the owner may lift the fence; a superseded restore's reload arriving late does nothing.
-	if (blobRestoreFences.get(databaseName) !== restoreToken) return;
-	liftBlobRestoreFences([databaseName], generationReplaced);
-}
-
 /** Release every fence one restore holds on this thread: it fences each name in the closed alias graph. */
 export function resumeBlobSavesForRestore(restoreToken: string, generationReplaced = true): void {
 	const owned: string[] = [];

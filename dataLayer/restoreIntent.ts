@@ -21,7 +21,7 @@ import {
 	listReplicationPeers,
 } from '../server/replicationMembership.ts';
 import { pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
-import { readAllManifests } from './backupManifest.ts';
+import { readAllManifests, readBackupManifest } from './backupManifest.ts';
 import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
 import {
 	RESTORE_META_DIR,
@@ -332,8 +332,43 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
  */
 export async function finishCommittedRestoresBeforeStartup(roots?: string[]): Promise<void> {
 	for (const { read } of scanRestoreReceipts(roots)) {
-		if (read.kind !== 'valid' || read.receipt.state !== 'committed' || read.receipt.job_id) continue;
-		await finishWithLock(read.receipt);
+		if (read.kind !== 'valid') continue;
+		if (read.receipt.state === 'committed' && !read.receipt.job_id) await finishWithLock(read.receipt);
+		else if (claimAbandonedBeforeDestruction(read.receipt)) dropAbandonedClaim(read.receipt);
+	}
+}
+
+/**
+ * An online or offline restore whose process died before its child announced the purge: the marker is
+ * published before anything is destroyed, so with none present the database was never touched, and its
+ * receipt must not keep it reserved. A restart restore's receipt is its intent, and is never dropped.
+ */
+function claimAbandonedBeforeDestruction(receipt: RestoreReceipt): boolean {
+	return receipt.route !== 'on_restart' && receipt.state === 'applying' && !restoreMarkerPresent(receipt.database_path);
+}
+
+function dropAbandonedClaim(receipt: RestoreReceipt): void {
+	let lock: RestoreLock;
+	try {
+		lock = acquireRestoreLock(receipt.database_path);
+	} catch {
+		return; // held: a restore is running, so this is not an abandoned claim
+	}
+	try {
+		const again = readRestoreReceipt(receipt.database_path);
+		if (
+			again.kind !== 'valid' ||
+			again.receipt.operation_id !== receipt.operation_id ||
+			!claimAbandonedBeforeDestruction(again.receipt)
+		)
+			return;
+		removeRestoreReceipt(lock, receipt.operation_id);
+		releaseReceiptPins(receipt);
+		logger.warn(
+			`Dropped the claim of a restore of '${receipt.database}' that stopped before replacing anything; the database loads as it was`
+		);
+	} finally {
+		releaseRestoreLock(lock);
 	}
 }
 
@@ -425,15 +460,21 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 		));
 	}
 	const pinId = preRestorePinId(receipt.operation_id);
-	await withBackupRepositoryLock(receipt.backup_dir, receipt.database, async () =>
+	await withBackupRepositoryLock(receipt.backup_dir, receipt.database, async () => {
+		// deletable until it is pinned, so the pin and the check that it still exists are one step
+		if (!(await readBackupManifest(receipt.backup_dir, backupId!))) {
+			throw new Error(
+				`The pre-restore backup ${backupId} of '${receipt.database}' was removed before it could be pinned`
+			);
+		}
 		pinBackup(
 			receipt.backup_dir,
 			pinId,
 			backupId!,
 			`rollback copy for the restore of '${receipt.database}'`,
 			receipt.database_path
-		)
-	);
+		);
+	});
 	return writeRestoreReceipt(lock, { ...receipt, pre_restore_backup_id: backupId, pre_restore_pin_id: pinId });
 }
 

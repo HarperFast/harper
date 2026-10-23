@@ -79,7 +79,9 @@ Several non-obvious mechanics keep that safe:
   so a native abort in the verifier costs the child, not Harper. **Online**, it runs after the close
   and `verifyDatabaseClosed`: verifying while the database still served would acknowledge writes
   for minutes that the purge then discards. A crash during it costs nothing durable: a fresh claim
-  holds the restore lock and the pin but publishes no marker until the purge is next. A backup
+  holds the restore lock and the pin but publishes no marker until the purge is next, and the
+  `applying` receipt it leaves — with no marker, so nothing was destroyed — is dropped with its pin
+  before the next startup loads anything (`finishCommittedRestoresBeforeStartup`). A backup
   whose manifest declares blobs must also still have its blob snapshot. Anything that fails only
   once the copy runs (`ENOSPC`, a crash) leaves the marker and needs a rerun, which the intact backup
   allows.

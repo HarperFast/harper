@@ -143,7 +143,6 @@ export class DiskLedger {
 		};
 	}
 
-	/** The allocation unit of the device holding `path`. */
 	/** What is left on the device holding `path` after charges, holds and the reserve. */
 	async remaining(path: string): Promise<{ bytes: number; inodes: number; basis: StorageSpaceStats['basis'] }> {
 		const budget = await this.#budgetFor(path);
