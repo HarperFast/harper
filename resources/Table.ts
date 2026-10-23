@@ -1641,9 +1641,9 @@ export function makeTable(options): TableResourceClass {
 		return { txnLogKey: version, nodeId };
 	}
 	/**
-	 * Whether a ref equal to the identity a re-delivery carries is that write's receipt: the ref the
-	 * origin-closed floor left for a rekeyed write (no entry at the key), or an audit head whose entry
-	 * is the same write. The protected first ref is the record's audit head; when its entry is gone it
+	 * Whether a ref equal to the identity a re-delivery carries is that write's receipt: the identity ref
+	 * a write whose version is not its key keeps on the record (no entry at the key), or an audit head
+	 * whose entry is the same write. The protected first ref is the record's audit head; when its entry is gone it
 	 * is evidence of nothing unless the record still sits at the incoming version.
 	 */
 	function receivedIdentityRefIsReceipt(
@@ -5098,11 +5098,9 @@ export function makeTable(options): TableResourceClass {
 							// options?.nodeId resolves to the same 0 the ref stored). Not after an earlier write of this
 							// transaction to this key: every write in it shares one log key, so the ref that write left is
 							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
-							// and stages nothing. On a retry whose prior attempt staged, the record read back may be that
-							// attempt's own: then its head ref is the key minted for this handle, which no other
-							// transaction in `local` has, and its identity ref is this write's too, so neither is a receipt.
-							// A committed competitor's record carries its own minted head, so its refs still count. Only
-							// for a minted key: a re-delivery in an origin's log shares its key with a competing delivery.
+							// and stages nothing. Nor when a retry reads back its own prior staging, recognized by its head
+							// ref being the key minted for this handle (a committed competitor carries another minted head;
+							// in an origin's log a competing delivery shares the key, so only a minted key can tell).
 							let refBase: Partial<Entry> | undefined;
 							let readsOwnStaging = false;
 							if (!priorStaged) {
@@ -5243,18 +5241,6 @@ export function makeTable(options): TableResourceClass {
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
-							// A record's ref list also carries its own audit head (walked from already) and, for a write
-							// whose version is not its key, the identity a re-delivery carries, which addresses no entry.
-							// Neither is a branch: visiting them costs a keyed miss each and keeps the early-out below from
-							// ever seeing an empty branch list.
-							const isBranchRef = (
-								ref: { version: number; nodeId?: number },
-								head: { txnLogKey: number; nodeId?: number },
-								version: number | undefined,
-								headNodeId: number | undefined
-							) =>
-								(ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0)) &&
-								(ref.version !== version || (ref.nodeId ?? 0) !== (headNodeId ?? 0));
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
@@ -5272,7 +5258,6 @@ export function makeTable(options): TableResourceClass {
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
-							// Resolved once per visited entry: the queue filter and the advance both need it.
 							let previousHeadOf: any;
 							let previousHead: { txnLogKey: number; nodeId: number };
 							const resolvePreviousHead = (auditRecord) => {
@@ -5379,9 +5364,9 @@ export function makeTable(options): TableResourceClass {
 												if (isRocksDB && localTime !== appendedLogKey && receivedLogKey === appendedLogKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
-													// Only for a write filed in a named origin's log under that origin's key. In `local`
-													// every key is minted, so the received identity never matches the key: an equal
-													// version there — a local write's own, or an unmapped origin's — is a re-delivery.
+													// Only for a write filed in a named origin's log under that origin's key. A write that
+													// carries a caller's value or an unmapped origin's key is filed in `local` under a
+													// minted key, so it never takes this branch: its equal version is a re-delivery.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
@@ -5695,8 +5680,8 @@ export function makeTable(options): TableResourceClass {
 						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
-					// An apply the floor rekeyed keeps its received identity on the record too, so a re-delivery
-					// matches it without a walk that may stop short; readers tolerate a ref with no entry.
+					// A write whose received identity is not its key keeps that identity on the record too, so a
+					// re-delivery matches it without a walk that may stop short; readers tolerate a ref with no entry.
 					if (
 						isRocksDB &&
 						audit &&
@@ -10737,6 +10722,24 @@ function isDescendantId(ancestorId, descendantId): boolean {
 
 // wait for an event turn (via a promise)
 const rest = () => new Promise(setImmediate);
+
+/**
+ * Whether a ref in a record's `additionalAuditRefs` is a branch for the out-of-order walk to follow. The
+ * list also carries the record's own audit head, which the walk starts from, and, for a write whose
+ * version is not its key, the identity a re-delivery carries, which addresses no entry: visiting either
+ * is a keyed miss, and a pending one keeps the fully-superseded early-out from seeing an empty branch list.
+ */
+function isBranchRef(
+	ref: { version: number; nodeId?: number },
+	head: { txnLogKey: number; nodeId?: number },
+	version: number | undefined,
+	nodeId: number | undefined
+): boolean {
+	return (
+		(ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0)) &&
+		(ref.version !== version || (ref.nodeId ?? 0) !== (nodeId ?? 0))
+	);
+}
 
 function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, version: number, nodeId?: number): number {
 	for (let index = 0; index < refs.length; index++) {

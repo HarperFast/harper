@@ -139,13 +139,8 @@ Consequences worth knowing:
   `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
   transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the
   origin's clock. New audit entries persist that write version even when an out-of-order merge leaves
-  a newer record version in the primary store. The version is stored as received, including one above
-  the log key (an origin's explicit timestamp ahead of its clock, whose key is minted below it): a peer
-  that lowered it to the key would disagree with the origin on which of two later writes wins. The
-  `min(version, key)` clamp that guarded pre-v5.3 audit-only entries (an overloaded body version above
-  the fold key, harper#2497) is gone; such an entry from an un-upgraded sender is stored at its body
-  version for as long as `auditRetention` keeps it. One frame can carry writes at different record
-  versions, so this cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
+  a newer record version in the primary store. The version is stored as received, including one above the log key (an origin's explicit timestamp ahead of its clock, whose key is minted below it): a peer that lowered it to the key would disagree with the origin on which of two later writes wins. The `min(version, key)` clamp that guarded pre-v5.3 audit-only entries (an overloaded body version above the fold key, harper#2497) is gone. Mixed-cluster window, for as long as `auditRetention` keeps the entries: an upgraded receiver stores such an entry from an un-upgraded sender at its body version, and an un-upgraded receiver still clamps an upgraded sender's above-key version to the key.
+  One frame can carry writes at different record versions, so this cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
 - **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
   into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order
   branches and, when a RocksDB record version differs from its log key, the record's own audit head —
