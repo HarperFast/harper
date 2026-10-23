@@ -5222,7 +5222,6 @@ export function makeTable(options): TableResourceClass {
 								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
 								: { txnLogKey: existingEntry.localTime, nodeId: existingEntry.nodeId };
 							let localTime = initialAuditHead.txnLogKey;
-							// the entry a head resolution already read, so the walk's first step does not read it again
 							let resolvedEntry = initialAuditHead.entry;
 							let auditedVersion = existingEntry.version;
 							logger.debug?.(
