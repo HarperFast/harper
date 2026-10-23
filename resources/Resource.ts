@@ -125,10 +125,14 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
 	 */
 	static get = transactional(
-		function (resource: any, query: RequestTarget, _request: Context, _data: any) {
+		function (resource: any, query: RequestTarget, request: Context, _data: any) {
 			const result = resource.get?.(query);
 			// for the new API we always apply select in the instance method
-			if (!resource.constructor.loadAsInstance) return result;
+			if (!resource.constructor.loadAsInstance) {
+				return result?.then
+					? result.then((result: any) => authorizeSearchResult(result, request?.user))
+					: authorizeSearchResult(result, request?.user);
+			}
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
@@ -1011,7 +1015,7 @@ function transactional(
 }
 
 function authorizeSearchResult(result: any, user: any) {
-	const authorization = result?.[SEARCH_AUTHORIZATION];
+	const authorization = result?.[SEARCH_AUTHORIZATION] ?? (result?.headers && result.data?.[SEARCH_AUTHORIZATION]);
 	return authorization
 		? when(authorization, (state: any) => {
 				if (state && typeof state === 'object') {
