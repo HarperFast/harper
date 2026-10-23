@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const {
 	assertEngineOnlyRestoreAllowed,
@@ -17,6 +17,7 @@ const {
 	fsyncTree,
 } = require('#src/dataLayer/blobBackup');
 const { classifyBlobFileForCapture, isSystemicIoError } = require('#src/resources/blob');
+const durableFile = require('#src/utility/durableFile');
 
 // Lay out a blob root the way resources/blob.ts does: files nested a few directories deep by id,
 // each an 8-byte header (type in the top 16 bits, body length in the low 48) followed by the body.
@@ -378,6 +379,23 @@ describe('blobBackup', function () {
 			await fsyncTree(join(tempDir, 'never-created'));
 			mkdirSync(join(rootA, 'empty', 'nested'), { recursive: true });
 			await fsyncTree(rootA);
+		});
+
+		it('flushes the root and its entry in its parent when the tree holds only empty directories', async function () {
+			mkdirSync(join(rootA, 'empty', 'nested'), { recursive: true });
+			const flushed = [];
+			// fsyncTree reads it through the module object at call time; a directory fsync leaves no trace to observe
+			const original = durableFile.fsyncDirectory;
+			durableFile.fsyncDirectory = (directory) => {
+				flushed.push(directory);
+				return original(directory);
+			};
+			try {
+				await fsyncTree(rootA);
+			} finally {
+				durableFile.fsyncDirectory = original;
+			}
+			assert.deepStrictEqual(flushed.sort(), [dirname(rootA), rootA].sort());
 		});
 	});
 
