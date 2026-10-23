@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { getRecordAtTime, applyForward, addValues } = require('#src/resources/crdt');
+const { getRecordAtTime, applyForward, addValues, remainingAgainstRecord } = require('#src/resources/crdt');
 
 // Build a mock audit history and the `store` shape getRecordAtTime expects. Each event is
 // { version, type: 'put'|'patch'|'delete', value, previousVersion }. The audit store resolves an
@@ -634,5 +634,57 @@ describe('crdt addValues', () => {
 		// number + bigint would otherwise throw a TypeError on the apply path.
 		assert.strictEqual(addValues(5, 3n), 8);
 		assert.strictEqual(typeof addValues(5, 3n), 'number');
+	});
+});
+
+describe('remainingAgainstRecord', () => {
+	const add = { __op__: 'add', value: 1 };
+
+	it('keeps operations and absent keys and drops plain keys the record holds', () => {
+		const remaining = remainingAgainstRecord({ held: 'old', count: add, fresh: 'new' }, { held: 'newer', count: 5 });
+		assert.deepStrictEqual(remaining, { count: add, fresh: 'new' });
+	});
+
+	it('returns null when nothing remains and the update itself when nothing was dropped', () => {
+		assert.strictEqual(remainingAgainstRecord({ held: 'old' }, { held: 'newer' }), null);
+		const update = { count: add, fresh: 'new' };
+		assert.strictEqual(remainingAgainstRecord(update, { count: 5 }), update);
+	});
+
+	it('does not treat inherited Object.prototype names or prototype methods as stored fields', () => {
+		class Row {
+			toJSON() {}
+		}
+		const record = Object.assign(new Row(), { held: 'newer' });
+		assert.deepStrictEqual(remainingAgainstRecord({ toString: 'a', toJSON: 'b', held: 'c' }, record), {
+			toString: 'a',
+			toJSON: 'b',
+		});
+	});
+
+	it('counts an accessor installed on the record prototype as a stored field', () => {
+		const record = Object.create({
+			get held() {
+				return 'newer';
+			},
+		});
+		assert.strictEqual(remainingAgainstRecord({ held: 'old' }, record), null);
+	});
+
+	it('keeps an own __proto__ key as data instead of adopting its value as a prototype', () => {
+		const update = JSON.parse('{"held":"old","__proto__":{"__op__":"add","value":1,"tag":"stale"}}');
+		const remaining = remainingAgainstRecord(update, { held: 'newer' });
+		assert.deepStrictEqual(Object.keys(remaining), ['__proto__']);
+		assert.strictEqual(Object.getPrototypeOf(remaining), Object.prototype);
+		assert.strictEqual(remaining.tag, undefined);
+	});
+
+	it('leaves nothing for an empty update', () => {
+		assert.strictEqual(remainingAgainstRecord({}, { held: 'newer' }), null);
+	});
+
+	it('passes the update through when there is no record to compare with', () => {
+		const update = { held: 'old' };
+		assert.strictEqual(remainingAgainstRecord(update, undefined), update);
 	});
 });

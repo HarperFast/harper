@@ -96,6 +96,40 @@ export function commutativeOpsOf(update: any) {
 	return ops;
 }
 
+/**
+ * What an out-of-order `update` still contributes to a materialized `record` that already includes
+ * newer writes: commutative operations and keys the record lacks. Null when nothing remains, `update`
+ * itself when nothing was dropped.
+ * Not `rebuildUpdateBefore`: a stored value carries no `__op__`, so it drops an incoming `add` on any
+ * key the record holds.
+ */
+export function remainingAgainstRecord(update: any, record: any) {
+	if (record == null) return update;
+	let remaining = null;
+	let dropped = false;
+	for (const key in update) {
+		const value = update[key];
+		if (value?.__op__ || !holdsField(record, key)) {
+			remaining ??= {};
+			// a JSON-parsed '__proto__' key must stay a data property, not become the prototype
+			if (key === '__proto__')
+				Object.defineProperty(remaining, key, { value, enumerable: true, writable: true, configurable: true });
+			else remaining[key] = value;
+		} else dropped = true;
+	}
+	return dropped || !remaining ? remaining : update;
+}
+
+// Stored fields are own properties, or accessors on a decoder-installed prototype; Object.prototype
+// members and prototype methods (toJSON, getUpdatedTime) are not fields.
+function holdsField(record: any, key: string) {
+	for (let object = record; object && object !== Object.prototype; object = Object.getPrototypeOf(object)) {
+		const descriptor = Object.getOwnPropertyDescriptor(object, key);
+		if (descriptor) return object === record || descriptor.get !== undefined;
+	}
+	return false;
+}
+
 export function applyReverse(record, update, unknowns: Set<string>) {
 	for (const key in update) {
 		const value = update[key];
