@@ -518,12 +518,23 @@ describe('Default reads authorize @enumerable relationships against the related 
 				},
 			},
 		};
-		let response;
+		let response, ignoredValueField;
 		try {
 			response = verifyPerms(request, 'searchByConditions');
+			// search_by_conditions does not run a value predicate, so its fields are not authorized
+			ignoredValueField = verifyPerms(
+				{
+					...request,
+					conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: 'e1' }],
+					search_attribute: ['dept', '__proto__'],
+					search_value: 1,
+				},
+				'searchByConditions'
+			);
 		} finally {
 			global.hdb_schema = priorSchema;
 		}
+		assert.equal(ignoredValueField, null);
 		assert.deepStrictEqual(response.invalid_schema_items, []);
 		assert.deepStrictEqual(JSON.parse(JSON.stringify(response.unauthorized_access)), [
 			{
