@@ -2789,7 +2789,13 @@ describe('history after record eviction (issue #3164)', () => {
 			await pastAuditWindow(patchTime);
 			const between = patchTime + 50;
 
-			assert.deepStrictEqual(recordAt('rec-1', between), patched, 'evicted: no current entry to walk back from');
+			const scans = countLogScans(HistoryTable);
+			try {
+				assert.deepStrictEqual(recordAt('rec-1', between), patched, 'evicted: no current entry to walk back from');
+				assert.strictEqual(scans.count, 0, 'the search back stops at the nearest entry');
+			} finally {
+				scans.restore();
+			}
 			assert.strictEqual(recordAt('rec-1', putTime - 1), null, 'the record did not exist yet');
 
 			await HistoryTable.put(refetched);

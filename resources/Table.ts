@@ -8807,7 +8807,6 @@ export function makeTable(options): TableResourceClass {
 			const historyEntry = historyEntryReader();
 			const isEntryOfRecord = (auditRecord) =>
 				isHistoryEntry(auditRecord) && compareKeys(auditRecord.recordId, id) === 0;
-			// the log is keyed by time alone, so entries no previousVersion link reaches take a scan
 			const unlinkedEntries = async (end: number) => {
 				const entries = [];
 				let sinceYield = 0;
@@ -8821,7 +8820,6 @@ export function makeTable(options): TableResourceClass {
 				return entries;
 			};
 			const entry = primaryStore.getEntry(id);
-			// eviction removes the primary entry but not the audit entries
 			if (!entry) return unlinkedEntries(Infinity);
 			let nextVersion = isRocksDB
 				? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
@@ -9405,10 +9403,7 @@ export function makeTable(options): TableResourceClass {
 	function isHistoryEntry(auditRecord): boolean {
 		return auditRecord.tableId === tableId && auditRecord.type !== 'evict' && !isLockControlType(auditRecord.type);
 	}
-	/**
-	 * Entries carry the record image at their own log position (issue #1330). A failed reconstruction
-	 * leaves `value` undefined and is logged once per reader.
-	 */
+	// each entry carries the record image as of its own log position (issue #1330)
 	function historyEntryReader() {
 		let loggedEntryError = false;
 		return (auditRecord) => {
