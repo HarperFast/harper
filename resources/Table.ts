@@ -1448,7 +1448,8 @@ export function makeTable(options): TableResourceClass {
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
-	let replicaExpirationMs = options.replicaExpirationMS ?? DEFAULT_REPLICA_EXPIRATION_MS;
+	const isRocksDB = primaryStore instanceof RocksDatabase;
+	let replicaExpirationMs = isRocksDB ? (options.replicaExpirationMS ?? DEFAULT_REPLICA_EXPIRATION_MS) : 0;
 	let replicaRefreshFraction = options.replicaRefreshFraction ?? DEFAULT_REPLICA_REFRESH_FRACTION;
 	// id → deadline (ms) for every REPLICA row, opened on the first replica stored or at load from its catalog row
 	let replicaDeadlines: any;
@@ -1552,7 +1553,6 @@ export function makeTable(options): TableResourceClass {
 			);
 		} catch {}
 	}
-	const isRocksDB = primaryStore instanceof RocksDatabase;
 	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
 	let idIncrementer: BigInt64ArrayAndMaxSafeId;
 	let replicateToCount;
@@ -2944,8 +2944,10 @@ export function makeTable(options): TableResourceClass {
 		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
-			if (typeof opts === 'object' && opts.replicaExpiration != null)
-				replicaExpirationMs = replicaExpirationMsOf(opts.replicaExpiration);
+			if (typeof opts === 'object' && opts.replicaExpiration != null) {
+				const validated = replicaExpirationMsOf(opts.replicaExpiration);
+				replicaExpirationMs = isRocksDB ? validated : 0;
+			}
 			if (typeof opts === 'object' && opts.replicaRefreshFraction != null)
 				replicaRefreshFraction = replicaRefreshFractionOf(opts.replicaRefreshFraction);
 			const declaredHere = typeof opts === 'object' && opts.fromSchema;
@@ -4234,24 +4236,13 @@ export function makeTable(options): TableResourceClass {
 				}
 				entry ??= primaryStore.getEntry(id, options);
 				if (observedDeadline !== undefined && !(entry?.metadataFlags & REPLICA)) return Promise.resolve();
-				if (entry?.metadataFlags & REPLICA && entry.version === existingVersion) {
-					if (primaryStore.ifVersion) {
-						const demotion = demoteReplica(entry, undefined, observedDeadline);
-						(lmdbTransaction as any).commit();
-						committed = true;
-						return trackMaintenanceCommit(
-							demotion.catch((error) => logger.warn?.('Error demoting replica', id, error))
-						);
-					}
+				if (isRocksDB && entry?.metadataFlags & REPLICA && entry.version === existingVersion) {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
-						reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
+						reserveLocalKey(tableRootStore, transaction as RocksTransaction);
 					const demotion = demoteReplica(entry, transaction, observedDeadline);
 					committed = true;
 					return trackMaintenanceCommit(
 						demotion.catch((error) => {
-							try {
-								(transaction as any).abort();
-							} catch {}
 							if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned demotion of busy replica', id);
 							else logger.warn?.('Error demoting replica', id, error);
 						})
@@ -9065,13 +9056,15 @@ export function makeTable(options): TableResourceClass {
 		TableResource.cleanup();
 		throw error;
 	}
-	const armerKey = `${primaryStore.path}:${tableId}`;
-	let armers = replicaEvictionArmers.get(armerKey);
-	if (!armers) replicaEvictionArmers.set(armerKey, (armers = new Set()));
-	armers.add(armReplicaEviction);
-	if (options.replicaDeadlines) {
-		openReplicaDeadlines();
-		if (replicaExpirationMs) armReplicaEviction();
+	if (isRocksDB) {
+		const armerKey = `${primaryStore.path}:${tableId}`;
+		let armers = replicaEvictionArmers.get(armerKey);
+		if (!armers) replicaEvictionArmers.set(armerKey, (armers = new Set()));
+		armers.add(armReplicaEviction);
+		if (options.replicaDeadlines) {
+			openReplicaDeadlines();
+			if (replicaExpirationMs) armReplicaEviction();
+		}
 	}
 	return TableResource;
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
@@ -10622,7 +10615,7 @@ export function makeTable(options): TableResourceClass {
 	/**
 	 * The table's replica-deadline store, catalogued beside its indexes (`<table>/@replicas`) so a drop
 	 * removes it. Opened here on every thread that needs it; the row is written once, before the first
-	 * replica, outside any transaction (lmdb-js cannot open a sub-db inside one).
+	 * replica, outside the replica write transaction.
 	 */
 	function openReplicaDeadlines(create = false): any {
 		if (replicaDeadlines) return replicaDeadlines;
@@ -10636,16 +10629,9 @@ export function makeTable(options): TableResourceClass {
 		return replicaDeadlines;
 	}
 	function dropReplicaDeadline(id: Id, replaced: Partial<Entry> | undefined, transaction: any) {
-		if (!(replaced?.metadataFlags & REPLICA)) return;
-		// lmdb-js cannot open a sub-db inside the write batch this runs in; the arm message opens it on
-		// every thread, and an entry missed here is garbage the sweep removes once its deadline passes
-		const store = primaryStore.ifVersion ? replicaDeadlines : openReplicaDeadlines();
-		if (!store) return;
-		if (isRocksDB) store.removeSync(id, transaction ? { transaction } : undefined);
-		else
-			void Promise.resolve(store.remove(id)).catch((error) =>
-				logger.warn?.('Error clearing a replica deadline', id, error)
-			);
+		if (!(replaced?.metadataFlags & REPLICA) || !isRocksDB) return;
+		const store = openReplicaDeadlines();
+		if (store) store.removeSync(id, transaction ? { transaction } : undefined);
 	}
 	/**
 	 * A read hit renews a replica once `replicaRefreshFraction` of its lifetime has passed. The decision
@@ -10762,12 +10748,7 @@ export function makeTable(options): TableResourceClass {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode() || !replicaExpirationMs)
 			return Promise.resolve(false);
 		const store = openReplicaDeadlines(true);
-		const databaseTransaction = primaryStore.ifVersion
-			? txnForContext({ transaction: new DatabaseTransaction() })
-			: undefined;
-		const transaction = databaseTransaction
-			? databaseTransaction.getReadTxn()
-			: new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
+		const transaction = new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
 		const options = { transaction };
 		let committed = false;
 		try {
@@ -10789,33 +10770,18 @@ export function makeTable(options): TableResourceClass {
 				residencyId: current.residencyId,
 				recordNodeId: current.nodeId,
 				additionalAuditRefs: current.additionalAuditRefs,
-				transaction: undefined as any,
+				transaction,
 			};
 			// A stub has no inputs for computed indexes, so their committed entries are kept as an
 			// invalidation keeps them. The replaced body's blobs are released only once the write is known
 			// to have committed (the encoder would otherwise unlink them before a write that may still lose).
 			const preserveComputed = Boolean(current.metadataFlags & INVALIDATED);
 			const base = withoutBlobRelease(current);
-			let completion: Promise<boolean>;
-			if (primaryStore.ifVersion) {
-				const stored = updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
-				const indexUpdate = primaryStore.ifVersion(id, current.version, () => {
-					updateIndices(id, current.value, body, undefined, preserveComputed);
-					void Promise.resolve(store.put(id, deadline)).catch((error) =>
-						logger.warn?.('Error writing a replica deadline', id, error)
-					);
-				});
-				(databaseTransaction as any).commit();
-				completion = Promise.all([indexUpdate, stored]).then(([, result]) => (result as unknown) !== false);
-			} else {
-				writeOptions.transaction = transaction;
-				if (hasDerivedIndexRegistration(auditStore, tableId))
-					reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
-				updateIndices(id, current.value, body, options, preserveComputed);
-				updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
-				store.putSync(id, deadline, options);
-				completion = commitRawTransaction(transaction as RocksTransaction);
-			}
+			if (hasDerivedIndexRegistration(auditStore, tableId)) reserveLocalKey(primaryStore.rootStore, transaction);
+			updateIndices(id, current.value, body, options, preserveComputed);
+			updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
+			store.putSync(id, deadline, options);
+			const completion = commitRawTransaction(transaction);
 			committed = true;
 			return trackMaintenanceCommit(
 				completion.then(
@@ -10835,11 +10801,6 @@ export function makeTable(options): TableResourceClass {
 						return stored;
 					},
 					(error) => {
-						if (!primaryStore.ifVersion) {
-							try {
-								(transaction as any).abort();
-							} catch {}
-						}
 						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned replica write of busy record', id);
 						else logger.warn?.('Error storing replica', id, error);
 						return false;
@@ -10848,23 +10809,28 @@ export function makeTable(options): TableResourceClass {
 			);
 		} finally {
 			if (!committed) {
-				if (primaryStore.ifVersion) (databaseTransaction as any).abort?.();
-				else {
-					releaseLocalKey(transaction as RocksTransaction);
-					(transaction as any)?.abort?.();
-				}
+				releaseLocalKey(transaction);
+				transaction.abort();
 			}
 		}
 	}
 	/** A raw handle's commit under coordinated retry resolves RETRY_NOW on a conflict; that is a loss, not a commit. */
 	function commitRawTransaction(transaction: RocksTransaction): Promise<boolean> {
-		return commitTrackedRocksTransaction(transaction, primaryStore).then((result) => {
-			if (result !== RETRY_NOW_VALUE) return true;
-			try {
-				transaction.abort();
-			} catch {}
-			return false;
-		});
+		return commitTrackedRocksTransaction(transaction, primaryStore).then(
+			(result) => {
+				if (result !== RETRY_NOW_VALUE) return true;
+				try {
+					transaction.abort();
+				} catch {}
+				return false;
+			},
+			(error) => {
+				try {
+					transaction.abort();
+				} catch {}
+				throw error;
+			}
+		);
 	}
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
@@ -10887,9 +10853,8 @@ export function makeTable(options): TableResourceClass {
 	// tables before it is worker 0), so the flag and the timer are settled on every wake
 	function armReplicaEviction() {
 		replicaTableKnown = true;
-		if (disposed) return;
+		if (disposed || !replicaExpirationMs) return;
 		openReplicaDeadlines();
-		if (!replicaExpirationMs) return;
 		replicaEvictionArmed = true;
 		if (!ownsCleanup()) return;
 		Atomics.store(replicaSweep(), 1, 1);
@@ -10926,7 +10891,7 @@ export function makeTable(options): TableResourceClass {
 				replicaDeadlinesRepaired = await repairReplicaDeadlines(store);
 				complete &&= replicaDeadlinesRepaired;
 			}
-			for (const { key, value: deadline } of store.getRange({ snapshot: false })) {
+			for (const { key, value: deadline } of store.getRange()) {
 				if (disposed || maintenanceClosed || !replicaEvictionArmed) {
 					complete = false;
 					return;
@@ -10966,7 +10931,6 @@ export function makeTable(options): TableResourceClass {
 			start: true,
 			versions: true,
 			lazy: true,
-			snapshot: false,
 		}) as Iterable<Entry>) {
 			if (disposed || maintenanceClosed || !replicaEvictionArmed) return false;
 			if (entry.metadataFlags & REPLICA && store.getSync(entry.key) === undefined) {
@@ -10980,16 +10944,9 @@ export function makeTable(options): TableResourceClass {
 	}
 	/**
 	 * Delete a deadline entry whose key holds no REPLICA row, without deleting the entry of a replica
-	 * admitted meanwhile: LMDB re-reads the row inside the sync write transaction; RocksDB takes the
-	 * entry's write lock first, then re-reads the committed row and entry.
+	 * admitted meanwhile: take the entry's write lock first, then re-read the committed row.
 	 */
 	function dropOrphanDeadline(store: any, key: Id): Promise<unknown> {
-		if (primaryStore.ifVersion) {
-			store.transactionSync(() => {
-				if (!(primaryStore.getEntry(key)?.metadataFlags & REPLICA)) store.removeSync(key);
-			});
-			return Promise.resolve();
-		}
 		const transaction = new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
 		try {
 			store.removeSync(key, { transaction });
@@ -11013,8 +10970,8 @@ export function makeTable(options): TableResourceClass {
 	 * Rewrite an expired replica as the stub it was fetched over: indexed fields, created time and the
 	 * residency, identity and record expiry it already carries. No audit entry, nothing replicates. A
 	 * sweep passes the deadline it acted on; it is read again where no refresh or new admission can
-	 * interleave (LMDB: inside the write batch; RocksDB: after taking the entry's write lock, from the
-	 * committed state), so a replica renewed since the sweep read it is kept. The body's blobs are
+	 * interleave (after taking the entry's write lock, from the committed state), so a replica renewed
+	 * since the sweep read it is kept. The body's blobs are
 	 * released only once the rewrite is known to have committed.
 	 */
 	function demoteReplica(entry: Entry, transaction: any, observedDeadline?: number): Promise<unknown> {
@@ -11033,29 +10990,6 @@ export function makeTable(options): TableResourceClass {
 		const releaseBlobs = (stored: unknown) => {
 			if (stored !== false) releaseReplacedBlobs(entry);
 		};
-		if (primaryStore.ifVersion) {
-			let stored: unknown = false;
-			const demotion = primaryStore.ifVersion(entry.key, entry.version, () => {
-				if (renewed()) return;
-				stored = updateRecord(
-					entry.key,
-					stub,
-					base,
-					entry.version,
-					INVALIDATED,
-					false,
-					writeOptions,
-					'invalidate',
-					true,
-					null
-				);
-				updateIndices(entry.key, entry.value, stub, undefined, true);
-				void Promise.resolve(store?.remove(entry.key)).catch((error) =>
-					logger.warn?.('Error clearing a replica deadline', entry.key, error)
-				);
-			});
-			return demotion.then((applied) => Promise.resolve(stored).then((result) => releaseBlobs(applied && result)));
-		}
 		store?.removeSync(entry.key, { transaction });
 		if (renewed()) {
 			releaseLocalKey(transaction as RocksTransaction);

@@ -945,11 +945,8 @@ function isAuxiliaryCatalogRow(value: any): boolean {
 export function openReplicaDeadlineStore(rootStore: any, tableName: string, generation: string | undefined): any {
 	const dbiInit = createOpenDBIObject(false);
 	const key = replicaDeadlinesCatalogKey(tableName);
-	let store: any;
-	if (rootStore instanceof RocksDatabase) {
-		store = openRocksDatabase(rootStore.path, { ...dbiInit, name: storeNameFor(key, generation) } as any);
-		ownedStoresFor(rootStore)?.push(store);
-	} else store = rootStore.openDB(key, dbiInit as any);
+	const store = openRocksDatabase(rootStore.path, { ...dbiInit, name: storeNameFor(key, generation) } as any);
+	ownedStoresFor(rootStore)?.push(store);
 	return markInternalDbiNonVersioned(store);
 }
 /** The primary catalog row of a live table, under either key layout. */

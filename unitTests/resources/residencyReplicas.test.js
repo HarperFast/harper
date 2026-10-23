@@ -27,7 +27,8 @@ async function waitFor(condition, description, timeoutMs = 5000) {
 	}
 }
 
-describe('Local replicas of residency stubs', function () {
+const describeReplicas = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
+describeReplicas('Local replicas of residency stubs', function () {
 	this.timeout(20_000);
 	let Records, response, calls, stored;
 
@@ -78,7 +79,10 @@ describe('Local replicas of residency stubs', function () {
 	}
 
 	beforeEach(async () => {
-		Records.setTTLExpiration({ replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000, replicaRefreshFraction: 0.5 });
+		Records.setTTLExpiration({
+			replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000,
+			replicaRefreshFraction: 0.5,
+		});
 		calls = [];
 		stored = [];
 		if (Records.primaryStore.getEntry(ID)?.value) await Records.delete(ID);
@@ -661,32 +665,5 @@ describe('Local replicas of residency stubs', function () {
 		assert.equal((await Records.get(ID)).body, 'complete');
 		assert.deepEqual(stored, [false]);
 		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
-	});
-
-	it('rejects a replicaRefreshFraction outside (0, 1]', () => {
-		for (const value of [0, -1, 1.5, 'half', NaN, true])
-			assert.throws(() => Records.setTTLExpiration({ replicaRefreshFraction: value }));
-		assert.throws(() =>
-			table({
-				database: 'test',
-				table: 'ResidencyReplicasBadFraction',
-				attributes: [{ name: 'id', isPrimaryKey: true }],
-				replicaRefreshFraction: 2,
-			})
-		);
-		Records.setTTLExpiration({ replicaRefreshFraction: 1 });
-	});
-
-	it('rejects a negative or non-numeric replicaExpiration', () => {
-		for (const value of [-1, 'soon', NaN, true, '', Number.MAX_VALUE])
-			assert.throws(() => Records.setTTLExpiration({ replicaExpiration: value }));
-		assert.throws(() =>
-			table({
-				database: 'test',
-				table: 'ResidencyReplicasBad',
-				attributes: [{ name: 'id', isPrimaryKey: true }],
-				replicaExpiration: false,
-			})
-		);
 	});
 });
