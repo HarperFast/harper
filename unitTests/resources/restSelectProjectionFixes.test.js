@@ -413,6 +413,42 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(collectionGetTo.body[0].children.length, 2);
 		});
 
+		it('returns all related fields on single-record GET with nested wildcard child{*} and child[select(*)]', async function () {
+			const singleStarBrace = await restGet('/Parent/p1?select(child{*})');
+			assert.strictEqual(singleStarBrace.status, 200);
+			assert.deepStrictEqual(singleStarBrace.body, {
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+			});
+
+			const multiStarBrace = await restGet('/Parent/p1?select(id,child{*})');
+			assert.strictEqual(multiStarBrace.status, 200);
+			assert.deepStrictEqual(multiStarBrace.body, {
+				id: 'p1',
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+			});
+
+			const singleStarSubSelect = await restGet('/Parent/p1?select(child[select(*)])');
+			assert.strictEqual(singleStarSubSelect.status, 200);
+			assert.deepStrictEqual(singleStarSubSelect.body, {
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+			});
+
+			const instanceTrueStar = await restGet('/ParentInstanceTrue/p1?select(child{*})');
+			assert.strictEqual(instanceTrueStar.status, 200);
+			assert.deepStrictEqual(instanceTrueStar.body, {
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+			});
+
+			const toManyStar = await restGet('/Parent/p1?select(children{*})');
+			assert.strictEqual(toManyStar.status, 200);
+			assert.deepStrictEqual(toManyStar.body, {
+				children: [
+					{ id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+					{ id: 'c2', parentId: 'p1', label: 'child-label-v2' },
+				],
+			});
+		});
+
 		it('returns 400 across collection search and single-record GET when bracketed filter conditions appear in select()', async function () {
 			for (const query of [
 				'select(children[label=child-label-v1])',
@@ -526,6 +562,28 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(wholeRelRows[0].id, 'p1');
 			assert.strictEqual(wholeRelRows[0].child.id, 'c1');
 			assert.strictEqual(wholeRelRows[0].child.label, 'child-label-v1');
+		});
+
+		it('returns all related fields in searchByHash when nested select is ["*"] or "*"', async function () {
+			for (const subSelect of [['*'], '*']) {
+				const rows = [];
+				for await (const row of bridge.searchByHash({
+					schema: dbName,
+					table: 'Parent',
+					hash_values: ['p1'],
+					get_attributes: ['id', { name: 'child', select: subSelect }, { name: 'children', select: subSelect }],
+				})) {
+					rows.push(row);
+				}
+				assert.strictEqual(rows.length, 1);
+				assert.strictEqual(rows[0].id, 'p1');
+				assert.strictEqual(rows[0].child.id, 'c1');
+				assert.strictEqual(rows[0].child.parentId, 'p1');
+				assert.strictEqual(rows[0].child.label, 'child-label-v1');
+				assert.strictEqual(rows[0].children.length, 2);
+				assert.strictEqual(rows[0].children[0].id, 'c1');
+				assert.strictEqual(rows[0].children[0].label, 'child-label-v1');
+			}
 		});
 
 		it('rejects unknown top-level and nested attributes with 400 statusCode in searchByHash, searchByValue, and searchByConditions', async function () {
