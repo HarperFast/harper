@@ -15,6 +15,15 @@ const { Readable } = require('node:stream');
 const { once } = require('node:events');
 const { waitFor } = require('../../waitFor.js');
 
+async function getFreeTcpPort() {
+	const reservation = net.createServer();
+	reservation.listen(0, '127.0.0.1');
+	await once(reservation, 'listening');
+	const { port } = reservation.address();
+	await new Promise((resolve) => reservation.close(resolve));
+	return port;
+}
+
 // A Readable that emits the given chunks one per read() tick (async), then ends.
 function chunkStream(chunks) {
 	let i = 0;
@@ -552,7 +561,7 @@ function readBody(request) {
 		{ name: 'releases a paused body before draining the upload', consume: false },
 	]) {
 		it(name, async function () {
-			const port = 36000 + (process.pid % 1500);
+			const port = await getFreeTcpPort();
 			let request;
 			let bufferedBeforeReject = 0;
 			let delivered = 0;
@@ -690,11 +699,13 @@ try {
 	'uWS WebSocket adapter (createUwsServer wsHandler)',
 	function () {
 		let server;
-		const port = 34100 + (process.pid % 1500); // avoid collisions across concurrent suites
+		let port;
 		const opened = [];
 
 		before(async function () {
+			port = await getFreeTcpPort();
 			server = await createUwsServer({
+				host: '127.0.0.1',
 				port,
 				handler: async (req) => ({
 					status: 200,
@@ -773,8 +784,9 @@ try {
 		it('enforces wsMaxPayload by closing a connection that sends an oversized frame', async function () {
 			// Regression: registerWsBehavior passed `maxPayload` to app.ws(), but uWS's option key is
 			// `maxPayloadLength`, so the configured cap was silently ignored (uWS's 16 KiB default applied).
-			const cappedPort = port + 1;
+			const cappedPort = await getFreeTcpPort();
 			const cappedServer = await createUwsServer({
+				host: '127.0.0.1',
 				port: cappedPort,
 				handler: async () => ({ status: 200, body: 'http' }),
 				wsHandler: (ws) => ws.on('message', (data) => ws.send(data)),
@@ -825,8 +837,9 @@ try {
 		it('resumes a backpressured producer and releases it when the reader disconnects', async function () {
 			this.timeout(20000);
 			const connections = [];
-			const pressurePort = port + 2;
+			const pressurePort = await getFreeTcpPort();
 			const pressureServer = await createUwsServer({
+				host: '127.0.0.1',
 				port: pressurePort,
 				handler: () => ({ status: 200, body: 'http' }),
 				wsHandler: (ws) => {
