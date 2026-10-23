@@ -144,11 +144,7 @@ async function storedEntry(clientId, condition) {
 	return entry;
 }
 
-/**
- * A session away while a base copy back-fills rows with no history and reloads its table resumes unchecked:
- * on LMDB always, and on RocksDB when its position names another generation. Its replay reaches the marker,
- * which must reset it rather than wedge it, so the client can subscribe again and resynchronize.
- */
+/** Resumes unchecked: on LMDB always, on RocksDB from a position in another generation. */
 function resetsAcrossReloadWhileAway(otherGeneration) {
 	for (const [label, levels] of [
 		['root', '#'],
@@ -190,7 +186,7 @@ function resetsAcrossReloadWhileAway(otherGeneration) {
 			const third = await connect(clientId);
 			assert.ok(!third.session.sessionWasPresent, 'the reset session is gone');
 			await third.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
-			// the current-scope scan reads a string prefix's rows as array children, so only the root delivers them
+			// the retained snapshot of a string-path prefix delivers none of its rows
 			if (label === 'root') await waitFor(() => values(third.received).includes('back'));
 			await T.put('team/live', { value: 'live' });
 			await waitFor(() => values(third.received).includes('live'));

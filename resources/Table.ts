@@ -7072,8 +7072,8 @@ export function makeTable(options): TableResourceClass {
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
 			const resnapshotsReload = !request.rawEvents && databaseName !== 'system';
-			// re-snapshotted once the replayed history is sent, so no older replayed value lands after a current one
-			let replayCrossedReload = false;
+			// a re-snapshot sent before the history or snapshot in progress would be overwritten by it, so it waits
+			let reloadPending = false;
 			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
@@ -7120,6 +7120,7 @@ export function makeTable(options): TableResourceClass {
 						if (auditRecord.type === 'reload' && resnapshotsReload) {
 							// back-filled rows have no history, so a progress certificate cannot pass the marker
 							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+							if (pendingRealTimeQueue) return void (reloadPending = true);
 							return scheduleReloadResnapshot();
 						}
 						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
@@ -7198,8 +7199,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				: undefined;
 			// request.reportProgress, not reportingProgress: an LMDB consumer keeps positions it gets no certificate for
-			const refusesReload = (auditRecord: any): boolean =>
-				auditRecord.type === 'reload' && (checkResume !== undefined || (resnapshotsReload && request.reportProgress));
+			const replayRefusesReload = checkResume !== undefined || (resnapshotsReload && request.reportProgress);
 			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
 			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
 			// in subscription.queue. Without this, the IIFE can fill the queue past
@@ -7216,9 +7216,6 @@ export function makeTable(options): TableResourceClass {
 				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 				let startTime = request.startTime;
 				let recordsSinceYield = 0;
-				// a marker is table-wide, as the live broadcast delivers it
-				const inReplayScope = (auditRecord: any): boolean =>
-					thisId == null || auditRecord.type === 'reload' || isDescendantId(thisId, auditRecord.recordId);
 
 				if (isCollection) {
 					// a collection should retrieve all descendant ids
@@ -7257,10 +7254,17 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
+								const isReload = auditRecord.type === 'reload';
 								// the rows a reload back-filled have no history, so no replay can deliver them
-								if (refusesReload(auditRecord))
+								if (isReload && replayRefusesReload)
 									return void refuseReplay(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
-								if (handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
+								const resnapshots = isReload && resnapshotsReload;
+								// the cursor passes a marker only once the current scope it calls for is handed off
+								if (reloadPending && !resnapshots) {
+									reloadPending = false;
+									if (!(await sendCurrentScope())) return;
+								}
+								if (!reloadPending && handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
 									subscription!.startTime = handledTxnLogKey;
 								}
 								const id = auditRecord.recordId;
@@ -7268,8 +7272,9 @@ export function makeTable(options): TableResourceClass {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
-								if (auditRecord.type === 'reload' && resnapshotsReload) replayCrossedReload = true;
-								else if (inReplayScope(auditRecord)) {
+								// a raw marker is table-wide, as the live broadcast delivers it
+								if (resnapshots) reloadPending = true;
+								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										if (!send(event)) return;
@@ -7284,6 +7289,10 @@ export function makeTable(options): TableResourceClass {
 									}
 								}
 								handledTxnLogKey = auditRecord.txnLogKey;
+							}
+							if (reloadPending) {
+								reloadPending = false;
+								if (!(await sendCurrentScope())) return;
 							}
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
@@ -7306,7 +7315,7 @@ export function makeTable(options): TableResourceClass {
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
-								if (inReplayScope(auditRecord)) {
+								if (thisId == null || auditRecord.type === 'reload' || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
 									// ACCEPTED) — an all-deny rowFilter must not force a full walk of the retained
 									// audit log, even though it returns fewer than `count` accepted events. Counted
@@ -7320,10 +7329,10 @@ export function makeTable(options): TableResourceClass {
 										break;
 									}
 									cursorMaxTime = Math.max(cursorMaxTime, auditRecord.txnLogKey);
-									if (refusesReload(auditRecord))
-										return void refuseReplay(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 									if (auditRecord.type === 'reload' && resnapshotsReload) {
-										replayCrossedReload = true;
+										if (replayRefusesReload)
+											return void refuseReplay(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+										reloadPending = true;
 										continue;
 									}
 									const historyEntry = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
@@ -7343,6 +7352,10 @@ export function makeTable(options): TableResourceClass {
 						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
+						}
+						if (reloadPending) {
+							reloadPending = false;
+							if (!(await sendCurrentScope())) return;
 						}
 						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// In-flight pre-subscribe 'committed' callbacks may have queued duplicates of
@@ -7498,7 +7511,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					pendingRealTimeQueue = null;
 				}
-				if (replayCrossedReload) scheduleReloadResnapshot();
+				if (reloadPending) scheduleReloadResnapshot();
 				settleResume?.(isActive());
 				goLive?.();
 			})();
@@ -7595,7 +7608,13 @@ export function makeTable(options): TableResourceClass {
 					let now = Date.now();
 					for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 						start: thisId ?? false,
-						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+						// a slash-terminated id is a path prefix, whose string descendants sort below it with the slash raised to '0'
+						end:
+							thisId == null
+								? undefined
+								: typeof thisId === 'string' && thisId.endsWith('/')
+									? thisId.slice(0, -1) + '0'
+									: [thisId, MAXIMUM_KEY],
 						versions: true,
 						snapshot: false, // no need for a snapshot, just want the latest data
 					})) {
@@ -7634,10 +7653,7 @@ export function makeTable(options): TableResourceClass {
 						// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
 						// the finally re-arm won't re-loop.
 						if (!subscription.subscriptions) return;
-						for await (const record of currentScopeRecords()) {
-							if (!subscription.subscriptions) return;
-							if (!send(record)) return;
-						}
+						if (!(await sendCurrentScope())) return;
 					}
 				} catch (error) {
 					// left open, it would stay past rows it never received
@@ -7648,6 +7664,13 @@ export function makeTable(options): TableResourceClass {
 					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
 					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
 				}
+			}
+			/** Resolves false once the subscription has closed. */
+			async function sendCurrentScope(): Promise<boolean> {
+				for await (const record of currentScopeRecords()) {
+					if (!send(record)) return false;
+				}
+				return isActive();
 			}
 			function scheduleReloadResnapshot() {
 				if (!subscription.subscriptions) return;
