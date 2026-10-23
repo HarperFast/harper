@@ -154,7 +154,7 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 
 	it('removes the index keys of the record it removes when a resequenced write reused the version', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip(); // only RocksDB resequences under a reused version
-		// no tag yet: an older patch on an audit:false table only merges keys the newer record lacks
+		// seeded without tag: remainingAgainstRecord drops an older plain assignment to a key the record holds
 		await UnauditedBlobs.put({ id: 'resequenced' });
 		const { version: baseVersion } = UnauditedBlobs.primaryStore.getEntry('resequenced');
 		await UnauditedBlobs.patch('resequenced', { blob: null }, { timestamp: baseVersion + 100 });
