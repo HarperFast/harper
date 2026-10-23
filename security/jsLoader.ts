@@ -324,6 +324,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		moduleCache: Map<string, SourceTextModule | SyntheticModule | Promise<SourceTextModule | SyntheticModule>>;
 		linkingPromises: Map<string, Promise<void>>;
 		cjsCache: Map<string, { exports: any }>;
+		nativeRequires: Set<string>;
 		contextObject: any;
 		context: any;
 	};
@@ -344,11 +345,12 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			moduleCache: new Map(),
 			linkingPromises: new Map(),
 			cjsCache: new Map(),
+			nativeRequires: new Set<string>(),
 			contextObject,
 			context,
 		};
 	}
-	const { moduleCache, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
+	const { moduleCache, linkingPromises, cjsCache, nativeRequires, contextObject, context } = moduleCaches;
 
 	/**
 	 * Load a CommonJS module in our context (private or current)
@@ -425,9 +427,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			if (resolvedUrl === 'harper') {
 				return getHarperExports(scope);
 			}
-			// every cached module passed checkAllowedModulePath when it was loaded
+			// every module this scope already loaded passed checkAllowedModulePath when it was loaded
 			const cachedModule = cjsCache.get(resolvedUrl);
 			if (cachedModule) return cachedModule.exports;
+			if (nativeRequires.has(resolvedUrl)) return require(fileURLToPath(resolvedUrl));
 			const replacedModule = checkAllowedModulePath(resolvedUrl, scope.allowedPath);
 			if (replacedModule) return replacedModule;
 			if (!resolvedUrl.startsWith('file://')) return require(resolvedUrl);
@@ -439,7 +442,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			}
 			if (!shouldUseApplicationLoader(spec, resolvedUrl)) {
 				if (isApplicationLocalModule(resolvedUrl)) scope.markNativeRuntime?.();
-				return require(modulePath);
+				const nativeModule = require(modulePath);
+				nativeRequires.add(resolvedUrl);
+				return nativeModule;
 			}
 			return loadCJS(resolvedUrl, readApplicationModule(resolvedUrl)).exports;
 		};
