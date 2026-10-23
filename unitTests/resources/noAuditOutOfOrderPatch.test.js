@@ -13,6 +13,8 @@ const { waitFor } = require('../waitFor');
 // LMDB stores a merged record at the merging write's older version (harper#3388), so a later write older than the
 // original head can compare as in-order there and replace the refs; these arms hold on RocksDB only until that is fixed.
 const itUnlessVersionRewinds = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it;
+// On LMDB a patch before a same-transaction publish ties the publish's restamp and is dropped, as on main.
+const itUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it;
 
 describe('out-of-order patch on an audit:false table', () => {
 	let NoAudit;
@@ -196,6 +198,37 @@ describe('out-of-order patch on an audit:false table', () => {
 		const record = await NoAudit.get(id);
 		assert.strictEqual(record.tag, 'after-publish');
 		assert.strictEqual(record.count, 11);
+	});
+
+	itUnlessLmdb('a patch before a publish to the record in the same transaction still applies', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const context = {};
+		await transaction(context, async () => {
+			await NoAudit.patch(id, { tag: 'before-publish', count: { __op__: 'add', value: 4 } }, context);
+			await NoAudit.publish(id, { message: 'hello' }, context);
+		});
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.tag, 'before-publish');
+		assert.strictEqual(record.count, 14);
+	});
+
+	itUnlessLmdb('a replicated patch before a publish in its source transaction still applies', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const version = Date.now() + 1000;
+		const nodeId = getIdOfRemoteNode('origin-before-publish', NoAudit.auditStore);
+		const context = { source: {}, sourceApply: true, timestamp: version };
+		await transaction(context, async () => {
+			const resource = await NoAudit.getResource(id, context);
+			await resource._writeUpdate(id, { count: { __op__: 'add', value: 4 } }, false, {
+				isNotification: true,
+				nodeId,
+				version,
+			});
+			await NoAudit.publish(id, { message: 'hello' }, context);
+		});
+		assert.strictEqual((await NoAudit.get(id)).count, 14);
 	});
 
 	it('a put after a publish to the record in the same transaction replaces it', async () => {
