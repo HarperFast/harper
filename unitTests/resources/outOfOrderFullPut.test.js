@@ -4,7 +4,12 @@ const { table } = require('#src/resources/databases');
 const { existsSync } = require('node:fs');
 const { waitFor } = require('../waitFor');
 const { certifyOriginFloor, publishOriginFloor } = require('#src/resources/originClosedFloor');
-const { persistOriginClosedFloor, raiseAuditFloor } = require('#src/resources/auditStore');
+const {
+	persistOriginClosedFloor,
+	raiseAuditFloor,
+	createAuditEntry,
+	HAS_ADDITIONAL_AUDIT_REFS,
+} = require('#src/resources/auditStore');
 const { getFileId, getFilePathForBlob, isSaving, setDeletionDelay } = require('#src/resources/blob');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -260,6 +265,7 @@ for (const loadAsInstance of [true, false]) {
 			const context = { timestamp: timestamp + 20 };
 			await transaction(context, async () => {
 				await T.patch('frame', { b: 'first', first: true, counter: { __op__: 'add', value: 5 } }, context);
+				await T.publish(null, { message: 'root topic' }, context);
 				await T.patch('frame', { b: 'last', d: 'second', counter: { __op__: 'add', value: 7 } }, context);
 			});
 			await T.put('frame', { a: 'replacement', counter: 100 }, { timestamp: timestamp + 10 });
@@ -337,6 +343,90 @@ for (const loadAsInstance of [true, false]) {
 					a: 'replacement',
 				}
 			);
+		});
+
+		it('preserves a newer sibling whose record ID cannot be decoded', async function () {
+			if (!isLMDB) return this.skip();
+			const id = 'aaaaaaaaaa';
+			const timestamp = (nextTimestamp += 1000);
+			await T.put(id, { c: 'retained' }, { timestamp });
+			const context = { timestamp: timestamp + 20 };
+			await transaction(context, async () => {
+				await T.patch(id, { b: 'first' }, context);
+				await T.patch(id, { d: 'last' }, context);
+			});
+			const key = T.primaryStore.getEntry(id).localTime;
+			const entry = T.auditStore.get(key);
+			const encoded = Buffer.from(entry.encoded);
+			const idOffset = encoded.indexOf(id);
+			assert.ok(idOffset >= 0);
+			Buffer.from('13195fb7a854cde125e9', 'hex').copy(encoded, idOffset);
+			await T.auditStore.put(key, encoded);
+			const corrupt = T.auditStore.get(key);
+			assert.equal(corrupt.type, 'patch');
+			assert.equal(corrupt.recordId, undefined);
+			assert.deepStrictEqual({ ...corrupt.getValue(T.primaryStore) }, { d: 'last' });
+			await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, c: 'retained', b: 'first', d: 'last', a: 'replacement' });
+		});
+
+		it('preserves a newer sibling whose version is not finite', async function () {
+			if (!isLMDB) return this.skip();
+			const id = 'bad-version';
+			const timestamp = (nextTimestamp += 1000);
+			await T.put(id, { c: 'retained' }, { timestamp });
+			const context = { timestamp: timestamp + 20 };
+			await transaction(context, async () => {
+				await T.patch(id, { b: 'first' }, context);
+				await T.patch(id, { d: 'last' }, context);
+			});
+			const first = [...T.auditStore.getRange({ start: 0, end: Infinity })].find(
+				(entry) =>
+					entry.tableId === T.tableId &&
+					entry.recordId === id &&
+					entry.type === 'patch' &&
+					entry.getValue(T.primaryStore).b === 'first'
+			);
+			assert.ok(first);
+			const encoded = Buffer.from(first.encoded);
+			const versionBytes = Buffer.alloc(8);
+			versionBytes.writeDoubleBE(timestamp + 20);
+			const offset = encoded.indexOf(versionBytes);
+			assert.ok(offset >= 0);
+			encoded.writeDoubleBE(NaN, offset);
+			await T.auditStore.put(first.key, encoded);
+			assert.ok(Number.isNaN(T.auditStore.get(first.key).version));
+			await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, c: 'retained', b: 'first', d: 'last', a: 'replacement' });
+		});
+
+		it('keeps the merge when an audit branch has an unreadable clock', async function () {
+			if (!isLMDB) return this.skip();
+			const id = 'bad-reference';
+			const timestamp = (nextTimestamp += 1000);
+			await T.put(id, { c: 'retained' }, { timestamp });
+			await T.patch(id, { b: 'newer' }, { timestamp: timestamp + 20 });
+			const key = T.primaryStore.getEntry(id).localTime;
+			const entry = T.auditStore.get(key);
+			await T.auditStore.put(
+				key,
+				Buffer.from(
+					createAuditEntry({
+						version: entry.version,
+						tableId: T.tableId,
+						recordId: id,
+						nodeId: 0,
+						type: 'patch',
+						previousVersion: entry.previousVersion,
+						extendedType: HAS_ADDITIONAL_AUDIT_REFS,
+						previousAdditionalAuditRefs: [{ version: NaN, nodeId: 0 }],
+						encodedRecord: entry.getBinaryValue(),
+					})
+				)
+			);
+			assert.ok(Number.isNaN(T.auditStore.get(key).previousAdditionalAuditRefs[0].version));
+			await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, c: 'retained', b: 'newer', a: 'replacement' });
 		});
 
 		it('replays equal-version origins in the existing node-name order', async function () {

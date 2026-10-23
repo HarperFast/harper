@@ -5163,10 +5163,13 @@ export function makeTable(options): TableResourceClass {
 							const visitedAuditRefs = new Set<string>();
 							const visitedAuditVersions = fullUpdate && isRocksDB ? new Set<string>() : null;
 							let isAdditionalAuditRef = false;
+							let auditHistoryMissing =
+								fullUpdate && auditRefsToVisit.some((ref) => !Number.isFinite(ref.localTime) || ref.localTime < 0);
 							const queuePreviousAuditRefs = (auditRecord) => {
 								const previousRefs = auditRecord.previousAdditionalAuditRefs;
 								if (previousRefs) {
 									for (const ref of previousRefs) {
+										if (fullUpdate && (!Number.isFinite(ref.version) || ref.version < 0)) auditHistoryMissing = true;
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
 											version: ref.version,
@@ -5183,10 +5186,11 @@ export function makeTable(options): TableResourceClass {
 										: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
 								localTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
+								if (fullUpdate && localTime != null && (!Number.isFinite(localTime) || localTime < 0))
+									auditHistoryMissing = true;
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
-							let auditHistoryMissing = false;
 							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
 							// throwaway copy of this write purely to detect when every field has been overwritten by
 							// newer writes. When it empties — and there is no alternate audit branch — the write is
@@ -5241,7 +5245,7 @@ export function makeTable(options): TableResourceClass {
 										break;
 									}
 									isAdditionalAuditRef = false;
-									if (!auditRecord.type || auditRecord.version == null) auditHistoryMissing = true;
+									if (!auditRecord.type || !Number.isFinite(auditRecord.version)) auditHistoryMissing = true;
 									visitedAuditVersions?.add(`${auditRecord.nodeId ?? 0}:${auditRecord.version}`);
 									queuePreviousAuditRefs(auditRecord);
 									if (
@@ -5397,14 +5401,18 @@ export function makeTable(options): TableResourceClass {
 										: { start: update.logKey, reverse: true };
 									for (const entry of auditStore.getRange(frameRange)) {
 										if (isRocksDB && entry.txnLogKey !== update.logKey) break;
-										if (!entry.type || entry.version == null) auditHistoryMissing = true;
+										if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
 										if (!isRocksDB && entry.version !== update.version) break;
 										if ((isRocksDB ? ++walkSteps : ++frameSteps) > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
 											if (isRocksDB) auditWalkCapped = true;
 											else auditHistoryMissing = true;
 											break;
 										}
-										if (entry.tableId === tableId && entry.recordId === id) {
+										const matchesTable = entry.tableId === tableId;
+										const entryId = matchesTable ? entry.recordId : undefined;
+										// Control entries use null; an undecodable ID is undefined.
+										if (matchesTable && entryId === undefined) auditHistoryMissing = true;
+										if (matchesTable && entryId === id) {
 											foundRecord = true;
 											if (collectedKeys?.has(entry.txnLogKey)) continue;
 											collectedKeys?.add(entry.txnLogKey);
