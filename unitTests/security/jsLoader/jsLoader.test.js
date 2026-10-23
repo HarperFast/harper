@@ -808,18 +808,26 @@ for (const mode of ['vm-current-context', 'vm']) {
 
 		it('require() keeps the route import() chose for a file reached by another specifier', async () => {
 			const probePath = writePackage('imported-probe');
+			const pendingProbePath = writePackage('pending-probe');
 			writeFileSync(
-				join(runtimeRoot, 'entry.cjs'),
-				'exports.load = async () => ({\n' +
-					"\timported: (await import('imported-probe')).default,\n" +
-					"\trequired: require('./node_modules/imported-probe/index.js'),\n" +
-					'});\n'
+				join(runtimeRoot, 'entry.mjs'),
+				"export { default as imported } from 'imported-probe';\n" +
+					"export { default as pendingImport } from 'pending-probe';\n" +
+					"export { required, pendingRequired } from './requires.cjs';\n"
 			);
-			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
-			const { imported, required } = await result.load();
-			expect(imported).to.equal(require(probePath));
-			expect(required).to.equal(imported);
+			// linked after both native imports start, and evaluated at link time, before they settle
+			writeFileSync(
+				join(runtimeRoot, 'requires.cjs'),
+				"exports.pendingRequired = require('./node_modules/pending-probe/index.js');\n" +
+					"exports.required = () => require('./node_modules/imported-probe/index.js');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.imported).to.equal(require(probePath));
+			expect(result.required()).to.equal(result.imported);
+			expect(result.pendingImport).to.equal(require(pendingProbePath));
+			expect(result.pendingRequired).to.equal(result.pendingImport);
 			expect(loadedModules.has(loadedUrl(probePath))).to.equal(false);
+			expect(loadedModules.has(loadedUrl(pendingProbePath))).to.equal(false);
 		});
 
 		it('still strips TypeScript types from an imported ESM .ts file', async () => {
