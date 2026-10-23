@@ -40,6 +40,38 @@ function runWithIsolatedRoot(mode, code) {
 }
 
 describe('TypeStrip runtime boundaries', () => {
+	it('initializes model persistence after cold core imports', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+			for (const entry of [
+				'server/threads/manageThreads',
+				'utility/environment/environmentManager',
+				'resources/DatabaseTransaction',
+			]) {
+				for (const readOnly of [false, true]) {
+					const output = runWithIsolatedRoot(
+						mode,
+						`
+						const assert = (await import('node:assert')).default;
+						process.env.HARPER_READONLY = ${JSON.stringify(readOnly ? '1' : '0')};
+						await import(${JSON.stringify(runtimeUrl(entry))});
+						const { getDecisionStore, DecisionPersistenceError } = await import(${JSON.stringify(runtimeUrl('resources/models/decisionStore'))});
+						const store = getDecisionStore();
+						assert.strictEqual(getDecisionStore(), store);
+						if (${readOnly}) {
+							assert.throws(() => store.assertWritable('Decisions'), error => error instanceof DecisionPersistenceError && error.statusCode === 503);
+						} else store.assertWritable('Decisions');
+						console.log('cold model persistence initialized');
+					`
+					);
+					assert.strictEqual(output, 'cold model persistence initialized', mode + ':' + entry + ':' + readOnly);
+				}
+			}
+		}
+	});
+
 	it('selects direct JSON codecs before serving REST and subscription messages', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			for (const bigint of [false, true]) {

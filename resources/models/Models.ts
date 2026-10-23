@@ -104,13 +104,13 @@ type MetricEmitter = (value: number, metric: string, path?: string) => void;
 export class Models implements ModelsContract {
 	#analyticsWriter: ModelCallAnalyticsWriter;
 	#emit: MetricEmitter;
-	#decisionStore: DecisionStore;
+	#decisionStore: DecisionStore | undefined;
 
 	constructor(
 		analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter(),
 		// DI'd for unit tests; production wires up the module-scope `recordAction`.
 		metricEmitter: MetricEmitter = recordAction,
-		decisionStore: DecisionStore = getDecisionStore()
+		decisionStore?: DecisionStore
 	) {
 		this.#analyticsWriter = analyticsWriter;
 		this.#emit = metricEmitter;
@@ -350,7 +350,7 @@ export class Models implements ModelsContract {
 		if (opts.persist !== undefined && typeof opts.persist !== 'boolean')
 			throw new DecisionInputError('persist must be a boolean');
 		const persist = opts.persist === true;
-		if (persist) this.#decisionStore.assertWritable('Decisions');
+		if (persist) (this.#decisionStore ??= getDecisionStore()).assertWritable('Decisions');
 		// the call and its record share one snapshot of the schema and options; nothing the caller mutates afterwards reaches either
 		const call = snapshotSchema(schema);
 		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
@@ -530,7 +530,7 @@ export class Models implements ModelsContract {
 
 	async getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
 		checkDecisionId(id);
-		return (await this.#decisionStore.get(id, resolveCallContext().accounting.tenantId)) as
+		return (await (this.#decisionStore ??= getDecisionStore()).get(id, resolveCallContext().accounting.tenantId)) as
 			DecisionRecord<T> | undefined;
 	}
 
@@ -550,7 +550,7 @@ export class Models implements ModelsContract {
 
 	async recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
 		checkDecisionId(id);
-		return (await this.#decisionStore.recordOutcome(
+		return (await (this.#decisionStore ??= getDecisionStore()).recordOutcome(
 			id,
 			outcome,
 			resolveCallContext().accounting.tenantId
@@ -602,7 +602,7 @@ export class Models implements ModelsContract {
 			row.calibration = calibration.applied.snapshot;
 		}
 		try {
-			await this.#decisionStore.persist(row);
+			await (this.#decisionStore ??= getDecisionStore()).persist(row);
 		} catch (err) {
 			// the fault stays on `cause`: its message can name a data path and this error can reach an HTTP body
 			const error = new DecisionPersistenceError('Decision could not be recorded');
