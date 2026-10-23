@@ -5,7 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const { pipeline } = require('node:stream/promises');
-const { Readable } = require('node:stream');
+const { Readable, Writable } = require('node:stream');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -17,6 +17,7 @@ const {
 	scanPackageDirectory,
 } = require('#src/components/packageComponent');
 const { PACKAGE_ROOT } = require('#src/utility/packageUtils');
+const { _symlinkHarperModuleForTests } = require('#src/components/componentLoader');
 const { buildMultipartBody } = require('#src/bin/multipartBuilder');
 const { parseMultipartRequest } = require('#src/server/serverHelpers/multipartParser');
 const gunzip = require('gunzip-maybe');
@@ -328,6 +329,176 @@ describe('streamPackagedDirectory round-trip', () => {
 		} finally {
 			await fs.rm(aliasDir, { recursive: true, force: true });
 		}
+	});
+
+	describe('a node_modules/harperdb link to the install (harper#2577)', () => {
+		const rootLink = path.join('node_modules', 'harperdb');
+		const pluginLink = path.join('node_modules', 'plugin', 'node_modules', 'harperdb');
+		const chainedLink = path.join('node_modules', 'chained', 'node_modules', 'harperdb');
+		const pluginHarperLink = path.join('node_modules', 'plugin', 'node_modules', 'harper');
+		const linkedElsewhere = path.join('node_modules', 'linked', 'node_modules', 'harperdb');
+		const placeholders = [rootLink, pluginLink, chainedLink];
+		const archiveName = (rel) => rel.split(path.sep).join('/');
+		const discard = () => new Writable({ write: (chunk, encoding, callback) => callback() });
+
+		// The link the loader gives a legacy component's `harperdb` once it has been loaded, at the root and
+		// under a `package:` sub-component, plus the chained form it also accepts as already linked.
+		async function makeLegacyFixture(aliasDir) {
+			const sourceDir = await makeFixture({
+				'index.js': 'x\n',
+				'node_modules/plugin/index.js': 'plugin\n',
+				'node_modules/plugin/node_modules/dep/index.js': 'dep\n',
+				'zz-after.js': 'sorts after node_modules\n',
+				// An npm-installed harperdb under a package nothing loads as a component: the loader never replaces it.
+				'node_modules/lib/node_modules/harperdb/index.js': 'npm copy\n',
+				'vendor/harperdb/index.js': 'vendored\n',
+			});
+			const realSourceDir = await fs.realpath(sourceDir);
+			const links = {
+				[rootLink]: PACKAGE_ROOT,
+				[pluginLink]: PACKAGE_ROOT,
+				[pluginHarperLink]: PACKAGE_ROOT,
+				[chainedLink]: path.join(aliasDir, 'harperdb'),
+				[linkedElsewhere]: path.join(realSourceDir, 'vendor', 'harperdb'),
+			};
+			for (const [link, target] of Object.entries(links)) {
+				await fs.mkdir(path.dirname(path.join(realSourceDir, link)), { recursive: true });
+				await fs.symlink(target, path.join(realSourceDir, link), 'dir');
+			}
+			return { sourceDir, realSourceDir };
+		}
+
+		async function withLegacyFixture(run) {
+			const aliasDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-install-alias-'));
+			await fs.symlink(PACKAGE_ROOT, path.join(aliasDir, 'harperdb'), 'dir');
+			const fixture = await makeLegacyFixture(aliasDir);
+			try {
+				await run(fixture.sourceDir, fixture.realSourceDir);
+			} finally {
+				await fs.rm(fixture.sourceDir, { recursive: true, force: true });
+				await fs.rm(aliasDir, { recursive: true, force: true });
+			}
+		}
+
+		it('ships an empty directory in its place, at the root and under a loaded package, under every option', async function () {
+			this.timeout(60000);
+			await withLegacyFixture(async (sourceDir, realSourceDir) => {
+				for (const options of [{}, { skip_symlinks: true }]) {
+					const scan = await scanPackageDirectory(sourceDir, options);
+					assert.ok(scan.totalSize < 100_000, `${JSON.stringify(options)}: estimate walked the install`);
+					assert.deepStrictEqual(
+						[...scan.installLinks].sort(),
+						[...placeholders, pluginHarperLink].sort(),
+						JSON.stringify(options)
+					);
+					const buffered = await packageDirectory(sourceDir, options);
+					for (const source of ['stream', 'known scan', 'buffer']) {
+						const label = `${JSON.stringify(options)} ${source}`;
+						const entries = await archiveEntries(
+							source === 'buffer'
+								? Readable.from(buffered)
+								: streamPackagedDirectory(sourceDir, options, undefined, source === 'known scan' ? scan : undefined)
+						);
+						for (const link of placeholders) {
+							const name = archiveName(link);
+							const entry = entries.get(name);
+							assert.strictEqual(entry?.type, 'directory', `${label}: ${name} must be a directory`);
+							assert.strictEqual(entry.mode & 0o777, 0o755, `${label}: ${name} mode`);
+							assert.ok(!entry.linkname, `${label}: ${name} carries a link target`);
+							assert.ok(![...entries.keys()].some((n) => n.startsWith(name + '/')), `${label}: ${name} has content`);
+						}
+						assert.ok(
+							[...entries.values()].every((entry) => !entry.linkname?.includes(PACKAGE_ROOT)),
+							`${label}: an entry carries the packaging host's install path`
+						);
+						// The loader makes `harper` unconditionally, so it needs no marker.
+						assert.ok(!entries.has(archiveName(pluginHarperLink)), `${label}: ${pluginHarperLink} was packed`);
+						assert.strictEqual(entries.get('zz-after.js')?.content, 'sorts after node_modules\n', label);
+						assert.strictEqual(entries.get('node_modules/plugin/node_modules/dep/index.js')?.content, 'dep\n', label);
+						assert.strictEqual(entries.get('node_modules/lib/node_modules/harperdb/index.js')?.content, 'npm copy\n');
+						if (options.skip_symlinks) {
+							const literal = entries.get(archiveName(linkedElsewhere));
+							assert.strictEqual(literal?.type, 'symlink', label);
+							assert.strictEqual(literal.linkname, path.join(realSourceDir, 'vendor', 'harperdb'), label);
+						} else {
+							assert.strictEqual(entries.get(`${archiveName(linkedElsewhere)}/index.js`)?.content, 'vendored\n', label);
+						}
+						const packedBytes = [...entries.values()].reduce((sum, e) => sum + (e.type === 'file' ? e.size : 0), 0);
+						assert.strictEqual(scan.totalSize, packedBytes, `${label}: the estimate is what was packed`);
+					}
+				}
+			});
+		});
+
+		it('ships nothing there when node_modules is skipped', async function () {
+			this.timeout(30000);
+			await withLegacyFixture(async (sourceDir) => {
+				for (const options of [{ skip_node_modules: true }, { skip_node_modules: true, skip_symlinks: true }]) {
+					const scan = await scanPackageDirectory(sourceDir, options);
+					assert.deepStrictEqual(scan.installLinks, [], JSON.stringify(options));
+					const names = [...(await archiveEntries(streamPackagedDirectory(sourceDir, options))).keys()];
+					assert.ok(!names.some((n) => n.startsWith('node_modules')), `${JSON.stringify(options)}: ${names}`);
+					assert.ok(names.includes('index.js'));
+				}
+			});
+		});
+
+		it('leaves the loader something to relink on a fresh extraction, where leaving the path out would not', async function () {
+			this.timeout(30000);
+			const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-harperdb-extract-'));
+			const bareDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-harperdb-bare-'));
+			try {
+				await withLegacyFixture(async (sourceDir) => {
+					await pipeline(streamPackagedDirectory(sourceDir), gunzip(), tar.extract(extractDir));
+				});
+				for (const link of placeholders) {
+					assert.ok((await fs.lstat(path.join(extractDir, link))).isDirectory(), `${link} extracted as a directory`);
+					assert.deepStrictEqual(await fs.readdir(path.join(extractDir, link)), []);
+				}
+				const installRoot = await fs.realpath(PACKAGE_ROOT);
+				for (const componentDirectory of [extractDir, path.join(extractDir, 'node_modules', 'plugin')]) {
+					await _symlinkHarperModuleForTests(componentDirectory);
+					assert.strictEqual(
+						await fs.realpath(path.join(componentDirectory, 'node_modules', 'harperdb')),
+						installRoot,
+						`${componentDirectory} was not relinked`
+					);
+				}
+				// The loader only repairs a path that exists: an archive that left the path out gets no harperdb.
+				await _symlinkHarperModuleForTests(bareDir);
+				assert.strictEqual(await fs.realpath(path.join(bareDir, 'node_modules', 'harper')), installRoot);
+				await assert.rejects(fs.lstat(path.join(bareDir, 'node_modules', 'harperdb')), { code: 'ENOENT' });
+			} finally {
+				await fs.rm(extractDir, { recursive: true, force: true });
+				await fs.rm(bareDir, { recursive: true, force: true });
+			}
+		});
+
+		it('still finishes, fails, or stops cleanly now that the archive is finalized by hand', async function () {
+			this.timeout(30000);
+			await withLegacyFixture(async (sourceDir) => {
+				await pipeline(
+					streamPackagedDirectory(sourceDir),
+					gunzip(),
+					tar.extract(await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-eof-')))
+				);
+
+				// A missing directory is the walk's own error, not an empty archive finalized over it.
+				await assert.rejects(pipeline(streamPackagedDirectory(path.join(sourceDir, 'gone')), discard()), {
+					code: 'ENOENT',
+				});
+
+				// A consumer that leaves early, before or after the walk starts, must not leave the packer running.
+				for (const readFirst of [false, true]) {
+					const stream = streamPackagedDirectory(sourceDir);
+					const closed = new Promise((resolve) => stream.once('close', resolve));
+					if (readFirst) await new Promise((resolve) => stream.once('data', resolve));
+					stream.destroy();
+					await closed;
+					await new Promise((resolve) => setTimeout(resolve, 100));
+				}
+			});
+		});
 	});
 
 	it("leaves out the component's own deployment provenance, and keeps a file of that name deeper down", async function () {
