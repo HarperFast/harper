@@ -332,8 +332,6 @@ describe('sharedMessageEncoding – pass-through messages', function () {
 		assert.strictEqual(share({ contentType: 'text/x-custom', data: 'text' }).payload, 'text');
 	});
 
-	// A table can declare attributes named contentType and data; such a record is not an envelope, and
-	// delivering its object `data` raw makes mqtt-packet throw.
 	it('negotiates for a record whose data is not text or bytes', function () {
 		const records = [{ a: 1 }, 5, 0, [1, 2], true].map((data, id) => ({ id, contentType: 'x', data }));
 
