@@ -4981,7 +4981,7 @@ export function makeTable(options): TableResourceClass {
 					// from the last attempt's skipped state launders when a recommit round self-skips
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
-					// A log hit cannot prove this retry's write committed: another handle may have abandoned its entry.
+					// The keyed probes are not commit evidence on a retry. A walk can skip only on links from committed state.
 					const ownEntryMayBeReadable = stagedOwnAuditEntry && write.appendedTo !== transaction;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
@@ -5175,8 +5175,8 @@ export function makeTable(options): TableResourceClass {
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard. A same-write retry skips this lookup because
-							// an audit entry from its prior attempt may be an orphan.
+							// check above remains the read-your-writes guard. Same-write retries skip this keyed probe because
+							// a matching log entry is not proof that their record mutation committed.
 							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
 								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
@@ -5229,14 +5229,14 @@ export function makeTable(options): TableResourceClass {
 							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
-							let walkOriginKnown = true;
+							let walkOriginKnown = !priorStaged;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number; originKnown: boolean }> =
 								existingEntry.additionalAuditRefs
 									? existingEntry.additionalAuditRefs.map((ref) => ({
 											localTime: ref.version,
 											nodeId: ref.nodeId,
-											originKnown: true,
+											originKnown: !priorStaged,
 										}))
 									: [];
 
@@ -5285,7 +5285,7 @@ export function makeTable(options): TableResourceClass {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
-							// Not for a same-write retry: its prior audit entry may be an orphan.
+							// Not for a same-write retry: a log hit does not prove its record mutation committed.
 							const isReDeliveredDuplicate = () => {
 								if (replaying || stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
@@ -5348,7 +5348,7 @@ export function makeTable(options): TableResourceClass {
 													// is the write itself, not proof that its primary-store mutation committed.
 													precedesExisting = 1;
 												} else if (stagedOwnAuditEntry && !walkOriginKnown) {
-													precedesExisting = -1;
+													precedesExisting = 1;
 												} else {
 													logger.debug?.(
 														'The transaction time and log key match the existing write, treating as duplicate',

@@ -232,6 +232,35 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		assert.equal((await state.T.get('counter')).count, 1);
 	});
 
+	it('does not authenticate a prior staged same-key write as committed retry provenance', async function () {
+		if (isLMDB) return this.skip();
+		const version = Date.now() + 86400000;
+		const { T, apply } = await fixture('PriorStagedRetry', version);
+		const originId = getIdOfRemoteNode('duplicate-origin', T.auditStore);
+		let native;
+		let writes;
+		await apply(add(1), { version }, async (txn, context) => {
+			const first = txn.writes.find((write) => write.key === 'counter');
+			await txn.save(first);
+			const resource = await T.getResource('counter', context);
+			await resource._writeUpdate('counter', add(2), false, {
+				isNotification: true,
+				nodeId: originId,
+				version,
+			});
+			writes = txn.writes.filter((write) => write.key === 'counter');
+			await txn.save(writes[1]);
+			native = txn.transaction;
+			await apply(add(10), { version: version + 1 });
+		});
+		assert.ok(native.retries > 0, 'the newer write must force the same-key transaction to retry');
+		assert.ok(
+			writes.every((write) => !write.skipped),
+			'both ordered writes must be applied on retry'
+		);
+		assert.equal((await T.get('counter')).count, 13);
+	});
+
 	it('skips a committed duplicate reached through a known-origin audit ref on retry', async function () {
 		if (isLMDB) return this.skip();
 		const version = Date.now() + 86400000;
@@ -457,6 +486,26 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		assert.equal(write.skipped, false, 'different numeric origins must not count as the same write');
 		assert.equal((await state.T.get('counter')).count, 2);
 	});
+
+	for (const [label, record, fullUpdate] of [
+		['plain-field patch', { count: 1 }, false],
+		['full put', { id: 'counter', count: 1 }, true],
+	]) {
+		it(`applies an ambiguous retry ${label} instead of treating an origin tie as committed identity`, async function () {
+			if (isLMDB) return this.skip();
+			const version = Date.now() + 86400000;
+			const state = await fixture(`AmbiguousRetry${label.replaceAll(' ', '')}`, version);
+			const { write } = await conflict(
+				state,
+				record,
+				{ version, originId: 35, fullUpdate },
+				{ version, originId: 36, fullUpdate },
+				label === 'full put' ? { id: 'counter', count: 2 } : { count: 2 }
+			);
+			assert.equal(write.skipped, false);
+			assert.ok((await state.T.get('counter')).count > 0);
+		});
+	}
 
 	it('does not mistake its own staged counter for committed state when another key conflicts', async function () {
 		if (isLMDB) return this.skip();

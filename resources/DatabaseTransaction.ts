@@ -2807,8 +2807,8 @@ export class DatabaseTransaction implements Transaction {
 							try {
 								for (const operation of this.writes) {
 									if (!operation?.saved) continue;
-									// a staging into the abandoned handle left no entry behind, so this first submission
-									// must not be treated as a retry over its own orphan
+									// A non-durable abandoned handle left no readable audit entry; a durable one may
+									// have published its log and must retain the retry shield.
 									if (operation.appendedTo === abandoned && !abandonedLogged) {
 										operation.appendedAuditEntry = false;
 										operation.appendedTo = undefined;
