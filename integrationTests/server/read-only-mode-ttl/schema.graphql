@@ -1,0 +1,11 @@
+# Per-record expiresAt, with an eviction window, keeps the expired row resident for the test to find.
+type Session @table(database: "readonlyttl", expiration: 3600, eviction: 3600) @export {
+	id: ID @primaryKey
+	name: String @indexed
+	expiresAt: Float @expiresAt
+}
+
+type Plain @table(database: "readonlyttl") @export {
+	id: ID @primaryKey
+	name: String
+}

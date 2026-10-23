@@ -4215,7 +4215,7 @@ export function makeTable(options): TableResourceClass {
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
 		static evict(id, existingRecord, existingVersion, observedDeadline?: number) {
-			if (maintenanceClosed) return Promise.resolve();
+			if (maintenanceClosed || isReadOnlyMode()) return Promise.resolve();
 			let entry;
 			let removedRecordWithBlobs;
 			// Raw on RocksDB: this method commits or aborts the handle itself, and its catch expects a conflict
@@ -9550,6 +9550,14 @@ export function makeTable(options): TableResourceClass {
 			}
 		} else if (entry?.value) {
 			if (hasExpired(entry)) {
+				// no eviction here, and nulling the shared cached entry would not hide it from LMDB's weak reference
+				if (isReadOnlyMode()) {
+					return {
+						then(callback) {
+							return callback(undefined);
+						},
+					};
+				}
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
 				entry.value = null;
@@ -10391,7 +10399,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
 		// a reclamation run may still hold this class's handler after cleanup(); a promise here would never settle
-		if (disposed || maintenanceClosed) return;
+		if (disposed || maintenanceClosed || isReadOnlyMode()) return;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority
@@ -10547,6 +10555,7 @@ export function makeTable(options): TableResourceClass {
 		});
 	}
 	function runRecordExpirationEviction() {
+		if (isReadOnlyMode()) return;
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
