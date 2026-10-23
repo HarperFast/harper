@@ -1002,7 +1002,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				subscription.registeredThrough === undefined ? undefined : subscription.databaseGeneration;
 			state = newTopicState({ qos: subscription.qos, topic: subscription.topic, startTime, databaseGeneration });
 			this.topics.set(subscription.topic, state);
-		} else if (state.subscription) {
+		} else {
 			const replaced = state;
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
 			this.topics.set(subscription.topic, state);

@@ -1551,6 +1551,142 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		second.handlers.close();
 	});
 
+	describe('a restored topic whose resume found no live subscription', () => {
+		async function subscribeAt(socket, topic, qos, messageId) {
+			socket.handlers.message(generate({ cmd: 'subscribe', messageId, subscriptions: [{ topic, qos, rh: 2 }] }, v5));
+			await waitFor(() => ofCommand(socket, 'suback').some((packet) => packet.messageId === messageId));
+			assert.deepStrictEqual(ofCommand(socket, 'suback').find((packet) => packet.messageId === messageId).granted, [
+				qos,
+			]);
+		}
+		/** Reconnects a saved session while its resource subscribes to nothing, leaving the topic restored but not live. */
+		async function reconnectWithoutSubscription(open, T, name, clientId, topic) {
+			let attempts = 0;
+			// the table's own audit store, so the saved receipts still name this database generation
+			class Silent extends T {
+				static subscribe() {
+					attempts++;
+				}
+			}
+			Resources.resources.set(name, Silent, { mqtt: true }, true);
+			let socket;
+			try {
+				socket = await openConnected(open, clientId);
+				await waitFor(() => attempts > 0);
+				const session = [...open.sessions].find((session) => session.sessionId === clientId);
+				await session.changes;
+				const restored = session.topics.get(topic);
+				assert.ok(restored, 'the topic is restored');
+				assert.strictEqual(restored.subscription, undefined, 'and has no live subscription');
+				return { socket, session, restored };
+			} finally {
+				Resources.resources.set(name, T, { mqtt: true }, true);
+			}
+		}
+		/** A QoS 2 session holding a delivery awaiting its PUBREC (`a`) behind one whose PUBREC arrived (`b`). */
+		async function savedQoS2(open, T, clientId, topic) {
+			const socket = await subscribed(open, clientId, topic);
+			await T.put('a', { value: 'a' });
+			await T.put('b', { value: 'b' });
+			await waitFor(() => published(socket, 'b'));
+			const a = published(socket, 'a');
+			socket.handlers.message(generate({ cmd: 'pubrec', messageId: published(socket, 'b').messageId }, v5));
+			await waitFor(() => ofCommand(socket, 'pubrel').length === 1);
+			await storedEntry(clientId, (entry) => entry.receivedRuns?.length > 0 && entry.inFlight?.length > 0);
+			socket.handlers.close();
+			return a;
+		}
+
+		it('releases its receipts and packet ids when it is subscribed again at QoS 1', async () => {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const open = mqttListener();
+			const topic = `${name}/#`;
+			const clientId = `qos2-to-1-${name}`;
+			const a = await savedQoS2(open, T, clientId, topic);
+			const { socket, session, restored } = await reconnectWithoutSubscription(open, T, name, clientId, topic);
+			try {
+				assert.strictEqual(restored.entry.qos, 2);
+				assert.ok(session.receivedCount > 0, 'receipts are restored');
+				assert.ok(session.reservedIds.has(a.messageId), 'and the id of the delivery awaiting its PUBREC is reserved');
+				await subscribeAt(socket, topic, 1, 2);
+				assert.strictEqual(session.topics.get(topic).entry.qos, 1);
+				assert.strictEqual(session.receivedCount, 0);
+				assert.ok(!session.reservedIds.has(a.messageId));
+				const saved = (await stored(clientId)).subscriptions[0];
+				assert.strictEqual(saved.qos, 1);
+				for (const field of ['received', 'receivedRuns', 'receivedThrough', 'inFlight', 'receiptsGeneration'])
+					assert.strictEqual(saved[field], undefined, `${field} is not saved for a QoS 1 topic`);
+			} finally {
+				socket.handlers.close();
+			}
+		});
+
+		it('tracks its deliveries for PUBREC when it is subscribed again at QoS 2', async () => {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const open = mqttListener();
+			const topic = `${name}/#`;
+			const clientId = `qos1-to-2-${name}`;
+			const first = await openConnected(open, clientId);
+			await subscribeAt(first, topic, 1, 1);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => published(first, 'a'));
+			first.handlers.message(generate({ cmd: 'puback', messageId: published(first, 'a').messageId }, v5));
+			await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined || !isRocksDB);
+			first.handlers.close();
+			const { socket: second, session, restored } = await reconnectWithoutSubscription(open, T, name, clientId, topic);
+			assert.strictEqual(restored.entry.qos, 1);
+			await subscribeAt(second, topic, 2, 2);
+			assert.strictEqual(session.topics.get(topic).entry.qos, 2);
+			await T.put('c', { value: 'c' });
+			const sent = await waitFor(() => published(second, 'c'));
+			assert.strictEqual(sent.qos, 2);
+			session.checkpoint();
+			const saved = await storedEntry(clientId, (entry) => entry.qos === 2 && entry.inFlight?.length > 0);
+			assert.strictEqual(saved.inFlight[0][3], sent.messageId, 'the delivery awaiting its PUBREC is saved');
+			second.handlers.close();
+			const third = await openConnected(open, clientId);
+			try {
+				const resent = await waitFor(() => published(third, 'c'));
+				assert.strictEqual(resent.qos, 2);
+				assert.strictEqual(resent.messageId, sent.messageId);
+				assert.strictEqual(resent.dup, true);
+				third.handlers.message(generate({ cmd: 'pubrec', messageId: sent.messageId }, v5));
+				await waitFor(() => ofCommand(third, 'pubrel').length === 1);
+			} finally {
+				third.handlers.close();
+			}
+		});
+
+		it('keeps its receipts and packet ids when it is subscribed again at QoS 2', async () => {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const open = mqttListener();
+			const topic = `${name}/#`;
+			const clientId = `qos2-to-2-${name}`;
+			const a = await savedQoS2(open, T, clientId, topic);
+			const { socket, session } = await reconnectWithoutSubscription(open, T, name, clientId, topic);
+			try {
+				const receipts = session.receivedCount;
+				assert.ok(receipts > 0);
+				assert.ok(session.reservedIds.has(a.messageId));
+				await subscribeAt(socket, topic, 2, 2);
+				assert.strictEqual(session.topics.get(topic).entry.qos, 2);
+				assert.strictEqual(session.receivedCount, receipts);
+				const resent = await waitFor(() => published(socket, 'a'));
+				assert.strictEqual(resent.messageId, a.messageId, 'the delivery with no PUBREC keeps its id');
+				assert.strictEqual(resent.dup, true);
+				session.checkpoint();
+				const saved = await storedEntry(clientId, (entry) => entry.qos === 2 && entry.receivedRuns?.length > 0);
+				assert.strictEqual(saved.inFlight[0][3], a.messageId);
+				assert.ok(!published(socket, 'b'), 'the delivery whose PUBREC arrived is not sent again');
+			} finally {
+				socket.handlers.close();
+			}
+		});
+	});
+
 	it('tells apart a record published twice in one transaction, live and on a replay', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
