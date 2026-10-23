@@ -1,6 +1,6 @@
 'use strict';
 
-import { closeSync, existsSync, openSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync } from 'node:fs';
 import { copyFile, link, mkdir, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -422,22 +422,27 @@ export async function restoreBlobSnapshot(
  * so a restore that is about to be declared committed cannot outlive its blobs across a power loss.
  */
 export async function fsyncTree(root: string): Promise<void> {
-	const directories = new Set<string>();
-	for await (const path of walkBlobFiles(root)) {
-		const fd = openSync(path, 'r');
-		try {
-			fsyncTolerantSync(fd);
-		} finally {
-			closeSync(fd);
+	if (!existsSync(root)) return;
+	const directories: string[] = [];
+	const visit = (directory: string) => {
+		directories.push(directory);
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const path = join(directory, entry.name);
+			if (entry.isDirectory()) visit(path);
+			else if (entry.isFile()) {
+				const fd = openSync(path, 'r');
+				try {
+					fsyncTolerantSync(fd);
+				} finally {
+					closeSync(fd);
+				}
+			}
 		}
-		for (let directory = dirname(path); directory.length >= root.length; directory = dirname(directory)) {
-			if (directories.has(directory)) break;
-			directories.add(directory);
-		}
-	}
-	if (existsSync(root)) directories.add(root);
-	for (const directory of directories) fsyncDirectory(directory);
-	if (existsSync(root)) fsyncDirectory(dirname(root));
+	};
+	visit(root);
+	// children before parents, so each directory's entry is flushed after what it names
+	for (const directory of directories.reverse()) fsyncDirectory(directory);
+	fsyncDirectory(dirname(root));
 }
 
 /**

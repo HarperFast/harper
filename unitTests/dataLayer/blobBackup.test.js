@@ -381,7 +381,7 @@ describe('blobBackup', function () {
 			await fsyncTree(rootA);
 		});
 
-		it('flushes the root and its entry in its parent when the tree holds only empty directories', async function () {
+		it('flushes every directory, the root and its entry in its parent when the tree holds only empty directories', async function () {
 			mkdirSync(join(rootA, 'empty', 'nested'), { recursive: true });
 			const flushed = [];
 			// fsyncTree reads it through the module object at call time; a directory fsync leaves no trace to observe
@@ -395,7 +395,10 @@ describe('blobBackup', function () {
 			} finally {
 				durableFile.fsyncDirectory = original;
 			}
-			assert.deepStrictEqual(flushed.sort(), [dirname(rootA), rootA].sort());
+			assert.deepStrictEqual(
+				flushed.sort(),
+				[dirname(rootA), rootA, join(rootA, 'empty'), join(rootA, 'empty', 'nested')].sort()
+			);
 		});
 	});
 
