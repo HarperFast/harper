@@ -740,24 +740,8 @@ function stubMethod(instance, name, replacement) {
 	};
 }
 
-let restoreRegistryStatusExport;
-
-// Reaches only modules that read the export at call time from the CommonJS build; under typestrip, production code
-// imports rocksdb-js's separate ESM build and the fake does not apply.
-function fakeRegistryStatus(fake) {
-	restoreRegistryStatus();
-	restoreRegistryStatusExport = stubMethod(require('@harperfast/rocksdb-js'), 'getRegistryStatus', fake);
-}
-
-function restoreRegistryStatus() {
-	restoreRegistryStatusExport?.();
-	restoreRegistryStatusExport = undefined;
-}
-
 module.exports = {
 	stubMethod,
-	fakeRegistryStatus,
-	restoreRegistryStatus,
 	routePutThroughPutSync,
 	changeProcessToBinDir,
 	deepClone,

@@ -21,6 +21,10 @@ const ATTRIBUTION_STATE_TTL_MS = 3600000;
 // per tick, so pruning per call is O(N^2) in exactly the leak this reporting exists to describe.
 const ATTRIBUTION_PRUNE_INTERVAL_MS = 60000;
 
+// Tests swap this reader rather than the rocksdb-js export: under typestrip this module binds the ESM build, which a
+// test cannot patch.
+let readRegistryStatus = getRegistryStatus;
+
 // Report state is keyed by database path AND native id: rocksdb-js allocates transaction ids per
 // database descriptor, so two databases routinely both have id 2, and a reopen restarts the counter.
 type ReportState = { nextReportAgeMs: number; lastAgeMs: number; touchedAt: number };
@@ -125,7 +129,7 @@ export function runLongLivedTransactionSweep(): void {
 		const thresholdMs = getReportThresholdMs();
 		rebaseLongLivedTransactionReports(thresholdMs);
 		if (thresholdMs === 0) return;
-		const status = getRegistryStatus();
+		const status = readRegistryStatus();
 		const seen = new Set<string>();
 		const due: { path: string | undefined; id: number; ageMs: number; state: ReportState }[] = [];
 		let missingDetails = false;
@@ -283,7 +287,7 @@ export function describeHolderCandidates(
 		const candidates: { id: number; ageMs: number; sameDatabase: boolean; path: string | undefined }[] = [];
 		let targetSeen = false;
 		let targetHasDetails = false;
-		for (const database of getRegistryStatus()) {
+		for (const database of readRegistryStatus()) {
 			// An entry with no path can never be the target, and resolve() would throw on it — which,
 			// inside this loop, would drop the candidate list for every database rather than just this one.
 			const sameDatabase = database.path != null && resolve(database.path) === target;
@@ -332,6 +336,10 @@ export function describeHolderCandidates(
 	} catch {
 		return '';
 	}
+}
+
+export function setRegistryStatusForTests(fn: typeof getRegistryStatus = getRegistryStatus): void {
+	readRegistryStatus = fn;
 }
 
 export function resetLongLivedTransactionReportsForTests(): void {

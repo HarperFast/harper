@@ -1,10 +1,11 @@
 require('../testUtils');
 const assert = require('assert');
-const { setupTestDBPath, fakeRegistryStatus, restoreRegistryStatus } = require('../testUtils');
+const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getOutstandingCommits, resetStuckCommitLogCooldownForTests } = require('#src/resources/DatabaseTransaction');
+const { setRegistryStatusForTests } = require('#src/resources/longLivedTransactions');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -154,7 +155,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		const errorLines = [];
 		const originalError = harperLogger.error;
 		harperLogger.error = (...args) => errorLines.push(args);
-		fakeRegistryStatus(() => [
+		setRegistryStatusForTests(() => [
 			{
 				path: DeadlineA.primaryStore.rootStore.path,
 				transactionDetails: [{ id: 999, ageMs: 3600000 }],
@@ -166,7 +167,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			({ outcome, error } = await outcomeOf(writePastBudget('retry-now', singleStoreWrite)));
 		} finally {
 			harperLogger.error = originalError;
-			restoreRegistryStatus();
+			setRegistryStatusForTests();
 		}
 		assert.strictEqual(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
 		assert.strictEqual(error.statusCode, 503);

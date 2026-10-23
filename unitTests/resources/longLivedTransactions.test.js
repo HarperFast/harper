@@ -1,4 +1,4 @@
-const { fakeRegistryStatus, restoreRegistryStatus } = require('../testUtils');
+require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const os = require('node:os');
@@ -17,6 +17,7 @@ const {
 	reportLongLivedHolder,
 	resetLongLivedTransactionReportsForTests,
 	runLongLivedTransactionSweep,
+	setRegistryStatusForTests,
 	startLongLivedTransactionReporting,
 } = require('#src/resources/longLivedTransactions');
 const { getRegistryStatus } = require('@harperfast/rocksdb-js');
@@ -56,7 +57,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		logger.warn = originalWarn;
 		logger.error = originalError;
 		env.setProperty(THRESHOLD, originalThreshold);
-		restoreRegistryStatus();
+		setRegistryStatusForTests();
 		resetLongLivedTransactionReportsForTests();
 	});
 
@@ -87,7 +88,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		it('disables reporting at 0', function () {
 			env.setProperty(THRESHOLD, 0);
 			assert.strictEqual(getReportThresholdMs(), 0);
-			fakeRegistryStatus(status(database('/db/a', [1, 99999999])));
+			setRegistryStatusForTests(status(database('/db/a', [1, 99999999])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warnings.length, 0, 'a disabled threshold must not sweep or report');
 		});
@@ -108,7 +109,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 
 	describe('registry sweep', () => {
 		it('reports a handle open past the threshold, with its database and age', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [7, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 3600000])));
 			runLongLivedTransactionSweep();
 			const reported = warningsMatching('Long-lived RocksDB transaction handle');
 			assert.strictEqual(reported.length, 1);
@@ -120,7 +121,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// getRegistryStatus() reports an entry with no path for an ephemeral descriptor; the rest of this
 		// surface defaults it, and an operator reading "on database undefined" learns nothing.
 		it('names a handle whose database has no path without printing undefined', function () {
-			fakeRegistryStatus(status(database(undefined, [7, 3600000])));
+			setRegistryStatusForTests(status(database(undefined, [7, 3600000])));
 			runLongLivedTransactionSweep();
 			const reported = warningsMatching('Long-lived RocksDB transaction handle');
 			assert.strictEqual(reported.length, 1);
@@ -128,25 +129,25 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 
 		it('ignores a handle below the threshold', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [7, 1000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 1000])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 0);
 		});
 
 		it('reports a handle that crosses the threshold after an earlier pass ignored it', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [7, 1000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 1000])));
 			runLongLivedTransactionSweep();
-			fakeRegistryStatus(status(database('/db/alpha', [7, 90000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 90000])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 1);
 		});
 
 		it('backs off rather than repeating every pass, and reports again once the age doubles', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [7, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 3600000])));
 			runLongLivedTransactionSweep();
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 1, 'second pass repeats');
-			fakeRegistryStatus(status(database('/db/alpha', [7, 7200001])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 7200001])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 2);
 		});
@@ -154,7 +155,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// The native id is allocated per database descriptor, so two databases commonly both have
 		// transaction 2. Keying suppression on the id alone would silence one of them.
 		it('does not let one database suppress the same id in another', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [2, 3600000]), database('/db/beta', [2, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [2, 3600000]), database('/db/beta', [2, 3600000])));
 			runLongLivedTransactionSweep();
 			const reported = warningsMatching('Long-lived RocksDB transaction handle');
 			assert.strictEqual(reported.length, 2);
@@ -165,16 +166,16 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// The counter restarts when a descriptor is reopened, so (path, id) can come back on a brand
 		// new handle without the old one ever being observed as gone.
 		it('reports a reused id whose age went backwards', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [2, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [2, 3600000])));
 			runLongLivedTransactionSweep();
-			fakeRegistryStatus(status(database('/db/alpha', [2, 3599000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [2, 3599000])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 2);
 		});
 
 		it('caps a pass and states how many it left out', function () {
 			const handles = Array.from({ length: 25 }, (unused, index) => [index + 1, 3600000 + index]);
-			fakeRegistryStatus(status(database('/db/alpha', ...handles)));
+			setRegistryStatusForTests(status(database('/db/alpha', ...handles)));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 10);
 			assert.strictEqual(warningsMatching('15 further RocksDB transaction handle(s)').length, 1);
@@ -184,7 +185,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// past its current age, so the pass after it names the ones it had to skip.
 		it('rotates the cap across passes so a skipped handle is still named', function () {
 			const handles = Array.from({ length: 12 }, (unused, index) => [index + 1, 3600000 + index]);
-			fakeRegistryStatus(status(database('/db/alpha', ...handles)));
+			setRegistryStatusForTests(status(database('/db/alpha', ...handles)));
 			runLongLivedTransactionSweep();
 			const first = new Set(warningsMatching('Long-lived RocksDB transaction handle').map(([m]) => m));
 			runLongLivedTransactionSweep();
@@ -194,24 +195,24 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 
 		it('forgets a handle that is gone, so a later id reuse is not suppressed', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [2, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [2, 3600000])));
 			runLongLivedTransactionSweep();
-			fakeRegistryStatus(status(database('/db/alpha')));
+			setRegistryStatusForTests(status(database('/db/alpha')));
 			runLongLivedTransactionSweep();
-			fakeRegistryStatus(status(database('/db/alpha', [2, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [2, 3600000])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 2);
 		});
 
 		it('warns once when the binding predates transactionDetails, and does not throw', function () {
-			fakeRegistryStatus(() => [{ path: '/db/alpha', transactions: 3 }]);
+			setRegistryStatusForTests(() => [{ path: '/db/alpha', transactions: 3 }]);
 			assert.doesNotThrow(() => runLongLivedTransactionSweep());
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('does not expose getRegistryStatus().transactionDetails').length, 1);
 		});
 
 		it('swallows and logs a registry failure', function () {
-			fakeRegistryStatus(() => {
+			setRegistryStatusForTests(() => {
 				throw new Error('boom');
 			});
 			assert.doesNotThrow(() => runLongLivedTransactionSweep());
@@ -223,7 +224,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// report forward, and raising it did not quiet one.
 		it('re-measures an already-observed handle when the threshold is lowered', function () {
 			env.setProperty(THRESHOLD, '1h');
-			fakeRegistryStatus(status(database('/db/alpha', [7, 120000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 120000])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 0);
 			env.setProperty(THRESHOLD, '1m');
@@ -232,7 +233,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 
 		it('re-measures an already-observed handle when the threshold is raised', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [7, 120000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 120000])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 1);
 			env.setProperty(THRESHOLD, '1h');
@@ -249,7 +250,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			startLongLivedTransactionReporting();
 			// Two armed intervals would double every future report; the reset seam clears exactly one.
 			resetLongLivedTransactionReportsForTests();
-			fakeRegistryStatus(status(database('/db/alpha', [7, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 3600000])));
 			runLongLivedTransactionSweep();
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 1);
 		});
@@ -281,7 +282,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 
 		it('joins to the sweep on the same native id', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [12, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [12, 3600000])));
 			runLongLivedTransactionSweep();
 			reportLongLivedHolder(holder());
 			assert.ok(warningsMatching('Long-lived RocksDB transaction handle').some(([m]) => m.includes('id 12')));
@@ -356,7 +357,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 
 	describe('holder candidates for a stuck commit', () => {
 		it('names the live handles on the same database, oldest first, excluding the victim', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [1, 60000], [2, 3600000], [3, 120000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [1, 60000], [2, 3600000], [3, 120000])));
 			const described = describeHolderCandidates('/db/alpha', 1);
 			assert.match(described, /oldest first: 2 \(open 1h 0m 0s\), 3 \(open 2m 0s\)/);
 			assert.ok(!described.includes(' 1 ('), 'the stuck commit must not be offered as its own holder');
@@ -365,7 +366,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// A coordinated retry parks on whoever holds the verification-table slot when the commit gets
 		// there, which can be a transaction younger than the commit — filtering by age would drop it.
 		it('keeps a candidate younger than the stuck commit', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [1, 90000], [2, 10])));
+			setRegistryStatusForTests(status(database('/db/alpha', [1, 90000], [2, 10])));
 			assert.match(describeHolderCandidates('/db/alpha', 1), /2 \(open 0s\)/);
 		});
 
@@ -373,13 +374,15 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// holder in `system` or `oauth` parks a `data` commit at the same rate another `data` key would.
 		// Filtering to the commit's own database printed nothing at all for that shape.
 		it('offers a handle on another database, labelled with its path', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [1, 90000]), database('/db/beta', [9, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [1, 90000]), database('/db/beta', [9, 3600000])));
 			const described = describeHolderCandidates('/db/alpha', 1);
 			assert.match(described, /9 \(open 1h 0m 0s on \/db\/beta\)/);
 		});
 
 		it('ranks the stuck commit’s own database ahead of an older foreign handle', function () {
-			fakeRegistryStatus(status(database('/db/alpha', [1, 90000], [2, 60000]), database('/db/beta', [9, 3600000])));
+			setRegistryStatusForTests(
+				status(database('/db/alpha', [1, 90000], [2, 60000]), database('/db/beta', [9, 3600000]))
+			);
 			assert.match(
 				describeHolderCandidates('/db/alpha', 1),
 				/oldest first: 2 \(open 1m 0s\), 9 \(open 1h 0m 0s on \/db\/beta\)/
@@ -390,7 +393,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// "and N more" count on exactly the busy database this surface is read on — which is the whole
 		// point of looking across databases in the first place.
 		it('always names the oldest foreign handle even when this database fills the cap', function () {
-			fakeRegistryStatus(
+			setRegistryStatusForTests(
 				status(
 					database('/db/alpha', [1, 90000], [2, 80000], [3, 70000], [4, 60000]),
 					database('/db/gamma', [8, 120000]),
@@ -407,26 +410,28 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// A registry entry with no path can never be the target, and resolve() throws on undefined —
 		// inside the enumeration that dropped the candidate list for every database, not just that entry.
 		it('survives a registry entry with no path', function () {
-			fakeRegistryStatus(status(database(undefined, [8, 3600000]), database('/db/alpha', [1, 90000], [2, 120000])));
+			setRegistryStatusForTests(
+				status(database(undefined, [8, 3600000]), database('/db/alpha', [1, 90000], [2, 120000]))
+			);
 			assert.match(describeHolderCandidates('/db/alpha', 1), /2 \(open 2m 0s\)/);
 		});
 
 		it('offers nothing when reporting is disabled', function () {
 			env.setProperty(THRESHOLD, 0);
-			fakeRegistryStatus(status(database('/db/alpha', [1, 90000], [2, 3600000])));
+			setRegistryStatusForTests(status(database('/db/alpha', [1, 90000], [2, 3600000])));
 			assert.strictEqual(describeHolderCandidates('/db/alpha', 1), '');
 		});
 
 		it('bounds the list and says how many it left out', function () {
 			const handles = Array.from({ length: 9 }, (unused, index) => [index + 1, 3600000 + index]);
-			fakeRegistryStatus(status(database('/db/alpha', ...handles)));
+			setRegistryStatusForTests(status(database('/db/alpha', ...handles)));
 			assert.match(describeHolderCandidates('/db/alpha', 1), /and 5 more\.$/);
 		});
 
 		// The suffix is diagnostic: its failure must not turn the caller's rate-limited error plus 503
 		// into an uncaught throw.
 		it('returns nothing rather than throwing when the registry fails', function () {
-			fakeRegistryStatus(() => {
+			setRegistryStatusForTests(() => {
 				throw new Error('boom');
 			});
 			assert.strictEqual(describeHolderCandidates('/db/alpha', 1), '');
@@ -518,7 +523,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			const originalError = harperLogger.error;
 			harperLogger.error = (...args) => errorLines.push(args);
 			env.setProperty(THRESHOLD, 0);
-			fakeRegistryStatus(status(database('/db/wedged', [4, 90000], [5, 3600000])));
+			setRegistryStatusForTests(status(database('/db/wedged', [4, 90000], [5, 3600000])));
 			try {
 				injectForeignErrorLines();
 				const wedged = trackAStuckCommit();
@@ -539,7 +544,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			const errorLines = [];
 			const originalError = harperLogger.error;
 			harperLogger.error = (...args) => errorLines.push(args);
-			fakeRegistryStatus(status(database('/db/wedged', [4, 90000], [5, 3600000])));
+			setRegistryStatusForTests(status(database('/db/wedged', [4, 90000], [5, 3600000])));
 			try {
 				injectForeignErrorLines();
 				const wedged = trackAStuckCommit();
@@ -567,7 +572,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			const errorLines = [];
 			const originalError = harperLogger.error;
 			harperLogger.error = (...args) => errorLines.push(args);
-			fakeRegistryStatus(status(database('/db/wedged', [4, 90000], [5, 3600000])));
+			setRegistryStatusForTests(status(database('/db/wedged', [4, 90000], [5, 3600000])));
 			try {
 				injectForeignErrorLines();
 				const wedged = trackAStuckCommit();
@@ -606,7 +611,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			let registryCalls = 0;
 			const originalError = harperLogger.error;
 			harperLogger.error = (...args) => errorLines.push(args);
-			fakeRegistryStatus(() => {
+			setRegistryStatusForTests(() => {
 				registryCalls++;
 				throw new Error('boom');
 			});
@@ -631,7 +636,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 	describe('the store path joins to the registry path', () => {
 		it('finds a real table’s database in the real registry', function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
-			restoreRegistryStatus();
+			setRegistryStatusForTests();
 			const JoinTable = table({
 				table: 'HolderJoinTable',
 				database: 'test',
@@ -667,7 +672,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				database: 'chain-attribution-secondary',
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
 			});
-			restoreRegistryStatus();
+			setRegistryStatusForTests();
 			env.setProperty(THRESHOLD, '0.001');
 			// sourceApply is exempt from reaping, which is what keeps both links open long enough for the
 			// monitor to observe them — and is the #2471 shape besides.
@@ -871,7 +876,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					worker.once('message', resolve);
 					worker.once('error', reject);
 				});
-				restoreRegistryStatus();
+				setRegistryStatusForTests();
 				env.setProperty(THRESHOLD, '0.05');
 				await waitFor(() => {
 					runLongLivedTransactionSweep();
