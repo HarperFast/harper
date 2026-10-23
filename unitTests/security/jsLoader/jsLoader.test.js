@@ -349,6 +349,12 @@ describe('compartment importHook', () => {
 		writeFileSync(file, source);
 		return file;
 	};
+	const writePackage = (name, files, packageJson = {}) => {
+		const packageDir = join(appDir, 'node_modules', name);
+		mkdirSync(packageDir, { recursive: true });
+		writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name, version: '1.0.0', ...packageJson }));
+		for (const [file, source] of Object.entries(files)) writeFileSync(join(packageDir, file), source);
+	};
 
 	describe('allowedPath', () => {
 		let secretPath;
@@ -429,6 +435,66 @@ describe('compartment importHook', () => {
 			const entry = writeApp('entry.js', "export { secret } from '../outside/secret.js';\n");
 			const result = await scopedImport(entry, compartmentScope({ allowedPath: '' }));
 			assert.strictEqual(result.secret, 'leaked');
+		});
+	});
+
+	describe('CommonJS dependencies imported natively', () => {
+		const importKeys = async (specifierSource) => {
+			const entry = writeApp('entry.mjs', specifierSource);
+			return scopedImport(entry, compartmentScope());
+		};
+
+		it('exposes names assigned dynamically to module.exports', async () => {
+			writePackage(
+				'dynpkg',
+				{
+					'index.cjs':
+						"module.exports = {};\nfor (const name of ['alpha', 'beta']) module.exports[name] = name + '!';\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys(
+				"import dynpkg, { alpha, beta } from 'dynpkg';\nexport { alpha, beta };\nexport const same = typeof dynpkg.alpha;\n"
+			);
+			assert.strictEqual(result.alpha, 'alpha!');
+			assert.strictEqual(result.beta, 'beta!');
+			assert.strictEqual(result.same, 'string');
+		});
+
+		it('keeps names that native import exposes but module.exports does not enumerate', async () => {
+			writePackage(
+				'hiddenpkg',
+				{ 'index.cjs': "Object.defineProperty(exports, 'alpha', { value: 42 });\n" },
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys("export { alpha } from 'hiddenpkg';\n");
+			assert.strictEqual(result.alpha, 42);
+		});
+
+		it('keeps the native default export of a transpiled-ESM module', async () => {
+			writePackage(
+				'babelpkg',
+				{
+					'index.cjs':
+						"'use strict';\nObject.defineProperty(exports, '__esModule', { value: true });\nexports.default = 'X';\nexports.named = 'N';\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys(
+				"import babel, { named } from 'babelpkg';\nexport { named };\nexport const wrapped = babel.default;\n"
+			);
+			assert.strictEqual(result.named, 'N');
+			assert.strictEqual(result.wrapped, 'X');
+		});
+
+		it('does not promote the properties of an ES module default export to named exports', async () => {
+			writePackage(
+				'esmpkg',
+				{ 'index.js': 'export default { hidden: 1 };\nexport const shown = 2;\n' },
+				{ type: 'module', exports: { '.': { import: './index.js' } } }
+			);
+			const result = await importKeys("import * as ns from 'esmpkg';\nexport const keys = Object.keys(ns).sort();\n");
+			assert.deepStrictEqual(result.keys, ['default', 'shown']);
 		});
 	});
 });

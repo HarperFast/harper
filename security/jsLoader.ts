@@ -313,6 +313,17 @@ function normalizeImportedModule(importedModule: any): any {
 }
 
 /**
+ * The names a CommonJS module assigns to `module.exports` at runtime, which the namespace from a native
+ * `import()` lacks when Node's static analysis cannot see them. Node 22 gives such a namespace no
+ * `'module.exports'` key, so the module is identified by its `require.cache` entry instead.
+ */
+function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, unknown> {
+	if (!moduleUrl.startsWith('file:')) return {};
+	const cjsModule = require.cache[fileURLToPath(moduleUrl)];
+	return cjsModule && cjsModule.exports === namespace.default ? { ...cjsModule.exports } : {};
+}
+
+/**
  * Load a module using Node's vm.Module API with optional sandboxing
  * @param moduleUrl - The URL of the module to load
  * @param scope - The application scope
@@ -775,7 +786,8 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					const moduleExports = await import(moduleSpecifier);
+					const namespace = await import(moduleSpecifier);
+					const moduleExports = { ...dynamicCjsExports(namespace, moduleSpecifier), ...namespace };
 					return {
 						imports: [],
 						exports: Object.keys(moduleExports),

@@ -199,6 +199,17 @@ gaps), and files a natively loaded dependency loads itself are outside it. Enfor
 `compartment importHook` block in `unitTests/security/jsLoader/jsLoader.test.js` and
 `integrationTests/components/compartment-allowed-directory.test.ts`.
 
+## The compartment adds a CommonJS dependency's dynamic names to its native namespace (`security/jsLoader.ts`)
+
+A bare or `node_modules` import in the compartment `importHook` is a native `import()`. For a CommonJS
+module, `dynamicCjsExports` copies the `module.exports` names the namespace lacks (those Node's static
+analysis cannot see) and every namespace key and the native `default` stay as they were. The module is found
+through its `require.cache` entry because Node 22 gives a CommonJS namespace no `'module.exports'` key.
+`normalizeImportedModule` is not used here: it is a no-op on Node 22, and where the key exists it rebuilds
+the exports from enumerable properties, dropping names such as `Object.defineProperty(exports, ...)` and
+replacing a transpiled module's `default`. The VM loaders still use it. Enforced by the `CommonJS
+dependencies imported natively` block in `unitTests/security/jsLoader/jsLoader.test.js`.
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`
