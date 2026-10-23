@@ -4738,8 +4738,7 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
-							// Decided from the record, not its log entry, which a base copy never writes (harper#3467). An
-							// earlier unskipped write to this key may have restamped the head without staging it.
+							// An earlier unskipped write to this key may have restamped the head without staging it.
 							if (
 								committedBy?.sourceApply &&
 								isRocksDB &&
