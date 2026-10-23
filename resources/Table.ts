@@ -887,13 +887,14 @@ interface TableResourceInstance<Record extends object = any> {
 	/**
 	 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 	 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
-	 * in process memory and does not write a lock record or audit entry. A lock admitted above the local
-	 * clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart cannot reuse
-	 * a key; admission farther ahead fails with `LockUnavailableError` until wall time catches up. Admission can raise the current transaction timestamp to the admitted version; a claimed
-	 * version can also put this node's local write clock ahead of wall time until it catches up. Phase 0
-	 * contract: lock() is mutually exclusive
-	 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
-	 * gated or blocked. The generation expires after `lease` if it is never released.
+	 * in process memory and does not write a lock record or audit entry. A lock admitted above the
+	 * local clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart
+	 * cannot reuse a key; admission farther ahead fails with `LockUnavailableError` until wall time
+	 * catches up. Admission can raise the current transaction timestamp to the admitted version; a
+	 * claimed version can also put this node's local write clock ahead of wall time until it catches
+	 * up. Phase 0 contract: lock() is mutually exclusive with other lock() calls on the same key;
+	 * plain writes (put/patch/delete/create) are never gated or blocked. The generation expires after
+	 * `lease` if it is never released.
 	 *
 	 * Transaction-scoped (default): write through the returned record (or the table's static verbs
 	 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
@@ -4263,7 +4264,8 @@ export function makeTable(options): TableResourceClass {
 		 */
 		save() {
 			const operation = this.#savingOperation;
-			if (this.#lockWritable && (operation?.lockHandle ?? this.#lockHandle)?.writeRefused)
+			const lockHandle = operation ? operation.lockHandle : this.#lockHandle;
+			if (this.#lockWritable && lockHandle?.writeRefused)
 				throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
 			if (
 				!this.#lockWritable &&
@@ -4859,13 +4861,14 @@ export function makeTable(options): TableResourceClass {
 		/**
 		 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
-		 * in process memory and does not write a lock record or audit entry. A lock admitted above the local
-		 * clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart cannot reuse
-		 * a key; admission farther ahead fails with `LockUnavailableError` until wall time catches up. Admission can raise the current transaction timestamp to the admitted version; a claimed
-		 * version can also put this node's local write clock ahead of wall time until it catches up. Phase 0
-		 * contract: lock() is mutually exclusive
-		 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
-		 * gated or blocked. The generation expires after `lease` if it is never released.
+		 * in process memory and does not write a lock record or audit entry. A lock admitted above the
+		 * local clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart
+		 * cannot reuse a key; admission farther ahead fails with `LockUnavailableError` until wall time
+		 * catches up. Admission can raise the current transaction timestamp to the admitted version; a
+		 * claimed version can also put this node's local write clock ahead of wall time until it catches
+		 * up. Phase 0 contract: lock() is mutually exclusive with other lock() calls on the same key;
+		 * plain writes (put/patch/delete/create) are never gated or blocked. The generation expires after
+		 * `lease` if it is never released.
 		 *
 		 * Transaction-scoped (default): write through the returned record (or the table's static verbs
 		 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock

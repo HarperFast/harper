@@ -501,10 +501,7 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	upgradeToHold(lease: number): void {
-		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets a step past acquiredAt rather than acquiredAt again.
-		// Without this, a post-commit save and any in-transaction save both get acquiredAt, causing
-		// a LWW tie that drops the write. Compute before mutating the hold state so a failure leaves
+		// Initialize the next holder version before changing modes, so an allocation failure leaves
 		// the handle scoped.
 		this.nextHolderVersion();
 		this.hold = true;

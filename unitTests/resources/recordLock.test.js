@@ -1795,7 +1795,7 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(entryOf(recordId).version > predecessorTimestamp, 'stamped above the admitted version');
 		});
 
-		it('rejects an over-cap admission after an unrelated explicit-transaction write without staging the lock write', async function () {
+		it('rejects an over-cap admission after an unrelated write committed in its own transaction', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			const otherId = id();
@@ -1990,6 +1990,27 @@ describe('Record locks (harper#483)', () => {
 			stream.end('payload');
 			await blobbed;
 			assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier commit landed');
+			await assert.rejects(
+				transaction(context, async () => {
+					await holder.update(lockedId, { n: 6 });
+					// Leave the deferred write to the explicit transaction's commit sweep.
+				}),
+				(error) => error.statusCode === 409
+			);
+			assert.strictEqual(
+				entryOf(lockedId).value.n,
+				3,
+				'a refused handle cannot commit a deferred explicit-transaction write'
+			);
+			const offKeyId = id();
+			await LockTest.put({ id: offKeyId, n: 0 });
+			await holder.update(offKeyId, { n: 5 });
+			await holder.save();
+			assert.strictEqual(
+				entryOf(offKeyId).value.n,
+				5,
+				'a refused handle does not block an off-key write through its instance'
+			);
 			await waitFor(() => refusedHandle.isExpired(), { timeout: 1000, message: 'refused handle lease expires' });
 			await LockTest.put({ id: lockedId, n: 4 });
 			const retry = await LockTest.lock(lockedId, { lease: 5000 });

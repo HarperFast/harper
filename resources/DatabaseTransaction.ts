@@ -2259,6 +2259,13 @@ export class DatabaseTransaction implements Transaction {
 			if (this.disconnected) throw requestAbortedError();
 		}
 		const lockHandle = operation.lockHandle;
+		if (lockHandle?.writeRefused) {
+			if (!operation.saved) {
+				operation.dropped = true;
+				this.detachWrite(operation);
+			}
+			throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
+		}
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
 		// isExpired() re-evaluates the deadline here rather than trusting the timer to have run: a
