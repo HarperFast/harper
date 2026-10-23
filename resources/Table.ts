@@ -4928,7 +4928,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txnTime;
-					let incrementalUpdateToApply: boolean;
+					let incrementalUpdateToApply: any;
+					let applyAsReplacement = fullUpdate;
 
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
@@ -5183,6 +5184,7 @@ export function makeTable(options): TableResourceClass {
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
+							let auditHistoryMissing = false;
 							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
 							// throwaway copy of this write purely to detect when every field has been overwritten by
 							// newer writes. When it empties — and there is no alternate audit branch — the write is
@@ -5227,7 +5229,10 @@ export function makeTable(options): TableResourceClass {
 										break;
 									}
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
-									if (!auditRecord) break;
+									if (!auditRecord) {
+										auditHistoryMissing = true;
+										break;
+									}
 									queuePreviousAuditRefs(auditRecord);
 									if (
 										isRocksDB &&
@@ -5287,14 +5292,14 @@ export function makeTable(options): TableResourceClass {
 											succeedingUpdates.push({ version: auditedVersion, value: newerPatch });
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
 											// rebuildUpdateBefore only ever DROPS plain fields the newer patch overwrites and
-											// KEEPS commutative ops (and, for a full update, every field) — so whether the residual
+											// KEEPS commutative ops — so whether the residual
 											// empties is order-independent, and a commutative op never triggers the early-out.
 											// Supersession is monotonic, so once empty stop folding (an unscanned branch may still
 											// be deferring the early-out below). RocksDB only — see the early-out below. Guard on
 											// newerPatch: a corrupt/undecodable audit value can be undefined, and folding it would
 											// throw in rebuildUpdateBefore's `in` check; it supersedes nothing, so skip it (the
 											// pre-existing fold below already tolerates this case by returning earlier).
-											if (isRocksDB && !fullySuperseded && newerPatch) {
+											if (isRocksDB && !fullUpdate && !fullySuperseded && newerPatch) {
 												earlyOutResidual = rebuildUpdateBefore(
 													earlyOutResidual ?? recordUpdate,
 													newerPatch,
@@ -5391,14 +5396,14 @@ export function makeTable(options): TableResourceClass {
 							// Fold the retained succeeding updates (the full chain, or — when capped — the most recent
 							// window) onto this older write so newer fields win; for a capped walk this layers in only
 							// what we collected before the cap.
+							// Replacing with incomplete history would erase newer writes we could not collect.
+							if (auditWalkCapped || auditHistoryMissing) applyAsReplacement = false;
 							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
 							for (const { version: patchVersion, value: newerUpdate } of succeedingUpdates) {
 								logger.debug?.('Rebuilding update with future patch:', new Date(patchVersion), newerUpdate);
-								incrementalUpdateToApply = rebuildUpdateBefore(
-									incrementalUpdateToApply ?? recordUpdate,
-									newerUpdate,
-									fullUpdate
-								);
+								incrementalUpdateToApply = applyAsReplacement
+									? updateAndFreeze(incrementalUpdateToApply ?? recordUpdate, newerUpdate)
+									: rebuildUpdateBefore(incrementalUpdateToApply ?? recordUpdate, newerUpdate, fullUpdate);
 								if (!incrementalUpdateToApply) return writeCommit(false); // if all changes are overwritten, nothing left to do
 							}
 							if (fullUpdate && !incrementalUpdateToApply && precedesExisting < 0) {
@@ -5461,7 +5466,7 @@ export function makeTable(options): TableResourceClass {
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
 					let recordToStore: any;
-					if (fullUpdate && !incrementalUpdateToApply) recordToStore = recordUpdate;
+					if (applyAsReplacement) recordToStore = incrementalUpdateToApply ?? recordUpdate;
 					else {
 						if ((this.constructor as any).loadAsInstance === false)
 							recordToStore = updateAndFreeze(existingRecord, incrementalUpdateToApply ?? recordUpdate);

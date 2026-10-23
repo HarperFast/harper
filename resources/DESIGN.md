@@ -135,36 +135,11 @@ when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 
 
 Consequences worth knowing:
 
-- **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the
-  single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on
-  it, and both retain rather than delete when identity is unknown. A version compare there would let one write authorize destroying another's tombstone or blob.
-- **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from
-  `options.version` by every `_write*` builder and read in `save()` only when the transaction is
-  `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
-  transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the
-  origin's clock. New audit entries persist that write version even when an out-of-order merge leaves
-  a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical
-  overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this
-  cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
-- **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
-  into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order
-  branches and, when a RocksDB record version differs from its log key, the record's own audit head —
-  and, for a write the origin-closed floor rekeyed, the identity a re-delivery carries, which addresses no entry (readers already tolerate a ref whose entry aged out).
-  Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record version silently unaddresses the entry it points at.
+- **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on it, and both retain rather than delete when identity is unknown. A version compare there would let one write authorize destroying another's tombstone or blob.
+- **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from `options.version` by every `_write*` builder and read in `save()` only when the transaction is `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the origin's clock. New audit entries persist that write version even when an out-of-order merge leaves a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
+- **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order branches and, when a RocksDB record version differs from its log key, the record's own audit head — and, for a write the origin-closed floor rekeyed, the identity a re-delivery carries, which addresses no entry (readers already tolerate a ref whose entry aged out). Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record version silently unaddresses the entry it points at.
 - **Retried duplicates use committed identity before audit I/O ([#3361](https://github.com/HarperFast/harper/issues/3361)).** `Table._writeUpdate` recognizes an implicit head only when origin, version and received log key match and no explicit refs exist; `replicatedRetryDuplicate.test.js` covers real conflicts, including multiple writes to the same key.
-- **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a
-  replayed record at its log key would move its version forward and make a later legitimate write
-  look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn`
-  marker, at a change of physical log, or at a change of `txnLogKey` (what
-  `CorruptFrameStop.truncatedVersions` records), and one a corrupt frame or a stalled replay cut
-  short is discarded, never committed. A log key alone is not a commit: a receiver commits every re-delivery of a source
-  transaction under the origin's key, and grouping by key once staged millions of them into one
-  replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
-  commit. Other consumers still treat a second commit at one key as a duplicate
-  (`resumePastExactStart`, the derived-index runtime, subscription delivery).
-- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
-  history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
-  no on-disk or on-wire identifier changes in this stage.
+- **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a replayed record at its log key would move its version forward and make a later legitimate write look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn` marker, at a change of physical log, or at a change of `txnLogKey` (what `CorruptFrameStop.truncatedVersions` records), and one a corrupt frame or a stalled replay cut short is discarded, never committed. A log key alone is not a commit: a receiver commits every re-delivery of a source transaction under the origin's key, and grouping by key once staged millions of them into one replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their commit. Other consumers still treat a second commit at one key as a duplicate (`resumePastExactStart`, the derived-index runtime, subscription delivery). - **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and remain unchanged; no on-disk or on-wire identifier changes in this stage.
 
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 
@@ -179,6 +154,10 @@ Consequences worth knowing:
 **The batch cannot settle while an element is outstanding.** `settleElements` — not `Promise.all` — closes the fan-out. `Promise.all` rejects the batch on the first failing element, which lets `transactional` unwind the transaction while a slower element is still resolving its resource; that element then stages its write against no live batch and commits on its own, leaving a _partially applied_ array PUT. It is only reachable once the async branch passes the target rather than the context — before that the late write failed for its own reasons and hid the hole — so the two fixes belong together. Every element has to stage or fail its write before the transaction may unwind. When several elements fail, the batch reports the **earliest-index** failure rather than whichever rejected first in wall-clock time, so the error a client sees does not move with scheduling. Only that one failure is reported: the framework does not attach a `cause` onto it, because the thrown value belongs to application code and may be a primitive, frozen, or a shared singleton that a per-request mutation would contaminate for every later request.
 
 ---
+
+## Full PUT resequencing
+
+`Table._writeUpdate` replays retained newer patches onto the PUT body and stores a replacement; missing or depth-capped history keeps the existing best-effort merge so uncollected newer fields survive. `outOfOrderFullPut.test.js` pins field removal, newer-only additions, indexes, metadata, blobs, and history boundaries ([#3404](https://github.com/HarperFast/harper/issues/3404)).
 
 ## Database generation and resumable positions
 
