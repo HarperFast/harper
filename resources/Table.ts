@@ -5910,6 +5910,9 @@ export function makeTable(options): TableResourceClass {
 							// is the backstop).
 							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
 								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+						} else if (precedesExisting === 0 && !priorWritesSkipped(write)) {
+							// An earlier write of this transaction restamped the head without staging it (a publish or relocate):
+							// the tie is program order, so this write applies as an in-order one does.
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -5920,13 +5923,13 @@ export function makeTable(options): TableResourceClass {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
 							// Without a log, the head's own identity (a tie) and the refs folded into it are the only record of
 							// what was already applied, and a head holding no record (a delete, or a publish to an absent key)
-							// keeps none. An earlier write of this transaction that restamped the head orders this one after it.
+							// keeps none.
 							if (
-								priorWritesSkipped(write) &&
-								(precedesExisting === 0 ||
-									existingRecord == null ||
-									(existingEntry.additionalAuditRefs &&
-										auditRefIndex(existingEntry.additionalAuditRefs, receivedLogKey, options?.nodeId) >= 0))
+								precedesExisting === 0 ||
+								existingRecord == null ||
+								(existingEntry.additionalAuditRefs &&
+									priorWritesSkipped(write) &&
+									auditRefIndex(existingEntry.additionalAuditRefs, receivedLogKey, options?.nodeId) >= 0)
 							) {
 								write.skipped = true;
 								return writeCommit(false);
