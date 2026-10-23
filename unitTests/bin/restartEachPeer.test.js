@@ -244,4 +244,33 @@ describe('a rolling restart of each peer', function () {
 			return true;
 		});
 	});
+
+	it('halts at a peer whose connection failed after the request may have been sent', async () => {
+		dispatchAnswers['peer-a'] = [Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })];
+		await assert.rejects(restartEachPeer(peers, request, TIMING), (error) => {
+			assert.match(error.result.replicated[1].error, /^skipped/);
+			return true;
+		});
+	});
+
+	it('moves on from a peer it could not connect to', async () => {
+		dispatchAnswers['peer-a'] = [
+			Object.assign(new Error('connect ECONNREFUSED 10.0.0.2:9933'), { code: 'ECONNREFUSED' }),
+		];
+		await assert.rejects(restartEachPeer(peers, request, TIMING), (error) => {
+			assert.deepStrictEqual(error.result.replicated.slice(1), [restarted('peer-b'), restarted('peer-c')]);
+			return true;
+		});
+	});
+
+	it('does not blame the network for a timeout once the peer answered again', async () => {
+		pollAnswers['peer-a'] = [
+			new Error(CLOSED_FIRST('get_job')),
+			...Array.from({ length: 100000 }, () => ({ results: [{ status: 'IN_PROGRESS' }] })),
+		];
+		await assert.rejects(restartEachPeer(peers, request, { ...TIMING, jobDeadlineMs: 50 }), (error) => {
+			assert.strictEqual(error.result.replicated[0].error, 'Timed out waiting for restart job job-peer-a to complete');
+			return true;
+		});
+	});
 });

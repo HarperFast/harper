@@ -778,14 +778,15 @@ otherwise `ERROR`, naming each peer that failed or was skipped, with one `result
 in both outcomes (`{ node, message }` restarted, `{ node, error }` not). A certified rolling deploy runs
 `activateDeploymentOnPeers` instead, which reports through `http_resp_msg`.
 
-- A peer that refused before running anything is recorded and the roll moves on.
-- A peer that may be restarting halts the roll, so two peers never restart at once: the replicator's
-  "outcome there is unknown" (a timeout, or the connection closed before the answer), or an answer with no
-  job id. So does a peer whose restart failed or timed out, since the release being rolled out may be what
-  failed. Every peer after it is recorded as skipped.
+- A peer that answered with its own error, or whose connection never opened (`ECONNREFUSED` and similar),
+  never started a restart: it is recorded and the roll moves on.
+- Any other dispatch failure halts the roll, so two peers never restart at once: the replicator's "outcome
+  there is unknown" (a timeout, or the connection closed before the answer), any other socket error,
+  or an answer with no job id. So does a peer whose restart failed or timed out, since the release being
+  rolled out may be what failed. Every peer after it is recorded as skipped.
 - Only the write-queue back-pressure refusal is retried (after the other peers, three attempts): it is the
-  one refusal known to precede execution. Errors cross replication only as text, so both classifications
-  match wording.
+  one refusal known to be transient. Errors cross replication as text plus, for a socket error, its `code`, so
+  these classifications match wording and codes.
 
 `COMPLETE` means each peer's restart job completed, not that every worker there took new code. Enforced by
 `unitTests/bin/restartEachPeer.test.js` and `replicatedRestartService.test.js` (harper#3468).

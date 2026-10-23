@@ -217,7 +217,9 @@ const PEER_RESTART_TIMING = {
 // A peer that refused the operation for write back-pressure never started it. Errors cross replication as
 // text, and 5.3 peers word it "too long of queue".
 const WRITE_QUEUE_BACK_PRESSURE = /Outstanding write transactions have too long (?:a|of) queue/;
-// How the replicator words a request that may have run there: it timed out, or its connection closed first.
+// Rejections known to precede the request reaching the peer. Anything else with a socket error code, or the
+// replicator's "outcome there is unknown" (a timeout, or the connection closing first), may have started it.
+const NEVER_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
 const OUTCOME_UNKNOWN = /outcome there is unknown/;
 const PEER_JOB_PENDING: string[] = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
 
@@ -248,7 +250,7 @@ async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART
 				queue.push({ node, attempt: attempt + 1, retryAt: Date.now() + timing.retryDelayMs * 2 ** (attempt - 1) });
 			} else {
 				replicated.push({ node: node.name, error: message });
-				if (OUTCOME_UNKNOWN.test(message)) haltedBy = node.name;
+				if (mayHaveStarted(error, message)) haltedBy = node.name;
 			}
 			continue;
 		}
@@ -272,6 +274,13 @@ async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART
 	return { replicated };
 }
 
+/** A peer's own error answer carries no code; a socket error does. */
+function mayHaveStarted(error: any, message: string) {
+	if (OUTCOME_UNKNOWN.test(message)) return true;
+	const code = error?.code;
+	return code !== undefined && !NEVER_CONNECTED.has(code);
+}
+
 async function awaitPeerJob(replication: any, node: any, jobId: string, timing: typeof PEER_RESTART_TIMING) {
 	const deadline = Date.now() + timing.jobDeadlineMs;
 	let lastPollError;
@@ -290,6 +299,7 @@ async function awaitPeerJob(replication: any, node: any, jobId: string, timing: 
 			hdbLogger.debug?.(`Polling restart job ${jobId} on ${node.name} failed, still waiting:`, lastPollError);
 			continue;
 		}
+		lastPollError = undefined;
 		const job = response?.results?.[0];
 		if (!job) return { node: node.name, error: `its restart job ${jobId} was not found` };
 		if (job.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE) return { node: node.name, message: job.message };
