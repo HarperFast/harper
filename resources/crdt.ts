@@ -279,27 +279,35 @@ function reconstructForward(
 	return record;
 }
 
-/**
- * Rebuild the state at `timestamp` from the record's entry at that key, else from its newest put,
- * patch or delete before it, which takes a scan: the log is keyed by time alone.
- */
+/** Rebuild the state at `timestamp` from the newest put, patch or delete of the record at or before it. */
 function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: any, timestamp, nodeId) {
 	const isOfRecord = (auditEntry) => auditEntry.tableId === tableId && compareKeys(auditEntry.recordId, recordId) === 0;
 	let start = auditStore.get(timestamp, tableId, recordId, nodeId);
 	// LMDB's get ignores the table and record arguments; an unlinked control entry, such as an eviction
 	// marker, reaches no state
-	if (start && isOfRecord(start) && (STATE_TYPES.has(start.type) || start.previousVersion))
-		start = { txnLogKey: timestamp, nodeId, entry: start };
-	else {
+	if (!(start && isOfRecord(start) && (STATE_TYPES.has(start.type) || start.previousVersion))) {
 		start = undefined;
-		for (const auditEntry of auditStore.getRange({ start: 1, end: timestamp + 0.001 })) {
-			if (auditEntry.txnLogKey > timestamp) break;
-			if (STATE_TYPES.has(auditEntry.type) && isOfRecord(auditEntry))
-				start = { txnLogKey: auditEntry.txnLogKey, nodeId: auditEntry.nodeId, entry: auditEntry };
+		// The log is keyed by time alone, so search back in windows that double, the first holding only
+		// `timestamp` itself (RocksDB's exact lookup misses a compound id).
+		let windowEnd = timestamp + 0.001;
+		let windowStart = Number.isFinite(timestamp) ? timestamp : 1;
+		for (let width = 100; !start && windowEnd > 1; windowStart -= width, width *= 2) {
+			for (const auditEntry of auditStore.getRange({ start: Math.max(windowStart, 1), end: windowEnd })) {
+				if (auditEntry.txnLogKey <= timestamp && STATE_TYPES.has(auditEntry.type) && isOfRecord(auditEntry))
+					start = auditEntry;
+			}
+			windowEnd = windowStart;
 		}
 		if (!start) return null;
 	}
-	return reconstructForward(auditStore, store, tableId, recordId, start, timestamp);
+	return reconstructForward(
+		auditStore,
+		store,
+		tableId,
+		recordId,
+		{ txnLogKey: start.txnLogKey ?? timestamp, nodeId: start.nodeId, entry: start },
+		timestamp
+	);
 }
 const STATE_TYPES = new Set(['put', 'patch', 'delete']);
 
