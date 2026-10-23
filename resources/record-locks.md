@@ -12,11 +12,12 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 `table.lock(id, options?, context?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
 write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
-map keyed by `[Symbol.for('record-lock'), tableId, id]`. No write goes to the store or audit log for
-`lock()` or `unlock()`. The record's version and stored bytes are unchanged when a lock is acquired or
-released; only the native key is locked in memory. This design eliminates all durable lock state from
-the on-disk format: durable LOCK/UNLOCK writes would produce version bumps that peers interpret as
-out-of-order duplicates and discard.
+map keyed by `[Symbol.for('record-lock'), tableId, id]`. No lock record or audit entry is written for
+`lock()` or `unlock()`. A lock admitted above the local clock within `storage.maxLockClockSkew` may
+persist an issuance ceiling so a restart cannot reuse a key. The record's version and stored bytes are
+unchanged when a lock is acquired or released; only the native key is locked in memory. This design
+eliminates durable lock state from the on-disk format: durable LOCK/UNLOCK writes would produce version
+bumps that peers interpret as out-of-order duplicates and discard.
 
 **Phase 0 contract.** `lock()` is mutually exclusive only with other `lock()` calls on the same key.
 Plain writes (`put`, `patch`, `delete`, `create`, `invalidate`, `relocate`) are never gated, parked,
@@ -26,6 +27,14 @@ unpinned mixed explicit transaction. That transaction's later timestamp becomes 
 so the holder cannot lose its own subsequent writes; ordering against plain writes between acquisition
 and that transaction timestamp is best-effort. Use `lock()` when the caller needs to read-then-
 conditionally-write without another holder interleaving, not to serialize arbitrary writers.
+
+Admission above a caller-supplied transaction timestamp can raise that timestamp to the admitted
+version. When the version is within `storage.maxLockClockSkew`, the local issuance clock can also move
+ahead of wall time, affecting unrelated local writes until the clock catches up.
+
+If persisting the issuance ceiling for a holder-write stamp fails, that save rejects and its unsaved
+operation is detached from the transaction. The caller must unlock and acquire a fresh lock before
+retrying the change; the refused operation cannot be reused through the same record instance.
 
 Consequences that shape the code:
 
@@ -175,6 +184,50 @@ transaction timestamp. A caller-supplied future `context.timestamp` likewise rem
 for the life of the lease; clamping it would put the next holder write behind the handle's own committed
 version and recreate the silent-drop bug.
 
+**Stamping above the admitted state (harper#2540).** Every fresh admission — after the cluster round's
+freshness wait, with the record read once under the lock and that same entry reloaded — raises the
+handle's floor one ulp (`timestampAbove`) above the stored version, a tombstone's included, and above
+the highest predecessor `lockRelease` / `lockBarrier` log position the round waited for
+(`admissionFloor`; the coordinator caches that maximum per delegation as `dependencyFloor`). A bound no
+valid timestamp exceeds fails the admission with a 409 and gives the key back.
+
+A floor above the handle's `acquiredAt` is not used as is (`admissionStamp`): every holder admitted on
+state one transaction left would share it, as the version of every write in its explicit transaction
+and as its log key, and two writes with an equal version and log key on one record read as a
+re-delivery — a shared counter loses an increment. A floor the clock has already passed takes the
+clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
+value falls back to it with a warning; read once per thread) is claimed as a unique local key
+(`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
+log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, a
+rate-limited clock-skew warning is logged and the floor stays explicit and moves no clock: one
+far-future timestamp pins neither the node's clock nor the holder's transaction, whose other writes
+would otherwise inherit it. Such a holder still outranks through an `ImmediateTransaction`'s per-write
+stamp, is best-effort in an explicit transaction, and its log key may repeat another's. A key the
+ratchet issues ahead of the clock is persisted as a ceiling before it is used and seeds issuance at
+open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
+reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
+not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry,
+coalesced followers and scoped → hold upgrades are not admissions and raise nothing.
+
+The floor reaches the write through the existing stamps. An explicit transaction's clock takes it only
+while nothing else would move with it — no log key reserved yet and no unlocked write staged first
+(`hasUnlockedWrite`, one pass over the writes for all of a transaction's locks); otherwise the clock
+stays put, the holder's ordering is best-effort, and nothing throws. Likewise a hold saved later in a
+different explicit transaction is stamped by that transaction's clock, not the floor. An
+`ImmediateTransaction` stamps holder writes from the handle as above, and each write commits on its own
+native handle whose log key is reserved at or above that write's stamp, because a replica applies a write
+at no more than its log key. A deferred write that has not been saved takes its stamp at its own save. A holder write saved while the same
+context's previous commit is still in flight (awaiting a streamed blob) would join that commit's handle,
+whose log key is already reserved; if that key is below the write's stamp it is refused with a 409
+before staging (harper#3238), because a replica would apply it at the lower key and could keep the
+predecessor's value while the origin keeps the holder's. The caller unlocks, then locks and retries once
+the earlier commit settles. A hold steps one ulp past its last version,
+which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
+ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
+issues. A step taken once the clock has passed a claimed version stays one ulp above it, keeping the
+hold's writes at their acquisition order; an unlocked write to the held record that the ratchet
+issued that exact key during the lead then drops the hold's save as its re-delivery (harper#3246).
+
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after
 the acquiring transaction committed is fine (each write auto-commits as an ImmediateTransaction).
@@ -191,7 +244,8 @@ parks a leader there and a coalesced follower behind it.
 > critical section, and successor freshness after a clean handoff while the key's home still holds
 > that handoff's dependency set. It adds no fencing generation and does not confirm locked writes to a
 > quorum, so **it changes nothing about how two conflicting writes resolve** and it does not promise
-> freshness once that dependency set is gone. Neither limitation is crash-only and both are reachable
+> freshness once that dependency set is gone. What it does do is stamp the holder's writes above every
+> predecessor write the admission could see (harper#2540; "Stamping above the admitted state" above). Neither limitation is crash-only and both are reachable
 > on a clean handoff.
 >
 > **§10 of the Phase 1 design below is the normative
@@ -202,8 +256,8 @@ parks a leader there and a coalesced follower behind it.
 > One consequence bears on the code here rather than on the API: **the Phase 0 contract's relationship
 > with ordinary writes is unchanged by Phase 1** — plain writes are still never gated and still
 > resolve by last-write-wins, with no field added to them — which is the main thing the fenced arm
-> would have given up. The fenced and quorum-confirmed alternatives are deferred, with their costs, to
-> harper#2540.
+> would have given up. The fenced and quorum-confirmed alternatives are not built; harper#2540 took
+> the stamp floor instead.
 
 Phase 1 keeps every Phase 0 mechanism and adds a cluster step on top of it. Nothing in core registers
 a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
@@ -490,10 +544,11 @@ home still holds that handoff's dependency set_ — a home restart, home-map cha
 the successor to the recovery barrier even after a clean release. It promises
 neither conflict-ordering fences nor quorum-confirmed settlement, so the exclusion invariant above
 ships narrower than it is written on two counts — the commit half holds only up to the
-pre-submission expiry fence, and a predecessor's write can still outrank its successor's under LWW.
-§10 states exactly what is and is not promised and is the normative wording; the two arms that would
-close the rest are deferred to harper#2540, not rejected. Where the sections below describe fenced or
-quorum-confirmed mode, they are describing that issue's scope, not this one's.
+pre-submission expiry fence, and a predecessor's write the successor could not see can still outrank
+its successor's under LWW. §10 states exactly what is and is not promised and is the normative wording.
+The two arms that would close the rest are not built: harper#2540 instead stamps a successor above
+every predecessor write its admission could see. Where the sections below describe fenced or
+quorum-confirmed mode, they describe arms that remain unbuilt.
 
 They are separate, and expiry establishes neither on its own. Phase 0 enforces part of the first:
 expiry is checked synchronously on every staged write and again immediately before the native commit
@@ -942,8 +997,9 @@ default.
 
 #### 7.3 The crashed writer: LWW is not enough, and fencing is not free
 
-> **Decided: (b) exclusion-only.** (a) and (c) are deferred to harper#2540. §10 carries the
-> normative contract and the reasoning; the analysis below is what those arms would have to build.
+> **Decided: (b) exclusion-only.** (a) and (c) are not built; harper#2540 stamps a successor above the
+> state it was admitted on rather than fencing. §10 carries the normative contract and the reasoning;
+> the analysis below is what those arms would have to build.
 
 The earlier claim — that a crashed holder's unreplicated write is stamped older and dropped by
 last-write-wins — does not hold. If `A`'s clock runs ahead, `A` writes under a valid delegation and
@@ -1098,8 +1154,9 @@ untouched.
 | **Fenced**            | `(generation, timestamp, origin)` | still narrowed                                                                                          | record-contract + stored-format change, reverses the Phase 0 contract, owes a tombstone-surviving rejection floor |
 | **Quorum-confirmed**  | either of the above               | closes the crashed/unreachable routes, not the late-settling one; §2 as written needs this _and_ fenced | latency on every locked write                                                                                     |
 
-**Exclusion-only is chosen.** The other two arms are deferred to harper#2540, which carries the
-limitations, the costs, and what closing them would take.
+**Exclusion-only is chosen.** The other two arms are not built. harper#2540 took a narrower step
+instead: a floor bump at admission, with no field, format or conflict-resolution change, which closes
+limitation (1) wherever the predecessor's write was visible to the successor's admission.
 
 Why the two arms were not taken now: fenced mode's cost is misplaced — it changes conflict resolution for _every_ write in the database,
 including in deployments that never call `lock()`, and it inverts a rule Phase 0 documented and
@@ -1124,20 +1181,23 @@ feature that has not yet been measured.
 >    on — so whatever the pair would have done to the record without a lock is what they do with one,
 >    silently and with no error raised. That is the whole of the limitation, and the contract must not
 >    restate the resolution rules: they live in `Table.ts` / `crdt.ts` and are not `lock()`'s to
->    promise. Two routes in, and they fail differently:
->    - **(1a) clock skew.** The predecessor's clock ran ahead of its successor's, and its write is
->      still in flight when the successor writes.
->    - **(1b) a timestamp pushed ahead on purpose, on a completely clean handoff.** A caller-supplied
->      future `context.timestamp`, or a mixed explicit transaction whose later timestamp becomes the
->      handle's floor — both documented as deliberate Phase 0 behavior ("Acquisition timestamp and mixed transactions" above). The
->      predecessor commits, replicates, drains and releases cleanly; the successor is admitted with
->      correct freshness, reads the current value, and writes at real wall-clock time — and its write
->      is the older one, silently, because the stored version is stamped in the future. What the
->      committed record then holds is whatever ordinary resolution produces from the pair — which for
->      overlapping plain fields is not the successor's value, and for disjoint patches or commutative
->      ops may still carry it. No crash, no skew, nothing in flight. **This is the case that
->      makes "exclusion-only" narrower than it sounds**, and the only defense available to a caller
->      today is not to stamp future timestamps under a lock.
+>    promise. What `lock()` does add (harper#2540) is a floor: an admitted holder's writes are stamped
+>    above the version it reloaded, a tombstone's included, and above the predecessor log positions its
+>    admission waited for. So a predecessor write that was committed and visible at admission — a
+>    clock-skewed peer's, or one stamped ahead on purpose by a caller's future `context.timestamp` —
+>    no longer outranks the holder's own writes. The routes that remain:
+>    - **(1a) clock skew, write in flight.** The predecessor's clock ran ahead of its successor's, and
+>      its write is still in flight when the successor writes, so no admission saw it.
+>    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
+>      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
+>      before `lock()`, keeps its clock; so does one admitted on state stamped beyond
+>      `storage.maxLockClockSkew`; and a hold saved later in a different explicit transaction is
+>      stamped by that transaction's clock. Either way the holder writes at that clock on a
+>      perfectly clean handoff, and if the admitted state is stamped above it, the holder's write is
+>      the older one, silently. What the committed record then holds is whatever ordinary resolution
+>      produces from the pair — which for overlapping plain fields is not the holder's value, and for
+>      disjoint patches or commutative ops may still carry it. The defense is to take the lock first
+>      in its own transaction, or write a hold from the context that acquired it.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and
@@ -1346,11 +1406,13 @@ cannot produce a barrier has no fence and fails closed.
   only final totals, and snapshot-free reload must still work after the applied-history fence
   (`#reloadLocked`). Under exclusion-only there is no fenced-mode suite to add here; the stale
   writes, patches and deletes against successor records and reclaimed tombstones belong to
-  harper#2540 if that arm is ever taken. What this suite **must** assert instead is the documented
+  the fenced arm if it is ever taken. What this suite **must** assert instead is the documented
   narrowing itself, as expected outcomes rather than test failures. Two schedules, and both must
   assert the observed value rather than only that no error was raised:
-  - **A predecessor's write outranking its successor's**, driven by a caller-supplied future
-    `context.timestamp` rather than a faked clock — so it runs over a _clean_ handoff with no skew.
+  - **A predecessor's write outranking its successor's**, over a _clean_ handoff with no skew: a
+    caller-supplied future `context.timestamp` on the predecessor, and a successor whose explicit
+    transaction clock was frozen before `lock()` (§10 (1b)). Without the frozen clock harper#2540's
+    floor makes the successor win, which is the other half to assert.
     Assert what `lock()` failed to prevent, not a storage disposition: that the committed record
     differs from what a serialized execution of the two critical sections would have produced, and
     that no error reached either caller. Choose a fixture where the two writes overlap on a plain
@@ -1380,8 +1442,8 @@ build supplies.
 
 Two things had to be settled before implementation, and one still is:
 
-1. **The guarantee decision — settled, exclusion-only** (§7.3 (b), §10). The deferred arms are
-   harper#2540.
+1. **The guarantee decision — settled, exclusion-only** (§7.3 (b), §10). harper#2540 added the
+   admission stamp floor instead of the fenced and quorum-confirmed arms.
 2. **The measurement gate of §10 comes before the protocol change, not after it.** Tracked as
    harper-pro#824.
 
@@ -1418,7 +1480,7 @@ but it is surprising, and the alternative — draining on the transaction rather
 costs bounded-time handoff. If revoke stands, harper#2547 must say so.
 
 **The documentation obligation is harper#2547, and it is not optional.** §10's rule that the two
-limitations may not be softened is the condition on which exclusion-only was chosen over harper#2540;
+limitations may not be softened is the condition on which exclusion-only was chosen over the fenced arm;
 if Phase 1 ships behind its gate and the public `lock()` page still describes exclusion without them,
 the tradeoff that justified the decision was never paid. It lands with or before enablement.
 

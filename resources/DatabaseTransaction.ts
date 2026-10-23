@@ -10,7 +10,7 @@ import {
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
-import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
+import { lockNotHeldError, markRecordLockWriteRefused, type RecordLockHandle } from './recordLock.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -678,6 +678,7 @@ export type TransactionWrite = {
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
+	dropped?: boolean;
 	// The origin record version carried by an applied or replayed write. Bound it by the origin's
 	// transaction-log key so malformed or historical overloaded values cannot move ordering past the write.
 	recordVersion?: number;
@@ -966,6 +967,7 @@ export class DatabaseTransaction implements Transaction {
 	 * staging is exactly what the fence exists to catch.
 	 */
 	declare hasLeaseProtectedWrite?: boolean;
+	declare unlockedWriteScan?: { writes: TransactionWrite[]; index: number; found: boolean };
 	// Tracks in-flight acquireRecordKey calls so concurrent lock() calls for the same key in one
 	// link (e.g. Promise.all([T.lock(id), T.lock(id)])) can coalesce rather than self-block.
 	declare pendingLocks?: Map<any, Map<unknown, Promise<RecordLockHandle>>>;
@@ -1315,6 +1317,7 @@ export class DatabaseTransaction implements Transaction {
 	detachWrite(operation: TransactionWrite): void {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
+		if (!operation.lockHandle) this.unlockedWriteScan = undefined;
 		this.ownedWrites?.delete(operation);
 		if (operation.stagedIn === this) operation.stagedIn = undefined;
 		if (operation.key === undefined) return;
@@ -1724,6 +1727,21 @@ export class DatabaseTransaction implements Transaction {
 		if (holds) txn.lockHolds = holds;
 	}
 
+	/**
+	 * Whether an unlocked write is staged. Resumes where the last call stopped, so a transaction that
+	 * takes N locks scans its writes once in all; detaching an unlocked write resets the cached scan.
+	 */
+	hasUnlockedWrite(): boolean {
+		const writes = this.writes;
+		let scan = this.unlockedWriteScan;
+		if (scan?.writes !== writes) scan = this.unlockedWriteScan = { writes, index: 0, found: false };
+		for (; !scan.found && scan.index < writes.length; scan.index++) {
+			const write = writes[scan.index];
+			if (write && !write.lockHandle) scan.found = true;
+		}
+		return scan.found;
+	}
+
 	private noteCommittedLockVersions(committedTransaction?: RocksTransaction): void {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
@@ -1787,6 +1805,7 @@ export class DatabaseTransaction implements Transaction {
 		// a locked write would otherwise re-scan every write of every later unlocked batch. Assigned
 		// only when it was set, so an ordinary transaction never gains the property at all.
 		if (this.hasLeaseProtectedWrite) this.hasLeaseProtectedWrite = false;
+		if (this.unlockedWriteScan) this.unlockedWriteScan = undefined;
 	}
 
 	/**
@@ -2169,7 +2188,18 @@ export class DatabaseTransaction implements Transaction {
 				// the same context before the commit resets it — a concurrent write in the caller's
 				// own Promise.all, or the next operation in a retry/replay save loop — with the
 				// lock's version, which LWW then silently drops against a newer record version.
-				if (!operation.lockStamp) operation.lockStamp = lockHandle.holderVersionCandidate();
+				if (!operation.lockStamp) {
+					try {
+						operation.lockStamp = lockHandle.holderVersionCandidate();
+					} catch (error) {
+						markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
+						if (!operation.saved) {
+							operation.dropped = true;
+							this.detachWrite(operation);
+						}
+						throw error;
+					}
+				}
 			}
 		}
 		const concurrentClosedWrite =
@@ -2238,10 +2268,36 @@ export class DatabaseTransaction implements Transaction {
 			// Before the first staged write, which freezes the native timestamp. A key below the floor's
 			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
 			// record version, and the entry then carries both clocks as an applied write does.
-			const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
-			if (!txnTime) {
-				txnTime = key;
-				if (!concurrentClosedWrite) this.timestamp = key;
+			// A holder write that joins a handle already reserved below its stamp would commit under that lower
+			// log key, which a replica applies the write at; refuse it before staging so a retry gets its own key.
+			const joinedKey = operation.lockStamp && !operation.saved ? reservedLocalKey(transaction) : undefined;
+			if (joinedKey !== undefined && joinedKey < operation.lockStamp) {
+				operation.dropped = true;
+				if (lockHandle) markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
+				this.detachWrite(operation);
+				throw new ClientError(
+					'Record lock write joined a commit already in flight under an earlier log key; unlock, then lock and retry once it settles',
+					409
+				);
+			}
+			try {
+				const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
+				if (!txnTime) {
+					txnTime = key;
+					if (!concurrentClosedWrite) this.timestamp = key;
+				}
+			} catch (error) {
+				// A refused write left attached would be staged by the next commit sweep after its caller saw the error.
+				if (!operation.saved) {
+					if (lockHandle) {
+						operation.dropped = true;
+						markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
+					}
+					this.detachWrite(operation);
+				}
+				if (immediateCommit)
+					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
+				throw error;
 			}
 		}
 		if (!txnTime) {
@@ -2289,6 +2345,7 @@ export class DatabaseTransaction implements Transaction {
 			!this.isReplay;
 		const wasSaved = Boolean(operation.saved);
 		let completion: Promise<void>;
+		let appliedByPriorAttempt: number | undefined;
 		try {
 			if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
 				const uncachedRead = !!operation.reloadCommitBase || reloadEntry || this.isReplay;
@@ -2322,6 +2379,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 			if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
+			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 			try {
 				completion = operation.commit(
@@ -2350,8 +2408,14 @@ export class DatabaseTransaction implements Transaction {
 			}
 			throw error;
 		}
+		// A retry that finds the record its own earlier attempt staged at this version skips the write, but that
+		// version stands. A record a competing write moved past it does not.
 		if (operation.trackRecordVersion)
-			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;
+			operation.appliedRecordVersion =
+				operation.recordVersionApplied ||
+				(appliedByPriorAttempt === writeVersion && operation.entry?.version === writeVersion)
+					? writeVersion
+					: undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion, transaction);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so

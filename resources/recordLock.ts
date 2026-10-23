@@ -1,6 +1,16 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import {
+	claimLocalKey,
+	freshLocalKey,
+	isValidFloor,
+	localIssuanceRatchet,
+	timestampAbove,
+} from './originClosedFloor.ts';
+import * as envMngr from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { convertToMS } from '../utility/common_utils.ts';
 
 /**
  * Exclusive per-record locks (harper#483).
@@ -25,6 +35,27 @@ export const MAX_LOCK_LEASE_MS = 300_000;
 export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 export const MAX_LOCK_TIMEOUT_MS = 300_000;
 const LOCK_KEY_PREFIX = Symbol.for('record-lock');
+
+// An ImmediateTransaction can rotate after a refused write, and callers may retain the old resource
+// instance. Keep the refusal attached to the native key until its handle releases that key.
+const refusedWriteKeys = new WeakMap<object, Set<unknown>>();
+
+export function markRecordLockWriteRefused(store: object, keyId: unknown): void {
+	let keys = refusedWriteKeys.get(store);
+	if (!keys) refusedWriteKeys.set(store, (keys = new Set()));
+	keys.add(keyId);
+}
+
+export function isRecordLockWriteRefused(store: object, keyId: unknown): boolean {
+	return refusedWriteKeys.get(store)?.has(keyId) ?? false;
+}
+
+export function clearRecordLockWriteRefused(store: object, keyId: unknown): void {
+	const keys = refusedWriteKeys.get(store);
+	if (!keys) return;
+	keys.delete(keyId);
+	if (keys.size === 0) refusedWriteKeys.delete(store);
+}
 
 export interface RecordLockOptions {
 	/** Lease in ms; the lock expires on its own if the holder never releases it (default 30 s, max 5 min) */
@@ -70,9 +101,12 @@ export interface RecordLockHandle {
 	acquiredAt: number;
 	/** Advance, but never lower, the version floor from the transaction that owns the actual write timestamp. */
 	noteHolderVersion(version: number): void;
-	/** Preserve a caller timestamp as a candidate floor without treating it as a committed write. */
+	/**
+	 * Raise the floor holder writes start from without treating it as a committed write: a caller
+	 * timestamp, or the stamp above the state the lock was admitted on.
+	 */
 	noteCandidateFloor(version: number): void;
-	/** Compute a holder-write version without advancing the floor until that write commits. */
+	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
 	clusterTsR?: number;
@@ -159,6 +193,72 @@ export function lockNotHeldError(handle: Pick<RecordLockHandle, 'expired'>): Cli
 	return new ClientError(handle.expired ? 'Record lock lease expired' : 'Record lock already released', 409);
 }
 
+/**
+ * The floor a newly admitted holder's writes start from: strictly above the version the lock reloaded
+ * (a tombstone's included) and the highest predecessor log position the admission waited for. A bound
+ * no valid timestamp exceeds fails the admission, rather than handing back a lock whose writes lose.
+ */
+export function admissionFloor(version: unknown, dependencyFloor: number | undefined): number | undefined {
+	const aboveVersion = stampAbove(version);
+	const aboveDependencies = stampAbove(dependencyFloor);
+	return aboveVersion === undefined || aboveDependencies > aboveVersion ? aboveDependencies : aboveVersion;
+}
+
+function stampAbove(bound: unknown): number | undefined {
+	if (!(typeof bound === 'number' && bound > 0)) return undefined;
+	const above = timestampAbove(bound);
+	if (!isValidFloor(above))
+		throw new ClientError(
+			`No valid timestamp is above ${bound}, so a write under this lock could not outrank the state it was admitted on`,
+			409
+		);
+	return above;
+}
+
+const DEFAULT_MAX_LOCK_CLOCK_SKEW_MS = 5000;
+let maxLockClockSkew: number | undefined;
+const CLOCK_SKEW_WARN_INTERVAL_MS = 60_000;
+let lastClockSkewWarn = -Infinity;
+
+function maxLockClockSkewMs(): number {
+	if (maxLockClockSkew !== undefined) return maxLockClockSkew;
+	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+	if (configured == null) return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
+	const skew = typeof configured === 'string' || typeof configured === 'number' ? convertToMS(configured) : NaN;
+	if (Number.isFinite(skew) && skew >= 0) return (maxLockClockSkew = skew);
+	harperLogger.warn?.(
+		`storage.maxLockClockSkew must be a finite, non-negative duration, but is ${configured}; using ${DEFAULT_MAX_LOCK_CLOCK_SKEW_MS}ms`
+	);
+	return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
+}
+
+/**
+ * The stamp a new holder's writes start from, given its admission floor. A floor above `acquiredAt` is
+ * the same for every holder admitted on state one transaction left, and as an explicit stamp it would
+ * become each one's log key, so it is replaced by a key no other local append is issued; one ahead of
+ * the clock, within the configured skew, lifts every later local key on this node above it. Past the
+ * skew the floor stays explicit and `movesClock` is false, so one far-future timestamp pins neither
+ * this node's clock nor the holder's transaction.
+ */
+export function admissionStamp(
+	rootStore: any,
+	floor: number,
+	acquiredAt: number
+): { floor: number; stamp: number; movesClock: boolean } {
+	if (floor <= acquiredAt) return { floor, stamp: acquiredAt, movesClock: true };
+	const maxSkew = maxLockClockSkewMs();
+	const skew = floor - rootStore.getMonotonicTimestamp();
+	if (skew <= maxSkew) return { floor, stamp: claimLocalKey(rootStore, floor), movesClock: true };
+	const now = performance.now();
+	if (now - lastClockSkewWarn >= CLOCK_SKEW_WARN_INTERVAL_MS) {
+		lastClockSkewWarn = now;
+		harperLogger.warn?.(
+			`A record lock was admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms); check clock synchronization. Its writes outrank that state only outside an explicit transaction, and their transaction log key may repeat another's.`
+		);
+	}
+	return { floor, stamp: floor, movesClock: false };
+}
+
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
 export function lockAttemptKey(tableId: number, id: any): any[] {
 	return Array.isArray(id) ? [LOCK_KEY_PREFIX, tableId, ...id] : [LOCK_KEY_PREFIX, tableId, id];
@@ -224,14 +324,28 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	holderVersionCandidate(floor?: number): number {
-		// A small nonzero step prevents exact LWW ties without materially moving past the observed floor.
-		const MIN_STEP = 0.000488;
 		return Math.max(
-			this.#lastHolderVersion != null ? this.#lastHolderVersion + MIN_STEP : this.acquiredAt,
+			this.#lastHolderVersion != null ? this.#stepPast(this.#lastHolderVersion) : this.acquiredAt,
 			this.acquiredAt,
 			this.#candidateFloor ?? -Infinity,
 			floor ?? -Infinity
 		);
+	}
+
+	/**
+	 * The smallest step past the holder's last version, which prevents an exact LWW tie with it. Ahead of
+	 * the clock it is claimed like an admission stamp: one ulp above the ratchet is otherwise the next key
+	 * the ratchet issues.
+	 */
+	#stepPast(version: number): number {
+		const step = timestampAbove(version);
+		const rootStore = this.store.rootStore;
+		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
+		const lead = step - rootStore.getMonotonicTimestamp();
+		if (lead <= 0) return step;
+		return lead <= maxLockClockSkewMs() || step <= timestampAbove(localIssuanceRatchet(rootStore))
+			? claimLocalKey(rootStore, step)
+			: step;
 	}
 
 	isExpired(): boolean {
@@ -402,6 +516,7 @@ class KeyLockHandle implements RecordLockHandle {
 	release(): boolean {
 		if (this.released) return false;
 		this.released = true;
+		clearRecordLockWriteRefused(this.store, this.keyId);
 		clearTimeout(this.#timer);
 		if (this.#commitHolds > 0) {
 			return this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');
@@ -411,6 +526,12 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	upgradeToHold(lease: number): void {
+		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
+		// enclosing transaction commits) gets a step past acquiredAt rather than acquiredAt again.
+		// Without this, a post-commit save and any in-transaction save both get acquiredAt, causing
+		// a LWW tie that drops the write. Compute before mutating the hold state so a failure leaves
+		// the handle scoped.
+		this.nextHolderVersion();
 		this.hold = true;
 		clearTimeout(this.#timer);
 		// A granted cluster round may not be extended locally: peers bound the hold from the request
@@ -424,11 +545,6 @@ class KeyLockHandle implements RecordLockHandle {
 		this.#deadlineMono = deadline;
 		this.expiresAt = Date.now() + remaining;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
-		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
-		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
-		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
-		this.nextHolderVersion();
 	}
 }
 
@@ -476,7 +592,14 @@ export async function acquireRecordKey(
 					wakeResolve?.();
 				};
 		const acquired = store.tryLock(key, onUnlocked);
-		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, store.getMonotonicTimestamp());
+		if (acquired) {
+			try {
+				return makeKeyLockHandle(store, key, keyId, lease, hold, freshLocalKey(store.rootStore ?? store));
+			} catch (error) {
+				store.unlock(key);
+				throw error;
+			}
+		}
 		if (onUnlocked) hasCallback = true; // callback now registered; do not register another until it fires
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
