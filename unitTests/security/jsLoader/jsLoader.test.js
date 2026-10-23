@@ -469,7 +469,8 @@ for (const mode of ['vm-current-context', 'vm']) {
 		});
 
 		it('strips TypeScript types from a required .ts file and records its source as read', async () => {
-			const typedSource = "interface Shape { value: string }\nconst shape: Shape = { value: 'stripped' };\nmodule.exports = shape;\n";
+			const typedSource =
+				"interface Shape { value: string }\nconst shape: Shape = { value: 'stripped' };\nmodule.exports = shape;\n";
 			writeFileSync(join(runtimeRoot, 'typed.ts'), typedSource);
 			writeFileSync(join(runtimeRoot, 'entry.cjs'), "module.exports = require('./typed.ts');\n");
 			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
@@ -539,7 +540,10 @@ for (const mode of ['vm-current-context', 'vm']) {
 		it('propagates an evaluation error instead of retrying the module as ESM', async () => {
 			writeFileSync(join(runtimeRoot, 'bad.cjs'), 'module.exports.value ====\n');
 			writeFileSync(join(runtimeRoot, 'requires-bad.cjs'), "module.exports = require('./bad.cjs');\n");
-			writeFileSync(join(runtimeRoot, 'throws.cjs'), "module.exports = {};\nthrow new Error('failed to import settings');\n");
+			writeFileSync(
+				join(runtimeRoot, 'throws.cjs'),
+				"module.exports = {};\nthrow new Error('failed to import settings');\n"
+			);
 			const failure = (file) =>
 				scopedImport(join(runtimeRoot, file), loaderScope()).then(
 					() => expect.fail(`${file} should not load`),
