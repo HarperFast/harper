@@ -4058,12 +4058,21 @@ export function makeTable(options): TableResourceClass {
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
-				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+				commit: (txnTime, existingEntry, _retry, transaction: any, committedBy?: DatabaseTransaction) => {
 					const txnLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					write.skipped = false;
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (
+						precedesExisting < 0 ||
+						// a re-delivered relocate would restamp the committed head, which can be another write of its transaction
+						(precedesExisting === 0 &&
+							committedBy?.sourceApply &&
+							isRocksDB &&
+							txnLogKey === txnTime &&
+							isHeadIdentity(committedEntry(id), txnTime, options?.nodeId))
+					) {
 						write.skipped = true;
 						return;
 					}
@@ -9637,12 +9646,16 @@ export function makeTable(options): TableResourceClass {
 	// The commit base is the committed record unless another write to the key already saved without being
 	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
-		let other = transaction?.writesByKey?.get(write.store)?.get(writeKeyId(write.key));
-		if (!other) return primaryStore.getEntry(write.key, COMMITTED_READ);
+		let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId);
+		if (!other) return committedEntry(write.key);
 		for (; other; other = other.priorWrite) {
-			if (other !== write && other.saved && !other.skipped) return primaryStore.getEntry(write.key, COMMITTED_READ);
+			if (other !== write && other.saved && !other.skipped) return committedEntry(write.key);
 		}
 		return existingEntry;
+	}
+
+	function committedEntry(id: Id): Entry | undefined {
+		return primaryStore.getEntry(id, COMMITTED_READ);
 	}
 
 	function isHeadIdentity(entry: Partial<Entry> | undefined, version: number, nodeId?: number): boolean {

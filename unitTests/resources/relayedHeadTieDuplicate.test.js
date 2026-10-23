@@ -171,6 +171,36 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		}
 	}
 
+	for (const putFirst of [false, true]) {
+		it(`re-delivers a put ${putFirst ? 'before' : 'after'} a non-resident relocate without changing the record`, async function () {
+			if (isLMDB) return this.skip();
+			const { T, apply, origin } = replicatedTable(`NonResidentRelocate${putFirst ? 'AfterPut' : 'ThenPut'}`);
+			const before = Date.now() - 60000;
+			await apply({
+				type: 'put',
+				id: 'r',
+				value: { id: 'r', name: 'old' },
+				timestamp: before,
+				version: before,
+				nodeId: origin,
+			});
+			const version = before + 1000;
+			const transaction = () => {
+				const put = { type: 'put', id: 'r', value: { id: 'r', name: 'new' }, nodeId: origin, version };
+				const relocate = { type: 'relocate', id: 'r', nodeId: origin, version, residencyList: ['not-this-node'] };
+				return { type: 'transaction', timestamp: version, writes: putFirst ? [put, relocate] : [relocate, put] };
+			};
+			await apply(transaction());
+			const delivered = T.primaryStore.getEntry('r');
+			await apply(transaction());
+			const redelivered = T.primaryStore.getEntry('r');
+			assert.deepEqual(
+				{ value: redelivered?.value, flags: redelivered?.metadataFlags, version: redelivered?.version },
+				{ value: delivered?.value, flags: delivered?.metadataFlags, version: delivered?.version }
+			);
+		});
+	}
+
 	it('skips the put of a re-delivered transaction that also publishes to its key', async function () {
 		if (isLMDB) return this.skip();
 		const { T, apply, origin } = replicatedTable('PutPublishRedelivery');
