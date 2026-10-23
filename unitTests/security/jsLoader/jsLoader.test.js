@@ -334,7 +334,7 @@ describe('compartment importHook', () => {
 	});
 
 	afterEach(() => {
-		rmSync(root, { recursive: true, force: true });
+		if (root) rmSync(root, { recursive: true, force: true });
 	});
 
 	const compartmentScope = (overrides = {}) => ({
@@ -485,6 +485,33 @@ describe('compartment importHook', () => {
 			);
 			assert.strictEqual(result.named, 'N');
 			assert.strictEqual(result.wrapped, 'X');
+		});
+
+		it('does not read a getter that throws', async () => {
+			writePackage(
+				'getterpkg',
+				{
+					'index.cjs':
+						"exports.ok = 1;\nfor (const name of ['bad']) Object.defineProperty(exports, name, { enumerable: true, get() { throw new Error('unused getter'); } });\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys("export { ok } from 'getterpkg';\n");
+			assert.strictEqual(result.ok, 1);
+		});
+
+		it('adds no names for an array, string or buffer module.exports', async () => {
+			const exportsByPackage = {
+				arraypkg: "module.exports = ['a', 'b'];",
+				stringpkg: "module.exports = 'text';",
+				bufferpkg: "module.exports = Buffer.from('xy');",
+			};
+			for (const [name, source] of Object.entries(exportsByPackage)) {
+				writePackage(name, { 'index.cjs': source }, { main: 'index.cjs' });
+				const result = await importKeys(`import * as ns from '${name}';\nexport const keys = Object.keys(ns);\n`);
+				assert.ok(!result.keys.includes('0'), `${name} exposed index names: ${result.keys}`);
+				assert.ok(result.keys.includes('default'), name);
+			}
 		});
 
 		it('does not promote the properties of an ES module default export to named exports', async () => {
