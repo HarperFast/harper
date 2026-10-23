@@ -695,6 +695,34 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 const ROLLOUT_RECORD_STATUSES = new Set(['rolling_out', 'success', 'partial', 'failed', 'rolled_back', 'staged']);
 const ENDED_ROW_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
 
+/** The nodes a rolling deploy's row lists with no confirmed activation. */
+function unconfirmedPeers(row: Record<string, any>): string[] {
+	return (row.peer_results ?? [])
+		.filter((peer: any) => peer?.activation?.activated !== true)
+		.map((peer: any) => peer?.node ?? 'unknown');
+}
+
+function partialRollout(row: Record<string, any>, reason: string): void {
+	const unconfirmed = unconfirmedPeers(row);
+	row.completed_at = Date.now();
+	row.status = 'partial';
+	row.error = {
+		message: reason + (unconfirmed.length ? `; not confirmed on: ${unconfirmed.join(', ')}` : ''),
+		nodes: unconfirmed,
+		phase: 'restart',
+	};
+}
+
+/**
+ * End a rolling deploy's record `partial` when its activation job failed before it could, naming each peer with no
+ * confirmed activation, so whatever follows the record is not left waiting out its bound on a job that has ended.
+ */
+export async function abandonRollout(deploymentId: string, reason: string): Promise<void> {
+	await updateRolloutRow(deploymentId, (row) => {
+		if (!ENDED_ROW_STATUSES.has(row.status)) partialRollout(row, `The activation job failed: ${reason}`);
+	});
+}
+
 /**
  * End the `rolling_out` records this node wrote whose activation job is no longer running: a restart mid-rollout
  * settles the job as ERROR (jobOwnership.ts), and nothing would end its record. `success` only when the job finished
@@ -715,21 +743,14 @@ export async function settleInterruptedRollouts(): Promise<number> {
 		for (const row of rows) {
 			const job = row.restart_job_id ? await jobs.get(row.restart_job_id) : undefined;
 			if (job?.status === terms.JOB_STATUS_ENUM.CREATED || job?.status === terms.JOB_STATUS_ENUM.IN_PROGRESS) continue;
-			const unconfirmed = (row.peer_results ?? [])
-				.filter((peer: any) => peer?.activation?.activated !== true)
-				.map((peer: any) => peer?.node ?? 'unknown');
 			const updated: Record<string, any> = { ...row, completed_at: Date.now() };
-			if (job?.status === terms.JOB_STATUS_ENUM.COMPLETE && unconfirmed.length === 0) {
+			if (job?.status === terms.JOB_STATUS_ENUM.COMPLETE && unconfirmedPeers(row).length === 0) {
 				updated.status = 'success';
 			} else {
-				updated.status = 'partial';
-				updated.error = {
-					message:
-						`The activation job ${row.restart_job_id ?? '(none recorded)'} ended without finishing this record` +
-						(unconfirmed.length ? `; not confirmed on: ${unconfirmed.join(', ')}` : ''),
-					nodes: unconfirmed,
-					phase: 'restart',
-				};
+				partialRollout(
+					updated,
+					`The activation job ${row.restart_job_id ?? '(none recorded)'} ended without finishing this record`
+				);
 			}
 			await withIsolatedTransaction(() => table.put(updated));
 			settled++;

@@ -222,6 +222,19 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	});
 	const activation = { project: 'web', deployment_id: DEPLOYMENT, deployment_row: ROW };
 
+	it('ends the record partial when the job fails before it can visit the peers, so no follower waits it out', async () => {
+		rows.set(ROW, stagedRow());
+		global.server.replication.monitorNodeCAs = () => {
+			throw new Error('hdb_nodes could not be read');
+		};
+		await assert.rejects(activateDeploymentOnPeers(activation), /hdb_nodes could not be read/);
+
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'partial');
+		assert.deepStrictEqual(row.error.nodes, ['peer-a', 'peer-b', 'peer-c']);
+		assert.match(row.error.message, /The activation job failed: hdb_nodes could not be read; not confirmed on: peer-a/);
+	});
+
 	it('ends the record partial, naming the node whose canary rejected the release, and keeps each staging outcome', async () => {
 		rows.set(ROW, stagedRow());
 		answers['peer-b'] = new Error('web was not deployed on this node: release failed to load in its canary worker');

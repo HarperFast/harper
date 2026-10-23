@@ -213,29 +213,27 @@ async function activateDeploymentOnPeers(activation: any) {
 			true
 		);
 	}
-	try {
-		// A job thread starts with an empty `server.nodes`; subscribing to node updates fills it from hdb_nodes.
-		(global as any).server.replication.monitorNodeCAs();
-	} catch (error) {
-		// Harper core alone has no replication, so no peers; any other failure leaves the list unknown, not empty.
-		if (error?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
-	}
+	const { finishRollout, abandonRollout } = await import('../components/deploymentRecorder.ts');
 	const thisNode = getThisNodeName();
-	const otherNodes = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
-	const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
-	const { finishRollout } = await import('../components/deploymentRecorder.ts');
 	const results = [];
-	const unrecorded = [];
-	if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results, unrecorded);
-	// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
-	for (const name of nodes ?? []) {
-		if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
-			const result = { node: name, error: 'it is no longer one of the nodes in this cluster' };
-			results.push(result);
-			unrecorded.push(result);
+	try {
+		const otherNodes = otherKnownNodes(thisNode);
+		const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
+		const unrecorded = [];
+		if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results, unrecorded);
+		// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
+		for (const name of nodes ?? []) {
+			if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
+				const result = { node: name, error: 'it is no longer one of the nodes in this cluster' };
+				results.push(result);
+				unrecorded.push(result);
+			}
 		}
+		await finishRollout(deploymentRow, results, unrecorded);
+	} catch (error) {
+		await abandonRollout(deploymentRow, error?.message ?? String(error));
+		throw error;
 	}
-	await finishRollout(deploymentRow, results, unrecorded);
 	const failed = results.filter((result) => result.error);
 	if (failed.length > 0) {
 		const error: any = new Error(
@@ -247,6 +245,17 @@ async function activateDeploymentOnPeers(activation: any) {
 		throw error;
 	}
 	return { activated: results };
+}
+
+/** The cluster's other nodes. A job thread starts with an empty `server.nodes`; subscribing to node updates fills it. */
+function otherKnownNodes(thisNode: string): any[] {
+	try {
+		(global as any).server.replication.monitorNodeCAs();
+	} catch (error) {
+		// Harper core alone has no replication, so no peers; any other failure leaves the list unknown, not empty.
+		if (error?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
+	}
+	return ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
 }
 
 /** Records each peer's outcome on the deployment row as it lands, except the last, which `unrecorded` hands on. */
