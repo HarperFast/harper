@@ -1,8 +1,11 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setTimeout: delay } = require('node:timers/promises');
-const { getFileId, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { waitFor } = require('../waitFor');
+const { certifyOriginFloor, publishOriginFloor } = require('#src/resources/originClosedFloor');
+const { persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { getFileId, getFilePathForBlob, isSaving, setDeletionDelay } = require('#src/resources/blob');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -91,7 +94,7 @@ for (const loadAsInstance of [true, false]) {
 
 		for (const [caseIndex, { name, writes, expected, lmdbVersionRegressionOrders = [] }] of cases.entries()) {
 			for (const order of permutations(writes.map((_, index) => index))) {
-				// Other LMDB permutations hit the independent entry.version regression (#3388).
+				// These orders hit the independent LMDB entry.version regression (#3388).
 				const test = isLMDB && lmdbVersionRegressionOrders.includes(order.join('')) ? it.skip : it;
 				test(`${name}: arrival ${order.join(',')}`, async () => {
 					const id = `${caseIndex}-${order.join('-')}`;
@@ -172,6 +175,163 @@ for (const loadAsInstance of [true, false]) {
 			);
 		});
 
+		it('replaces across a backdated newer patch whose receipt has no audit entry', async function () {
+			if (isLMDB) return this.skip();
+			const timestamp = Date.now();
+			await T.put('rekeyed', { a: 'old', c: 'stale' }, { timestamp });
+			let floor;
+			await waitFor(
+				() => {
+					floor = certifyOriginFloor(T.primaryStore.rootStore);
+					return floor && floor > timestamp + 20;
+				},
+				{ timeout: 5000, message: 'the origin floor did not advance past the newer patch' }
+			);
+			persistOriginClosedFloor(T.auditStore, floor);
+			publishOriginFloor(T.primaryStore.rootStore, floor);
+			await T.patch('rekeyed', { b: 'newer' }, { timestamp: timestamp + 20 });
+			const entry = T.primaryStore.getEntry('rekeyed');
+			assert.ok(entry.additionalAuditRefs.some((ref) => ref.version === timestamp + 20));
+			assert.equal(T.auditStore.get(timestamp + 20, T.tableId, 'rekeyed', 0), undefined);
+			await T.put('rekeyed', { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual(
+				{ ...(await T.get('rekeyed')) },
+				{
+					id: 'rekeyed',
+					a: 'replacement',
+					b: 'newer',
+				}
+			);
+		});
+
+		it('applies an empty PUT on a keyless table beneath a deep patch history', async () => {
+			const Keyless = table({
+				table: `Keyless${loadAsInstance}`,
+				database: 'fullPutBoundaries',
+				audit: true,
+				schemaDefined: true,
+				attributes: [
+					{ name: 'sequence', type: 'Int' },
+					{ name: 'stale', type: 'String' },
+				],
+			});
+			Keyless.loadAsInstance = loadAsInstance;
+			const timestamp = (nextTimestamp += 2000);
+			nextTimestamp += 2000;
+			await Keyless.put('keyless', { stale: 'old' }, { timestamp });
+			for (let index = 1; index <= 999; index++) {
+				await Keyless.patch('keyless', { sequence: index }, { timestamp: timestamp + index + 1 });
+			}
+			await Keyless.put('keyless', {}, { timestamp: timestamp + 1 });
+			assert.deepStrictEqual({ ...(await Keyless.get('keyless')) }, { sequence: 999 });
+		});
+
+		it('replays every newer same-key patch within one transaction', async () => {
+			const timestamp = (nextTimestamp += 1000);
+			await T.put('frame', { c: 'stale', counter: 10 }, { timestamp });
+			const context = { timestamp: timestamp + 20 };
+			await transaction(context, async () => {
+				await T.patch('frame', { b: 'first', first: true, counter: { __op__: 'add', value: 5 } }, context);
+				await T.patch('frame', { b: 'last', d: 'second', counter: { __op__: 'add', value: 7 } }, context);
+			});
+			await T.put('frame', { a: 'replacement', counter: 100 }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual(
+				{ ...(await T.get('frame')) },
+				{
+					id: 'frame',
+					a: 'replacement',
+					b: 'last',
+					first: true,
+					d: 'second',
+					counter: 112,
+				}
+			);
+		});
+
+		it('preserves newer data when a retained patch body is unavailable', async function () {
+			if (!isLMDB) return this.skip();
+			const timestamp = (nextTimestamp += 1000);
+			await T.put('bodyless', { c: 'stale' }, { timestamp });
+			await T.patch('bodyless', { b: 'newer' }, { timestamp: timestamp + 20 });
+			const key = T.primaryStore.getEntry('bodyless').localTime;
+			const entry = T.auditStore.get(key);
+			const header = Buffer.from(entry.encoded.subarray(0, entry.encoded.length - entry.getBinaryValue().length));
+			await T.auditStore.put(key, header);
+			assert.equal(T.auditStore.get(key).getValue(T.primaryStore), undefined);
+			await T.put('bodyless', { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual(
+				{ ...(await T.get('bodyless')) },
+				{
+					id: 'bodyless',
+					c: 'stale',
+					b: 'newer',
+					a: 'replacement',
+				}
+			);
+		});
+
+		it('preserves newer data behind a corrupt audit header', async function () {
+			if (!isLMDB) return this.skip();
+			const timestamp = (nextTimestamp += 1000);
+			await T.put('corrupt', { c: 'stale' }, { timestamp });
+			await T.patch('corrupt', { b: 'newer' }, { timestamp: timestamp + 20 });
+			const key = T.primaryStore.getEntry('corrupt').localTime;
+			await T.patch('corrupt', { d: 'latest' }, { timestamp: timestamp + 30 });
+			await T.auditStore.put(key, Buffer.from([0x40, 0, 0]));
+			assert.equal(T.auditStore.get(key).type, undefined);
+			await T.put('corrupt', { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual(
+				{ ...(await T.get('corrupt')) },
+				{
+					id: 'corrupt',
+					c: 'stale',
+					b: 'newer',
+					d: 'latest',
+					a: 'replacement',
+				}
+			);
+		});
+
+		it('replays equal-version origins in the existing node-name order', async function () {
+			if (isLMDB) return this.skip();
+			for (const order of [
+				[0, 1],
+				[1, 0],
+			]) {
+				const timestamp = (nextTimestamp += 1000);
+				const id = `ties-${order.join('-')}`;
+				async function apply(value, version, logKey, origin, fullUpdate = false) {
+					const nodeId = getIdOfRemoteNode(origin, T.auditStore);
+					const context = { source: {}, sourceApply: true, timestamp: logKey };
+					await transaction(context, async () => {
+						const resource = await T.getResource(id, context);
+						await resource._writeUpdate(id, value, fullUpdate, { isNotification: true, nodeId, version });
+					});
+				}
+				await apply({ id, c: 'stale' }, timestamp, timestamp + 100, 'tie-base', true);
+				const patches = [
+					{ value: { b: 'alpha', first: true }, origin: 'tie-alpha' },
+					{ value: { b: 'zeta', second: true }, origin: 'tie-zeta' },
+				];
+				for (const [arrival, index] of order.entries()) {
+					const { value, origin } = patches[index];
+					await apply(value, timestamp + 20, timestamp + 200 + arrival, origin);
+				}
+				assert.strictEqual((await T.get(id)).b, 'zeta');
+				await apply({ id, a: 'replacement' }, timestamp + 10, timestamp + 400, 'tie-base', true);
+				assert.deepStrictEqual(
+					{ ...(await T.get(id)) },
+					{
+						id,
+						a: 'replacement',
+						b: 'zeta',
+						first: true,
+						second: true,
+					}
+				);
+			}
+		});
+
 		it('preserves timestamp metadata while storing the original PUT in audit history', async () => {
 			const Metadata = table({
 				table: `Metadata${loadAsInstance}`,
@@ -228,17 +388,37 @@ for (const loadAsInstance of [true, false]) {
 			const timestamp = (nextTimestamp += 1000);
 			const content = 'newer blob'.repeat(4096);
 			await Blobs.put('blob', { c: 'stale' }, { timestamp });
-			await Blobs.patch('blob', { blob: new Blob([content]) }, { timestamp: timestamp + 20 });
+			const retainedBlob = new Blob([content]);
+			await Blobs.patch('blob', { blob: retainedBlob }, { timestamp: timestamp + 20 });
+			await isSaving(retainedBlob);
 			const fileId = getFileId((await Blobs.get('blob')).blob);
 			assert.ok(fileId, 'must use a file-backed blob');
+			const Sentinel = table({
+				table: `BlobSentinel${loadAsInstance}`,
+				database: 'fullPutBoundaries',
+				audit: false,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'blob', type: 'Blob' },
+				],
+			});
+			const sentinelBlob = new Blob([content]);
+			await Sentinel.put('sentinel', { blob: sentinelBlob });
+			await isSaving(sentinelBlob);
+			const sentinelPath = getFilePathForBlob(Sentinel.primaryStore.getSync('sentinel').blob);
+			assert.ok(existsSync(sentinelPath));
 			setDeletionDelay(0);
 			try {
 				await Blobs.put('blob', { a: 'replacement' }, { timestamp: timestamp + 10 });
-				// Assert a non-event after the configured reclamation window.
-				await delay(30);
+				await Sentinel.delete('sentinel');
+				await waitFor(() => !existsSync(sentinelPath), {
+					timeout: 5000,
+					message: 'the reclamation sentinel was not deleted',
+				});
 				const record = await Blobs.get('blob');
 				assert.equal(record.c, undefined);
 				assert.strictEqual(getFileId(record.blob), fileId);
+				assert.ok(existsSync(getFilePathForBlob(record.blob)));
 				assert.strictEqual(await record.blob.text(), content);
 			} finally {
 				setDeletionDelay(undefined);

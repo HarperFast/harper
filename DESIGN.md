@@ -19,12 +19,12 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## resources/ — records, transactions, tables, blobs, audit
 
-- [Full PUT resequencing](resources/DESIGN.md#full-put-resequencing) — Replay newer patches on a replacement body only when the audit walk is complete.
 - [File overview](resources/DESIGN.md#file-overview) — What each file in `resources/` owns.
 - [`Resource.ts` — base class](resources/DESIGN.md#resourcets--base-class) — Static entry points versus instance methods, and the `transactional()` wrapper.
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the `makeTable()` factory.
 - ["Where is X" cheat sheet](resources/DESIGN.md#where-is-x-cheat-sheet) — Symbol lookup for the read/write path, audit, subscriptions and schema.
 - [Full-text declarations and reader snapshots](resources/DESIGN.md#full-text-declarations-and-reader-snapshots) — Declaration names stay separate from stored attributes; a query retains one native reader across every page.
+- [Full PUT resequencing](resources/DESIGN.md#full-put-resequencing) — Replay newer patches on a replacement body only when the audit walk is complete.
 - [Database generation and resumable positions](resources/DESIGN.md#database-generation-and-resumable-positions) — Every copy path stamps a new generation before the copy is readable; a position resumes only if it names it and sits at or above its resume floor.
 - [Origin-closed timestamp floor](resources/DESIGN.md#origin-closed-timestamp-floor) — Every key appended to the `local` log is reserved on its thread first; a certifier publishes a persisted floor no later transaction can append below, held by stalled commits and ratcheted across a restart.
 - [Historical record reconstruction (`getRecordAtTime`)](resources/DESIGN.md#historical-record-reconstruction-getrecordattime) — A put or delete newer than the requested time stops patch reversal; the state is rebuilt forward from older history.
