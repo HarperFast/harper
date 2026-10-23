@@ -5,7 +5,7 @@ testUtils.preTestPrep();
 
 const assert = require('node:assert');
 const { randomBytes, randomUUID } = require('node:crypto');
-const { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const { writeUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
@@ -36,14 +36,16 @@ const {
 	restorePinId,
 } = require('#src/dataLayer/rocksdbBackup');
 const { readBackupManifest } = require('#src/dataLayer/backupManifest');
-const { readBackupPins } = require('#src/dataLayer/backupRepository');
+const { backupPinsDir, readBackupPins } = require('#src/dataLayer/backupRepository');
 const {
 	acquireRestoreLock,
 	checkRestoreState,
 	markRestoreDestructive,
 	releaseRestoreLock,
+	restoreLockHeldExclusively,
 	restoreMarkerPresent,
 	restoreSourceId,
+	restoringMarkerPath,
 } = require('#src/dataLayer/restoreMarker');
 const restoreReceiptModule = require('#src/dataLayer/restoreReceipt');
 const { readRestoreReceipt, restoreReceiptPath, writeRestoreReceipt } = restoreReceiptModule;
@@ -54,6 +56,9 @@ const {
 	scanRestoreReceipts,
 	terminalRestoreExists,
 } = require('#src/dataLayer/restoreIntent');
+const { finishOutstandingRestore } = require('#src/dataLayer/restorePublication');
+const restoreChildRunnerModule = require('#src/dataLayer/restoreChildRunner');
+const { runRestoreChild } = restoreChildRunnerModule;
 const { reconcileInterruptedJobs } = require('#src/server/jobs/jobOwnership');
 const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletion');
 const restartModule = require('#src/bin/restart');
@@ -259,6 +264,16 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		}
 	}
 
+	/**
+	 * Makes every receipt write for this database fail, as a real write does: a directory sits where the
+	 * write opens its temp file. Returns the undo.
+	 */
+	function failReceiptWrites(fixture) {
+		const tempPath = `${restoreReceiptPath(fixture.dir)}-tmp`;
+		mkdirSync(join(tempPath, 'occupied'), { recursive: true });
+		return () => rmSync(tempPath, { recursive: true, force: true });
+	}
+
 	/** The receipt as a crash at a later transition would have left it, written under the target's lock. */
 	function rewriteReceipt(dir, fields, { marker = false } = {}) {
 		const lock = acquireRestoreLock(dir);
@@ -303,7 +318,13 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 					requested_by: 'admin',
 				}
 			);
-			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: restorePinId(fixture.dir), backup_id: backupId }]);
+			assert.strictEqual(receipt.source_pin_id, `restore-intent-${receipt.operation_id}`);
+			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: receipt.source_pin_id, backup_id: backupId }]);
+			assert.strictEqual(
+				readBackupPins(fixture.backupDir)[0].database_path,
+				fixture.dir,
+				'the pin names the database, so it lapses with its marker'
+			);
 			assert.strictEqual(checkRestoreState(fixture.dir), 'pending');
 
 			// The restarted process: no marker exists yet and nothing holds the lock, so only the receipt
@@ -499,7 +520,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
 			assert.strictEqual(checkRestoreState(fixture.dir), 'pending');
 			assert.strictEqual(loadedItems(fixture.name), undefined, 'the name stays blocked');
-			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: restorePinId(fixture.dir), backup_id: backupId }]);
+			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: failed.source_pin_id, backup_id: backupId }]);
 			// the interrupted-job sweep that follows the hook leaves the job to its receipt
 			await reconcileInterruptedJobs(owned);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
@@ -600,7 +621,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const fixture = await seededDatabase({ backups: 2 });
 			const [first, second] = fixture.backupIds;
 			const original = await requestRestore(fixture.name, { on_restart: true, backup_id: first });
-			const { operation_id: originalOperation } = receiptOf(fixture.dir);
+			const { operation_id: originalOperation, source_pin_id: originalPin } = receiptOf(fixture.dir);
 
 			const replacement = await requestRestore(fixture.name, { on_restart: true, backup_id: second });
 
@@ -610,7 +631,13 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(receipt.retain_previous, false);
 			assert.strictEqual(receipt.backup_id, second);
 			assert.strictEqual(receipt.job_id, replacement.jobId);
-			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: restorePinId(fixture.dir), backup_id: second }]);
+			assert.strictEqual(receipt.source_pin_id, `restore-intent-${receipt.operation_id}`);
+			assert.notStrictEqual(receipt.source_pin_id, originalPin, 'each restore pins its source under its own id');
+			assert.deepStrictEqual(
+				pinsOf(fixture),
+				[{ pin_id: receipt.source_pin_id, backup_id: second }],
+				"the superseded restore's pin is released once its successor's receipt names its own"
+			);
 			const supersededJob = await job(original.jobId);
 			assert.strictEqual(supersededJob.status, JOB_STATUS_ENUM.ERROR);
 			assert.strictEqual(supersededJob.message, `Superseded by job ${replacement.jobId}`);
@@ -623,6 +650,62 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			);
 			assert.strictEqual((await job(replacement.jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[1]);
+		});
+
+		it('keeps a superseded restore and its pinned source when its successor cannot record its receipt', async function () {
+			const fixture = await seededDatabase({ backups: 2 });
+			const [first, second] = fixture.backupIds;
+			const original = await requestRestore(fixture.name, { on_restart: true, backup_id: first });
+			const pending = receiptOf(fixture.dir);
+
+			const repair = failReceiptWrites(fixture);
+			try {
+				await assert.rejects(
+					requestRestore(fixture.name, { on_restart: true, backup_id: second }),
+					(error) => error.code === 'EISDIR'
+				);
+			} finally {
+				repair();
+			}
+
+			assert.deepStrictEqual(receiptOf(fixture.dir), pending, 'the superseded restore is still the one recorded');
+			assert.ok(
+				pinsOf(fixture).some((pin) => pin.pin_id === pending.source_pin_id && pin.backup_id === first),
+				`its source is still pinned: ${JSON.stringify(pinsOf(fixture))}`
+			);
+			await assert.rejects(deleteBackupOffline(fixture.name, first), (error) => error.statusCode === 409);
+			assert.strictEqual(
+				(await job(original.jobId)).status,
+				JOB_STATUS_ENUM.IN_PROGRESS,
+				'and its job is not superseded'
+			);
+
+			await boot(fixture.name);
+			assert.strictEqual((await job(original.jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
+		it('releases its claim when it cannot count the attempt, and runs it at the next boot', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const pending = receiptOf(fixture.dir);
+
+			const repair = failReceiptWrites(fixture);
+			let owned;
+			try {
+				owned = await boot(fixture.name);
+			} finally {
+				repair();
+			}
+
+			assert.deepStrictEqual([...owned], [jobId]);
+			assert.deepStrictEqual(receiptOf(fixture.dir), pending, 'neither counted nor started');
+			assert.strictEqual(restoreLockHeldExclusively(fixture.dir), false, 'the claim is not left held');
+
+			assert.deepStrictEqual([...(await boot(fixture.name))], []);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
 		it('never counts a failure to finish a committed restore as a failed attempt', async function () {
@@ -764,7 +847,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 					.map(({ pin_id, backup_id, database_path }) => ({ pin_id, backup_id, database_path }))
 					.sort((a, b) => a.backup_id - b.backup_id),
 				[
-					{ pin_id: restorePinId(fixture.dir), backup_id: unprovable, database_path: fixture.dir },
+					{ pin_id: failed.source_pin_id, backup_id: unprovable, database_path: fixture.dir },
 					{ pin_id: failed.pre_restore_pin_id, backup_id: preRestoreId, database_path: fixture.dir },
 				].sort((a, b) => a.backup_id - b.backup_id)
 			);
@@ -811,6 +894,80 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(result.cancelled, 'unreadable restore record');
 			assert.strictEqual(result.still_blocked, false);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
+		});
+	});
+
+	// The offline route, which publishes through the same protocol as the online one.
+	describe('an offline restore', function () {
+		it('reports a proven restore whose marker could not be cleared as unpublished, and the next claim publishes it', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			await closeDatabase(fixture.name);
+			const markerPath = restoringMarkerPath(fixture.dir);
+			let marker;
+			// Nothing runs between the child's proof and the commit: a directory put in the marker's place
+			// there makes clearing it, the publication step, fail as a real unlink does.
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (...args) => {
+				const evidence = await runRestoreChild(...args);
+				marker = readFileSync(markerPath);
+				rmSync(markerPath);
+				mkdirSync(join(markerPath, 'occupied'), { recursive: true });
+				return evidence;
+			});
+			try {
+				await assert.rejects(
+					restoreBackupOffline(fixture.name, backupId),
+					/was applied and proven but could not be published/
+				);
+			} finally {
+				restoreRunner();
+			}
+
+			assert.strictEqual(receiptOf(fixture.dir).state, 'committed');
+			assert.strictEqual(loadedItems(fixture.name), undefined, 'the marker still blocks it');
+
+			rmSync(markerPath, { recursive: true });
+			writeFileSync(markerPath, marker);
+			await finishOutstandingRestore(fixture.dir);
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
+		it('removes its receipt before its pin when it fails before destroying anything', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			await closeDatabase(fixture.name);
+			const repair = breakBackup(fixture, backupId);
+			const pinFile = join(backupPinsDir(fixture.backupDir), `${restorePinId(fixture.dir)}.json`);
+			// The claim has pinned the source by the time it starts the child: a directory put in the pin's
+			// place there makes releasing the pin fail as a real unlink does.
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', (...args) => {
+				rmSync(pinFile);
+				mkdirSync(join(pinFile, 'occupied'), { recursive: true });
+				return runRestoreChild(...args);
+			});
+			try {
+				await assert.rejects(restoreBackupOffline(fixture.name, backupId), /failed verification/);
+			} finally {
+				restoreRunner();
+				repair();
+			}
+
+			try {
+				assert.ok(existsSync(pinFile), 'precondition: releasing the pin failed');
+				assert.strictEqual(
+					readRestoreReceipt(fixture.dir).kind,
+					'absent',
+					'no applying receipt reserves the database the restore never touched'
+				);
+				assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
+			} finally {
+				rmSync(pinFile, { recursive: true, force: true });
+			}
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
 		});
 	});
