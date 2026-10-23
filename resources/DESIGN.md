@@ -405,6 +405,10 @@ Opt-in deflate compression for file-backed blobs (harper#2443) has three load-be
 
 RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them when that transaction ends. An abandoned range is still bounded by the idle monitor. Resuming after its snapshot has been released throws an `ReadSnapshotExpiredError` (503) before accessing the native iterator; retry only the read, without replaying previously committed writes. A poisoned write-bearing transaction retains its existing 422 error and rollback behavior. Early iterator return remains a cleanup operation, including after expiration.
 
+## A read reference belongs to the handle acquisition it was taken on (`DatabaseTransaction.useReadTxn`/`doneReadTxn`, harper#3308)
+
+`readTxnsUsed` is never positive without a read handle, and `doneReadTxn(generation)` ignores a return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot). Enforced by `unitTests/resources/detachedReadRefs.test.js`.
+
 ## Replicated apply failure listeners (`resources/replicatedApplyFailure.ts`)
 
 `registerReplicatedApplyFailureListener(database, listener)` and

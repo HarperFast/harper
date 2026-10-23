@@ -764,6 +764,10 @@ export class DatabaseTransaction implements Transaction {
 	readTxn: ReadTransaction;
 	readTxnRefCount: number;
 	readTxnsUsed: number;
+	// Bumped each time this instance acquires a read handle, so a reference can be returned to the
+	// acquisition it came from (doneReadTxn()). Not the handle's identity: lmdb-js hands back the same
+	// read Txn object for a new snapshot.
+	readTxnGeneration = 0;
 	timeout: number;
 	// Write recency, tracked separately from `timeout`: set only by addWrite, never by a read. `timeout`
 	// is re-armed by reads too (on a link with no pending writes of its own, see the fast path in
@@ -1006,6 +1010,7 @@ export class DatabaseTransaction implements Transaction {
 		readTransactionOwners.set(transaction, this);
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
+		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		this.handleOpenedAt = performance.now();
 	}
@@ -1106,12 +1111,12 @@ export class DatabaseTransaction implements Transaction {
 		// the array it never got threw (issue #2222). Capturing an Error per read that nothing can dump
 		// is not worth doing either, so those reads stay untraced.
 		if (DEBUG_LONG_TXNS && this.stackTraces) this.stackTraces.push(new StartedTransaction());
-		this.readTxnsUsed++;
+		if (readTxn) this.readTxnsUsed++;
 		return readTxn;
 	}
 
-	doneReadTxn() {
-		if (!this.transaction) return;
+	doneReadTxn(generation = this.readTxnGeneration) {
+		if (!this.transaction || generation !== this.readTxnGeneration) return;
 		if (--this.readTxnsUsed === 0) {
 			// The native handle was only being held open for the read iterators: any writes staged
 			// through it were already committed at commit() time by replaying them onto a fresh
@@ -3218,7 +3223,7 @@ export class DatabaseTransaction implements Transaction {
 						this.baseReadRefConsumed = true;
 					}
 				} else {
-					while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+					while (this.transaction && this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 				}
 				// A write-only transaction never took a read reference (getReadTxn was never called), so the
 				// loop above releases nothing even though save() created a native handle. Keep an iterator's
