@@ -189,6 +189,7 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 	let state = NONE;
 	let text = '';
 	let copied = 0;
+	let trimmedEnd = -1;
 	ASSIGNMENT.lastIndex = from;
 	for (let match = ASSIGNMENT.exec(line); match && match.index < end; match = ASSIGNMENT.exec(line)) {
 		if (!CREDENTIAL_KEY.test(match[2])) continue;
@@ -203,7 +204,12 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 			state = { kind: 'block', column: 0, empty };
 		}
 		const masked = valueStart < copied;
-		if (valueStart === end || (!masked && isPlaceholder(line.slice(valueStart, end).trimEnd()))) continue;
+		if (valueStart === end) continue;
+		if (!masked) {
+			// Trimmed once per line; trimming the rest of the line at every key is quadratic in its trailing space.
+			if (trimmedEnd === -1) trimmedEnd = line.slice(0, end).trimEnd().length;
+			if (isPlaceholder(line.slice(valueStart, Math.max(valueStart, trimmedEnd)))) continue;
+		}
 		let escapes = 0;
 		while (line[valueStart + escapes] === '\\') escapes++;
 		const quote = line[valueStart + escapes];
