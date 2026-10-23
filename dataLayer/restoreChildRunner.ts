@@ -64,6 +64,13 @@ export class RestoreChildError extends Error {
 	}
 }
 
+export { restoreChildLockPath };
+
+/** The instance-wide slot every restore, import and verification child takes first. */
+export function restoreChildSlotLockPath(): string {
+	return join(getHdbBasePath(), RESTORE_CHILD_SLOT_FILE);
+}
+
 function childScriptPath(): string {
 	const compiled = join(__dirname, 'restoreChild.js');
 	return existsSync(compiled) ? compiled : join(__dirname, 'restoreChild.ts');
@@ -110,7 +117,7 @@ export function runRestoreChild<T = any>(
 	options: RestoreChildOptions = {}
 ): Promise<T> {
 	const spec: RestoreChildSpec = {
-		slotLockPath: join(getHdbBasePath(), RESTORE_CHILD_SLOT_FILE),
+		slotLockPath: restoreChildSlotLockPath(),
 		targetLockPath: options.databasePath ? restoreChildLockPath(options.databasePath) : undefined,
 		authorizeTimeoutMs: AUTHORIZE_TIMEOUT_MS,
 		configOverrides: getConfigOverrides(),
