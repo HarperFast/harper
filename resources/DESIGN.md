@@ -127,11 +127,7 @@ entry's key in the per-origin transaction log: write identity, the record→log 
 (`auditStore.get(logKey, tableId, id, nodeId)`), and every resume cursor. On LMDB these have always
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and `#2409`'s `recordVersion` alias is now absorbed back into `version`.
 
-They hold the same value for every write whose record version is its own commit timestamp, which is
-every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
-(`getFromSource`, core #2065): the record is stored at the source-reported version while its log
-entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
-when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that compatibility pointer with a dedicated log-key word.
+They match for every ordinary local write (its record version is its own commit timestamp), so confusing them stays invisible until a **source fill** (`getFromSource`, core #2065) stores the record at the source-reported version and keys its log entry at the fill's commit. A RocksDB record keeps its version in the existing word and, when the clocks diverge, its audit head in `additionalAuditRefs`; stage 2 can replace that pointer with a dedicated log-key word.
 
 Consequences worth knowing:
 
@@ -162,9 +158,7 @@ Consequences worth knowing:
   replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
   commit. Other consumers still treat a second commit at one key as a duplicate
   (`resumePastExactStart`, the derived-index runtime, subscription delivery).
-- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
-  history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
-  no on-disk or on-wire identifier changes in this stage.
+- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and stay unchanged.
 
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 
