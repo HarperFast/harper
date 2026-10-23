@@ -716,11 +716,12 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		}
 		if (isApplicationLocalModule(url)) scope.markNativeRuntime?.();
 		// registered before the import settles, so a require() of the file meanwhile takes the same route
-		if (url.startsWith('file://')) nativeModules.add(url);
+		const reservesRoute = url.startsWith('file://') && !url.endsWith('.json') && !nativeModules.has(url);
+		if (reservesRoute) nativeModules.add(url);
 		return import(url).then(
 			(importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)),
 			(error) => {
-				nativeModules.delete(url);
+				if (reservesRoute) nativeModules.delete(url);
 				throw error;
 			}
 		);
