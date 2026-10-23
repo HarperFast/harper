@@ -36,6 +36,7 @@ const JOB_ID = JOB_NAME.substring(4);
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
+	let afterRecorded: (() => void) | undefined;
 	try {
 		env.initSync();
 		harperLogger.notify('Starting job:', JOB_ID);
@@ -78,6 +79,7 @@ const JOB_ID = JOB_NAME.substring(4);
 			jobObj.deferred_to = results.owner;
 			jobObj.message = results.message;
 			if (results.result !== undefined) jobObj.result = results.result;
+			afterRecorded = results.afterRecorded;
 			harperLogger.notify('Job', JOB_ID, 'continues after this worker:', results.message);
 		} else {
 			jobObj.status = hdbTerms.JOB_STATUS_ENUM.COMPLETE;
@@ -101,8 +103,10 @@ const JOB_ID = JOB_NAME.substring(4);
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would
 		// leak this worker's process-global RocksDB handles and leave the worker hanging).
+		let recorded = false;
 		try {
 			await jobs.updateJob(jobObj);
+			recorded = true;
 		} catch (updateErr) {
 			harperLogger.error('Error updating job record on job worker exit:', updateErr);
 		}
@@ -120,6 +124,13 @@ const JOB_ID = JOB_NAME.substring(4);
 			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
 		}
 		if (databaseHandlesReleased) notifyJobCleanupComplete();
+		if (recorded && afterRecorded) {
+			try {
+				afterRecorded();
+			} catch (afterError) {
+				harperLogger.error('Error continuing job after recording it:', afterError);
+			}
+		}
 		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
 		// while sibling workers are running causes a NAPI fatal error crash. Unref
 		// parentPort (which broadcastWithAcknowledgement may have ref'd during schema

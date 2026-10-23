@@ -100,9 +100,7 @@ function releaseReceiptPins(receipt: RestoreReceipt): void {
 		// Only a pin this receipt's backup holds: another restore of the same target pins the same id.
 		const pin = readBackupPins(receipt.backup_dir).find((candidate) => candidate.pin_id === sourcePinId);
 		if (pin && pin.backup_id === receipt.backup_id) unpinBackup(receipt.backup_dir, sourcePinId);
-		if (receipt.pre_restore_backup_id !== undefined) {
-			unpinBackup(receipt.backup_dir, preRestorePinId(receipt.operation_id));
-		}
+		if (receipt.pre_restore_pin_id) unpinBackup(receipt.backup_dir, receipt.pre_restore_pin_id);
 	} catch (error) {
 		logger.error(`Could not release the backup pins of the restore of '${receipt.database}'`, error);
 	}

@@ -40,6 +40,8 @@ export interface RestoreReceipt {
 	retain_previous?: boolean;
 	pre_restore_started_at?: number;
 	pre_restore_backup_id?: number;
+	/** Kept with the id: a supersede carries the rollback copy, and its pin, into a new operation. */
+	pre_restore_pin_id?: string;
 	superseded_from?: string;
 	expected_tables?: string[];
 	options: RestoreReceiptOptions;

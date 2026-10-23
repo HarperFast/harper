@@ -22,6 +22,8 @@ export interface ReceiptAuthorization {
 	databasePath: string;
 	operationId: string;
 	attempt: number;
+	/** The state the receipt must be in; `applying` unless the command runs before destruction. */
+	state?: 'pending' | 'applying';
 }
 
 export interface RestoreChildSpec {

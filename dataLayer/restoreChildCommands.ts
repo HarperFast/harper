@@ -12,7 +12,13 @@ import { restoreBlobSnapshot } from './blobBackup.ts';
 import type { BackupManifest } from './backupManifest.ts';
 import { readRestoreReceipt } from './restoreReceipt.ts';
 import type { ReceiptAuthorization, RestoreChildCommand, RestoreChildSpec } from './restoreChildRunner.ts';
-import { assertBackupReadable, BackupInProgressError, isRocksDbLockError, verifyBackupFiles } from './rocksdbBackup.ts';
+import {
+	assertBackupReadable,
+	BackupInProgressError,
+	createPreRestoreBackup,
+	isRocksDbLockError,
+	verifyBackupFiles,
+} from './rocksdbBackup.ts';
 
 export function initializeRestoreChildEnvironment(spec: RestoreChildSpec): void {
 	initSync();
@@ -28,7 +34,7 @@ export function assertReceiptAuthorizes(authorization: ReceiptAuthorization): bo
 		read.kind === 'valid' &&
 		read.receipt.operation_id === authorization.operationId &&
 		read.receipt.attempts === authorization.attempt &&
-		read.receipt.state === 'applying'
+		read.receipt.state === (authorization.state ?? 'applying')
 	);
 }
 
@@ -184,6 +190,10 @@ export async function runRestoreChildCommand(command: RestoreChildCommand, args:
 			return { ok: true };
 		case 'apply-and-prove':
 			return applyAndProve(args);
+		case 'pre-restore-backup':
+			return {
+				backupId: await createPreRestoreBackup(args.databaseName, args.databasePath, args.backupDir, args.operationId),
+			};
 		default:
 			throw new Error(`Unknown restore child command ${command}`);
 	}
