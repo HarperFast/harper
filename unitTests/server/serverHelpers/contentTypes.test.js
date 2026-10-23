@@ -854,3 +854,78 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		}
 	});
 });
+
+describe('contentTypes – JSON terminal metadata', () => {
+	for (const asynchronous of [false, true]) {
+		for (const property of ['replicationUnconfirmed', 'retryable']) {
+			it(`finishes valid JSON when ${property} throws in a ${asynchronous ? 'async' : 'sync'} iterator error`, async function () {
+				this.timeout(2000);
+				const failure = new Proxy(new Error('Iterator failed'), {
+					get(target, key, receiver) {
+						if (key === property) throw new Error('Metadata is unreadable');
+						return Reflect.get(target, key, receiver);
+					},
+				});
+				function* syncSource() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				async function* asyncSource() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				const readable = contentTypes
+					.get('application/json')
+					.serializeStream(asynchronous ? asyncSource() : syncSource());
+				try {
+					const result = JSON.parse(await streamToString(readable));
+					assert.deepStrictEqual(result, [{ id: 'first' }, { error: 'Error: Iterator failed' }]);
+				} finally {
+					readable.destroy();
+				}
+			});
+		}
+	}
+});
+
+describe('contentTypes – readable outcome with unreadable status', () => {
+	for (const type of ['application/x-ndjson', 'text/event-stream']) {
+		for (const property of ['statusCode', 'status']) {
+			it(`retains the terminal outcome in ${type} when ${property} throws`, async function () {
+				this.timeout(2000);
+				const failure = new Error('Peer timeout');
+				failure.replicationUnconfirmed = true;
+				failure.retryable = false;
+				Object.defineProperty(failure, property, {
+					get() {
+						throw new Error('Status is unreadable');
+					},
+				});
+				async function* source() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				const readable = contentTypes.get(type).serializeStream(source());
+				try {
+					const text = await streamToString(readable);
+					const lines = text.trim().split('\n');
+					const record = JSON.parse(
+						type === 'text/event-stream'
+							? lines
+									.filter((line) => line.startsWith('data: '))
+									.at(-1)
+									.slice(6)
+							: lines.at(-1)
+					);
+					const outcome = record.$harperStreamError ?? record;
+					assert.strictEqual(outcome.replicationUnconfirmed, true);
+					assert.strictEqual(outcome.retryable, false);
+					assert.strictEqual(outcome.message, 'Peer timeout');
+					assert.strictEqual(outcome.status, undefined);
+				} finally {
+					readable.destroy();
+				}
+			});
+		}
+	}
+});

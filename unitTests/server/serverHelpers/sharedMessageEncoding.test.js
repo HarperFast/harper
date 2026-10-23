@@ -297,6 +297,41 @@ describe('sharedMessageEncoding – pass-through messages', function () {
 		assert.strictEqual(altCalls, 0);
 	});
 
+	// A record decoded on another worker thread carries binary data as a plain Uint8Array view into
+	// the transaction log, and mqtt-packet cannot encode one.
+	it('delivers a non-Buffer binary view as a Buffer over exactly the same bytes', function () {
+		const backing = new Uint8Array([0xee, 0xee, 1, 2, 3, 0xee]);
+		const message = { contentType: 'application/octet-stream', data: backing.subarray(2, 5) };
+		const unsatisfiable = subscriberRequest('application/x-not-registered');
+
+		const first = share(message, unsatisfiable);
+		const second = share(message, subscriberRequest(COUNTED_TYPE));
+
+		assert.ok(Buffer.isBuffer(first.payload));
+		assert.deepStrictEqual([...first.payload], [1, 2, 3]);
+		assert.strictEqual(first.payload.buffer, backing.buffer, 'the payload must not be a copy');
+		assert.strictEqual(second.payload, first.payload, 'every subscriber shares the one wrapper');
+		assert.strictEqual(countedCalls, 0);
+		const packet = generate({ cmd: 'publish', topic: 'a', payload: first.payload, qos: 0, dup: false, retain: false });
+		assert.deepStrictEqual([...packet.subarray(packet.length - 3)], [1, 2, 3]);
+	});
+
+	it('wraps any typed-array view by its byte range', function () {
+		const backing = new ArrayBuffer(8);
+		new Uint8Array(backing).set([9, 9, 4, 0, 5, 0, 9, 9]);
+		for (const data of [new Uint16Array(backing, 2, 2), new DataView(backing, 2, 4)]) {
+			const { payload } = getSharedMessageEncoding({ contentType: 'application/x-opaque', data });
+			assert.ok(Buffer.isBuffer(payload));
+			assert.deepStrictEqual([...payload], [4, 0, 5, 0]);
+		}
+	});
+
+	it('returns Buffer and string data as they are', function () {
+		const buffer = Buffer.from('bytes');
+		assert.strictEqual(share({ contentType: 'application/octet-stream', data: buffer }).payload, buffer);
+		assert.strictEqual(share({ contentType: 'text/x-custom', data: 'text' }).payload, 'text');
+	});
+
 	it('still negotiates normally for a message with a content type but no data', function () {
 		const message = { contentType: 'application/octet-stream', id: 11 };
 

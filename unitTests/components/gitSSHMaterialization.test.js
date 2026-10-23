@@ -101,10 +101,12 @@ describe('materializeGitSSH', () => {
 
 	const seal = (plaintext, kp = keypair) => ENC_PREFIX + encryptEnvelope(plaintext, kp.publicKey, kp.kid);
 
+	let originalRootPath;
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-test-'));
 		sshDir = path.join(rootDir, 'ssh');
+		originalRootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
 		keypair = makeKeypair();
 
@@ -119,6 +121,8 @@ describe('materializeGitSSH', () => {
 		logger.error = originalError;
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
+		// the root is deleted with the scoped tmpdir; a later suite must not resolve system keys under it
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
 		scopedTmpdir?.restore();
 	});
 
@@ -362,10 +366,12 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	let rootDir;
 	let sshDir;
 
+	let originalRootPath;
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-spawn-test-'));
 		sshDir = path.join(rootDir, 'ssh');
+		originalRootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
 		fs.mkdirSync(sshDir, { recursive: true });
 		fs.writeFileSync(path.join(sshDir, 'deploy.key'), KEY_MATERIAL, { mode: 0o600 });
@@ -377,6 +383,7 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	});
 
 	afterEach(() => {
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
 		scopedTmpdir?.restore();
 	});
 

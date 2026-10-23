@@ -337,3 +337,294 @@ describe('RecordEncoder structure-dictionary bound & observability (harper#2220)
 		assert.strictEqual(byWidth.getStructureCounts().typed, 2, 'same field set, different value width, two shapes');
 	});
 });
+
+describe('PrimaryRocksDatabase non-initStore transactional saveStructures (__dbis__)', () => {
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+	const { Worker } = require('worker_threads');
+	const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+	const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
+
+	let tmpDir;
+	let errors, restoreError;
+	const openedDbs = [];
+
+	function trackDb(db) {
+		openedDbs.push(db);
+		return db;
+	}
+
+	function openDbisHandle(
+		dir = tmpDir,
+		{ isPrimary = false, isObject = false, randomAccessStructure = false, name = '__dbis__', useVersions = false } = {}
+	) {
+		const dbiInit = { ...new OpenDBIObject(isPrimary, isObject), randomAccessStructure, disableWAL: false, name };
+		const db = trackDb(PrimaryRocksDatabase.open(dir, dbiInit));
+		db.encoder.useVersions = useVersions;
+		return db;
+	}
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-dbis-struct-'));
+		errors = [];
+		restoreError = harperLogger.error;
+		harperLogger.error = (...args) => errors.push(args);
+	});
+
+	afterEach(() => {
+		harperLogger.error = restoreError;
+		while (openedDbs.length) {
+			try {
+				openedDbs.pop().close();
+			} catch {}
+		}
+		if (tmpDir) {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	for (const [label, firstRow, secondRow] of [
+		[
+			'4-field vs 3-field seq rows',
+			{ seqId: 100, nodes: [{ id: 1, originLogKey: 90, closedFloor: 80, relayable: true }] },
+			{ seqId: 200, nodes: [{ id: 2, originLogKey: 190, closedFloor: 180 }] },
+		],
+		[
+			'3-field vs 4-field seq rows',
+			{ seqId: 200, nodes: [{ id: 2, originLogKey: 190, closedFloor: 180 }] },
+			{ seqId: 100, nodes: [{ id: 1, originLogKey: 90, closedFloor: 80, relayable: true }] },
+		],
+	]) {
+		it(`resolves concurrent structure saves via txn.getBinarySync without clobbering (${label})`, () => {
+			const db1 = openDbisHandle();
+			const db2 = openDbisHandle();
+			const origTxn2 = db2.transactionSync;
+			let injected = false;
+			db2.transactionSync = function (callback, options) {
+				return origTxn2.call(
+					this,
+					(txn, attempt) =>
+						callback(
+							new Proxy(txn, {
+								get(target, prop) {
+									if (prop === 'putSync' && !injected) {
+										return (...args) => {
+											injected = true;
+											db1.putSync([Symbol.for('seq'), 1], firstRow);
+											return target.putSync(...args);
+										};
+									}
+									const value = target[prop];
+									return typeof value === 'function' ? value.bind(target) : value;
+								},
+							}),
+							attempt
+						),
+					options
+				);
+			};
+
+			db2.putSync([Symbol.for('seq'), 2], secondRow);
+			assert.ok(injected, 'precondition: db1 committed inside db2 saveStructures read-to-put window');
+			db1.close();
+			db2.close();
+
+			const db3 = openDbisHandle();
+			assert.deepEqual(db3.getSync([Symbol.for('seq'), 1]), firstRow);
+			assert.deepEqual(db3.getSync([Symbol.for('seq'), 2]), secondRow);
+			assert.strictEqual(errors.length, 0, `expected zero decode errors, got: ${JSON.stringify(errors)}`);
+		});
+	}
+
+	it('returns false and leaves structureUpdate unset when transactionSync returns undefined (aborted txn)', () => {
+		const db = openDbisHandle();
+		db.transactionSync = () => undefined;
+		db.encoder.structureUpdate = undefined;
+		const saved = db.encoder.saveStructures([['a']], () => true);
+		assert.strictEqual(saved, false);
+		assert.strictEqual(db.encoder.structureUpdate, undefined);
+	});
+
+	it('throws and marks structures.uninitialized when existingStructuresBuffer fails to decode', () => {
+		const db = openDbisHandle();
+		const origTxn = db.transactionSync;
+		let putCalled = false;
+		db.transactionSync = (cb) =>
+			cb({
+				getBinarySync: () => Buffer.from([0xd9, 0x10, 0x61]),
+				putSync: () => {
+					putCalled = true;
+				},
+			});
+		assert.throws(() => {
+			db.putSync('bad1', { alpha: 1, beta: 2 });
+		}, /Failed to decode existing structures for __dbis__/);
+		assert.strictEqual(putCalled, false, 'must not overwrite durable structures when existing bytes fail to decode');
+		assert.strictEqual(
+			db.encoder.structures.uninitialized,
+			true,
+			'must mark structures.uninitialized on throw so later writes reload before using the minted id'
+		);
+
+		db.transactionSync = origTxn;
+		db.putSync('good1', { alpha: 1, beta: 2 });
+		db.close();
+		const reader = openDbisHandle();
+		assert.deepEqual(reader.getSync('good1'), { alpha: 1, beta: 2 });
+	});
+
+	it('resolves two-encoder structure conflicts on a non-versioned custom-object index store (randomAccessStructure: true, no initStore)', () => {
+		const opts = {
+			isPrimary: false,
+			isObject: true,
+			randomAccessStructure: true,
+			name: 'CustomIdx',
+			useVersions: false,
+		};
+		const db1 = openDbisHandle(tmpDir, opts);
+		const db2 = openDbisHandle(tmpDir, opts);
+		const origTxn2 = db2.transactionSync;
+		let injected = false;
+		db2.transactionSync = function (callback, options) {
+			return origTxn2.call(
+				this,
+				(txn, attempt) =>
+					callback(
+						new Proxy(txn, {
+							get(target, prop) {
+								if (prop === 'putSync' && !injected) {
+									return (...args) => {
+										injected = true;
+										db1.putSync('k1', { a: 1, b: 2 });
+										return target.putSync(...args);
+									};
+								}
+								const value = target[prop];
+								return typeof value === 'function' ? value.bind(target) : value;
+							},
+						}),
+						attempt
+					),
+				options
+			);
+		};
+
+		db2.putSync('k2', { a: 1, c: 3 });
+		const raw1 = db1.getBinarySync('k1');
+		const raw2 = db2.getBinarySync('k2');
+		assert.ok(raw1[0] >= 0x20 && raw1[0] < 0x40, `expected typed struct byte for k1, got 0x${raw1[0].toString(16)}`);
+		assert.ok(raw2[0] >= 0x20 && raw2[0] < 0x40, `expected typed struct byte for k2, got 0x${raw2[0].toString(16)}`);
+		assert.ok(
+			db1.getBinarySync(Symbol.for('structures'))?.length > 0,
+			'structures must be saved in the store column family'
+		);
+		db1.close();
+		db2.close();
+
+		const db3 = openDbisHandle(tmpDir, opts);
+		assert.deepEqual(db3.getSync('k1'), { a: 1, b: 2 });
+		assert.deepEqual(db3.getSync('k2'), { a: 1, c: 3 });
+		assert.strictEqual(errors.length, 0);
+	});
+
+	it('gives initStore(rootStore) precedence over rocksStore so table structures live in rootStore', () => {
+		const rootDb = openDbisHandle(tmpDir, { isPrimary: false, isObject: false, name: '__dbis__', useVersions: false });
+		const tableDb = openDbisHandle(tmpDir, { isPrimary: true, isObject: true, name: 'MyTable', useVersions: true });
+		tableDb.initStore(rootDb);
+		tableDb.putSync('row1', { id: 'row1', title: 'hello' });
+
+		assert.ok(
+			rootDb.getBinarySync([Symbol.for('structures'), 'MyTable'])?.length > 0,
+			'table structures must be stored under [Symbol.for("structures"), name] in rootStore'
+		);
+		assert.strictEqual(
+			tableDb.getBinarySync(Symbol.for('structures')),
+			undefined,
+			'table column family must not store its own Symbol.for("structures") after initStore'
+		);
+	});
+
+	it('decodes classic structure #2 (leading byte 0x42) on __dbis__ without misreading it as a RocksDB version prefix', () => {
+		const db1 = openDbisHandle();
+		assert.ok(!db1.encoder.isRocksDB, 'precondition: __dbis__ must not set encoder.isRocksDB');
+		db1.putSync('s0', { s0: 1 });
+		db1.putSync('s1', { s1: 2 });
+		const shape2 = { a: 10, b: 20, c: 30, d: 40 };
+		db1.putSync('s2', shape2);
+
+		const raw = db1.getBinarySync('s2');
+		assert.strictEqual(raw[0], 0x42, 'third classic structure must start with byte 0x42');
+		assert.deepEqual(db1.getSync('s2'), shape2);
+		db1.close();
+
+		const db2 = openDbisHandle();
+		assert.deepEqual(db2.getSync('s2'), shape2);
+		assert.strictEqual(errors.length, 0);
+	});
+
+	it('survives 4 worker_threads concurrently minting classic structures in __dbis__', async function () {
+		this.timeout(15_000);
+		const dbInit = openDbisHandle();
+		dbInit.putSync('seed', { seed: 0 });
+		dbInit.close();
+
+		const workerCount = 4;
+		const shapesPerWorker = 12;
+		const barrier = new Int32Array(new SharedArrayBuffer(4));
+
+		const workers = Array.from({ length: workerCount }, (_, workerIdx) => {
+			return new Promise((resolve, reject) => {
+				const w = new Worker(
+					`
+					const { workerData, parentPort } = require('worker_threads');
+					const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+					const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
+
+					const dbiInit = { ...new OpenDBIObject(false, false), disableWAL: false, name: '__dbis__' };
+					const db = PrimaryRocksDatabase.open(workerData.tmpDir, dbiInit);
+					db.encoder.useVersions = false;
+
+					Atomics.add(workerData.barrier, 0, 1);
+					Atomics.notify(workerData.barrier, 0);
+					while (Atomics.load(workerData.barrier, 0) < workerData.workerCount) {
+						Atomics.wait(workerData.barrier, 0, Atomics.load(workerData.barrier, 0), 50);
+					}
+
+					for (let i = 0; i < workerData.shapesPerWorker; i++) {
+						const key = 'w' + workerData.workerIdx + '_' + i;
+						const row = {
+							['w' + workerData.workerIdx + '_f' + i]: i,
+							nested: [{ ['n' + workerData.workerIdx + '_' + i]: i * 10, extra: workerData.workerIdx }],
+						};
+						db.putSync(key, row);
+					}
+					db.close();
+					parentPort.postMessage('ok');
+					`,
+					{
+						eval: true,
+						workerData: { tmpDir, workerIdx, workerCount, shapesPerWorker, barrier },
+					}
+				);
+				w.once('message', resolve);
+				w.once('error', reject);
+			});
+		});
+
+		await Promise.all(workers);
+
+		const reader = openDbisHandle();
+		for (let workerIdx = 0; workerIdx < workerCount; workerIdx++) {
+			for (let i = 0; i < shapesPerWorker; i++) {
+				const key = `w${workerIdx}_${i}`;
+				const expected = {
+					[`w${workerIdx}_f${i}`]: i,
+					nested: [{ [`n${workerIdx}_${i}`]: i * 10, extra: workerIdx }],
+				};
+				assert.deepEqual(reader.getSync(key), expected, `failed to decode ${key}`);
+			}
+		}
+		assert.strictEqual(errors.length, 0, `expected zero decode errors, got: ${JSON.stringify(errors)}`);
+	});
+});

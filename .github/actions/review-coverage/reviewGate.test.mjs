@@ -278,6 +278,10 @@ test('one Cursor leg is one family, not two', () => {
 		structuredCoverage(FIELD('authored=claude; ran=cursor-grok,cursor-composer; rounds=1')).families,
 		['cursor', 'xai']
 	);
+	assert.deepStrictEqual(
+		structuredCoverage(FIELD('authored=claude; ran=cursor-composer,cursor-kimi,cursor-muse,muse; rounds=1')).families,
+		['cursor', 'kimi', 'meta']
+	);
 });
 
 test('the authoring family never counts, and the adjudicator is excluded by the producer', () => {

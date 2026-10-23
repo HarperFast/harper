@@ -336,6 +336,7 @@ export class StatusAggregator {
 		const lastCheckedTimes: AggregatedComponentStatus['lastChecked'] = {
 			workers: {},
 		};
+		let highestPriorityIndex = Infinity;
 		let mostRecentCheckTime = 0;
 		let latestMessage: string | undefined;
 		let error: Error | string | undefined;
@@ -365,17 +366,18 @@ export class StatusAggregator {
 			// Track status counts
 			statusCounts.set(status.status, (statusCounts.get(status.status) || 0) + 1);
 
-			// Track messages - prioritize non-healthy messages
-			if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY && status.message) {
-				if (!latestMessage || checkTime > mostRecentCheckTime) {
+			// Pair latestMessage and error from the highest-priority, most-recent non-healthy entry
+			if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY && (status.message || status.error !== undefined)) {
+				const priorityIndex = STATUS_PRIORITY.indexOf(status.status);
+				if (
+					priorityIndex < highestPriorityIndex ||
+					(priorityIndex === highestPriorityIndex && checkTime > mostRecentCheckTime)
+				) {
+					highestPriorityIndex = priorityIndex;
 					mostRecentCheckTime = checkTime;
 					latestMessage = status.message;
+					error = status.error;
 				}
-			}
-
-			// Capture any error
-			if (status.error && !error) {
-				error = status.error;
 			}
 		}
 

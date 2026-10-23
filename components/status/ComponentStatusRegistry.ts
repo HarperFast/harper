@@ -61,7 +61,9 @@ export class ComponentStatusRegistry {
 			);
 		}
 
-		this.statusMap.set(componentName, new ComponentStatus(status, message, error));
+		const sanitizedMessage = typeof message === 'string' ? redactUrlCredentials(message) : message;
+		const sanitizedError = typeof error === 'string' ? redactUrlCredentials(error) : error;
+		this.statusMap.set(componentName, new ComponentStatus(status, sanitizedMessage, sanitizedError));
 	}
 
 	/**
@@ -170,7 +172,6 @@ export class ComponentStatusRegistry {
 	/**
 	 * Get aggregated status for a specific component and all its sub-components
 	 * This method handles both exact matches and sub-component aggregation
-	 *
 	 * @param componentName - The component name to look up (e.g., "application-template", "http")
 	 * @param consolidatedStatuses - Pre-fetched consolidated statuses from all threads (optional, will fetch if not provided)
 	 * @returns Aggregated status information for the component
@@ -222,20 +223,28 @@ export class ComponentStatusRegistry {
 
 		// Show details if anything is not healthy
 		let overallMessage = 'All components loaded successfully';
-		const details: Record<string, { status: ComponentStatusLevel; message?: string }> = {};
+		const details: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }> = {};
 
 		if (hasErrors || hasLoading) {
 			const problemStatuses = allStatuses.filter(
 				(s) => s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
 			);
-			overallMessage = problemStatuses.map((s) => `${s.key}: ${s.latestMessage || s.status}`).join('; ');
+			overallMessage = problemStatuses
+				.map((s) => {
+					const errorMessage = serializeStatusError(s.error);
+					const message = formatProblemMessage(s.latestMessage, errorMessage);
+					return `${s.key}: ${message || s.status}`;
+				})
+				.join('; ');
 
 			// Include details for debugging
 			for (const status of allStatuses) {
 				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
+					const errorMessage = serializeStatusError(status.error);
 					details[status.key] = {
 						status: status.status,
-						message: status.latestMessage,
+						message: formatProblemMessage(status.latestMessage, errorMessage),
+						...(errorMessage !== undefined && { error: errorMessage }),
 					};
 				}
 			}
@@ -248,4 +257,87 @@ export class ComponentStatusRegistry {
 			lastChecked: allStatuses[0]?.lastChecked || { workers: {} },
 		};
 	}
+}
+
+// A raw `/ ? #` in a password is indistinguishable from a path delimiter, so redact through the last `@` in the
+// token. The regex consumes the whole token and the replacer finds the `@`, keeping the scan linear.
+const CREDENTIAL_URL_TOKEN_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)\S+/gi;
+const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
+const LOADER_DIRECTORY_FAILURE_MESSAGE = /^Could not load \S+$/;
+
+function redactUrlCredentials(text: string): string {
+	return text.replace(CREDENTIAL_URL_TOKEN_PATTERN, (token) => {
+		const at = token.lastIndexOf('@');
+		return at < 0 ? token : `[REDACTED]${token.slice(at)}`;
+	});
+}
+
+/**
+ * Format a component status error into a single wire-safe diagnostic string.
+ *
+ * Deliberate exposure decision: `get_status` and `get_components` are operator
+ * health/diagnostic operations (super_user by default, or explicitly granted via
+ * a role's `operations` allowlist) that intentionally surface component failure
+ * causes so operators can diagnose broken deployments without log access. Only
+ * the error class name and message are rendered (never stack traces or arbitrary
+ * enumerable properties), and embedded URL userinfo credentials (`scheme://user:pass@host`)
+ * are redacted in both status messages (`setStatus`) and serialized errors before
+ * text leaves the status registry. Redaction runs through the last `@` in the URL token, so an
+ * `@` later in a path or query also replaces the host.
+ */
+export function serializeStatusError(error: unknown): string | undefined {
+	if (error === undefined || error === null) return undefined;
+	if (typeof error === 'string') return redactUrlCredentials(error);
+	try {
+		if (typeof error === 'object') {
+			const message = (error as { message?: unknown }).message;
+			if (typeof message === 'string') {
+				const rawName = (error as { name?: unknown }).name;
+				const ctorName = (error as { constructor?: { name?: unknown } }).constructor?.name;
+				const errorName =
+					typeof rawName === 'string' && rawName.length > 0 && rawName !== 'Error'
+						? rawName
+						: typeof ctorName === 'string' && ctorName.length > 0 && ctorName !== 'Object'
+							? ctorName
+							: typeof rawName === 'string' && rawName.length > 0
+								? rawName
+								: undefined;
+				if (!message) {
+					return errorName || 'Error';
+				}
+				const rendered =
+					errorName && errorName !== 'Error' && !message.startsWith(`${errorName}:`)
+						? `${errorName}: ${message}`
+						: message;
+				return redactUrlCredentials(rendered);
+			}
+		}
+		return redactUrlCredentials(String(error));
+	} catch {
+		try {
+			return Object.prototype.toString.call(error);
+		} catch {
+			return '[Unrenderable Object]';
+		}
+	}
+}
+
+function formatProblemMessage(latestMessage: string | undefined, errorMessage: string | undefined): string | undefined {
+	const sanitizedLatest = latestMessage !== undefined ? redactUrlCredentials(latestMessage) : undefined;
+	if (sanitizedLatest && errorMessage) {
+		if (sanitizedLatest.includes(errorMessage)) {
+			return sanitizedLatest;
+		}
+		if (
+			errorMessage.includes(sanitizedLatest) ||
+			(LOADER_COMPONENT_FAILURE_MESSAGE.test(sanitizedLatest) &&
+				/^(?:[\w$]+:\s*)?Could not load component /.test(errorMessage)) ||
+			(LOADER_DIRECTORY_FAILURE_MESSAGE.test(sanitizedLatest) &&
+				/^(?:[\w$]+:\s*)?Could not load application due to /.test(errorMessage))
+		) {
+			return errorMessage;
+		}
+		return `${sanitizedLatest}: ${errorMessage}`;
+	}
+	return sanitizedLatest ?? errorMessage;
 }

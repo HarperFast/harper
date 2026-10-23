@@ -11,7 +11,7 @@
  *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
  */
 
-import { addExtension, pack, Packr } from 'msgpackr';
+import { addExtension, Packr } from 'msgpackr';
 import {
 	readFile,
 	rename,
@@ -3319,6 +3319,11 @@ export function collectRetainedFileIds(record: any): Set<string> | undefined {
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
+// Extension 11's `pack()` runs inside an outer Packr.pack() call — including msgpackr's
+// module-level `pack()` singleton used by the public `application/x-msgpack` serializer.
+// Calling that singleton here would re-enter `defaultPackr.pack()` and reset its closure
+// `start` offset to 0, prepending stale shared-buffer bytes to the outer frame.
+const blobPackr = new Packr({ useRecords: false });
 
 addExtension({
 	Class: Blob,
@@ -3372,7 +3377,7 @@ addExtension({
 				(storageInfo.contentBuffer?.length < FILE_STORAGE_THRESHOLD || blob.saveInRecord)
 			) {
 				options.size = storageInfo.contentBuffer.length;
-				return pack([options, storageInfo.contentBuffer]);
+				return blobPackr.pack([options, storageInfo.contentBuffer]);
 			}
 		}
 		if (encodeForStorageForRecordId !== undefined) {
@@ -3390,12 +3395,12 @@ addExtension({
 			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
 			// write that supersedes, not a file already awaiting reclamation from a previous one.
 			cancelBlobReclamation(storageInfo);
-			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+			return blobPackr.pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
 			if (currentBlobCallback) {
 				currentBlobCallback(blob);
-				return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+				return blobPackr.pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 			}
 			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 			// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
@@ -3420,7 +3425,7 @@ addExtension({
 					// so the receiver holds the gap and retries rather than replicating the stub (harper-pro#481/#429).
 					if (type !== PENDING_TYPE && size === buffer.length - HEADER_SIZE && sizeMatchesDescriptor) {
 						// the file is there and complete, we can return the encoding
-						return Buffer.concat([pack([options]), buffer]);
+						return Buffer.concat([blobPackr.pack([options]), buffer]);
 					}
 				}
 				// declare it as being fulfilled

@@ -1,3 +1,5 @@
 'use strict';
 
-require('../utility/packageUtils.js').loadRuntimeModule('launchServiceScripts/startHarperDB');
+const { loadRuntimeModule } = require('../utility/packageUtils.js');
+loadRuntimeModule('server/threads/nativeAddonGuard');
+loadRuntimeModule('launchServiceScripts/startHarperDB');

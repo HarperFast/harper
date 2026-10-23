@@ -4,6 +4,7 @@ const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const { DERIVED_INDEX_ACCEPTED, DerivedIndexRuntime } = require('#src/resources/derivedIndexRuntime');
@@ -123,6 +124,149 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			),
 			false
 		);
+		await runtime.stop();
+		runtime = undefined;
+	});
+
+	it('anchors a retention-emptied peer log by floor, condemns a crossed floor, and re-anchors on the next commit', async function () {
+		this.timeout(60_000);
+		const Product = table({
+			database: 'derived-index-floor-rocks',
+			table: 'Product',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		const auditStore = Product.auditStore;
+		const rootStore = auditStore.rootStore;
+		const remoteNodeId = auditStore.ensureLogExists('remote');
+		const remote = rootStore.useLog('remote');
+		let peerTime = Date.now() - 10_000;
+		const writeRemote = async (id) => {
+			const context = { source: {}, sourceApply: true, timestamp: ++peerTime };
+			await transaction(context, async () => {
+				const resource = await Product.getResource(id, context);
+				return resource._writeUpdate(id, { title: id }, true, {
+					isNotification: true,
+					nodeId: remoteNodeId,
+					version: peerTime,
+				});
+			});
+		};
+		// rocksdb-js 2.12 purges a flushed log's last file too. flushSync publishes the flushed position
+		// from RocksDB's flush callback, so the purge is retried until the peer log really has no files.
+		// A local write after the flush keeps the local log's current file (unflushed tail) and with it
+		// the local anchor, so only the peer log changes under the cursor.
+		let filler = 0;
+		const emptyRemote = async () => {
+			rootStore.flushSync();
+			await Product.put(`filler-${++filler}`, { title: 'filler' });
+			await waitFor(
+				() => {
+					rootStore.purgeLogs({ before: Date.now() + 60_000 });
+					return remote.getStats().fileCount === 0;
+				},
+				{ timeout: 20_000 }
+			);
+			return remote.getStats();
+		};
+		const backend = {
+			id: 'floor-products',
+			cursor: undefined,
+			deliveries: [],
+			resets: 0,
+			attach() {},
+			flush() {},
+			shutdown() {},
+			reset() {
+				this.resets++;
+				this.cursor = undefined;
+			},
+			getDurableCursor() {
+				return this.cursor;
+			},
+			deliver(batch) {
+				this.deliveries.push(batch);
+				if (batch.through) this.cursor = batch.through;
+				return DERIVED_INDEX_ACCEPTED;
+			},
+			onStateChange(wake) {
+				this.wake = wake;
+				return () => (this.wake = undefined);
+			},
+		};
+		runtime = new DerivedIndexRuntime(
+			auditStore,
+			(tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{
+				scanRecords: () =>
+					Product.primaryStore.getRange({ versions: true }).map((entry) => ({
+						recordId: entry.key,
+						version: entry.version,
+						value: entry.value,
+					})),
+			}
+		);
+		const register = () =>
+			runtime.register({
+				backend,
+				projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+				options: { maxFlushAgeMilliseconds: 10, maxRebuildAttempts: 2, rebuildBackoffMilliseconds: 10 },
+			});
+		// Shared readiness outlives a registration, so a new generation is observed through work it
+		// delivers: once a rebuild (if any) has installed its boundary, a local write must replay through.
+		let probe = 0;
+		const settled = async (resets) => {
+			await waitFor(() => backend.resets === resets && backend.cursor !== undefined, { timeout: 20_000 });
+			const id = `probe-${++probe}`;
+			await Product.put(id, { title: id });
+			await waitFor(() => mutationsFor(backend, id).length === 1, { timeout: 20_000 });
+			await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 20_000 });
+		};
+		const scannedRecordIds = () => new Set(backend.deliveries.flatMap((batch) => batch.records.map((r) => r.recordId)));
+
+		// A peer commit is purged with its whole log before any index reads it; no reader holds a mapping
+		// of the purged segment, so the emptied log is exactly what a restarted process would see.
+		await writeRemote('r1');
+		const emptied = await emptyRemote();
+		assert.ok(
+			emptied.currentSequenceNumber > 1,
+			`an emptied log reports a writer sequence past 1, got ${emptied.currentSequenceNumber}`
+		);
+		let unregister = register();
+		await settled(1);
+		assert.ok(scannedRecordIds().has('r1'), 'the seeding scan indexed the record whose log entry was purged');
+		assert.strictEqual(backend.cursor.logs.remote, undefined);
+		assert.strictEqual(backend.cursor.floors.remote, emptied.currentSequenceNumber);
+		await unregister();
+
+		backend.cursor = { format: 1, logs: { ...backend.cursor.logs } };
+		unregister = register();
+		await settled(2);
+		assert.strictEqual(backend.cursor.floors.remote, emptied.currentSequenceNumber);
+		await unregister();
+
+		unregister = register();
+		await settled(2);
+		assert.strictEqual(backend.cursor.floors.remote, emptied.currentSequenceNumber);
+		await unregister();
+
+		await writeRemote('r3');
+		const crossed = await emptyRemote();
+		assert.ok(crossed.currentSequenceNumber > emptied.currentSequenceNumber, 'the writer moved past the floor');
+		unregister = register();
+		await settled(3);
+		assert.strictEqual(backend.cursor.floors.remote, crossed.currentSequenceNumber);
+		assert.ok(scannedRecordIds().has('r3'), 'the rebuild scan indexed the record whose log entry was purged');
+
+		await writeRemote('r4');
+		await waitFor(() => backend.cursor.logs.remote > 0, { timeout: 20_000 });
+		assert.strictEqual(backend.cursor.floors, undefined);
+		assert.strictEqual(backend.resets, 3);
+		assert.strictEqual(mutationsFor(backend, 'r4').length, 1);
+		await unregister();
 		await runtime.stop();
 		runtime = undefined;
 	});

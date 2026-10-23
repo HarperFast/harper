@@ -1,3 +1,4 @@
+import { nativeAddonGuardExecArgv } from './nativeAddonGuard.ts';
 import { loadRuntimeModule } from '../../utility/packageUtils.js';
 import {
 	listenersByType,
@@ -28,9 +29,10 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { randomBytes } from 'node:crypto';
 import { _assignPackageExport } from '../../globals.js';
-import { PACKAGE_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
+import { PACKAGE_ROOT, PRODUCT_NAME, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
+import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { resolveWatchTarget } from '../../utility/watchPath.ts';
 import {
@@ -1223,6 +1225,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
 		throw error;
 	}
+	applyConfiguredV8Flags();
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -1261,6 +1264,8 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 	const execArgv = isBun
 		? []
 		: [
+				// first: --require modules run in order and before every --import, so the guard precedes the preloads below
+				...nativeAddonGuardExecArgv(),
 				'--experimental-vm-modules', // used for giving applications their own top level scope
 				'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
 				'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
@@ -3206,7 +3211,7 @@ if (isMainThread) {
 					queuedRestart = setTimeout(async () => {
 						if (beforeRestart) await beforeRestart();
 						await restartWorkers(undefined, undefined, true, null, '*');
-						console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
+						console.log(`Reloaded ${PRODUCT_NAME} components, changed files:`, Array.from(changedFiles));
 						changedFiles.clear();
 					}, 100);
 				});

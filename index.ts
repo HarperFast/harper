@@ -1,3 +1,5 @@
+// first, before anything that can load a native addon
+import './server/threads/nativeAddonGuard.ts';
 // Prevents server from starting in worker threads if this was directly imported from a non-server user thread
 import workerThreads from 'node:worker_threads';
 if (!workerThreads.isMainThread) {
@@ -43,6 +45,12 @@ export type {
 	WritableRecord,
 } from './resources/ResourceInterface.ts';
 export type { User } from './security/user.ts';
+export type {
+	BearerValidator,
+	BearerValidatorIdentity,
+	BearerValidatorOptions,
+	BearerValidatorResult,
+} from './server/Server.ts';
 export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';

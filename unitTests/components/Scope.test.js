@@ -914,6 +914,98 @@ describe('Scope', () => {
 			assert.equal(scope.options.getAll().urlPath, 'assets', 'plugin config stays as authored');
 			await scope.close();
 		});
+
+		it('keeps Bearer validators active across scope.close() for shutdown draining and rejects registration after close', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			let unregisterCalls = 0;
+			const registeredValidators = [];
+			const registerBearerValidator = (validator) => {
+				registeredValidators.push(validator);
+				return () => unregisterCalls++;
+			};
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { registerBearerValidator })
+			);
+			await scope.ready;
+
+			const validator = async () => undefined;
+			const unregister = scope.server.registerBearerValidator(validator);
+			assert.deepStrictEqual(registeredValidators, [validator]);
+
+			await scope.close();
+			assert.equal(
+				unregisterCalls,
+				0,
+				'scope.close() must not unregister validators before shutdown draining finishes'
+			);
+
+			unregister();
+			assert.equal(unregisterCalls, 1);
+
+			assert.throws(() => scope.server.registerBearerValidator(validator), /closed scope/);
+
+			let unregisterOnAbortCalls = 0;
+			const abortScope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, {
+					registerBearerValidator: () => () => unregisterOnAbortCalls++,
+				})
+			);
+			await abortScope.ready;
+			abortScope.server.registerBearerValidator(validator);
+			abortScope.disposeBearerValidators();
+			assert.equal(
+				unregisterOnAbortCalls,
+				1,
+				'disposeBearerValidators() unregisters validators registered on an aborted scope load'
+			);
+			assert.throws(
+				() => abortScope.server.registerBearerValidator(validator),
+				/closed scope/,
+				'late async registration after disposeBearerValidators() must throw even before scope.close()'
+			);
+			await abortScope.close();
+
+			const componentLoader = require('#src/components/componentLoader');
+			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-app-'));
+			const failedPluginName = 'failedBearerPlugin';
+			let failedScope;
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName] = {
+				async handleApplication(scope) {
+					failedScope = scope;
+					scope.server.registerBearerValidator(() => null);
+					throw new Error('simulated handleApplication failure');
+				},
+			};
+			try {
+				writeFileSync(join(failedAppDir, 'harperdb-config.yaml'), stringify({ [failedPluginName]: {} }));
+				let unregisterOnFailedLoadCalls = 0;
+				await componentLoader.loadComponent(failedAppDir, { isWorker: true, set() {} }, 'test', {
+					applicationScope: new ApplicationScope('test', this.resources, {
+						registerBearerValidator: () => () => unregisterOnFailedLoadCalls++,
+					}),
+				});
+				assert.ok(failedScope, 'handleApplication must have been invoked by loadComponent');
+				assert.equal(
+					unregisterOnFailedLoadCalls,
+					1,
+					'loadComponent must call disposeBearerValidators() when handleApplication rejects'
+				);
+			} finally {
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
+				componentLoader.loadedPaths.clear();
+				// a failed load leaves its scope open; its watchers must stop before Windows can delete the directory
+				await failedScope?.close();
+				rmSync(failedAppDir, { recursive: true, force: true });
+			}
+		});
 	});
 
 	// REST deduplicates its registration per route, so the route identity must be injective: two

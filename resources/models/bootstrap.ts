@@ -46,13 +46,15 @@ import {
 	getBackend,
 	removeIfCurrent,
 	replaceIfCurrent,
+	setBackendPricing,
 	setBackendSource,
 	type CapturedInstall,
 } from './backendRegistry.ts';
 import { getSharedRootConfigWatcher, RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
+import { flattenObject } from '../../config/harperConfigEnvVars.ts';
 import { validateModelsBlock } from '../../validation/configValidator.ts';
 import { registerGenerativeDecisionBackend, type GenerativeDecisionConfig } from './generativeDecision.ts';
-import type { ModelBackend, ModelKind } from './types.ts';
+import type { ModelBackend, ModelKind, ModelPricing } from './types.ts';
 
 /**
  * Field names treated as credentials. When present in config as a literal
@@ -71,6 +73,7 @@ interface ModelEntry {
 	apiKey?: string;
 	baseUrl?: string;
 	organization?: string;
+	inputPrefixes?: OpenAIBackendConfig['inputPrefixes'];
 	// bedrock
 	region?: string;
 	// generative decision adapter
@@ -82,6 +85,8 @@ interface ModelEntry {
 	requireStructuredOutput?: boolean;
 	/** Ordered fallback group: other logical names tried, in order, after this one (#1326). */
 	fallback?: string[];
+	/** What the operator pays for this generative model; prices `Models.generate` calls it serves. */
+	pricing?: ModelPricing;
 }
 
 interface ModelsConfig {
@@ -293,6 +298,7 @@ function publishEntry(
 	const key = slotKey(kind, logicalName);
 	const sourceConfig = desiredEntry.configJson ? JSON.parse(desiredEntry.configJson) : entry;
 	setBackendSource(backend, sourceFingerprint(kind, logicalName, sourceConfig));
+	if (kind === 'generative') setBackendPricing(backend, entry.pricing);
 	for (const extra of extras)
 		setBackendSource(extra.backend, sourceFingerprint(extra.kind, extra.logicalName, sourceConfig));
 	// Boot overwrites occupants (the documented contract); a reload replaces only what this
@@ -516,8 +522,12 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 function installedConfiguration(): Record<string, unknown> | undefined {
 	const configuration: Record<string, unknown> = {};
 	for (const [key, slot] of installedSlots) {
-		if (slot.backend)
-			configuration[key] = JSON.parse(slot.configJson ?? JSON.stringify(expandEnvVarsDeep(JSON.parse(slot.entryJson))));
+		if (!slot.backend) continue;
+		// What a call costs is not part of what produced a decision.
+		const { pricing: _pricing, ...entry } = JSON.parse(
+			slot.configJson ?? JSON.stringify(expandEnvVarsDeep(JSON.parse(slot.entryJson)))
+		);
+		configuration[key] = entry;
 	}
 	return Object.keys(configuration).length > 0 ? configuration : undefined;
 }
@@ -617,7 +627,7 @@ function modelsWatcherErrorListener(error: unknown): void {
 	harperLogger.warn(`models: config watcher error: ${(error as Error)?.message ?? error}`);
 }
 
-function envLayerNamingModels(): string | undefined {
+export function envLayerNamingModels(): string | undefined {
 	for (const name of ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG']) {
 		const raw = process.env[name];
 		if (!raw) continue;
@@ -628,7 +638,7 @@ function envLayerNamingModels(): string | undefined {
 			if (
 				parsed &&
 				typeof parsed === 'object' &&
-				Object.keys(parsed).some((k) => k === 'models' || k.startsWith('models.'))
+				Object.keys(flattenObject(parsed, '', false)).some((k) => k === 'models' || k.startsWith('models.'))
 			)
 				return name;
 		} catch {

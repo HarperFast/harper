@@ -47,6 +47,8 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
  */
 const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
+const PRODUCT_NAME = packageJson.productName || 'Harper';
+
 /**
  * Canonical directory containing core's runtime modules, independent of the
  * metadata owner: the source root, standalone dist, or an embedded dist/core.
@@ -75,6 +77,7 @@ function getRuntimeModuleURL(relativePath) {
 module.exports = {
 	packageJson,
 	PACKAGE_ROOT,
+	PRODUCT_NAME,
 	RUNTIME_SRC_ROOT,
 	RUNTIME_FILE_EXT,
 	loadNativePackage,

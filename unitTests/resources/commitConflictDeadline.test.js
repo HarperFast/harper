@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { getOutstandingCommits } = require('#src/resources/DatabaseTransaction');
+const { getOutstandingCommits, resetStuckCommitLogCooldownForTests } = require('#src/resources/DatabaseTransaction');
 const { setRegistryStatusForTests } = require('#src/resources/longLivedTransactions');
 const harperLogger = require('#js/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
@@ -24,7 +24,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 	// Larger than any configured storage.maxTransactionQueueTime this suite could run under, so the
 	// budget is spent at the first retry decision and the test never waits real seconds for it.
 	const WELL_PAST_BUDGET_MS = 3600000;
-	let DeadlineA, DeadlineB;
+	let DeadlineA, DeadlineB, LoggedDeadline;
 	const unhandled = [];
 	const onUnhandled = (error) => unhandled.push(error);
 	const pendingRestores = [];
@@ -36,7 +36,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			table: 'CommitDeadlineA',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
-			audit: true,
+			audit: false,
 		});
 		// A different database, deliberately: txnForContext() only builds the `transaction.next` chain
 		// across databases, and the chained link is where "an earlier store already committed" arises.
@@ -44,6 +44,13 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			table: 'CommitDeadlineB',
 			database: 'testCommitDeadline',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: false,
+		});
+		LoggedDeadline = table({
+			table: 'LoggedCommitDeadline',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: true,
 		});
 		process.on('unhandledRejection', onUnhandled);
 	});
@@ -282,5 +289,38 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		assert.strictEqual(attempts.length, 1, 'the retry after the forced conflict must have been allowed');
 		assert.strictEqual((await DeadlineA.get('reset'))?.name, 'after-abandon');
 		assert.deepStrictEqual(getOutstandingCommits(), { count: 0, oldestAgeMs: undefined }, 'no commit left tracked');
+	});
+
+	it('never abandons a durably logged commit past the conflict budget, logging the overdue diagnostic once', async function () {
+		this.timeout(20000);
+		resetStuckCommitLogCooldownForTests();
+		const errorLines = [];
+		const originalError = harperLogger.error;
+		harperLogger.error = (...args) => errorLines.push(args);
+		let attempts, result;
+		try {
+			({ attempts } = conflictCommits(LoggedDeadline, 'retryNow', { failFirst: 5 }));
+			const context = {};
+			result = await outcomeOf(
+				transaction(context, async () => {
+					await LoggedDeadline.get('logged-overdue', context);
+					await LoggedDeadline.put({ id: 'logged-overdue', name: 'logged-ok' }, context);
+					context.transaction.commitStartedAt = performance.now() - WELL_PAST_BUDGET_MS;
+				})
+			);
+		} finally {
+			harperLogger.error = originalError;
+		}
+		assert.strictEqual(
+			result.outcome,
+			'committed',
+			'a durably logged write must retry past the budget, not be abandoned'
+		);
+		assert.strictEqual(attempts.length, 5, 'every forced conflict was retried');
+		assert.strictEqual((await LoggedDeadline.get('logged-overdue'))?.name, 'logged-ok');
+		const overdueLogs = errorLines.filter(([message]) =>
+			message.startsWith('A durably logged write transaction is still in write-intent conflict')
+		);
+		assert.strictEqual(overdueLogs.length, 1, 'the overdue diagnostic must be logged once per logical commit');
 	});
 });

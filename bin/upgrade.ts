@@ -14,7 +14,7 @@ import * as directivesManager from '../upgrade/directivesManager.ts';
 import * as installation from '../utility/installation.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
-import { packageJson } from '../utility/packageUtils.js';
+import { packageJson, PRODUCT_NAME } from '../utility/packageUtils.js';
 import { promisify } from 'node:util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 let pm2Utils;
@@ -39,7 +39,7 @@ async function upgrade(upgradeObj) {
 	//We have to make sure HDB is installed before doing anything else
 	const installed = installation.isHdbInstalled(env, hdbLogger);
 	if (!installed) {
-		const hdbNotInstalledMsg = 'Harper is not installed. Harper must be installed before running an upgrade.';
+		const hdbNotInstalledMsg = `${PRODUCT_NAME} is not installed. ${PRODUCT_NAME} must be installed before running an upgrade.`;
 		printToLogAndConsole(hdbNotInstalledMsg, hdbTerms.LOG_LEVELS.ERROR);
 		process.exit(1);
 	}
@@ -48,12 +48,12 @@ async function upgrade(upgradeObj) {
 	if (!hdbUpgradeInfo) {
 		hdbUpgradeInfo = await hdbInfoController.getVersionUpdateInfo();
 		if (!hdbUpgradeInfo) {
-			console.log('Harper version is current');
+			console.log(`${PRODUCT_NAME} version is current`);
 			process.exit(0);
 		}
 	}
 
-	printToLogAndConsole(`This version of Harper is ${packageJson.version}`, hdbTerms.LOG_LEVELS.INFO);
+	printToLogAndConsole(`This version of ${PRODUCT_NAME} is ${packageJson.version}`, hdbTerms.LOG_LEVELS.INFO);
 
 	//The upgrade version should always be included in the hdbUpgradeInfo object returned from the getVersion function
 	// above but testing for it and using the version from package.json just in case it is not
@@ -75,14 +75,14 @@ async function upgrade(upgradeObj) {
 	// (Downgrades still confirm via forceDowngradePrompt in hdbInfoController — running older
 	// software on upgraded data is the genuinely risky, lossy direction.)
 	printToLogAndConsole(
-		`Harper is completing an update to version ${currentHdbVersion}. You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/`,
+		`${PRODUCT_NAME} is completing an update to version ${currentHdbVersion}. You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/`,
 		hdbTerms.LOG_LEVELS.INFO
 	);
 
 	await runUpgrade(hdbUpgradeInfo);
 
 	printToLogAndConsole(
-		`Harper was successfully upgraded to version ${hdbUpgradeInfo[UPGRADE_VERSION]}`,
+		`${PRODUCT_NAME} was successfully upgraded to version ${hdbUpgradeInfo[UPGRADE_VERSION]}`,
 		hdbTerms.LOG_LEVELS.INFO
 	);
 }
@@ -111,7 +111,7 @@ async function runUpgrade(upgradeObj) {
 		await hdbInfoController.insertHdbUpgradeInfo(upgradeObj[UPGRADE_VERSION] ?? packageJson.version);
 	} catch (err) {
 		printToLogAndConsole(
-			`The data upgrade completed, but the new data version could not be recorded in the '${hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME}' table, so Harper will not start. Every restart re-runs the upgrade directives against already-upgraded data, so stop any process supervisor that restarts Harper automatically, then check the logs and contact ${hdbTerms.HDB_SUPPORT_ADDRESS}.`,
+			`The data upgrade completed, but the new data version could not be recorded in the '${hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME}' table, so ${PRODUCT_NAME} will not start. Every restart re-runs the upgrade directives against already-upgraded data, so stop any process supervisor that restarts ${PRODUCT_NAME} automatically, then check the logs and contact ${hdbTerms.HDB_SUPPORT_ADDRESS}.`,
 			hdbTerms.LOG_LEVELS.ERROR
 		);
 		throw err;

@@ -30,12 +30,18 @@ import {
 } from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
+import { asBinary } from './asBinary.ts';
 import { constants, RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+// Dedicated stateless msgpackr encoder for persisting the shared-structures dictionary itself.
+// Encoding via `this` inside `saveStructures` (when `targetStore === this.rocksStore`) would
+// re-enter the active `RecordEncoder.encode` mid-pack and mutate `lastNamedStructuresLength`
+// before `transactionSync` commits, masking CAS conflicts on retry.
+const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
 // Analytics counter incremented whenever a record cannot be decoded because its shared structure is
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
@@ -247,6 +253,7 @@ export function assignStoredFields(target: any, source: any, encoder: any) {
 
 export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
+	rocksStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
@@ -459,7 +466,8 @@ export class RecordEncoder extends StructonEncoder {
 		const superSaveStructures = this.saveStructures;
 		const superGetStructures = this.getStructures;
 		this.saveStructures = function (structures, isCompatible): boolean | undefined {
-			if (this.isRocksDB) {
+			const targetStore = this.isRocksDB ? this.rootStore : this.rocksStore;
+			if (targetStore) {
 				// transactionSync returns the callback's value on commit, but returns `undefined`
 				// when the txn was aborted (it swallows ERR_ALREADY_ABORTED). The success path here
 				// returns an explicit `true`; anything else means the shared structures were NOT
@@ -471,23 +479,49 @@ export class RecordEncoder extends StructonEncoder {
 				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
 				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
 				// trie, re-mints, and re-saves — so the record always references a persisted structure.
-				const committed = this.rootStore.transactionSync(
-					(txn) => {
-						const sharedStructuresKey = [Symbol.for('structures'), this.name];
-						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
-						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
-						if (typeof isCompatible == 'function') {
-							if (!isCompatible(existingStructures)) {
+				const sharedStructuresKey = this.isRocksDB
+					? [Symbol.for('structures'), this.name]
+					: targetStore.store.sharedStructuresKey;
+				const encodedStructures = asBinary(structuresEncoder.encode(structures));
+				const resetUncommittedStructures = () => {
+					if (this.structures) {
+						this.structures.length = (this as any).lastNamedStructuresLength || 0;
+						(this.structures as any).sharedLength = this.structures.length;
+						delete (this.structures as any).transitions;
+						(this.structures as any).uninitialized = true;
+					}
+				};
+				let incompatible = false;
+				let committed: boolean | undefined;
+				try {
+					committed = targetStore.transactionSync(
+						(txn) => {
+							const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
+							let existingStructures: any;
+							if (existingStructuresBuffer?.length) {
+								existingStructures = this.decode(existingStructuresBuffer);
+								if (!existingStructures || typeof existingStructures !== 'object') {
+									throw new Error(`Failed to decode existing structures for ${this.name ?? 'unnamed store'}`);
+								}
+							}
+							if (typeof isCompatible == 'function') {
+								if (!isCompatible(existingStructures)) {
+									incompatible = true;
+									return false;
+								}
+							} else if (existingStructures && existingStructures.length !== isCompatible) {
+								incompatible = true;
 								return false;
 							}
-						} else if (existingStructures && existingStructures.length !== isCompatible) {
-							return false;
-						}
-						txn.putSync(sharedStructuresKey, structures);
-						return true;
-					},
-					{ retryOnBusy: true }
-				);
+							txn.putSync(sharedStructuresKey, encodedStructures);
+							return true;
+						},
+						{ retryOnBusy: true }
+					);
+				} catch (error) {
+					resetUncommittedStructures();
+					throw error;
+				}
 				// Only record the structure update once the txn has actually committed. Setting it
 				// inside the callback would leave it dangling on an aborted txn and could flag a
 				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
@@ -495,6 +529,9 @@ export class RecordEncoder extends StructonEncoder {
 					this.structureUpdate = structures;
 					this.checkStructureCapacity();
 					return true;
+				}
+				if (!incompatible) {
+					resetUncommittedStructures();
 				}
 				return false;
 			} else {
@@ -505,9 +542,12 @@ export class RecordEncoder extends StructonEncoder {
 			}
 		};
 		this.getStructures = function (): any {
-			if (this.isRocksDB) {
-				const sharedStructuresKey = [Symbol.for('structures'), this.name];
-				const buffer = this.rootStore.getBinarySync(sharedStructuresKey);
+			const targetStore = this.isRocksDB ? this.rootStore : this.rocksStore;
+			if (targetStore) {
+				const sharedStructuresKey = this.isRocksDB
+					? [Symbol.for('structures'), this.name]
+					: targetStore.store.sharedStructuresKey;
+				const buffer = targetStore.getBinarySync(sharedStructuresKey);
 				return buffer ? this.decode(buffer) : undefined;
 			} else {
 				// msgpackr only defines getStructures when the option was supplied; a store with no

@@ -1520,6 +1520,44 @@ describe('cliOperations', () => {
 			assert.match(multipartText, /name="operation"/);
 		});
 
+		it('hands the packer its pre-deploy scan, so the links it found to leave out stay out', async () => {
+			const originalScan = packageComponentModule.scanPackageDirectory;
+			const originalStream = packageComponentModule.streamPackagedDirectory;
+			const scan = {
+				totalSize: 0,
+				danglingSymlinks: [],
+				installLinks: [path.join('node_modules', 'plugin', 'node_modules', 'harper')],
+			};
+			packageComponentModule.scanPackageDirectory = async () => scan;
+			let packedWith;
+			packageComponentModule.streamPackagedDirectory = (...args) => {
+				packedWith = args;
+				return Readable.from(Buffer.from('fake-tar-bytes'));
+			};
+			commonUtilsModule.httpRequest = async (options, body) => {
+				if (body && typeof body.operation === 'string' && body.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				for await (const _chunk of body);
+				return Object.assign(
+					Readable.from([`event: done\ndata: ${JSON.stringify({ result: { success: true } })}\n\n`]),
+					{ statusCode: 200, headers: { 'content-type': 'text/event-stream' } }
+				);
+			};
+
+			try {
+				await cliOperationsModule.cliOperations(
+					{ operation: 'deploy_component', project: 'widget', target: 'example.com', skip_node_modules: false },
+					true
+				);
+			} finally {
+				packageComponentModule.scanPackageDirectory = originalScan;
+				packageComponentModule.streamPackagedDirectory = originalStream;
+			}
+
+			assert.strictEqual(packedWith[3], scan);
+		});
+
 		// The credentials of the user being created/altered must never outrank the caller's own
 		// saved session — otherwise `harper login` + `add_user` authenticates as a user that
 		// doesn't exist yet and 401s.

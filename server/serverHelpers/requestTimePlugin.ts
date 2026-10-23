@@ -28,6 +28,8 @@ export default fp(
 				method = config.method;
 			}
 			recordAction(responseTime, 'duration', action, method, type);
+			const receivedAt = (request.raw as typeof request.raw & { receivedAt?: number })?.receivedAt;
+			if (receivedAt !== undefined) recordAction(startTransfer - receivedAt, 'request-time', action, method, type);
 			// TODO: Remove the "success" metric, since we have switch to using recording responses by status code
 			recordActionBinary(reply.raw.statusCode < 400, 'success', action, method, type);
 			recordActionBinary(1, 'response_' + reply.raw.statusCode, action, method, type);

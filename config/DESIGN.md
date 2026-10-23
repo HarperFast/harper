@@ -8,6 +8,14 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Model configuration writes (`config/configUtils.ts`)
+
+`set_configuration` accepts `models` as a complete replacement (including `{}` to clear it), validated by the existing model schema; named entry keys remain inside the object, and `flattenConfig` uses prototype-safe ownership checks so a name such as `hasOwnProperty` can boot. `lookupConfigWriteParam` keeps this out of the bare env/CLI registry, so an unrelated `MODELS` variable does not become a boot override. Model writes always validate and persist the candidate, bypassing the startup-snapshot no-op check that could silently skip a rollback. They reject with 409 when `HARPER_CONFIG` or `HARPER_SET_CONFIG` names model settings; the shared environment flattener excludes empty maps, which impose no overrides. `HARPER_DEFAULT_CONFIG` remains writable and yields to edits of values it supplied, requiring restart when it names model settings and disables the watcher. A default introduced for an entry already in the file can recreate that entry after a later API removal; removing it persistently requires changing that default as well. Operation logs redact the entire block; `${ENV_VAR}` credentials remain literal on disk, while literal credentials retain the existing bootstrap warning. Enforced by `unitTests/config/setConfigurationModels.test.js` and the configuration integration suite.
+
+## Root config is adopted only when it parses (`config/configUtils.ts`)
+
+`initConfig()` rejects `Document.errors` before upgrade backfill, environment-state writes, validation, or active-config replacement on boot and forced reload. Forced reloads use `initSync()`, whose current failure policy exits the process, so a malformed edit can terminate a running node; this deliberately follows the existing fail-closed validation path. YAML duplicate keys are fatal where they appear in `Document.errors`, including existing files encountered during upgrade. The CLI error is a `ServerError` with status 500 and uses the source-free code and location formatter shared with `ConfigParseError` while retaining the `Error parsing … YAMLParseError` prefix, because parser source frames can expose credentials. It does not retain the parser error as a cause. `unitTests/config/configUtils-parseErrors.test.js` pins the error type and malformed and duplicate-key files with all legacy backfill keys present.
+
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
@@ -229,6 +237,10 @@ cannot tell apart from one the file really held, and `updateLogger` reads an abs
 rotation off and an absent `console` as console off. `updateLogSettings()` therefore keeps what
 `initLogSettings()` established until a real config arrives, rather than silently turning logging
 off on the very boot that could not read its configuration.
+
+## `RootConfigWatcher` polls under Bun (`config/RootConfigWatcher.ts`)
+
+Bun's `fs.watch` (1.4.3, 1.4.4) tears down a fresh watch when a stale watch on the same path closes. chokidar closes and re-opens its watch whenever the watched file's inode changes, so once two watchers share a path, the first atomic tmp+rename write leaves every one of them deaf. Each thread has its own shared `RootConfigWatcher` (`getSharedRootConfigWatcher`) on the root config, all in one process, and `configUtils` writes the file by rename. So under native watching, Bun stopped hot-reloading models and logging after the first `set_configuration`. The constructor therefore starts on the existing `POLLING_FALLBACK_OPTIONS` (1 s `fs.watchFile`) when `process.versions.bun` is set. Two writes inside one poll interval coalesce; consumers converge on the latest file. The poller reports only a size change or a newer mtime, so a same-size replacement carrying an older mtime (an mtime-preserving copy, a backward clock step) goes unseen until the next write; `atomicWriteFile` always stamps a fresh mtime. Root-config `OptionsWatcher`s still watch natively and remain exposed. Drop the Bun branch once a Bun release delivers every rename to two watchers of one file. Enforced by the `under Bun` case in `unitTests/config/rootConfigWatcher.test.js` and, on the Bun integration leg, `integrationTests/apiTests/configuration.test.mjs`.
 
 ## Config is composed and memoized before any component runs (`config/configUtils.ts`)
 

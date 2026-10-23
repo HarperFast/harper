@@ -17,6 +17,26 @@ export interface AgentMessage {
 	toolCallId?: string;
 	/** Wall-clock timestamp of when this item entered the transcript. */
 	createdAt: number;
+	/** Assistant messages only: what the model call that produced this message reported. */
+	usage?: AgentCallUsage;
+}
+
+/** One model call's usage as reported; a field the backend or pricing did not supply is absent. */
+export interface AgentCallUsage {
+	promptTokens?: number;
+	completionTokens?: number;
+	costUsd?: number;
+}
+
+/**
+ * A session's usage folded from its transcript (`summarizeSessionUsage`). A total is present only
+ * while every call in the session reported it, so an absent total with `calls > 0` means unmeasured.
+ */
+export interface AgentSessionUsage {
+	calls: number;
+	promptTokens?: number;
+	completionTokens?: number;
+	costUsd?: number;
 }
 
 export interface ApprovalRequest {
@@ -46,6 +66,8 @@ export interface AgentSessionRow {
 	createdAt: number;
 	updatedAt: number;
 	lastError?: string;
+	/** Usage of billed model calls whose reply was rejected and kept out of `messages`; folded into the session's usage. */
+	rejectedCalls?: AgentCallUsage[];
 }
 
 export interface AgentToolHandler {
@@ -64,6 +86,8 @@ export interface AgentToolContext {
 	signal?: AbortSignal;
 	/** Filesystem scope roots accessible to FS tools. Read-only after composition. */
 	scopes: AgentScopes;
+	/** Byte cap the loop applies to each tool result; read tools size their pages to fit under it. */
+	maxResultBytes?: number;
 }
 
 export interface AgentScopes {
@@ -86,7 +110,12 @@ export interface AgentConfig {
 	model?: string;
 	maxTurns: number;
 	maxTokens: number;
-	maxCostUsd: number;
+	/** Largest tool result, in bytes of serialized JSON, the loop appends to the transcript. */
+	maxToolResultBytes: number;
+	/** Per-session cap on prompt + completion tokens. Unset: uncapped. */
+	maxSessionTokens?: number;
+	/** Per-session cap in USD, from the serving model entry's `pricing`. Unset: uncapped. */
+	maxCostUsd?: number;
 	autoApprove: boolean;
 	allowDestructive: boolean;
 	user: string;

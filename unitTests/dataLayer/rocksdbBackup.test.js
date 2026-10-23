@@ -1,15 +1,27 @@
 'use strict';
 
 const assert = require('node:assert');
-const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
+const { setTimeout: delay } = require('node:timers/promises');
 const { extract } = require('tar-stream');
-const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { RocksDatabase, fileLockRelease, registryStatus, tryFileLock } =
+	require('../rocksdbBindings.mts').rocksdbBindings();
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const {
 	backupDirForDatabase,
+	createBackup,
 	createBackupOffline,
 	deleteBackup,
 	deleteBackupOffline,
@@ -40,17 +52,30 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
-const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
-const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
+const {
+	abandonRestore,
+	beginRestore,
+	completeRestore,
+	checkRestoreState,
+	restoreLockHeldExclusively,
+	restoreMarkerPresent,
+} = require('#src/dataLayer/restoreMarker');
+const {
+	managementLockPath,
+	pinBackup,
+	readBackupPins,
+	unpinBackup,
+	withBackupRepositoryLock,
+} = require('#src/dataLayer/backupRepository');
 const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
-const { closeLoadedDatabases } = require('#src/resources/databases');
+const { closeLoadedDatabases, table } = require('#src/resources/databases');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
 	ARCHIVE_SCHEMA_VERSION,
 	assertArchiveRestorable,
 	parseArchiveManifest,
 } = require('#src/dataLayer/backupArchiveManifest');
-const { readBackupManifest } = require('#src/dataLayer/backupManifest');
+const { readBackupManifest, writeBackupManifest } = require('#src/dataLayer/backupManifest');
 
 const DB_NAME = 'rocksdb-backup-unit-test';
 
@@ -320,6 +345,289 @@ describe('rocksdbBackup', function () {
 			} finally {
 				completeRestore(lock);
 			}
+		});
+	});
+
+	// harper#2965
+	describe('restore verifies the backup before it purges', function () {
+		const VERIFIED = `${DB_NAME}-verified`;
+		const verifiedDir = () => join(storageDir, VERIFIED);
+		const RECORDS = Array.from({ length: 500 }, (_, i) => [`k${i}`, { i, pad: 'x'.repeat(100) }]);
+
+		afterEach(async function () {
+			// a refused online restore reloads the database it left intact, in this process too
+			await closeLoadedDatabases();
+			if (checkRestoreState(verifiedDir()) !== 'clear') completeRestore(beginRestore(verifiedDir()));
+			rmSync(verifiedDir(), { recursive: true, force: true });
+			rmSync(backupDirForDatabase(VERIFIED), { recursive: true, force: true });
+		});
+
+		async function seed() {
+			const database = RocksDatabase.open(verifiedDir());
+			try {
+				await database.transaction(async (transaction) => {
+					transaction.useLog('audit').addEntry(Buffer.from('entry'));
+					for (const [key, value] of RECORDS) transaction.putSync(key, value);
+				});
+				await database.flush();
+			} finally {
+				database.close();
+			}
+			const { backup_id: backupId } = await createBackupOffline(VERIFIED);
+			// diverge from the backup, so "intact" cannot be satisfied by a restore that happened to succeed
+			const after = RocksDatabase.open(verifiedDir());
+			try {
+				after.putSync('after-backup', { kept: true });
+			} finally {
+				after.close();
+			}
+			return backupId;
+		}
+
+		function assertDestinationIntact() {
+			assert.strictEqual(checkRestoreState(verifiedDir()), 'clear', 'a refused restore must not leave a marker');
+			const database = RocksDatabase.open(verifiedDir());
+			try {
+				assert.deepStrictEqual(database.getSync('k7'), RECORDS[7][1]);
+				assert.deepStrictEqual(database.getSync('after-backup'), { kept: true }, 'the pre-restore data must survive');
+			} finally {
+				database.close();
+			}
+		}
+
+		function assertRestoredFromBackup() {
+			const database = RocksDatabase.open(verifiedDir());
+			try {
+				assert.deepStrictEqual(database.getSync('k7'), RECORDS[7][1]);
+				assert.strictEqual(database.getSync('after-backup'), undefined, 'the restore took effect');
+			} finally {
+				database.close();
+			}
+		}
+
+		// RocksDB's backup meta records a crc32c per file, verified as the file is copied out.
+		function crc32c(buffer) {
+			let crc = 0xffffffff;
+			for (const byte of buffer) {
+				crc ^= byte;
+				for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0x82f63b78 : crc >>> 1;
+			}
+			return (crc ^ 0xffffffff) >>> 0;
+		}
+
+		// A table whose footer declares a format_version this build does not know — what a newer
+		// binding's table format looks like to this one — with its checksum re-recorded, so only a
+		// check that opens the table can refuse it.
+		function writeUnsupportedTableFormat(backupId) {
+			const backupDir = backupDirForDatabase(VERIFIED);
+			const sst = readdirSync(join(backupDir, 'shared_checksum')).find((name) => name.endsWith('.sst'));
+			assert.ok(sst, 'precondition: the backup holds a table file');
+			const sstPath = join(backupDir, 'shared_checksum', sst);
+			const contents = readFileSync(sstPath);
+			contents.writeUInt32LE(99, contents.length - 12);
+			writeFileSync(sstPath, contents);
+			const metaPath = join(backupDir, 'meta', String(backupId));
+			const meta = readFileSync(metaPath, 'utf8');
+			const entry = new RegExp(`^(shared_checksum/${sst} crc32 )\\d+$`, 'm');
+			assert.match(meta, entry);
+			writeFileSync(metaPath, meta.replace(entry, `$1${crc32c(contents)}`));
+		}
+
+		function writeUnsupportedLogVersion(backupId) {
+			const store = join(backupDirForDatabase(VERIFIED), 'transaction_logs', String(backupId), 'audit');
+			const log = readdirSync(store).find((name) => name.endsWith('.txnlog'));
+			const contents = readFileSync(join(store, log));
+			contents[4] = 99;
+			writeFileSync(join(store, log), contents);
+		}
+
+		function corruptBackupFile(backupId) {
+			const privateDir = join(backupDirForDatabase(VERIFIED), 'private', String(backupId));
+			const manifest = readdirSync(privateDir).find((name) => name.startsWith('MANIFEST-'));
+			const contents = readFileSync(join(privateDir, manifest));
+			contents.fill(0x5a, 0, Math.min(contents.length, 64));
+			writeFileSync(join(privateDir, manifest), contents);
+		}
+
+		const restores = {
+			offline: (backupId) => restoreBackupOffline(VERIFIED, backupId),
+			online: (backupId) => restoreBackup({ ...SU, database: VERIFIED, backup_id: backupId }),
+		};
+		const verificationPoint = {
+			// no live writers: verified before the claim, so a crash mid-verify leaves the database loadable
+			offline: {
+				title: 'verifies under the repository lock, before claiming the database',
+				expected: { repositoryLocked: true, claimed: false, marked: false, open: false },
+			},
+			// a write acknowledged during verification would be lost to the purge, and a marker published
+			// before it would leave the intact database unloadable after a crash mid-verify
+			online: {
+				title: 'verifies only once the database is claimed and closed, before it is marked',
+				expected: { repositoryLocked: false, claimed: true, marked: false, open: false },
+			},
+		};
+		const unreadable = [
+			['a corrupt backup', corruptBackupFile, /checksum/i],
+			['a table format this build cannot open', writeUnsupportedTableFormat, /format_version 99/],
+			['a transaction log format this build cannot read', writeUnsupportedLogVersion, /version: 99/],
+		];
+		for (const [mode, restore] of Object.entries(restores)) {
+			for (const [label, damage, signature] of unreadable) {
+				it(`${mode}: refuses ${label} without touching the destination`, async function () {
+					this.timeout(30000);
+					const backupId = await seed();
+					damage(backupId);
+					await assert.rejects(
+						restore(backupId),
+						(error) => signature.test(error.message) && /did not modify/.test(error.message)
+					);
+					assertDestinationIntact();
+				});
+			}
+
+			it(`${mode}: leaves an interrupted restore's marker as it was when verification refuses`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				abandonRestore(beginRestore(verifiedDir()));
+				corruptBackupFile(backupId);
+				await assert.rejects(restore(backupId), /earlier restore that did not finish/);
+				assert.strictEqual(checkRestoreState(verifiedDir()), 'incomplete');
+			});
+
+			it(`${mode}: ${verificationPoint[mode].title}`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const realVerify = backups.verify;
+				const observed = [];
+				backups.verify = async (...args) => {
+					const token = tryFileLock(managementLockPath(backupDirForDatabase(VERIFIED)));
+					if (token) fileLockRelease(token);
+					observed.push({
+						repositoryLocked: token === 0,
+						claimed: restoreLockHeldExclusively(verifiedDir()),
+						marked: restoreMarkerPresent(verifiedDir()),
+						open: registryStatus().some((entry) => entry.path === verifiedDir() && entry.refCount > 0),
+					});
+					return realVerify.apply(backups, args);
+				};
+				try {
+					await restore(backupId);
+				} finally {
+					backups.verify = realVerify;
+				}
+				assert.deepStrictEqual(observed, [verificationPoint[mode].expected]);
+			});
+
+			it(`${mode}: selects the backup under the repository lock`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const backupDir = backupDirForDatabase(VERIFIED);
+				const token = tryFileLock(managementLockPath(backupDir));
+				assert.ok(token, 'precondition: the test holds the repository lock');
+				const realList = backups.list;
+				let listed = 0;
+				backups.list = (...args) => {
+					listed++;
+					return realList.apply(backups, args);
+				};
+				try {
+					const restoring = restore(backupId);
+					restoring.catch(() => {});
+					try {
+						await delay(300);
+						assert.strictEqual(listed, 0, 'no backup is selected before the repository lock is held');
+						// the same id now names an engine-only backup, which this restore must not accept
+						await writeBackupManifest(backupDir, backupId, false);
+					} finally {
+						fileLockRelease(token);
+					}
+					await assert.rejects(restoring, /Cannot restore an engine-only backup/);
+				} finally {
+					backups.list = realList;
+				}
+				assertDestinationIntact();
+			});
+
+			it(`${mode}: refuses a backup whose declared blob snapshot is missing`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const snapshotDir = blobSnapshotDir(backupDirForDatabase(VERIFIED), backupId);
+				assert.ok(existsSync(snapshotDir), 'precondition: the backup captured a blob snapshot');
+				rmSync(snapshotDir, { recursive: true, force: true });
+				await assert.rejects(
+					restore(backupId),
+					(error) =>
+						error.statusCode === 400 &&
+						/blob snapshot is missing/.test(error.message) &&
+						/did not modify/.test(error.message)
+				);
+				assertDestinationIntact();
+			});
+
+			it(`${mode}: marks the database before the purge, so a failure past it blocks the load`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const realRestore = backups.restore;
+				let markedAtPurge;
+				backups.restore = async () => {
+					markedAtPurge = restoreMarkerPresent(verifiedDir());
+					throw new Error('injected copy failure');
+				};
+				try {
+					await assert.rejects(restore(backupId), /rerun restore_backup to recover/);
+				} finally {
+					backups.restore = realRestore;
+				}
+				assert.strictEqual(markedAtPurge, true);
+				assert.strictEqual(checkRestoreState(verifiedDir()), 'incomplete');
+			});
+
+			it(`${mode}: restores a backup that verifies`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				await restore(backupId);
+				assert.strictEqual(checkRestoreState(verifiedDir()), 'clear');
+				await closeLoadedDatabases();
+				assertRestoredFromBackup();
+			});
+		}
+
+		it('online: refuses when something reopens the database directly while the backup verifies', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realVerify = backups.verify;
+			let reopened;
+			backups.verify = async (...args) => {
+				await realVerify.apply(backups, args);
+				reopened = RocksDatabase.open(verifiedDir());
+			};
+			try {
+				await assert.rejects(restores.online(backupId), (error) => error.statusCode === 409);
+			} finally {
+				backups.verify = realVerify;
+				reopened?.close();
+			}
+			assertDestinationIntact();
+		});
+
+		it('online: keeps the backup from being deleted while it verifies', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realVerify = backups.verify;
+			let deletion;
+			backups.verify = async (...args) => {
+				deletion = await deleteBackupOffline(VERIFIED, backupId).then(
+					() => 'deleted',
+					(error) => error
+				);
+				return realVerify.apply(backups, args);
+			};
+			try {
+				await restores.online(backupId);
+			} finally {
+				backups.verify = realVerify;
+			}
+			assert.strictEqual(deletion?.statusCode, 409, `the claimed backup must be pinned, got ${deletion}`);
 		});
 	});
 
@@ -892,6 +1200,56 @@ describe('rocksdbBackup', function () {
 			await created;
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 1, 'and it proceeds once the lock is free');
 		});
+
+		// The blob snapshot and manifest are written after the engine backup returns, so the lock has to
+		// span them too, or a purge removes the backup the create is about to publish.
+		for (const mode of ['online', 'offline']) {
+			it(`makes a purge wait for an ${mode} create that is copying its blob snapshot`, async function () {
+				this.timeout(30000);
+				let create, purge;
+				if (mode === 'online') {
+					table({ table: 'Pinned', database: PINNED, attributes: [{ name: 'id', isPrimaryKey: true }] });
+					create = () => createBackup({ database: PINNED });
+					purge = () => purgeBackups({ ...SU, database: PINNED, keep_count: 0 });
+				} else {
+					const database = RocksDatabase.open(join(storageDir, PINNED));
+					try {
+						database.putSync('rec', { n: 1 });
+					} finally {
+						database.close();
+					}
+					create = () => createBackupOffline(PINNED);
+					purge = () => purgeBackupsOffline(PINNED, 0);
+				}
+				const backupDir = backupDirForDatabase(PINNED);
+				const original = blobBackupModule.snapshotBlobs;
+				let purged;
+				let lockHeldDuringCopy;
+				let purgeSettledDuringCopy;
+				blobBackupModule.snapshotBlobs = async (...args) => {
+					const probe = tryFileLock(managementLockPath(backupDir));
+					if (probe !== 0) fileLockRelease(probe);
+					lockHeldDuringCopy = probe === 0;
+					let settled = false;
+					purged = purge().finally(() => (settled = true));
+					await Promise.race([purged, delay(250)]);
+					purgeSettledDuringCopy = settled;
+					return original(...args);
+				};
+				try {
+					const created = await create();
+					assert.strictEqual(lockHeldDuringCopy, true, 'the create must hold the lock while it copies');
+					assert.strictEqual(purgeSettledDuringCopy, false, 'a purge must not run inside a create');
+					assert.deepStrictEqual(await purged, { deleted: 1, remaining: 0 }, 'the purge sees the published backup');
+					assert.strictEqual(await readBackupManifest(backupDir, created.backup_id), null, 'no manifest outlives it');
+				} finally {
+					blobBackupModule.snapshotBlobs = original;
+					// a purge left waiting by a failed create would otherwise delete the next test's backups
+					await purged?.catch(() => {});
+					if (mode === 'online') await closeLoadedDatabases();
+				}
+			});
+		}
 
 		it('refuses to publish a backup the engine no longer has by the time it finalizes', async function () {
 			this.timeout(30000);

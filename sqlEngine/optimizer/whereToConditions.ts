@@ -410,14 +410,14 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			};
 		}
 		case 'logical': {
-			if (expr.op !== 'or') return undefined;
+			if (expr.op !== 'or' && expr.op !== 'and') return undefined;
 			const sub: ConditionNode[] = [];
 			for (const a of expr.args) {
 				const c = leafToCondition(a);
 				if (!c) return undefined;
 				sub.push(c);
 			}
-			return { conditions: sub, operator: 'or' };
+			return { conditions: sub, operator: expr.op };
 		}
 		default:
 			return undefined;

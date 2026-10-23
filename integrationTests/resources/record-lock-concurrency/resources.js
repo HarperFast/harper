@@ -10,6 +10,9 @@
 // POST /LockHold/ { id, lease } — take a held lock ({ hold: true }) and return without releasing it;
 //   only its lease ends it (the abandoned-holder case).
 import { threadId } from 'node:worker_threads';
+import { readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 let workerMutex = Promise.resolve();
 function withWorkerMutex(fn) {
@@ -55,5 +58,39 @@ export class LockHold extends Resource {
 			worker: threadId,
 			n: record.getProperty('n'),
 		};
+	}
+}
+
+async function waitForBarrier(context, n) {
+	const barrierDir = context.headers?.get?.('x-test-barrier');
+	if (!barrierDir) return;
+	writeFileSync(join(barrierDir, String(n)), '');
+	const deadline = Date.now() + 10_000;
+	while (Date.now() < deadline && readdirSync(barrierDir).length < 16) {
+		await sleep(5);
+	}
+}
+
+export class ConditionalCounter extends tables.Counter {
+	async put(data, target) {
+		const context = this.getContext();
+		context.responseHeaders.set('X-Test-Worker', String(threadId));
+		const result = await super.put(data, target);
+		await waitForBarrier(context, data?.n);
+		return result;
+	}
+
+	async patch(data, target) {
+		const context = this.getContext();
+		context.responseHeaders.set('X-Test-Worker', String(threadId));
+		const result = await super.patch(data, target);
+		await waitForBarrier(context, data?.n);
+		return result;
+	}
+}
+
+export class ConditionalShortCircuit extends tables.Counter {
+	patch() {
+		throw new Response('ok', { status: 200 });
 	}
 }

@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileLockRelease, tryFileLock } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import { restoreMarkerPresent } from './restoreMarker.ts';
+import { restoreLockHeldExclusively, restoreMarkerPresent } from './restoreMarker.ts';
 import { fsyncDirectory, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
@@ -26,9 +26,9 @@ import { fsyncDirectory, removeFileDurably, writeFileDurably } from '../utility/
  * resume after a pin landed.
  *
  * A pin holds no owner or expiry. It names the database directory it is protecting, and it counts
- * only while that database still carries a restoring marker — the marker being present is exactly
- * the condition under which a restore is either running or waiting to be rerun, and therefore the
- * condition under which its source must survive. A process killed mid-restore leaves both, and the
+ * only while a restore holds that database's lock or the database still carries a restoring marker —
+ * exactly the conditions under which a restore is either running (claimed, or past its marker) or
+ * waiting to be rerun, and therefore under which its source must survive. A process killed mid-restore leaves both, and the
  * rerun clears both; a process killed between clearing the marker and releasing the pin leaves a pin
  * that is ignored and swept the next time anything looks. Nothing has to be reaped on a timer, and
  * no pin can outlive what it protects.
@@ -203,10 +203,10 @@ export function pinBackup(
 	writeFileDurably(path, JSON.stringify(pin), `${pinId}.tmp`);
 }
 
-/** Whether a pin still protects anything: a restore pin counts only while its database is marked. */
+/** Whether a pin still protects anything: a restore pin counts while its restore is claimed or marked. */
 function pinIsLive(pin: BackupPin): boolean {
 	if (!pin.database_path) return true;
-	return restoreMarkerPresent(pin.database_path);
+	return restoreMarkerPresent(pin.database_path) || restoreLockHeldExclusively(pin.database_path);
 }
 
 /** Release a claim. Missing is success — the goal is that nothing holds this backup any more. */

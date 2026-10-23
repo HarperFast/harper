@@ -27,7 +27,7 @@ import isEqual from 'lodash/isEqual.js';
 // through its shared module object the way named exports can.
 // eslint-disable-next-line prefer-const
 let PropertiesReader = propertiesReaderModule;
-import { handleHDBError } from '../utility/errors/hdbError.ts';
+import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES, HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
 import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
@@ -35,6 +35,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
 
@@ -703,6 +704,12 @@ export function initConfig(force = false) {
 			}
 		}
 
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${configFilePath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+
 		checkForUpdatedConfig(configDoc, configFilePath);
 
 		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
@@ -788,13 +795,6 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 
 	if (updateFile) {
 		logger.trace('Updating config file with missing config params');
-		if (configDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml ${configDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
 		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}
 }
@@ -992,6 +992,12 @@ function isSuffixEscapedParam(arg: string): boolean {
 	return component !== undefined && !isReservedComponentName(component);
 }
 
+function lookupConfigWriteParam(arg: string): string | undefined {
+	// Keep the generic MODELS env var out of the boot/install config allowlist.
+	if (arg.toLowerCase() === 'models') return 'models';
+	return lookupConfigParam(arg) ?? (isSuffixEscapedParam(arg) ? arg : undefined);
+}
+
 function findReservedComponentParams(args: object): string[] {
 	const reserved = [];
 	for (const arg in args) {
@@ -1021,7 +1027,7 @@ function describeUnrecognized(names: string[]): string {
 function findUnrecognizedParams(args: object): string[] {
 	let unrecognized;
 	for (const arg in args) {
-		if (lookupConfigParam(arg) === undefined && !isSuffixEscapedParam(arg)) (unrecognized ??= []).push(arg);
+		if (lookupConfigWriteParam(arg) === undefined) (unrecognized ??= []).push(arg);
 	}
 	return unrecognized ?? [];
 }
@@ -1061,7 +1067,8 @@ export function updateConfigValue(
 		let doUpdate = false;
 		for (const arg in parsedArgs) {
 			const castedValue = castConfigValue(arg, parsedArgs[arg]);
-			if (!isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
+			// set_configuration leaves the startup snapshot unchanged, so model rollbacks must bypass it.
+			if (lookupConfigWriteParam(arg) === 'models' || !isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
 				doUpdate = true;
 				break;
 			}
@@ -1099,7 +1106,7 @@ export function updateConfigValue(
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsedArgs) {
-			let configParam = lookupConfigParam(arg);
+			let configParam = lookupConfigWriteParam(arg);
 
 			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
 			if (
@@ -1129,10 +1136,6 @@ export function updateConfigValue(
 					configDoc.deleteIn(['threads']);
 					configDoc.setIn(['threads', 'count'], threadCount);
 				}
-			}
-
-			if (!configParam && isSuffixEscapedParam(arg)) {
-				configParam = arg;
 			}
 
 			if (configParam !== undefined) {
@@ -1230,12 +1233,12 @@ export function flattenConfig(obj) {
 	function squashObj(obj) {
 		let result = {};
 		for (let i in obj) {
-			if (!obj.hasOwnProperty(i)) continue;
+			if (!Object.hasOwn(obj, i)) continue;
 
 			if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
 				const flatObj = squashObj(obj[i]);
 				for (const x in flatObj) {
-					if (!flatObj.hasOwnProperty(x)) continue;
+					if (!Object.hasOwn(flatObj, x)) continue;
 
 					if (x !== 'package') i = i.toLowerCase();
 					const key = i + '_' + x;
@@ -1409,6 +1412,12 @@ export async function setConfiguration(setConfigJson) {
 		);
 	}
 	assertThreadHeapMemoryStartable(configFields);
+	if (Object.keys(configFields).some((field) => field.toLowerCase() === 'models')) {
+		const { envLayerNamingModels } = await import('../resources/models/bootstrap.ts');
+		const pinnedBy = envLayerNamingModels();
+		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
+			throw new ClientError(`Cannot set models: ${pinnedBy} defines models. Change that variable first.`, 409);
+	}
 	try {
 		// Imported lazily: the publication lock's module loads this one.
 		const { withRootConfigPublicationLock } = await import('../components/rootConfigPublication.ts');

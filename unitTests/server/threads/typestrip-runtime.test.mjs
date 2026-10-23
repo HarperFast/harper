@@ -292,9 +292,9 @@ describe('TypeStrip runtime boundaries', () => {
 				const { readFileSync } = await import('node:fs');
 				const { join } = await import('node:path');
 				assert.strictEqual(typeof globalThis.module, 'undefined');
-				const { createLogger, setMainLogger } = await import(${JSON.stringify(runtimeUrl('utility/logging/harper_logger'))});
+				const { createLogger, setMainLogger, conditional } = await import(${JSON.stringify(runtimeUrl('utility/logging/harper_logger'))});
 				const logPath = join(process.env.ROOTPATH, 'before-startup.log');
-				setMainLogger(createLogger({ path: logPath, level: 'warn', stdStreams: false }));
+				setMainLogger(createLogger({ path: logPath, level: 'warn', stdStreams: false, conditional }));
 				const { logger } = await import(${JSON.stringify(runtimeUrl('utility/logging/logger'))});
 				const { hasStarted } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
 				assert.strictEqual(hasStarted(), false);
@@ -497,7 +497,7 @@ describe('TypeStrip runtime boundaries', () => {
 						setMainLogger(createLogger({path:secondPath,level:'trace',stdStreams:false}));
 						implicit.notify('after replacement');
 						explicit.notify('explicit remains');
-						assert.strictEqual(conditional.debug, null);
+						assert.strictEqual(typeof conditional.debug, 'function');
 						assert.ok(existsSync(secondPath), 'implicit tag did not follow new main sink');
 						assert.match(readFileSync(secondPath,'utf8'), /\\[implicit\\].*after replacement/);
 						const firstText = readFileSync(firstPath,'utf8');

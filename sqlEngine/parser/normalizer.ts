@@ -389,6 +389,13 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 		return { kind: 'literal', value: val, sqlType };
 	}
 
+	// AlaSQL wraps parenthesized expressions `(expr)` in `new yy.UniOp({ right })` with
+	// `op === undefined` and `left === undefined`. Unary operators (`NOT`, `-`, `+`, `~`, `#`)
+	// also use `yy.UniOp` but always set `op`, and binary `yy.Op` nodes always set `op` and `left`.
+	if (node.op == null && node.left == null && node.right != null) {
+		return normalizeExpr(node.right as AlaSqlNode);
+	}
+
 	if (typeof node.op === 'string') {
 		const op = node.op.toUpperCase();
 		switch (op) {

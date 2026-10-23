@@ -65,9 +65,9 @@ export interface AggregatedComponentStatus {
 	};
 	/** Map of thread-specific statuses if they differ (only populated when inconsistent) */
 	abnormalities?: Map<string, ComponentStatusAbnormality>;
-	/** Most recent message across all threads */
+	/** Status message from the highest-priority, most recent non-healthy thread */
 	latestMessage?: string;
-	/** Any error from any thread */
+	/** Error from the highest-priority, most recent non-healthy thread */
 	error?: Error | string;
 }
 
@@ -91,7 +91,7 @@ export interface ComponentApplicationStatus {
 	/** Descriptive message with details when not healthy */
 	message: string;
 	/** Detailed breakdown when issues exist */
-	details?: Record<string, { status: ComponentStatusLevel; message?: string }>;
+	details?: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }>;
 	/** Last checked time information */
 	lastChecked: { workers: Record<number, number> };
 }

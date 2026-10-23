@@ -331,7 +331,7 @@ function warnEmptyObjectDropped(path: string): void {
 	);
 }
 
-function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
+export function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
 	const result: Record<string, any> = {};
 
 	for (const key in obj) {

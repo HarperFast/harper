@@ -9,6 +9,17 @@ const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
 	throw BIGINT_SERIALIZATION;
 };
 const { errorToString } = harperLogger;
+function streamError(error) {
+	const record: { error: string; replicationUnconfirmed?: true; retryable?: false } = { error: errorToString(error) };
+	try {
+		if (error?.replicationUnconfirmed === true) {
+			record.replicationUnconfirmed = true;
+			record.retryable = false;
+		} else if (error?.retryable === false) record.retryable = false;
+	} catch {}
+	return record;
+}
+
 export function streamAsJSON(value) {
 	return new JSONStream({ value });
 }
@@ -58,7 +69,7 @@ class JSONStream extends Readable {
 									(error) => {
 										// try to properly serialize the error, but then finish the iterator
 										harperLogger.warn('Error serializing in stream', error);
-										iteratorResult = { done: false, value: { error: errorToString(error) } };
+										iteratorResult = { done: false, value: streamError(error) };
 										iterator = {
 											next: () => ({ done: true }),
 										};
@@ -67,7 +78,7 @@ class JSONStream extends Readable {
 								);
 							}
 						} catch (error) {
-							iteratorResult = { done: false, value: { error: errorToString(error) } };
+							iteratorResult = { done: false, value: streamError(error) };
 							iterator = {
 								next: () => ({ done: true }),
 							};

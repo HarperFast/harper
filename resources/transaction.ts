@@ -8,6 +8,7 @@ import {
 } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
 
@@ -104,6 +105,14 @@ export function transaction<T>(
 		abortAndThrow(error, true);
 	}
 	function abortAndThrow(error, callbackThrew: boolean): never {
+		try {
+			if (
+				callbackThrew &&
+				error?.replicationUnconfirmed === true &&
+				(transaction.hasPendingWrites() || transaction.isChainCommitting() || transaction.writesRolledBack)
+			)
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
 		// A commit attempt that has not reached its native outcome owns its own teardown — a handler that
 		// fired txn.commit() without awaiting it can get here while it is still running, and aborting
 		// would clear the writes it is committing and abort the handle it is committing them through.

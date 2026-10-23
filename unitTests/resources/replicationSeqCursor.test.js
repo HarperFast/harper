@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
@@ -56,7 +56,7 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		const blocking = [];
 		const originalPutSync = dbisDB.putSync;
 		const originalPut = dbisDB.put;
-		dbisDB.putSync = function (key, value, options) {
+		const restorePutSync = stubMethod(dbisDB, 'putSync', function (key, value, options) {
 			if (isSeqKey(key)) {
 				if (options?.transaction) {
 					staged.push({ key, value, transaction: options.transaction });
@@ -64,17 +64,17 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				} else blocking.push({ key, value });
 			}
 			return originalPutSync.apply(this, arguments);
-		};
-		dbisDB.put = function (key, value) {
+		});
+		const restorePut = stubMethod(dbisDB, 'put', function (key, value) {
 			if (isSeqKey(key)) blocking.push({ key, value });
 			return originalPut.apply(this, arguments);
-		};
+		});
 		return {
 			staged,
 			blocking,
 			restore() {
-				dbisDB.putSync = originalPutSync;
-				dbisDB.put = originalPut;
+				restorePutSync();
+				restorePut();
 			},
 		};
 	}

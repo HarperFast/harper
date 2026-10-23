@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, routePutThroughPutSync } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { databases, resetDatabases, table, tables } = require('#src/resources/databases');
@@ -814,6 +814,7 @@ describe('HNSW GraphQL numeric options', () => {
 				};
 				patched.push([method, original]);
 			}
+			const restorePut = routePutThroughPutSync(Table.dbisDB);
 			try {
 				Table = table({
 					table: tableName,
@@ -824,6 +825,7 @@ describe('HNSW GraphQL numeric options', () => {
 					],
 				});
 			} finally {
+				restorePut();
 				for (const [method, original] of patched) catalogPrototype[method] = original;
 			}
 			assert(
@@ -875,6 +877,7 @@ describe('HNSW GraphQL numeric options', () => {
 				};
 				removalPatched.push([method, original]);
 			}
+			const restoreRemovalPut = routePutThroughPutSync(Removed.dbisDB);
 			try {
 				table({
 					table: removedTableName,
@@ -885,6 +888,7 @@ describe('HNSW GraphQL numeric options', () => {
 					],
 				});
 			} finally {
+				restoreRemovalPut();
 				for (const [method, original] of removalPatched) removalPrototype[method] = original;
 			}
 			assert(

@@ -77,7 +77,9 @@ describe('describeAll authorization bypass state', function () {
 			const internalResult = await operationAuthorizationState.runWithOperationAuthorizationBypass(true, () =>
 				schema_describe.describeAll(request)
 			);
-			assert.deepStrictEqual(internalResult.private_database, {});
+			// null-prototype, so compare contents: deepStrictEqual against `{}` also compares prototypes
+			assert.ok(Object.hasOwn(internalResult, 'private_database'));
+			assert.deepStrictEqual({ ...internalResult.private_database }, {});
 		} finally {
 			delete databases.private_database;
 		}

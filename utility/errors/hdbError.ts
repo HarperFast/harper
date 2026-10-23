@@ -93,6 +93,68 @@ export class ServerError extends Error {
 	}
 }
 
+function readErrorProperty(error: any, property: string) {
+	try {
+		return error?.[property];
+	} catch {}
+}
+
+export class ReplicationConfirmationError extends ServerError {
+	replicationUnconfirmed = true;
+	retryable = false;
+	code: string;
+	http_resp_msg: unknown;
+	detail: unknown;
+
+	constructor(cause: any) {
+		const message = readErrorProperty(cause, 'message');
+		super(
+			typeof message === 'string' ? message : 'Replication confirmation failed after the local write committed',
+			readErrorProperty(cause, 'statusCode') ?? readErrorProperty(cause, 'status')
+		);
+		this.name = 'ReplicationConfirmationError';
+		this.cause = cause;
+		this.code =
+			readErrorProperty(cause, 'code') ??
+			(cause !== null && typeof cause === 'object'
+				? readErrorProperty(readErrorProperty(cause, 'constructor'), 'name')
+				: undefined) ??
+			this.name;
+		this.http_resp_msg = readErrorProperty(cause, 'http_resp_msg');
+		this.detail = readErrorProperty(cause, 'detail');
+	}
+}
+
+export function withoutReplicationUnconfirmed(error: any): ServerError {
+	const message = readErrorProperty(error, 'message');
+	const code = readErrorProperty(error, 'code') ?? readErrorProperty(readErrorProperty(error, 'constructor'), 'name');
+	let responseMessage = readErrorProperty(error, 'http_resp_msg');
+	try {
+		if (Array.isArray(responseMessage)) {
+			responseMessage = { error: responseMessage, code, retryable: false };
+		} else if (responseMessage && typeof responseMessage === 'object') {
+			responseMessage = { ...responseMessage, retryable: false };
+			responseMessage.code ??= code;
+			delete responseMessage.replicationUnconfirmed;
+		}
+	} catch {
+		responseMessage = undefined;
+	}
+	return Object.assign(
+		new ServerError(
+			typeof message === 'string' ? message : 'Replication confirmation failed',
+			readErrorProperty(error, 'statusCode')
+		),
+		{
+			cause: error,
+			code,
+			http_resp_msg: responseMessage,
+			detail: readErrorProperty(error, 'detail'),
+			retryable: false,
+		}
+	);
+}
+
 /** Retryable admission failure when a derived index cannot meet a write or query lag budget. */
 export class DerivedIndexLagError extends ServerError {
 	code: string;

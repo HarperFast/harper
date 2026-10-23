@@ -15,6 +15,12 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
+import {
+	readEventLoopDelay,
+	resetEventLoopDelay,
+	startEventLoopDelayMonitor,
+	stopEventLoopDelayMonitor,
+} from '../../server/eventLoopDelay.ts';
 import { getTransactionQueueDepths, setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
 import { contextStorage } from '../transaction.ts';
 import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
@@ -47,21 +53,26 @@ onStartup(() => {
 	analyticsReadOnlyChecked = false;
 });
 
-// Check read-only mode lazily to avoid circular dependency at module load time
-function checkAnalyticsEnabled(): boolean {
+// Check read-only mode lazily to avoid circular dependency at module load time. The event loop
+// sampler starts here rather than at load, so a read-only worker never runs it.
+export function checkAnalyticsEnabled(): boolean {
 	if (!analyticsReadOnlyChecked) {
 		analyticsReadOnlyChecked = true;
-		if (isReadOnlyMode()) {
-			analyticsEnabled = false;
-		}
+		if (isReadOnlyMode()) analyticsEnabled = false;
+		else if (analyticsEnabled) startEventLoopDelayMonitor();
 	}
 	return analyticsEnabled;
 }
 
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
+	if (enabled) startEventLoopDelayMonitor();
+	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
 	sendAnalyticsTimeout = null;
+	// The cancelled window must not stretch the next one's period or skip its histogram reset.
+	analyticsStart = 0;
+	lastFlushAt = 0;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -142,6 +153,7 @@ export function recordActionBinary(value, metric, path?, method?, type?) {
 }
 
 let analyticsStart = 0;
+let lastFlushAt = 0;
 export const analyticsDelay = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 const analyticsListeners = [];
@@ -160,102 +172,126 @@ const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1
  * its user and, once its client disconnected, have every write rejected by its aborted signal.
  */
 function sendAnalytics() {
-	analyticsStart ||= performance.now();
-	sendAnalyticsTimeout = setTimeout(async () => {
-		sendAnalyticsTimeout = null;
-		// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
-		// an entry already reported, and dropped with it.
-		const reportingActions = activeActions;
-		activeActions = new Map();
-		const period = performance.now() - analyticsStart;
-		analyticsStart = 0;
-		const metrics = [];
-		const report = {
-			time: Date.now(),
-			period,
-			threadId,
-			metrics,
-		};
-		for (const [_name, action] of reportingActions) {
-			if (action.values) {
-				const values = action.values.subarray(0, (action.values as any).index);
-				values.sort();
-				const count = values.length;
-				// compute the stats
-				let lastUpperBound = 0;
-				const distribution = [];
-				let lastValue;
-				for (const percentile of IDEAL_PERCENTILES) {
-					const upperBound = Math.floor(count * percentile);
-					const value = values[upperBound - 1];
-					if (upperBound > lastUpperBound) {
-						const count = upperBound - lastUpperBound;
-						if (value === lastValue) {
-							const entry = distribution[distribution.length - 1];
-							if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
-							else entry.count += count;
-						} else {
-							distribution.push(count > 1 ? { value, count } : value);
-							lastValue = value;
-						}
-						lastUpperBound = upperBound;
-					}
-				}
-				metrics.push(
-					Object.assign(action.description, {
-						mean: action.total / count,
-						distribution,
-						count,
-					})
-				);
-			} else if (action.callback) {
-				metrics.push(Object.assign(action.description, action.callback(action)));
-			} else {
-				metrics.push(
-					Object.assign(action.description, {
-						total: action.total,
-						count: action.count,
-					})
-				);
-			}
-			await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
-		}
-		const memoryUsage = process.memoryUsage();
-		metrics.push({
-			metric: 'memory',
-			threadId,
-			byThread: true,
-			...memoryUsage,
-		});
-		// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
-		// the high-water mark over this sampling window (the queue can fill and drain within a single
-		// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
-		// summed across threads by the aggregator, mirroring the `memory` gauge above.
-		const queueDepths = getTransactionQueueDepths();
-		metrics.push({
-			metric: METRIC.WRITE_TRANSACTION_QUEUE_DEPTH,
-			threadId,
-			byThread: true,
-			depth: queueDepths.writeDepth,
-			maxDepth: queueDepths.writeMaxDepth,
-		});
-		metrics.push({
-			metric: METRIC.READ_TRANSACTION_QUEUE_DEPTH,
-			threadId,
-			byThread: true,
-			depth: queueDepths.readDepth,
-			maxDepth: queueDepths.readMaxDepth,
-		});
-		for (const listener of analyticsListeners) {
-			listener(metrics);
-		}
-		if (parentPort)
-			parentPort.postMessage({
-				type: ANALYTICS_REPORT_TYPE,
-				report,
-			});
-		else recordAnalytics({ report });
+	if (!analyticsStart) {
+		analyticsStart = performance.now();
+		// After an idle gap or at boot, the report's delay covers its own window, not the gap. Right
+		// after a flush, which already reset the histogram, another reset would only add a blind spot.
+		if (!lastFlushAt || analyticsStart - lastFlushAt > analyticsDelay) resetEventLoopDelay();
+	}
+	sendAnalyticsTimeout = setTimeout(() => {
+		// One more timer turn: a stall that ran past the deadline is recorded by the event loop
+		// sampler's overdue firing, which libuv runs before a timer armed now, and the read below
+		// would otherwise reset that sample away.
+		sendAnalyticsTimeout = setTimeout(flushAnalytics, 0).unref();
 	}, analyticsDelay).unref();
+}
+
+async function flushAnalytics() {
+	sendAnalyticsTimeout = null;
+	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
+	// an entry already reported, and dropped with it.
+	const reportingActions = activeActions;
+	activeActions = new Map();
+	const period = performance.now() - analyticsStart;
+	analyticsStart = 0;
+	// Read before the first yield too, so the event loop's samples from the rest of the flush belong
+	// to the next report.
+	const eventLoopDelay = readEventLoopDelay();
+	lastFlushAt = performance.now();
+	const metrics = [];
+	const report = {
+		time: Date.now(),
+		period,
+		threadId,
+		metrics,
+	};
+	for (const [_name, action] of reportingActions) {
+		if (action.values) {
+			const values = action.values.subarray(0, (action.values as any).index);
+			values.sort();
+			const count = values.length;
+			// compute the stats
+			let lastUpperBound = 0;
+			const distribution = [];
+			let lastValue;
+			for (const percentile of IDEAL_PERCENTILES) {
+				const upperBound = Math.floor(count * percentile);
+				const value = values[upperBound - 1];
+				if (upperBound > lastUpperBound) {
+					const count = upperBound - lastUpperBound;
+					if (value === lastValue) {
+						const entry = distribution[distribution.length - 1];
+						if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
+						else entry.count += count;
+					} else {
+						distribution.push(count > 1 ? { value, count } : value);
+						lastValue = value;
+					}
+					lastUpperBound = upperBound;
+				}
+			}
+			metrics.push(
+				Object.assign(action.description, {
+					mean: action.total / count,
+					distribution,
+					count,
+				})
+			);
+		} else if (action.callback) {
+			metrics.push(Object.assign(action.description, action.callback(action)));
+		} else {
+			metrics.push(
+				Object.assign(action.description, {
+					total: action.total,
+					count: action.count,
+				})
+			);
+		}
+		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
+	}
+	const memoryUsage = process.memoryUsage();
+	metrics.push({
+		metric: 'memory',
+		threadId,
+		byThread: true,
+		...memoryUsage,
+	});
+	if (eventLoopDelay) {
+		metrics.push({
+			metric: METRIC.EVENT_LOOP_DELAY,
+			threadId,
+			perThread: true,
+			...eventLoopDelay,
+		});
+	}
+	// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
+	// the high-water mark over this sampling window (the queue can fill and drain within a single
+	// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
+	// summed across threads by the aggregator, mirroring the `memory` gauge above.
+	const queueDepths = getTransactionQueueDepths();
+	metrics.push({
+		metric: METRIC.WRITE_TRANSACTION_QUEUE_DEPTH,
+		threadId,
+		byThread: true,
+		depth: queueDepths.writeDepth,
+		maxDepth: queueDepths.writeMaxDepth,
+	});
+	metrics.push({
+		metric: METRIC.READ_TRANSACTION_QUEUE_DEPTH,
+		threadId,
+		byThread: true,
+		depth: queueDepths.readDepth,
+		maxDepth: queueDepths.readMaxDepth,
+	});
+	for (const listener of analyticsListeners) {
+		listener(metrics);
+	}
+	if (parentPort)
+		parentPort.postMessage({
+			type: ANALYTICS_REPORT_TYPE,
+			report,
+		});
+	else recordAnalytics({ report });
 }
 
 export async function recordHostname() {
@@ -929,6 +965,7 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 
 // A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
 const MAX_MEASURE_NAME = /^max[A-Z]/;
+const PER_THREAD_METRICS = new Map<string, string>([['duration', METRIC.DURATION_BY_THREAD]]);
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
@@ -987,13 +1024,27 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		} else firstForPeriod = key;
 		lastTime = key;
 		const { metrics, threadId } = value;
-		for (const entry of metrics || []) {
-			// eslint-disable-next-line no-unused-vars
-			let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
+		const aggregateEntry = (entry) => {
+			let {
+				path,
+				method,
+				type,
+				metric,
+				count,
+				total,
+				distribution,
+				threads: _threads,
+				threadId: _threadId,
+				perThread,
+				...measures
+			} = entry;
 			if (!count) count = 1;
 			let key = metric + (path ? '-' + path : '');
 			if (method !== undefined) key += '-' + method;
 			if (type !== undefined) key += '-' + type;
+			// No ordinary key ends in NUL and digits: HTTP methods are token characters, and an operation
+			// key, whose action name a request body chooses, always ends in `-operation`.
+			if (perThread) key += '\0' + threadId;
 			let action = aggregateActions.get(key);
 			if (action) {
 				const byThread = Boolean(action.byThread);
@@ -1002,7 +1053,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					if (actionForThread) action = actionForThread;
 					else {
 						action.threads[threadId] = { ...measures };
-						continue;
+						return;
 					}
 				}
 				if (!action.count) action.count = 1;
@@ -1033,8 +1084,12 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			} else {
 				action = { period: toPeriod, ...entry };
 				delete action.distribution;
+				delete action.threadId;
 				aggregateActions.set(key, action);
-				if (action.byThread) {
+				if (perThread) {
+					delete action.perThread;
+					action.thread = threadId;
+				} else if (action.byThread) {
 					action.threads = [];
 					action.threads[threadId] = { ...measures };
 					threadsToAverage.push(action);
@@ -1048,6 +1103,12 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					existingDistribution.push(...distribution);
 				}
 			}
+		};
+		for (const entry of metrics || []) {
+			aggregateEntry(entry);
+			const perThreadMetric = PER_THREAD_METRICS.get(entry.metric);
+			if (perThreadMetric)
+				aggregateEntry({ metric: perThreadMetric, count: entry.count, mean: entry.mean, perThread: true });
 		}
 		await rest();
 	}
@@ -1055,7 +1116,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// every relevant thread's samples fully cover; the peaks need not coincide.
 	for (const entry of threadsToAverage) {
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
-		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
+		let { path, method, type, metric, count, total, distribution, threads, period, ...measures } = entry;
 		threads = threads.filter((thread) => thread);
 		for (const measureName in measures) {
 			if (typeof entry[measureName] === 'number') entry[measureName] = 0;
@@ -1063,6 +1124,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		// A thread can carry measures the entry's first sample lacked.
 		for (const thread of threads) {
 			for (const measureName in thread) {
+				if (measureName === 'period') continue;
 				const value = thread[measureName];
 				if (typeof value === 'number')
 					entry[measureName] = (typeof entry[measureName] === 'number' ? entry[measureName] : 0) + value;

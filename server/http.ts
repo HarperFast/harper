@@ -8,6 +8,7 @@ import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
 import { setMaxListeners } from 'node:events';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
@@ -22,7 +23,7 @@ import { claimListener, listenerOwner, shouldBindListenerHere } from './threads/
 import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
-import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
+import { createServer, IncomingMessage, STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import {
@@ -39,8 +40,9 @@ import {
 	withProxyProtocol,
 } from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
-import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
-import { Readable, Writable, pipeline } from 'node:stream';
+import { checkAnalyticsEnabled, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { METRIC } from '../resources/analytics/metadata.ts';
+import { Readable, Writable, finished, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
@@ -575,6 +577,9 @@ export function httpServer(listener, options) {
  * up destroy-propagation in both directions (client disconnect destroys the source, a source error
  * destroys the response) and, unlike a clean `.end()`, closes the response abruptly on error — which
  * correctly signals a failed/truncated transfer to the client instead of implying it completed.
+ *
+ * A body that writes its own head (`handlesHeaders`, an unknown-size Blob) reaches here with the head
+ * unwritten: a failure before its first byte is still an HTTP error, which `pipeline()` cannot answer.
  */
 export function pipeBodyToResponse(
 	body: Readable,
@@ -591,7 +596,7 @@ export function pipeBodyToResponse(
 	body.on('data', (data) => {
 		bytesSent += typeof data === 'string' ? Buffer.byteLength(data) : data.length;
 	});
-	pipeline(body, nodeResponse, (error) => {
+	const complete = (error?: Error | null) => {
 		if (error) {
 			// a client closing the connection mid-stream surfaces as a premature-close error here;
 			// that's a routine disconnect, not a failure worth a warning
@@ -601,7 +606,97 @@ export function pipeBodyToResponse(
 			recordAction(bytesSent, 'bytes-sent', handlerPath, method);
 			endConnectionIfClientExpectsClose(nodeResponse);
 		}
+	};
+	if (nodeResponse.headersSent) pipeline(body, nodeResponse, complete);
+	else pipeBeforeHeaders(body, nodeResponse, complete);
+}
+
+function prematureCloseError(): NodeJS.ErrnoException {
+	return Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+}
+
+function pipeBeforeHeaders(body: Readable, nodeResponse: any, complete: (error?: Error | null) => void) {
+	let failed = false;
+	let bodyEnded = false;
+	const fail = (error: NodeJS.ErrnoException) => {
+		// Later source events (a 'close' after its 'error') must not abort the replacement response
+		if (failed) return;
+		const premature = error.code === 'ERR_STREAM_PREMATURE_CLOSE';
+		const declaredStatus = errorStatus(error);
+		if (!premature) harperLogger[declaredStatus && declaredStatus < 500 ? 'info' : 'warn'](errorForLog(error));
+		// An error after the source ended must not cut off the response the pipe is still flushing
+		if (bodyEnded) return;
+		failed = true;
+		body.unpipe?.(nodeResponse);
+		body.destroy?.();
+		if (
+			!premature &&
+			!nodeResponse.headersSent &&
+			!nodeResponse.destroyed &&
+			!nodeResponse.writableEnded &&
+			answerBeforeHeaders(nodeResponse, error)
+		)
+			return;
+		nodeResponse.destroy(error);
+	};
+	// 'error' goes on first: a source that is destroyed with an error emits it on a later tick
+	body.on('error', (error) => fail(error ?? prematureCloseError()));
+	body.on('end', () => {
+		bodyEnded = true;
 	});
+	body.on('close', () => {
+		if (!bodyEnded && !nodeResponse.writableEnded && !nodeResponse.destroyed) fail(prematureCloseError());
+	});
+	finished(nodeResponse, (error) => {
+		if (failed) {
+			if (!error) endConnectionIfClientExpectsClose(nodeResponse);
+			return;
+		}
+		if (error || !nodeResponse.writableFinished) body.destroy?.();
+		complete(error);
+	});
+	// A source destroyed before the listeners above attached emits nothing later
+	if (body.destroyed && !body.readableEnded) fail(body.errored ?? prematureCloseError());
+	else body.pipe(nodeResponse);
+}
+
+function errorStatus(error: any): number | undefined {
+	const status = Number(error?.statusCode ?? error?.status);
+	return Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
+}
+
+const STAGED_ENTITY_HEADERS = [
+	'content-length',
+	'content-type',
+	'content-range',
+	'content-encoding',
+	'etag',
+	'last-modified',
+	'accept-ranges',
+];
+
+function answerBeforeHeaders(nodeResponse: any, error: any): boolean {
+	const declaredStatus = errorStatus(error);
+	const status = declaredStatus ?? 500;
+	try {
+		for (const name of STAGED_ENTITY_HEADERS) nodeResponse.removeHeader(name);
+		nodeResponse.setHeader('Cache-Control', 'no-store');
+		// the body is ours, so a length the error declared for another one would leave the client waiting
+		const declared = toWriteHeadHeaders(error?.headers);
+		const headers = {};
+		for (const name in declared) if (name.toLowerCase() !== 'content-length') headers[name] = declared[name];
+		nodeResponse.writeHead(status, headers);
+		// Only a message written for clients is sent; others (a blob or filesystem error) can name a path.
+		// The class name stays: it is the public error code.
+		nodeResponse.end(
+			(error?.expose ?? error instanceof ClientError)
+				? errorToString(error)
+				: `${error?.constructor?.name ?? 'Error'}: ${STATUS_CODES[status]}`
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -731,6 +826,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			const startTime = performance.now();
+			const receivedAt = (nodeRequest as any).receivedAt;
 			let requestId = 0;
 			try {
 				const request = new Request(nodeRequest, nodeResponse);
@@ -832,16 +928,11 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
-				recordActionBinary(status < 400, 'success', handlerPath, method);
-				recordActionBinary(1, 'response_' + status, handlerPath, method);
-				logRequest(nodeRequest, status, requestId, executionTime);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
+				if (receivedAt !== undefined)
+					recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
 					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
@@ -852,6 +943,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					else if (!(body instanceof Readable) && (body[Symbol.iterator] || body[Symbol.asyncIterator]))
 						body = Readable.from(body);
 
+					// the head may still turn into an error status, so record what the response carries on close
+					if (body?.pipe && !nodeResponse.headersSent && !nodeResponse.destroyed)
+						nodeResponse.once('close', () =>
+							recordOutcome(nodeResponse.statusCode, nodeRequest, requestId, executionTime, handlerPath, method)
+						);
+					else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
+
 					// if it is a stream, pipe it
 					if (body?.pipe) pipeBodyToResponse(body, nodeResponse, handlerPath, method, endTime);
 					// else just send the buffer/string
@@ -860,7 +958,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 							nodeResponse.end(body);
 						}, onError);
 					else nodeResponse.end(body);
-				}
+				} else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
 			} catch (error) {
 				onError(error);
 			}
@@ -900,15 +998,19 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			env.get(serverPrefix + '_requestQueueLimit'),
 			`HTTP request queue on port ${port}`
 		);
-		const server = (httpServers[port] = (
-			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
+		const dispatchRequest = (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
 			// want to block or slow down other activity
 			const method = nodeRequest.method;
 			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-			else throttledRequestHandler(nodeRequest, nodeResponse);
-		}));
+			else {
+				if (checkAnalyticsEnabled()) (nodeRequest as any).receivedAt = performance.now();
+				throttledRequestHandler(nodeRequest, nodeResponse);
+			}
+		};
+		const server = (httpServers[port] = (
+			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
+		)(options, dispatchRequest));
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
 		// number or it will actually crash the server
@@ -979,12 +1081,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						...socketOptionDefaults,
 						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 					},
-					(nodeRequest: IncomingMessage, nodeResponse: any) => {
-						const method = nodeRequest.method;
-						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD')
-							requestHandler(nodeRequest, nodeResponse);
-						else throttledRequestHandler(nodeRequest, nodeResponse);
-					}
+					dispatchRequest
 				);
 
 				udsServer.isPerThreadSocket = true;
@@ -1021,11 +1118,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
 				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
 				if (threadType) claimListener(udsPathH2, threadType);
-				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
-					const method = nodeRequest.method;
-					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-					else throttledRequestHandler(nodeRequest, nodeResponse);
-				});
+				const h2Server = createH2CServer({}, dispatchRequest);
 				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
 				h2Server.on('sessionError', (error: Error) => {
 					harperLogger.debug('h2c UDS session error:', error);
@@ -1072,6 +1165,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 	// mutates. `headers` is normalized in place the same way the Bun path does.
 	const handle = async (request: any) => {
 		const startTime = performance.now();
+		const receivedAt = request.receivedAt;
 		let requestId = 0;
 		if (isOperationsServer) request.isOperationsServer = true;
 		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
@@ -1132,19 +1226,18 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		}
 		if (universalHeaders.length > 0) applyUniversalHeaders(headers);
 		const status = response.status || 200;
-		const executionTime = performance.now() - startTime;
+		const endTime = performance.now();
+		const executionTime = endTime - startTime;
 		if (!response.handlesHeaders) {
 			let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
 			if (response.wasCacheMiss) serverTiming += ', miss';
 			appendHeader(headers, 'Server-Timing', serverTiming, true);
 		}
-		recordAction(
-			executionTime,
-			'duration',
-			request.handlerPath,
-			request.method,
-			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-		);
+		const cacheType =
+			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+		recordAction(executionTime, 'duration', request.handlerPath, request.method, cacheType);
+		if (receivedAt !== undefined)
+			recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logHttpRequest(request, status, requestId, executionTime);
@@ -1179,6 +1272,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 	return (request: any) => {
 		const method = request.method;
 		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
+		if (checkAnalyticsEnabled()) request.receivedAt = performance.now();
 		return throttledHandle(request);
 	};
 }
@@ -1360,13 +1454,9 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logHttpRequest(request, status, requestId, executionTime);
@@ -2071,6 +2161,19 @@ function logHttpRequest(request: any, status: number, requestId: number, executi
 			} ${status}${logging.timing && executionTime ? ' ' + executionTime.toFixed(2) + 'ms' : ''}${requestId ? ' id: ' + requestId : ''}`
 		);
 	}
+}
+
+function recordOutcome(
+	status: number,
+	nodeRequest: IncomingMessage,
+	requestId: number,
+	executionTime: number,
+	handlerPath: string,
+	method: string
+) {
+	recordActionBinary(status < 400, 'success', handlerPath, method);
+	recordActionBinary(1, 'response_' + status, handlerPath, method);
+	logRequest(nodeRequest, status, requestId, executionTime);
 }
 
 export function logRequest(nodeRequest: IncomingMessage, status: number, requestId: number, executionTime?: number) {

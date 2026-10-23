@@ -20,6 +20,7 @@ testUtils.preTestPrep();
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const operations = require('#src/components/operations');
+const { PACKAGE_ROOT } = require('#src/utility/packageUtils');
 const gunzip = require('gunzip-maybe');
 const tar = require('tar-fs');
 
@@ -134,6 +135,36 @@ describe('package_component (handler)', () => {
 			const result = await operations.packageComponent({ project: PROJECT, estimate: true, stream: true });
 			assert.ok(!(result instanceof Readable));
 			assert.equal(typeof result.total_size, 'number');
+		});
+	});
+
+	describe('an application with a sub-component loaded from node_modules', () => {
+		const NESTED_PROJECT = 'pkg-op-nested';
+		const NESTED_FILES = {
+			'index.js': 'module.exports = () => 42;\n',
+			'node_modules/plugin/index.js': 'module.exports = "plugin";\n',
+		};
+
+		before(() => {
+			for (const [rel, content] of Object.entries(NESTED_FILES)) {
+				fs.outputFileSync(path.join(ROOT, NESTED_PROJECT, rel), content);
+			}
+			// What the loader leaves in the sub-component's directory once it has loaded it.
+			const link = path.join(ROOT, NESTED_PROJECT, 'node_modules', 'plugin', 'node_modules', 'harper');
+			fs.ensureDirSync(path.dirname(link));
+			fs.symlinkSync(PACKAGE_ROOT, link, 'dir');
+		});
+
+		it('ships its files without the install, and estimates exactly that', async () => {
+			const request = { project: NESTED_PROJECT, skip_node_modules: false };
+			const { total_size } = await operations.packageComponent({ ...request, estimate: true });
+			const expected = Object.values(NESTED_FILES).reduce((sum, content) => sum + Buffer.byteLength(content), 0);
+			assert.equal(total_size, expected);
+			const extracted = await extractToTree(await operations.packageComponent({ ...request, stream: true }));
+			assert.deepEqual(extracted, {
+				'index.js': NESTED_FILES['index.js'],
+				[path.join('node_modules', 'plugin', 'index.js')]: NESTED_FILES['node_modules/plugin/index.js'],
+			});
 		});
 	});
 

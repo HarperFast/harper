@@ -18,7 +18,7 @@ const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().cons
 describe('request-path commit retry exhaustion rejects the awaited chain', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const MAX_RETRIES = 40; // mirrors resources/DatabaseTransaction.ts
-	let ExhaustTable;
+	let ExhaustTable, LoggedExhaustTable;
 	const unhandled = [];
 	const onUnhandled = (error) => unhandled.push(error);
 
@@ -27,6 +27,12 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 		setMainIsWorker(true);
 		ExhaustTable = table({
 			table: 'RetryExhaustionTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }],
+			audit: false,
+		});
+		LoggedExhaustTable = table({
+			table: 'LoggedRetryExhaustionTable',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }],
 			audit: true,
@@ -52,13 +58,13 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	// release their native handles. Scoped to the test table's native db handle — background
 	// timers (hdb_analytics aggregation) commit their own transactions during the ~20s backoff
 	// window, and failing those spawns unrelated retry chains that pollute the attempt count.
-	function failCommits(mode, code) {
+	function failCommits(mode, code, { failFirst = Infinity, targetTable = ExhaustTable } = {}) {
 		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
-		const targetDb = ExhaustTable.primaryStore.store.db;
+		const targetDb = targetTable.primaryStore.store.db;
 		const attempts = [];
 		Transaction.prototype.commit = function (...args) {
-			if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+			if (this.store?.db !== targetDb || attempts.length >= failFirst) return originalCommit.apply(this, args);
 			attempts.push(this.id);
 			if (mode === 'retryNow') return Promise.resolve(RETRY_NOW_VALUE);
 			return Promise.reject(Object.assign(new Error('forced conflict'), { code }));
@@ -68,13 +74,13 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 		return { attempts, restore };
 	}
 
-	async function writeThatExhausts(id) {
+	async function writeThatExhausts(id, targetTable = ExhaustTable) {
 		const context = {};
 		return transaction(context, async () => {
 			// read first so the transaction is created via getReadTxn (coordinatedRetry), matching the
 			// operations-API bulk upsert flow (ResourceBridge reads each record before writing)
-			await ExhaustTable.get(id, context);
-			await ExhaustTable.put({ id, writer: 'exhaust' }, context);
+			await targetTable.get(id, context);
+			await targetTable.put({ id, writer: 'exhaust' }, context);
 		});
 	}
 
@@ -147,5 +153,37 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 		// the listener is removed in the after hook)
 		await delay(50);
 		assert.deepEqual(unhandled, [], 'exhaustion must not leak an unhandled rejection');
+	});
+
+	it('keeps retrying a durably logged transaction past MAX_RETRIES and commits once contention clears', async function () {
+		this.timeout(15000);
+		const harperLogger = require('#src/utility/logging/harper_logger');
+		const warnLines = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = function (...args) {
+			warnLines.push(args);
+			return originalWarn.apply(this, args);
+		};
+		const { attempts, restore } = failCommits('retryNow', undefined, {
+			failFirst: MAX_RETRIES + 2,
+			targetTable: LoggedExhaustTable,
+		});
+		try {
+			const { outcome } = await raceOutcome(writeThatExhausts('logged-retry-now', LoggedExhaustTable), 10000);
+			assert.equal(outcome, 'committed', 'a durably logged transaction must never abort at MAX_RETRIES');
+			assert.equal(attempts.length, MAX_RETRIES + 2);
+			assert.equal((await LoggedExhaustTable.get('logged-retry-now'))?.writer, 'exhaust');
+			assert.ok(
+				warnLines.some(([msg]) =>
+					/Logged transaction .* still in conflict after 40 coordinated retries; continuing to retry/.test(msg)
+				),
+				'expected periodic warning at MAX_RETRIES for a logged transaction'
+			);
+		} finally {
+			harperLogger.warn = originalWarn;
+			restore();
+		}
+		await delay(50);
+		assert.deepEqual(unhandled, []);
 	});
 });
