@@ -47,14 +47,14 @@ describe('storageReclamation module', function () {
 		}
 
 		// Clear any timers
-		const timer = storageReclamation.__get__('reclamationTimer');
+		const timer = storageReclamation?.__get__('reclamationTimer');
 		if (timer) {
 			clearTimeout(timer);
 		}
 
 		// Clear the handlers map
-		const handlers = storageReclamation.__get__('reclamationHandlers');
-		handlers.clear();
+		const handlers = storageReclamation?.__get__('reclamationHandlers');
+		handlers?.clear();
 
 		sandbox.restore();
 	});

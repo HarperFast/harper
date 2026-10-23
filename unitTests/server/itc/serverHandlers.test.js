@@ -237,7 +237,7 @@ describe('Test hdbChildIpcHandler module', () => {
 		});
 
 		afterEach(() => {
-			resources_instance.clear();
+			resources_instance?.clear();
 		});
 
 		// Tests validation: invalid events should be rejected and logged

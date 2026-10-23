@@ -36,7 +36,7 @@ describe('backup.ts get_backup download (atomic write)', () => {
 		cliOperationsModule.resolveRequestOptions = originalResolveRequestOptions;
 		commonUtilsModule.httpRequest = originalHttpRequest;
 		console.log = originalConsoleLog;
-		fs.removeSync(tmpDir);
+		if (tmpDir) fs.removeSync(tmpDir);
 	});
 
 	// A fake server response: a Readable body plus the statusCode/headers httpRequest normally attaches.
@@ -139,6 +139,7 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 	});
 
 	afterEach(() => {
+		if (!saved) return;
 		process.argv = saved.argv;
 		cliCredentialsModule.loadCredentials = saved.loadCredentials;
 		processMgmtModule.getHdbPid = saved.getHdbPid;

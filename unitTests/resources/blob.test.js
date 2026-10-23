@@ -2667,7 +2667,7 @@ describe('backup of a blob root during a live write (harper#2262)', () => {
 		backupDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.live-snapshot-'));
 	});
 	afterEach(() => {
-		rmSync(backupDir, { recursive: true, force: true });
+		if (backupDir) rmSync(backupDir, { recursive: true, force: true });
 	});
 
 	it('a restored substituted marker reads as retryable, not as absent or corrupt', async () => {
@@ -2862,6 +2862,7 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 		});
 
 		afterEach(() => {
+			if (!recorded) return;
 			assert.deepStrictEqual(recorded.calls, { change: 0, failure: 0 });
 			assert.strictEqual(live.closeCount, 0);
 			assert.strictEqual(superseded.closeCount, 0);

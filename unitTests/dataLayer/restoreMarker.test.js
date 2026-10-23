@@ -55,7 +55,7 @@ describe('restoreMarker', function () {
 	});
 
 	afterEach(function () {
-		rmSync(tempDir, { recursive: true, force: true });
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	describe('paths', function () {

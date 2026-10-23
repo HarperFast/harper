@@ -206,7 +206,7 @@ describeUnlessLmdb('import_backup', function () {
 			for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
 			rmSync(backupDirForDatabase(name), { recursive: true, force: true });
 		}
-		rmSync(tempDir, { recursive: true, force: true });
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	describe('source_file', function () {
@@ -416,7 +416,7 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		afterEach(function () {
-			restoreParseMessage();
+			restoreParseMessage?.();
 			rmSync(backupDirForDatabase(IMPORTED), { recursive: true, force: true });
 		});
 
@@ -549,8 +549,8 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		after(() => {
-			server.closeAllConnections();
-			return new Promise((resolve) => server.close(resolve));
+			server?.closeAllConnections();
+			return new Promise((resolve) => (server ? server.close(resolve) : resolve()));
 		});
 
 		beforeEach(function () {
@@ -577,8 +577,8 @@ describeUnlessLmdb('import_backup', function () {
 			});
 
 			afterEach(function () {
-				for (const restore of restores.reverse()) restore();
-				rmSync(root, { recursive: true, force: true });
+				for (const restore of (restores ?? []).reverse()) restore();
+				if (root) rmSync(root, { recursive: true, force: true });
 			});
 
 			// no network and no full disk in a unit test: the fetch, the S3 read and the device's room stand in
@@ -919,7 +919,7 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		afterEach(function () {
-			for (const restore of restores.reverse()) restore();
+			for (const restore of (restores ?? []).reverse()) restore();
 			databases.system.hdb_secret = priorTable;
 			clearSecretCustody();
 			rmSync(backupDirForDatabase(IMPORTED), { recursive: true, force: true });
@@ -1334,8 +1334,8 @@ describe('import_backup CLI', function () {
 	});
 
 	after(async function () {
-		await new Promise((resolve) => server.close(resolve));
-		rmSync(tempDir, { recursive: true, force: true });
+		if (server) await new Promise((resolve) => server.close(resolve));
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	beforeEach(function () {

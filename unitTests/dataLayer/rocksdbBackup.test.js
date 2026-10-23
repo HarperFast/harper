@@ -135,8 +135,8 @@ describe('rocksdbBackup', function () {
 		// declare its tables in a `system` under this storage path. Closing that would strand the analytics
 		// tables bound to it, so it stays open, and its files go only once the exit flush has run.
 		const dir = storageDir;
-		if (existsSync(join(dir, 'system'))) process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
-		else rmSync(dir, { recursive: true, force: true });
+		if (dir && existsSync(join(dir, 'system'))) process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+		else if (dir) rmSync(dir, { recursive: true, force: true });
 		rmSync(backupDirForDatabase(DB_NAME), { recursive: true, force: true });
 	});
 
@@ -421,8 +421,10 @@ describe('rocksdbBackup', function () {
 			});
 
 			afterEach(async function () {
-				clearRestoreDebris(targetDir, backupDir);
-				rmSync(targetDir, { recursive: true, force: true });
+				if (targetDir) {
+					clearRestoreDebris(targetDir, backupDir);
+					rmSync(targetDir, { recursive: true, force: true });
+				}
 				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
 			});
 
@@ -766,7 +768,14 @@ describe('rocksdbBackup', function () {
 					},
 					stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
 				});
-				holder.exited = new Promise((resolve) => holder.once('exit', resolve));
+				const deadline = setTimeout(() => holder.kill('SIGKILL'), 60000);
+				deadline.unref();
+				holder.exited = new Promise((resolve) =>
+					holder.once('exit', (...args) => {
+						clearTimeout(deadline);
+						resolve(...args);
+					})
+				);
 				await new Promise((resolve, reject) => {
 					holder.once('message', (message) =>
 						message?.type === 'ready' ? resolve() : reject(new Error(JSON.stringify(message)))
@@ -776,6 +785,7 @@ describe('rocksdbBackup', function () {
 			});
 
 			afterEach(async function () {
+				if (!holder) return;
 				holder.kill('SIGKILL');
 				await holder.exited;
 			});

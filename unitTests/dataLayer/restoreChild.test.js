@@ -25,6 +25,7 @@ const {
 const isPosix = process.platform !== 'win32';
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 const CHILD_START_MS = 30000;
+const HELD_CHILD_MAX_MS = 120000;
 const SOURCE = 'restorechildsource';
 
 function alive(pid) {
@@ -144,7 +145,14 @@ describeUnlessLmdb('restore child', function () {
 		held.add(child);
 		child.messages = [];
 		child.on('message', (message) => child.messages.push(message));
-		child.exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+		const deadline = setTimeout(() => child.kill('SIGKILL'), HELD_CHILD_MAX_MS);
+		deadline.unref();
+		child.exited = new Promise((resolve) =>
+			child.once('exit', (code, signal) => {
+				clearTimeout(deadline);
+				resolve({ code, signal });
+			})
+		);
 		await waitFor(() => child.messages.some((message) => message.type === 'ready'), {
 			timeout: CHILD_START_MS,
 			message: () => `the held child never reported ready: ${JSON.stringify(child.messages)}`,

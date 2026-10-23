@@ -24,7 +24,7 @@ describeUnlessLmdb('offline restore_backup in a fresh CLI process', function () 
 	});
 
 	afterEach(function () {
-		install.remove();
+		install?.remove();
 	});
 
 	/**

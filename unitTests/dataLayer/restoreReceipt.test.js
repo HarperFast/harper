@@ -43,8 +43,8 @@ describe('restoreReceipt', function () {
 	});
 
 	afterEach(function () {
-		releaseRestoreLock(lock);
-		rmSync(tempDir, { recursive: true, force: true });
+		if (lock) releaseRestoreLock(lock);
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	it('reads back what it wrote, stamped with the current version', function () {

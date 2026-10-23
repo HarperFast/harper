@@ -60,7 +60,7 @@ describe('jobOwnership', function () {
 	});
 
 	afterEach(async function () {
-		await removeSeededJobs(seeded);
+		await removeSeededJobs(seeded ?? []);
 	});
 
 	describe('stampJobOwner', function () {

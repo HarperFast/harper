@@ -59,7 +59,7 @@ describe('archiveExtraction', function () {
 	});
 
 	afterEach(function () {
-		rmSync(workDir, { recursive: true, force: true });
+		if (workDir) rmSync(workDir, { recursive: true, force: true });
 	});
 
 	async function writeArchive(entries, { gzip = true } = {}) {

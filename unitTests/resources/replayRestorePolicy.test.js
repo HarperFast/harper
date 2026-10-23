@@ -122,7 +122,7 @@ describeUnlessLmdb('replayLogs restore policy over a restored database', functio
 	});
 
 	after(function () {
-		rmSync(tempDir, { recursive: true, force: true });
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	function runCrashChild(args) {

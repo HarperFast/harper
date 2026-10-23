@@ -122,8 +122,8 @@ describe('safeFetch', function () {
 		});
 
 		after(async function () {
-			server.closeAllConnections();
-			await new Promise((resolve) => server.close(resolve));
+			server?.closeAllConnections();
+			if (server) await new Promise((resolve) => server.close(resolve));
 		});
 
 		beforeEach(function () {
@@ -134,7 +134,7 @@ describe('safeFetch', function () {
 		});
 
 		afterEach(function () {
-			rmSync(tempDir, { recursive: true, force: true });
+			if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 		});
 
 		function options(overrides = {}) {

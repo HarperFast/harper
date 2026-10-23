@@ -59,7 +59,7 @@ describe('blobBackup', function () {
 	});
 
 	afterEach(function () {
-		rmSync(tempDir, { recursive: true, force: true });
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	describe('snapshotBlobs', function () {
