@@ -50,7 +50,7 @@ import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.ts';
-import { workerData } from 'node:worker_threads';
+import { isMainThread, workerData } from 'node:worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.ts';
@@ -1151,7 +1151,10 @@ export function getDatabases(): Databases {
 			// the restore-metadata directory is reserved: never load it as a database, even if a
 			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
 			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
-			if (databaseEntry.name === RESTORE_META_DIR) continue;
+			if (databaseEntry.name === RESTORE_META_DIR) {
+				warnIfReservedDirLooksLikeDatabase(join(databasePath, databaseEntry.name));
+				continue;
+			}
 			// branch directories are process-local derivatives, never databases in their own right
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
@@ -1229,7 +1232,10 @@ export function getDatabases(): Databases {
 				const blockedByDrop = databaseRootsBlockedByDrop(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
-					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
+					if (databaseEntry.name === RESTORE_META_DIR) {
+						warnIfReservedDirLooksLikeDatabase(join(databasePath, databaseEntry.name));
+						continue;
+					}
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					const dbPath = join(databasePath, databaseEntry.name);
@@ -3246,13 +3252,34 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 	}
 }
 
+const warnedReservedDirs = new Set<string>();
+
+/** The scan skips the reserved restore directory silently; say so when it looks like a database someone expects to load. */
+function warnIfReservedDirLooksLikeDatabase(reservedDir: string): void {
+	if (!isMainThread || warnedReservedDirs.has(reservedDir)) return;
+	let names: string[];
+	try {
+		names = readdirSync(reservedDir);
+	} catch {
+		return;
+	}
+	if (!names.includes('CURRENT') || !names.some((name) => name.startsWith('MANIFEST-'))) return;
+	warnedReservedDirs.add(reservedDir);
+	logger.warn(
+		`'${reservedDir}' is a reserved directory and is never loaded as a database, but it contains a RocksDB database; rename it to load that data`
+	);
+}
+
 const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; rootPaths: string[] }>();
 
 function addPhysicalDatabaseRoots(directory: string, rootPaths: Set<string>): void {
 	if (!existsSync(directory)) return;
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
-		if (entry.name === RESTORE_META_DIR || entry.name === BRANCH_ROOT_DIR || entry.name.endsWith(MIGRATING_DIR_SUFFIX))
+		if (entry.name === RESTORE_META_DIR) {
+			warnIfReservedDirLooksLikeDatabase(join(directory, entry.name));
 			continue;
+		}
+		if (entry.name === BRANCH_ROOT_DIR || entry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
 		const rootPath = join(directory, entry.name);
 		if (entry.isFile()) {
 			if (extname(entry.name).toLowerCase() === '.mdb') rootPaths.add(rootPath);
