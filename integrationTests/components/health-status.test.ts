@@ -38,7 +38,9 @@ suite('configured runtime health status', { timeout: 360_000 }, () => {
 				const quotaPath = join(ctx.harper.dataRootDir, 'quota-status.json');
 				for (const [usedBytes, expected] of [
 					[96, 'error'],
+					[92, 'error'],
 					[85, 'warning'],
+					[75, 'warning'],
 					[40, 'healthy'],
 				] as const) {
 					await writeFile(quotaPath, JSON.stringify({ usedBytes, quotaBytes: 100, updatedAt: Date.now() }));

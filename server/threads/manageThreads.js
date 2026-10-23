@@ -1345,9 +1345,8 @@ function startWorker(path, options = {}, startOptions = {}) {
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
-		harperLogger
-			.status({ problem: 'threads.worker-error', expires: 120 })
-			.error(`Worker index ${options.workerIndex} error:`, error);
+		harperLogger.status({ problem: 'threads.worker-error', expires: 120 });
+		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
 	const exitedThreadId = worker.threadId;
 	worker.on('exit', (_code) => {

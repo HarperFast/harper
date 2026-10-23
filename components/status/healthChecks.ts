@@ -10,7 +10,9 @@
 
 import { totalmem } from 'node:os';
 import { readFile } from 'node:fs/promises';
-import { dirname, resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { cgroupPaths, readCgroupCPU, getCPUUtilization, type CPUSample } from './cgroup.ts';
 import { isMainThread } from 'node:worker_threads';
 import { getConfigPath } from '../../config/configUtils.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
@@ -98,35 +100,23 @@ export async function readConstrainedMemoryUsage(
 	membershipFile = '/proc/self/cgroup'
 ): Promise<{ used: number; basis: string }> {
 	try {
-		const membership = await readFile(membershipFile, 'utf8');
-		const group = membership
-			.split('\n')
-			.find((line) => line.startsWith('0::'))
-			?.slice(3);
-		if (group !== undefined) {
-			const root = resolve(cgroupRoot);
-			let path = resolve(root, `.${group}`);
-			if (path !== root && !path.startsWith(root + sep)) path = root;
-			for (;;) {
-				try {
-					const [maximum, high, current, stats] = await Promise.all([
-						readFile(resolve(path, 'memory.max'), 'utf8'),
-						readFile(resolve(path, 'memory.high'), 'utf8').catch(() => 'max'),
-						readFile(resolve(path, 'memory.current'), 'utf8'),
-						readFile(resolve(path, 'memory.stat'), 'utf8'),
-					]);
-					const effectiveLimit = Math.min(Number(maximum) || Infinity, Number(high) || Infinity);
-					const inactive = Number(stats.match(/^inactive_file[ \t]+(\d+)[ \t]*\r?$/m)?.[1]);
-					const used = Number(current);
-					// Reclaimable file cache must not make a database scan look like memory exhaustion.
-					if (effectiveLimit === limit && Number.isFinite(used) && used >= 0 && Number.isFinite(inactive)) {
-						return { used: Math.max(0, used - inactive), basis: 'cgroup working set' };
-					}
-				} catch {
-					// A namespaced cgroup mount may expose the process's group at its root.
+		for (const path of await cgroupPaths(cgroupRoot, membershipFile)) {
+			try {
+				const [maximum, high, current, stats] = await Promise.all([
+					readFile(resolve(path, 'memory.max'), 'utf8'),
+					readFile(resolve(path, 'memory.high'), 'utf8').catch(() => 'max'),
+					readFile(resolve(path, 'memory.current'), 'utf8'),
+					readFile(resolve(path, 'memory.stat'), 'utf8'),
+				]);
+				const effectiveLimit = Math.min(Number(maximum) || Infinity, Number(high) || Infinity);
+				const inactive = Number(stats.match(/^inactive_file[ \t]+(\d+)[ \t]*\r?$/m)?.[1]);
+				const used = Number(current);
+				// Reclaimable file cache must not make a database scan look like memory exhaustion.
+				if (effectiveLimit === limit && Number.isFinite(used) && used >= 0 && Number.isFinite(inactive)) {
+					return { used: Math.max(0, used - inactive), basis: 'cgroup working set' };
 				}
-				if (path === root) break;
-				path = dirname(path);
+			} catch {
+				// A namespaced cgroup mount may expose the process's group at its root.
 			}
 		}
 	} catch {
@@ -148,11 +138,28 @@ async function checkMemory(): Promise<Metric> {
 	return { percent: ((mem.total - mem.available) / mem.total) * 100, label: 'Memory' };
 }
 
-async function checkCPU(): Promise<Metric> {
-	const si = await import('systeminformation');
-	const load = await si.currentLoad();
-	if (!Number.isFinite(load.currentLoad)) throw new Error('CPU usage is unavailable');
-	return { percent: load.currentLoad, label: 'CPU' };
+export function createCPUReader(cgroupRoot = '/sys/fs/cgroup', membershipFile = '/proc/self/cgroup') {
+	let previous: CPUSample;
+	return async function checkCPU(): Promise<Metric> {
+		let current = await readCgroupCPU(cgroupRoot, membershipFile);
+		if (current) {
+			let percent = previous && getCPUUtilization(previous, current);
+			if (percent === undefined) {
+				previous = current;
+				await delay(100);
+				current = await readCgroupCPU(cgroupRoot, membershipFile);
+				percent = current && getCPUUtilization(previous, current);
+			}
+			previous = current;
+			if (percent === undefined) throw new Error('CPU accounting changed during sampling');
+			return { percent, label: `CPU (${current.basis})` };
+		}
+		previous = undefined;
+		const si = await import('systeminformation');
+		const load = await si.currentLoad();
+		if (!Number.isFinite(load.currentLoad)) throw new Error('CPU usage is unavailable');
+		return { percent: load.currentLoad, label: 'CPU (host)' };
+	};
 }
 
 export async function withHealthCheckDeadline<T>(sample: Promise<T>, milliseconds: number): Promise<T> {
@@ -192,7 +199,7 @@ export function startHealthChecks(config?: HealthCheckConfig) {
 	};
 	const seconds = config.intervalSeconds;
 	const intervalMs = Number.isFinite(seconds) && seconds >= 1 && seconds <= 2147483 ? seconds * 1000 : 60_000;
-	const readers = { disk: checkDisk, memory: checkMemory, cpu: checkCPU };
+	const readers = { disk: checkDisk, memory: checkMemory, cpu: createCPUReader() };
 	const pending = new Map<MetricName, Promise<Metric>>();
 	async function sample(name: MetricName) {
 		try {

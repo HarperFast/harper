@@ -127,11 +127,7 @@ entry's key in the per-origin transaction log: write identity, the record→log 
 (`auditStore.get(logKey, tableId, id, nodeId)`), and every resume cursor. On LMDB these have always
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and `#2409`'s `recordVersion` alias is now absorbed back into `version`.
 
-They hold the same value for every write whose record version is its own commit timestamp, which is
-every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
-(`getFromSource`, core #2065): the record is stored at the source-reported version while its log
-entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
-when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that compatibility pointer with a dedicated log-key word.
+They hold the same value for every write whose record version is its own commit timestamp, which is every ordinary local write, so a bug that confuses them stays invisible until a **source fill** (`getFromSource`, core #2065): the record is stored at the source-reported version while its log entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and, when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that compatibility pointer with a dedicated log-key word.
 
 Consequences worth knowing:
 
@@ -347,17 +343,9 @@ the source responds, a valid positive, finite, Date-representable `sourceContext
 record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the
 existing version.
 
-The candidate is capped at local time (`max(reserved token, Date.now())`). A record's version is also
-this node's ordering token — `precedesExistingVersion()` compares a write's transaction timestamp
-against it — so a source that reports a `lastModified` ahead of local time (a skewed origin clock)
-would otherwise make every later local write to that row look out-of-order and be discarded until
-wall-clock caught up. Capping costs the shared-version property only for that misbehaving case, and
-the cap is logged.
+The candidate is capped at local time (`max(reserved token, Date.now())`). A record's version is also this node's ordering token — `precedesExistingVersion()` compares a write's transaction timestamp against it — so a source that reports a `lastModified` ahead of local time (a skewed origin clock) would otherwise make every later local write to that row look out-of-order and be discarded until wall-clock caught up. Capping costs the shared-version property only for that misbehaving case, and the cap is logged.
 
-The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction
-keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB
-stores the source candidate directly, preserving its separate source-version/local-time semantics;
-only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
+The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB stores the source candidate directly, preserving its separate source-version/local-time semantics; only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
 
 Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the
 fetch. First fills may replace a raced record only when their candidate version is strictly greater
@@ -372,10 +360,7 @@ then refuses to publish or confirm that version through the VerificationTable. T
 an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
 vouched as fresh.
 
-The flag is applied generically to every RocksDB record write whose version does not advance past
-the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this source-fill path — an
-ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible
-for VerificationTable fast-path confirmation until a later write advances their version.
+The flag is applied generically to every RocksDB record write whose version does not advance past the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this source-fill path — an ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible for VerificationTable fast-path confirmation until a later write advances their version.
 
 The native layer reads the stored bytes itself: the big-endian version at offset 0, then a big-endian
 metadata word at offset 8 tagged `0x0E` (`ACTION_32_BIT`), with the flag at literal bit `0x10000`. The

@@ -96,7 +96,8 @@ process.on('uncaughtException', (error) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
-	harperLogger.status({ problem: 'threads.uncaught-exception', expires: 120 }).error('uncaughtException', error);
+	harperLogger.status({ problem: 'threads.uncaught-exception', expires: 120 });
+	harperLogger.error('uncaughtException', error);
 });
 // In both Node.js 15+ and Bun, an unhandled promise rejection exits the worker unless a
 // handler is registered. Without this, any async path that rejects without being caught
@@ -383,8 +384,8 @@ function mirrorBindPath(socketPath) {
 const POOL_BIND_RETRY_MS = 60_000;
 let listening;
 function listenOnPorts() {
-	if (isBun) return listenOnPortsBun();
-	if (listening) return Promise.all(listening); // already set up
+	if (listening) return Promise.all(listening);
+	if (isBun) return Promise.all((listening = [listenOnPortsBun()]));
 	listening = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];

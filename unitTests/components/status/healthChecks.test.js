@@ -61,6 +61,16 @@ describe('runtime health checks', function () {
 		await waitFor(() => disk()?.status === 'healthy' && disk().message.includes('40.0%'), 5000);
 	});
 
+	it('labels the accounting domain of the CPU status', async function () {
+		await quota(40);
+		startHealthChecks({ intervalSeconds: 1 });
+		await waitFor(() => componentStatusRegistry.getStatus('system.cpu')?.message?.includes('%'), 5000);
+		assert.match(
+			componentStatusRegistry.getStatus('system.cpu').message,
+			/^CPU \((host|cgroup quota|cgroup affinity)\)/
+		);
+	});
+
 	it('merges partial thresholds and does not reconfigure an active poller on re-entry', async function () {
 		await quota(85);
 		startHealthChecks({ intervalSeconds: 1, thresholds: { disk: { warning: 90 } } });
