@@ -7071,6 +7071,9 @@ export function makeTable(options): TableResourceClass {
 			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
+			const resnapshotsReload = !request.rawEvents && databaseName !== 'system';
+			// re-snapshotted once the replayed history is sent, so no older replayed value lands after a current one
+			let replayCrossedReload = false;
 			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
@@ -7114,7 +7117,7 @@ export function makeTable(options): TableResourceClass {
 					if (dropDuringReplay) return;
 					try {
 						if (isLockControlType(auditRecord.type)) return;
-						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
+						if (auditRecord.type === 'reload' && resnapshotsReload) {
 							// back-filled rows have no history, so a progress certificate cannot pass the marker
 							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 							return scheduleReloadResnapshot();
@@ -7178,20 +7181,25 @@ export function makeTable(options): TableResourceClass {
 			// Each check compares the floor with the position the replay had reached at the previous check: a
 			// prune raises the floor before it deletes anything below it, so a pass means nothing unread was deleted.
 			let resumeCheckedThrough = request.startTime;
+			const refuseReplay = (refusal: Error): false => {
+				logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
+				try {
+					subscription.close(refusal);
+				} finally {
+					// a listener that throws on the refusal must not leave the subscription open
+					if (!subscription.closed) subscription.close();
+				}
+				return false;
+			};
 			const checkResume = resuming
 				? (refusal?: Error): boolean => {
 						refusal ??= resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough);
-						if (!refusal) return true;
-						logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
-						try {
-							subscription.close(refusal);
-						} finally {
-							// a listener that throws on the refusal must not leave the subscription open
-							if (!subscription.closed) subscription.close();
-						}
-						return false;
+						return refusal ? refuseReplay(refusal) : true;
 					}
 				: undefined;
+			// request.reportProgress, not reportingProgress: an LMDB consumer keeps positions it gets no certificate for
+			const refusesReload = (auditRecord: any): boolean =>
+				auditRecord.type === 'reload' && (checkResume !== undefined || (resnapshotsReload && request.reportProgress));
 			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
 			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
 			// in subscription.queue. Without this, the IIFE can fill the queue past
@@ -7208,6 +7216,9 @@ export function makeTable(options): TableResourceClass {
 				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 				let startTime = request.startTime;
 				let recordsSinceYield = 0;
+				// a marker is table-wide, as the live broadcast delivers it
+				const inReplayScope = (auditRecord: any): boolean =>
+					thisId == null || auditRecord.type === 'reload' || isDescendantId(thisId, auditRecord.recordId);
 
 				if (isCollection) {
 					// a collection should retrieve all descendant ids
@@ -7246,11 +7257,9 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
-								if (checkResume && auditRecord.type === 'reload') {
-									// the rows a reload back-filled have no history, so no replay can deliver them
-									checkResume(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
-									return;
-								}
+								// the rows a reload back-filled have no history, so no replay can deliver them
+								if (refusesReload(auditRecord))
+									return void refuseReplay(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 								if (handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
 									subscription!.startTime = handledTxnLogKey;
 								}
@@ -7259,7 +7268,8 @@ export function makeTable(options): TableResourceClass {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
-								if (thisId == null || isDescendantId(thisId, id)) {
+								if (auditRecord.type === 'reload' && resnapshotsReload) replayCrossedReload = true;
+								else if (inReplayScope(auditRecord)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										if (!send(event)) return;
@@ -7296,7 +7306,7 @@ export function makeTable(options): TableResourceClass {
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
-								if (thisId == null || isDescendantId(thisId, id)) {
+								if (inReplayScope(auditRecord)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
 									// ACCEPTED) — an all-deny rowFilter must not force a full walk of the retained
 									// audit log, even though it returns fewer than `count` accepted events. Counted
@@ -7310,6 +7320,12 @@ export function makeTable(options): TableResourceClass {
 										break;
 									}
 									cursorMaxTime = Math.max(cursorMaxTime, auditRecord.txnLogKey);
+									if (refusesReload(auditRecord))
+										return void refuseReplay(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+									if (auditRecord.type === 'reload' && resnapshotsReload) {
+										replayCrossedReload = true;
+										continue;
+									}
 									const historyEntry = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (!historyEntry) continue;
 									// Filter rows before they consume a previousCount slot.
@@ -7322,6 +7338,7 @@ export function makeTable(options): TableResourceClass {
 								}
 							} catch (error) {
 								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+								if (!isActive()) return;
 							}
 						}
 						for (let i = history.length; i > 0;) {
@@ -7481,6 +7498,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					pendingRealTimeQueue = null;
 				}
+				if (replayCrossedReload) scheduleReloadResnapshot();
 				settleResume?.(isActive());
 				goLive?.();
 			})();
@@ -7622,7 +7640,8 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 				} catch (error) {
-					harperLogger.error?.('Error in reload re-snapshot:', error);
+					// left open, it would stay past rows it never received
+					failSubscription(error);
 				} finally {
 					reloadResnapshotRunning = false;
 					// A marker that landed after the last pending-check but before we cleared the flag would
@@ -10591,6 +10610,7 @@ function rejectNaN(value: number) {
 }
 function isDescendantId(ancestorId, descendantId): boolean {
 	if (ancestorId == null) return true; // ancestor of all ids
+	if (descendantId == null) return false;
 	if (!Array.isArray(descendantId)) return ancestorId === descendantId || descendantId.startsWith?.(ancestorId);
 	if (Array.isArray(ancestorId)) {
 		let al = ancestorId.length;

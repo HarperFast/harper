@@ -3,6 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
+const { ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
 const {
 	DatabaseTransaction,
 	replicationConfirmation: rocksReplicationConfirmation,
@@ -187,4 +188,226 @@ describe('table-reload marker (harper-pro#489)', () => {
 			setReplicationConfirmation(undefined);
 		}
 	});
+});
+
+// A copyApply base copy back-fills rows with no history, then writes the marker. A replay that reaches
+// the marker cannot deliver those rows, so it hands them over as the live listener does: a consumer that
+// keeps positions is refused, any other gets its current scope again once the replay is sent.
+describe('a replay that crosses a reload marker', () => {
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	let sequence = 0;
+	function reloadTable(database) {
+		const name = `ReplayReload${++sequence}`;
+		return table({
+			table: name,
+			database: database ?? `replay_reload_${name}`,
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+	}
+
+	/** The log position of a write, as a subscription resuming after it would carry it. */
+	async function putAndPosition(T, id, value) {
+		const positions = [];
+		const live = await T.subscribe({ omitCurrent: true, listener: (event) => positions.push(event.localTime) });
+		await T.put(id, { value });
+		await waitFor(() => positions.length > 0);
+		live.end();
+		return positions[0];
+	}
+
+	/** A row stored without an audit entry, as a copyApply snapshot leaves it. */
+	const backfill = (T, id, value) => T.primaryStore.put(id, { id, value });
+
+	// ids nest as arrays, the hierarchy the current-scope scan of a re-delivery reads
+	async function reloadedAfterPosition(database) {
+		const T = reloadTable(database);
+		const startTime = await putAndPosition(T, ['team', 'before'], 'before');
+		await backfill(T, ['team', 'back'], 'back');
+		await backfill(T, ['other', 'back'], 'other-back');
+		await T.writeReloadMarker();
+		await T.put(['team', 'after'], { value: 'after' });
+		await T.put(['other', 'after'], { value: 'other-after' });
+		return { T, startTime };
+	}
+
+	async function subscribed(T, request) {
+		const events = [];
+		const subscription = await T.subscribe({ ...request, listener: (event) => events.push(event) });
+		return { subscription, events };
+	}
+
+	const delivered = (events) => events.filter((event) => !(event instanceof Error)).map((event) => event.value?.value);
+	const errors = (events) => events.filter((event) => event instanceof Error);
+	const saw = (events) => () =>
+		`saw ${JSON.stringify(events.map((event) => (event instanceof Error ? `${event.name}: ${event.message}` : [event.type, event.id, event.value?.value])))}`;
+	const refused = (events) => {
+		const last = events.at(-1);
+		return last instanceof ResumeHistoryUnavailableError && /bulk reload/.test(last.message);
+	};
+
+	const scopes = [
+		['root', {}, ['back', 'other-back']],
+		['prefix', { id: 'team', isCollection: true }, ['back']],
+	];
+
+	for (const [label, scope, backfilled] of scopes) {
+		it(`re-delivers the current ${label} scope after a startTime replay across the marker`, async () => {
+			const { T, startTime } = await reloadedAfterPosition();
+			const { subscription, events } = await subscribed(T, { startTime, ...scope });
+			await waitFor(() => backfilled.every((value) => delivered(events).includes(value)), { message: saw(events) });
+			assert.ok(delivered(events).includes('after'), 'the replay after the marker is delivered');
+			if (label === 'prefix') {
+				assert.ok(
+					!delivered(events).some((value) => String(value).startsWith('other')),
+					'the re-delivery keeps to the scope'
+				);
+			}
+			assert.ok(!events.some((event) => event.type === 'reload'), 'the marker is not delivered as an event');
+			assert.deepStrictEqual(errors(events), []);
+			assert.strictEqual(subscription.closed, false);
+			subscription.end();
+		});
+
+		it(`refuses a ${label} startTime replay that reports progress, at the marker`, async () => {
+			const { T, startTime } = await reloadedAfterPosition();
+			const { subscription, events } = await subscribed(T, { startTime, reportProgress: true, ...scope });
+			await waitFor(() => subscription.closed, { message: saw(events) });
+			assert.ok(refused(events), `refused with the 410, not ${events.at(-1)}`);
+			assert.strictEqual(events.at(-1).code, 'RESUME_HISTORY_UNAVAILABLE');
+			assert.ok(!delivered(events).includes('after'), 'nothing past the marker is delivered');
+		});
+
+		it(`hands a previousCount backfill across the marker the current ${label} scope, spending no slot on it`, async function () {
+			// collection previousCount reads the log in reverse, which the RocksDB transaction log cannot
+			if (!isLMDB) return this.skip();
+			const { T } = await reloadedAfterPosition();
+			const { subscription, events } = await subscribed(T, { previousCount: 10, ...scope });
+			await waitFor(() => backfilled.every((value) => delivered(events).includes(value)), { message: saw(events) });
+			assert.ok(!events.some((event) => event.type === 'reload'));
+			assert.deepStrictEqual(errors(events), []);
+			subscription.end();
+			const slots = label === 'root' ? 3 : 2;
+			const counted = await subscribed(T, { previousCount: slots, ...scope });
+			const history = label === 'root' ? ['before', 'after', 'other-after'] : ['before', 'after'];
+			await waitFor(() => counted.events.length >= history.length, { message: saw(counted.events) });
+			assert.deepStrictEqual(delivered(counted.events).slice(0, history.length), history);
+			counted.subscription.end();
+		});
+
+		it(`refuses a ${label} previousCount backfill that reports progress, at the marker`, async function () {
+			if (!isLMDB) return this.skip();
+			const { T } = await reloadedAfterPosition();
+			const { subscription, events } = await subscribed(T, { previousCount: 10, reportProgress: true, ...scope });
+			await waitFor(() => subscription.closed, { message: saw(events) });
+			assert.ok(refused(events), `refused with the 410, not ${events.at(-1)}`);
+			assert.deepStrictEqual(delivered(events), [], 'none of the history is delivered');
+		});
+	}
+
+	it('ends the last delivery of each row on its current value', async () => {
+		const T = reloadTable();
+		const startTime = await putAndPosition(T, 'seed', 'seed');
+		await T.put('team/x', { value: 'audited' });
+		await backfill(T, 'team/x', 'back-filled');
+		await T.writeReloadMarker();
+		const { subscription, events } = await subscribed(T, { startTime, includeSuperseded: true });
+		await waitFor(() => delivered(events).includes('back-filled'), { message: saw(events) });
+		const forRow = events.filter((event) => event.id === 'team/x').map((event) => event.value?.value);
+		assert.strictEqual(forRow.at(-1), 'back-filled', `deliveries: ${forRow}`);
+		subscription.end();
+	});
+
+	it('re-delivers once for several markers in one replay', async () => {
+		const { T, startTime } = await reloadedAfterPosition();
+		await T.writeReloadMarker();
+		let scans = 0;
+		const getRange = T.primaryStore.getRange;
+		T.primaryStore.getRange = function (options) {
+			if (options?.versions) scans++;
+			return getRange.apply(this, arguments);
+		};
+		try {
+			const { subscription, events } = await subscribed(T, { startTime, id: 'team', isCollection: true });
+			// the scan reads keys in order, so the last of the scope ends it
+			await waitFor(() => delivered(events).includes('before'), { message: saw(events) });
+			await new Promise(setImmediate);
+			assert.strictEqual(scans, 1);
+			assert.strictEqual(delivered(events).filter((value) => value === 'back').length, 1);
+			subscription.end();
+		} finally {
+			T.primaryStore.getRange = getRange;
+		}
+	});
+
+	it("is not affected by another table's marker", async () => {
+		const T = reloadTable('replay_reload_shared');
+		const Other = reloadTable('replay_reload_shared');
+		const startTime = await putAndPosition(T, 'team/before', 'before');
+		await Other.writeReloadMarker();
+		await T.put('team/after', { value: 'after' });
+		const { subscription, events } = await subscribed(T, {
+			startTime,
+			reportProgress: true,
+			id: 'team/',
+			isCollection: true,
+		});
+		await waitFor(() => delivered(events).includes('after'), { message: saw(events) });
+		assert.strictEqual(subscription.closed, false);
+		subscription.end();
+	});
+
+	for (const [label, database, request] of [
+		['a rawEvents', undefined, { rawEvents: true }],
+		['a system-database', 'system', {}],
+	]) {
+		it(`delivers the raw marker to ${label} prefix replay, as to its root replay`, async () => {
+			const { T, startTime } = await reloadedAfterPosition(database);
+			for (const scope of [{}, { id: 'team', isCollection: true }]) {
+				const { subscription, events } = await subscribed(T, { startTime, ...request, ...scope });
+				await waitFor(() => delivered(events).includes('after'), { message: saw(events) });
+				assert.ok(
+					events.some((event) => event.type === 'reload' && event.id == null),
+					`the marker reaches ${JSON.stringify(scope)}`
+				);
+				assert.deepStrictEqual(errors(events), []);
+				subscription.end();
+			}
+		});
+	}
+
+	it('passes over a root publish in a prefix replay', async () => {
+		const T = reloadTable();
+		const startTime = await putAndPosition(T, 'team/before', 'before');
+		await T.publish(null, { value: 'root message' });
+		await T.put('team/after', { value: 'after' });
+		const { subscription, events } = await subscribed(T, { startTime, id: 'team/', isCollection: true });
+		await waitFor(() => delivered(events).includes('after'), { message: saw(events) });
+		assert.deepStrictEqual(errors(events), []);
+		assert.ok(!delivered(events).includes('root message'));
+		subscription.end();
+	});
+
+	for (const [label, replayed] of [
+		['a replay', true],
+		['a live subscription', false],
+	]) {
+		it(`ends ${label} whose re-delivery fails, rather than leaving it open past the marker`, async () => {
+			const T = reloadTable();
+			const startTime = await putAndPosition(T, 'team/before', 'before');
+			const listener = (event) => {
+				if (event.value?.value === 'back') throw new Error('the consumer failed');
+			};
+			const live = replayed ? undefined : await T.subscribe({ omitCurrent: true, listener });
+			await backfill(T, 'team/back', 'back');
+			await T.writeReloadMarker();
+			const subscription = live ?? (await T.subscribe({ startTime, listener }));
+			await waitFor(() => subscription.closed);
+			assert.match(String(subscription.closedWith), /the consumer failed/);
+		});
+	}
 });
