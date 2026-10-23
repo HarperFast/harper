@@ -211,7 +211,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		? `; the Harper adjudicator (\`domain\`) is blocked (${adjudicatorBlocked}) in every round, so no outside finding was adjudicated — rerun the pre-push review until \`domain\` completes and re-materialize the footer`
 		: '';
 	const pendingNote =
-		pendingLegs.length && !classification.draft
+		pendingLegs.length && !exempt
 			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — ${PENDING_FIX}`
 			: '';
 	const summary = exempt

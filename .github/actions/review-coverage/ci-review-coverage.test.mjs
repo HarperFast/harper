@@ -1218,3 +1218,12 @@ test('a malformed `late=` segment is the existing strict-format failure', () => 
 		/has `late=` after `adjudicated=`/
 	);
 });
+
+test('an exempt PR with a pending late leg passes without the fold advice', () => {
+	const r = evaluateCiCoverage(pr({ body: lateFooter('late=cursor-grok:pending; '), additions: 1, deletions: 1 }), {
+		mode: 'enforce',
+	});
+	assert.strictEqual(r.pass, true);
+	assert.match(r.exempt, /trivial change/);
+	assert.doesNotMatch(r.detail, /still pending/);
+});
