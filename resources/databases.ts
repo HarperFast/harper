@@ -364,7 +364,6 @@ interface LMDBRootDatabase extends RootDatabase {
 	databaseName?: string;
 	dbisDb?: LMDBDatabase;
 	isLegacy?: boolean;
-	needsDeletion?: boolean;
 	path?: string;
 	status?: 'open' | 'closed';
 	store: any;
@@ -1584,9 +1583,7 @@ export function readMetaDb(
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	try {
 		let rootStore = lmdbDatabaseEnvs.get(path);
-		if (rootStore) {
-			rootStore.needsDeletion = false;
-		} else {
+		if (!rootStore) {
 			rootStore = openLmdb(envInit) as any;
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
@@ -2685,17 +2682,7 @@ export async function closeBranchDatabases(requireClosed = false): Promise<void>
 
 export function resetDatabases() {
 	loadedDatabases = false;
-	for (const store of Object.values(lmdbDatabaseEnvs)) {
-		store.needsDeletion = true;
-	}
-	getDatabases();
-	for (const [path, store] of lmdbDatabaseEnvs) {
-		if (store.needsDeletion && !path.endsWith('system.mdb')) {
-			store.close();
-			lmdbDatabaseEnvs.delete(path);
-		}
-	}
-	return databases;
+	return getDatabases();
 }
 
 interface TableDefinition {
@@ -3539,6 +3526,8 @@ export async function closeDatabase(
 	try {
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
 		handleCloseStarted = true;
+		// past the last point that resumes maintenance, so a disposed table is never handed back
+		for (const table of Object.values(dbTables)) table?.cleanup?.({ closing: true });
 		const closeFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, requireClosed);
 		if (requireClosed && closeFailures.length > 0) {
 			for (const rootStore of rootStores) {
