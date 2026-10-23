@@ -1,15 +1,17 @@
 /**
  * Under `applications.moduleLoader: compartment` with the default `allowedDirectory: app`, a component
  * cannot import a plain file outside its own directory, by relative path, absolute path or symlink, and a
- * refused component does not take the instance or its sibling components down.
+ * refused component does not take the instance or its sibling components down. A CommonJS dependency
+ * whose `module.exports` names are assigned dynamically supports named imports.
  *
  * On the unfixed loader the compartment `importHook` read plain files without the allowed-path check, so
- * the three escaping components loaded and served the outside file's contents.
+ * the three escaping components loaded and served the outside file's contents, and the named import from
+ * the CommonJS dependency failed with "does not provide an export named".
  *
  * Run: npm run test:integration -- "integrationTests/components/compartment-allowed-directory.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,7 +20,7 @@ import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } fr
 
 const SECRET = 'leaked-from-outside-the-component';
 const ESCAPING_APPS = ['escape-relative', 'escape-absolute', 'escape-symlink'];
-const ALL_APPS = [...ESCAPING_APPS, 'control'];
+const ALL_APPS = [...ESCAPING_APPS, 'control', 'cjs-dependency'];
 
 async function writeApp(componentsDir: string, name: string, files: Record<string, string>): Promise<string> {
 	const appDir = join(componentsDir, name);
@@ -81,6 +83,24 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 			'dep.js': "export const inside = 'loaded-in-tree';\n",
 		});
 
+		const cjsApp = await writeApp(componentsDir, 'cjs-dependency', {
+			'resources.js': resourceSource(
+				'CjsDependency',
+				"import dynamic, { alpha, beta } from 'dynamic-cjs';\n",
+				'{ alpha, beta, viaDefault: dynamic.alpha }'
+			),
+		});
+		const dependencyDir = join(cjsApp, 'node_modules', 'dynamic-cjs');
+		await mkdir(dependencyDir, { recursive: true });
+		await writeFile(
+			join(dependencyDir, 'package.json'),
+			JSON.stringify({ name: 'dynamic-cjs', version: '1.0.0', main: 'index.cjs' })
+		);
+		await writeFile(
+			join(dependencyDir, 'index.cjs'),
+			"module.exports = {};\nfor (const name of ['alpha', 'beta']) module.exports[name] = `${name}!`;\n"
+		);
+
 		ctx.harper = { dataRootDir };
 		await startHarper(ctx, { config: { applications: { moduleLoader: 'compartment' }, threads: { count: 1 } } });
 
@@ -101,6 +121,13 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 		const body = await response.text();
 		strictEqual(response.status, 200, body);
 		strictEqual(JSON.parse(body).inside, 'loaded-in-tree');
+	});
+
+	test('a CommonJS dependency with dynamically assigned exports supports named imports', async () => {
+		const response = await fetch(new URL('/CjsDependency', ctx.harper.httpURL));
+		const body = await response.text();
+		strictEqual(response.status, 200, body);
+		deepStrictEqual(JSON.parse(body), { alpha: 'alpha!', beta: 'beta!', viaDefault: 'alpha!' });
 	});
 
 	for (const app of ESCAPING_APPS) {
