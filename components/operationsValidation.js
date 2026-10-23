@@ -16,6 +16,7 @@ const { ENV_ENCRYPTED_PREFIX } = require('../utility/envFile.ts');
 const {
 	PROJECT_NAME_PATTERN: PROJECT_FILE_NAME_REGEX,
 	GIT_HOST_PATTERN,
+	isComponentNamePattern,
 	isReservedComponentName,
 } = require('../utility/componentNames.ts');
 const { assertBranchedDatabases } = require('./Application.ts');
@@ -341,7 +342,16 @@ function setSecretValidator(req) {
 function grantSecretValidator(req) {
 	const schema = Joi.object({
 		name: SECRET_NAME,
-		component: Joi.string().min(1).required(),
+		// A pattern that is not valid would match nothing at all, so it is refused rather than stored inert.
+		component: Joi.string()
+			.min(1)
+			.required()
+			.custom((value, helpers) =>
+				value.includes('*') && !isComponentNamePattern(value) ? helpers.error('string.componentPattern') : value
+			)
+			.messages({
+				'string.componentPattern': `{#label} may only end in one '*' after a component name prefix, as in 'my-app-pr-*'`,
+			}),
 	});
 
 	return validator.validateBySchema(req, schema);

@@ -24,7 +24,7 @@ import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { encryptEnvelope, parseEnvelopeFields } from '../utility/secretEnvelope.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import { type ResolvedGitCredential } from './gitCredentialServer.ts';
-import { deriveGitSecretName, deriveRegistrySecretName } from '../utility/componentNames.ts';
+import { componentNameMatches, deriveGitSecretName, deriveRegistrySecretName } from '../utility/componentNames.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const SECRET_TABLE = terms.SYSTEM_TABLE_NAMES.SECRET_TABLE_NAME;
@@ -520,7 +520,12 @@ export async function resolveCredentials(
 			);
 		}
 		const grants = Array.isArray(row.grants) ? row.grants : [];
-		if (!row.processEnv && !grants.includes(component)) {
+		// Only a deploy credential honors a pattern grant: a component's runtime view of its secrets stays exact.
+		if (
+			!row.processEnv &&
+			!grants.includes(component) &&
+			!grants.some((grant) => grant.endsWith('*') && componentNameMatches(grant, component))
+		) {
 			throw new ClientError(
 				`credential secret '${name}' is not granted to component '${component}' ` +
 					`(grant it with grant_secret, or set it processEnv:true)`,
