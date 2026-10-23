@@ -1,11 +1,11 @@
 'use strict';
 
-const { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
+const assert = require('node:assert');
+const { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
-const assert = require('node:assert');
 const { expect } = require('chai');
 
 const SYMLINK_FIXTURE = join(__dirname, 'fixtures', 'symlink-test', 'node_modules', 'proxyTransform');
@@ -607,6 +607,120 @@ describe('application require() of package exports (vm-current-context)', () => 
 		} finally {
 			rmSync(runtimeRoot, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('compartment importHook', () => {
+	const OUTSIDE_ALLOWED_PATH = /Can not load module at .* outside of allowed path/;
+	let root;
+	let appDir;
+	let outsideDir;
+
+	beforeEach(() => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), 'js-loader-compartment-')));
+		appDir = join(root, 'app');
+		outsideDir = join(root, 'outside');
+		mkdirSync(appDir);
+		mkdirSync(outsideDir);
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	const compartmentScope = (overrides = {}) => ({
+		mode: 'compartment',
+		runtimeRoot: appDir,
+		allowedPath: appDir,
+		resources: {},
+		...overrides,
+	});
+	const writeApp = (name, source) => {
+		const file = join(appDir, name);
+		writeFileSync(file, source);
+		return file;
+	};
+
+	describe('allowedPath', () => {
+		let secretPath;
+		beforeEach(() => {
+			secretPath = join(outsideDir, 'secret.js');
+			writeFileSync(secretPath, "export const secret = 'leaked';\n");
+		});
+
+		it('refuses a relative import of a plain file outside allowedPath', async () => {
+			const entry = writeApp('entry.js', "export { secret } from '../outside/secret.js';\n");
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses an absolute import of a plain file outside allowedPath', async () => {
+			const entry = writeApp('entry.js', `export { secret } from ${JSON.stringify(secretPath)};\n`);
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses a file: URL import of a plain file outside allowedPath', async () => {
+			const entry = writeApp('entry.js', `export { secret } from ${JSON.stringify(pathToFileURL(secretPath).href)};\n`);
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses an import through a symlink that points outside allowedPath', async () => {
+			symlinkSync(secretPath, join(appDir, 'link.js'));
+			const entry = writeApp('entry.js', "export { secret } from './link.js';\n");
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses an entry module outside allowedPath', async () => {
+			await assert.rejects(scopedImport(secretPath, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses a transitive import from an allowed module', async () => {
+			writeApp('hop.js', "export { secret } from '../outside/secret.js';\n");
+			const entry = writeApp('entry.js', "export { secret } from './hop.js';\n");
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses JSON and TypeScript files outside allowedPath', async () => {
+			writeFileSync(join(outsideDir, 'data.json'), '{"secret":"leaked"}');
+			writeFileSync(join(outsideDir, 'typed.ts'), "export const secret: string = 'leaked';\n");
+			for (const target of ['data.json', 'typed.ts']) {
+				const entry = writeApp(
+					'entry.mjs',
+					target.endsWith('.json')
+						? `import data from '../outside/${target}' with { type: 'json' };\nexport default data;\n`
+						: `export { secret } from '../outside/${target}';\n`
+				);
+				await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH, target);
+			}
+		});
+
+		it('still loads modules inside allowedPath, including JSON and TypeScript', async () => {
+			writeApp('dep.js', "export const inside = 'ok';\n");
+			writeApp('data.json', '{"value":1}');
+			writeApp('typed.ts', "export const typed: string = 'ts';\n");
+			const entry = writeApp(
+				'entry.mjs',
+				"export { inside } from './dep.js';\nexport { typed } from './typed.ts';\n" +
+					"import data from './data.json' with { type: 'json' };\nexport { data };\n"
+			);
+			const result = await scopedImport(entry, compartmentScope());
+			assert.strictEqual(result.inside, 'ok');
+			assert.strictEqual(result.typed, 'ts');
+			assert.strictEqual(result.data.value, 1);
+		});
+
+		it('still loads node: built-ins', async () => {
+			const entry = writeApp(
+				'entry.mjs',
+				"import { basename } from 'node:path';\nexport const name = basename('/a/b.js');\n"
+			);
+			assert.strictEqual((await scopedImport(entry, compartmentScope())).name, 'b.js');
+		});
+
+		it('loads a plain file outside the app directory when allowedPath is unrestricted', async () => {
+			const entry = writeApp('entry.js', "export { secret } from '../outside/secret.js';\n");
+			const result = await scopedImport(entry, compartmentScope({ allowedPath: '' }));
+			assert.strictEqual(result.secret, 'leaked');
+		});
 	});
 });
 

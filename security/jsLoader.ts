@@ -870,8 +870,10 @@ async function getCompartment(scope: ApplicationScope, globals) {
 							Object.assign(exports, harperExports);
 						},
 					};
-				} else if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
-					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+				}
+				// Ahead of branch selection so that no branch can load a module without it
+				checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+				if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
 					const nativeModule = createRequire(moduleSpecifier)(fileURLToPath(moduleSpecifier));
 					scope.markNativeRuntime?.();
 					const moduleExports = normalizeImportedModule(nativeModule);
@@ -903,7 +905,6 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
 					const moduleExports = await import(moduleSpecifier);
 					return {
 						imports: [],

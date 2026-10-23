@@ -195,6 +195,18 @@ then throws `SES_NO_SLOPPY`. Lockdown and the compartment share that one SES ins
 `pure-ESM package resolution` blocks in `unitTests/security/jsLoader/jsLoader.test.js` (both modes) and
 `integrationTests/components/compartment-pure-esm-dependency.test.ts` (Node and Bun shards).
 
+## The compartment `importHook` checks `allowedPath` before any branch loads a module (`security/jsLoader.ts`)
+
+`checkAllowedModulePath` runs once at the top of the compartment `importHook`, after the synthetic `harper`
+return and ahead of branch selection, so the `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
+branches cannot load a module it has not approved, and a branch added later inherits it. Each branch used to
+make its own call and the plain-file branch made none, so compartment mode loaded any file a relative,
+absolute or symlinked specifier reached while VM mode (`createModule`) refused it. This applies the existing
+prefix test only; it is not a containment boundary (#1929 and #2970 track that test's prefix and realpath
+gaps), and files a natively loaded dependency loads itself are outside it. Enforced by the
+`compartment importHook` block in `unitTests/security/jsLoader/jsLoader.test.js` and
+`integrationTests/components/compartment-allowed-directory.test.ts`.
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`
