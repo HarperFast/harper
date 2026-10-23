@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
+const { randomBytes } = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 const { Readable, Writable } = require('node:stream');
 
@@ -341,40 +342,37 @@ describe('streamPackagedDirectory round-trip', () => {
 		const archiveName = (rel) => rel.split(path.sep).join('/');
 		const discard = () => new Writable({ write: (chunk, encoding, callback) => callback() });
 
-		async function makeLegacyFixture(aliasDir) {
-			const sourceDir = await makeFixture({
-				'index.js': 'x\n',
-				'node_modules/plugin/index.js': 'plugin\n',
-				'node_modules/plugin/node_modules/dep/index.js': 'dep\n',
-				'zz-after.js': 'sorts after node_modules\n',
-				// An npm-installed harperdb under a package nothing loads as a component: the loader never replaces it.
-				'node_modules/lib/node_modules/harperdb/index.js': 'npm copy\n',
-				'vendor/harperdb/index.js': 'vendored\n',
-			});
-			const realSourceDir = await fs.realpath(sourceDir);
-			const links = {
-				[rootLink]: PACKAGE_ROOT,
-				[pluginLink]: PACKAGE_ROOT,
-				[pluginHarperLink]: PACKAGE_ROOT,
-				[chainedLink]: path.join(aliasDir, 'harperdb'),
-				[linkedElsewhere]: path.join(realSourceDir, 'vendor', 'harperdb'),
-			};
-			for (const [link, target] of Object.entries(links)) {
-				await fs.mkdir(path.dirname(path.join(realSourceDir, link)), { recursive: true });
-				await fs.symlink(target, path.join(realSourceDir, link), 'dir');
-			}
-			return { sourceDir, realSourceDir };
-		}
-
 		async function withLegacyFixture(run) {
-			const aliasDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-install-alias-'));
-			await fs.symlink(PACKAGE_ROOT, path.join(aliasDir, 'harperdb'), 'dir');
-			const fixture = await makeLegacyFixture(aliasDir);
+			let aliasDir;
+			let sourceDir;
 			try {
-				await run(fixture.sourceDir, fixture.realSourceDir);
+				aliasDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-install-alias-'));
+				await fs.symlink(PACKAGE_ROOT, path.join(aliasDir, 'harperdb'), 'dir');
+				sourceDir = await makeFixture({
+					'index.js': 'x\n',
+					'node_modules/plugin/index.js': 'plugin\n',
+					'node_modules/plugin/node_modules/dep/index.js': 'dep\n',
+					'zz-after.js': 'sorts after node_modules\n',
+					// An npm-installed harperdb under a package nothing loads as a component: the loader never replaces it.
+					'node_modules/lib/node_modules/harperdb/index.js': 'npm copy\n',
+					'vendor/harperdb/index.js': 'vendored\n',
+				});
+				const realSourceDir = await fs.realpath(sourceDir);
+				const links = {
+					[rootLink]: PACKAGE_ROOT,
+					[pluginLink]: PACKAGE_ROOT,
+					[pluginHarperLink]: PACKAGE_ROOT,
+					[chainedLink]: path.join(aliasDir, 'harperdb'),
+					[linkedElsewhere]: path.join(realSourceDir, 'vendor', 'harperdb'),
+				};
+				for (const [link, target] of Object.entries(links)) {
+					await fs.mkdir(path.dirname(path.join(realSourceDir, link)), { recursive: true });
+					await fs.symlink(target, path.join(realSourceDir, link), 'dir');
+				}
+				await run(sourceDir, realSourceDir);
 			} finally {
-				await fs.rm(fixture.sourceDir, { recursive: true, force: true });
-				await fs.rm(aliasDir, { recursive: true, force: true });
+				if (sourceDir) await fs.rm(sourceDir, { recursive: true, force: true });
+				if (aliasDir) await fs.rm(aliasDir, { recursive: true, force: true });
 			}
 		}
 
@@ -475,6 +473,8 @@ describe('streamPackagedDirectory round-trip', () => {
 		it('still finishes, fails, or stops without throwing now that the archive is finalized by hand', async function () {
 			this.timeout(30000);
 			await withLegacyFixture(async (sourceDir) => {
+				// Incompressible, so gzip hands out its first chunk while the walk is still reading this file.
+				await fs.writeFile(path.join(sourceDir, 'big.bin'), randomBytes(2 << 20));
 				await pipeline(streamPackagedDirectory(sourceDir), gunzip(), discard());
 				await assert.rejects(pipeline(streamPackagedDirectory(path.join(sourceDir, 'gone')), discard()), {
 					code: 'ENOENT',
