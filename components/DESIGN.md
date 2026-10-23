@@ -971,11 +971,13 @@ directory applications; only an explicit drop removes it.
 
 ## Component status: one severity order, and the loader only completes its own `loading`
 
-`STATUS_PRIORITY` (`components/status/types.ts`) is the only definition of "worst status" (error > warning > loading >
-unknown > healthy). `get_status` (`StatusAggregator`) and `get_components` (`getAggregatedStatusFor`) both reduce with
-it, so a lone warning or unknown reads the same in both and carries its details.
+`STATUS_PRIORITY` (`components/status/types.ts`) defines "worst status" (error > warning > loading > unknown >
+healthy) for `get_status` (`StatusAggregator`) and `get_components` (`getAggregatedStatusFor`), so a lone warning or
+unknown reads the same in both and carries its details. `status/hierarchy.ts` ranks the same levels in its own numeric
+map; keep the two orders identical.
 
 The loader marks a component loaded after its plugin ran only while the status is still `loading` or unset
 (`markLoadedUnlessReported` in `componentLoader.ts`). A status the plugin reported during `handleApplication`, `start`,
-or the application-only walk survives, so the automatic success report cannot erase it. `lifecycle.loaded()` itself
+or the application-only walk survives, so the automatic success report cannot erase it. A plugin that sets `loading`
+itself is indistinguishable from the loader's own and is still completed. `lifecycle.loaded()` itself
 stays unconditional: it is exported, and a direct caller expects healthy to replace any earlier status.
