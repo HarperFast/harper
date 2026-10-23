@@ -136,7 +136,8 @@ describe('Cache fill across database close', function () {
 			assert.equal(sourceCalls(), 1);
 
 			await closeDatabase(databaseName);
-			await assert.rejects(waiter, 'the waiter cannot read a closed database');
+			// RocksDB: 'Database not open'; LMDB: 'Can not operate on a closed database'
+			await assert.rejects(waiter, /Database not open|closed database/);
 			releaseSource();
 			assert.equal((await fill)?.name, 'from source');
 			await settleCallbacks();
