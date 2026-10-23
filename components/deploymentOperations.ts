@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
-import { getActiveEmitter } from './deploymentRecorder.ts';
+import { getActiveDeployment } from './deploymentRecorder.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
@@ -108,80 +108,35 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	// reaches a terminal status. The final return value becomes the SSE `done` event.
 	if (req.progress && typeof (req.progress as any).emit === 'function') {
 		const sse = req.progress;
-		const liveEmitter = getActiveEmitter(req.deployment_id);
+		const live = getActiveDeployment(req.deployment_id);
 
-		// Subscribe FIRST, before reading the row, so any event the recorder emits between
-		// "now" and the moment we finish reading the historical log still lands. Buffer
+		// Subscribe FIRST, before replaying the row, so any event the recorder emits between
+		// "now" and the moment we finish replaying the historical log still lands. Buffer
 		// those live events; dedupe by recording the timestamp of the last replayed entry
 		// and skipping any live event whose timestamp is <= that. Forward everything else.
 		let lastReplayedTs = 0;
-		let resolveLive: (() => void) | null = null;
-		let liveDone = false;
+		let replayed = false;
 		const liveBuffer: Array<{ t: number; event: { event: string; data: unknown } }> = [];
-		const forwardLive = (e: { event: string; data: unknown }) => {
-			sse.emit(e.event, e.data);
-			// A terminal signal — either explicit success/error event from the lifecycle, or
-			// the recorder's `_recorder_finished` sentinel emitted before it unsubscribes.
-			const isTerminalEvent =
-				e.event === '_recorder_finished' ||
-				e.event === 'error' ||
-				(e.event === 'phase' &&
-					e.data &&
-					typeof e.data === 'object' &&
-					(e.data as { phase?: string }).phase === 'success');
-			if (isTerminalEvent && !liveDone) {
-				liveDone = true;
-				resolveLive?.();
-			}
-		};
-		const unsubscribe = liveEmitter
-			? liveEmitter.subscribe((event) => {
+		const unsubscribe = live
+			? live.emitter.subscribe((event) => {
 					const t = Date.now();
-					if (resolveLive) {
-						// Replay phase finished; we own the live forward path now.
-						if (t > lastReplayedTs) forwardLive(event);
-					} else {
-						// Still replaying; stash for dedup-and-forward once replay completes.
-						liveBuffer.push({ t, event });
-					}
+					if (!replayed) liveBuffer.push({ t, event });
+					else if (t > lastReplayedTs) sse.emit(event.event, event.data);
 				})
 			: null;
 
 		try {
-			for (const entry of row.event_log ?? []) {
+			const replayRow = (await table.get(req.deployment_id)) ?? row;
+			for (const entry of replayRow.event_log ?? []) {
 				sse.emit(entry.event, entry.data);
 				if (typeof entry.t === 'number') lastReplayedTs = Math.max(lastReplayedTs, entry.t);
 			}
-
-			if (liveEmitter && !TERMINAL_STATUSES.has(row.status)) {
-				await new Promise<void>((resolve) => {
-					resolveLive = resolve;
-					// Flush anything that arrived during replay, filtering to events the replay missed.
-					for (const buffered of liveBuffer) {
-						if (buffered.t > lastReplayedTs) forwardLive(buffered.event);
-					}
-					if (liveDone) resolve();
-					// Safety net — if the in-memory emitter is dropped (recorder finished or
-					// the process recycled) before signaling, poll the row's status as a
-					// fallback so the client never hangs indefinitely.
-					const pollTimer = setInterval(async () => {
-						if (liveDone) {
-							clearInterval(pollTimer);
-							return;
-						}
-						const live = getActiveEmitter(req.deployment_id);
-						if (!live || live !== liveEmitter) {
-							clearInterval(pollTimer);
-							const latest = await table.get(req.deployment_id);
-							if (latest && TERMINAL_STATUSES.has(latest.status) && !liveDone) {
-								liveDone = true;
-								resolve();
-							}
-						}
-					}, 500);
-				});
+			for (const buffered of liveBuffer) {
+				if (buffered.t > lastReplayedTs) sse.emit(buffered.event.event, buffered.event.data);
 			}
-			// Re-read the row so the final SSE payload reflects the post-deploy state.
+			replayed = true;
+			// Settles after the recorder's terminal write, so the re-read below sees the final row.
+			if (live && !TERMINAL_STATUSES.has(replayRow.status)) await untilFinished(live.finished, sse.signal);
 			const finalRow = await table.get(req.deployment_id);
 			return stripBlob(finalRow ?? row);
 		} finally {
@@ -190,6 +145,20 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	}
 
 	return stripBlob(row);
+}
+
+/** Ends early when the SSE client disconnects, so a dropped tail stops holding the request. */
+function untilFinished(finished: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	if (!signal) return finished;
+	if (signal.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const onAbort = () => resolve();
+		signal.addEventListener('abort', onAbort, { once: true });
+		finished.then(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		});
+	});
 }
 
 async function requireDeploymentRow(deploymentId: unknown): Promise<any> {

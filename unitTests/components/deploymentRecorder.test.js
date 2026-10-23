@@ -805,3 +805,28 @@ describe('readPayloadBlobWithRetry', () => {
 		);
 	});
 });
+
+describe('DeploymentRecorder.finish (harper#3062)', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	it('ends the deploy without sending an internal event through its emitter or into event_log', async () => {
+		const emitter = new ProgressEmitter();
+		const seen = [];
+		emitter.subscribe((event) => seen.push(event.event));
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter });
+		emitter.emit('phase', { phase: 'prepare', status: 'start' });
+		emitter.emit('phase', { phase: 'success', status: 'done' });
+		await recorder.finish('success');
+
+		assert.deepStrictEqual(seen, ['phase', 'phase']);
+		const persisted = await installed.mock.get(recorder.deploymentId);
+		assert.deepStrictEqual(
+			persisted.event_log.map((entry) => entry.event),
+			['phase', 'phase']
+		);
+	});
+});

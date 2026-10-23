@@ -31,14 +31,22 @@ import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 const EVENT_LOG_MAX = 200;
 const EVENT_LOG_HEAD_KEEP = 20;
 
-// In-memory registry of live emitters, keyed by deployment_id. Populated for the lifetime
-// of an in-progress deploy on the origin node; get_deployment SSE looks here to tail live
-// events after replaying event_log. Per-node, not replicated — peers don't see another
-// node's in-progress emitters. Cross-node tailing is a later concern.
-const activeEmitters = new Map<string, ProgressEmitter>();
+// In-memory registry of in-progress deploys on the origin node, keyed by deployment_id;
+// get_deployment SSE looks here to tail live events after replaying event_log. Per-node, not
+// replicated — peers don't see another node's in-progress emitters. `finished` settles once the
+// terminal row is written, so a tail ends without an in-band sentinel event that every other
+// subscriber to the emitter (the event_log, a streamed deploy_component) would also receive.
+interface ActiveDeployment {
+	emitter: ProgressEmitter;
+	finished: PromiseWithResolvers<void>;
+}
+const activeDeployments = new Map<string, ActiveDeployment>();
 
-export function getActiveEmitter(deploymentId: string): ProgressEmitter | undefined {
-	return activeEmitters.get(deploymentId);
+export function getActiveDeployment(
+	deploymentId: string
+): { emitter: ProgressEmitter; finished: Promise<void> } | undefined {
+	const active = activeDeployments.get(deploymentId);
+	return active && { emitter: active.emitter, finished: active.finished.promise };
 }
 
 // Cap for the degraded fallback used only when the hdb_deployment table is missing (so the
@@ -158,7 +166,7 @@ export class DeploymentRecorder {
 		await recorder.put();
 		if (options.emitter) {
 			recorder.subscribeTo(options.emitter);
-			activeEmitters.set(deploymentId, options.emitter);
+			activeDeployments.set(deploymentId, { emitter: options.emitter, finished: Promise.withResolvers<void>() });
 		}
 		return recorder;
 	}
@@ -477,15 +485,19 @@ export class DeploymentRecorder {
 
 	async finish(status: 'success' | 'failed' | 'rolled_back' | 'staged', error?: unknown): Promise<void> {
 		if (this.finished) return;
-		// Send a terminal sentinel through the emitter (if any) BEFORE we unsubscribe and
-		// remove it from the registry, so any SSE tail subscribers can resolve their wait
-		// even on a code path that doesn't emit an explicit `error` event.
-		const emitter = activeEmitters.get(this.deploymentId);
-		emitter?.emit('_recorder_finished', { status });
 		this.finished = true;
 		this.unsubscribe?.();
 		this.unsubscribe = null;
-		activeEmitters.delete(this.deploymentId);
+		const active = activeDeployments.get(this.deploymentId);
+		activeDeployments.delete(this.deploymentId);
+		try {
+			await this.writeTerminal(status, error);
+		} finally {
+			active?.finished.resolve();
+		}
+	}
+
+	private async writeTerminal(status: DeploymentStatus, error?: unknown): Promise<void> {
 		// Drain the ENTIRE coalesced-flush chain before mutating + persisting the terminal
 		// state. Just awaiting `this.pendingPut` once isn't enough: its `.finally` may
 		// re-schedule another put (when `dirty` was set during the in-flight put), and

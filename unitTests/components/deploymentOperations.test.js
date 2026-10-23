@@ -188,3 +188,55 @@ describe('handleDeleteDeploymentPayload', () => {
 		assert.strictEqual(installed.mock.puts.length, 0, 'no write on the idempotent path');
 	});
 });
+
+describe('handleGetDeployment live tail (harper#3062)', () => {
+	const { handleGetDeployment } = require('#src/components/deploymentOperations');
+	const { DeploymentRecorder } = require('#src/components/deploymentRecorder');
+	const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	it('forwards live events, sends no internal event, and ends with the terminal row once the deploy finishes', async () => {
+		const deployEmitter = new ProgressEmitter();
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter: deployEmitter });
+		const sse = new ProgressEmitter();
+		const forwarded = [];
+		sse.subscribe((event) => forwarded.push(event.event));
+
+		let settled = false;
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, progress: sse }).then((row) => {
+			settled = true;
+			return row;
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		deployEmitter.emit('phase', { phase: 'prepare', status: 'start' });
+		deployEmitter.emit('phase', { phase: 'success', status: 'done' });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(settled, false, 'the tail waits for the recorder, not for a phase event');
+
+		await recorder.finish('success');
+		const row = await tail;
+		assert.strictEqual(row.status, 'success');
+		assert.ok(forwarded.length > 0);
+		assert.ok(
+			forwarded.every((name) => !name.startsWith('_')),
+			`forwarded: ${forwarded.join(', ')}`
+		);
+	});
+
+	it('stops waiting when the SSE client disconnects', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter: new ProgressEmitter() });
+		const sse = new ProgressEmitter();
+		const controller = new AbortController();
+		sse.signal = controller.signal;
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, progress: sse });
+		await new Promise((resolve) => setImmediate(resolve));
+		controller.abort();
+		const row = await tail;
+		assert.strictEqual(row.status, 'pending');
+		await recorder.finish('success');
+	});
+});

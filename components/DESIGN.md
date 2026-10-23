@@ -767,6 +767,20 @@ dependencies and leave the same lockfile, or none. Lockfiles written against dif
 differ while the code matches. This prevents nothing, and a restart can still re-resolve a package component
 (`installConfiguredApplication`) with no report.
 
+## The deployment record (`system.hdb_deployment`)
+
+`DeploymentRecorder` (`components/deploymentRecorder.ts`) owns one row per deploy on the node that received it.
+It subscribes to the deploy's `ProgressEmitter`, so every event the deploy emits lands in `event_log`, and a
+streamed `deploy_component` forwards the same events over SSE.
+
+### A live tail ends on the recorder's promise, not on an event
+
+Nothing internal travels through the deploy's emitter. Its subscribers are the record's own `event_log`, the
+streamed `deploy_component` response and any `get_deployment` tail, so an in-band signal reaches all three
+(#3062). The registry of in-progress deploys (`getActiveDeployment`) holds the emitter and a promise that
+`finish()` settles after it writes the terminal row, so the tail's closing re-read sees the final status. The
+tail also stops when its own SSE client disconnects (`ProgressEmitter.signal`).
+
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
 Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
