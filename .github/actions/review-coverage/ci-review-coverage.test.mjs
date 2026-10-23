@@ -425,6 +425,8 @@ const HELPER_FOOTERS = [
 	`<sub>Review-Coverage: authored=claude; ran=codex,muse; adjudicated=domain; rounds=1; full=1 @ ${PIN}</sub>`,
 	`<sub>Review-Coverage: authored=codex; ran=claude,gemini; adjudicated=domain; blocked=muse(auth); rounds=1 @ ${PIN}</sub>`,
 	`<sub>Review-Coverage: authored=gemini; ran=codex,cursor-composer; adjudicated=domain; declined=muse; rounds=1 @ ${PIN}</sub>`,
+	`<sub>Review-Coverage: authored=claude; ran=codex,gemini,cursor-composer,cursor-grok; late=cursor-grok:adjudicated; adjudicated=domain; rounds=3; full=2 @ ${PIN}</sub>`,
+	`<sub>Review-Coverage: authored=claude; ran=codex,gemini; late=cursor-grok:timeout; adjudicated=domain; blocked=cursor-grok(timeout); rounds=2; full=1 @ ${PIN}</sub>`,
 ];
 
 test('every helper-shaped Review-Coverage footer is enforceable', () => {
@@ -1100,7 +1102,7 @@ test('a non-draft PR whose footer still shows a late leg pending fails enforceme
 	assert.strictEqual(r.pass, false);
 	assert.match(r.detail, /late review leg `cursor-grok` is still pending/);
 	assert.match(r.summary, /late review leg pending/);
-	assert.match(r.detail, /--final/);
+	assert.match(r.detail, /--wait-late/);
 	assert.match(r.detail, /--fold-late/);
 	assert.match(r.detail, /self-fold/);
 	assert.strictEqual(evaluateCiCoverage(pr({ body: lateFooter('pending=cursor-grok; ') })).pass, true, 'report mode');
@@ -1168,4 +1170,51 @@ test('the CLI tells a pending-late-leg PR to fold the leg, not to report more fa
 	const draft = runResult({ pull_request: pr({ body, draft: true }) }, '--mode', 'enforce');
 	assert.strictEqual(draft.status, 0);
 	assert.match(draft.stdout, /exempt: draft.*cursor-grok/);
+});
+
+test('the `late=` token gates a ready PR on any `:pending` entry, with or without the older `pending=`', () => {
+	for (const footer of [
+		lateFooter('late=cursor-grok:pending; adjudicated=domain; '),
+		lateFooter('pending=cursor-grok; late=cursor-grok:pending; adjudicated=domain; '),
+	]) {
+		assert.strictEqual(coverageFooterProblem(footer), '', footer);
+		const r = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+		assert.strictEqual(r.pass, false, footer);
+		assert.deepStrictEqual(r.pendingLegs, ['cursor-grok'], footer);
+		assert.match(r.detail, /late review leg `cursor-grok` is still pending/);
+		const draft = evaluateCiCoverage(pr({ body: footer, draft: true }), { mode: 'enforce' });
+		assert.strictEqual(draft.pass, true, footer);
+		assert.match(draft.exempt, /late review leg `cursor-grok` must be adjudicated first/);
+	}
+	for (const state of ['adjudicated', 'failed', 'timeout', 'lost', 'no-scope']) {
+		const r = evaluateCiCoverage(pr({ body: lateFooter(`late=cursor-grok:${state}; adjudicated=domain; `) }), {
+			mode: 'enforce',
+		});
+		assert.strictEqual(r.pass, true, state);
+		assert.deepStrictEqual(r.pendingLegs, [], state);
+	}
+});
+
+test('a malformed `late=` segment is the existing strict-format failure', () => {
+	for (const [extra, problem] of [
+		['late=cursor-grok; ', /`late=` entry `cursor-grok`, not `<leg>:<state>`/],
+		['late=cursor-grok:running; ', /`late=` entry `cursor-grok:running`, whose state is not one of/],
+		['late=grok:pending; ', /names unknown leg `grok` in `late=`/],
+		['late=cursor-grok:pending,cursor-grok:adjudicated; ', /repeats a leg in `late=`/],
+	]) {
+		const footer = lateFooter(extra);
+		assert.match(coverageFooterProblem(footer), problem, extra);
+		const r = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+		assert.strictEqual(r.pass, false, extra);
+		assert.match(r.detail, /counts 0 toward enforcement/, extra);
+		assert.deepStrictEqual(r.pendingLegs, [], extra);
+	}
+	assert.match(
+		coverageFooterProblem(lateFooter('late=cursor-grok:pending; pending=cursor-grok; ')),
+		/has `pending=` after `late=`/
+	);
+	assert.match(
+		coverageFooterProblem(lateFooter('adjudicated=domain; late=cursor-grok:adjudicated; ')),
+		/has `late=` after `adjudicated=`/
+	);
 });

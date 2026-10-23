@@ -23,6 +23,9 @@ const knownLegs = (key, allowed, legs) => {
 	return new Set(legs).size === legs.length ? '' : `repeats a leg in \`${key}=\``;
 };
 const legList = (key, allowed) => (value) => knownLegs(key, allowed, value.split(','));
+// skills-internal rules/prepush-cli.md "The footer token": `pending` until a round or the leg's own
+// fold adjudicates it; the rest are consumed.
+const LATE_STATES = new Set(['pending', 'adjudicated', 'failed', 'timeout', 'lost', 'no-scope']);
 const positive = (key) => (value) =>
 	/^[1-9]\d*$/.test(value) ? '' : `has \`${key}=${value}\`, not a positive integer`;
 const SEGMENTS = new Map([
@@ -35,6 +38,20 @@ const SEGMENTS = new Map([
 	],
 	['ran', (value) => (value === 'none' ? '' : legList('ran', COVERAGE_LEGS)(value))],
 	['pending', legList('pending', COVERAGE_LEGS)],
+	[
+		'late',
+		(value) => {
+			const legs = [];
+			for (const entry of value.split(',')) {
+				const parsed = /^(.+):([^:]+)$/.exec(entry);
+				if (!parsed) return `has \`late=\` entry \`${entry}\`, not \`<leg>:<state>\``;
+				if (!LATE_STATES.has(parsed[2]))
+					return `has \`late=\` entry \`${entry}\`, whose state is not one of ${[...LATE_STATES].join(', ')}`;
+				legs.push(parsed[1]);
+			}
+			return knownLegs('late', COVERAGE_LEGS, legs);
+		},
+	],
 	['adjudicated', legList('adjudicated', new Set(['domain']))],
 	[
 		'blocked',
@@ -53,7 +70,7 @@ const SEGMENTS = new Map([
 	['full', positive('full')],
 ]);
 export const PENDING_FIX =
-	'run the pre-push CLI with `--fold-late`, `--final` or another review round, then re-materialize the footer with `pr-body-review-need.mjs --write`; a late leg that self-folds updates the PR body itself';
+	'run the pre-push CLI with `--fold-late` (`--wait-late` while the leg still runs), which folds it and updates the PR body, or run another review round and re-materialize the footer with `pr-body-review-need.mjs --write`; a late leg that self-folds updates the PR body itself';
 const ORDER = [...SEGMENTS.keys()];
 const FIELD = 'Review-Coverage: ';
 
@@ -126,7 +143,16 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const adjudicatorBlocked = footerRead.segments.get('adjudicated')?.split(',').includes('domain')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
-	const pendingLegs = footerRead.segments.get('pending')?.split(',') ?? [];
+	// `pending=` is the older form the helper still writes beside `late=`; either one holds the PR.
+	const pendingLegs = [
+		...new Set([
+			...(footerRead.segments.get('pending')?.split(',') ?? []),
+			...(footerRead.segments.get('late') ?? '')
+				.split(',')
+				.filter((entry) => entry.endsWith(':pending'))
+				.map((entry) => entry.slice(0, -':pending'.length)),
+		]),
+	];
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
