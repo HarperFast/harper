@@ -1,5 +1,6 @@
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import * as jobOwnershipRuntimeModule from './jobs/jobOwnership.ts';
+import * as restoreIntentRuntimeModule from '../dataLayer/restoreIntent.ts';
 import { isMainThread, workerData } from 'node:worker_threads';
 import { getTables } from '../resources/databases.ts';
 import {
@@ -52,6 +53,18 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// would assert "nothing is unreconciled" on a thread that never checked. The loader treats undefined as
 	// "no verdict from boot" instead.
 	let interruptedActivationFailures;
+	// Before every safe-mode check below, and before any worker inherits this environment: a restart
+	// restore that ran out of attempts starts the node in safe mode, so it can be repaired through the
+	// operations API without the components that hold the database.
+	if (isMainThread && !process.env.HARPER_SAFE_MODE && !isWorkerThread) {
+		try {
+			if (restoreIntentRuntimeModule.terminalRestoreExists()) {
+				process.env.HARPER_SAFE_MODE = 'restore-terminal';
+			}
+		} catch (error) {
+			console.error(errorForLog(error));
+		}
+	}
 	try {
 		if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 			interruptedActivationFailures = await recoverInterruptedActivations(
@@ -94,7 +107,17 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// An unreconciled job row is misleading, but it is no reason to refuse to start. This function re-runs
 	// on every root component reload; the sweep itself holds the once-per-process guard.
 	if (isMainThread) {
-		jobOwnershipRuntimeModule.reconcileInterruptedJobsOnce().catch((error) => console.error(errorForLog(error)));
+		// Startup only (it latches): restart restores run here, after `system` is open and before any
+		// component, worker or plugin could hold the database they replace.
+		let restoreOwnedJobs;
+		try {
+			restoreOwnedJobs = await restoreIntentRuntimeModule.recoverRestoresAtStartup();
+		} catch (error) {
+			console.error(errorForLog(error));
+		}
+		jobOwnershipRuntimeModule
+			.reconcileInterruptedJobsOnce(restoreOwnedJobs)
+			.catch((error) => console.error(errorForLog(error)));
 	}
 
 	await loadCertificates();

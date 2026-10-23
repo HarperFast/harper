@@ -346,6 +346,10 @@ async function finishWithLock(receipt: RestoreReceipt): Promise<void> {
 
 let startupRecoveryRan = false;
 
+export function resetStartupRecoveryForTesting(): void {
+	startupRecoveryRan = false;
+}
+
 /**
  * Startup only, once per process: `loadRootComponents` also runs on every worker-replacing reload,
  * while the old workers still hold the databases. Returns the job ids still owned by a receipt, for
