@@ -7262,7 +7262,7 @@ export function makeTable(options): TableResourceClass {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
-								// a marker is table-wide: re-snapshotted, or delivered raw to every scope as the live broadcast does
+								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);

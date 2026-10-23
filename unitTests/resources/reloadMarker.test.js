@@ -246,7 +246,6 @@ describe('a replay that crosses a reload marker', () => {
 		return last instanceof ResumeHistoryUnavailableError && /bulk reload/.test(last.message);
 	};
 
-	// [label, request, row id, back-filled values its re-delivery brings]
 	const scopes = [
 		['root', {}, pathId, ['back', 'other-back']],
 		['array-prefix', { id: 'team', isCollection: true }, (group, name) => [group, name], ['back']],
