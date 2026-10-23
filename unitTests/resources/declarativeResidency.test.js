@@ -335,19 +335,33 @@ describe('Declarative residency', function () {
 			assert.equal(converted.primaryStore.getEntry('new2').residencySlot, undefined);
 			await converted.put('new6', { id: 'new6', tag: 'new', body: 'remote body' });
 			const stub = converted.primaryStore.getEntry('new6');
+			const cachesReplicas = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 			assert.equal(
 				await converted._storeReplica(stub, {
 					...stub,
 					originNode: server.hostname,
 					value: { id: 'new6', tag: 'new', body: 'remote body' },
 				}),
-				true
+				cachesReplicas
 			);
+			let ownerLoads = 0;
 			converted.sourcedFrom(
-				{ load: () => assert.fail('The former by-id hook must not bypass an indexed replica') },
+				{
+					load() {
+						assert.ok(!cachesReplicas, 'The former by-id hook must not bypass an indexed replica');
+						ownerLoads++;
+						return { id: 'new6', tag: 'new', body: 'remote body' };
+					},
+				},
 				{ intermediateSource: true }
 			);
 			assert.equal((await converted.get('new6')).body, 'remote body');
+			assert.equal(ownerLoads, cachesReplicas ? 0 : 1);
+			if (!cachesReplicas) {
+				const retained = converted.primaryStore.getEntry('new6');
+				assert.ok(retained.metadataFlags & INVALIDATED);
+				assert.equal(retained.value.body, undefined);
+			}
 		} finally {
 			env.setProperty('replication_shards', [1, 0]);
 		}
