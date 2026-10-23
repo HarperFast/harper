@@ -135,7 +135,7 @@ function main(mode, formatMode, framingMode) {
 			: r.compliant
 				? ''
 				: r.pendingLegs.length
-					? `A late review leg (${r.pendingLegs.map((leg) => `\`${leg}\``).join(', ')}) is still pending, so its findings were never adjudicated. Run the pre-push CLI with \`--fold-late\` (or another review round), or wait for the late leg to self-fold into the PR body; either updates the \`Review-Coverage:\` footer.`
+					? `A late review leg (${r.pendingLegs.map((leg) => `\`${leg}\``).join(', ')}) is still pending, so its findings were never adjudicated. Run the pre-push CLI with \`--fold-late\` or \`--final\` (or another review round), or wait for the late leg to self-fold into the PR body; either updates the \`Review-Coverage:\` footer.`
 					: r.adjudicatorBlocked
 						? `Per team policy, outside-model findings reach a human only after the Harper adjudicator (\`domain\`) has ruled on them. Every review round on this branch lost that leg (${r.adjudicatorBlocked}). Rerun the pre-push review until \`domain\` completes, then re-materialize the footer with \`pr-body-review-need.mjs --write\`.`
 						: `Per team policy, a substantive AI-authored PR reports ${required} outside-model review families in its \`Review-Coverage:\` footer. Materialize it with the cross-model-review skill's \`pr-body-review-need.mjs --write\` (harper-engineering-guidelines, pr-conventions): it unions every review round the branch had, so the head commit does not need a receipt of its own — do not re-review just to produce the footer.`,

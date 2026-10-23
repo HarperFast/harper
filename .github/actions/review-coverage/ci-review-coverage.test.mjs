@@ -1099,6 +1099,8 @@ test('a non-draft PR whose footer still shows a late leg pending fails enforceme
 	assert.strictEqual(r.compliant, false);
 	assert.strictEqual(r.pass, false);
 	assert.match(r.detail, /late review leg `cursor-grok` is still pending/);
+	assert.match(r.summary, /late review leg pending/);
+	assert.match(r.detail, /--final/);
 	assert.match(r.detail, /--fold-late/);
 	assert.match(r.detail, /self-fold/);
 	assert.strictEqual(evaluateCiCoverage(pr({ body: lateFooter('pending=cursor-grok; ') })).pass, true, 'report mode');

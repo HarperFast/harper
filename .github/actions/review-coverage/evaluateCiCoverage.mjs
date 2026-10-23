@@ -186,9 +186,15 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		: '';
 	const pendingNote =
 		pendingLegs.length && !classification.draft
-			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — run the pre-push CLI with \`--fold-late\` (or another review round), or wait for the late leg to self-fold into the PR body, then re-materialize the footer with \`pr-body-review-need.mjs --write\``
+			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — run the pre-push CLI with \`--fold-late\` or \`--final\` (or another review round), or wait for the late leg to self-fold into the PR body, then re-materialize the footer with \`pr-body-review-need.mjs --write\``
 			: '';
-	const summary = exempt ? `exempt: ${exempt}` : adjudicatorBlocked ? `${coverage}; adjudication blocked` : coverage;
+	const summary = exempt
+		? `exempt: ${exempt}`
+		: adjudicatorBlocked
+			? `${coverage}; adjudication blocked`
+			: pendingLegs.length
+				? `${coverage}; late review leg pending`
+				: coverage;
 	return {
 		pass,
 		exempt,
