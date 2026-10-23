@@ -157,7 +157,7 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 
 	it('keeps retrying a durably logged transaction past MAX_RETRIES and commits once contention clears', async function () {
 		this.timeout(15000);
-		const harperLogger = require('#src/utility/logging/harper_logger');
+		const harperLogger = require('#js/utility/logging/harper_logger');
 		const warnLines = [];
 		const originalWarn = harperLogger.warn;
 		harperLogger.warn = function (...args) {
