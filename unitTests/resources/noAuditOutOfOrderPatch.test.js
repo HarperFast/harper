@@ -192,9 +192,24 @@ describe('out-of-order patch on an audit:false table', () => {
 		const context = {};
 		await transaction(context, async () => {
 			await NoAudit.publish(id, { message: 'hello' }, context);
-			await NoAudit.patch(id, { count: { __op__: 'add', value: 1 } }, context);
+			await NoAudit.patch(id, { tag: 'after-publish', count: { __op__: 'add', value: 1 } }, context);
 		});
-		assert.strictEqual((await NoAudit.get(id)).count, 11);
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.tag, 'after-publish');
+		assert.strictEqual(record.count, 11);
+	});
+
+	it('a put after a publish to the record in the same transaction replaces it', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const context = {};
+		await transaction(context, async () => {
+			await NoAudit.publish(id, { message: 'hello' }, context);
+			await NoAudit.put(id, { tag: 'replaced' }, context);
+		});
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.tag, 'replaced');
+		assert.strictEqual(record.count, undefined);
 	});
 
 	it('a patch after a publish to an absent record in the same transaction creates it', async () => {
