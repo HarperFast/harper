@@ -866,5 +866,51 @@ for (const mode of ['vm-current-context', 'vm']) {
 			expect(result.fromB).to.equal('a');
 			expect(result.same).to.equal(true);
 		});
+
+		describe('outside allowedPath', () => {
+			let allowedPath;
+			const rejection = (options = {}) =>
+				scopedImport(join(allowedPath, 'entry.cjs'), loaderScope({ allowedPath, ...options })).then(
+					() => expect.fail('entry.cjs should not load'),
+					(error) => expect(error.message).to.include('outside of allowed path')
+				);
+
+			beforeEach(() => {
+				allowedPath = join(runtimeRoot, 'app');
+				mkdirSync(allowedPath);
+				writeFileSync(join(runtimeRoot, 'outside.js'), 'module.exports = { loaded: true };\n');
+				writeFileSync(join(runtimeRoot, 'outside.cjs'), 'module.exports = { loaded: true };\n');
+			});
+
+			for (const file of ['outside.js', 'outside.cjs']) {
+				it(`rejects a required ${file}`, async () => {
+					writeFileSync(join(allowedPath, 'entry.cjs'), `module.exports = require('../${file}');\n`);
+					await rejection();
+				});
+			}
+
+			it('rejects a required symlink whose target is outside', async () => {
+				symlinkSync(join(runtimeRoot, 'outside.cjs'), join(allowedPath, 'link.cjs'));
+				writeFileSync(join(allowedPath, 'entry.cjs'), "module.exports = require('./link.cjs');\n");
+				await rejection();
+			});
+
+			it('rejects a natively required dependency', async () => {
+				writePackage('hoisted-probe');
+				writeFileSync(join(allowedPath, 'entry.cjs'), "module.exports = require('hoisted-probe');\n");
+				await rejection({ dependencyLoader: 'native' });
+			});
+		});
+
+		it('substitutes the constrained child_process for require()', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.bare = require('child_process');\nexports.prefixed = require('node:child_process');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			for (const childProcess of [result.bare, result.prefixed]) {
+				expect(() => childProcess.execSync('exit 0')).to.throw('execSync is not allowed');
+			}
+		});
 	});
 }
