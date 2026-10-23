@@ -4,9 +4,13 @@ const assert = require('node:assert');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { DiskLedger, defaultReserve } = require('#src/dataLayer/diskLedger');
+const { once } = require('node:events');
+const { Readable, Writable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
+const { DiskLedger, defaultReserve, ledgerMeter } = require('#src/dataLayer/diskLedger');
 
 const GIB = 1024 ** 3;
+const MIB = 1024 ** 2;
 
 /** A controllable volume: `available` and `updatedAt` are what the next stats call reports. */
 function fakeVolume({ available = 10_000_000, updatedAt = 1000, basis = 'quota', bsize = 4096, files, ffree } = {}) {
@@ -249,6 +253,98 @@ describe('DiskLedger', function () {
 			const volume = fakeVolume({ available: 1_000_000_000, files: 0, ffree: 0 });
 			const { ledger } = ledgerFor(volume, { inodeReserve: () => 1000 });
 			for (let i = 0; i < 10; i++) await ledger.debitEntry('/staging/a', 0);
+		});
+	});
+
+	describe('ledgerMeter', function () {
+		/** A ledger whose debits are recorded, so a test sees how often the meter consults it. */
+		function countedLedger(volume) {
+			const { ledger } = ledgerFor(volume);
+			const debits = [];
+			const debit = ledger.debit.bind(ledger);
+			ledger.debit = (path, bytes, inodes) => {
+				debits.push(bytes);
+				return debit(path, bytes, inodes);
+			};
+			return { ledger, debits };
+		}
+
+		async function meterThrough(meter, chunks) {
+			let carried = 0;
+			await pipeline(
+				Readable.from(chunks),
+				meter,
+				new Writable({
+					write(chunk, _encoding, callback) {
+						carried += chunk.length;
+						callback();
+					},
+				})
+			);
+			return carried;
+		}
+
+		it('charges in batches rather than per chunk, and flushes the remainder', async function () {
+			const volume = fakeVolume({ available: 1 * GIB });
+			const { ledger, debits } = countedLedger(volume);
+			const chunks = Array.from({ length: 20 * 16 }, () => Buffer.alloc(64 * 1024));
+			const seen = [];
+			const carried = await meterThrough(
+				ledgerMeter(ledger, '/staging/archive', { onChunk: (chunk) => seen.push(chunk.length) }),
+				chunks
+			);
+			assert.strictEqual(carried, 20 * MIB, 'every byte passes through');
+			assert.strictEqual(seen.length, chunks.length, 'onChunk sees every chunk');
+			assert.deepStrictEqual(debits, [8 * MIB, 8 * MIB, 4 * MIB], 'two full batches, then the remainder');
+			assert.strictEqual((await ledger.remaining('/staging')).bytes, 1 * GIB - 20 * MIB);
+		});
+
+		it('charges a stream smaller than one batch once, at its end', async function () {
+			const volume = fakeVolume({ available: 1 * GIB });
+			const { ledger, debits } = countedLedger(volume);
+			await meterThrough(ledgerMeter(ledger, '/staging/archive'), [Buffer.alloc(1000), Buffer.alloc(24)]);
+			assert.deepStrictEqual(debits, [1024]);
+		});
+
+		it('fails the stream with 507 once a batch crosses the budget', async function () {
+			const volume = fakeVolume({ available: 12 * MIB });
+			const { ledger } = countedLedger(volume);
+			const chunks = Array.from({ length: 32 }, () => Buffer.alloc(1 * MIB));
+			await assert.rejects(meterThrough(ledgerMeter(ledger, '/staging/archive'), chunks), (error) => {
+				assert.strictEqual(error.statusCode, 507);
+				assert.match(error.message, /\/staging\/archive/);
+				return true;
+			});
+		});
+
+		it('destroys a stream that stops delivering with 504, and arms no timer without idleMs', async function () {
+			const volume = fakeVolume({ available: 1 * GIB });
+			const { ledger } = countedLedger(volume);
+			const stalled = ledgerMeter(ledger, '/staging/archive', { idleMs: 50 });
+			stalled.write(Buffer.alloc(10));
+			const [error] = await once(stalled, 'error');
+			assert.strictEqual(error.statusCode, 504);
+			assert.match(error.message, /No data arrived for 50ms/);
+
+			const patient = ledgerMeter(ledger, '/staging/archive');
+			patient.on('error', (unexpected) => assert.fail(unexpected));
+			patient.write(Buffer.alloc(10));
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.strictEqual(patient.destroyed, false);
+			patient.destroy();
+		});
+
+		it('keeps a stream alive while data keeps arriving within idleMs', async function () {
+			const volume = fakeVolume({ available: 1 * GIB });
+			const { ledger } = countedLedger(volume);
+			async function* trickle() {
+				// each gap well inside idleMs, the whole stream well past it
+				for (let i = 0; i < 5; i++) {
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					yield Buffer.alloc(10);
+				}
+			}
+			assert.strictEqual(await meterThrough(ledgerMeter(ledger, '/staging/archive', { idleMs: 300 }), trickle()), 50);
 		});
 	});
 });
