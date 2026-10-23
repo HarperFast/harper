@@ -161,6 +161,8 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		const read = UnauditedBlobs.primaryStore.getEntry('resequenced');
 		await UnauditedBlobs.patch('resequenced', { tag: 'merged' }, { timestamp: baseVersion + 50 });
 		const merged = UnauditedBlobs.primaryStore.getEntry('resequenced');
+		const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+		assert.ok(merged.metadataFlags & VERSION_REUSED, 'precondition: a real resequence marked the version reused');
 		assert.equal(merged.version, read.version, 'precondition: the resequenced write kept the version the caller read');
 		assert.equal(merged.value.tag, 'merged');
 		assert.equal(read.value.tag, undefined, "precondition: the caller's copy lacks the merged index key");

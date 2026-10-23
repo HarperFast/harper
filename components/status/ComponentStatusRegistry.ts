@@ -8,6 +8,7 @@
 import { ComponentStatus } from './ComponentStatus.ts';
 import {
 	type ComponentStatusLevel,
+	type ComponentStatusSource,
 	COMPONENT_STATUS_LEVELS,
 	type AggregatedComponentStatus,
 	type ComponentApplicationStatus,
@@ -43,7 +44,8 @@ export class ComponentStatusRegistry {
 		componentName: string,
 		status: ComponentStatusLevel,
 		message?: string,
-		error?: Error | string
+		error?: Error | string,
+		source?: ComponentStatusSource
 	): void {
 		if (!componentName || typeof componentName !== 'string') {
 			throw new ComponentStatusOperationError(
@@ -63,10 +65,18 @@ export class ComponentStatusRegistry {
 
 		const sanitizedMessage = typeof message === 'string' ? redactUrlCredentials(message) : message;
 		const sanitizedError = typeof error === 'string' ? redactUrlCredentials(error) : error;
-		const next = new ComponentStatus(status, sanitizedMessage, sanitizedError);
-		const loadedAt = this.statusMap.get(componentName)?.loadedAt;
-		if (loadedAt) next.loadedAt = loadedAt;
-		this.statusMap.set(componentName, next);
+		const existing = this.statusMap.get(componentName);
+		if (existing && existing.status === status) {
+			existing.lastChecked = new Date();
+			existing.message = sanitizedMessage;
+			existing.error = sanitizedError;
+			if (source !== undefined) existing.source = source;
+			existing.occurrenceCount++;
+		} else {
+			const next = new ComponentStatus(status, sanitizedMessage, sanitizedError, source);
+			if (existing?.loadedAt) next.loadedAt = existing.loadedAt;
+			this.statusMap.set(componentName, next);
+		}
 	}
 
 	private markLoadEnded(componentName: string): void {
@@ -280,7 +290,7 @@ const CREDENTIAL_URL_TOKEN_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)\S+/gi;
 const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
 const LOADER_DIRECTORY_FAILURE_MESSAGE = /^Could not load \S+$/;
 
-function redactUrlCredentials(text: string): string {
+export function redactUrlCredentials(text: string): string {
 	return text.replace(CREDENTIAL_URL_TOKEN_PATTERN, (token) => {
 		const at = token.lastIndexOf('@');
 		return at < 0 ? token : `[REDACTED]${token.slice(at)}`;

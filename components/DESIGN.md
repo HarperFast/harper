@@ -8,6 +8,12 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Runtime health checks (`status/healthChecks.ts`)
+
+`startHTTPThreads()` starts main-thread health polling after listeners and workers are ready, including zero-worker mode. Importing status exports starts no OS polling. Startup reads the registered `status.healthChecks` keys; edits require restart, and re-entry is idempotent. Defaults stay in code so an upgraded config does not gain a synthetic `status` component. Poll cycles have deadlines and keep at most one pending reader per metric; a permanently wedged reader remains a warning until restart, avoiding unbounded outstanding native work. Stop suppresses late results. Disk uses the configured storage path with `getStorageSpaceStats()` quota scoping. Constrained memory uses cgroup-v2 working set (usage minus inactive file cache), with labelled process-RSS fallback; unconstrained hosts keep `systeminformation.mem().available` semantics. CPU uses per-cgroup `cpu.stat` usage deltas across polling cycles divided by `cpu.max` quota/period, capped by that group’s effective CPU set or online host capacity. Each ancestor constraint uses its own usage counter; the highest utilization wins. CPU-set-only groups use their effective CPU count; process affinity is never applied to an ancestor counter. The first sample and changed/reset accounting use a short priming interval; missing cgroup accounting falls back to labelled host CPU. `cgroupCPU.test.js` covers filesystem accounting and reader lifecycle; `healthChecks.test.js` covers fixtures, lifecycle and deadlines; `logBridge.test.js` covers expiry renewal and cancellation.
+
+The log bridge redacts complete URL credentials before its 500-character summary cap. Summaries never coerce objects or invoke Proxy traps, and native errors from other VM contexts retain their public error class. A report replaces message and error together, even at the same severity. Expiry uses a monotonic deadline and bounded timer chunks; each callback owns its map entry and registry timestamp, so an old timer cannot clear a newer report. Invalid durations remain persistent. Unrestricted worker exceptions, corrupt-record and transaction-timeout diagnostics stay in the ordinary log: their status producers report only the problem key, excluding raw bytes, decoder messages that can contain decoded data, request targets that can contain private paths or query values, and exception messages produced by arbitrary application code. The operations-handler tests verify this privacy boundary and that the diagnostic log remains available.
+
 ## A deploy builds off to the side, is certified, and only then goes live
 
 `deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, certifies
@@ -787,9 +793,9 @@ terminal write (`getActiveDeployment`), so its closing re-read sees the final st
 
 The record used to say `success` before the `restart_service` job activated the release on the other nodes
 (`activateDeploymentOnPeers`, `bin/restart.ts`), whatever they then did (#3060). The origin now finishes it
-`rolling_out`, with `restart_job_id`; the job, on the node that wrote the row, adds each peer's outcome to its
-`peer_results` entry as `activation`, then ends the row `success`, or `partial` with `error.nodes`. Two ordering
-rules keep the replicated row convergent:
+`rolling_out` with `restart_job_id`; the job, on the node that wrote the row, loads the node list itself (a job thread
+starts with an empty `server.nodes`), adds each peer's outcome to its `peer_results` entry as `activation`, then ends
+the row `success`, or `partial` with `error.nodes`. Two ordering rules keep the replicated row convergent:
 
 - The job waits, once per row and for up to ten minutes, for the origin's `rolling_out` write before its own first,
   since a later put of the origin's in-memory record would erase it; if the job wrote first anyway, the origin keeps
@@ -797,14 +803,13 @@ rules keep the replicated row convergent:
 - Writes to the row land at least a second apart, the origin's included, because a tight burst to one row can commit
   out of order on a loaded peer (#1170); the last peer's outcome rides the final write.
 
-A job cut short by a restart is settled `ERROR` at boot (`reconcileInterruptedJobs`); `settleInterruptedRollouts`
-then ends each `rolling_out` row this node wrote whose job is not running, `partial` unless every peer took the
-release. An origin that failed after starting the job keeps its status, with each peer's outcome.
+A job that throws ends the row `partial` itself (`abandonRollout`); one cut short by a restart is settled `ERROR` at
+boot, and `settleInterruptedRollouts` then ends each `rolling_out` row this node wrote whose job is not running. An
+origin that failed after starting the job keeps its status, with each peer's outcome.
 
-`harper deploy restart=rolling` follows the record, not the job (`bin/deployRollout.ts`, #3058), because `hdb_job`
-does not replicate: behind a load balancer a `get_job` poll can land on a node that never had the job. It polls
-`get_deployment` with the deploy's own connection and token, since an OIDC exchange per poll would mint a token each
-time, and a 401/403 ends the wait at once, naming the missing grant.
+`harper deploy restart=rolling` follows the record, not the job (`bin/deployRollout.ts`, #3058): `hdb_job` does not
+replicate, so a `get_job` poll behind a load balancer can miss it. It polls with the deploy's own token, as an OIDC
+exchange per poll would mint one each time, and a 401/403 ends the wait at once, naming the missing grant.
 
 ### A deployment records where it came from
 
@@ -817,18 +822,16 @@ say `declared`, and lets an attested one win; the request's `source` is removed 
 
 Kept forever, failed tarballs from a retried rollout filled a tenant's quota (#2681). `sweepFailedPayloads`
 (`components/payloadRetention.ts`) drops a project's `failed` payloads beyond `failedMaxCount` or older than
-`failedMaxAge` (an unknown unit falls back to the default rather than read as seconds), never its newest. Rows rank
-across the cluster, but each node drops only rows it wrote (`origin_node`), so each is written once, as
-`delete_deployment_payload` writes it, after a recorded failure for that project and once at boot.
+`failedMaxAge` (an unknown unit falls back to the default), never its newest. Rows rank across the cluster, but each
+node drops only rows it wrote (`origin_node`), after a recorded failure for that project and once at boot.
 
 ### `get_components` says when the live release was deployed and when it last loaded
 
 This node's view (#564). `deployed_at` is the `completed_at` of the released row (`success`, `rolling_out` or
 `partial`) whose `deployment_id` or `activated_from` is the live marker's id, found by key and index, so a node that
-rejected a newer rolling release reports the one it serves; failing that, a `failed` row naming the id, since a
-deploy that swapped here and then failed on a peer is live. `restarted_at` is `ComponentStatus.loadedAt`, the latest
-load on any thread, successful or not; a restart starts new threads, so nothing persists it. `hdb_deployment` is the
-source, not configuration history, because it replicates and covers payload deploys, which change no configuration.
+rejected a newer rolling release reports the one it serves; failing that, a `failed` row naming the id (it swapped
+here, then failed on a peer). `restarted_at` is `ComponentStatus.loadedAt`, the latest load on any thread, successful
+or not, never persisted. The source is `hdb_deployment`, not config history: it replicates and covers payload deploys.
 
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
@@ -849,16 +852,14 @@ tar-fs's dereferenced walk does (readdir through the link), since a dangling sym
 one is just as capable of tripping the same early-finalize — skipping recursion into symlinked
 dirs there would silently reintroduce the bug for that case. Circular directory symlinks are not
 guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existing tar-fs limitation
-this fix doesn't attempt to solve. A truncation from some other cause no longer reports success
-silently either: see the next section.
+this fix doesn't attempt to solve.
 
-## A deploy warns when an entry point its config declares did not arrive (`components/declaredEntryPoints.ts`)
+### A deploy warns when an entry point its config declares did not arrive (`components/declaredEntryPoints.ts`)
 
-Before the swap (`validateCandidate`), a deploy warns, in a `warning` event and its response, of each `jsResource` or
-`graphqlSchema` `files` pattern in the component's own config file that matches nothing in the built candidate
-(#1719). Only those two, the application's code and schema; only its own config, because `DEFAULT_CONFIG` names
-optional files. It warns rather than fails because deleting an application's only resource file by redeploying is a
-tested workflow (`integrationTests/deploy/redeploy-restart-flag-deletion.test.ts`).
+Before the swap (`validateCandidate`), a deploy warns of each `jsResource`/`graphqlSchema` `files` pattern in the
+component's own config that matches nothing in the built candidate (#1719): the application's code and schema, not
+`DEFAULT_CONFIG`'s optional files. It warns rather than fails because deleting an application's only resource file by
+redeploying is a tested workflow (`integrationTests/deploy/redeploy-restart-flag-deletion.test.ts`).
 
 ## The packer never ships the loader's links to the install (`components/packageComponent.ts`)
 

@@ -147,7 +147,7 @@ Consequences worth knowing:
   branches and, when a RocksDB record version differs from its log key, the record's own audit head —
   and, for a write the origin-closed floor rekeyed, the identity a re-delivery carries, which addresses no entry (readers already tolerate a ref whose entry aged out).
   Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record version silently unaddresses the entry it points at.
-- **Replicated duplicates use committed identity before audit I/O ([#3361](https://github.com/HarperFast/harper/issues/3361), [#3467](https://github.com/HarperFast/harper/issues/3467)).** `Table._writeUpdate` recognizes an implicit head only when origin, version and received log key match, no explicit refs exist, and every earlier write to the key in the transaction was skipped (a publish or relocate restamps the head without staging it), on first delivery and on retry alike. The head's own log entry is not required: a base-copied record has none, and looking for it costs an end-of-log scan and, on a miss, re-appends the duplicate for every peer to re-receive. `replicatedRetryDuplicate.test.js` covers real conflicts, including multiple writes to the same key; `relayedHeadTieDuplicate.test.js` covers a relayed duplicate of a base-copied record and a put after a same-key publish or relocate.
+- **Replicated duplicates use committed identity before audit I/O ([#3361](https://github.com/HarperFast/harper/issues/3361), [#3467](https://github.com/HarperFast/harper/issues/3467)).** `Table._writeUpdate` recognizes an implicit head only when origin, version and received log key match and no explicit refs exist, on first delivery and on retry alike. Identity comes from the commit base unless another write to the key in the transaction has saved without being skipped; then it is read from the committed record, outside the transaction, because a publish or relocate saves when it is added and restamps the base, before or after this write, which would make a write that never applied look like its own head. The out-of-order ref check reads its refs from the same record, and a source-applied relocate that ties with the committed head is skipped too: re-applied, it would restamp the head, which can be its own transaction's put. The head's own log entry is not required: a base-copied record has none, and looking for it costs an end-of-log scan and, on a miss, re-appends the duplicate for every peer to re-receive. `replicatedRetryDuplicate.test.js` covers real conflicts, including multiple writes to the same key; `relayedHeadTieDuplicate.test.js` covers a relayed duplicate of a base-copied record, a put before or after a same-key publish or relocate, a competing delivery committing while a publish is staged, a log key that differs from the version, and a re-delivered non-resident relocate.
 - **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a
   replayed record at its log key would move its version forward and make a later legitimate write
   look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn`
@@ -227,13 +227,9 @@ Tests: `../unitTests/resources/paramRoutes.test.js` (unit) and `../integrationTe
 
 GraphQL `@relationship` attributes are live objects in component workers, but the operations API runs in a separate thread that does not load component schemas. `processGraphQLSchema` therefore records each relationship's target `database.table`, and `table()` persists a normalized, data-only relationship list on the table's primary catalog descriptor. The primary descriptor is deliberate: older Harper versions ignore the unknown field instead of loading a per-attribute row without the runtime table definition and silently returning `null`.
 
-`getDatabases()` waits until the complete table catalog is loaded, then hydrates catalog-owned relationship attributes with a stable target-class snapshot and calls `updatedAttributes()` to rebuild resolvers. The list is authoritative only when the GraphQL authoring path explicitly supplies `schemaRelationshipsDefined`; admin and replication callers that omit it cannot erase component-owned metadata. An empty list removes catalog-owned relationships. Live schema relationships and same-name runtime attributes always win, and `@enumerable` is not persisted, so operations queries traverse relationships only when explicitly selected.
+`getDatabases()` waits until the complete table catalog is loaded, then hydrates catalog-owned relationship attributes with a stable target-class snapshot and calls `updatedAttributes()` to rebuild resolvers. The list is authoritative only when the GraphQL authoring path explicitly supplies `schemaRelationshipsDefined`; admin and replication callers that omit it cannot erase component-owned metadata. An empty list removes catalog-owned relationships. Live schema relationships and same-name runtime attributes always win, and `@enumerable` is not persisted, so operations queries traverse relationships only when explicitly selected. The primary-descriptor update shares the `update-attributes` serialization boundary with `dropTable()`, re-reads the row after locking, and refuses to replace a drop tombstone. Missing or malformed targets are skipped rather than installed without authorization metadata.
 
-The primary-descriptor update shares the `update-attributes` serialization boundary with `dropTable()`, re-reads the row after locking, and refuses to replace a drop tombstone. Missing or malformed targets are skipped rather than installed without authorization metadata.
-
-Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Tightening the operations API's object/nested `get_attributes` form to reject names it cannot resolve is NOT an option: `Table.transformEntryForSelect` projects undeclared JSON sub-objects through that same form, so `validation/searchValidator.ts` deliberately leaves it unchecked.
-
-Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior) and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
+Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Tightening the operations API's object/nested `get_attributes` form to reject names it cannot resolve is NOT an option: `Table.transformEntryForSelect` projects undeclared JSON sub-objects through that same form, so `validation/searchValidator.ts` deliberately leaves it unchecked. Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior) and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
 
 ---
 
@@ -254,9 +250,7 @@ A contract is `{ path, record?, get/post/put/patch/delete: { query?, body?, resp
 
 **Vocabulary.** The built-in `t` (`t.string/number/integer/boolean/date/enum/array/object`) and `schemaOf<T>(source?)` both reduce to `JsonSchemaFragment`. A `defineTable` projection slots straight into a contract body/response — `schemaOf<(typeof Track)['$insert']>({ table: Track, projection: 'insert' })` derives the compile-time type from the projection and the runtime fragment from the table's attributes (via `projectTableFragment` → `attributeToFragment`). **Nullability:** non-nullable by default (a bare `t.string` rejects `null`); `.optional` allows absence, `.nullable` allows an explicit `null`; table-derived bodies mirror `Table.validate`'s policy (null rejected only when `nullable === false`).
 
-**Downstream surfaces.** `openApi.ts` emits a contract's query params, request body, and response for parameterised routes; `components/mcp/tools/application.ts` drives the tool input/output schema off the contract and binds arbitrary path params + query (`applyContractInputs`), which lifts the generated-verb binding restriction for contract resources. `ValidationError` (`../utility/errors/hdbError.ts`) extends `ClientError` (400) so existing HTTP handling is unchanged; the structured issues ride on `.detail`/`.errors`.
-
-Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/defineTable-registration.test.js`, `../unitTests/resources/openApi-contract.test.js`, `../unitTests/components/mcp/tools/application-contract.test.js`.
+**Downstream surfaces.** `openApi.ts` emits a contract's query params, request body, and response for parameterised routes; `components/mcp/tools/application.ts` drives the tool input/output schema off the contract and binds arbitrary path params + query (`applyContractInputs`), which lifts the generated-verb binding restriction for contract resources. `ValidationError` (`../utility/errors/hdbError.ts`) extends `ClientError` (400) so existing HTTP handling is unchanged; the structured issues ride on `.detail`/`.errors`. Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/defineTable-registration.test.js`, `../unitTests/resources/openApi-contract.test.js`, `../unitTests/components/mcp/tools/application-contract.test.js`.
 
 ---
 
@@ -319,9 +313,7 @@ A `PrimaryRocksDatabase` store that never runs `initStore` (notably `__dbis__`) 
 
 ## getFromSource() timing: promise resolves before commit runs
 
-In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution.
-
-Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
+In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution. Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
@@ -437,9 +429,7 @@ RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them wh
 Worker threads in a process share one id counter (`getUserSharedBuffer('id')`), but each thread decides on its own when the range in the `id_allocation` record is exhausted, so two threads can extend or re-allocate it at the same moment. `replaceIdAllocation` lets exactly one of them install the new range: it writes only while the stored allocation still equals the one the caller read (or none is stored), and a loser bounds its ids by the stored range instead of its own proposal. A losing re-allocation (`alreadyUpdated`) leaves the counter for the winner to move, so between the winner's commit and its `Atomics.store` the loser's limit and the counter can briefly name different ranges. Two properties make this hold on RocksDB:
 
 - **The comparison token is the allocation value, not `entry.version`.** The record is a bare `putSync` with no Harper record metadata, so RocksDB returns no version for it; a version check compares `undefined` with `undefined` and always passes.
-- **The read and the write take `{ transaction }` from the `transactionSync` callback, with `retryOnBusy`.** rocksdb-js only joins operations that are given the transaction. When a sibling thread commits between the read and the commit, the commit fails with an optimistic conflict, and the retry reads the sibling's allocation. lmdb-js serializes write transactions and passes no transaction to the callback; its second argument is numeric flags, so the options are passed only on RocksDB.
-
-`unitTests/resources/idAllocation.test.js` commits a sibling write between the read and the commit, for both re-allocation and extension.
+- **The read and the write take `{ transaction }` from the `transactionSync` callback, with `retryOnBusy`.** rocksdb-js only joins operations that are given the transaction. When a sibling thread commits between the read and the commit, the commit fails with an optimistic conflict, and the retry reads the sibling's allocation. lmdb-js serializes write transactions and passes no transaction to the callback; its second argument is numeric flags, so the options are passed only on RocksDB. `unitTests/resources/idAllocation.test.js` commits a sibling write between the read and the commit, for both re-allocation and extension.
 
 ## Replicated apply failure listeners (`resources/replicatedApplyFailure.ts`)
 
@@ -604,9 +594,7 @@ It has to be one codec, decided before the first open, because RocksDB opens **e
 
 Opens pass `compressionForAllColumnFamilies` (rocksdb-js) alongside the codec. Without it the binding gives every family the caller did not name its _persisted_ algorithm and applies the request only to the target, so families this process never names individually would keep their original codec forever — which is why a database created before the prebuild carried any codecs (every 5.1 instance) stayed uncompressed no matter how new the binary was, and why reconciling a table afterwards failed with `already open with compression ...; cannot reopen it with ...`.
 
-The ordering that still has to hold is a fresh install: `install()` calls `mountHdb()` — which creates the system families — several steps before `createConfigFile()` writes the config file, so `installer.ts` stages the value into the in-memory config (`stageRocksCompression()`, mirroring the `STORAGE_ENGINE` line beside it) before `mountHdb()` runs. Without it the main thread resolves no codec while workers resolve the configured one, and the boot dies with "The system database failed to load".
-
-Changing the codec governs newly written files. Existing SST/blob files keep theirs until rewritten; ordinary compaction will not do it (RocksDB skips the bottommost level without a compaction filter), so converting an existing database in place needs `compact({ bottommost: true })`.
+The ordering that still has to hold is a fresh install: `install()` calls `mountHdb()` — which creates the system families — several steps before `createConfigFile()` writes the config file, so `installer.ts` stages the value into the in-memory config (`stageRocksCompression()`, mirroring the `STORAGE_ENGINE` line beside it) before `mountHdb()` runs. Without it the main thread resolves no codec while workers resolve the configured one, and the boot dies with "The system database failed to load". Changing the codec governs newly written files. Existing SST/blob files keep theirs until rewritten; ordinary compaction will not do it (RocksDB skips the bottommost level without a compaction filter), so converting an existing database in place needs `compact({ bottommost: true })`.
 
 Harper's normal RocksDB open path disables RocksDB's native WAL for primary and index column families; durable recovery for runtime transactions comes from rocksdb-js transaction logs. The root handle that owns those logs and the `__dbis__` metadata column family deliberately keep native WAL enabled. `copyDbToRocks` writes directly and does not create rocksdb-js transaction-log entries, so it can use the same no-native-WAL bulk path only when called by `migrateOnStart` for a `<database>.migrating` staging directory. The LMDB source remains authoritative until the copy and verification finish; an interruption deletes that staging directory and restarts the copy. The root and `__dbis__` handles retain native WAL, while every primary and index handle receives `disableWAL: true` (rocksdb-js stores the option per handle). Their metadata-sized WAL traffic is negligible beside the bulk copy. When the last handle closes, rocksdb-js flushes every column family and waits for background work before the verified staging directory is atomically renamed. A direct `copyDbToRocks` call to a non-staging path keeps native WAL enabled because it has neither transaction-log recovery nor the wrapper's discard-and-retry guarantee.
 
@@ -702,7 +690,7 @@ reader of a drop time skips that row (`getTableDrops`, `pendingOrRecordedDropTim
 and the create checks), so peers never learn of the drop, and a timed drop overwrites it.
 
 The rule is enforced where a generation becomes or stops being live, under the lock that publishes the primary
-row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed:
+row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed (`unitTests/resources/dropTableLifecycle.test.js`):
 
 - A create carrying a peer's generation (`origin: 'cluster'`, or a supplied `createdTime`) throws
   `TableGenerationDroppedError` (409) when a marker here retires it, and so does a stamped one for a name live here,
@@ -725,8 +713,6 @@ row or writes the tombstone, so no peer path can check it and then act on a cata
   anything to decide. A table created during a rollback to such a build gets its own bound at the next load.
 - The legacy per-table layout (`databasePath` is not the database name) has no database catalog for a marker,
   so its drops leave none.
-
-`unitTests/resources/dropTableLifecycle.test.js`.
 
 **Store names and 5.2 rollback (harper#3102).** A RocksDB table's store names are distinct from its `createdTime`
 stamp: a generation suffix (`T/@<generation>`) on the primary row, which `writeTombstone` also checks as identity.
@@ -895,13 +881,15 @@ envelope format, key model and client flow are user-facing and belong in HarperF
 
 ## Closing an LMDB database closes its environment, never its dbis (`databases.ts` `closeDatabase`)
 
-Database aliases that resolve to one path share one LMDB root store, but each alias opens its own
-dbi handles. `mdb_env_close` releases every dbi, while lmdb-js's native `DbiWrap.close()` calls
-`mdb_dbi_close` on the `MDB_env*` it captured at open, so closing a dbi after another alias closed the
-environment is a use-after-free (an intermittent segfault in the lmdb unit run). `closeDatabase` closes
-an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
-column families are independently refcounted handles, so they are still closed one by one. Enforced by
-the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
+Aliases that resolve to one path share one LMDB root store but open their own dbis. `mdb_env_close` releases
+every dbi, while lmdb-js's `DbiWrap.close()` calls `mdb_dbi_close` on the `MDB_env*` captured at open, so closing a
+dbi after another alias closed the environment is a use-after-free (an intermittent segfault in the lmdb unit run).
+`closeDatabase` closes an LMDB root once, skips its dbis, and closes every alias sharing it; RocksDB column families
+are refcounted and still close one by one (shared-store cases in `databaseAliasIdentity.test.js`). Only `closed`
+counts as closed: lmdb (through 3.5.8) resolves `close()` early while a read is in flight on an environment that
+never wrote, so a drop unlinked an open `.mdb`. `openLmdb` gives each root one close completion, resolved by lmdb's
+close callback; a close finding `closing` awaits it, and a drop removes the file after it even when an earlier close
+finished. Remove the wrapper once lmdb returns its deferred close (`lmdbCloseCompletion.test.js`).
 
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 
@@ -927,14 +915,12 @@ and, end to end, `integrationTests/database/restore-backup-online.test.ts`.
 
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
 
-A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` file at the top level
-of the storage path and of every configured database path, and each one a directory below the storage
-path as a legacy `<schema>/<table>.mdb` table. lmdb-js (3.5.6, and still 3.5.7) crashes the process
-when `mdb_env_open` fails: the failure path in `EnvWrap::openEnv` frees its `ExtendedEnv`, then
-`closeEnv` frees it again. A file there that is not an LMDB environment therefore takes the process
-down with SIGSEGV and no stack, at whatever moment the next rescan runs. Until lmdb-js returns the
-open error instead, tests keep non-database fixtures outside those paths;
-`unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists (harper#2669).
+A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` at the top level of the storage
+path and of every configured database path, and one directory below the storage path as a legacy
+`<schema>/<table>.mdb` table. lmdb-js (3.5.6, and still 3.5.7) frees its `ExtendedEnv` twice when `mdb_env_open`
+fails (`EnvWrap::openEnv`, then `closeEnv`), so a non-LMDB file there takes the process down with SIGSEGV and no
+stack at the next rescan. Until lmdb-js returns the open error, tests keep non-database fixtures outside those
+paths; `unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists (harper#2669).
 
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
@@ -963,7 +949,7 @@ base's list is the one naming a complete holder. An explicit received residency 
 does not make the receiver complete. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
 before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines).
 
-Transport invariant: a stub is never sent, served, or stored as a complete record through harper-pro GET_RECORD and its copy sender. This does not cover the separate relocate-on-read path or the explicit local `replicateFrom: false` policy. `loadLocalRecord`, `ensureLoaded`, and full-record query materialization propagate residency loader errors; only a successful empty response means absence. A successful instance load advances the request’s last-modified version to the resident’s version.
+Transport invariant: a stub is never sent, served, or stored as a complete record through harper-pro GET_RECORD and its copy sender, except the legacy base-copy fallback for a peer without `residencyStubCopy` or whose capabilities are not yet learned. For a peer listed in the stub’s residency (or with no residency list), that fallback sends the stored projection as an ordinary `put`, which an equal-version holder skips; a receiver without the row stores it as complete. A capable peer receives `invalidate`. Excluded peers still receive an invalidation or are skipped under id-based residency. See harper-pro's `replication/DESIGN.md`, Send-side residency. This does not cover the separate relocate-on-read path or the explicit local `replicateFrom: false` policy. `loadLocalRecord`, `ensureLoaded`, and full-record query materialization propagate residency loader errors. A holder’s versioned answer settles the read immediately, whether it contains a live record or a deletion at version V: both are positive evidence from a holder. A tombstone retains its versioned GET_RECORD frame, including for older requesters. An unversioned empty reply is weak evidence: it can mean no row, or a stub on the legacy GET_RECORD path. If no versioned answer arrives, absence requires every listed non-self holder to answer and at least one unversioned empty reply; an unreachable holder keeps the result at 502, and all not-resident answers produce a descriptive 502. Reads do not compare versions across holders or perform quorum/read-repair reads, for live records or deletions. A successful instance load advances the request’s last-modified version to the resident’s version.
 Query projections stay local only for stored indexed fields and the primary key; selecting a computed index loads its resolver inputs from the resident.
 `_writeInvalidate` keeps the primary key and updates stored-field indexes with the incoming projection (including removed fields). Ordinary cache invalidation carries forward the commit base's values. Invalidation joins the same-key write chain and publishes its staged projection, so subsequent writes diff the correct indexes on both engines. Stored vector fields are retained and indexed; computed indexes retain their committed entries because a stub lacks resolver inputs (later full writes/deletes resolving those inputs remain a separate limitation). Invalidation reads incoming indexed fields through their accessors, and keeps an equal-origin/equal-version full row when the incoming residency still includes this node. Ordinary cache invalidation and non-resident demotion still apply. Enforced by `unitTests/resources/residencyReads.test.js` on both engines.
 
