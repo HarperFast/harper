@@ -21,8 +21,7 @@ const ATTRIBUTION_STATE_TTL_MS = 3600000;
 // per tick, so pruning per call is O(N^2) in exactly the leak this reporting exists to describe.
 const ATTRIBUTION_PRUNE_INTERVAL_MS = 60000;
 
-// Tests swap this reader rather than the rocksdb-js export: under typestrip this module binds the ESM build, which a
-// test cannot patch.
+// Under typestrip this module binds rocksdb-js's ESM namespace, which cannot be patched, so a fake registry goes here.
 let readRegistryStatus = getRegistryStatus;
 
 // Report state is keyed by database path AND native id: rocksdb-js allocates transaction ids per
@@ -152,7 +151,7 @@ export function runLongLivedTransactionSweep(): void {
 		if (missingDetails && !missingDetailsWarned) {
 			missingDetailsWarned = true;
 			logger.warn?.(
-				'Long-lived transaction reporting is degraded: the installed @harperfast/rocksdb-js does not expose getRegistryStatus().transactionDetails (requires 2.8.0)'
+				'Long-lived transaction reporting is degraded: a getRegistryStatus() entry has no transactionDetails'
 			);
 		}
 		if (due.length === 0) return;

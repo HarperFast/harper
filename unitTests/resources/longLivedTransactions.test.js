@@ -208,7 +208,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			setRegistryStatusForTests(() => [{ path: '/db/alpha', transactions: 3 }]);
 			assert.doesNotThrow(() => runLongLivedTransactionSweep());
 			runLongLivedTransactionSweep();
-			assert.strictEqual(warningsMatching('does not expose getRegistryStatus().transactionDetails').length, 1);
+			assert.strictEqual(warningsMatching('entry has no transactionDetails').length, 1);
 		});
 
 		it('swallows and logs a registry failure', function () {
