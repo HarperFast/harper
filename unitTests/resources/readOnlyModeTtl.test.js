@@ -7,10 +7,8 @@ const auditStore = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
-// harper#474 follow-up: TTL expiry is a storage writer that never reaches transaction admission.
-// These run on handles that are still writable with the flag flipped, so a missing guard shows up
-// as a record or index entry that actually disappears. Stores opened read-only are covered by
-// integrationTests/server/read-only-mode-ttl.test.ts. Runs on whichever engine HARPER_STORAGE_ENGINE selects.
+// The handles stay writable with the flag flipped, so a missing guard shows up as a record that disappears.
+// Stores opened read-only are covered by integrationTests/server/read-only-mode-ttl.test.ts.
 describe('read-only mode does not evict expired records', () => {
 	const isLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 	let tableSeq = 0;
@@ -22,6 +20,7 @@ describe('read-only mode does not evict expired records', () => {
 
 	afterEach(() => __setReadOnlyModeForTest(undefined));
 
+	const SWEEP_INTERVAL = 60_000;
 	const PAST = () => Date.now() - 60_000;
 	const FUTURE = () => Date.now() + 3_600_000;
 
@@ -53,6 +52,7 @@ describe('read-only mode does not evict expired records', () => {
 			await seed(Table, 'expired', 'read', PAST());
 			await seed(Table, 'live', 'read', FUTURE());
 		});
+		after(() => Table?.closeMaintenance());
 
 		it('get treats an expired record as absent and leaves it, its index entry and its cached entry alone', async function () {
 			const held = Table.primaryStore.getEntry('expired');
@@ -119,11 +119,14 @@ describe('read-only mode does not evict expired records', () => {
 			}
 			await waitFor(() => Table.primaryStore.getEntry('deleted')?.value === null);
 		});
-		after(() => auditStore.setAuditRetention(originalRetention));
+		after(async () => {
+			if (originalRetention !== undefined) auditStore.setAuditRetention(originalRetention);
+			await Table?.closeMaintenance();
+		});
 
 		it('is not armed by a read-only process, and is once the flag is off', async function () {
 			await Table.closeMaintenance();
-			auditStore.setAuditRetention(-1000); // the tombstone is now past retention
+			auditStore.setAuditRetention(-1000);
 			__setReadOnlyModeForTest(true);
 			Table.resumeMaintenance();
 			Table.setTTLExpiration({ expiration: 0.005, eviction: 0.005 });
@@ -156,30 +159,35 @@ describe('read-only mode does not evict expired records', () => {
 			await waitFor(() => Table.primaryStore.getEntry('expired'));
 			await Table.closeMaintenance();
 
-			// the sweep's own interval is the only thing that runs it, and a read-only process must not start it
-			const sweeps = [];
-			const realSetInterval = globalThis.setInterval;
-			globalThis.setInterval = (callback, interval, ...args) => {
-				const timer = realSetInterval(callback, interval, ...args);
-				sweeps.push({ callback, timer });
-				return timer;
+			// Capture only around the synchronous resume, so another module's interval cannot be counted
+			const resumeAndCaptureSweeps = () => {
+				const sweeps = [];
+				const realSetInterval = globalThis.setInterval;
+				globalThis.setInterval = (callback, interval, ...args) => {
+					if (interval === SWEEP_INTERVAL) sweeps.push(callback);
+					return realSetInterval(callback, interval, ...args);
+				};
+				try {
+					Table.resumeMaintenance();
+				} finally {
+					globalThis.setInterval = realSetInterval;
+				}
+				return sweeps;
 			};
 			try {
 				__setReadOnlyModeForTest(true);
-				Table.resumeMaintenance();
-				assert.strictEqual(sweeps.length, 0, 'a read-only process must not arm the expiration sweep');
+				assert.strictEqual(resumeAndCaptureSweeps().length, 0, 'a read-only process must not arm the sweep');
 
 				__setReadOnlyModeForTest(undefined);
 				await Table.closeMaintenance();
-				Table.resumeMaintenance();
-				assert.strictEqual(sweeps.length, 1, 'a writable process arms the expiration sweep');
+				const sweeps = resumeAndCaptureSweeps();
+				assert.strictEqual(sweeps.length, 1, 'a writable process arms the sweep');
 				// RocksDB's index stores have no getValues(), which the sweep calls, so only LMDB's sweep can evict
 				if (isLmdb) {
-					sweeps[0].callback();
+					sweeps[0]();
 					await waitFor(() => Table.primaryStore.getEntry('expired') === undefined, 5000);
 				}
 			} finally {
-				globalThis.setInterval = realSetInterval;
 				await Table.closeMaintenance();
 			}
 		});

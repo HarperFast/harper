@@ -277,6 +277,11 @@ type SourceTxnStream = {
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+const ABSENT_ENTRY = Object.freeze({
+	then(callback) {
+		return callback(undefined);
+	},
+});
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
@@ -9550,14 +9555,8 @@ export function makeTable(options): TableResourceClass {
 			}
 		} else if (entry?.value) {
 			if (hasExpired(entry)) {
-				// no eviction here, and nulling the shared cached entry would not hide it from LMDB's weak reference
-				if (isReadOnlyMode()) {
-					return {
-						then(callback) {
-							return callback(undefined);
-						},
-					};
-				}
+				// nulling the shared cached entry would not hide the record from LMDB's weak reference
+				if (isReadOnlyMode()) return ABSENT_ENTRY;
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
 				entry.value = null;

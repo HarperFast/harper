@@ -1,8 +1,6 @@
 /**
- * A read-only server (`storage.readOnly`) treats an expired record on a table with no source as absent, and
- * neither evicts it nor errors (harper#474). Reading it used to fail with a 500 on both engines, because the
- * read evicts the record and the stores are open read-only. Runs on whichever engine HARPER_STORAGE_ENGINE
- * selects.
+ * A read-only server (`storage.readOnly`) answers for an expired record on a table with no source as if it were
+ * absent, and leaves it on disk (harper#474). Runs on whichever engine HARPER_STORAGE_ENGINE selects.
  *
  *   npm run test:integration -- "integrationTests/server/read-only-mode-ttl.test.ts"
  */
@@ -24,6 +22,8 @@ import {
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'read-only-mode-ttl');
+// The writable server's expiresAt sweep removes a row as soon as it expires, so the seed expires after the restart.
+const SEED_EXPIRES_IN_MS = 5_000;
 // Read-only startup fails on Windows (#2853)
 const skipSuite = process.platform === 'win32';
 
@@ -35,7 +35,7 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 		client = createApiClient(ctx.harper);
 		const now = Date.now();
 		for (const [table, id, expiresAt] of [
-			['Session', 'expired', now - 60_000],
+			['Session', 'expired', now + SEED_EXPIRES_IN_MS],
 			['Session', 'live', now + 3_600_000],
 			['Plain', 'live', undefined],
 		] as const) {
@@ -48,6 +48,7 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 		await killHarper(ctx);
 		await startHarper(ctx, { config: { storage: { readOnly: true } }, env: {} });
 		client = createApiClient(ctx.harper);
+		await delay(Math.max(0, now + SEED_EXPIRES_IN_MS - Date.now() + 100));
 	});
 
 	after(async () => {
