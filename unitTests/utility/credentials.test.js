@@ -95,6 +95,30 @@ describe('utility/credentials', () => {
 			);
 		});
 
+		it('masks a block value whose key follows a log prefix or prose, read whole or from the continuation', () => {
+			const log =
+				'2026-10-20T00:00:00.000Z [main/0] [warn]: apiKey: |-\n  sk-SENTINEL\n2026-10-20T00:00:01.000Z [main/0] [info]: next\n';
+			const maskedLog = log.replace('|-', '**').replace('sk-SENTINEL', '***********');
+			assert.equal(masked(log), maskedLog);
+			const at = log.indexOf('  sk-SENTINEL');
+			assert.equal(masked(log.slice(at), log.slice(0, at), true), maskedLog.slice(at));
+			assert.equal(
+				maskCredentialValues('upstream config: apiKey: |-\n  sk-SENTINEL', { oneEntry: true }),
+				'upstream config: apiKey: **\n  ***********'
+			);
+			assert.equal(
+				masked('T [warn]: credentials:\n- one\nT [info]: next\n'),
+				'T [warn]: credentials:\n*****\nT [info]: next\n'
+			);
+		});
+
+		it('leaves the stack after an inline credential value readable', () => {
+			assert.equal(
+				masked('T [error]: Error: bad token: abc\n    at foo (a.js:1:1)\n'),
+				'T [error]: Error: bad token: ***\n    at foo (a.js:1:1)\n'
+			);
+		});
+
 		it('runs an unterminated quote to the end of a single log entry', () => {
 			assert.equal(maskCredentialValues('{"apiKey":"sk-a\nsk-b"}', { oneEntry: true }), '{"apiKey":"****\n****"}');
 		});

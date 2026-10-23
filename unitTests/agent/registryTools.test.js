@@ -333,6 +333,14 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 		]);
 	});
 
+	it('masks a block value whose key follows prose in the message', async () => {
+		operations.set('read_log', async () => [
+			{ timestamp: 't1', message: 'upstream config: apiKey: |-\n  sk-SENTINEL' },
+		]);
+		const { results } = await tool('read_log').handler({}, { sessionId: 's1' });
+		assert.deepEqual(results, [{ timestamp: 't1', message: 'upstream config: apiKey: **\n  ***********' }]);
+	});
+
 	it('masks a quoted credential that an entry continues on a line of its own', async () => {
 		operations.set('read_log', async () => [{ timestamp: 't1', message: 'request {"apiKey":"sk-a\nsk-b"}' }]);
 		const { results } = await tool('read_log').handler({}, { sessionId: 's1' });

@@ -837,6 +837,24 @@ describe('agent/fsTools credential values in the read-only scopes (harper#3097)'
 		);
 	});
 
+	it('masks a block value whose key follows the log prefix, read whole or from the continuation', async () => {
+		const header = '2026-10-20T00:00:00.000Z [main/0] [warn]: apiKey: |-\n';
+		writeFileSync(
+			join(root, 'log', 'hdb.log'),
+			`${header}  sk-SENTINEL\n2026-10-20T00:00:01.000Z [main/0] [info]: next\n`
+		);
+		const whole = await readFileTool.handler({ root: 'logs', path: 'hdb.log' }, ctx(scopes));
+		assert.doesNotMatch(whole.content, /sk-SENTINEL/);
+		const page = await readFileTool.handler(
+			{ root: 'logs', path: 'hdb.log', offset: Buffer.byteLength(header), lineCount: 1 },
+			ctx(scopes)
+		);
+		assert.equal(page.content, '  ***********\n');
+		const tail = await tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 2 }, ctx(scopes));
+		assert.doesNotMatch(tail.lines.join('\n'), /sk-SENTINEL/);
+		assert.equal((await grepFilesTool.handler({ root: 'logs', pattern: 'SENTINEL' }, ctx(scopes))).count, 0);
+	});
+
 	it('masks credentials in the logs scope', async () => {
 		writeFileSync(join(root, 'log', 'hdb.log'), 'T [main/0] [error]: failed {"apiKey":"sk-logged","model":"m"}\n');
 		const read = await readFileTool.handler({ root: 'logs', path: 'hdb.log' }, ctx(scopes));

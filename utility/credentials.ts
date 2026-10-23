@@ -14,6 +14,7 @@ const MASK = '*';
 // such as `\n`. A match never starts inside a run of backslashes, so a run is scanned once.
 const ASSIGNMENT = /(?<!(?<!\\)[\w$.-])(?!(?<=\\)\\)(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
+const BLOCK_SCALAR = /^[|>][-+0-9]*[ \t]*(?:#.*)?$/;
 
 type State =
 	| { kind: 'none' }
@@ -188,8 +189,12 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 		const valueStart = Math.min(match.index + match[0].length, end);
 		// A YAML comment after the key leaves its value empty, so the key's `- ` items below are its value.
 		const comment = line[valueStart] === '#' && /[ \t]/.test(line[valueStart - 1]);
+		const empty = valueStart === end || comment;
 		if (match.index === prefix && match[3] === ':') {
-			state = { kind: 'block', column: prefix, empty: valueStart === end || comment };
+			state = { kind: 'block', column: prefix, empty };
+		} else if (match[3] === ':' && (empty || BLOCK_SCALAR.test(line.slice(valueStart, end)))) {
+			// After a log prefix or prose, the value's lines are indented relative to the message, not the key.
+			state = { kind: 'block', column: 0, empty };
 		}
 		if (valueStart === end || isPlaceholder(line.slice(valueStart, end).trimEnd())) continue;
 		let escapes = 0;
