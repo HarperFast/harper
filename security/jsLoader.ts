@@ -388,9 +388,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					scope.markNativeRuntime?.();
 					return nativeModule;
 				}
-				const contents = readFileSync(new URL(resolvedUrl));
-				scope.recordLoadedModule?.(resolvedUrl, contents);
-				return loadCJS(resolvedUrl, contents.toString('utf-8')).exports;
+				const cachedModule = cjsCache.get(resolvedUrl);
+				if (cachedModule) return cachedModule.exports;
+				if (!shouldUseApplicationLoader(spec, resolvedUrl)) {
+					if (isApplicationLocalModule(resolvedUrl)) scope.markNativeRuntime?.();
+					return require(fileURLToPath(resolvedUrl));
+				}
+				return loadCJS(resolvedUrl, readApplicationModule(resolvedUrl)).exports;
 			}
 			return require(resolvedUrl);
 		};
@@ -459,29 +463,21 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	 */
 	function packageDependsOnHarper(fileUrl: string): boolean {
 		try {
-			// Convert file:// URL to path
-			const filePath = fileURLToPath(fileUrl);
-
-			// Find the node_modules directory and package name
-			// Example: /path/to/node_modules/package-name/dist/index.js
-			// or: /path/to/node_modules/@scope/package-name/dist/index.js
+			// Find the node_modules directory and package name in the URL, whose separators are `/` on every platform
+			// Example: file:///path/to/node_modules/package-name/dist/index.js
+			// or: file:///path/to/node_modules/@scope/package-name/dist/index.js
 			const nodeModulesMarker = '/node_modules/';
-			const nodeModulesIndex = filePath.lastIndexOf(nodeModulesMarker);
+			const nodeModulesIndex = fileUrl.lastIndexOf(nodeModulesMarker);
 			if (nodeModulesIndex === -1) return false;
 
-			// Get the part after /node_modules/
-			const afterNodeModules = filePath.substring(nodeModulesIndex + nodeModulesMarker.length);
-			const parts = afterNodeModules.split('/');
-
 			// Handle scoped packages (@scope/package-name) vs regular packages (package-name)
-			const beforeNodeModules = filePath.substring(0, nodeModulesIndex);
-			const packageRoot = parts[0].startsWith('@')
-				? join(beforeNodeModules, 'node_modules', parts[0], parts[1])
-				: join(beforeNodeModules, 'node_modules', parts[0]);
+			const packageStart = nodeModulesIndex + nodeModulesMarker.length;
+			const parts = fileUrl.substring(packageStart).split('/');
+			const packageName = parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0];
 
 			// Read package.json from the package root
-			const packageJsonPath = join(packageRoot, 'package.json');
-			const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+			const packageJsonUrl = new URL(`${fileUrl.substring(0, packageStart)}${packageName}/package.json`);
+			const packageJson = JSON.parse(readFileSync(packageJsonUrl, 'utf-8'));
 
 			const deps = {
 				...packageJson.dependencies,
@@ -603,6 +599,17 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	}
 
 	/**
+	 * Read the source of a module the application loader evaluates: the bytes as read are recorded for
+	 * runtime-equivalence checks, and TypeScript types are stripped from the returned source
+	 */
+	function readApplicationModule(url: string): string {
+		const contents = readFileSync(new URL(url));
+		scope.recordLoadedModule?.(url, contents);
+		const source = contents.toString('utf-8');
+		return url.endsWith('.ts') || url.endsWith('.tsx') ? stripTypeScriptTypes(source) : source;
+	}
+
+	/**
 	 * Create a SourceTextModule or SyntheticModule from source code
 	 */
 	function createModuleFromSource(
@@ -620,11 +627,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				},
 				{ identifier: url, context }
 			);
-		}
-
-		// Strip TypeScript types if this is a .ts file
-		if (url.endsWith('.ts') || url.endsWith('.tsx')) {
-			source = stripTypeScriptTypes(source);
 		}
 
 		// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
@@ -685,9 +687,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				scope.markNativeRuntime?.();
 				return createSyntheticModule(url, normalizeImportedModule(nativeModule));
 			}
-			const contents = readFileSync(new URL(url));
-			scope.recordLoadedModule?.(url, contents);
-			return createModuleFromSource(url, contents.toString('utf-8'), usePrivateGlobal);
+			return createModuleFromSource(url, readApplicationModule(url), usePrivateGlobal);
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
