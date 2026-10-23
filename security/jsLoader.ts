@@ -425,22 +425,23 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			if (resolvedUrl === 'harper') {
 				return getHarperExports(scope);
 			}
-			if (resolvedUrl.startsWith('file://')) {
-				if (resolvedUrl.endsWith('.node')) {
-					checkAllowedModulePath(resolvedUrl, scope.allowedPath);
-					const nativeModule = require(fileURLToPath(resolvedUrl));
-					scope.markNativeRuntime?.();
-					return nativeModule;
-				}
-				const cachedModule = cjsCache.get(resolvedUrl);
-				if (cachedModule) return cachedModule.exports;
-				if (!shouldUseApplicationLoader(spec, resolvedUrl)) {
-					if (isApplicationLocalModule(resolvedUrl)) scope.markNativeRuntime?.();
-					return require(fileURLToPath(resolvedUrl));
-				}
-				return loadCJS(resolvedUrl, readApplicationModule(resolvedUrl)).exports;
+			// every cached module passed checkAllowedModulePath when it was loaded
+			const cachedModule = cjsCache.get(resolvedUrl);
+			if (cachedModule) return cachedModule.exports;
+			const replacedModule = checkAllowedModulePath(resolvedUrl, scope.allowedPath);
+			if (replacedModule) return replacedModule;
+			if (!resolvedUrl.startsWith('file://')) return require(resolvedUrl);
+			const modulePath = fileURLToPath(resolvedUrl);
+			if (resolvedUrl.endsWith('.node')) {
+				const nativeModule = require(modulePath);
+				scope.markNativeRuntime?.();
+				return nativeModule;
 			}
-			return require(resolvedUrl);
+			if (!shouldUseApplicationLoader(spec, resolvedUrl)) {
+				if (isApplicationLocalModule(resolvedUrl)) scope.markNativeRuntime?.();
+				return require(modulePath);
+			}
+			return loadCJS(resolvedUrl, readApplicationModule(resolvedUrl)).exports;
 		};
 		cjsRequire.resolve = (spec: string) => {
 			const resolvedUrl = resolveModule(spec, url, scope);
