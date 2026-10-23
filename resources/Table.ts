@@ -4744,13 +4744,8 @@ export function makeTable(options): TableResourceClass {
 								isRocksDB &&
 								!replaying &&
 								precedesExisting === 0 &&
-<<<<<<< HEAD
-								txnLogKey === txnTime &&
-=======
 								priorWritesSkipped(write) &&
-								receivedLogKey === txnTime &&
-								appendedLogKey === receivedLogKey &&
->>>>>>> f8f32b712 (Keep a put that follows an unstaged same-key write out of the head-tie skip)
+								txnLogKey === txnTime &&
 								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
 								!existingEntry.additionalAuditRefs?.length
 							) {
