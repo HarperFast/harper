@@ -810,7 +810,8 @@ finished as `success` before the job ran, so it reported success for a release a
 
 Two ordering rules keep the replicated row convergent. The job waits, for up to ten minutes, for the origin's own
 `rolling_out` write before its first one, since the job starts before the origin's terminal write and a later put of
-the origin's in-memory record would erase what the job wrote. And no two writes to the row land close together,
+the origin's in-memory record would erase what the job wrote; should the job have written first anyway, the origin's
+write keeps the activations and final status already stored (`keepRolloutProgress`). And no two writes to the row land close together,
 because a tight burst of writes to one row can commit out of order on a loaded peer (#1170, the reason the recorder
 seals before replicating): the last peer's outcome rides the job's final write, and every job write waits until a
 second has passed since the previous one, the origin's `rolling_out` (its `completed_at`) included, so a peer that
@@ -868,7 +869,9 @@ Each entry carries three fields, all of this node's view (#564):
 - `deployed_at` is the `completed_at` of the record that made that release live: the newest released row (`success`,
   `rolling_out` or `partial`) whose `deployment_id` or `activated_from` is the marker's id, found by key and by the
   `activated_from` index rather than a scan of the history. So a node that rejected a newer rolling release still
-  reports the release it serves. A tree with no marker reports the project's newest released row.
+  reports the release it serves. With no released row, a `failed` one naming the id counts: a deploy that swapped
+  here and then failed on a peer is recorded failed, yet is live. A tree with no marker reports the project's newest
+  released row, walking its rows newest first.
 - `restarted_at` is the latest time any thread on this node finished loading the application or one of its
   sub-components, successfully or not (`ComponentStatus.loadedAt`, set by `lifecycle.loaded`/`failed` and kept
   across later status reports). A restarted worker is a new thread, so a restart refreshes it; nothing persists it.
