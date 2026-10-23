@@ -365,8 +365,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	}
 
 	/**
-	 * Compile a CommonJS module's wrapper function in our context (private or current). A SyntaxError from here
-	 * is about this module's own source, unlike an error thrown while evaluating it.
+	 * A SyntaxError from here is about this module's own source, unlike an error thrown while evaluating it
 	 */
 	function compileCJS(url: string, source: string): Function {
 		const cjsWrapper = `
@@ -716,10 +715,15 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
 		}
 		if (isApplicationLocalModule(url)) scope.markNativeRuntime?.();
-		return import(url).then((importedModule) => {
-			if (url.startsWith('file://')) nativeModules.add(url);
-			return createSyntheticModule(url, normalizeImportedModule(importedModule));
-		});
+		// registered before the import settles, so a require() of the file meanwhile takes the same route
+		if (url.startsWith('file://')) nativeModules.add(url);
+		return import(url).then(
+			(importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)),
+			(error) => {
+				nativeModules.delete(url);
+				throw error;
+			}
+		);
 	}
 	// Load the entry module
 	const entryModule = await loadModuleWithCache(moduleUrl, true);
