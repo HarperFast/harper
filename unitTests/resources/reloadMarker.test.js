@@ -219,14 +219,15 @@ describe('a replay that crosses a reload marker', () => {
 	/** A row stored without an audit entry, as a copyApply snapshot leaves it. */
 	const backfill = (T, id, value) => T.primaryStore.put(id, { id, value });
 
-	async function reloadedAfterPosition(database) {
+	const pathId = (group, name) => `${group}/${name}`;
+	async function reloadedAfterPosition(database, id = pathId) {
 		const T = reloadTable(database);
-		const startTime = await putAndPosition(T, 'team/before', 'before');
-		await backfill(T, 'team/back', 'back');
-		await backfill(T, 'other/back', 'other-back');
+		const startTime = await putAndPosition(T, id('team', 'before'), 'before');
+		await backfill(T, id('team', 'back'), 'back');
+		await backfill(T, id('other', 'back'), 'other-back');
 		await T.writeReloadMarker();
-		await T.put('team/after', { value: 'after' });
-		await T.put('other/after', { value: 'other-after' });
+		await T.put(id('team', 'after'), { value: 'after' });
+		await T.put(id('other', 'after'), { value: 'other-after' });
 		return { T, startTime };
 	}
 
@@ -245,18 +246,21 @@ describe('a replay that crosses a reload marker', () => {
 		return last instanceof ResumeHistoryUnavailableError && /bulk reload/.test(last.message);
 	};
 
+	// [label, request, row id, back-filled values its re-delivery brings]
 	const scopes = [
-		['root', {}, ['back', 'other-back']],
-		['prefix', { id: 'team/', isCollection: true }, ['back']],
+		['root', {}, pathId, ['back', 'other-back']],
+		['array-prefix', { id: 'team', isCollection: true }, (group, name) => [group, name], ['back']],
+		// the current-scope scan reads no string-path descendants (harper#3481)
+		['path-prefix', { id: 'team/', isCollection: true }, pathId, []],
 	];
 
-	for (const [label, scope, backfilled] of scopes) {
+	for (const [label, scope, id, backfilled] of scopes) {
 		it(`re-delivers the current ${label} scope after a startTime replay across the marker`, async () => {
-			const { T, startTime } = await reloadedAfterPosition();
+			const { T, startTime } = await reloadedAfterPosition(undefined, id);
 			const { subscription, events } = await subscribed(T, { startTime, ...scope });
 			await waitFor(() => backfilled.every((value) => delivered(events).includes(value)), { message: saw(events) });
 			await waitFor(() => delivered(events).includes('after'), { message: saw(events) });
-			if (label === 'prefix') {
+			if (label !== 'root') {
 				assert.ok(
 					!delivered(events).some((value) => String(value).startsWith('other')),
 					'the re-delivery keeps to the scope'
@@ -269,7 +273,7 @@ describe('a replay that crosses a reload marker', () => {
 		});
 
 		it(`refuses a ${label} startTime replay that reports progress, at the marker`, async () => {
-			const { T, startTime } = await reloadedAfterPosition();
+			const { T, startTime } = await reloadedAfterPosition(undefined, id);
 			const { subscription, events } = await subscribed(T, { startTime, reportProgress: true, ...scope });
 			await waitFor(() => subscription.closed, { message: saw(events) });
 			assert.ok(refused(events), `refused with the 410, not ${events.at(-1)}`);
@@ -280,11 +284,12 @@ describe('a replay that crosses a reload marker', () => {
 		it(`hands a previousCount backfill across the marker the current ${label} scope, spending no slot on it`, async function () {
 			// collection previousCount reads the log in reverse, which the RocksDB transaction log cannot
 			if (!isLMDB) return this.skip();
-			const { T } = await reloadedAfterPosition();
+			const { T } = await reloadedAfterPosition(undefined, id);
 			const slots = label === 'root' ? 3 : 2;
 			const history = label === 'root' ? ['before', 'after', 'other-after'] : ['before', 'after'];
 			const { subscription, events } = await subscribed(T, { previousCount: slots, ...scope });
 			await waitFor(() => backfilled.every((value) => delivered(events).includes(value)), { message: saw(events) });
+			await waitFor(() => delivered(events).length >= history.length, { message: saw(events) });
 			assert.deepStrictEqual(delivered(events).slice(0, history.length), history);
 			assert.ok(!events.some((event) => event.type === 'reload'));
 			assert.deepStrictEqual(errors(events), []);
@@ -293,7 +298,7 @@ describe('a replay that crosses a reload marker', () => {
 
 		it(`refuses a ${label} previousCount backfill that reports progress, at the marker`, async function () {
 			if (!isLMDB) return this.skip();
-			const { T } = await reloadedAfterPosition();
+			const { T } = await reloadedAfterPosition(undefined, id);
 			const { subscription, events } = await subscribed(T, { previousCount: 10, reportProgress: true, ...scope });
 			await waitFor(() => subscription.closed, { message: saw(events) });
 			assert.ok(refused(events), `refused with the 410, not ${events.at(-1)}`);
@@ -312,6 +317,25 @@ describe('a replay that crosses a reload marker', () => {
 		await waitFor(() => first.closed);
 		const { subscription, events } = await subscribed(T, { startTime: first.startTime });
 		await waitFor(() => delivered(events).includes('back'), { message: saw(events) });
+		subscription.end();
+	});
+
+	it('delivers a commit that lands while the re-snapshot after the last marker waits for its consumer', async () => {
+		const T = reloadTable();
+		const startTime = await putAndPosition(T, 'team/before', 'before');
+		for (let i = 0; i < 150; i++) await backfill(T, `team/back${i}`, `back${i}`);
+		await T.writeReloadMarker();
+		const subscription = await T.subscribe({ startTime });
+		await waitFor(() => subscription.queue?.length > 100, { message: 'the re-snapshot fills the queue and waits' });
+		const witness = [];
+		const live = await T.subscribe({ omitCurrent: true, listener: (event) => witness.push(event.value?.value) });
+		await T.put('team/live', { value: 'live' });
+		await waitFor(() => witness.includes('live'));
+		live.end();
+		const events = [];
+		subscription.on('data', (event) => events.push(event));
+		await waitFor(() => delivered(events).includes('live'), { message: saw(events) });
+		assert.ok(delivered(events).includes('back149'));
 		subscription.end();
 	});
 
@@ -342,7 +366,7 @@ describe('a replay that crosses a reload marker', () => {
 			return getRange.apply(this, arguments);
 		};
 		try {
-			const { subscription, events } = await subscribed(T, { startTime, id: 'team/', isCollection: true });
+			const { subscription, events } = await subscribed(T, { startTime });
 			await waitFor(() => delivered(events).filter((value) => value === 'after').length === 2, {
 				message: saw(events),
 			});

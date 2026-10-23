@@ -186,7 +186,7 @@ function resetsAcrossReloadWhileAway(otherGeneration) {
 			const third = await connect(clientId);
 			assert.ok(!third.session.sessionWasPresent, 'the reset session is gone');
 			await third.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
-			// the retained snapshot of a string-path prefix delivers none of its rows
+			// the retained snapshot of a string-path prefix delivers none of its rows (harper#3481)
 			if (label === 'root') await waitFor(() => values(third.received).includes('back'));
 			await T.put('team/live', { value: 'live' });
 			await waitFor(() => values(third.received).includes('live'));

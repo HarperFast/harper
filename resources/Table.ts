@@ -7072,7 +7072,7 @@ export function makeTable(options): TableResourceClass {
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
 			const resnapshotsReload = !request.rawEvents && databaseName !== 'system';
-			// a re-snapshot sent before the history or snapshot in progress would be overwritten by it, so it waits
+			// a re-snapshot waits for the history or snapshot in progress, whose older values would overwrite it
 			let reloadPending = false;
 			let reportingProgress = false;
 			const subContext = this.getContext() as any;
@@ -7182,20 +7182,10 @@ export function makeTable(options): TableResourceClass {
 			// Each check compares the floor with the position the replay had reached at the previous check: a
 			// prune raises the floor before it deletes anything below it, so a pass means nothing unread was deleted.
 			let resumeCheckedThrough = request.startTime;
-			const refuseReplay = (refusal: Error): false => {
-				logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
-				try {
-					subscription.close(refusal);
-				} finally {
-					// a listener that throws on the refusal must not leave the subscription open
-					if (!subscription.closed) subscription.close();
-				}
-				return false;
-			};
 			const checkResume = resuming
 				? (refusal?: Error): boolean => {
 						refusal ??= resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough);
-						return refusal ? refuseReplay(refusal) : true;
+						return refusal ? refuseReplay(subscription, tableName, refusal) : true;
 					}
 				: undefined;
 			// request.reportProgress, not reportingProgress: an LMDB consumer keeps positions it gets no certificate for
@@ -7257,7 +7247,7 @@ export function makeTable(options): TableResourceClass {
 								const isReload = auditRecord.type === 'reload';
 								// the rows a reload back-filled have no history, so no replay can deliver them
 								if (isReload && replayRefusesReload)
-									return void refuseReplay(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+									return void refuseReplay(subscription, tableName, new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 								const resnapshots = isReload && resnapshotsReload;
 								// the cursor passes a marker only once the current scope it calls for is handed off
 								if (reloadPending && !resnapshots) {
@@ -7272,7 +7262,7 @@ export function makeTable(options): TableResourceClass {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
-								// a raw marker is table-wide, as the live broadcast delivers it
+								// a marker is table-wide: re-snapshotted, or delivered raw to every scope as the live broadcast does
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
@@ -7292,7 +7282,14 @@ export function makeTable(options): TableResourceClass {
 							}
 							if (reloadPending) {
 								reloadPending = false;
+								// the finished cursor reads no more commits, so live ones wait behind the scan
+								pendingRealTimeQueue = [];
+								dropDuringReplay = false;
 								if (!(await sendCurrentScope())) return;
+								const replayedThrough = handledTxnLogKey;
+								pendingRealTimeQueue = pendingRealTimeQueue.filter(
+									(event) => (event.localTime ?? event.version) > replayedThrough
+								);
 							}
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
@@ -7331,7 +7328,11 @@ export function makeTable(options): TableResourceClass {
 									cursorMaxTime = Math.max(cursorMaxTime, auditRecord.txnLogKey);
 									if (auditRecord.type === 'reload' && resnapshotsReload) {
 										if (replayRefusesReload)
-											return void refuseReplay(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+											return void refuseReplay(
+												subscription,
+												tableName,
+												new ResumeHistoryUnavailableError(RELOAD_REFUSAL)
+											);
 										reloadPending = true;
 										continue;
 									}
@@ -7352,10 +7353,6 @@ export function makeTable(options): TableResourceClass {
 						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
-						}
-						if (reloadPending) {
-							reloadPending = false;
-							if (!(await sendCurrentScope())) return;
 						}
 						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// In-flight pre-subscribe 'committed' callbacks may have queued duplicates of
@@ -7608,13 +7605,7 @@ export function makeTable(options): TableResourceClass {
 					let now = Date.now();
 					for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 						start: thisId ?? false,
-						// a slash-terminated id is a path prefix, whose string descendants sort below it with the slash raised to '0'
-						end:
-							thisId == null
-								? undefined
-								: typeof thisId === 'string' && thisId.endsWith('/')
-									? thisId.slice(0, -1) + '0'
-									: [thisId, MAXIMUM_KEY],
+						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 						versions: true,
 						snapshot: false, // no need for a snapshot, just want the latest data
 					})) {
@@ -7665,7 +7656,6 @@ export function makeTable(options): TableResourceClass {
 					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
 				}
 			}
-			/** Resolves false once the subscription has closed. */
 			async function sendCurrentScope(): Promise<boolean> {
 				for await (const record of currentScopeRecords()) {
 					if (!send(record)) return false;
@@ -10630,6 +10620,16 @@ export function coerceType(value: any, attribute: any): any {
 function rejectNaN(value: number) {
 	if (isNaN(value)) throw new SyntaxError(); // will set the message in the catch block with more context
 	return value;
+}
+function refuseReplay(subscription: any, tableName: string, refusal: Error): false {
+	logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
+	try {
+		subscription.close(refusal);
+	} finally {
+		// a listener that throws on the refusal must not leave the subscription open
+		if (!subscription.closed) subscription.close();
+	}
+	return false;
 }
 function isDescendantId(ancestorId, descendantId): boolean {
 	if (ancestorId == null) return true; // ancestor of all ids
