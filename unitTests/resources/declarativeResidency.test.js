@@ -106,6 +106,22 @@ describe('Declarative residency', function () {
 			assert.equal((await Records.get('present')).body, 'complete');
 		});
 
+	for (const region of [0, 1])
+		it(`publishes an event without changing attribute placement (slot=${region})`, async () => {
+			const Records = await declare(
+				`SlotPublished${region}`,
+				'@residency(slots: 10, slotFrom: "region", byAttribute: true)',
+				'region: Int @indexed\nbody: String'
+			);
+			await Records.put('published', { id: 'published', region, body: 'complete' });
+			const before = Records.primaryStore.getEntry('published');
+			await Records.publish('published', { event: 'notice' });
+			const after = Records.primaryStore.getEntry('published');
+			assert.equal(after.residencySlot, region);
+			assert.equal(after.metadataFlags & INVALIDATED, before.metadataFlags & INVALIDATED);
+			assert.deepEqual({ ...after.value }, { ...before.value });
+		});
+
 	it('refuses an attribute-slot transition before commit without a connected new owner', async () => {
 		const Records = await declare(
 			'SlotOffline',
