@@ -86,6 +86,7 @@ describe('get_components deployment times (harper#564)', () => {
 	afterEach(async () => {
 		restoreTable?.();
 		reset();
+		if (!root) return;
 		env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, previousRoot);
 		await fs.rm(root, { recursive: true, force: true });
 	});

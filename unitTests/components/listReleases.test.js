@@ -63,6 +63,7 @@ describe('list_releases (harper#3059)', () => {
 		await build(root, D, 'stage');
 	});
 	after(async () => {
+		if (!root) return;
 		env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, previousRoot);
 		await fs.rm(root, { recursive: true, force: true });
 	});

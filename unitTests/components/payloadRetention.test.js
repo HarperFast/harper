@@ -36,7 +36,7 @@ describe('failed deploy payload retention (harper#2681)', () => {
 		};
 	});
 	afterEach(() => {
-		databases.system[DEPLOYMENT_TABLE] = prior;
+		if (databases.system) databases.system[DEPLOYMENT_TABLE] = prior;
 		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, undefined);
 		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT, undefined);
 	});

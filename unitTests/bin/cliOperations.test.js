@@ -670,9 +670,9 @@ describe('cliOperations', () => {
 		});
 
 		afterEach(() => {
-			process.exit = originalExit;
-			console.error = originalConsoleError;
-			console.log = originalConsoleLog;
+			if (originalExit) process.exit = originalExit;
+			if (originalConsoleError) console.error = originalConsoleError;
+			if (originalConsoleLog) console.log = originalConsoleLog;
 		});
 
 		const sseDoneResponse = (result) =>

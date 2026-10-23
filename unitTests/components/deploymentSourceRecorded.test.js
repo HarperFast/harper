@@ -45,12 +45,12 @@ describe('deploy_component records its source (harper#3061)', function () {
 	});
 	beforeEach(() => (replicated = []));
 	after(async () => {
-		server.replication.replicateOperation = originalReplicateOperation;
+		if (originalReplicateOperation) server.replication.replicateOperation = originalReplicateOperation;
 		await dropComponentDirectory(path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), PROJECT), PROJECT).catch(
 			() => {}
 		);
 		resetRestartNeeded();
-		await fs.rm(source, { recursive: true, force: true });
+		if (source) await fs.rm(source, { recursive: true, force: true });
 	});
 
 	const recorded = async (deploymentId) => (await databases.system[DEPLOYMENT_TABLE].get(deploymentId)).source;

@@ -23,7 +23,7 @@ describe('what a deploy declares about where it came from (harper#3061)', () => 
 		git('add', '.');
 		git('commit', '-q', '-m', 'first');
 	});
-	after(() => fs.rmSync(checkout, { recursive: true, force: true }));
+	after(() => checkout && fs.rmSync(checkout, { recursive: true, force: true }));
 
 	it("names a directory deploy's commit, and whether the tree had changes it does not hold", () => {
 		assert.deepStrictEqual(declaredDeploySource({ directory: checkout }, {}), {

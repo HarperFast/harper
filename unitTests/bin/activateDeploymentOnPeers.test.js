@@ -192,7 +192,7 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	});
 	afterEach(() => {
 		global.server = previousServer;
-		databases.system[DEPLOYMENT_TABLE] = previousTable;
+		if (databases.system) databases.system[DEPLOYMENT_TABLE] = previousTable;
 	});
 
 	const stagedRow = (status = 'rolling_out') => ({
