@@ -13,7 +13,7 @@ import {
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
-import { lockNotHeldError, markRecordLockWriteRefused, type RecordLockHandle } from './recordLock.ts';
+import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -1418,7 +1418,7 @@ export class DatabaseTransaction implements Transaction {
 	detachWrite(operation: TransactionWrite): void {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
-		if (!operation.lockHandle) this.unlockedWriteScan = undefined;
+		if (!operation.lockHandle && this.unlockedWriteScan) this.unlockedWriteScan = undefined;
 		this.ownedWrites?.delete(operation);
 		if (operation.stagedIn === this) operation.stagedIn = undefined;
 		if (operation.key === undefined) return;
@@ -2300,7 +2300,7 @@ export class DatabaseTransaction implements Transaction {
 					try {
 						operation.lockStamp = lockHandle.holderVersionCandidate();
 					} catch (error) {
-						markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
+						lockHandle.writeRefused = true;
 						if (!operation.saved) {
 							operation.dropped = true;
 							this.detachWrite(operation);
@@ -2373,7 +2373,7 @@ export class DatabaseTransaction implements Transaction {
 			const joinedKey = operation.lockStamp && !operation.saved ? reservedLocalKey(transaction) : undefined;
 			if (joinedKey !== undefined && joinedKey < operation.lockStamp) {
 				operation.dropped = true;
-				if (lockHandle) markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
+				if (lockHandle) lockHandle.writeRefused = true;
 				this.detachWrite(operation);
 				throw new ClientError(
 					'Record lock write joined a commit already in flight under an earlier log key; unlock, then lock and retry once it settles',
@@ -2391,7 +2391,7 @@ export class DatabaseTransaction implements Transaction {
 				if (!operation.saved) {
 					if (lockHandle) {
 						operation.dropped = true;
-						markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
+						lockHandle.writeRefused = true;
 					}
 					this.detachWrite(operation);
 				}

@@ -101,8 +101,6 @@ import {
 	admissionStamp,
 	lockAttemptKey,
 	lockNotHeldError,
-	isRecordLockWriteRefused,
-	clearRecordLockWriteRefused,
 	resolveLockOptions,
 	type RecordLockHandle,
 	type RecordLockOptions,
@@ -891,7 +889,7 @@ interface TableResourceInstance<Record extends object = any> {
 	 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
 	 * in process memory and does not write a lock record or audit entry. A lock admitted above the local
 	 * clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart cannot reuse
-	 * a key. Admission can raise the current transaction timestamp to the admitted version; a claimed
+	 * a key; admission farther ahead fails with `LockUnavailableError` until wall time catches up. Admission can raise the current transaction timestamp to the admitted version; a claimed
 	 * version can also put this node's local write clock ahead of wall time until it catches up. Phase 0
 	 * contract: lock() is mutually exclusive
 	 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
@@ -4265,7 +4263,7 @@ export function makeTable(options): TableResourceClass {
 		 */
 		save() {
 			const operation = this.#savingOperation;
-			if (isRecordLockWriteRefused(primaryStore, writeKeyId(this.getId())))
+			if (this.#lockWritable && (operation?.lockHandle ?? this.#lockHandle)?.writeRefused)
 				throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
 			if (
 				!this.#lockWritable &&
@@ -4863,7 +4861,7 @@ export function makeTable(options): TableResourceClass {
 		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
 		 * in process memory and does not write a lock record or audit entry. A lock admitted above the local
 		 * clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart cannot reuse
-		 * a key. Admission can raise the current transaction timestamp to the admitted version; a claimed
+		 * a key; admission farther ahead fails with `LockUnavailableError` until wall time catches up. Admission can raise the current transaction timestamp to the admitted version; a claimed
 		 * version can also put this node's local write clock ahead of wall time until it catches up. Phase 0
 		 * contract: lock() is mutually exclusive
 		 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
@@ -5113,7 +5111,7 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
-				let admitted: { floor: number; stamp: number; movesClock: boolean } | undefined;
+				let admitted: { floor: number; stamp: number } | undefined;
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
 					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
@@ -5136,7 +5134,7 @@ export function makeTable(options): TableResourceClass {
 						link.timestamp = handle.acquiredAt;
 					}
 					if (
-						admitted?.movesClock &&
+						admitted &&
 						admitted.floor > link.timestamp &&
 						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
 						!link.hasUnlockedWrite()
@@ -5249,7 +5247,6 @@ export function makeTable(options): TableResourceClass {
 			const handle = this.#lockHandle;
 			this.#lockHandle = undefined;
 			this.#lockWritable = false;
-			clearRecordLockWriteRefused(primaryStore, writeKeyId(this.getId()));
 			if (!handle || handle.released) return Promise.resolve(false);
 			const link = txnForContext(this.getContext());
 			// A scoped lock staged its write at lock() time; released before commit, that write must not

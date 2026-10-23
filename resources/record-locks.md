@@ -14,7 +14,9 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
 map keyed by `[Symbol.for('record-lock'), tableId, id]`. No lock record or audit entry is written for
 `lock()` or `unlock()`. A lock admitted above the local clock within `storage.maxLockClockSkew` may
-persist an issuance ceiling so a restart cannot reuse a key. The record's version and stored bytes are
+persist an issuance ceiling so a restart cannot reuse a key. Admission farther ahead fails with
+`LockUnavailableError`; the record remains unavailable until wall time catches up, so repair the source
+peer's clock or wait. The record's version and stored bytes are
 unchanged when a lock is acquired or released; only the native key is locked in memory. This design
 eliminates durable lock state from the on-disk format: durable LOCK/UNLOCK writes would produce version
 bumps that peers interpret as out-of-order duplicates and discard.
@@ -196,7 +198,9 @@ freshness wait, with the record read once under the lock and that same entry rel
 handle's floor one ulp (`timestampAbove`) above the stored version, a tombstone's included, and above
 the highest predecessor `lockRelease` / `lockBarrier` log position the round waited for
 (`admissionFloor`; the coordinator caches that maximum per delegation as `dependencyFloor`). A bound no
-valid timestamp exceeds fails the admission with a 409 and gives the key back.
+valid timestamp exceeds fails the admission with a 409 and gives the key back. A valid floor beyond
+`storage.maxLockClockSkew` fails with `LockUnavailableError` (503) before the holder write is staged
+or a local issuance ceiling is reserved.
 
 A floor above the handle's `acquiredAt` is not used as is (`admissionStamp`): every holder admitted on
 state one transaction left would share it, as the version of every write in its explicit transaction
@@ -205,11 +209,11 @@ re-delivery — a shared counter loses an increment. A floor the clock has alrea
 clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
 value falls back to it with a warning; read once per thread) is claimed as a unique local key
 (`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
-log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, a
-rate-limited clock-skew warning is logged and the floor stays explicit and moves no clock: one
-far-future timestamp pins neither the node's clock nor the holder's transaction, whose other writes
-would otherwise inherit it. Such a holder still outranks through an `ImmediateTransaction`'s per-write
-stamp, is best-effort in an explicit transaction, and its log key may repeat another's. A key the
+log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, admission
+fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. A far-future replicated
+version can therefore leave the record unavailable until wall time catches up. Rewriting or deleting
+from a correctly timed node does not resolve it because those writes still lose LWW; repair the source
+peer's clock, rewrite from that origin, or wait. A key the
 ratchet issues ahead of the clock is persisted as a ceiling before it is used and seeds issuance at
 open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
 reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
@@ -1197,8 +1201,8 @@ feature that has not yet been measured.
 >      its write is still in flight when the successor writes, so no admission saw it.
 >    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
 >      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
->      before `lock()`, keeps its clock; so does one admitted on state stamped beyond
->      `storage.maxLockClockSkew`; and a hold saved later in a different explicit transaction is
+>      before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects admission; and
+>      a hold saved later in a different explicit transaction is
 >      stamped by that transaction's clock. Either way the holder writes at that clock on a
 >      perfectly clean handoff, and if the admitted state is stamped above it, the holder's write is
 >      the older one, silently. What the committed record then holds is whatever ordinary resolution

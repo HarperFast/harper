@@ -194,6 +194,19 @@ describe('Test configValidator module', () => {
 			expect(configValidator(bad_blobs_key_obj).error).to.not.eql(undefined);
 		});
 
+		it('storage.maxLockClockSkew accepts finite duration strings and rejects malformed values', () => {
+			for (const value of [5, '5', '500ms', '5s', '5m', '2h', '1d']) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.strictEqual(configValidator(config).error, undefined, `${value} is accepted`);
+			}
+			for (const value of ['5 ms', '-1s', '1e400', 'Infinity', '1M', '1y', `${'9'.repeat(400)}s`]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.ok(configValidator(config).error, `${value} is rejected`);
+			}
+		});
+
 		it('Test logging in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';

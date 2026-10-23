@@ -598,7 +598,14 @@ export function configValidator(configJson, skipFsValidation = false) {
 			]),
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
-			maxLockClockSkew: Joi.alternatives([number.min(0), string]).optional(),
+			maxLockClockSkew: Joi.alternatives([
+				number.min(0),
+				string
+					.pattern(/^\d+(?:\.\d+)?(?:ms|[smhd])?$/)
+					.custom((value, helpers) =>
+						Number.isFinite(Number.parseFloat(value)) ? value : helpers.error('any.invalid')
+					),
+			]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),

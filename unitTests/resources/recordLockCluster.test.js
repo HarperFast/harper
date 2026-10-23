@@ -20,6 +20,7 @@ const { LOCAL_ONLY, isLockControlType, readLocalIssuanceCeiling } = require('#sr
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { ClientError } = require('#src/utility/errors/hdbError');
+const { lockAttemptKey } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -50,6 +51,16 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		throw new Error('no id in the first 10000 homes on this node');
 	};
 	const NODE_NAME = 'lock-test-node';
+	const applyFromPeer = async (recordId, timestamp) => {
+		const context = { source: {}, timestamp };
+		await transaction(context, async () => {
+			const resource = await ClusterLockTest.getResource(recordId, context);
+			return resource._writeUpdate(recordId, { id: recordId, n: 10 }, true, {
+				isNotification: true,
+				nodeId: 'peer-ahead',
+			});
+		});
+	};
 
 	before(function () {
 		setupTestDBPath();
@@ -1327,7 +1338,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			useSoloTransport();
 			const recordId = id();
 			const predecessorTimestamp = Date.now() + 1_000;
-			await transaction({ timestamp: predecessorTimestamp }, () => ClusterLockTest.put({ id: recordId, n: 10 }));
+			await applyFromPeer(recordId, predecessorTimestamp);
 			await transaction(async () => {
 				const record = await ClusterLockTest.lock(recordId);
 				assert.strictEqual(record.n, 10);
@@ -1337,6 +1348,44 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const after = ClusterLockTest.primaryStore.getEntry(recordId);
 			assert.strictEqual(after.value.n, 11);
 			assert.ok(after.version > predecessorTimestamp);
+		});
+
+		it('rejects an over-cap dependency floor and releases the cluster admission', async function () {
+			if (isLMDB) return this.skip();
+			const homes = [NODE_NAME, 'peer-ahead'];
+			useSoloTransport({ homes });
+			const recordId = idHomedHere(homes);
+			await ClusterLockTest.put({ id: recordId, n: 10 });
+			const coordinator = ClusterLockTest.lockCoordinator;
+			const granted = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-ahead',
+				generation: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(granted.granted, true);
+			const releasePosition = Date.now() + 60_000;
+			coordinator.applyEntry(
+				{ type: 'lockRelease', key: recordId, requester: 'peer-ahead', token: granted.token, dependencies: [] },
+				'peer-ahead',
+				releasePosition
+			);
+			const admissionsBefore = coordinator.stats.admitted;
+			await assert.rejects(
+				ClusterLockTest.lock(recordId, { lease: 5000 }),
+				(error) => error.name === 'LockUnavailableError' && error.statusCode === 503
+			);
+			await waitFor(() => coordinator.stats.admitted === admissionsBefore, {
+				timeout: 1000,
+				message: 'cluster admission released',
+			});
+			const key = lockAttemptKey(ClusterLockTest.tableId, recordId);
+			assert.strictEqual(
+				ClusterLockTest.primaryStore.tryLock(key, () => {}),
+				true,
+				'failed admission returned native key'
+			);
+			ClusterLockTest.primaryStore.unlock(key);
 		});
 
 		it('stamps a holder write above a predecessor release position ahead of its clock', async function () {
@@ -1353,14 +1402,14 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				leaseMs: 5000,
 			});
 			assert.strictEqual(granted.granted, true);
-			const releasePosition = Date.now() + 120_000;
+			const releasePosition = ClusterLockTest.primaryStore.getMonotonicTimestamp() + 2_000;
 			coordinator.applyEntry(
 				{ type: 'lockRelease', key: recordId, requester: 'peer-ahead', token: granted.token, dependencies: [] },
 				'peer-ahead',
 				releasePosition
 			);
 			const context = {};
-			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 }, context);
+			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 500 }, context);
 			const handle = [...context.transaction.recordLocks.values()][0].values().next().value;
 			assert.ok(handle.expiresAt < releasePosition, 'the floor does not stretch the lease');
 			record.n = 12;

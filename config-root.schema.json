@@ -718,7 +718,7 @@
 				},
 				"maxLockClockSkew": {
 					"type": ["string", "number"],
-					"description": "How far ahead of this node's clock (e.g. '5s'; a number is seconds) a record lock may find the state it is admitted on and still lift this node's transaction-log clock above it, so the holder's log key is unique. Further ahead, a clock-skew warning is logged, the holder's writes outrank that state only outside an explicit transaction, and their log key may repeat another's. 0 never lifts the clock. Read once per thread; restart to change it. Default: '5s'"
+					"description": "Maximum clock lead in which a record lock may admit stored state and advance the local transaction-log clock above it. Above the limit, lock() fails with LockUnavailableError until wall time catches up; repair the source peer clock or wait. A string accepts ms, s, m, h, or d (e.g. '500ms' or '5s'); a number is seconds. Read once per thread; restart to change it. Default: '5s'."
 				},
 				"longTransactionReportThreshold": {
 					"type": ["string", "number"],

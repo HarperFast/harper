@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, LockUnavailableError } from '../utility/errors/hdbError.ts';
 import {
 	claimLocalKey,
 	freshLocalKey,
@@ -35,27 +35,6 @@ export const MAX_LOCK_LEASE_MS = 300_000;
 export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 export const MAX_LOCK_TIMEOUT_MS = 300_000;
 const LOCK_KEY_PREFIX = Symbol.for('record-lock');
-
-// An ImmediateTransaction can rotate after a refused write, and callers may retain the old resource
-// instance. Keep the refusal attached to the native key until its handle releases that key.
-const refusedWriteKeys = new WeakMap<object, Set<unknown>>();
-
-export function markRecordLockWriteRefused(store: object, keyId: unknown): void {
-	let keys = refusedWriteKeys.get(store);
-	if (!keys) refusedWriteKeys.set(store, (keys = new Set()));
-	keys.add(keyId);
-}
-
-export function isRecordLockWriteRefused(store: object, keyId: unknown): boolean {
-	return refusedWriteKeys.get(store)?.has(keyId) ?? false;
-}
-
-export function clearRecordLockWriteRefused(store: object, keyId: unknown): void {
-	const keys = refusedWriteKeys.get(store);
-	if (!keys) return;
-	keys.delete(keyId);
-	if (keys.size === 0) refusedWriteKeys.delete(store);
-}
 
 export interface RecordLockOptions {
 	/** Lease in ms; the lock expires on its own if the holder never releases it (default 30 s, max 5 min) */
@@ -97,6 +76,7 @@ export interface RecordLockHandle {
 	hold: boolean;
 	released: boolean;
 	expired: boolean;
+	writeRefused: boolean;
 	/** Monotonic timestamp at which tryLock succeeded; used as the base version for holder writes. */
 	acquiredAt: number;
 	/** Advance, but never lower, the version floor from the transaction that owns the actual write timestamp. */
@@ -217,14 +197,12 @@ function stampAbove(bound: unknown): number | undefined {
 
 const DEFAULT_MAX_LOCK_CLOCK_SKEW_MS = 5000;
 let maxLockClockSkew: number | undefined;
-const CLOCK_SKEW_WARN_INTERVAL_MS = 60_000;
-let lastClockSkewWarn = -Infinity;
 
 function maxLockClockSkewMs(): number {
 	if (maxLockClockSkew !== undefined) return maxLockClockSkew;
 	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
 	if (configured == null) return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
-	const skew = typeof configured === 'string' || typeof configured === 'number' ? convertToMS(configured) : NaN;
+	const skew = parseMaxLockClockSkewMs(configured);
 	if (Number.isFinite(skew) && skew >= 0) return (maxLockClockSkew = skew);
 	harperLogger.warn?.(
 		`storage.maxLockClockSkew must be a finite, non-negative duration, but is ${configured}; using ${DEFAULT_MAX_LOCK_CLOCK_SKEW_MS}ms`
@@ -232,31 +210,28 @@ function maxLockClockSkewMs(): number {
 	return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
 }
 
+export function parseMaxLockClockSkewMs(configured: unknown): number {
+	if (typeof configured === 'number') return convertToMS(configured);
+	if (typeof configured !== 'string' || !/^\d+(?:\.\d+)?(?:ms|[smhd])?$/.test(configured)) return NaN;
+	if (configured.endsWith('ms')) return Number(configured.slice(0, -2));
+	return convertToMS(configured);
+}
+
 /**
  * The stamp a new holder's writes start from, given its admission floor. A floor above `acquiredAt` is
  * the same for every holder admitted on state one transaction left, and as an explicit stamp it would
- * become each one's log key, so it is replaced by a key no other local append is issued; one ahead of
- * the clock, within the configured skew, lifts every later local key on this node above it. Past the
- * skew the floor stays explicit and `movesClock` is false, so one far-future timestamp pins neither
- * this node's clock nor the holder's transaction.
+ * become each one's log key, so it is replaced by a key no other local append is issued. A floor ahead
+ * of the clock within the configured skew lifts every later local key on this node above it; a floor
+ * beyond that limit is rejected before it can reserve a local key.
  */
-export function admissionStamp(
-	rootStore: any,
-	floor: number,
-	acquiredAt: number
-): { floor: number; stamp: number; movesClock: boolean } {
-	if (floor <= acquiredAt) return { floor, stamp: acquiredAt, movesClock: true };
+export function admissionStamp(rootStore: any, floor: number, acquiredAt: number): { floor: number; stamp: number } {
+	if (floor <= acquiredAt) return { floor, stamp: acquiredAt };
 	const maxSkew = maxLockClockSkewMs();
 	const skew = floor - rootStore.getMonotonicTimestamp();
-	if (skew <= maxSkew) return { floor, stamp: claimLocalKey(rootStore, floor), movesClock: true };
-	const now = performance.now();
-	if (now - lastClockSkewWarn >= CLOCK_SKEW_WARN_INTERVAL_MS) {
-		lastClockSkewWarn = now;
-		harperLogger.warn?.(
-			`A record lock was admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms); check clock synchronization. Its writes outrank that state only outside an explicit transaction, and their transaction log key may repeat another's.`
-		);
-	}
-	return { floor, stamp: floor, movesClock: false };
+	if (skew <= maxSkew) return { floor, stamp: claimLocalKey(rootStore, floor) };
+	throw new LockUnavailableError(
+		`A record lock cannot be admitted on state ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; fix the source peer clock or wait.`
+	);
 }
 
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
@@ -287,6 +262,7 @@ class KeyLockHandle implements RecordLockHandle {
 	hold: boolean;
 	released = false;
 	expired = false;
+	writeRefused = false;
 	acquiredAt: number;
 	clusterTsR: number | undefined;
 	#lastHolderVersion: number | undefined;
@@ -516,7 +492,6 @@ class KeyLockHandle implements RecordLockHandle {
 	release(): boolean {
 		if (this.released) return false;
 		this.released = true;
-		clearRecordLockWriteRefused(this.store, this.keyId);
 		clearTimeout(this.#timer);
 		if (this.#commitHolds > 0) {
 			return this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');
