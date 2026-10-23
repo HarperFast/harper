@@ -10762,8 +10762,12 @@ export function makeTable(options): TableResourceClass {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode() || !replicaExpirationMs)
 			return Promise.resolve(false);
 		const store = openReplicaDeadlines(true);
-		const databaseTransaction = txnForContext({ transaction: new DatabaseTransaction() });
-		const transaction = databaseTransaction.getReadTxn();
+		const databaseTransaction = primaryStore.ifVersion
+			? txnForContext({ transaction: new DatabaseTransaction() })
+			: undefined;
+		const transaction = databaseTransaction
+			? databaseTransaction.getReadTxn()
+			: new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
 		const options = { transaction };
 		let committed = false;
 		try {
@@ -10922,7 +10926,7 @@ export function makeTable(options): TableResourceClass {
 				replicaDeadlinesRepaired = await repairReplicaDeadlines(store);
 				complete &&= replicaDeadlinesRepaired;
 			}
-			for (const { key, value: deadline } of store.getRange({})) {
+			for (const { key, value: deadline } of store.getRange({ snapshot: false })) {
 				if (disposed || maintenanceClosed || !replicaEvictionArmed) {
 					complete = false;
 					return;
@@ -10958,7 +10962,12 @@ export function makeTable(options): TableResourceClass {
 	 */
 	async function repairReplicaDeadlines(store: any): Promise<boolean> {
 		let repaired = 0;
-		for (const entry of primaryStore.getRange({ start: true, versions: true, lazy: true }) as Iterable<Entry>) {
+		for (const entry of primaryStore.getRange({
+			start: true,
+			versions: true,
+			lazy: true,
+			snapshot: false,
+		}) as Iterable<Entry>) {
 			if (disposed || maintenanceClosed || !replicaEvictionArmed) return false;
 			if (entry.metadataFlags & REPLICA && store.getSync(entry.key) === undefined) {
 				await store.put(entry.key, replicaDeadlineFor(entry.expiresAt));
@@ -10981,7 +10990,7 @@ export function makeTable(options): TableResourceClass {
 			});
 			return Promise.resolve();
 		}
-		const transaction = txnForContext({ transaction: new DatabaseTransaction() }).getReadTxn();
+		const transaction = new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
 		try {
 			store.removeSync(key, { transaction });
 			if (!(primaryStore.getEntry(key)?.metadataFlags & REPLICA))
