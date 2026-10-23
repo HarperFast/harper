@@ -5873,7 +5873,7 @@ export function makeTable(options): TableResourceClass {
 							let nodeId = initialAuditHead.nodeId ?? 0;
 							const headNodeId = nodeId;
 							const headLogKey = localTime;
-							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
+							let succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
@@ -5892,6 +5892,8 @@ export function makeTable(options): TableResourceClass {
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
+							const visitedAuditVersions = fullUpdate && isRocksDB ? new Set<string>() : null;
+							let isAdditionalAuditRef = false;
 							let previousHeadOf: any;
 							let previousHead: { txnLogKey: number; nodeId: number; entry?: any };
 							const resolvePreviousHead = (auditRecord) => {
@@ -5977,9 +5979,12 @@ export function makeTable(options): TableResourceClass {
 											: auditStore.get(localTime, tableId, id, nodeId);
 									resolvedEntry = undefined;
 									if (!auditRecord) {
-										auditHistoryMissing = true;
+										if (!isAdditionalAuditRef || !visitedAuditVersions?.has(auditIdentity)) auditHistoryMissing = true;
 										break;
 									}
+									isAdditionalAuditRef = false;
+									if (!auditRecord.type || auditRecord.version == null) auditHistoryMissing = true;
+									visitedAuditVersions?.add(`${auditRecord.nodeId ?? 0}:${auditRecord.version}`);
 									queuePreviousAuditRefs(auditRecord);
 									if (
 										isRocksDB &&
@@ -6034,12 +6039,17 @@ export function makeTable(options): TableResourceClass {
 										}
 										if (auditRecord.type === 'patch') {
 											logger.debug?.('out of order patch will be applied', id, auditRecord);
-											// Materialize the patch value now and keep only { version, value } rather than the
-											// audit record itself, so its backing transaction-log buffer and decoders can be
-											// reclaimed immediately. Only these two fields are needed for the ordered fold below;
-											// retaining the full records is what pins the heap on a deep chain (issue #1114).
+											// Retaining audit records pins log buffers and decoders on deep chains (#1114).
+											// Keep only ordering metadata and the materialized patch value.
 											const newerPatch = auditRecord.getValue(primaryStore);
-											succeedingUpdates.push({ version: auditedVersion, value: newerPatch });
+											if (newerPatch == null) auditHistoryMissing = true;
+											succeedingUpdates.push({
+												version: auditedVersion,
+												nodeId: auditRecord.nodeId ?? 0,
+												logKey: auditRecord.txnLogKey ?? localTime,
+												endTxn: auditRecord.endTxn,
+												value: newerPatch,
+											});
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
 											// rebuildUpdateBefore only ever DROPS plain fields the newer patch overwrites and
 											// KEEPS commutative ops — so whether the residual
@@ -6050,11 +6060,7 @@ export function makeTable(options): TableResourceClass {
 											// throw in rebuildUpdateBefore's `in` check; it supersedes nothing, so skip it (the
 											// pre-existing fold below already tolerates this case by returning earlier).
 											if (isRocksDB && !fullUpdate && !fullySuperseded && newerPatch) {
-												earlyOutResidual = rebuildUpdateBefore(
-													earlyOutResidual ?? recordUpdate,
-													newerPatch,
-													fullUpdate
-												);
+												earlyOutResidual = rebuildUpdateBefore(earlyOutResidual ?? recordUpdate, newerPatch);
 												if (!earlyOutResidual) fullySuperseded = true;
 											}
 										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
@@ -6101,6 +6107,7 @@ export function makeTable(options): TableResourceClass {
 								if (auditWalkCapped) break;
 								nextRef = auditRefsToVisit.shift();
 								if (nextRef) {
+									isAdditionalAuditRef = true;
 									// A ref is a log key, not a version: the branch's version is unknown until its head is read,
 									// and a minted key sits below an explicit version it stores.
 									localTime = nextRef.localTime;
@@ -6118,6 +6125,69 @@ export function makeTable(options): TableResourceClass {
 									'existing version preserved',
 									existingEntry
 								);
+							}
+							if (fullUpdate && !auditWalkCapped && !auditHistoryMissing) {
+								let frameUpdates;
+								const collectedKeys = isRocksDB ? null : new Set<number>();
+								for (let index = 0; index < succeedingUpdates.length; index++) {
+									const update = succeedingUpdates[index];
+									if (isRocksDB && update.endTxn !== false) {
+										frameUpdates?.push(update);
+										continue;
+									}
+									if (collectedKeys?.has(update.logKey)) continue;
+									frameUpdates ??= succeedingUpdates.slice(0, index);
+									let complete = !isRocksDB;
+									let foundRecord = false;
+									let frameSteps = 0;
+									// LMDB sibling writes can share a version without linking to each other.
+									const frameRange = isRocksDB
+										? { start: update.logKey, exactStart: true, log: update.nodeId }
+										: { start: update.logKey, reverse: true };
+									for (const entry of auditStore.getRange(frameRange)) {
+										if (isRocksDB && entry.txnLogKey !== update.logKey) break;
+										if (!entry.type || entry.version == null) auditHistoryMissing = true;
+										if (!isRocksDB && entry.version !== update.version) break;
+										if ((isRocksDB ? ++walkSteps : ++frameSteps) > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+											if (isRocksDB) auditWalkCapped = true;
+											else auditHistoryMissing = true;
+											break;
+										}
+										if (entry.tableId === tableId && entry.recordId === id) {
+											foundRecord = true;
+											if (collectedKeys?.has(entry.txnLogKey)) continue;
+											collectedKeys?.add(entry.txnLogKey);
+											const precedes = precedesExistingVersion(txnTime, entry, options?.nodeId);
+											if (
+												precedes < 0 ||
+												(precedes === 0 && receivedLogKey === appendedLogKey && entry.txnLogKey > appendedLogKey)
+											) {
+												if (entry.type === 'put' || entry.type === 'delete') {
+													write.skipped = true;
+													return;
+												}
+												if (entry.type === 'patch') {
+													const value = entry.getValue(primaryStore);
+													if (value == null) auditHistoryMissing = true;
+													frameUpdates.push({
+														version: entry.version,
+														nodeId: entry.nodeId ?? 0,
+														logKey: entry.txnLogKey,
+														endTxn: entry.endTxn,
+														value,
+													});
+												}
+											}
+										}
+										if (isRocksDB && foundRecord && entry.endTxn) {
+											complete = true;
+											break;
+										}
+									}
+									if (!complete || !foundRecord) auditHistoryMissing = true;
+									if (auditWalkCapped || auditHistoryMissing) break;
+								}
+								if (frameUpdates && !auditWalkCapped && !auditHistoryMissing) succeedingUpdates = frameUpdates;
 							}
 							if (auditWalkCapped) {
 								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
@@ -6152,7 +6222,12 @@ export function makeTable(options): TableResourceClass {
 							// what we collected before the cap.
 							// Replacing with incomplete history would erase newer writes we could not collect.
 							if (auditWalkCapped || auditHistoryMissing) applyAsReplacement = false;
-							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
+							succeedingUpdates.sort((a, b) => {
+								const versionOrder = a.version - b.version;
+								if (versionOrder || !applyAsReplacement) return versionOrder;
+								if (a.nodeId === b.nodeId) return a.logKey - b.logKey;
+								return precedesExistingVersion(a.version, b, a.nodeId);
+							});
 							for (const { version: patchVersion, value: newerUpdate } of succeedingUpdates) {
 								logger.debug?.('Rebuilding update with future patch:', new Date(patchVersion), newerUpdate);
 								incrementalUpdateToApply = applyAsReplacement
