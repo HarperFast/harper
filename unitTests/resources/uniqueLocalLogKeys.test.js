@@ -131,7 +131,7 @@ describe('Every local-origin transaction has a unique log key', () => {
 		await Tbl.patch(other, { name: 'other-newer' }, { timestamp: base + 100 });
 		await Tbl.put(between, { name: 'between' });
 		await Tbl.put(id, { name: 'original', count: 0 });
-		// apply order: update4, update2, update1, update3 — with update4 at the other record's timestamp
+		// update4 shares its timestamp with the other record's head
 		await Tbl.patch(id, { name: 'update4', prop4: true }, { timestamp: base + 100 });
 		await Tbl.patch(id, { prop2: true }, { timestamp: base + 40 });
 		await Tbl.patch(id, { prop1: true, count: { __op__: 'add', value: 1 } }, { timestamp: base + 20 });

@@ -5292,6 +5292,8 @@ export function makeTable(options): TableResourceClass {
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
+							// a branch head read only to learn its version: older than this write, it folds nothing
+							let probingBranch = false;
 							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
 							// throwaway copy of this write purely to detect when every field has been overwritten by
 							// newer writes. When it empties — and there is no alternate audit branch — the write is
@@ -5353,6 +5355,10 @@ export function makeTable(options): TableResourceClass {
 										return;
 									}
 									auditedVersion = auditRecord.version;
+									if (probingBranch) {
+										probingBranch = false;
+										if (auditedVersion < txnTime) walkSteps--;
+									}
 									if (auditedVersion >= txnTime) {
 										if (auditedVersion === txnTime) {
 											precedesExisting = precedesExistingVersion(
@@ -5460,6 +5466,7 @@ export function makeTable(options): TableResourceClass {
 									// and a minted key sits below an explicit version it stores.
 									localTime = nextRef.localTime;
 									auditedVersion = Infinity;
+									probingBranch = true;
 									nodeId = nextRef.nodeId;
 									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
 								}

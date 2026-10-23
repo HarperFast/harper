@@ -91,7 +91,6 @@ describe('source transactions keyed by stream', function () {
 		await waitFor(async () => (await recordIds(Table, ['a1', 'a2', 'b1', 'b2'])).length === 4);
 		if (!isRocksDB) return;
 		const entries = logEntries(Table);
-		// the event timestamp is the record version; each stream's transaction commits under one minted key
 		assert.equal(entries.a1.key, entries.a2.key, 'stream A is one transaction');
 		assert.equal(entries.b1.key, entries.b2.key, 'stream B is one transaction');
 		assert.notEqual(entries.a1.key, entries.b1.key);
