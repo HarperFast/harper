@@ -4912,9 +4912,9 @@ export function makeTable(options): TableResourceClass {
 					// this the index diff re-removes the values that write already removed and never removes
 					// the ones it added — orphaning them — and an incremental update merges onto the
 					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
-					// record comes from the earlier write; the rest of the entry (version, audit chain, blob
-					// metadata) stays the pre-transaction one, which is the version this write's audit entry
-					// and optimistic version check are still relative to.
+					// record comes from the earlier write. The rest of the entry is the pre-transaction one on
+					// LMDB; RocksDB reloads it through this transaction, so it also carries the earlier write's
+					// audit refs (see the re-delivery check below).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
@@ -5015,8 +5015,12 @@ export function makeTable(options): TableResourceClass {
 							// only as previousAdditionalAuditRefs on the audit log), so that case falls back to the
 							// best-effort keyed lookup in the capped block below — see #1148. precedesExistingVersion(...)
 							// === 0 is the identity tie: same version AND same node (the local node is id 0, so an undefined
-							// options?.nodeId resolves to the same 0 the ref stored).
+							// options?.nodeId resolves to the same 0 the ref stored). Not after an earlier write of this
+							// transaction to this key: every write in it shares one log key, so the ref that write left is
+							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
+							// and stages nothing.
 							if (
+								!priorStaged &&
 								existingEntry.additionalAuditRefs?.some(
 									(ref, index) =>
 										(ref.version === appendedLogKey ||
@@ -5309,8 +5313,10 @@ export function makeTable(options): TableResourceClass {
 										// Add a reference to this older audit record if we had out-of-order writes. The stored
 										// value is a LOG key, not a record version: every consumer follows it straight into
 										// `auditStore.get` (see the `auditRefsToVisit` mapping above and below), and on an
-										// applied write those two clocks differ.
-										additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+										// applied write those two clocks differ. An earlier write of this transaction to this key
+										// may already have carried it over.
+										if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
+											additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 										logger.debug?.('Adding additional audit ref for out-of-order write', {
 											txnLogKey: appendedLogKey,
 											nodeId: options?.nodeId,
@@ -5432,7 +5438,8 @@ export function makeTable(options): TableResourceClass {
 							// re-delivery of these ops on. Best-effort, like every other guard here: the encoder bounds
 							// the persisted list, so an identity can age out of it (harper#1148's full-copy convergence
 							// is the backstop).
-							additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
+								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -5556,9 +5563,7 @@ export function makeTable(options): TableResourceClass {
 
 					// Preserve an addressable audit head when the record and log clocks diverge.
 					if (isRocksDB && audit && !isCopyApply && appendedLogKey !== txnTime) {
-						const headIndex = additionalAuditRefs.findIndex(
-							(ref) => ref.version === appendedLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0)
-						);
+						const headIndex = auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId);
 						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
@@ -10499,6 +10504,13 @@ function isDescendantId(ancestorId, descendantId): boolean {
 
 // wait for an event turn (via a promise)
 const rest = () => new Promise(setImmediate);
+
+function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, version: number, nodeId?: number): number {
+	for (let index = 0; index < refs.length; index++) {
+		if (refs[index].version === version && (refs[index].nodeId ?? 0) === (nodeId ?? 0)) return index;
+	}
+	return -1;
+}
 
 // for filtering
 function exists(value) {
