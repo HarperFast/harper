@@ -330,7 +330,7 @@ function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, un
 	if (!cjsExports || cjsExports !== namespace.default) return {};
 	if (typeof cjsExports !== 'object' && typeof cjsExports !== 'function') return {};
 	if (Array.isArray(cjsExports) || ArrayBuffer.isView(cjsExports)) return {};
-	const names: Record<string, unknown> = {};
+	const names: Record<string, unknown> = Object.create(null);
 	for (const name of Object.keys(cjsExports)) {
 		if (name in namespace) continue;
 		try {

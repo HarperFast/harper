@@ -500,6 +500,19 @@ describe('compartment importHook', () => {
 			assert.strictEqual(result.ok, 1);
 		});
 
+		it('keeps an own __proto__ export as a name', async () => {
+			writePackage(
+				'protopkg',
+				{
+					'index.cjs':
+						"for (const name of ['__proto__']) Object.defineProperty(exports, name, { enumerable: true, value: 7 });\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys("import * as ns from 'protopkg';\nexport const keys = Object.keys(ns);\n");
+			assert.ok(result.keys.includes('__proto__'), `keys: ${result.keys}`);
+		});
+
 		it('adds no names for an array, string or buffer module.exports', async () => {
 			const exportsByPackage = {
 				arraypkg: "module.exports = ['a', 'b'];",
