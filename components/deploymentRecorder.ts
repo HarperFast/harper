@@ -695,7 +695,6 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 const ROLLOUT_RECORD_STATUSES = new Set(['rolling_out', 'success', 'partial', 'failed', 'rolled_back', 'staged']);
 const ENDED_ROW_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
 
-/** The nodes a rolling deploy's row lists with no confirmed activation. */
 function unconfirmedPeers(row: Record<string, any>): string[] {
 	return (row.peer_results ?? [])
 		.filter((peer: any) => peer?.activation?.activated !== true)

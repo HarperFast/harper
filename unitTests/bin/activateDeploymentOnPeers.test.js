@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
+const { randomUUID } = require('node:crypto');
 const { activateDeploymentOnPeers } = require('#src/bin/restart');
 const { getThisNodeName } = require('#src/server/nodeName');
 const { server: coreServer } = require('#src/server/Server');
@@ -179,8 +180,13 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	let rows;
 	let puts;
 	let answers;
+	// A fresh row each test: the recorder remembers per row that it has seen the origin's write.
+	let ROW;
+	let activation;
 
 	beforeEach(() => {
+		ROW = randomUUID();
+		activation = { project: 'web', deployment_id: DEPLOYMENT, deployment_row: ROW };
 		previousServer = global.server;
 		answers = {};
 		global.server = {
@@ -220,7 +226,6 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 		event_log: [],
 		peer_results: ['peer-a', 'peer-b', 'peer-c'].map((node) => ({ node, status: 'success', error: null })),
 	});
-	const activation = { project: 'web', deployment_id: DEPLOYMENT, deployment_row: ROW };
 
 	it('ends the record partial when the job fails before it can visit the peers, so no follower waits it out', async () => {
 		rows.set(ROW, stagedRow());
