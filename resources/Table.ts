@@ -4415,9 +4415,9 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to update data from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowUpdate checks.
-		// eslint-disable-next-line no-unused-vars
-		allowUpdate(user: User, updatedData: Record, context: Context): boolean {
+		allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
 			this.#updatableAttributes = undefined;
 			const tablePermission = getTablePermissions(user);
 			if (tablePermission?.update) {
@@ -4446,8 +4446,9 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowCreate checks.
-		allowCreate(user: User, newData: Record, context: Context): boolean {
+		allowCreate(user: User, newData: Record, context: Context): boolean;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
 			if (this.isCollection) {
 				const tablePermission = getTablePermissions(user);
 				if (tablePermission?.insert) {
@@ -4541,7 +4542,7 @@ export function makeTable(options): TableResourceClass {
 				} else {
 					// standard path, where we retrieve the references record and return an instance, initialized with any
 					// updates that were passed into this method
-					let allowed = true;
+					let allowed: boolean | Promise<boolean> = true;
 					if (target == undefined) throw new TypeError('Can not put a record without a target');
 					if ((target as any)?.checkPermission) {
 						// requesting authorization verification
@@ -5714,7 +5715,7 @@ export function makeTable(options): TableResourceClass {
 				// `when` settles the embed hook before `save()` so the write is staged first.
 				return when((this as any).update(target, true), () => this.save() as any) as any;
 			} else {
-				let allowed = true;
+				let allowed: boolean | Promise<boolean> = true;
 				if (target == undefined) throw new TypeError('Can not put a record without a target');
 				const context = this.getContext();
 				if ((target as any).checkPermission) {
@@ -5780,7 +5781,7 @@ export function makeTable(options): TableResourceClass {
 			target: RequestTargetOrId,
 			record: Partial<Record & RecordObject>
 		): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>> {
-			let allowed = true;
+			let allowed: boolean | Promise<boolean> = true;
 			const context = this.getContext();
 			if (!record && !(target instanceof URLSearchParams)) {
 				// single argument, shift arguments
@@ -10095,7 +10096,7 @@ export function makeTable(options): TableResourceClass {
 				// legacy arg format, shift the args
 				this._writePublish(this.getId(), target, message);
 			} else {
-				let allowed = true;
+				let allowed: boolean | Promise<boolean> = true;
 				const context = this.getContext();
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
