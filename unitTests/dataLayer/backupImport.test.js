@@ -21,7 +21,6 @@ const { join } = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { gunzipSync } = require('node:zlib');
-const sinon = require('sinon');
 const { pack: tarPack } = require('tar-stream');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
@@ -77,6 +76,26 @@ function placeInImport(databaseName, archivePath, name) {
 	mkdirSync(dir, { recursive: true });
 	copyFileSync(archivePath, join(dir, name));
 	return join(dir, name);
+}
+
+// The code under test reads these through their module objects (or a class prototype) at call time, so
+// assigning one reaches it. Returns the function that puts the original back.
+function replaceProperty(owner, name, replacement) {
+	const original = owner[name];
+	owner[name] = replacement;
+	return () => {
+		owner[name] = original;
+	};
+}
+
+function recordingCalls(implementation) {
+	const calls = [];
+	const recorder = (...args) => {
+		calls.push(args);
+		return implementation(...args);
+	};
+	recorder.calls = calls;
+	return recorder;
 }
 
 // The repository as list_backups and the engine see it: an import that failed must leave neither.
@@ -377,14 +396,13 @@ describeUnlessLmdb('import_backup', function () {
 	describe('a multipart upload', function () {
 		const jobs = require('#src/server/jobs/jobs');
 		const jobRunner = require('#src/server/jobs/jobRunner');
-		let sandbox;
+		let restoreParseMessage;
 		let queued;
 
 		beforeEach(function () {
-			sandbox = sinon.createSandbox();
 			queued = [];
 			// the job thread, run in this thread: what the job sees when it starts, then the job itself
-			sandbox.stub(jobRunner, 'parseMessage').callsFake(async (message) => {
+			restoreParseMessage = replaceProperty(jobRunner, 'parseMessage', async (message) => {
 				const stagingDir = message.json.staging_id && importStagingDir(IMPORTED, message.json.staging_id);
 				const read = (name) => stagingDir && existsSync(join(stagingDir, name)) && readFileSync(join(stagingDir, name));
 				const seen = {
@@ -398,7 +416,7 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		afterEach(function () {
-			sandbox.restore();
+			restoreParseMessage();
 			rmSync(backupDirForDatabase(IMPORTED), { recursive: true, force: true });
 		});
 
@@ -460,8 +478,14 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		it('removes the spool when the job cannot be queued', async function () {
-			sandbox.stub(jobs, 'addJob').rejects(new Error('job table unavailable'));
-			await assert.rejects(upload({}), /job table unavailable/);
+			const restoreAddJob = replaceProperty(jobs, 'addJob', async () => {
+				throw new Error('job table unavailable');
+			});
+			try {
+				await assert.rejects(upload({}), /job table unavailable/);
+			} finally {
+				restoreAddJob();
+			}
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
 		});
 
@@ -532,18 +556,24 @@ describeUnlessLmdb('import_backup', function () {
 			const { DiskLedger } = require('#src/dataLayer/diskLedger');
 			const { importArchive } = require('#src/dataLayer/importChildCommands');
 			const SHA = 'a'.repeat(64);
-			let sandbox;
+			let restores;
 			let root;
 
 			beforeEach(function () {
-				sandbox = sinon.createSandbox();
+				restores = [];
 				root = mkdtempSync(join(tmpdir(), 'harper.unit-test.import-pull-'));
 			});
 
 			afterEach(function () {
-				sandbox.restore();
+				for (const restore of restores.reverse()) restore();
 				rmSync(root, { recursive: true, force: true });
 			});
+
+			// no network and no full disk in a unit test: the fetch, the S3 read and the device's room stand in
+			const replace = (owner, name, replacement) => {
+				restores.push(replaceProperty(owner, name, replacement));
+				return replacement;
+			};
 
 			const pull = () =>
 				importArchive({
@@ -559,11 +589,17 @@ describeUnlessLmdb('import_backup', function () {
 				[-4096, 0],
 			]) {
 				it(`passes maxBytes ${maxBytes} when the staging device has ${room} bytes of room`, async function () {
-					sandbox.stub(DiskLedger.prototype, 'remaining').resolves({ bytes: room, inodes: 1000, basis: 'quota' });
-					const fetch = sandbox.stub(safeFetch, 'safeFetchToFile').rejects(new Error('no network in a unit test'));
+					replace(DiskLedger.prototype, 'remaining', async () => ({ bytes: room, inodes: 1000, basis: 'quota' }));
+					const fetch = replace(
+						safeFetch,
+						'safeFetchToFile',
+						recordingCalls(async () => {
+							throw new Error('no network in a unit test');
+						})
+					);
 					await assert.rejects(pull(), /no network/);
-					assert.strictEqual(fetch.callCount, 1);
-					const [url, destination, options] = fetch.firstCall.args;
+					assert.strictEqual(fetch.calls.length, 1);
+					const [url, destination, options] = fetch.calls[0];
 					assert.strictEqual(url, 'https://backups.example.com/db.tar.gz');
 					assert.strictEqual(destination, join(root, 'staging', 'archive'));
 					assert.strictEqual(options.maxBytes, maxBytes);
@@ -573,10 +609,14 @@ describeUnlessLmdb('import_backup', function () {
 
 			it('meters an S3 pull into the ledger as it lands', async function () {
 				const aws = require('#js/utility/AWS/AWSConnector');
-				sandbox
-					.stub(aws, 'getFileStreamFromS3')
-					.resolves(Readable.from([Buffer.from('not '), Buffer.from('an archive')]));
-				const debit = sandbox.stub(DiskLedger.prototype, 'debit').resolves();
+				replace(aws, 'getFileStreamFromS3', async () =>
+					Readable.from([Buffer.from('not '), Buffer.from('an archive')])
+				);
+				const debit = replace(
+					DiskLedger.prototype,
+					'debit',
+					recordingCalls(async () => {})
+				);
 				await assert.rejects(
 					importArchive({
 						databaseName: IMPORTED,
@@ -592,18 +632,22 @@ describeUnlessLmdb('import_backup', function () {
 					})
 				);
 				assert.strictEqual(readFileSync(join(root, 'staging', 'archive'), 'utf8'), 'not an archive');
-				assert.deepStrictEqual(debit.firstCall?.args.slice(0, 2), [join(root, 'staging', 'archive'), 14]);
+				assert.deepStrictEqual(debit.calls[0]?.slice(0, 2), [join(root, 'staging', 'archive'), 14]);
 			});
 
 			it('charges the fetched bytes to the staging device before reading them', async function () {
-				sandbox.stub(DiskLedger.prototype, 'remaining').resolves({ bytes: 1e9, inodes: 1000, basis: 'quota' });
-				const debit = sandbox.stub(DiskLedger.prototype, 'debit').resolves();
-				sandbox.stub(safeFetch, 'safeFetchToFile').callsFake(async (_url, destination) => {
+				replace(DiskLedger.prototype, 'remaining', async () => ({ bytes: 1e9, inodes: 1000, basis: 'quota' }));
+				const debit = replace(
+					DiskLedger.prototype,
+					'debit',
+					recordingCalls(async () => {})
+				);
+				replace(safeFetch, 'safeFetchToFile', async (_url, destination) => {
 					writeFileSync(destination, 'not an archive');
 					return { bytes: 14 };
 				});
 				await assert.rejects(pull());
-				assert.deepStrictEqual(debit.firstCall?.args, [join(root, 'staging'), 14]);
+				assert.deepStrictEqual(debit.calls[0], [join(root, 'staging'), 14]);
 			});
 		});
 
@@ -639,18 +683,24 @@ describeUnlessLmdb('import_backup', function () {
 			['SCOPED', { name: 'SCOPED', processEnv: false, grants: ['app'], envelope: 'envelope:SCOPED' }],
 		]);
 		const plaintexts = { S3_CREDS: PLAINTEXT, NOT_JSON: 'not-json-plaintext', SCOPED: PLAINTEXT };
-		let sandbox;
+		let restores;
 		let priorTable;
 
+		// no S3 and no job thread in a unit test: the child and the job runner stand in
+		const replace = (owner, name, replacement) => {
+			restores.push(replaceProperty(owner, name, replacement));
+			return replacement;
+		};
+
 		beforeEach(function () {
-			sandbox = sinon.createSandbox();
+			restores = [];
 			priorTable = databases.system.hdb_secret;
 			databases.system.hdb_secret = { get: async (name) => rows.get(name) };
 			registerSecretCustody({ decrypt: (envelope) => plaintexts[envelope.slice('envelope:'.length)] });
 		});
 
 		afterEach(function () {
-			sandbox.restore();
+			for (const restore of restores.reverse()) restore();
 			databases.system.hdb_secret = priorTable;
 			clearSecretCustody();
 			rmSync(backupDirForDatabase(IMPORTED), { recursive: true, force: true });
@@ -673,7 +723,7 @@ describeUnlessLmdb('import_backup', function () {
 
 		it('hands the resolved keys only to the child, leaving the job request with the secret name', async function () {
 			let childArgs;
-			sandbox.stub(restoreChildRunner, 'runRestoreChild').callsFake(async (_command, args) => {
+			replace(restoreChildRunner, 'runRestoreChild', async (_command, args) => {
 				childArgs = args;
 				mkdirSync(args.stagingDir, { recursive: true });
 				throw new Error('S3 is not reachable from a unit test');
@@ -692,7 +742,13 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		it('refuses a scoped secret or one that is not a key pair, without echoing its value', async function () {
-			const child = sandbox.stub(restoreChildRunner, 'runRestoreChild').rejects(new Error('must not run'));
+			const child = replace(
+				restoreChildRunner,
+				'runRestoreChild',
+				recordingCalls(async () => {
+					throw new Error('must not run');
+				})
+			);
 			await assert.rejects(
 				importBackupJob({ ...SU, database: IMPORTED, s3: s3('SCOPED') }),
 				(error) => error.statusCode === 403
@@ -702,7 +758,7 @@ describeUnlessLmdb('import_backup', function () {
 				(error) =>
 					error.statusCode === 400 && /NOT_JSON/.test(error.message) && !/not-json-plaintext/.test(error.message)
 			);
-			assert.strictEqual(child.callCount, 0);
+			assert.strictEqual(child.calls.length, 0);
 		});
 
 		// A job worker without custody asks the main thread; a reply that never comes must not leave the
@@ -712,11 +768,23 @@ describeUnlessLmdb('import_backup', function () {
 			const worker = new Worker(
 				`
 				const { workerData, parentPort } = require('node:worker_threads');
-				const sinon = require(workerData.sinon);
 				const { importBackupJob } = require(workerData.backupImport);
-				const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+				// a manual clock: the deadline reads the global setTimeout when it is armed
+				const pending = new Map();
+				let now = 0;
+				globalThis.setTimeout = (callback, ms = 0, ...args) => {
+					const handle = { ref: () => handle, unref: () => handle, hasRef: () => true };
+					pending.set(handle, { at: now + ms, callback, args });
+					return handle;
+				};
+				globalThis.clearTimeout = (handle) => pending.delete(handle);
 				parentPort.on('message', (message) => {
-					if (message?.type === 'advance') clock.tick(message.ms);
+					if (message?.type !== 'advance') return;
+					now += message.ms;
+					for (const [handle, timer] of [...pending].sort((a, b) => a[1].at - b[1].at)) {
+						if (timer.at > now || !pending.delete(handle)) continue;
+						timer.callback(...timer.args);
+					}
 				});
 				importBackupJob(workerData.request).then(
 					() => parentPort.postMessage({ type: 'outcome' }),
@@ -726,7 +794,6 @@ describeUnlessLmdb('import_backup', function () {
 				{
 					eval: true,
 					workerData: {
-						sinon: require.resolve('sinon'),
 						backupImport: require.resolve('#src/dataLayer/backupImport'),
 						request: { ...SU, database: IMPORTED, s3: s3('S3_CREDS') },
 					},
@@ -757,7 +824,7 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		it('persists only the secret name in the job row', async function () {
-			sandbox.stub(jobRunner, 'parseMessage').resolves(undefined);
+			replace(jobRunner, 'parseMessage', async () => undefined);
 			const { job_id } = await importBackup({
 				...SU,
 				operation: 'import_backup',
@@ -948,17 +1015,14 @@ describe('import_backup operation logging', function () {
 		const jobRunner = require('#src/server/jobs/jobRunner');
 		let restoreLogConfig;
 		let originalLogLevel;
-		let sandbox;
 
 		before(function () {
 			restoreLogConfig = pinLogConfig({ level: 'info' });
 			originalLogLevel = harperLogger.logLevel;
 			harperLogger.logLevel = 'info';
-			sandbox = sinon.createSandbox();
 		});
 
 		after(function () {
-			sandbox.restore();
 			harperLogger.logLevel = originalLogLevel;
 			restoreLogConfig?.();
 		});
@@ -970,14 +1034,23 @@ describe('import_backup operation logging', function () {
 				database: 'db',
 				url: 'https://example.com/a.tar.gz?X-Amz-Signature=sekrit-presigned',
 			};
-			sandbox.stub(jobs, 'addJob').resolves({ createdJob: { id: marker, type: 'import_backup', request } });
-			sandbox.stub(jobRunner, 'parseMessage').resolves(undefined);
 			const logPath = harperLogger.getLogFilePath();
 			const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
 
-			// the loaded module, not a fresh copy: re-requiring it rebinds server.operation and
-			// server.registerOperation to the copy for every later test
-			assert.strictEqual((await serverUtilities.executeJob(request)).job_id, marker);
+			// the job row and the job thread stand in, so only executeJob's own log is in play
+			const restores = [
+				replaceProperty(jobs, 'addJob', async () => ({
+					createdJob: { id: marker, type: 'import_backup', request },
+				})),
+				replaceProperty(jobRunner, 'parseMessage', async () => undefined),
+			];
+			try {
+				// the loaded module, not a fresh copy: re-requiring it rebinds server.operation and
+				// server.registerOperation to the copy for every later test
+				assert.strictEqual((await serverUtilities.executeJob(request)).job_id, marker);
+			} finally {
+				for (const restore of restores) restore();
+			}
 
 			const written = await waitFor(
 				() => {

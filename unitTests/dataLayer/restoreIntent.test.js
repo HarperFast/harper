@@ -8,7 +8,6 @@ const { randomBytes, randomUUID } = require('node:crypto');
 const { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
-const sinon = require('sinon');
 const { writeUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
@@ -60,6 +59,17 @@ const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletio
 const restartModule = require('#src/bin/restart');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
+
+// The code under test reads these exports through their module objects at call time, so assigning one
+// reaches it. Returns the function that puts the original back.
+function replaceExport(module, name, replacement) {
+	const original = module[name];
+	module[name] = replacement;
+	return () => {
+		module[name] = original;
+	};
+}
+
 const SU = { hdb_user: { username: 'admin', role: { permission: { super_user: true } } } };
 const BLOB_BYTES = 20000; // over the file-storage threshold, so the blob lives in a blob root
 
@@ -81,7 +91,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 	});
 
 	afterEach(function () {
-		sinon.restore();
 		if (savedSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
 		else process.env.HARPER_SAFE_MODE = savedSafeMode;
 	});
@@ -311,13 +320,21 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 		it('asks for a drained restart once the job row records the deferral', async function () {
 			const fixture = await seededDatabase();
-			const restart = sinon.stub(restartModule, 'restart').resolves();
-			const { result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
-			assert.ok(restart.notCalled, 'not before the job row says where the job went');
+			// a real restart would tear this process down
+			const restarts = [];
+			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
+				restarts.push(args);
+			});
+			try {
+				const { result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+				assert.deepStrictEqual(restarts, [], 'not before the job row says where the job went');
 
-			result.afterRecorded();
+				result.afterRecorded();
 
-			assert.ok(restart.calledOnceWithExactly({ operation: 'restart', drain: true }));
+				assert.deepStrictEqual(restarts, [[{ operation: 'restart', drain: true }]]);
+			} finally {
+				restoreRestart();
+			}
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
@@ -382,14 +399,22 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const fixture = await seededDatabase();
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
 			const { operation_id: operationId } = receiptOf(fixture.dir);
-			const writes = sinon.spy(restoreReceiptModule, 'writeRestoreReceipt');
+			// each write replaces the receipt file, so only the writes themselves show every state it passed through
+			const written = [];
+			const restoreWrite = replaceExport(restoreReceiptModule, 'writeRestoreReceipt', (lock, receipt) => {
+				written.push(receipt);
+				return writeRestoreReceipt(lock, receipt);
+			});
+			let owned;
+			try {
+				owned = await boot(fixture.name);
+			} finally {
+				restoreWrite();
+			}
 
-			const owned = await boot(fixture.name);
-
-			const states = writes
-				.getCalls()
-				.filter((call) => call.args[1].database_path === fixture.dir)
-				.map((call) => call.args[1].state)
+			const states = written
+				.filter((receipt) => receipt.database_path === fixture.dir)
+				.map((receipt) => receipt.state)
 				.filter((state, index, all) => state !== all[index - 1]);
 			assert.deepStrictEqual(states, ['pending', 'applying', 'committed']);
 			assert.deepStrictEqual([...owned], []);
@@ -608,13 +633,20 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			// the last attempt the limit allows, so a miscounted failure would make it terminal
 			rewriteReceipt(fixture.dir, { attempts: maxAttempts - 1 });
 			// the receipt's own removal is the last finishing step; the job row is written by then
-			const removal = sinon
-				.stub(restoreReceiptModule, 'removeRestoreReceipt')
-				.throws(new Error('the restore metadata directory is unavailable'));
+			// it shares a directory with the marker cleared just before it, so a real fault cannot reach it alone
+			let removals = 0;
+			const restoreRemoval = replaceExport(restoreReceiptModule, 'removeRestoreReceipt', () => {
+				removals++;
+				throw new Error('the restore metadata directory is unavailable');
+			});
+			let owned;
+			try {
+				owned = await boot(fixture.name);
+			} finally {
+				restoreRemoval();
+			}
 
-			const owned = await boot(fixture.name);
-
-			assert.ok(removal.called, 'precondition: the finish failed');
+			assert.ok(removals > 0, 'precondition: the finish failed');
 			const receipt = receiptOf(fixture.dir);
 			assert.strictEqual(receipt.state, 'committed', 'a published restore is only ever finished');
 			assert.strictEqual(receipt.last_error, undefined);
@@ -624,7 +656,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE, 'the restore did not fail');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 
-			removal.restore();
 			await boot(fixture.name);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);

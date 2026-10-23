@@ -14,7 +14,6 @@ const {
 	writeFileSync,
 } = require('node:fs');
 const { dirname, join, relative, resolve } = require('node:path');
-const sinon = require('sinon');
 const { tmpdir } = require('node:os');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { writeUnsupportedTableFormat: sharedWriteUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
@@ -69,9 +68,14 @@ const {
 	restoreMarkerPresent,
 	restoreSourceId,
 } = require('#src/dataLayer/restoreMarker');
-const backupRepositoryModule = require('#src/dataLayer/backupRepository');
-const { backupPinsDir, managementLockPath, pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } =
-	backupRepositoryModule;
+const {
+	backupPinsDir,
+	managementLockPath,
+	pinBackup,
+	readBackupPins,
+	unpinBackup,
+	withBackupRepositoryLock,
+} = require('#src/dataLayer/backupRepository');
 const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { closeLoadedDatabases, table } = require('#src/resources/databases');
 const harperDatabase = require('./fixtures/harperDatabase.js');
@@ -875,22 +879,25 @@ describe('rocksdbBackup', function () {
 					rmSync(managementLockPath(backupDir));
 					assert.ok(!existsSync(backupPinsDir(backupDir)), 'precondition: nothing has claimed a backup');
 					const before = snapshotTree(backupDir);
-					const lockSpy = sinon.spy(backupRepositoryModule, 'withBackupRepositoryLock');
-					const warnSpy = sinon.spy(harperLogger, 'warn');
+					const realWarn = harperLogger.warn;
+					const warnings = [];
+					harperLogger.warn = (...args) => {
+						warnings.push(args.join(' '));
+						return realWarn(...args);
+					};
 					let result;
 					try {
 						result = await immutableRestores[mode](backupId);
 					} finally {
-						lockSpy.restore();
-						warnSpy.restore();
+						harperLogger.warn = realWarn;
 					}
-					assert.strictEqual(lockSpy.callCount, 0, 'the management lock must never be entered');
 					assert.deepStrictEqual(snapshotTree(backupDir), before, 'the repository must be byte- and mtime-identical');
-					assert.ok(!existsSync(managementLockPath(backupDir)), 'no lock file');
+					// entering the management lock creates its file, and nothing removes it
+					assert.ok(!existsSync(managementLockPath(backupDir)), 'the management lock must never be entered');
 					assert.ok(!existsSync(backupPinsDir(backupDir)), 'no claim');
 					assert.strictEqual(result.immutable_source, true);
 					assert.ok(
-						warnSpy.getCalls().some((call) => /immutable_source/.test(String(call.args[0]))),
+						warnings.some((warning) => /immutable_source/.test(warning)),
 						'the waived lock and claim are logged at warn'
 					);
 					assert.strictEqual(checkRestoreState(verifiedDir()), 'clear');
