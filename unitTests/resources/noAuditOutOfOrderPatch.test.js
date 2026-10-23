@@ -127,8 +127,7 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual(record.extra, 'added');
 	});
 
-	// a patch as the source-apply handler hands it over: the origin's node id and record version, committed under
-	// the origin's log key
+	// the context and options the source-apply handler passes for a replicated patch
 	function applyFrom(nodeName, id, update, version, logKey = version) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {

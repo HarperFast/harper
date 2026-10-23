@@ -5921,9 +5921,8 @@ export function makeTable(options): TableResourceClass {
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
-							// Without a log, the head's own identity (a tie) and the refs folded into it are the only record of
-							// what was already applied, and a head holding no record (a delete, or a publish to an absent key)
-							// keeps none.
+							// Without a log, a tie with the head or a listed ref is the only sign this write was already applied,
+							// and an older write must not give a deleted or publish-only head a record.
 							if (
 								precedesExisting === 0 ||
 								existingRecord == null ||
