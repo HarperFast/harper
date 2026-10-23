@@ -5099,17 +5099,20 @@ export function makeTable(options): TableResourceClass {
 							// transaction to this key: every write in it shares one log key, so the ref that write left is
 							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
 							// and stages nothing. On a retry whose prior attempt staged, the record read back may be that
-							// attempt's own: then its head ref is this write's key (unique in its log) and its identity ref
-							// is this write's too, so neither is a receipt. A committed competitor's record carries its
-							// own head, so its refs still count.
+							// attempt's own: then its head ref is the key minted for this handle, which no other
+							// transaction in `local` has, and its identity ref is this write's too, so neither is a receipt.
+							// A committed competitor's record carries its own minted head, so its refs still count. Only
+							// for a minted key: a re-delivery in an origin's log shares its key with a competing delivery.
 							let refBase: Partial<Entry> | undefined;
 							let readsOwnStaging = false;
 							if (!priorStaged) {
 								refBase = identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
+								const ownMintedKey = isRocksDB ? reservedLocalKey(transaction) : undefined;
 								readsOwnStaging =
 									stagedOwnAuditEntry &&
+									ownMintedKey !== undefined &&
 									refBase?.additionalAuditRefs !== undefined &&
-									auditRefIndex(refBase.additionalAuditRefs, appendedLogKey, options?.nodeId) >= 0;
+									auditRefIndex(refBase.additionalAuditRefs, ownMintedKey, options?.nodeId) >= 0;
 							}
 							if (
 								!priorStaged &&
