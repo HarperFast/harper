@@ -353,11 +353,11 @@ the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this so
 ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible
 for VerificationTable fast-path confirmation until a later write advances their version.
 
-The native layer reads the stored bytes itself: the big-endian version at offset 0, then a big-endian
-metadata word at offset 8 tagged `0x0E` (`ACTION_32_BIT`), with the flag at literal bit `0x10000`. The
-bit is persisted, so it cannot follow a renumbered rocksdb-js constant without a migration.
-`unitTests/resources/caching-rocks-database.test.js` ('marks a record whose version was reused…') pins
-the layout against raw stored values.
+The native layer reads the stored bytes itself: the big-endian version at offset 0, then a big-endian metadata word at offset 8 tagged `0x0E` (`ACTION_32_BIT`), with the flag at literal bit `0x10000`. The bit is persisted, so it cannot follow a renumbered rocksdb-js constant without a migration. `unitTests/resources/caching-rocks-database.test.js` ('marks a record whose version was reused…') pins the layout against raw stored values.
+
+## getFromSource() record locks outlive neither their handle nor a close (`Table.ts`)
+
+A fill holds a native record lock (`primaryStore.tryLock`) while it awaits the source, and a database close does not wait for it: the close drains only submitted commits. Closing the handle that owns the lock releases it and wakes its waiters: rocksdb-js `DBHandle::close` → `lockReleaseByOwner`, lmdb-js `EnvWrap::closeEnv` (an LMDB close closes the environment, never the dbis). So an unlock that throws on a closed store has nothing to release, and `releaseRecordLock` treats it as a no-op. Two consequences for waiters: the `tryLock` callback only wakes the request (it can fire during the close, where reading the store throws inside a native callback), and the `LOCK_TIMEOUT` timer wakes it too, because closing this thread's handle never notifies a wait on another thread's lock. `unitTests/resources/cacheFillClose.test.js` covers both engines.
 
 A fill's puts carry no condition of their own: on LMDB the `LMDBTransaction` `ifVersion` block holds
 the condition with the primary, index and audit puts in one native write transaction (a per-put

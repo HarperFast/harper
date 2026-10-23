@@ -11870,7 +11870,7 @@ export function makeTable(options): TableResourceClass {
 		const sourceTimestamp =
 			inheritedTimestamp ||
 			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
-		let whenResolved, timer;
+		let wake: () => void;
 		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
@@ -11878,10 +11878,22 @@ export function makeTable(options): TableResourceClass {
 		// tryLock() will return true if we got the lock, and the callback won't be called.
 		// If another thread has the lock it returns false and then the callback is called once
 		// the other thread releases the lock.
-		const callback = () => {
-			// This is called when another thread releases the lock on resolution. Hopefully
-			// it should be resolved now and we can use the value it saved.
+		// The callback only wakes this request: it can fire during a database close, where reading
+		// the store would throw inside a native callback and leave the request unsettled.
+		const lockAcquired = primaryStore.tryLock(id, () => wake());
+
+		if (!lockAcquired) {
+			let timer: ReturnType<typeof setTimeout>;
+			await new Promise<void>((resolve) => {
+				wake = resolve;
+				// closing this thread's handle does not notify a wait on another thread's lock
+				timer = setTimeout(() => {
+					releaseRecordLock(id);
+					resolve();
+				}, LOCK_TIMEOUT);
+			});
 			clearTimeout(timer);
+			// Hopefully the other resolution has saved a value we can use now.
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
@@ -11896,25 +11908,15 @@ export function makeTable(options): TableResourceClass {
 					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
 				) {
 					setLoadedFromSource(target, false);
-					whenResolved(outcome);
+					return outcome;
 				}
 				// try again — entry still not valid, need to actually fetch from source
-				else whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
+				else return getFromSource(source, id, primaryStore.getEntry(id), context, target);
 			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
-				whenResolved(entry);
+				return entry;
 			}
-		};
-		const lockAcquired = primaryStore.tryLock(id, callback);
-
-		if (!lockAcquired) {
-			return new Promise((resolve) => {
-				whenResolved = resolve;
-				timer = setTimeout(() => {
-					primaryStore.unlock(id);
-				}, LOCK_TIMEOUT);
-			});
 		}
 		// lock acquired — this request will actually load from source
 		setLoadedFromSource(target, true);
@@ -11922,7 +11924,7 @@ export function makeTable(options): TableResourceClass {
 		(sourceFills ??= new Map()).set(fillKey, fill);
 		const releaseFill = () => {
 			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
-			primaryStore.unlock(id);
+			releaseRecordLock(id);
 		};
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
@@ -12367,6 +12369,19 @@ export function makeTable(options): TableResourceClass {
 				}
 			);
 		});
+	}
+
+	/**
+	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
+	 * environment), so an unlock that fails after close had nothing left to release.
+	 */
+	function releaseRecordLock(id: Id): void {
+		try {
+			primaryStore.unlock(id);
+		} catch (error) {
+			if (primaryStore.status === 'open' && tableRootStore.status === 'open')
+				logger.error?.(`Error releasing the cache resolution lock for ${id} in ${tableName}`, error);
+		}
 	}
 
 	function trackMaintenanceCommit<T>(commit: Promise<T>): Promise<T> {
