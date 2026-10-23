@@ -2,18 +2,25 @@
 
 const assert = require('node:assert');
 const http = require('node:http');
+const { Readable } = require('node:stream');
+const { generate } = require('mqtt-packet');
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const {
 	contentTypes,
 	findBestSerializer,
+	isPassThroughEnvelope,
+	isHttpPassThroughEnvelope,
+	serialize,
+	serializeMessage,
 	waitForStreamStartup,
 	discardSerializedStream,
 	brotliOptions,
 } = require('#src/server/serverHelpers/contentTypes');
 const { constants } = require('node:zlib');
 const { pipeBodyToResponse } = require('#src/server/http');
+const { Headers } = require('#src/server/serverHelpers/Headers');
 
 function streamToString(readable) {
 	return new Promise((resolve, reject) => {
@@ -567,3 +574,405 @@ describe('contentTypes – application/x-www-form-urlencoded', function () {
 		assert.strictEqual(handler.serialize(handler.deserialize(body)), body);
 	});
 });
+<<<<<<< HEAD
+=======
+
+describe('contentTypes – a multipart upload its route answers without reading', function () {
+	const Fastify = require('fastify');
+	const net = require('node:net');
+	const { Readable, PassThrough } = require('node:stream');
+	const { randomBytes } = require('node:crypto');
+	const { setTimeout: sleep } = require('node:timers/promises');
+	const { registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
+	const { buildMultipartBody } = require('#src/bin/multipartBuilder');
+
+	const CHUNK = randomBytes(64 * 1024);
+	let app;
+	let port;
+
+	before(async function () {
+		// A regression leaves connections mid-request; close them so it fails on its own deadline.
+		app = Fastify({ forceCloseConnections: true });
+		app.post('/early', async () => ({ ok: true }));
+		registerContentHandlers(app);
+		app.post('/ignore', async () => ({ ok: true }));
+		app.post(
+			'/transformed',
+			{
+				preParsing: (request, reply, payload, done) => {
+					const transformed = new PassThrough();
+					payload.pipe(transformed);
+					done(null, transformed);
+				},
+			},
+			async () => ({ ok: true })
+		);
+		app.post('/echo', async (request, reply) => {
+			reply.type('application/octet-stream');
+			const { payload } = request.body;
+			return Readable.from(
+				(async function* () {
+					for await (const chunk of payload) yield chunk;
+				})()
+			);
+		});
+		app.get('/health', async () => 'ok');
+		app.get('/slow', async () => {
+			await sleep(1500);
+			return 'slow';
+		});
+		await app.listen({ port: 0, host: '127.0.0.1' });
+		port = app.server.address().port;
+	});
+
+	after(async function () {
+		await app?.close();
+	});
+
+	async function* fileChunks(fileBytes) {
+		for (let sent = 0; sent < fileBytes; sent += CHUNK.length) yield CHUNK;
+	}
+
+	// Node's own client stops writing after an early complete answer, so these use raw sockets. The rest of this
+	// upload waits for the answer, since a check made when the upload finishes races a server that drains it quickly.
+	function uploadOnRawSocket(path, { fileBytes = 16 * 1024 * 1024, next = '/health', deadlineMs = 10_000 } = {}) {
+		const multipart = buildMultipartBody(
+			{ operation: 'deploy_component' },
+			{ name: 'payload', filename: 'package.tar.gz', stream: Readable.from(fileChunks(fileBytes)) }
+		);
+		return new Promise((resolve, reject) => {
+			const socket = net.connect(port, '127.0.0.1');
+			let received = '';
+			let stage = 'sending the first megabyte';
+			let uploadEndedAt;
+			let onAnswer;
+			const answer = new Promise((resolveAnswer) => (onAnswer = resolveAnswer));
+			const fail = (error) => {
+				clearTimeout(deadline);
+				socket.destroy();
+				reject(error);
+			};
+			const deadline = setTimeout(
+				() => fail(new Error(`${path}: unfinished after ${deadlineMs}ms, ${stage}`)),
+				deadlineMs
+			);
+			const statuses = () => received.match(/HTTP\/1\.1 \d{3}/g) ?? [];
+			socket.on('error', fail);
+			socket.on('data', (data) => {
+				received += data;
+				if (received.includes('{"ok":true}')) onAnswer();
+				if (
+					uploadEndedAt !== undefined &&
+					statuses().length >= 2 &&
+					received.endsWith(next === '/slow' ? 'slow' : 'ok')
+				) {
+					clearTimeout(deadline);
+					socket.destroy();
+					resolve({ statuses: statuses(), nextAnsweredAfterMs: Date.now() - uploadEndedAt });
+				}
+			});
+			socket.once('connect', async () => {
+				try {
+					socket.write(
+						`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: ${multipart.contentType}\r\n` +
+							'Transfer-Encoding: chunked\r\n\r\n'
+					);
+					let sent = 0;
+					for await (const chunk of multipart.stream) {
+						if (socket.destroyed) return;
+						if (stage === 'sending the first megabyte' && sent >= 1024 * 1024) {
+							stage = 'waiting for the answer';
+							await answer;
+							if (socket.destroyed) return;
+							stage = 'sending the rest of the upload';
+						}
+						const frame = Buffer.concat([Buffer.from(`${chunk.length.toString(16)}\r\n`), chunk, Buffer.from('\r\n')]);
+						if (!socket.write(frame)) await new Promise((resume) => socket.once('drain', resume));
+						sent += chunk.length;
+					}
+					if (socket.destroyed) return;
+					socket.write('0\r\n\r\n', (error) => {
+						if (error || socket.destroyed) return;
+						stage = `waiting for the answer to ${next}`;
+						uploadEndedAt = Date.now();
+						socket.write(`GET ${next} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`);
+					});
+				} catch (error) {
+					fail(error);
+				}
+			});
+		});
+	}
+
+	function holdUnfinishedUpload(path, deadlineMs = 5_000) {
+		const boundary = '----HarperUnfinishedUpload';
+		const head =
+			`--${boundary}\r\nContent-Disposition: form-data; name="operation"\r\n\r\ndeploy_component\r\n` +
+			`--${boundary}\r\nContent-Disposition: form-data; name="payload"; filename="package.tar.gz"\r\n\r\n`;
+		const frame = (data) => Buffer.concat([Buffer.from(`${data.length.toString(16)}\r\n`), data, Buffer.from('\r\n')]);
+		return new Promise((resolve, reject) => {
+			const socket = net.connect(port, '127.0.0.1');
+			let received = '';
+			const deadline = setTimeout(() => {
+				socket.destroy();
+				reject(new Error(`${path}: the server kept the connection of an unfinished upload open for ${deadlineMs}ms`));
+			}, deadlineMs);
+			socket.on('data', (data) => (received += data));
+			socket.on('error', () => {});
+			socket.on('close', () => {
+				clearTimeout(deadline);
+				resolve(received);
+			});
+			socket.once('connect', () => {
+				socket.write(
+					`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: multipart/form-data; boundary=${boundary}\r\n` +
+						'Transfer-Encoding: chunked\r\n\r\n'
+				);
+				socket.write(frame(Buffer.from(head)));
+				for (let chunk = 0; chunk < 16; chunk++) socket.write(frame(CHUNK));
+			});
+		});
+	}
+
+	it('reads the rest of an upload the route never read, so the request ends and the socket serves another', async function () {
+		this.timeout(20_000);
+		const { statuses } = await uploadOnRawSocket('/ignore');
+		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
+	});
+
+	it('releases the upload of a route registered before the parser was', async function () {
+		this.timeout(20_000);
+		const { statuses } = await uploadOnRawSocket('/early');
+		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
+	});
+
+	it('keeps a reused connection open past the grace period of the upload it discarded', async function () {
+		this.timeout(20_000);
+		const { statuses, nextAnsweredAfterMs } = await uploadOnRawSocket('/ignore', { next: '/slow' });
+		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
+		assert.ok(nextAnsweredAfterMs >= 1500, `the slow request was answered after ${nextAnsweredAfterMs}ms`);
+	});
+
+	it('closes the connection when the rest of a discarded upload stops arriving, after answering', async function () {
+		this.timeout(20_000);
+		const received = await holdUnfinishedUpload('/ignore');
+		assert.match(received, /^HTTP\/1\.1 200/);
+		assert.ok(received.includes('{"ok":true}'), 'the answer arrived before the connection closed');
+	});
+
+	it('closes it too when a preParsing hook handed the parser a transform of the request', async function () {
+		this.timeout(20_000);
+		const received = await holdUnfinishedUpload('/transformed');
+		assert.match(received, /^HTTP\/1\.1 200/);
+	});
+
+	it('leaves the upload to a response stream that reads it while it is sent', async function () {
+		this.timeout(20_000);
+		const fileBytes = 2 * 1024 * 1024;
+		const multipart = buildMultipartBody(
+			{ operation: 'deploy_component' },
+			{ name: 'payload', filename: 'package.tar.gz', stream: Readable.from(fileChunks(fileBytes)) }
+		);
+		const echoed = await new Promise((resolve, reject) => {
+			const request = http.request(
+				{ host: '127.0.0.1', port, method: 'POST', path: '/echo', headers: { 'Content-Type': multipart.contentType } },
+				(response) => {
+					const chunks = [];
+					response.on('data', (chunk) => chunks.push(chunk));
+					response.on('end', () => resolve(Buffer.concat(chunks)));
+					response.on('error', reject);
+				}
+			);
+			request.on('error', reject);
+			multipart.stream.pipe(request);
+		});
+		assert.strictEqual(echoed.length, fileBytes);
+		for (let offset = 0; offset < fileBytes; offset += CHUNK.length) {
+			assert.ok(echoed.subarray(offset, offset + CHUNK.length).equals(CHUNK), `bytes at ${offset} were echoed intact`);
+		}
+	});
+});
+
+describe('contentTypes – JSON terminal metadata', () => {
+	for (const asynchronous of [false, true]) {
+		for (const property of ['replicationUnconfirmed', 'retryable']) {
+			it(`finishes valid JSON when ${property} throws in a ${asynchronous ? 'async' : 'sync'} iterator error`, async function () {
+				this.timeout(2000);
+				const failure = new Proxy(new Error('Iterator failed'), {
+					get(target, key, receiver) {
+						if (key === property) throw new Error('Metadata is unreadable');
+						return Reflect.get(target, key, receiver);
+					},
+				});
+				function* syncSource() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				async function* asyncSource() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				const readable = contentTypes
+					.get('application/json')
+					.serializeStream(asynchronous ? asyncSource() : syncSource());
+				try {
+					const result = JSON.parse(await streamToString(readable));
+					assert.deepStrictEqual(result, [{ id: 'first' }, { error: 'Error: Iterator failed' }]);
+				} finally {
+					readable.destroy();
+				}
+			});
+		}
+	}
+});
+
+describe('contentTypes – readable outcome with unreadable status', () => {
+	for (const type of ['application/x-ndjson', 'text/event-stream']) {
+		for (const property of ['statusCode', 'status']) {
+			it(`retains the terminal outcome in ${type} when ${property} throws`, async function () {
+				this.timeout(2000);
+				const failure = new Error('Peer timeout');
+				failure.replicationUnconfirmed = true;
+				failure.retryable = false;
+				Object.defineProperty(failure, property, {
+					get() {
+						throw new Error('Status is unreadable');
+					},
+				});
+				async function* source() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				const readable = contentTypes.get(type).serializeStream(source());
+				try {
+					const text = await streamToString(readable);
+					const lines = text.trim().split('\n');
+					const record = JSON.parse(
+						type === 'text/event-stream'
+							? lines
+									.filter((line) => line.startsWith('data: '))
+									.at(-1)
+									.slice(6)
+							: lines.at(-1)
+					);
+					const outcome = record.$harperStreamError ?? record;
+					assert.strictEqual(outcome.replicationUnconfirmed, true);
+					assert.strictEqual(outcome.retryable, false);
+					assert.strictEqual(outcome.message, 'Peer timeout');
+					assert.strictEqual(outcome.status, undefined);
+				} finally {
+					readable.destroy();
+				}
+			});
+		}
+	}
+});
+
+describe('contentTypes – pass-through envelopes', function () {
+	const collidingData = [{ a: 1 }, [1, 2], 5, 0, true, false, null, undefined, new Map(), Symbol.iterator];
+	const textAndBytes = [
+		'text',
+		'',
+		Buffer.from('bytes'),
+		Buffer.alloc(0),
+		new Uint8Array([1, 2, 3]).subarray(1),
+		new Uint16Array(2),
+		new DataView(new ArrayBuffer(4)),
+	];
+
+	function httpRequest() {
+		return { headers: { asObject: { accept: 'application/json' } } };
+	}
+
+	describe('isPassThroughEnvelope', function () {
+		it('accepts a string content type with text or a binary view as data', function () {
+			for (const data of textAndBytes) assert.strictEqual(isPassThroughEnvelope({ contentType: 'x/y', data }), true);
+		});
+
+		it('rejects data that is not text or a binary view', function () {
+			for (const data of [...collidingData, new ArrayBuffer(2), Readable.from([]), new Blob(['b'])])
+				assert.strictEqual(isPassThroughEnvelope({ contentType: 'x/y', data }), false, String(data));
+		});
+
+		it('rejects a content type that is not a string, and values that are not objects', function () {
+			for (const contentType of [5, {}, null, undefined, ['x/y']])
+				assert.strictEqual(isPassThroughEnvelope({ contentType, data: 'text' }), false, String(contentType));
+			for (const value of [null, undefined, 'text', 5, Buffer.from('x'), { data: 'text' }])
+				assert.strictEqual(isPassThroughEnvelope(value), false);
+		});
+	});
+
+	describe('isHttpPassThroughEnvelope', function () {
+		it('accepts everything the message predicate does, plus a Blob and Node or Web streams', function () {
+			const extra = [new Blob(['b']), Readable.from(['s']), new ReadableStream()];
+			for (const data of [...textAndBytes, ...extra])
+				assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 'x/y', data }), true);
+		});
+
+		it('rejects the shapes a table record can hold, including iterable ones', function () {
+			for (const data of [...collidingData, new ArrayBuffer(2), (function* () {})(), (async function* () {})()])
+				assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 'x/y', data }), false, String(data));
+			assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 5, data: 'text' }), false);
+			assert.strictEqual(isHttpPassThroughEnvelope(null), false);
+		});
+	});
+
+	describe('serializeMessage', function () {
+		it('serializes a record whose contentType and data attributes are not an envelope as a record', function () {
+			for (const data of [{ a: 1 }, 5, 0, [1], true]) {
+				const record = { id: 'k', contentType: 'x/y', data };
+				const payload = serializeMessage(record, { headers: { accept: 'application/json' } });
+				assert.deepStrictEqual(JSON.parse(payload), record);
+				generate({ cmd: 'publish', topic: 't', payload, qos: 1, messageId: 1, dup: false, retain: false });
+			}
+		});
+
+		it('still delivers a real string or binary envelope as its data', function () {
+			assert.strictEqual(serializeMessage({ contentType: 'text/x-custom', data: 'text' }), 'text');
+			const buffer = Buffer.from('bytes');
+			assert.strictEqual(serializeMessage({ contentType: 'application/octet-stream', data: buffer }), buffer);
+			const view = new Uint8Array([9, 1, 2, 9]).subarray(1, 3);
+			const wrapped = serializeMessage({ contentType: 'application/octet-stream', data: view });
+			assert.ok(Buffer.isBuffer(wrapped));
+			assert.deepStrictEqual([...wrapped], [1, 2]);
+		});
+
+		it('serializes a record whose data is a Blob, which no protocol encoder accepts', function () {
+			const payload = serializeMessage({ id: 'k', contentType: 'image/png', data: new Blob(['b']) }, httpRequest());
+			assert.strictEqual(JSON.parse(payload).contentType, 'image/png');
+		});
+	});
+
+	describe('serialize', function () {
+		it('serializes a record whose contentType and data attributes are not an envelope as a record', function () {
+			for (const data of [{ a: 1 }, 5, [1]]) {
+				const record = { id: 'k', contentType: 'x/y', data };
+				const response = { headers: new Headers() };
+				const body = serialize(record, httpRequest(), response);
+				assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
+				assert.deepStrictEqual(JSON.parse(body), record);
+			}
+		});
+
+		it('still answers a real envelope with its own content type and data', function () {
+			const buffer = Buffer.from('bytes');
+			for (const [contentType, data] of [
+				['text/x-custom', 'text'],
+				['application/octet-stream', buffer],
+			]) {
+				const response = { headers: new Headers() };
+				assert.strictEqual(serialize({ contentType, data }, httpRequest(), response), data);
+				assert.strictEqual(response.headers.get('Content-Type'), contentType);
+			}
+		});
+
+		it('hands a Blob or a stream envelope to the HTTP writer unchanged', function () {
+			for (const data of [new Blob(['b']), Readable.from(['s']), new ReadableStream()]) {
+				const response = { headers: new Headers() };
+				assert.strictEqual(serialize({ contentType: 'x/y', data }, httpRequest(), response), data);
+				assert.strictEqual(response.headers.get('Content-Type'), 'x/y');
+			}
+		});
+	});
+});
+>>>>>>> c3dc7dd13 (Deliver a record as a pass-through envelope only when its data is text or bytes)

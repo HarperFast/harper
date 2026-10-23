@@ -1,0 +1,12 @@
+# Attributes named like a stored non-JSON payload's `{ contentType, data }` envelope: only `data` that is
+# text or bytes makes a record one. Asset keeps `data` a Blob.
+type Item @table(audit: true) @export {
+	id: ID @primaryKey
+	contentType: String
+	data: Any
+}
+type Asset @table @export {
+	id: ID @primaryKey
+	contentType: String
+	data: Blob
+}
