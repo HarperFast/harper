@@ -81,6 +81,26 @@ export function restoreChildSlotLockPath(): string {
 	return join(getHdbBasePath(), RESTORE_CHILD_SLOT_FILE);
 }
 
+// flags that would run their own code in place of the child's script
+const SCRIPT_FLAGS = new Set(['-e', '--eval', '-p', '--print']);
+
+/** The parent's runtime flags, minus its heap size, debugger, and any code it was told to evaluate. */
+export function childExecArgv(parentExecArgv: string[]): string[] {
+	const kept: string[] = [];
+	for (let i = 0; i < parentExecArgv.length; i++) {
+		const arg = parentExecArgv[i];
+		if (SCRIPT_FLAGS.has(arg)) {
+			i++;
+			continue;
+		}
+		if (/^(--eval|--print)=/.test(arg) || arg.startsWith('--max-old-space-size') || arg.startsWith('--inspect')) {
+			continue;
+		}
+		kept.push(arg);
+	}
+	return kept;
+}
+
 function childScriptPath(): string {
 	const compiled = join(__dirname, 'restoreChild.js');
 	return existsSync(compiled) ? compiled : join(__dirname, 'restoreChild.ts');
@@ -134,10 +154,7 @@ export function runRestoreChild<T = any>(
 		blockCacheSize: CHILD_BLOCK_CACHE_BYTES,
 		writeBufferManagerSize: CHILD_WRITE_BUFFER_BYTES,
 	};
-	const execArgv = [
-		...process.execArgv.filter((arg) => !arg.startsWith('--max-old-space-size') && !arg.startsWith('--inspect')),
-		`--max-old-space-size=${options.heapMb ?? DEFAULT_HEAP_MB}`,
-	];
+	const execArgv = [...childExecArgv(process.execArgv), `--max-old-space-size=${options.heapMb ?? DEFAULT_HEAP_MB}`];
 	return new Promise<T>((resolve, reject) => {
 		let child: ChildProcess;
 		try {

@@ -355,3 +355,25 @@ describeUnlessLmdb('restore child', function () {
 		});
 	});
 });
+
+describe('restore child exec arguments', function () {
+	const { childExecArgv } = require('#src/dataLayer/restoreChildRunner');
+
+	it('drops code the parent was told to evaluate, its heap size and its debugger, and keeps the rest', function () {
+		assert.deepStrictEqual(
+			childExecArgv([
+				'--conditions=typestrip',
+				'-e',
+				'require("x")',
+				'--eval=1',
+				'-p',
+				'2',
+				'--print=3',
+				'--max-old-space-size=8192',
+				'--inspect=9229',
+				'--enable-source-maps',
+			]),
+			['--conditions=typestrip', '--enable-source-maps']
+		);
+	});
+});
