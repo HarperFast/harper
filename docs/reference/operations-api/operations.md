@@ -1492,7 +1492,7 @@ Response:
 }
 ```
 
-- `deployment_id` on a component is the release live on this node's disk, which its workers load when they start. After a deploy that did not restart, they may still run the previous one: [`get_components`](../components/applications.md#get_components)' `restarted_at` says when this node last loaded the component, and `get_status` reports `restartRequired`. It is absent for a tree installed before v5.3.0, by `add_component`, or from a `file:` link.
+- `deployment_id` on a component is the release live on this node's disk, which its workers load when they start. After a deploy that did not restart, they may still run the previous one: [`get_components`](../components/applications.md#get_components)' `restarted_at` says when this node last loaded the component, and `get_status` reports `restartRequired` when the deploy changed something [that needs one](#deploying-without-a-restart). It is absent for a tree installed before v5.3.0, by `add_component`, or from a `file:` link.
 - `state` is `staged` for a build made with `activate: false` that never went live here, or `kept` for a release a later activation replaced on this node. A release kept before v5.4.0 reports `staged`.
 - `at` is when the build was made or, for a kept release, when it was replaced. `size` is its tree's size on disk, in bytes.
 
