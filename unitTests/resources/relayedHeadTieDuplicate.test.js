@@ -3,14 +3,10 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
-const { setTimeout: delay } = require('node:timers/promises');
+const { waitFor } = require('../waitFor.js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// harper#3467: a relayed re-delivery of the write a record already holds (same origin, version and log
-// key) must be dropped from the committed record alone. When the receiver has no log entry for it (here,
-// because a base copy applied the record), a log lookup scans to end-of-log, and applying it again appends
-// an entry that every peer is re-sent.
 describe('Relayed head-tie duplicates (harper#3467)', function () {
 	this.timeout(10000);
 	before(() => {
@@ -19,16 +15,6 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		setMainIsWorker(true);
 	});
 
-	async function waitFor(predicate, message, timeout = 5000) {
-		const start = Date.now();
-		while (Date.now() - start < timeout) {
-			if (await predicate()) return;
-			await delay(20);
-		}
-		throw new Error('waitFor timed out: ' + message);
-	}
-
-	// A table fed by an intermediate (replication) source; push() hands it the next batch of events.
 	function replicatedTable(name) {
 		const pending = [];
 		let wake;
@@ -52,25 +38,39 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 			},
 			{ intermediateSource: true }
 		);
+		const origin = getIdOfRemoteNode('v4-era-origin', T.auditStore);
 		return {
 			T,
-			push(...events) {
-				pending.push(...events);
+			origin,
+			async apply(...events) {
+				const markerKey = Date.now();
+				pending.push(...events, {
+					type: 'put',
+					id: 'marker',
+					value: { id: 'marker', name: String(markerKey) },
+					timestamp: markerKey,
+					nodeId: origin,
+				});
 				wake?.();
+				await waitFor(async () => (await T.get('marker'))?.name === String(markerKey), {
+					timeout: 5000,
+					message: 'the batch should apply',
+				});
 			},
 		};
 	}
 
-	function spyLogReads(T) {
+	function spyRecordLogReads(T, logKey, origin) {
 		const reads = [];
 		const originalGet = T.auditStore.getSync;
 		const originalRange = T.auditStore.getRange;
 		T.auditStore.getSync = function (key, ...args) {
-			reads.push({ getSync: key });
+			if (key === logKey) reads.push({ getSync: key });
 			return originalGet.call(this, key, ...args);
 		};
 		T.auditStore.getRange = function (options, ...args) {
-			reads.push({ getRange: options?.start, log: options?.log });
+			if (options?.start === logKey || (options?.start === 1 && options?.log === origin))
+				reads.push({ getRange: options.start, log: options.log });
 			return originalRange.call(this, options, ...args);
 		};
 		return {
@@ -84,61 +84,102 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 
 	async function copiedRecord(name) {
 		const state = replicatedTable(name);
-		const origin = getIdOfRemoteNode('v4-era-origin', state.T.auditStore);
 		const version = Date.now() - 60000;
-		state.push(
-			{
+		await state.apply({
+			type: 'put',
+			id: 'r',
+			value: { id: 'r', name: 'copied' },
+			timestamp: version,
+			version,
+			nodeId: state.origin,
+			isCopyApply: true,
+		});
+		assert.equal((await state.T.getHistoryOfRecord('r')).length, 0, 'a copy-applied row has no log entry');
+		return { ...state, version };
+	}
+
+	it('skips a relayed duplicate without reading the transaction log or appending to it', async function () {
+		if (isLMDB) return this.skip();
+		const { T, apply, origin, version } = await copiedRecord('NoLogEntry');
+		const spy = spyRecordLogReads(T, version, origin);
+		try {
+			await apply({
 				type: 'put',
 				id: 'r',
 				value: { id: 'r', name: 'copied' },
 				timestamp: version,
 				version,
 				nodeId: origin,
-				isCopyApply: true,
-			},
-			{
-				type: 'put',
-				id: 'copied',
-				value: { id: 'copied' },
-				timestamp: version + 1,
-				version: version + 1,
-				nodeId: origin,
-				isCopyApply: true,
-			}
-		);
-		await waitFor(async () => (await state.T.get('copied')) != null, 'copy applied');
-		assert.equal((await state.T.getHistoryOfRecord('r')).length, 0, 'a copy-applied row has no log entry');
-		return { ...state, origin, version };
-	}
-
-	it('skips a relayed duplicate without reading the transaction log or appending to it', async function () {
-		if (isLMDB) return this.skip();
-		const { T, push, origin, version } = await copiedRecord('NoLogEntry');
-		const spy = spyLogReads(T);
-		try {
-			push(
-				{ type: 'put', id: 'r', value: { id: 'r', name: 'copied' }, timestamp: version, version, nodeId: origin },
-				{ type: 'put', id: 'marker', value: { id: 'marker' }, timestamp: Date.now(), nodeId: origin }
-			);
-			await waitFor(async () => (await T.get('marker')) != null, 'duplicate batch applied');
+			});
 		} finally {
 			spy.restore();
 		}
-		const recordReads = spy.reads.filter((read) => read.getSync === version || read.getRange !== undefined);
-		assert.deepEqual(recordReads, [], 'the duplicate must be decided from the committed record');
+		assert.deepEqual(spy.reads, [], 'the duplicate must be decided from the committed record');
 		assert.equal((await T.getHistoryOfRecord('r')).length, 0, 'the duplicate must not be appended to the log');
 		assert.equal((await T.get('r')).name, 'copied');
 	});
 
 	it('still orders a same-version write that carries a different log key', async function () {
 		if (isLMDB) return this.skip();
-		const { T, push, origin, version } = await copiedRecord('DistinctLogKey');
-		push(
-			{ type: 'put', id: 'r', value: { id: 'r', name: 'distinct' }, timestamp: version + 5, version, nodeId: origin },
-			{ type: 'put', id: 'marker', value: { id: 'marker' }, timestamp: Date.now(), nodeId: origin }
-		);
-		await waitFor(async () => (await T.get('marker')) != null, 'distinct write applied');
+		const { T, apply, origin, version } = await copiedRecord('DistinctLogKey');
+		await apply({
+			type: 'put',
+			id: 'r',
+			value: { id: 'r', name: 'distinct' },
+			timestamp: version + 5,
+			version,
+			nodeId: origin,
+		});
 		assert.equal((await T.get('r')).name, 'distinct', 'the later log key orders after the copied write');
 		assert.equal((await T.getHistoryOfRecord('r')).length, 1, 'a distinct write is applied and logged');
+	});
+
+	it('applies a put that follows a same-key publish in its source transaction', async function () {
+		if (isLMDB) return this.skip();
+		const { T, apply, origin } = replicatedTable('PublishThenPut');
+		const before = Date.now() - 60000;
+		await apply({
+			type: 'put',
+			id: 'r',
+			value: { id: 'r', name: 'old' },
+			timestamp: before,
+			version: before,
+			nodeId: origin,
+		});
+		const version = before + 1000;
+		await apply({
+			type: 'transaction',
+			timestamp: version,
+			writes: [
+				{ type: 'message', id: 'r', value: { id: 'r', name: 'published' }, nodeId: origin, version },
+				{ type: 'put', id: 'r', value: { id: 'r', name: 'new' }, nodeId: origin, version },
+			],
+		});
+		assert.equal((await T.get('r')).name, 'new');
+	});
+
+	it('skips every write of a re-delivered transaction that writes one key twice', async function () {
+		if (isLMDB) return this.skip();
+		const { T, apply, origin } = replicatedTable('TwoWriteRedelivery');
+		const version = Date.now() - 60000;
+		const transaction = () => ({
+			type: 'transaction',
+			timestamp: version,
+			writes: [
+				{ type: 'put', id: 'r', value: { id: 'r', name: 'first' }, nodeId: origin, version },
+				{ type: 'patch', id: 'r', value: { name: 'second' }, nodeId: origin, version },
+			],
+		});
+		await apply(transaction());
+		const history = (await T.getHistoryOfRecord('r')).length;
+		const spy = spyRecordLogReads(T, version, origin);
+		try {
+			await apply(transaction());
+		} finally {
+			spy.restore();
+		}
+		assert.deepEqual(spy.reads, [], 'both writes are decided from the committed record');
+		assert.equal((await T.getHistoryOfRecord('r')).length, history);
+		assert.equal((await T.get('r')).name, 'second');
 	});
 });

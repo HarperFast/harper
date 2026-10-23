@@ -4738,15 +4738,20 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
-							// Without explicit refs, the committed head's log key is its record version, so a matching
-							// delivery is already applied. Decided from the record because its log entry can be absent
-							// (a base copy writes none), and an absent exact-start key scans to end-of-log (harper#3467).
+							// Decided from the record, not its log entry, which a base copy never writes (harper#3467). An
+							// earlier unskipped write to this key may have restamped the head without staging it.
 							if (
 								committedBy?.sourceApply &&
 								isRocksDB &&
 								!replaying &&
 								precedesExisting === 0 &&
+<<<<<<< HEAD
 								txnLogKey === txnTime &&
+=======
+								priorWritesSkipped(write) &&
+								receivedLogKey === txnTime &&
+								appendedLogKey === receivedLogKey &&
+>>>>>>> f8f32b712 (Keep a put that follows an unstaged same-key write out of the head-tie skip)
 								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
 								!existingEntry.additionalAuditRefs?.length
 							) {
@@ -9119,6 +9124,13 @@ export function makeTable(options): TableResourceClass {
 	 * nearest earlier write in the transaction that staged state, else the stored entry. Only writes marked
 	 * skipped are passed over, because an invalidate or relocate stores a null stub without staging it.
 	 */
+	function priorWritesSkipped(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return false;
+		}
+		return true;
+	}
+
 	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
 			if (prior.stagedEntry) return prior.stagedEntry;
