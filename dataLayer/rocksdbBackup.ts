@@ -853,7 +853,7 @@ function beginRestoreForDatabase(
  * follow-on). We match conservatively and fail *closed* on a hit so the offline restore never purges
  * a database another process still has open.
  */
-function isRocksDbLockError(error: any): boolean {
+export function isRocksDbLockError(error: any): boolean {
 	const message = typeof error?.message === 'string' ? error.message : '';
 	return (
 		/lock file:/i.test(message) ||
@@ -1384,7 +1384,7 @@ export async function restoreBackupOffline(
 }
 
 /** Where each restore path calls this, and why, is in dataLayer/DESIGN.md (harper#2965). */
-async function assertBackupReadable(
+export async function assertBackupReadable(
 	backupDir: string,
 	backupId: number,
 	manifest: BackupManifest,
@@ -1410,7 +1410,7 @@ async function assertBackupReadable(
 	}
 }
 
-async function verifyBackupFiles(
+export async function verifyBackupFiles(
 	backupDir: string,
 	backupId: number,
 	manifest: BackupManifest,

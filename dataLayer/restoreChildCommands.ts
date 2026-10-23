@@ -1,0 +1,169 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { RocksDatabase, backups } from '@harperfast/rocksdb-js';
+import { initSync, setProperty } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import { stampDatabaseDirectory } from '../resources/auditStore.ts';
+import { openRestoredGeneration, closeRestoredGeneration } from '../resources/databases.ts';
+import { replayLogs, type ReplaySummary } from '../resources/replayLogs.ts';
+import { assessBlobReferences, type BlobReferenceAssessment } from '../resources/blob.ts';
+import { restoreBlobSnapshot } from './blobBackup.ts';
+import type { BackupManifest } from './backupManifest.ts';
+import { readRestoreReceipt } from './restoreReceipt.ts';
+import type { ReceiptAuthorization, RestoreChildCommand, RestoreChildSpec } from './restoreChildRunner.ts';
+import { assertBackupReadable, BackupInProgressError, isRocksDbLockError, verifyBackupFiles } from './rocksdbBackup.ts';
+
+export function initializeRestoreChildEnvironment(spec: RestoreChildSpec): void {
+	initSync();
+	for (const [name, value] of Object.entries(spec.configOverrides ?? {})) setProperty(name, value);
+	setProperty(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE, spec.blockCacheSize);
+	setProperty(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE, spec.writeBufferManagerSize);
+}
+
+/** True only while the receipt on disk still names the attempt this child was started for. */
+export function assertReceiptAuthorizes(authorization: ReceiptAuthorization): boolean {
+	const read = readRestoreReceipt(authorization.databasePath);
+	return (
+		read.kind === 'valid' &&
+		read.receipt.operation_id === authorization.operationId &&
+		read.receipt.attempts === authorization.attempt &&
+		read.receipt.state === 'applying'
+	);
+}
+
+export interface VerifyArgs {
+	backupDir: string;
+	backupId: number;
+	manifest: BackupManifest;
+	databaseName: string;
+	verifyWithChecksum: boolean;
+	verifyTables: boolean;
+}
+
+export interface ApplyAndProveArgs {
+	databaseName: string;
+	sourceDatabase: string;
+	databasePath: string;
+	backupDir: string;
+	backupId: number;
+	manifest: BackupManifest;
+	blobRoots: string[];
+	probe: boolean;
+	interrupted: boolean;
+	expectedTables?: string[];
+	acceptUnverifiedBlobs?: boolean;
+}
+
+export interface RestoreEvidence {
+	tables: string[];
+	required_stores: Record<string, string[]>;
+	replay: ReplaySummary;
+	blobs: Omit<BlobReferenceAssessment, 'blobIntegrity'> & { blob_integrity: string; waived?: boolean };
+	durability: 'full' | 'no-directory-fsync';
+}
+
+async function probeEngineLock(databaseName: string, databasePath: string): Promise<void> {
+	if (!existsSync(join(databasePath, 'CURRENT'))) return;
+	let handle: RocksDatabase | undefined;
+	try {
+		handle = RocksDatabase.open(databasePath);
+	} catch (error: any) {
+		if (isRocksDbLockError(error)) {
+			throw new BackupInProgressError(
+				`Cannot restore database '${databaseName}': it is open by a running Harper process — stop Harper before restoring offline`
+			);
+		}
+		// corrupt or half-restored: exactly what the restore recovers
+	}
+	handle?.close();
+}
+
+export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
+	await assertBackupReadable(
+		args.backupDir,
+		args.backupId,
+		args.manifest,
+		args.sourceDatabase,
+		args.databaseName,
+		() => args.interrupted
+	);
+	if (args.probe) await probeEngineLock(args.databaseName, args.databasePath);
+	await backups.restore(args.backupDir, args.databasePath, { backupId: args.backupId, mode: 'purgeAllFiles' });
+	if (args.manifest.blobs) {
+		await restoreBlobSnapshot(args.backupDir, args.backupId, args.sourceDatabase, args.blobRoots, { durable: true });
+	}
+	await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
+
+	const generation = openRestoredGeneration(args.databasePath, args.databaseName);
+	let evidence: RestoreEvidence;
+	try {
+		const missingTables = (args.expectedTables ?? []).filter((table) => !generation.tables[table]);
+		for (const table of generation.requiredStores.keys()) {
+			if (!generation.tables[table]) missingTables.push(table);
+		}
+		if (missingTables.length > 0) {
+			throw new Error(
+				`The restored ${args.databaseName} database did not load table(s) the backup contains: ${[...new Set(missingTables)].join(', ')}`
+			);
+		}
+		const replay = (await replayLogs(generation.rootStore, generation.tables, { policy: 'restore' })) as ReplaySummary;
+		let blobs: RestoreEvidence['blobs'];
+		if (args.acceptUnverifiedBlobs) {
+			blobs = {
+				blob_integrity: 'unverified',
+				waived: true,
+				recordsScanned: {},
+				references: 0,
+				markers: 0,
+				failures: [],
+			};
+		} else {
+			const { blobIntegrity, ...assessment } = await assessBlobReferences(generation.tables);
+			if (blobIntegrity === 'failed') {
+				throw new ClientError(
+					`The restored ${args.databaseName} database references blob files the backup does not contain (${assessment.failures
+						.map((failure) => `${failure.table} ${JSON.stringify(failure.id)}: ${failure.state}`)
+						.join('; ')}); rerun with accept_unverified_blobs=true to publish it anyway`,
+					409
+				);
+			}
+			blobs = { blob_integrity: blobIntegrity, ...assessment };
+		}
+		await (generation.rootStore as any).flush?.();
+		evidence = {
+			tables: Object.keys(generation.tables),
+			required_stores: Object.fromEntries(generation.requiredStores),
+			replay,
+			blobs,
+			durability: process.platform === 'win32' ? 'no-directory-fsync' : 'full',
+		};
+	} catch (error) {
+		closeRestoredGeneration(args.databasePath, generation);
+		throw error;
+	}
+	const closeFailures = closeRestoredGeneration(args.databasePath, generation);
+	if (closeFailures.length > 0) {
+		throw new AggregateError(closeFailures, `The restored ${args.databaseName} database did not close cleanly`);
+	}
+	return evidence;
+}
+
+export async function runRestoreChildCommand(command: RestoreChildCommand, args: any): Promise<unknown> {
+	switch (command) {
+		case 'verify':
+			await verifyBackupFiles(
+				args.backupDir,
+				args.backupId,
+				args.manifest,
+				args.databaseName,
+				args.verifyWithChecksum,
+				args.verifyTables
+			);
+			return { ok: true };
+		case 'apply-and-prove':
+			return applyAndProve(args);
+		default:
+			throw new Error(`Unknown restore child command ${command}`);
+	}
+}

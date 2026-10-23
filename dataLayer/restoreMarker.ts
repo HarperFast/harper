@@ -84,6 +84,11 @@ function restoreMetaKey(dbPath: string): string {
 	return createHash('sha256').update(basename(dbPath)).digest('hex').slice(0, 32);
 }
 
+/** A restore metadata file of this database, keyed the way its lock and marker are. */
+export function restoreMetaFilePath(dbPath: string, suffix: string): string {
+	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + suffix);
+}
+
 export function restoreLockPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_LOCK_SUFFIX);
 }

@@ -2584,28 +2584,32 @@ export function isSystemicIoError(error: unknown): boolean {
  * PENDING stamp rewrites that inode in place, truncating any same-filesystem hard link taken from it.
  * Telling the two apart needs the blob write lock, which is keyed by file id and unreachable from a walk.
  */
-export async function classifyBlobFileForCapture(filePath: string): Promise<BlobCaptureDisposition> {
-	if (filePath.endsWith(BLOB_REPAIR_SUFFIX)) return 'skip';
-	let header: Buffer;
-	let fileSize: number;
+async function readBlobFileHeader(filePath: string): Promise<{ header: Buffer; fileSize: number } | undefined> {
 	let handle: FileHandle;
 	try {
 		handle = await openFile(filePath, 'r');
 	} catch (error) {
-		// Reclamation can unlink a superseded blob after the engine checkpoint but before this walk. The
-		// checkpointed record may still reference it, so reserve the id. Treat local absence as terminal
-		// rather than making every read wait for repair; this gives up peer repair of that checkpointed version.
-		if ((error as { code?: string }).code === 'ENOENT') return 'gone';
+		if ((error as { code?: string }).code === 'ENOENT') return undefined;
 		throw error;
 	}
 	try {
-		fileSize = (await handle.stat()).size;
-		header = Buffer.alloc(HEADER_SIZE);
+		const fileSize = (await handle.stat()).size;
+		const header = Buffer.alloc(HEADER_SIZE);
 		const { bytesRead } = await handle.read(header, 0, HEADER_SIZE, 0);
-		header = header.subarray(0, bytesRead);
+		return { header: header.subarray(0, bytesRead), fileSize };
 	} finally {
 		await handle.close();
 	}
+}
+
+export async function classifyBlobFileForCapture(filePath: string): Promise<BlobCaptureDisposition> {
+	if (filePath.endsWith(BLOB_REPAIR_SUFFIX)) return 'skip';
+	const read = await readBlobFileHeader(filePath);
+	// Reclamation can unlink a superseded blob after the engine checkpoint but before this walk. The
+	// checkpointed record may still reference it, so reserve the id. Treat local absence as terminal
+	// rather than making every read wait for repair; this gives up peer repair of that checkpointed version.
+	if (!read) return 'gone';
+	const { header, fileSize } = read;
 	if (blobHeaderIsAbortMarker(header)) return 'capture';
 	if (blobHeaderIndicatesIncomplete(header, fileSize)) return 'pending';
 	// A deflate header records the *uncompressed* length, so the check above compares lengths only for
@@ -3930,6 +3934,92 @@ export function openStoredBlobBody(blob: Blob): StoredBlobBody | undefined {
 			}
 		},
 	};
+}
+
+export type RestoredBlobFileState = 'complete' | 'marker' | 'missing' | 'incomplete';
+
+/** What a restored blob file is: whole, a capture marker the backup recorded in its place, or neither. */
+export async function classifyRestoredBlobFile(filePath: string): Promise<RestoredBlobFileState> {
+	const read = await readBlobFileHeader(filePath);
+	if (!read) return 'missing';
+	if (blobHeaderIsAbortMarker(read.header)) return 'marker';
+	if (blobHeaderIndicatesIncomplete(read.header, read.fileSize)) return 'incomplete';
+	if (read.header[1] !== DEFLATE_TYPE) return 'complete';
+	const uncompressedSize = Number(
+		new DataView(read.header.buffer, read.header.byteOffset, HEADER_SIZE).getBigUint64(0) & 0xffffffffffffn
+	);
+	return (await inflatesToExactly(filePath, uncompressedSize)) ? 'complete' : 'incomplete';
+}
+
+export interface BlobReferenceAssessment {
+	blobIntegrity: 'verified' | 'unverified' | 'failed';
+	recordsScanned: Record<string, number>;
+	references: number;
+	markers: number;
+	/** The first few references that resolve to neither a whole file nor a capture marker. */
+	failures: { table: string; id: unknown; state: RestoredBlobFileState }[];
+}
+
+const REPORTED_BLOB_FAILURES = 20;
+
+/**
+ * Decodes every record of every table and resolves each file-backed blob reference, for a restore that
+ * must not publish a generation it cannot read. Unlike {@link findIncompleteBlobRefs}, a record that
+ * cannot be decoded is an error rather than a skip.
+ */
+export async function assessBlobReferences(database: Record<string, any>): Promise<BlobReferenceAssessment> {
+	const { HAS_BLOBS } = await import('./auditStore.ts');
+	const assessment: BlobReferenceAssessment = {
+		blobIntegrity: 'verified',
+		recordsScanned: {},
+		references: 0,
+		markers: 0,
+		failures: [],
+	};
+	let failed = false;
+	let i = 0;
+	const perMS = Math.floor((envGet(CONFIG_PARAMS.STORAGE_BLOBCLEANUPSPEED) ?? 10000) / 1000 + 1);
+	for (const tableName in database) {
+		const table = database[tableName];
+		let scanned = 0;
+		let entry: any;
+		try {
+			for (entry of table.primaryStore.getRange({ versions: true, snapshot: false })) {
+				scanned++;
+				const value = entry.value;
+				if (entry.metadataFlags & HAS_BLOBS && value) {
+					const paths: string[] = [];
+					findBlobsInObject(value, (blob) => {
+						if (blob instanceof FileBackedBlob) {
+							const storageInfo = storageInfoForBlob.get(blob);
+							if (storageInfo?.fileId != null) paths.push(getFilePath(storageInfo));
+						}
+					});
+					for (const path of paths) {
+						assessment.references++;
+						const state = await classifyRestoredBlobFile(path);
+						if (state === 'marker') assessment.markers++;
+						else if (state !== 'complete') {
+							failed = true;
+							if (assessment.failures.length < REPORTED_BLOB_FAILURES)
+								assessment.failures.push({ table: tableName, id: entry.key, state });
+						}
+					}
+				}
+				if (i++ % perMS === 0) await delay(1);
+				else await rest();
+			}
+		} catch (error) {
+			throw new Error(
+				`Could not read record ${scanned + 1} of table ${tableName}${entry ? ` (after id ${JSON.stringify(entry.key)})` : ''} while checking its blob references`,
+				{ cause: error }
+			);
+		}
+		assessment.recordsScanned[tableName] = scanned;
+	}
+	if (failed) assessment.blobIntegrity = 'failed';
+	else if (assessment.markers > 0) assessment.blobIntegrity = 'unverified';
+	return assessment;
 }
 
 /**

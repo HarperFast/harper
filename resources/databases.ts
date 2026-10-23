@@ -1609,6 +1609,78 @@ function readRocksMetaDb(
 	}
 }
 
+interface CatalogTable {
+	attributes: any[];
+	primary?: any;
+	tombstone?: any;
+	replicaDeadlines?: boolean;
+}
+
+/** The catalogue rows of a database, grouped per table the way `initStores` loads them. */
+function collectCatalogTables(attributesDbi: any, defaultTable?: string): Map<string, CatalogTable> {
+	const catalogTables = new Map<string, CatalogTable>();
+	for (const result of attributesDbi.getRange({ start: false })) {
+		const { key, value } = result as { key: string; value: any };
+		if (value == null) continue;
+		if (typeof key === 'string' && (key.startsWith(GENERATION_ROW_PREFIX) || key.startsWith(DROPPED_ROW_PREFIX)))
+			continue;
+		let [tableName, attribute_name] = key.toString().split('/');
+		if (attribute_name === '') {
+			// primary key
+			attribute_name = value.name;
+		} else if (!attribute_name) {
+			attribute_name = tableName;
+			tableName = defaultTable;
+			if (!value.name) {
+				// legacy attribute
+				value.name = attribute_name;
+				value.indexed = !value.isPrimaryKey;
+			}
+		}
+		let tableDef = catalogTables.get(tableName);
+		if (!tableDef) catalogTables.set(tableName, (tableDef = { attributes: [] }));
+		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
+		if (value.dropping) tableDef.tombstone = value;
+		if (isAuxiliaryCatalogRow(value)) {
+			tableDef.replicaDeadlines = true;
+			continue;
+		}
+		if (attribute_name != null) tableDef.attributes.push(value);
+		Object.defineProperty(value, 'key', { value: key, configurable: true });
+	}
+	return catalogTables;
+}
+
+function opensIndexStore(attribute: any): boolean {
+	return !attribute.isPrimaryKey && !!attribute.indexed;
+}
+
+function catalogPrimary({ primary, attributes }: CatalogTable): any {
+	return primary ?? attributes.find((attribute) => attribute.isPrimaryKey);
+}
+
+/**
+ * Every column family `initStores` opens for this catalogue, by the same rules it opens them with:
+ * a table mid-drop or without a primary-key row is never loaded, and only indexed attributes have a
+ * store. A restore checks these against the families the engine already has, because `initStores`
+ * would otherwise create a missing one empty and report the table as loaded. A replica-deadline store
+ * is not required: a table load rebuilds its entries from the REPLICA rows.
+ */
+export function requiredStoreNames(attributesDbi: any, defaultTable?: string): Map<string, string[]> {
+	const required = new Map<string, string[]>();
+	for (const [tableName, tableDef] of collectCatalogTables(attributesDbi, defaultTable)) {
+		if ((tableDef.tombstone ?? tableDef.primary)?.dropping) continue;
+		const primary = catalogPrimary(tableDef);
+		if (!primary) continue;
+		const names = [storeNameFor(primary.key, primary.generation)];
+		for (const attribute of tableDef.attributes) {
+			if (opensIndexStore(attribute)) names.push(storeNameFor(attribute.key, primary.generation));
+		}
+		required.set(tableName, names);
+	}
+	return required;
+}
+
 interface InitStoresOptions {
 	defaultTable?: string;
 	auditPath?: string;
@@ -1627,19 +1699,10 @@ interface InitStoresOptions {
 	openedStores?: StoreOwner;
 }
 
-function initStores(
-	path: string,
-	rootStore: RootDatabaseKind,
-	databaseName: string,
-	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
-) {
-	openedStores ??= ownedStoresFor(rootStore);
-	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
-	rootStore.databaseName ??= storeName ?? databaseName;
-	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
-	const internalDbiInit = createOpenDBIObject(false);
+function openCatalogStore(rootStore: RootDatabaseKind, openedStores?: StoreOwner) {
 	let attributesDbi = rootStore.dbisDb;
 	if (!attributesDbi) {
+		const internalDbiInit = createOpenDBIObject(false);
 		if (rootStore instanceof RocksDatabase) {
 			attributesDbi = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
@@ -1652,6 +1715,69 @@ function initStores(
 		openedStores?.push(attributesDbi);
 		rootStore.dbisDb = markInternalDbiNonVersioned(attributesDbi);
 	}
+	return attributesDbi;
+}
+
+export interface RestoredGeneration {
+	rootStore: RocksRootDatabase;
+	tables: Tables;
+	openedStores: any[];
+	requiredStores: Map<string, string[]>;
+}
+
+/**
+ * Opens a just-restored RocksDB directory privately — never registered, never published — after
+ * proving every column family its catalogue requires already exists. The family set is read at a
+ * root-only open, before anything that can create a family: `initStores` recreates a missing one
+ * empty, which would make a truncated restore look loaded.
+ */
+export function openRestoredGeneration(path: string, databaseName: string): RestoredGeneration {
+	const rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as RocksRootDatabase;
+	const openedStores: any[] = [];
+	const tables: Tables = {};
+	try {
+		const resolvedPath = resolve(path);
+		const families = new Set(
+			getRegistryStatus()
+				.filter((instance) => resolve(instance.path) === resolvedPath)
+				.flatMap((instance) => Object.keys(instance.columnFamilies ?? {}))
+		);
+		if (!families.has(INTERNAL_DBIS_NAME)) {
+			throw new Error(
+				`The restored ${databaseName} database at ${path} has no table catalogue (${INTERNAL_DBIS_NAME})`
+			);
+		}
+		const requiredStores = requiredStoreNames(openCatalogStore(rootStore, openedStores));
+		const missing = [...requiredStores.values()].flat().filter((name) => !families.has(name));
+		if (missing.length > 0) {
+			throw new Error(
+				`The restored ${databaseName} database at ${path} is missing column families its catalogue requires: ${missing.join(', ')}`
+			);
+		}
+		initStores(path, rootStore, databaseName, { destination: tables, openedStores });
+		return { rootStore, tables, openedStores, requiredStores };
+	} catch (error) {
+		closeBranchHandles(path, rootStore, openedStores, tables);
+		throw error;
+	}
+}
+
+/** Closes a {@link openRestoredGeneration} result; the returned failures are close errors to surface. */
+export function closeRestoredGeneration(path: string, generation: RestoredGeneration): unknown[] {
+	return closeBranchHandles(path, generation.rootStore, generation.openedStores, generation.tables);
+}
+
+function initStores(
+	path: string,
+	rootStore: RootDatabaseKind,
+	databaseName: string,
+	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
+) {
+	openedStores ??= ownedStoresFor(rootStore);
+	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
+	rootStore.databaseName ??= storeName ?? databaseName;
+	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
+	const attributesDbi = openCatalogStore(rootStore, openedStores);
 
 	let auditStore = rootStore.auditStore;
 	if (!auditStore) {
@@ -1683,38 +1809,8 @@ function initStores(
 	if (destination && !destination[DEFINED_TABLES]) destination[DEFINED_TABLES] = new Set<string>();
 	const definedTables = tables[DEFINED_TABLES];
 	(definedTables as any).rootStore = rootStore;
-	const tablesToLoad = new Map<string, any>();
-
-	for (const result of attributesDbi.getRange({ start: false })) {
-		const { key, value } = result as { key: string; value: any };
-		if (value == null) continue;
-		if (typeof key === 'string' && (key.startsWith(GENERATION_ROW_PREFIX) || key.startsWith(DROPPED_ROW_PREFIX)))
-			continue;
-		let [tableName, attribute_name] = key.toString().split('/');
-		if (attribute_name === '') {
-			// primary key
-			attribute_name = value.name;
-		} else if (!attribute_name) {
-			attribute_name = tableName;
-			tableName = defaultTable;
-			if (!value.name) {
-				// legacy attribute
-				value.name = attribute_name;
-				value.indexed = !value.isPrimaryKey;
-			}
-		}
-		definedTables?.add(tableName);
-		let tableDef = tablesToLoad.get(tableName);
-		if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
-		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
-		if (value.dropping) tableDef.tombstone = value;
-		if (isAuxiliaryCatalogRow(value)) {
-			tableDef.replicaDeadlines = true;
-			continue;
-		}
-		if (attribute_name != null) tableDef.attributes.push(value);
-		Object.defineProperty(value, 'key', { value: key, configurable: true });
-	}
+	const tablesToLoad = collectCatalogTables(attributesDbi, defaultTable);
+	for (const tableName of tablesToLoad.keys()) definedTables?.add(tableName);
 
 	// Complete any drops that were interrupted mid-flight. dropTable persists a
 	// `dropping` tombstone on the table's primary catalog entry before removing
@@ -1795,29 +1891,21 @@ function initStores(
 		);
 
 	for (const [tableName, tableDef] of tablesToLoad) {
-		let { attributes, primary: primaryAttribute } = tableDef;
+		let { attributes } = tableDef;
+		const primaryAttribute = catalogPrimary(tableDef);
 		if (!primaryAttribute) {
-			// this isn't defined, find it in the attributes
-			for (const attribute of attributes) {
-				if (attribute.isPrimaryKey) {
-					primaryAttribute = attribute;
-					break;
-				}
+			const tableKey = `${databaseName}/${tableName}`;
+			if (reportedIncompleteCatalogs.has(tableKey))
+				logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
+			else {
+				reportedIncompleteCatalogs.add(tableKey);
+				logger.warn(
+					`Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
+				);
 			}
-			if (!primaryAttribute) {
-				const tableKey = `${databaseName}/${tableName}`;
-				if (reportedIncompleteCatalogs.has(tableKey))
-					logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
-				else {
-					reportedIncompleteCatalogs.add(tableKey);
-					logger.warn(
-						`Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
-					);
-				}
-				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
-				definedTables?.delete(tableName);
-				continue;
-			}
+			// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
+			definedTables?.delete(tableName);
+			continue;
 		}
 		if (reportedIncompleteCatalogs.size) reportedIncompleteCatalogs.delete(`${databaseName}/${tableName}`);
 		// if the table has already been defined, use that class, don't create a new one
@@ -1928,7 +2016,7 @@ function initStores(
 			attribute.attribute = attribute.name;
 			try {
 				// now load the non-primary keys, opening the dbs as necessary for indices
-				if (!attribute.isPrimaryKey && (attribute.indexed || (attribute.attribute && !attribute.name))) {
+				if (opensIndexStore(attribute)) {
 					if (!indices[attribute.name]) {
 						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation, openedStores);
 						indices[attribute.name] = dbi;

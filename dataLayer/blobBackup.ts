@@ -1,10 +1,12 @@
 'use strict';
 
-import { existsSync } from 'node:fs';
+import { closeSync, existsSync, openSync } from 'node:fs';
 import { copyFile, link, mkdir, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { fsyncTolerantSync } from '../utility/fsync.ts';
+import { fsyncDirectory } from '../utility/durableFile.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -391,7 +393,8 @@ export async function restoreBlobSnapshot(
 	backupDir: string,
 	backupId: number,
 	databaseName: string,
-	blobRoots: string[]
+	blobRoots: string[],
+	{ durable = false }: { durable?: boolean } = {}
 ): Promise<void> {
 	const snapshotDir = blobSnapshotDir(backupDir, backupId);
 	if (!existsSync(snapshotDir)) {
@@ -410,7 +413,30 @@ export async function restoreBlobSnapshot(
 	}
 	for (const index of indexDirs) {
 		await copyTree(join(snapshotDir, String(index)), blobRoots[index]);
+		if (durable) await fsyncTree(blobRoots[index]);
 	}
+}
+
+/**
+ * Flush every file under `root`, every directory holding one, and `root`'s own entry in its parent,
+ * so a restore that is about to be declared committed cannot outlive its blobs across a power loss.
+ */
+export async function fsyncTree(root: string): Promise<void> {
+	const directories = new Set<string>();
+	for await (const path of walkBlobFiles(root)) {
+		const fd = openSync(path, 'r');
+		try {
+			fsyncTolerantSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+		for (let directory = dirname(path); directory.length >= root.length; directory = dirname(directory)) {
+			if (directories.has(directory)) break;
+			directories.add(directory);
+		}
+	}
+	for (const directory of directories) fsyncDirectory(directory);
+	if (existsSync(root)) fsyncDirectory(dirname(root));
 }
 
 /**
