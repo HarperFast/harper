@@ -1410,12 +1410,24 @@ async function getComponents() {
 		log.debug(`Failed to get component status from threads: ${error.message}`);
 	}
 
+	const { successfulDeploymentsByProject, deploymentOfLiveRelease } = require('./deploymentOperations.ts');
+	const { liveDeploymentIdOf } = require('./Application.ts');
+	const deploymentsByProject = await successfulDeploymentsByProject().catch((error) => {
+		log.debug(`Failed to read deployment records for get_components: ${error.message}`);
+		return new Map();
+	});
 	for (const component of results.entries) {
+		const liveDeploymentId = await liveDeploymentIdOf(componentsRoot, component.name).catch(() => undefined);
+		if (liveDeploymentId) component.deployment_id = liveDeploymentId;
+		const deployment = deploymentOfLiveRelease(deploymentsByProject.get(component.name), liveDeploymentId);
+		if (deployment?.completed_at != null) component.deployed_at = deployment.completed_at;
 		try {
-			component.status = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
+			const { loadedAt, ...status } = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
 				component.name,
 				consolidatedStatuses
 			);
+			component.status = status;
+			if (loadedAt !== undefined) component.restarted_at = loadedAt;
 		} catch (error) {
 			log.debug(`Failed to get aggregated status for component ${component.name}: ${error.message}`);
 			component.status = {

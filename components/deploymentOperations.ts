@@ -91,6 +91,35 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 	return { deployments: collected.slice(offset, offset + limit), total };
 }
 
+/**
+ * Each project's successful deployments, newest first by completion. One scan serves a whole `get_components`; an
+ * empty map when this node has no deployment table.
+ */
+export async function successfulDeploymentsByProject(): Promise<Map<string, any[]>> {
+	const byProject = new Map<string, any[]>();
+	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
+	if (!table) return byProject;
+	for await (const row of table.search([{ attribute: 'status', value: 'success' }])) {
+		if (!row?.project) continue;
+		let rows = byProject.get(row.project);
+		if (!rows) byProject.set(row.project, (rows = []));
+		rows.push(stripBlob(row));
+	}
+	for (const rows of byProject.values()) rows.sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
+	return byProject;
+}
+
+/**
+ * The record that made a component's live release live: the newest successful deploy or activation naming the id in
+ * its tree's provenance marker. A tree without one (installed before 5.3, by `add_component`, or from a `file:` link)
+ * is described by the project's newest successful deployment.
+ */
+export function deploymentOfLiveRelease(rows: any[] | undefined, liveDeploymentId: string | undefined): any {
+	if (!rows) return undefined;
+	if (liveDeploymentId === undefined) return rows[0];
+	return rows.find((row) => row.deployment_id === liveDeploymentId || row.activated_from === liveDeploymentId);
+}
+
 export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	if (!req || !req.deployment_id) {
 		throw new ClientError(`'deployment_id' is required`);

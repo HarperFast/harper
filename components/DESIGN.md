@@ -781,6 +781,23 @@ streamed `deploy_component` response and any `get_deployment` tail, so an in-ban
 `finish()` settles after it writes the terminal row, so the tail's closing re-read sees the final status. The
 tail also stops when its own SSE client disconnects (`ProgressEmitter.signal`).
 
+### `get_components` says when the live release was deployed and when it last loaded
+
+Each entry carries three fields, all of this node's view (#564):
+
+- `deployment_id` is the id the live tree's provenance marker names, the id `deploy_component { deployment_id }`
+  accepts. It is absent for a tree with no marker.
+- `deployed_at` is the `completed_at` of the record that made that release live: the newest `success` row whose
+  `deployment_id` or `activated_from` is the marker's id. So a node that rejected a newer rolling release still
+  reports the release it serves. A tree with no marker reports the project's newest `success` row.
+- `restarted_at` is the latest time any thread on this node finished loading the application or one of its
+  sub-components, successfully or not (`ComponentStatus.loadedAt`, set by `lifecycle.loaded`/`failed` and kept
+  across later status reports). A restarted worker is a new thread, so a restart refreshes it; nothing persists it.
+
+The issue offered deriving `deployedAt` from configuration history instead. `hdb_deployment` is already the
+replicated record of every deploy, and it covers payload deploys, which change no configuration, so it is the
+source, and no second record of deploys exists. `get_components` reads it in one scan.
+
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
 Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).

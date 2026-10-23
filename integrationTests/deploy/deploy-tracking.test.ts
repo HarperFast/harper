@@ -145,6 +145,40 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 		);
 	});
 
+	test('get_components reports when the live release was deployed and when workers last loaded it (harper#564)', async () => {
+		const project = 'tracking-times-application';
+		const multipart = buildMultipartBody(
+			{ operation: 'deploy_component', project, restart: true },
+			{
+				name: 'payload',
+				filename: 'package.tar.gz',
+				contentType: 'application/gzip',
+				stream: streamPackagedDirectory(fixtureDir, { skip_node_modules: true }),
+			}
+		);
+		const response = await postMultipart(
+			new URL(ctx.harper.operationsAPIURL),
+			multipart.contentType,
+			multipart.stream,
+			ctx.harper.admin
+		);
+		strictEqual(response.status, 200, `expected 200, got ${response.status}: ${response.body}`);
+		const { deployment_id } = JSON.parse(response.body);
+		const row = (await callOperation(ctx, { operation: 'get_deployment', deployment_id })).body;
+
+		let entry: any;
+		for (let attempt = 0; attempt < 60; attempt++) {
+			const components = await callOperation(ctx, { operation: 'get_components' });
+			strictEqual(components.status, 200);
+			entry = components.body.entries.find((candidate: any) => candidate.name === project);
+			if (entry?.restarted_at >= row.started_at) break;
+			await sleep(500);
+		}
+		strictEqual(entry.deployment_id, deployment_id);
+		strictEqual(entry.deployed_at, row.completed_at);
+		ok(entry.restarted_at >= row.started_at, `restarted_at ${entry.restarted_at} predates the deploy`);
+	});
+
 	test('the response and the row carry the install fingerprint this node took', async () => {
 		const project = 'tracking-fingerprint-application';
 		const lockfile = '{"name":"tracking-fingerprint-application","lockfileVersion":3,"packages":{}}\n';

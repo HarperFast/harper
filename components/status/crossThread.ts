@@ -340,6 +340,7 @@ export class StatusAggregator {
 		let mostRecentCheckTime = 0;
 		let latestMessage: string | undefined;
 		let error: Error | string | undefined;
+		let loadedAt: number | undefined;
 		const statusCounts = new Map<ComponentStatusLevel, number>();
 		const abnormalities = new Map<string, ComponentStatusAbnormality>();
 
@@ -362,6 +363,8 @@ export class StatusAggregator {
 					lastCheckedTimes.workers[workerIndex] = Math.max(lastCheckedTimes.workers[workerIndex] ?? 0, checkTime);
 				}
 			}
+
+			if (status.loadedAt) loadedAt = Math.max(loadedAt ?? 0, new Date(status.loadedAt).getTime());
 
 			// Track status counts
 			statusCounts.set(status.status, (statusCounts.get(status.status) || 0) + 1);
@@ -413,6 +416,7 @@ export class StatusAggregator {
 			latestMessage,
 			error,
 		};
+		if (loadedAt !== undefined) aggregatedStatus.loadedAt = loadedAt;
 
 		// Only add abnormalities if there are any
 		if (abnormalities.size > 0) {

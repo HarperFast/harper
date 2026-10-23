@@ -1609,6 +1609,11 @@ async function readDeploymentProvenance(treePath: string, componentName: string)
 	return raw === undefined ? undefined : parseDeploymentProvenance(raw, componentName);
 }
 
+/** The deployment id the component's live tree names, or undefined when it names none. */
+export function liveDeploymentIdOf(componentsRootDirPath: string, componentName: string): Promise<string | undefined> {
+	return readDeploymentProvenance(join(componentsRootDirPath, componentName), componentName);
+}
+
 async function isDeploymentRecord(deploymentDirPath: string, componentName: string): Promise<boolean> {
 	if ((await candidateComponentName(deploymentDirPath)) !== componentName) return false;
 	if (!(await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER)))) return false;
