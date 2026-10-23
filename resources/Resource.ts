@@ -16,6 +16,7 @@ import {
 	isReleasedTransaction,
 	type Transaction,
 } from './DatabaseTransaction.ts';
+import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -28,8 +29,19 @@ import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
+// Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
+// read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
+const WRITE_METHODS = new Set(['put', 'patch', 'delete', 'invalidate', 'update']);
+
+function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
+	// the transport has already started parsing a request body; nothing else will observe it now
+	for (const arg of args) if (typeof arg?.then === 'function') arg.then(undefined, () => {});
+	return Promise.reject(readOnlyModeError());
+}
+
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+export const WRITE_CONDITION = Symbol('writeCondition');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -680,8 +692,11 @@ function transactional(
 ) {
 	applyContext.reliesOnPrototype = true;
 	const hasContent = options.hasContent;
+	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
+		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
+			return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
 		let id, query, isCollection;
 		let data;
 		// An absent argument, not a context — and not this call's data either.
