@@ -1290,9 +1290,7 @@ describe('Blob test', () => {
 		}
 	});
 
-	// harper#2412: the orphan sweep scans every audit value, including the entry whose write the
-	// primary record carries. A record whose version equals the entry's must never stand in for the
-	// entry's own blobs, since a version is legitimately non-unique.
+	// harper#2412: a version is non-unique and cannot prove the live record carries an audit entry's blobs.
 	it('scans an audit value whose record version matches a different write', async () => {
 		const { blob, filePath } = await makeDiskBackedBlob(4096);
 		const id = 'orphan-identity';
