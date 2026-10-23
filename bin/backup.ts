@@ -88,7 +88,8 @@ export async function runBackupCommand(command: string): Promise<void> {
 				databaseName,
 				request.backup_id,
 				request.target_database,
-				request.allow_engine_only
+				request.allow_engine_only,
+				request.accept_incompatible_backup
 			);
 			break;
 		default:

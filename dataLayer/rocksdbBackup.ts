@@ -334,15 +334,27 @@ async function requireBackupComplete(
 async function resolveCompleteBackup(
 	backupDir: string,
 	requestedId: number | undefined,
-	databaseName: string
-): Promise<{ backupId: number; manifest: BackupManifest }> {
+	databaseName: string,
+	acceptIncompatible = false
+): Promise<{ backupId: number; manifest: BackupManifest; waived: string[] }> {
 	const resolved = await resolveCompleteBackupManifest(backupDir, requestedId, databaseName);
 	// Both restore paths come through here, ahead of anything destructive. A manifest with no
 	// `producer` KEY predates the field and is this instance's own lineage, so it is accepted; a key
 	// that is present but unreadable is the malformed case and refuses, since Harper only ever writes
 	// the key alongside a value.
-	if (Object.hasOwn(resolved.manifest, 'producer')) assertArchiveRestorable(resolved.manifest.producer!);
-	return resolved;
+	const waived = Object.hasOwn(resolved.manifest, 'producer')
+		? assertArchiveRestorable(resolved.manifest.producer!, { acceptIncompatible })
+		: [];
+	return { ...resolved, waived };
+}
+
+function logCompatibilityWaived(databaseName: string, backupId: number, manifest: BackupManifest, waived: string[]) {
+	if (waived.length === 0) return;
+	const producer = manifest.producer;
+	logger.warn(
+		`Restoring backup ${backupId} of database '${databaseName}' with accept_incompatible_backup; waived: ${waived.join('; ')}. ` +
+			`Producer: Harper ${producer?.harper_version ?? 'unknown'}, rocksdb-js ${producer?.rocksdb_js_version ?? 'unknown'}`
+	);
 }
 
 async function resolveCompleteBackupManifest(
@@ -588,6 +600,7 @@ export async function verifyBackup(request: any) {
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
 	requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
+	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
 	const databaseName = getDatabaseName(request);
 	if (databaseName === 'system') {
 		throw new ClientError(
@@ -605,7 +618,8 @@ export async function validateRestoreBackup(request: any) {
 	await resolveCompleteBackup(
 		backupDir,
 		request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
-		databaseName
+		databaseName,
+		acceptIncompatible
 	);
 	// Only a loaded database that actually has tables can be validated as a single-root RocksDB
 	// store here (an empty/tableless database has no table to resolve a root store from, and an
@@ -648,16 +662,17 @@ export async function restoreBackup(request: any) {
 			: resolveDatabasePath(databaseName);
 	const blobRoots = getBlobPathsForDatabaseName(databaseName);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
+	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
 	// Selection and every check derived from it run under the repository lock, so they apply to the
 	// backup the claim pins; the claim is published before the marker under both locks, so a crash
 	// cannot leave a marked database with an unprotected source.
-	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+	const { lock, backupId, manifest, waived } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
 		// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
 		// tells us whether blobs were captured so we restore them only when they were
-		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
+		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName, acceptIncompatible);
 		// reject a backup with more blob roots than the current config *before* anything destructive —
 		// restoring it would mis-address blobs (records persist their root index)
 		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
@@ -667,6 +682,7 @@ export async function restoreBackup(request: any) {
 		);
 		return { lock: claimed, ...selected };
 	});
+	logCompatibilityWaived(databaseName, backupId, manifest, waived);
 	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the held restore lock (later the marker) keeps it from reloading.
@@ -736,7 +752,12 @@ export async function restoreBackup(request: any) {
 	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
 	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
-	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
+	return {
+		database: databaseName,
+		backup_id: backupId,
+		...(allowEngineOnly ? { allow_engine_only: true } : {}),
+		...(waived.length > 0 ? { compatibility_waived: waived } : {}),
+	};
 }
 
 /**
@@ -1259,11 +1280,13 @@ export async function restoreBackupOffline(
 	databaseName: string,
 	requestedBackupId?: number,
 	targetDatabase?: string,
-	allowEngineOnlyOption?: boolean
+	allowEngineOnlyOption?: boolean,
+	acceptIncompatibleOption?: boolean
 ) {
 	// Validated the same way the online path validates it, so a malformed opt-in is refused rather than
 	// silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
 	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
+	const acceptIncompatible = requireBooleanOption(acceptIncompatibleOption, 'accept_incompatible_backup');
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
 	if (targetDatabase !== undefined) validateDatabaseName(targetDatabase);
@@ -1273,9 +1296,9 @@ export async function restoreBackupOffline(
 	let destructionStarted = false;
 	// Unlike online, verify before the claim: with no live writers to refuse, a crash mid-verify then
 	// leaves the database loadable. Claim before marking under both locks, and mark before probing.
-	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+	const { lock, backupId, manifest, waived } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
 		// resolve to the latest complete backup (or the requested id, rejected if incomplete)
-		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
+		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName, acceptIncompatible);
 		// reject a backup with more blob roots than the target's current config before anything
 		// destructive (records persist their root index, so collapsing would mis-address blobs)
 		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
@@ -1319,6 +1342,7 @@ export async function restoreBackupOffline(
 		});
 		return { lock: claimed, ...selected };
 	});
+	logCompatibilityWaived(databaseName, backupId, manifest, waived);
 	try {
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
 		// a heuristic: the PID file is briefly absent mid-`harper restart`, and backups.restore's
@@ -1380,6 +1404,7 @@ export async function restoreBackupOffline(
 		backup_id: backupId,
 		restored_to: databaseDir,
 		...(allowEngineOnly ? { allow_engine_only: true } : {}),
+		...(waived.length > 0 ? { compatibility_waived: waived } : {}),
 	};
 }
 

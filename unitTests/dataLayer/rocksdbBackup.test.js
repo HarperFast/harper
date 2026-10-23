@@ -13,6 +13,7 @@ const {
 } = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
+const harperLogger = require('#src/utility/logging/harper_logger');
 const { writeUnsupportedTableFormat: sharedWriteUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
 const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -1501,6 +1502,95 @@ describe('rocksdbBackup', function () {
 				restoreBackupOffline(PROV_DB, created.backup_id),
 				(error) => error.statusCode === 400 && /archive_schema_version/.test(error.message)
 			);
+		});
+
+		describe('accept_incompatible_backup', function () {
+			async function backupWithProducer(edit) {
+				const database = RocksDatabase.open(join(storageDir, PROV_DB));
+				try {
+					database.putSync('rec', { n: 1 });
+				} finally {
+					database.close();
+				}
+				const created = await createBackupOffline(PROV_DB);
+				const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+				const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+				edit(stored.producer);
+				writeFileSync(manifestFile, JSON.stringify(stored));
+				return created.backup_id;
+			}
+			const newerMajor = (producer) => {
+				producer.archive_schema_version += 1;
+				producer.harper_version = '99.0.0';
+			};
+
+			it('refuses a newer archive major without the flag, before submitting a job', async function () {
+				this.timeout(30000);
+				const backupId = await backupWithProducer(newerMajor);
+				const refused = (error) => error.statusCode === 400 && /manifest schema version/.test(error.message);
+				await assert.rejects(validateRestoreBackup({ ...SU, database: PROV_DB, backup_id: backupId }), refused);
+				await assert.rejects(restoreBackupOffline(PROV_DB, backupId), refused);
+			});
+
+			it('admits a newer archive major with the flag, and records and logs what it waived', async function () {
+				this.timeout(30000);
+				const backupId = await backupWithProducer(newerMajor);
+				await validateRestoreBackup({
+					...SU,
+					database: PROV_DB,
+					backup_id: backupId,
+					accept_incompatible_backup: true,
+				});
+
+				const realWarn = harperLogger.warn;
+				const warnings = [];
+				harperLogger.warn = (...args) => warnings.push(args.join(' '));
+				let result;
+				try {
+					result = await restoreBackupOffline(PROV_DB, backupId, undefined, undefined, true);
+				} finally {
+					harperLogger.warn = realWarn;
+				}
+				assert.strictEqual(result.compatibility_waived.length, 1);
+				assert.match(result.compatibility_waived[0], /archive_schema_version/);
+				assert.strictEqual(warnings.length, 1);
+				assert.match(warnings[0], /99\.0\.0/);
+				assert.match(warnings[0], /rocksdb-js/);
+				assert.match(warnings[0], /archive_schema_version/);
+			});
+
+			it('still refuses an unsupported capability token with the flag', async function () {
+				this.timeout(30000);
+				const backupId = await backupWithProducer((producer) => {
+					newerMajor(producer);
+					producer.requires.push('blob-encryption-v2');
+				});
+				const refused = (error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message);
+				await assert.rejects(
+					validateRestoreBackup({ ...SU, database: PROV_DB, backup_id: backupId, accept_incompatible_backup: true }),
+					refused
+				);
+				await assert.rejects(restoreBackupOffline(PROV_DB, backupId, undefined, undefined, true), refused);
+			});
+
+			it('ignores the archive schema minor and waives nothing for it', async function () {
+				this.timeout(30000);
+				const backupId = await backupWithProducer((producer) => {
+					producer.archive_schema_minor = 99;
+				});
+				const result = await restoreBackupOffline(PROV_DB, backupId);
+				assert.strictEqual(result.compatibility_waived, undefined);
+			});
+
+			it('rejects a flag that is not a boolean', async function () {
+				const notBoolean = (error) =>
+					error.statusCode === 400 && /accept_incompatible_backup' must be a boolean/.test(error.message);
+				await assert.rejects(
+					validateRestoreBackup({ ...SU, database: PROV_DB, accept_incompatible_backup: 'true' }),
+					notBoolean
+				);
+				await assert.rejects(restoreBackupOffline(PROV_DB, undefined, undefined, undefined, 'true'), notBoolean);
+			});
 		});
 
 		it('still restores a backup whose completion manifest predates the producer field', async function () {

@@ -327,10 +327,16 @@ a multi-gigabyte archive just to decide whether to reject it.
   already-loaded `system` database rather than calling `getDatabases()`: the offline CLI runs with
   nothing loaded, and a scan there would open — and lock — every database on the instance. Names
   only; the archive carries no role definitions and a restore never creates a role.
+- **`archive_schema_version` is the major; `archive_schema_minor` is informational.** Additive
+  fields bump the minor, which no reader gates on. A reader refuses only a newer major.
 - **A manifest that predates this is accepted, not refused.** A managed backup written without a
   `producer` block came from this instance's own lineage, so it is reported as unidentified. A
   manifest that is present but malformed is an error — that is a different situation, and only the
   first is eligible for an operator's provenance override.
+- **`accept_incompatible_backup` is that override.** A super-user boolean on `restore_backup`
+  (online, offline, CLI). It waives only the newer-major refusal, never an unsupported `requires`
+  token, which names a format this build cannot read. A waiver is logged at `warn` with the
+  producer's `harper_version`/`rocksdb_js_version` and returned as `compatibility_waived`.
 
 ## Legacy SQL pre-fetch narrows only by top-level AND conjuncts (`dataLayer/SQLSearch.ts`)
 
