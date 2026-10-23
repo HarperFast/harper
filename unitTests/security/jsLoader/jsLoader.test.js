@@ -1,6 +1,6 @@
 'use strict';
 
-const { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -721,3 +721,23 @@ describe('native addon delegation', () => {
 		expect(error?.message).to.include('outside of allowed path');
 	});
 });
+
+for (const mode of ['vm-current-context', 'vm']) {
+	describe(`CommonJS require (${mode})`, () => {
+		let runtimeRoot;
+		const loaderScope = (options = {}) => ({ mode, runtimeRoot, allowedPath: runtimeRoot, resources: {}, ...options });
+
+		beforeEach(() => {
+			runtimeRoot = mkdtempSync(join(realpathSync(tmpdir()), 'harper-js-loader-cjs-'));
+		});
+		afterEach(() => rmSync(runtimeRoot, { recursive: true, force: true }));
+
+		it('passes filesystem paths as __filename and __dirname', async () => {
+			writeFileSync(join(runtimeRoot, 'paths.cjs'), 'module.exports = { filename: __filename, dirname: __dirname };\n');
+			writeFileSync(join(runtimeRoot, 'entry.cjs'), "module.exports = require('./paths.cjs');\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.filename).to.equal(join(runtimeRoot, 'paths.cjs'));
+			expect(result.dirname).to.equal(runtimeRoot);
+		});
+	});
+}

@@ -553,13 +553,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			? runInContext(cjsWrapper, contextObject, runOptions)
 			: runInThisContext(cjsWrapper, runOptions);
 
-		wrappedFn(
-			cjsModule,
-			cjsModule.exports,
-			cjsRequire,
-			url,
-			dirname(url.startsWith('file://') ? fileURLToPath(url) : url)
-		);
+		const filename = url.startsWith('file://') ? fileURLToPath(url) : url;
+		wrappedFn(cjsModule, cjsModule.exports, cjsRequire, filename, dirname(filename));
 
 		return cjsModule;
 	}
