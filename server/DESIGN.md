@@ -72,6 +72,25 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 > version is therefore correct, not merely disallowed; one that supplies no version is not shared at
 > all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
 > indistinguishable from re-sending the same message.
+<<<<<<< HEAD
+=======
+>
+> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
+> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
+
+> **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
+> is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
+> than the publisher's, the record is decoded from the transaction log and `data` is a plain `Uint8Array`,
+> which mqtt-packet cannot encode. Pinned by `integrationTests/mqtt/opaque-payload-across-workers.test.ts`.
+>
+> **Only text or bytes make an envelope.** A table may declare attributes named `contentType` and `data`,
+> so the shape alone proves nothing: `isPassThroughEnvelope` (`serverHelpers/contentTypes.ts`) requires a
+> string `contentType` and string or ArrayBuffer-view `data`, and every other record goes through the
+> negotiated serializer. Delivered raw, object or number `data` made mqtt-packet throw, and a durable
+> session replayed the delivery on every reconnect. `isHttpPassThroughEnvelope` also accepts a `Blob` and
+> Node/Web streams, which the HTTP body writer sends; plain iterables stay out because an array-valued `data`
+> is one. Pinned by `integrationTests/mqtt/passthrough-envelope-shape.test.ts`.
+>>>>>>> c3dc7dd13 (Deliver a record as a pass-through envelope only when its data is text or bytes)
 
 ### Threads
 

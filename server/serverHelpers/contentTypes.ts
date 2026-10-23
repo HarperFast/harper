@@ -425,6 +425,30 @@ const BROTLI_GENERIC_OPTIONS = brotliParams(constants.BROTLI_MODE_GENERIC);
 export function brotliOptions(contentType: string) {
 	return contentType.includes('json') || contentType.includes('text') ? BROTLI_TEXT_OPTIONS : BROTLI_GENERIC_OPTIONS;
 }
+
+function isTextOrBytes(data: unknown): data is string | ArrayBufferView {
+	return typeof data === 'string' || ArrayBuffer.isView(data);
+}
+
+/**
+ * Whether a message is a `{ contentType, data }` envelope delivered as its `data`, verbatim. Stored
+ * non-JSON payloads have this shape, but so can a table's own records, so `data` must be something a
+ * protocol encoder accepts; any other shape is an ordinary record for the negotiated serializer.
+ */
+export function isPassThroughEnvelope(value: any): value is { contentType: string; data: string | ArrayBufferView } {
+	return typeof value?.contentType === 'string' && isTextOrBytes(value.data);
+}
+
+/**
+ * {@link isPassThroughEnvelope} for an HTTP response, whose body writer also accepts a Blob or a stream.
+ * Plain iterables are excluded: an array-valued `data` attribute is one.
+ */
+export function isHttpPassThroughEnvelope(value: any): boolean {
+	if (typeof value?.contentType !== 'string') return false;
+	const data = value.data;
+	return isTextOrBytes(data) || data instanceof Blob || data instanceof Readable || data instanceof ReadableStream;
+}
+
 /**
  * Serialize a response
  * @param responseData
@@ -438,7 +462,7 @@ export function serialize(responseData, request, responseObject) {
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
 	let contentType: string;
-	if (responseData?.contentType != null && responseData.data != null) {
+	if (isHttpPassThroughEnvelope(responseData)) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
 		contentType = responseData.contentType;
 		responseObject.headers.set('Content-Type', contentType);
@@ -536,7 +560,18 @@ export function serializeMessage(
 	request?: Request,
 	inAsyncContinuation?: boolean
 ): Buffer | string | Promise<Buffer | string> {
+<<<<<<< HEAD
 	if (message?.contentType != null && message.data != null) return message.data;
+=======
+	if (isPassThroughEnvelope(message)) {
+		const data = message.data;
+		// a record read on another thread decodes binary as a plain Uint8Array view, which protocol
+		// encoders (mqtt-packet) reject; wrap the same bytes rather than copy them
+		return ArrayBuffer.isView(data) && !Buffer.isBuffer(data)
+			? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+			: data;
+	}
+>>>>>>> c3dc7dd13 (Deliver a record as a pass-through envelope only when its data is text or bytes)
 	asyncSerializations = inAsyncContinuation ? undefined : [];
 	try {
 		const serialized: Buffer | string = getMessageSerializer(request)(message);

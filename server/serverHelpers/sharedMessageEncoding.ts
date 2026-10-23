@@ -1,4 +1,4 @@
-import { serializeMessage, getMessageSerializer } from './contentTypes.ts';
+import { serializeMessage, getMessageSerializer, isPassThroughEnvelope } from './contentTypes.ts';
 import { logger } from '../../utility/logging/logger.ts';
 
 /**
@@ -222,8 +222,7 @@ function reuse(encoding: SharedMessageEncoding, message: any, request: any): Sha
 export function getSharedMessageEncoding(message: any, request?: any, version?: number): SharedMessageEncoding {
 	// Negotiation must not run for a pass-through message: an Accept header naming only unsupported
 	// types throws 406, which would kill a delivery that used to succeed by returning message.data.
-	const serializer =
-		message?.contentType != null && message.data != null ? PASS_THROUGH : getMessageSerializer(request);
+	const serializer = isPassThroughEnvelope(message) ? PASS_THROUGH : getMessageSerializer(request);
 	// primitives can not key a WeakMap, and are cheap to encode anyway; these stay per-subscriber
 	if (message === null || typeof message !== 'object' || typeof version !== 'number')
 		return encode(message, request, serializer);
