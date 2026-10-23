@@ -62,9 +62,13 @@ export function restoreReceiptPath(dbPath: string): string {
 }
 
 export function readRestoreReceipt(dbPath: string): RestoreReceiptRead {
+	return readRestoreReceiptFile(restoreReceiptPath(dbPath));
+}
+
+export function readRestoreReceiptFile(receiptPath: string): RestoreReceiptRead {
 	let text: string;
 	try {
-		text = readFileSync(restoreReceiptPath(dbPath), 'utf8');
+		text = readFileSync(receiptPath, 'utf8');
 	} catch (error: any) {
 		if (error.code === 'ENOENT') return { kind: 'absent' };
 		return { kind: 'unreadable', reason: `${error.code ?? 'read error'}: ${error.message}` };

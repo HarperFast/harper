@@ -1200,7 +1200,7 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 	const restoreState = marked === 'clear' && restoreLockHeldExclusively(databaseDir) ? 'in-progress' : marked;
 	if (restoreState !== 'clear') {
 		throw new BackupInProgressError(
-			`Database '${databaseName}' has an ${restoreState === 'in-progress' ? 'active' : 'incomplete'} restore; rerun restore_backup before backing up`
+			`Database '${databaseName}' has an ${restoreState === 'in-progress' || restoreState === 'pending' ? 'active' : 'incomplete'} restore; ${restoreState === 'pending' ? 'finish or cancel it' : 'rerun restore_backup'} before backing up`
 		);
 	}
 	const database = RocksDatabase.open(databaseDir);

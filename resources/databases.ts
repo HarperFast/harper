@@ -1117,6 +1117,26 @@ export function getTables(): Tables {
 // Register getter in the shared registry so common_utils.ts can access databases
 // without importing this module directly (which would create a circular dep).
 setDatabasesGetter(() => getDatabases());
+/**
+ * Every directory database directories live in: the storage root and each configured database path.
+ * Resolved from config alone, so startup recovery can find restore records before anything opens.
+ */
+export function databaseRoots(): string[] {
+	const roots = new Set<string>();
+	const hdbBasePath = getHdbBasePath();
+	const defaultPath = hdbBasePath && join(hdbBasePath, DATABASES_DIR_NAME);
+	const storagePath =
+		process.env.STORAGE_PATH ||
+		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
+		(defaultPath && (existsSync(defaultPath) ? defaultPath : join(hdbBasePath, LEGACY_DATABASES_DIR_NAME)));
+	if (storagePath) roots.add(resolve(storagePath));
+	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
+	for (const name in schemaConfigs) {
+		if (schemaConfigs[name]?.path) roots.add(resolve(schemaConfigs[name].path));
+	}
+	return [...roots];
+}
+
 export function getDatabases(): Databases {
 	if (loadedDatabases) {
 		return databases;
@@ -1502,6 +1522,9 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 			logger.error(
 				`Incomplete restore of database '${dbName}' detected (a restore started but did not finish); not loading it — rerun the restore to recover`
 			);
+			blocked.add(dbName);
+		} else if (state === 'pending') {
+			logger.warn(`Database '${dbName}' is reserved by a restore that has not finished; not loading it`);
 			blocked.add(dbName);
 		}
 	}
@@ -2942,7 +2965,7 @@ function openUnlessBlocked(rootPath: string, dbName: string, load: () => void): 
 		(state) => {
 			// a drop holds this lock exclusively too, so 'in-progress' cannot be attributed to a restore
 			logger.warn(
-				`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore or drop is in progress' : 'an incomplete restore must be rerun'}`
+				`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore or drop is in progress' : state === 'pending' ? 'a restore has reserved it' : 'an incomplete restore must be rerun'}`
 			);
 			return undefined;
 		}
@@ -2959,7 +2982,9 @@ function throwBlockedByRestore(databaseName: string, restoreState: BlockedRestor
 	const error: any = new Error(
 		restoreState === 'in-progress'
 			? `Database '${databaseName}' is being restored or dropped; retry when that completes`
-			: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+			: restoreState === 'pending'
+				? `Database '${databaseName}' is reserved by a restore that has not finished; it loads once that restore completes or is cancelled`
+				: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
 	);
 	error.statusCode = 409;
 	throw error;

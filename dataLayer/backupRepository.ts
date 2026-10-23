@@ -7,6 +7,7 @@ import { fileLockRelease, tryFileLock } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { restoreLockHeldExclusively, restoreMarkerPresent } from './restoreMarker.ts';
+import { readRestoreReceipt } from './restoreReceipt.ts';
 import { fsyncDirectory, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
@@ -231,10 +232,14 @@ export function pinBackup(
 	writeFileDurably(path, JSON.stringify(pin), `${pinId}.tmp`);
 }
 
-/** Whether a pin still protects anything: a restore pin counts while its restore is claimed or marked. */
+/** Whether a pin still protects anything: a restore pin counts while its restore is claimed, marked or recorded. */
 function pinIsLive(pin: BackupPin): boolean {
 	if (!pin.database_path) return true;
-	return restoreMarkerPresent(pin.database_path) || restoreLockHeldExclusively(pin.database_path);
+	return (
+		restoreMarkerPresent(pin.database_path) ||
+		restoreLockHeldExclusively(pin.database_path) ||
+		readRestoreReceipt(pin.database_path).kind !== 'absent'
+	);
 }
 
 /** Release a claim. Missing is success — the goal is that nothing holds this backup any more. */

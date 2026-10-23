@@ -4,6 +4,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'no
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
+import {
+	RESTORE_RECEIPT_SUFFIX,
+	readRestoreReceipt,
+	readRestoreReceiptFile,
+	receiptBlocksDiscovery,
+} from './restoreReceipt.ts';
 import { fsyncDirectory, pathPresent, writeFileDurably } from '../utility/durableFile.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
@@ -103,7 +109,8 @@ export function droppingMarkerPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DROPPING_MARKER_SUFFIX);
 }
 
-export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
+/** `pending`: no marker yet, but a restore receipt that has not committed reserves the database. */
+export type RestoreState = 'in-progress' | 'incomplete' | 'pending' | 'clear';
 /** The states that mean "do not load" — what `withRestoreExclusion` reports to its caller. */
 export type BlockedRestoreState = Exclude<RestoreState, 'clear'>;
 
@@ -152,8 +159,13 @@ export type RestoreLock = {
  * holds the lock exclusively, which every open (`withRestoreExclusion`) contends with.
  */
 export function checkRestoreState(dbPath: string): RestoreState {
-	if (!pathPresent(restoringMarkerPath(dbPath))) return 'clear';
+	if (!pathPresent(restoringMarkerPath(dbPath))) return receiptReservesDatabase(dbPath) ? 'pending' : 'clear';
 	return restoreLockHeldExclusively(dbPath) ? 'in-progress' : 'incomplete';
+}
+
+/** A receipt that is not committed — or cannot be read — reserves its database just as a marker does. */
+export function receiptReservesDatabase(dbPath: string): boolean {
+	return receiptBlocksDiscovery(readRestoreReceipt(dbPath));
 }
 
 /** Whether a restore or a drop holds this database's lock, which a marker-less claim is held by alone. */
@@ -222,13 +234,15 @@ export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: 
 		// propagates: silently opening with no exclusion is the window this guard exists to close.
 		if (!isUnwritableRootError(error)) throw error;
 		warnOnceUnwritableRoot(dbPath, error);
-		return pathPresent(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
+		if (pathPresent(restoringMarkerPath(dbPath))) return blocked('incomplete');
+		return receiptReservesDatabase(dbPath) ? blocked('pending') : open();
 	}
 	// tryFileLock throws on an open failure and returns 0 only on contention, so a zero token means
 	// an exclusive holder — a restore or a drop — and nothing else.
 	if (token === 0) return blocked('in-progress');
 	try {
 		if (pathPresent(restoringMarkerPath(dbPath))) return blocked('incomplete');
+		if (receiptReservesDatabase(dbPath)) return blocked('pending');
 		return open();
 	} finally {
 		fileLockRelease(token);
@@ -691,13 +705,30 @@ export function scanBlockedRestores(databasesRoot: string): Array<[string, Resto
 	const databaseNamesByMarker = new Map(
 		readdirSync(databasesRoot, { withFileTypes: true })
 			.filter((entry) => entry.name !== RESTORE_META_DIR)
-			.map((entry) => [restoreMetaKey(join(databasesRoot, entry.name)) + RESTORING_MARKER_SUFFIX, entry.name])
+			.map((entry) => [restoreMetaKey(join(databasesRoot, entry.name)), entry.name])
 	);
 	const blocked: Array<[string, RestoreState]> = [];
+	const seen = new Set<string>();
 	for (const entry of readdirSync(metaDir, { withFileTypes: true })) {
-		if (!entry.isFile() || !entry.name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
+		if (!entry.isFile()) continue;
+		if (entry.name.endsWith(RESTORE_RECEIPT_SUFFIX)) {
+			// A receipt names its database by path, and may precede the database directory itself.
+			const read = readRestoreReceiptFile(join(metaDir, entry.name));
+			const dbName =
+				read.kind === 'valid'
+					? basename(read.receipt.database_path)
+					: databaseNamesByMarker.get(entry.name.slice(0, -RESTORE_RECEIPT_SUFFIX.length));
+			if (!dbName || seen.has(dbName)) continue;
+			const state = checkRestoreState(join(databasesRoot, dbName));
+			if (state !== 'clear') {
+				seen.add(dbName);
+				blocked.push([dbName, state]);
+			}
+			continue;
+		}
+		if (!entry.name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
 		const markerPath = join(metaDir, entry.name);
-		let dbName = databaseNamesByMarker.get(entry.name);
+		let dbName = databaseNamesByMarker.get(entry.name.slice(0, -RESTORING_MARKER_SUFFIX.length));
 		if (!dbName) {
 			try {
 				dbName = readFileSync(markerPath, 'utf8').split('\n', 1)[0];
@@ -706,8 +737,12 @@ export function scanBlockedRestores(databasesRoot: string): Array<[string, Resto
 			}
 			if (!dbName || restoringMarkerPath(join(databasesRoot, dbName)) !== markerPath) continue;
 		}
+		if (seen.has(dbName)) continue;
 		const state = checkRestoreState(join(databasesRoot, dbName));
-		if (state !== 'clear') blocked.push([dbName, state]);
+		if (state !== 'clear') {
+			seen.add(dbName);
+			blocked.push([dbName, state]);
+		}
 	}
 	return blocked;
 }
