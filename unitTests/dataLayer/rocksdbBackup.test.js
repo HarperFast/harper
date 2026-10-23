@@ -74,9 +74,12 @@ const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { closeLoadedDatabases, table } = require('#src/resources/databases');
 const harperDatabase = require('./fixtures/harperDatabase.js');
 const { clearRestoreDebris, declareIndexWithoutFamily, readRecord, restoreDebris, writeBlobRecord } = harperDatabase;
-const { readRestoreReceipt } = require('#src/dataLayer/restoreReceipt');
+const { newRestoreReceipt, readRestoreReceipt, writeRestoreReceipt } = require('#src/dataLayer/restoreReceipt');
+const { finishOutstandingRestore } = require('#src/dataLayer/restorePublication');
 const restoreChildRunnerModule = require('#src/dataLayer/restoreChildRunner');
+const env = require('#src/utility/environment/environmentManager');
 const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const restoreMarkerModule = require('#src/dataLayer/restoreMarker');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
@@ -811,6 +814,178 @@ describe('rocksdbBackup', function () {
 				);
 			}
 		});
+	});
+
+	describe('online restore_backup into a target_database', function () {
+		const SOURCE = `${DB_NAME}-online-source`;
+		const TARGET = `${DB_NAME}-online-copy`;
+		const targetDir = () => join(storageDir, TARGET);
+		const sourceBackups = () => backupDirForDatabase(SOURCE);
+		const request = (backupId) => ({ ...SU, database: SOURCE, target_database: TARGET, backup_id: backupId });
+
+		afterEach(async function () {
+			await closeLoadedDatabases();
+			clearRestoreDebris(targetDir(), sourceBackups());
+			for (const name of [SOURCE, TARGET]) {
+				rmSync(join(storageDir, name), { recursive: true, force: true });
+				for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
+			}
+			rmSync(sourceBackups(), { recursive: true, force: true });
+		});
+
+		async function seed() {
+			await harperDatabase.writeRecords(SOURCE, [['alpha', { n: 1 }]]);
+			const { backup_id: backupId } = await createBackupOffline(SOURCE);
+			await harperDatabase.writeRecords(SOURCE, [['beta', { n: 2 }]]);
+			return backupId;
+		}
+
+		it('restores into a target that does not exist, leaving the source as it was', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			await validateRestoreBackup(request(backupId));
+			const result = await restoreBackup(request(backupId));
+			assert.strictEqual(result.database, TARGET);
+			assert.strictEqual(result.source_database, SOURCE);
+			assert.strictEqual(checkRestoreState(targetDir()), 'clear');
+			assertNoRestoreDebris(targetDir(), sourceBackups());
+			await closeLoadedDatabases();
+			assert.deepStrictEqual(await readRecord(TARGET, 'alpha'), { n: 1 });
+			assert.strictEqual(await readRecord(TARGET, 'beta'), undefined, 'the target holds the backup');
+			assert.deepStrictEqual(await readRecord(SOURCE, 'beta'), { n: 2 }, 'the source is not restored in place');
+		});
+
+		it('refuses a target that is an existing database, and changes nothing', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			await harperDatabase.writeRecords(TARGET, [['own', { n: 9 }]]);
+			await assert.rejects(
+				restoreBackup(request(backupId)),
+				(error) => error.statusCode === 400 && /already exists/.test(error.message)
+			);
+			assertNoRestoreDebris(targetDir(), sourceBackups());
+			await closeLoadedDatabases();
+			assert.deepStrictEqual(await readRecord(TARGET, 'own'), { n: 9 });
+			assert.strictEqual(await readRecord(TARGET, 'alpha'), undefined);
+		});
+
+		it("reruns this repository's own interrupted restore into the target", async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			await restoreBackup(request(backupId));
+			await closeLoadedDatabases();
+			// what a restore killed past its purge leaves: the target populated, and marked by this repository
+			abandonRestore(beginRestore(targetDir(), undefined, sourceBackups()));
+
+			await restoreBackup(request(backupId));
+			assert.strictEqual(checkRestoreState(targetDir()), 'clear');
+			assertNoRestoreDebris(targetDir(), sourceBackups());
+			await closeLoadedDatabases();
+			assert.deepStrictEqual(await readRecord(TARGET, 'alpha'), { n: 1 });
+		});
+	});
+
+	describe('restore admission', function () {
+		const ADMITTED = `${DB_NAME}-admission`;
+		const admittedDir = () => join(storageDir, ADMITTED);
+		const admittedBackups = () => backupDirForDatabase(ADMITTED);
+
+		afterEach(async function () {
+			await closeLoadedDatabases();
+			clearRestoreDebris(admittedDir(), admittedBackups());
+			rmSync(admittedDir(), { recursive: true, force: true });
+			rmSync(admittedBackups(), { recursive: true, force: true });
+			for (const root of getBlobPathsForDatabaseName(ADMITTED)) rmSync(root, { recursive: true, force: true });
+		});
+
+		async function seed() {
+			await harperDatabase.writeRecords(ADMITTED, [['alpha', { n: 1 }]]);
+			const { backup_id: backupId } = await createBackupOffline(ADMITTED);
+			await harperDatabase.writeRecords(ADMITTED, [['after-backup', { kept: true }]]);
+			return backupId;
+		}
+
+		it('refuses on a node with replication peers, online and offline, and changes nothing', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const routes = env.get(CONFIG_PARAMS.REPLICATION_ROUTES);
+			env.setProperty(CONFIG_PARAMS.REPLICATION_ROUTES, [{ hostname: 'peer.example.com', port: 9933 }]);
+			try {
+				for (const restore of [
+					() => restoreBackup({ ...SU, database: ADMITTED, backup_id: backupId }),
+					() => restoreBackupOffline(ADMITTED, backupId),
+				]) {
+					await assert.rejects(
+						restore(),
+						(error) => error.statusCode === 409 && /replication peers \(route peer\.example\.com\)/.test(error.message)
+					);
+				}
+			} finally {
+				env.setProperty(CONFIG_PARAMS.REPLICATION_ROUTES, routes);
+			}
+			assert.strictEqual(checkRestoreState(admittedDir()), 'clear');
+			assertNoRestoreDebris(admittedDir(), admittedBackups());
+			await closeLoadedDatabases();
+			assert.deepStrictEqual(await readRecord(ADMITTED, 'after-backup'), { kept: true }, 'nothing was restored');
+		});
+
+		// What a restore that crashed between committing its receipt and finishing leaves: the restored
+		// generation, still behind its marker, with its source pinned and a committed receipt.
+		async function plantCommittedRestore(backupId) {
+			const lock = beginRestore(admittedDir(), undefined, admittedBackups());
+			try {
+				await withBackupRepositoryLock(admittedBackups(), ADMITTED, async () => {
+					pinBackup(admittedBackups(), restorePinId(admittedDir()), backupId, 'a committed restore', admittedDir());
+				});
+				writeRestoreReceipt(lock, {
+					...newRestoreReceipt({
+						route: 'offline',
+						state: 'committed',
+						database: ADMITTED,
+						database_path: admittedDir(),
+						source_database: ADMITTED,
+						backup_dir: admittedBackups(),
+						backup_id: backupId,
+						options: {},
+					}),
+					attempts: 1,
+				});
+			} finally {
+				abandonRestore(lock);
+			}
+			assert.strictEqual(checkRestoreState(admittedDir()), 'incomplete', 'precondition: the marker still blocks it');
+			assert.deepStrictEqual(restoreDebris(admittedDir(), admittedBackups()), ['marker', 'receipt (committed)', 'pin']);
+		}
+
+		it('finishOutstandingRestore finishes a committed receipt: marker, pin, then the receipt', async function () {
+			this.timeout(30000);
+			await plantCommittedRestore(await seed());
+			await finishOutstandingRestore(admittedDir());
+			assert.strictEqual(checkRestoreState(admittedDir()), 'clear');
+			assertNoRestoreDebris(admittedDir(), admittedBackups());
+			assert.deepStrictEqual(
+				await readRecord(ADMITTED, 'after-backup'),
+				{ kept: true },
+				'finishing re-applies nothing'
+			);
+		});
+
+		for (const mode of ['offline', 'online']) {
+			it(`${mode}: a new restore finishes a committed one on its target before claiming it`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				await plantCommittedRestore(backupId);
+				const result =
+					mode === 'offline'
+						? await restoreBackupOffline(ADMITTED, backupId)
+						: await restoreBackup({ ...SU, database: ADMITTED, backup_id: backupId });
+				assert.strictEqual(result.backup_id, backupId);
+				assert.strictEqual(checkRestoreState(admittedDir()), 'clear');
+				assertNoRestoreDebris(admittedDir(), admittedBackups());
+				await closeLoadedDatabases();
+				assert.strictEqual(await readRecord(ADMITTED, 'after-backup'), undefined, 'and then restores');
+			});
+		}
 	});
 
 	// These are whole-database administrative ops and must never be reachable by a non-super_user,
