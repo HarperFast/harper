@@ -127,20 +127,31 @@ entry's key in the per-origin transaction log: write identity, the record→log 
 (`auditStore.get(logKey, tableId, id, nodeId)`), and every resume cursor. On LMDB these have always
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and `#2409`'s `recordVersion` alias is now absorbed back into `version`.
 
-They hold the same value for every write whose record version is its own commit timestamp, which is
-every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
-(`getFromSource`, core #2065): the record is stored at the source-reported version while its log
-entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
-when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that compatibility pointer with a dedicated log-key word.
+They match for every ordinary local write (its record version is its own commit timestamp), so confusing them stays invisible until a **source fill** (`getFromSource`, core #2065) stores the record at the source-reported version and keys its log entry at the fill's commit. A RocksDB record keeps its version in the existing word and, when the clocks diverge, its audit head in `additionalAuditRefs`; stage 2 can replace that pointer with a dedicated log-key word.
 
 Consequences worth knowing:
 
-- **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on it, and both retain rather than delete when identity is unknown. A version compare there would let one write authorize destroying another's tombstone or blob.
+- **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the
+  single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on
+  it, and both retain rather than delete when identity is unknown. A version compare there would let one write authorize destroying another's tombstone or blob.
 - **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from `options.version` by every `_write*` builder and read in `save()` only when the transaction is `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the origin's clock. New audit entries persist that write version even when an out-of-order merge leaves a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply behavior.
-- **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order branches and, when a RocksDB record version differs from its log key, the record's own audit head — and, for a write the origin-closed floor rekeyed, the identity a re-delivery carries, which addresses no entry (readers already tolerate a ref whose entry aged out). Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record version silently unaddresses the entry it points at.
+- **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
+  into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order
+  branches and, when a RocksDB record version differs from its log key, the record's own audit head —
+  and, for a write the origin-closed floor rekeyed, the identity a re-delivery carries, which addresses no entry (readers already tolerate a ref whose entry aged out).
+  Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record version silently unaddresses the entry it points at.
 - **Retried duplicates use committed identity before audit I/O ([#3361](https://github.com/HarperFast/harper/issues/3361)).** `Table._writeUpdate` recognizes an implicit head only when origin, version and received log key match and no explicit refs exist; `replicatedRetryDuplicate.test.js` covers real conflicts, including multiple writes to the same key.
-- **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a replayed record at its log key would move its version forward and make a later legitimate write look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn` marker, at a change of physical log, or at a change of `txnLogKey` (what `CorruptFrameStop.truncatedVersions` records), and one a corrupt frame or a stalled replay cut short is discarded, never committed. A log key alone is not a commit: a receiver commits every re-delivery of a source transaction under the origin's key, and grouping by key once staged millions of them into one replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their commit. Other consumers still treat a second commit at one key as a duplicate (`resumePastExactStart`, the derived-index runtime, subscription delivery).
-- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and remain unchanged; no on-disk or on-wire identifier changes in this stage.
+- **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a
+  replayed record at its log key would move its version forward and make a later legitimate write
+  look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn`
+  marker, at a change of physical log, or at a change of `txnLogKey` (what
+  `CorruptFrameStop.truncatedVersions` records), and one a corrupt frame or a stalled replay cut
+  short is discarded, never committed. A log key alone is not a commit: a receiver commits every re-delivery of a source
+  transaction under the origin's key, and grouping by key once staged millions of them into one
+  replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
+  commit. Other consumers still treat a second commit at one key as a duplicate
+  (`resumePastExactStart`, the derived-index runtime, subscription delivery).
+- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and stay unchanged.
 
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 
@@ -159,6 +170,7 @@ Consequences worth knowing:
 ## Full PUT resequencing
 
 `Table._writeUpdate` replays retained newer patches onto the PUT body and stores a replacement. Inspect nonterminal frames even when their first same-key entry is a message or an older version. Collect all newer same-key mutations, then order by record version, origin-name tie-break and same-origin log/program order. The RocksDB walk/frame budget counts all scanned entries; LMDB bounds each equal-version cohort. A tied pending head from an earlier same-key write in this transaction is not missing retained history. A floor-rekeyed receipt needs no entry when its origin/version was already collected and the retention floor is known not to exceed the incoming version; genuinely missing entries, unreadable IDs or clocks, unavailable patch bodies or bounded walks keep the previous approximate merge, which can retain omitted fields or overwrite an uncollected newer value. Unresolved mixed-version audit heads and a pruned predecessor below the incoming version keep this approximation, even if all newer patches remain. `outOfOrderFullPut.test.js` covers both engines, omissions, additions, indexes, metadata, blobs, transaction siblings and history boundaries ([#3404](https://github.com/HarperFast/harper/issues/3404)).
+
 
 ## Database generation and resumable positions
 
@@ -249,23 +261,15 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 ## Conventions
 
 - Single-record nested selections use `Resource.transformForSelect`; searches use
-  `Table.transformEntryForSelect`. Generic recursion needs no target table for plain JSON;
-  classless primitive array items and whole selected Dates keep their values; Date-array
-  subselects retain the existing search projection policy. Missing targets
-  preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object projection. Promise and
-  `getRecord` detection requires callable values; ordinary method-like JSON keys are data.
-  Generic fallback projections treat function values as absent while retaining inherited data and getters;
-  registered resolver results stay unchanged.
-- The native missing-value contract is pinned by
+  `Table.transformEntryForSelect`. Plain JSON needs no target table; classless primitive array items
+  and whole selected Dates keep their values (Date-array subselects keep the search projection policy).
+  Missing targets preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object
+  projection. Only callable values count as a Promise or `getRecord`, so method-like JSON keys are data;
+  generic fallbacks treat function values as absent but keep inherited data and getters, and registered
+  resolver results pass through unchanged. Resolver dictionaries are read by own entries, the private
+  transform cache has no prototype, and a selected own `__proto__` is a data property on a normal response object. Pinned by
   `../unitTests/resources/nestedSelectMissingValues.test.js` and
-  `../integrationTests/resources/relationship-and-status-contract.test.ts`.
-  `Resource.transformForSelect` resolver dictionaries use own entries, the private transform cache has no prototype, and
-  a selected own `__proto__` is a data property on a normal response object.
-  [REST select projection crashes on missing targets and non-relationship fields](https://github.com/HarperFast/harper/issues/1415)
-  remains open for singleton-selector parsing and invalid-subselect policy outside this helper.
-  [Nested Resource projection fails to settle asynchronous arrays and forceNulls](https://github.com/HarperFast/harper/issues/3168)
-  and [Prototype-chain key/attribute names: one **proto** PK poisons SQL/index reads table-wide; proto-named attributes falsely rejected at insert](https://github.com/HarperFast/harper/issues/1295)
-  track separate asynchronous projection and table-wide key boundaries.
+  `../integrationTests/resources/relationship-and-status-contract.test.ts`. Still open, outside these helpers: [singleton-selector parsing and invalid-subselect policy](https://github.com/HarperFast/harper/issues/1415); separately, [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168) and [a `__proto__` key poisoning a table, and proto-named attributes rejected at insert](https://github.com/HarperFast/harper/issues/1295).
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
@@ -305,6 +309,10 @@ To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `Reco
 - We **bail** the hook (return 0) rather than clear it (`undefined`). Clearing it shifts msgpackr's positive-fixint boundary from `0x20` to `0x40`, so top-level integers `0x20–0x3f` (e.g. a `NEXT_TABLE_ID` ≥ 32 stored in `__dbis__`) would be written as bare fixints — which the still-installed struct **read** hook misreads as struct headers. Bailing keeps the boundary at `0x20`, so those integers are written as `uint8`.
 - The struct **read** hook is left intact, so records a prior v5 already wrote in struct mode still decode (read-compat); only new writes switch to records mode.
 - Companion change in `structon`: `prepareStructures` saves the shared structures in the legacy plain-array form when there are no typed structs (instead of the `{named, typed}` Map), so the `Symbol.for('structures')` buffer for a records-mode `__dbis__` is also v4-decodable.
+
+## Non-`initStore` structure saves read inside their own transaction (`PrimaryRocksDatabase`/`RecordEncoder`)
+
+A `PrimaryRocksDatabase` store that never runs `initStore` (notably `__dbis__`) binds `encoder.rocksStore` in `open()` so `RecordEncoder.saveStructures` reads `sharedStructuresKey` inside its compare-and-put transaction, pinning the optimistic snapshot before writing instead of falling back to `rocksdb-js`'s untracked read, and writes pre-encoded bytes (`asBinary`) so `txn.putSync` never re-enters the active `RecordEncoder.encode` mid-pack. `encoder.isRocksDB` must never be set on `__dbis__` because it moves the structure key to `[Symbol.for('structures'), name]` and strips leading byte `0x42` (classic structure `#2`) as a RocksDB version header (`unitTests/resources/recordEncoder.test.js`).
 
 ## getFromSource() timing: promise resolves before commit runs
 
@@ -895,26 +903,24 @@ the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 
 A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) used to reopen
-`__dbis__` and every indexed attribute's column family and overwrite the references the table graph
-holds. rocksdb-js releases a wrapper's native handle only when it closes or is garbage-collected, so the
-replaced wrappers kept the process-global refCount up until a collection happened to run, and online
-`restore_backup`, which waits 3 s for closure, refused the database as held open. `declareTable` now
-reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a redeclare, a plain index's open
-wrapper on an unchanged store (`indexFor`); a custom index (HNSW) is always reopened, since `openIndex`
-builds its state from the current options, and is never reused for a plain declaration. Every wrapper
-`initStores` or `declareTable` opens for a global RocksDB root is also recorded in `ownedRocksStores` under
-the root path, so a close reaches one the graph stopped pointing at. The record is a `WeakRef`: an unreachable wrapper is
-still released by collection, as before, rather than kept alive until the database closes.
-`closeDatabaseStores` closes the live entries before the root, and drains the record again after it for a
-declaration that resolved the root mid-close. A wrapper whose close failed, including a custom index whose
-setup threw and whose cleanup close failed, is held strongly instead, since collection may not release its
-handle; the record is keyed by path because a lenient close discards the root object even after a failure. A
-wrapper is never closed when the graph stops pointing at it: a query that took it before the redeclare
-opens its ranges through it afterward, and a closed wrapper refuses them (a range already open keeps
-reading either way). Short-lived wrappers (column-family drops, the blob sweep) close themselves and are not
-recorded. `destroy()` closes every wrapper on the root, so a drop only forgets the record. Enforced by the
-redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.test.js` and, end to end,
-`integrationTests/database/restore-backup-online.test.ts`.
+`__dbis__` and every indexed column family, overwriting the references the table graph holds. rocksdb-js
+releases a native handle only on close or garbage collection, so the replaced wrappers held the
+process-global refCount up and online `restore_backup` (which waits 3 s for closure) refused the database
+as held open. `declareTable` now reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a
+redeclare, a plain index's open wrapper on an unchanged store (`indexFor`); a custom index (HNSW) is
+always reopened, since `openIndex` builds its state from the current options, and is never reused for a
+plain declaration. Every wrapper `initStores` or `declareTable` opens for a global RocksDB root is
+recorded in `ownedRocksStores` under the root path, as a `WeakRef` so collection still releases an
+unreachable one. `closeDatabaseStores` closes the live entries before the root, and drains the record
+again afterward for a declaration that resolved the root mid-close. A wrapper whose close failed
+(including a custom index's cleanup close after its setup threw) is held strongly, since collection may
+not release it; the record is keyed by path because a lenient close discards the root object even after
+a failure. A wrapper is never closed when the graph stops pointing at it: a query that took it before
+the redeclare still opens ranges through it, and a closed wrapper would refuse them (a range already open
+keeps reading either way). Short-lived wrappers (column-family drops, the blob sweep) close themselves
+and are not recorded; `destroy()` closes every wrapper on the root, so a drop only forgets the record.
+Enforced by the redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.test.js`
+and, end to end, `integrationTests/database/restore-backup-online.test.ts`.
 
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
 

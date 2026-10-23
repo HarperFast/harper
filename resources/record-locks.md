@@ -143,6 +143,8 @@ Consequences that shape the code:
   not a `transactional()` verb on `Resource`, and no protocol reaches it: REST answers 501,
   `KNOWN_METHODS` does not include it,
   and neither OpenAPI nor MCP enumerate it. Exposing lock/unlock over a protocol is a Phase 1 decision.
+  REST conditional writes do take a default-scope hold lock internally, after authorization, when
+  `rest.preconditionLocks` is on; see [HTTP request preconditions](../server/DESIGN.md#http-request-preconditions-restts-tablets).
   Acquisition itself has no authorization hook — lock() is not protocol-dispatched, so no
   allowUpdate/allowCreate check runs when a caller acquires a lock.
 - **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table

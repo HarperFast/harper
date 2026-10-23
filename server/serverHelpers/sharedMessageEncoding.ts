@@ -162,8 +162,9 @@ function fill(encoding: SharedMessageEncoding, message: any, request: any) {
 	const payload = serializeMessage(message, request);
 	encoding.payload = payload;
 	encoding.failed = false;
-	// A pass-through payload IS the message's own data, already reachable from the WeakMap key, so
-	// caching it retains nothing extra and must not be billed against the budget.
+	// A pass-through payload IS the message's own data (or a Buffer over the same memory), already
+	// reachable from the WeakMap key, so caching it retains nothing extra and must not be billed
+	// against the budget.
 	if (encoding.serializer === PASS_THROUGH) return;
 	if (typeof (payload as any)?.then === 'function')
 		// collapse an async serialization in place so later subscribers, and frame sharing, see the

@@ -101,7 +101,7 @@ async function dropCreatedSince(atStart, file) {
 	if (!databasesModule) return;
 	const env = require('#src/utility/environment/environmentManager');
 	const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-	const { registryStatus } = require('@harperfast/rocksdb-js');
+	const { getRegistryStatus } = require('@harperfast/rocksdb-js');
 	const configuredDatabases = env.get(CONFIG_PARAMS.DATABASES) || {};
 	// a database configured at or inside the storage root scans or nests in the directories dropped
 	// here, so ownership can't be told by name or by root; leave the storage root alone
@@ -124,7 +124,7 @@ async function dropCreatedSince(atStart, file) {
 	}
 	// closed by the file but still on disk, where the next storage scan would reopen it
 	const openRoots = new Set(
-		registryStatus()
+		getRegistryStatus()
 			.filter((entry) => entry.refCount > 0)
 			.map((entry) => path.resolve(entry.path))
 	);
