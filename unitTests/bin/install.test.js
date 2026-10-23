@@ -19,7 +19,7 @@ describe('Test install module', () => {
 
 	after(() => {
 		// installer.install is a shared module binding; leaving the stub would break later installer tests
-		revert_installer();
+		revert_installer?.();
 		sandbox.restore();
 	});
 

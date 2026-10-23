@@ -716,6 +716,7 @@ describe('install storage.engine resolution', () => {
 	}
 
 	beforeEach(async () => {
+		savedRocksCompression = getRocksCompression();
 		sandbox = sinon.createSandbox();
 		tempBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-engine-'));
 		const fakeHome = path.join(tempBaseDir, 'home');
@@ -729,7 +730,6 @@ describe('install storage.engine resolution', () => {
 			publicKey: 'test-public-key',
 		});
 
-		savedRocksCompression = getRocksCompression();
 		savedEnv = {};
 		for (const k of ENV_KEYS) {
 			savedEnv[k] = process.env[k];
