@@ -16,7 +16,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { Transform, type Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 import { isMainThread, parentPort, threadId } from 'node:worker_threads';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
@@ -26,7 +26,7 @@ import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { redactUrl } from '../utility/safeFetch.ts';
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { DiskLedger } from './diskLedger.ts';
+import { DiskLedger, ledgerMeter } from './diskLedger.ts';
 import {
 	backupDirForDatabase,
 	getBackupsRoot,
@@ -40,6 +40,7 @@ export const IMPORT_STAGING_DIR = '.staging';
 const OWNER_FILE = 'owner.json';
 const SPOOL_FILE = 'archive';
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
+const SECRET_REQUEST_TIMEOUT_MS = 30_000;
 const IMPORT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ALLOWED_S3_FIELDS = new Set(['bucket', 'key', 'region', 'credentials']);
 
@@ -94,10 +95,10 @@ export function validateImportBackup(request: any): void {
 		const credentials = s3.credentials;
 		if (
 			extra.length > 0 ||
-			(credentials !== undefined &&
-				(typeof credentials !== 'object' ||
-					typeof credentials.secret !== 'string' ||
-					Object.keys(credentials).length !== 1))
+			!credentials ||
+			typeof credentials !== 'object' ||
+			typeof credentials.secret !== 'string' ||
+			Object.keys(credentials).length !== 1
 		) {
 			// An inline key would be persisted in the job row; only a reference to a stored secret is accepted.
 			throw new ClientError(
@@ -149,12 +150,10 @@ async function spoolUpload(databaseName: string, payload: Readable, declaredSize
 	const hash = createHash('sha256');
 	let bytes = 0;
 	// the declared size is only advisory; the ledger stops a spool that outgrows the staging device
-	const ledger = new DiskLedger();
-	const meter = new Transform({
-		transform(chunk, _encoding, callback) {
+	const meter = ledgerMeter(new DiskLedger(), dir, {
+		onChunk(chunk) {
 			hash.update(chunk);
 			bytes += chunk.length;
-			ledger.debit(dir, chunk.length).then(() => callback(null, chunk), callback);
 		},
 	});
 	try {
@@ -201,10 +200,15 @@ async function resolveImportSecret(name: string): Promise<string> {
 		const requestId = randomUUID();
 		const onMessage = (message: any) => {
 			if (message?.type !== hdbTerms.ITC_EVENT_TYPES.IMPORT_SECRET_RESPONSE || message.requestId !== requestId) return;
+			clearTimeout(timer);
 			parentPort!.off('message', onMessage);
 			if (message.error) reject(new ClientError(message.error, message.statusCode ?? 500));
 			else resolve(message.value);
 		};
+		const timer = setTimeout(() => {
+			parentPort!.off('message', onMessage);
+			reject(new ClientError(`The main thread did not resolve secret '${name}' in time`, 504));
+		}, SECRET_REQUEST_TIMEOUT_MS);
 		parentPort!.on('message', onMessage);
 		parentPort!.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.IMPORT_SECRET_REQUEST, requestId, name });
 	});
@@ -291,7 +295,8 @@ export async function importBackupJob(request: any) {
 			sourceFile: request.source_file,
 			url: request.url,
 			s3,
-			sha256: request.sha256 ?? undefined,
+			// an upload's own digest pins the bytes the job reads back from staging
+			sha256: request.sha256 ?? request.upload_digest ?? undefined,
 			acceptIncompatible: request.accept_incompatible_backup === true,
 			importedFrom: describeImportSource(request),
 		});

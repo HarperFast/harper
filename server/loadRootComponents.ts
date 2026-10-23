@@ -57,7 +57,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// Before every safe-mode check below, and before any worker inherits this environment: a restart
 	// restore that ran out of attempts starts the node in safe mode, so it can be repaired through the
 	// operations API without the components that hold the database.
-	if (isMainThread && !process.env.HARPER_SAFE_MODE && !isWorkerThread) {
+	if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 		try {
 			if (restoreIntentRuntimeModule.terminalRestoreExists()) {
 				process.env.HARPER_SAFE_MODE = 'restore-terminal';

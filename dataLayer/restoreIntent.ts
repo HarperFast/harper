@@ -296,7 +296,9 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 				);
 			}
 			cancelled = read.receipt;
-			releaseIntentPins(cancelled);
+			// a target this restore began replacing stays blocked by its marker, and its source and its
+			// rollback copy stay pinned with it: the pins name the database, so they lapse with the marker
+			if (!restoreMarkerPresent(databaseDir)) releaseIntentPins(cancelled);
 			removeRestoreReceipt(lock, cancelled.operation_id);
 		}
 	} finally {
@@ -419,7 +421,13 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 	}
 	const pinId = preRestorePinId(receipt.operation_id);
 	await withBackupRepositoryLock(receipt.backup_dir, receipt.database, async () =>
-		pinBackup(receipt.backup_dir, pinId, backupId!, `rollback copy for the restore of '${receipt.database}'`)
+		pinBackup(
+			receipt.backup_dir,
+			pinId,
+			backupId!,
+			`rollback copy for the restore of '${receipt.database}'`,
+			receipt.database_path
+		)
 	);
 	return writeRestoreReceipt(lock, { ...receipt, pre_restore_backup_id: backupId, pre_restore_pin_id: pinId });
 }
@@ -472,7 +480,6 @@ async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 		);
 		const interrupted = restoreMarkerPresent(receipt.database_path);
 		receipt = writeRestoreReceipt(lock, { ...receipt, state: 'applying' });
-		markRestoreDestructive(lock);
 		const evidence = await runRestoreChild<RestoreEvidence>(
 			'apply-and-prove',
 			{
@@ -491,6 +498,7 @@ async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 			{
 				databasePath: receipt.database_path,
 				receipt: { databasePath: receipt.database_path, operationId: receipt.operation_id, attempt: receipt.attempts },
+				beforeDestruction: () => markRestoreDestructive(lock),
 			}
 		);
 		receipt = writeRestoreReceipt(lock, { ...receipt, state: 'committed', evidence: { ...evidence } });

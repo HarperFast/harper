@@ -601,6 +601,13 @@ export function beginDatabaseDrop(
 			error.statusCode = 409;
 			throw error;
 		}
+		if (receiptReservesDatabase(dbPath)) {
+			const error: any = new Error(
+				`Database '${databaseName}' is reserved by a restore that has not finished; finish or cancel it before dropping it`
+			);
+			error.statusCode = 409;
+			throw error;
+		}
 		if (preexisting) {
 			const marker = readDatabaseDropMarker(dbPath);
 			if (marker?.databaseName !== databaseName) {

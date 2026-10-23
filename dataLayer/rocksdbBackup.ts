@@ -13,6 +13,7 @@ import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, getRegistryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
 import { publishRestore } from './restorePublication.ts';
+import { runRestoreChild } from './restoreChildRunner.ts';
 import { cancelRestartRestore, requestRestartRestore, resumeRestartRestore } from './restoreIntent.ts';
 import { readRestoreReceipt } from './restoreReceipt.ts';
 import { currentJobId } from '../server/jobs/deferredJobCompletion.ts';
@@ -33,17 +34,14 @@ import { SchemaEventMsg } from '../server/threads/itc.ts';
 import {
 	claimRestore,
 	restoreLockHeldExclusively,
-	clearRestoringMarker,
 	checkRestoreState,
 	readRestoringMarkerSource,
-	releaseRestoreLock,
 	restoreSourceId,
 	type RestoreLock,
 } from './restoreMarker.ts';
 import {
 	assertBackupsUnpinned,
 	readBackupPins,
-	unpinBackup,
 	withBackupRepositoryLock,
 	withBackupRepositoryReadAccess,
 } from './backupRepository.ts';
@@ -501,9 +499,7 @@ export async function createBackup(request: any) {
 			} catch (error) {
 				throw mapLockedError(error, databaseName);
 			}
-			await finalizeBackup(backupDir, id, databaseName, !excludeBlobs, {
-				tables: Object.keys(getDatabases()[databaseName] ?? {}),
-			});
+			await finalizeBackup(backupDir, id, databaseName, !excludeBlobs);
 			return id;
 		},
 		true
@@ -604,7 +600,9 @@ export async function validateVerifyBackup(request: any) {
 export async function verifyBackup(request: any) {
 	const databaseName = getDatabaseName(request);
 	requireBackupRepositoryAccess(databaseName, OPERATIONS_ENUM.VERIFY_BACKUP);
-	return verifyBackupOffline(databaseName, requireBackupId(request.backup_id), request.verify_checksum);
+	return verifyBackupOffline(databaseName, requireBackupId(request.backup_id), request.verify_checksum, {
+		inChild: true,
+	});
 }
 
 export async function validateRestoreBackup(request: any) {
@@ -783,27 +781,6 @@ export function warnImmutableSource(databaseName: string, backupDir: string): vo
  * delete. Both happen under the restore lock, so no later attempt can have written a claim at this
  * same id yet; one stranded after the marker is gone simply lapses and is swept.
  */
-export function releaseRestoreClaim(
-	backupDir: string,
-	pinId: string | undefined,
-	lock: RestoreLock,
-	databaseName: string
-): void {
-	try {
-		clearRestoringMarker(lock);
-		try {
-			if (pinId) unpinBackup(backupDir, pinId);
-		} catch (error) {
-			logger.error(
-				`Could not release the backup claim after restoring '${databaseName}'; it lapses with the marker`,
-				error
-			);
-		}
-	} finally {
-		releaseRestoreLock(lock);
-	}
-}
-
 /**
  * `restoreToken` identifies the restore that owns the blob fence. Two restores of the same database
  * can overlap, so a worker releases the fence only for the token that established it -- see
@@ -1472,13 +1449,30 @@ export async function listBackupsOffline(databaseName: string) {
 	);
 }
 
-export async function verifyBackupOffline(databaseName: string, backupId: number, verifyChecksum?: boolean) {
+export async function verifyBackupOffline(
+	databaseName: string,
+	backupId: number,
+	verifyChecksum?: boolean,
+	{ inChild = false }: { inChild?: boolean } = {}
+) {
 	validateDatabaseName(databaseName);
 	const verifyWithChecksum = requireBooleanOption(verifyChecksum, 'verify_checksum');
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
 	const manifest = await requireBackupComplete(backupDir, backupId, databaseName);
-	await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum, true);
+	if (inChild) {
+		// inside a running server the native verifier reads untrusted files, so an abort costs the child
+		await runRestoreChild('verify', {
+			backupDir,
+			backupId,
+			manifest,
+			databaseName,
+			verifyWithChecksum,
+			verifyTables: true,
+		});
+	} else {
+		await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum, true);
+	}
 	return { database: databaseName, backup_id: backupId, ok: true, blobs: manifest.blobs };
 }
 

@@ -251,21 +251,18 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	let evidence: RestoreEvidence;
 	try {
 		await request.online?.close();
-		markRestoreDestructive(lock);
-		try {
-			evidence = await runRestoreChild<RestoreEvidence>(
-				'apply-and-prove',
-				applyArgs(request, backupId, manifest, lock.preexisting),
-				{
-					databasePath: databaseDir,
-					receipt: { databasePath: databaseDir, operationId: receipt.operation_id, attempt: receipt.attempts },
-				}
-			);
-		} catch (error: any) {
-			destructionStarted = error?.phase !== 'verify' && error?.phase !== 'probe';
-			throw error;
-		}
-		destructionStarted = true;
+		evidence = await runRestoreChild<RestoreEvidence>(
+			'apply-and-prove',
+			applyArgs(request, backupId, manifest, lock.preexisting),
+			{
+				databasePath: databaseDir,
+				receipt: { databasePath: databaseDir, operationId: receipt.operation_id, attempt: receipt.attempts },
+				beforeDestruction: () => {
+					markRestoreDestructive(lock);
+					destructionStarted = true;
+				},
+			}
+		);
 		if (request.checkPeers) assertNoReplicationPeers(targetDatabase);
 		receipt = writeRestoreReceipt(lock, {
 			...receipt,

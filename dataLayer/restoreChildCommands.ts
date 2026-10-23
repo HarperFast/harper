@@ -97,6 +97,27 @@ async function inPhase<T>(phase: RestorePhase, run: () => Promise<T>): Promise<T
 	}
 }
 
+const DESTRUCTION_PERMIT_TIMEOUT_MS = 30_000;
+
+/** Tells the parent the purge is next and waits for it to mark the target; outside a child, a no-op. */
+function announceDestruction(): Promise<void> {
+	if (!process.send) return Promise.resolve();
+	return new Promise((resolve, reject) => {
+		const onMessage = (message: any) => {
+			if (message?.type !== 'proceed') return;
+			clearTimeout(timer);
+			process.off('message', onMessage);
+			resolve();
+		};
+		const timer = setTimeout(() => {
+			process.off('message', onMessage);
+			reject(new Error('The restoring process never permitted the purge'));
+		}, DESTRUCTION_PERMIT_TIMEOUT_MS);
+		process.on('message', onMessage);
+		process.send!({ type: 'destroying' });
+	});
+}
+
 export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 	await inPhase('verify', () =>
 		assertBackupReadable(
@@ -110,6 +131,7 @@ export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvi
 	);
 	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));
 	await inPhase('apply', async () => {
+		await announceDestruction();
 		await backups.restore(args.backupDir, args.databasePath, { backupId: args.backupId, mode: 'purgeAllFiles' });
 		if (args.manifest.blobs) {
 			await restoreBlobSnapshot(args.backupDir, args.backupId, args.sourceDatabase, args.blobRoots, {

@@ -3989,8 +3989,9 @@ export async function assessBlobReferences(database: Record<string, any>): Promi
 		failures: [],
 	};
 	let failed = false;
+	// It runs in the restore child, with nothing to share the CPU with; a short yield keeps it
+	// responsive to its parent's disconnect, which is all the pacing it needs.
 	let i = 0;
-	const perMS = Math.floor((envGet(CONFIG_PARAMS.STORAGE_BLOBCLEANUPSPEED) ?? 10000) / 1000 + 1);
 	for (const tableName in database) {
 		const table = database[tableName];
 		let scanned = 0;
@@ -4022,8 +4023,7 @@ export async function assessBlobReferences(database: Record<string, any>): Promi
 						}
 					}
 				}
-				if (i++ % perMS === 0) await delay(1);
-				else await rest();
+				if (++i % 1000 === 0) await rest();
 			}
 		} catch (error) {
 			throw new Error(

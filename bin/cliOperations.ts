@@ -583,8 +583,8 @@ const PREPARE_OPERATION: any = {
 		if (req.file === undefined) return;
 		const archivePath = path.resolve(String(req.file));
 		const archiveSize = (await fs.promises.stat(archivePath)).size;
-		// a plain tar's size is its extracted size; a compressed one's is only a lower bound, so it is not declared
-		if (req.declared_size === undefined && !/\.(tgz|gz)$/i.test(archivePath)) req.declared_size = archiveSize;
+		// the server compares this with the bytes it spools, which are the file's own
+		req.declared_size ??= archiveSize;
 		delete req.file;
 		req._uploadFile = archivePath;
 		req._multipart = true;

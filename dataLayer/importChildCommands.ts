@@ -18,7 +18,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import { fsyncDirectory } from '../utility/durableFile.ts';
 import { safeFetchToFile } from '../utility/safeFetch.ts';
 import { openRestoredGeneration, closeRestoredGeneration } from '../resources/databases.ts';
-import { DiskLedger } from './diskLedger.ts';
+import { DiskLedger, ledgerMeter } from './diskLedger.ts';
 import { extractArchive, tallyArchive } from './archiveExtraction.ts';
 import { withBackupRepositoryLock } from './backupRepository.ts';
 import { blobSnapshotDir, copyTree, deleteBlobSnapshot, fsyncTree } from './blobBackup.ts';
@@ -65,7 +65,11 @@ async function sha256File(path: string): Promise<string> {
 	return hash.digest('hex');
 }
 
-async function fetchFromS3(s3: NonNullable<ImportArchiveArgs['s3']>, destination: string): Promise<void> {
+async function fetchFromS3(
+	s3: NonNullable<ImportArchiveArgs['s3']>,
+	destination: string,
+	ledger: DiskLedger
+): Promise<void> {
 	if (!s3.credentials) throw new ClientError(`'s3' needs credentials: { secret: '<name>' }`);
 	const { getFileStreamFromS3 } = require('../utility/AWS/AWSConnector.js');
 	const body = await getFileStreamFromS3({
@@ -77,7 +81,11 @@ async function fetchFromS3(s3: NonNullable<ImportArchiveArgs['s3']>, destination
 			aws_secret_access_key: s3.credentials.secretAccessKey,
 		},
 	});
-	await pipeline(body, createWriteStream(destination, { flags: 'wx' }));
+	await pipeline(
+		body,
+		ledgerMeter(ledger, destination, { idleMs: FETCH_IDLE_TIMEOUT_MS }),
+		createWriteStream(destination, { flags: 'wx' })
+	);
 }
 
 /** Archive blob roots by their recorded index; a gap must stay a gap, or blobs would be mis-addressed. */
@@ -143,12 +151,17 @@ export async function importArchive(args: ImportArchiveArgs) {
 	} else {
 		archivePath = join(stagingDir, 'archive');
 		if (args.url !== undefined) {
-			await safeFetchToFile(args.url, archivePath, {
+			// bounded by what the staging device can take, so a pull cannot fill the databases' device
+			const { bytes: room } = await ledger.remaining(stagingDir);
+			const fetched = await safeFetchToFile(args.url, archivePath, {
 				totalTimeoutMs: FETCH_TOTAL_TIMEOUT_MS,
 				idleTimeoutMs: FETCH_IDLE_TIMEOUT_MS,
+				maxBytes: Math.max(0, room),
+				sha256: args.sha256,
 			});
+			await ledger.debit(stagingDir, fetched.bytes);
 		} else if (args.s3 !== undefined) {
-			await fetchFromS3(args.s3, archivePath);
+			await fetchFromS3(args.s3, archivePath, ledger);
 		} else if (!existsSync(archivePath)) {
 			throw new ClientError('The uploaded archive is no longer staged; upload it again', 410);
 		}

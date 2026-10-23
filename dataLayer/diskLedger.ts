@@ -1,5 +1,6 @@
 import { statSync, statfsSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { Transform } from 'node:stream';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { getStorageSpaceStats, type StorageSpaceStats } from '../server/storageReclamation.ts';
@@ -263,4 +264,48 @@ function remainingInodes(budget: DeviceBudget): number {
 
 function insufficient(message: string): ClientError {
 	return new ClientError(message, HTTP_STATUS_CODES.INSUFFICIENT_STORAGE);
+}
+
+const METER_BATCH_BYTES = 8 * 1024 * 1024;
+
+/**
+ * A pass-through that charges every byte it carries to `ledger` against `path`, in batches so a
+ * serving thread does not pay a device lookup per chunk, and — given `idleMs` — fails a stream that
+ * stops delivering, which would otherwise hold its slot until a much longer outer timeout.
+ */
+export function ledgerMeter(
+	ledger: DiskLedger,
+	path: string,
+	{ idleMs, onChunk }: { idleMs?: number; onChunk?: (chunk: Buffer) => void } = {}
+): Transform {
+	let pending = 0;
+	let idleTimer: NodeJS.Timeout | undefined;
+	const meter = new Transform({
+		transform(chunk: Buffer, _encoding, callback) {
+			armIdle();
+			onChunk?.(chunk);
+			pending += chunk.length;
+			if (pending < METER_BATCH_BYTES) return callback(null, chunk);
+			const charge = pending;
+			pending = 0;
+			ledger.debit(path, charge).then(() => callback(null, chunk), callback);
+		},
+		flush(callback) {
+			if (idleTimer) clearTimeout(idleTimer);
+			if (pending === 0) return callback();
+			ledger.debit(path, pending).then(() => callback(), callback);
+		},
+		destroy(error, callback) {
+			if (idleTimer) clearTimeout(idleTimer);
+			callback(error);
+		},
+	});
+	function armIdle() {
+		if (!idleMs) return;
+		if (idleTimer) clearTimeout(idleTimer);
+		idleTimer = setTimeout(() => meter.destroy(new ClientError(`No data arrived for ${idleMs}ms`, 504)), idleMs);
+		idleTimer.unref?.();
+	}
+	armIdle();
+	return meter;
 }

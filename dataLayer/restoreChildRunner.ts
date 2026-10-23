@@ -35,15 +35,18 @@ export interface RestoreChildSpec {
 	writeBufferManagerSize: number;
 }
 
-export type ParentToChild = {
-	type: 'authorize';
-	command: RestoreChildCommand;
-	args: Record<string, unknown>;
-	receipt?: ReceiptAuthorization;
-};
+export type ParentToChild =
+	| {
+			type: 'authorize';
+			command: RestoreChildCommand;
+			args: Record<string, unknown>;
+			receipt?: ReceiptAuthorization;
+	  }
+	| { type: 'proceed' };
 
 export type ChildToParent =
 	| { type: 'ready'; pid: number }
+	| { type: 'destroying' }
 	| { type: 'refused'; reason: 'busy' | 'target-busy' }
 	| { type: 'result'; result: any }
 	| { type: 'error'; name?: string; message: string; statusCode?: number; phase?: string; cause?: string };
@@ -55,6 +58,11 @@ export interface RestoreChildOptions {
 	receipt?: ReceiptAuthorization;
 	timeoutMs?: number;
 	heapMb?: number;
+	/**
+	 * Called when the child is about to destroy the target, before it may; the child waits for it.
+	 * This is where the parent publishes its marker, so a child that dies any earlier leaves none.
+	 */
+	beforeDestruction?: () => void;
 }
 
 export class RestoreChildError extends Error {
@@ -146,13 +154,14 @@ export function runRestoreChild<T = any>(
 		const stdout = capped(child.stdout);
 		const stderr = capped(child.stderr);
 		let settled = false;
+		let destructionPermitted = false;
 		let outcome: ChildToParent | undefined;
 		const settle = (error: Error | undefined, value?: T) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			unregister?.();
-			if (error) reject(error);
+			if (error) reject(Object.assign(error, { destructionBegan: destructionPermitted }));
 			else resolve(value as T);
 		};
 		const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -166,6 +175,15 @@ export function runRestoreChild<T = any>(
 			if (message?.type === 'ready') {
 				const authorize: ParentToChild = { type: 'authorize', command, args, receipt: options.receipt };
 				child.send(authorize);
+			} else if (message?.type === 'destroying') {
+				try {
+					options.beforeDestruction?.();
+					destructionPermitted = true;
+					child.send({ type: 'proceed' } satisfies ParentToChild);
+				} catch (error) {
+					killGroup(child);
+					settle(new RestoreChildError(`Could not mark the target before ${command} destroyed it`, undefined, error));
+				}
 			} else if (message?.type === 'refused') {
 				outcome = message;
 				settle(

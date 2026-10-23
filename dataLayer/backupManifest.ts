@@ -38,7 +38,11 @@ export type BackupManifest = {
 	 * are reported as unidentified rather than refused.
 	 */
 	producer?: BackupArchiveManifest;
-	/** The tables the backed-up database held; a restore refuses to publish one that did not load. */
+	/**
+	 * The tables an imported archive's own catalogue proved present; a restore refuses to publish one
+	 * that did not load. `create_backup` does not record it: the loaded catalogue it could read can
+	 * differ from the checkpoint, and the backup's own catalogue is what the restore proves against.
+	 */
 	tables?: string[];
 	/** Set on a backup an import produced, naming where the archive came from (redacted). */
 	imported_from?: string;

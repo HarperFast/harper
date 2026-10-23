@@ -1129,11 +1129,17 @@ export function databaseRoots(): string[] {
 		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
 		(defaultPath && (existsSync(defaultPath) ? defaultPath : join(hdbBasePath, LEGACY_DATABASES_DIR_NAME)));
 	if (storagePath) roots.add(resolve(storagePath));
-	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
+	const schemaConfigs = { ...(envGet(CONFIG_PARAMS.DATABASES) || {}) };
+	if (process.env.SCHEMAS_DATA_PATH) schemaConfigs.data = { path: process.env.SCHEMAS_DATA_PATH };
 	for (const name in schemaConfigs) {
 		if (schemaConfigs[name]?.path) roots.add(resolve(schemaConfigs[name].path));
 	}
 	return [...roots];
+}
+
+/** Whether this thread has scanned and loaded its databases; the offline CLI has not. */
+export function databasesLoaded(): boolean {
+	return loadedDatabases;
 }
 
 export function getDatabases(): Databases {

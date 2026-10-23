@@ -51,17 +51,6 @@ export function replayTimeBudgetMs(): number {
 	return configuredReplayTimeout > 0 ? configuredReplayTimeout : REPLAY_WALL_CLOCK_LIMIT_MS;
 }
 
-/**
- * `electedReplayer` marks a caller that has already won a cross-thread election for this store —
- * the branch claim (branchDatabase.ts) — and so may replay off the main thread. It also makes the
- * replay strict: the promise settles (never hangs), and a failure to apply the tail — a commit or
- * write error, a stall or wall-clock abort — rejects instead of quietly serving a rewound store.
- * Undecodable entries and a torn tail stay tolerated in both modes: a crash tears the last frame of
- * a log by construction, and end-of-log is the designed reading of it (see replayLogsGuards.ts). A
- * **mid-log** break is different — entries behind it were acknowledged and are now quarantined — so
- * an elected replay rejects on one rather than publish a branch as a trustworthy point-in-time copy
- * over known lost writes; boot replay still logs it and continues (harper#2016, harper#2063).
- */
 export interface ReplayLogsOptions {
 	elected?: boolean;
 	/**
@@ -80,6 +69,17 @@ export interface ReplaySummary {
 	discardedWrites: number;
 }
 
+/**
+ * `electedReplayer` marks a caller that has already won a cross-thread election for this store —
+ * the branch claim (branchDatabase.ts) — and so may replay off the main thread. It also makes the
+ * replay strict: the promise settles (never hangs), and a failure to apply the tail — a commit or
+ * write error, a stall or wall-clock abort — rejects instead of quietly serving a rewound store.
+ * Undecodable entries and a torn tail stay tolerated in both modes: a crash tears the last frame of
+ * a log by construction, and end-of-log is the designed reading of it (see replayLogsGuards.ts). A
+ * **mid-log** break is different — entries behind it were acknowledged and are now quarantined — so
+ * an elected replay rejects on one rather than publish a branch as a trustworthy point-in-time copy
+ * over known lost writes; boot replay still logs it and continues (harper#2016, harper#2063).
+ */
 export function replayLogs(
 	rootStore: RocksDatabase,
 	tables: any,

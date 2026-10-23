@@ -92,10 +92,8 @@ const JOB_ID = JOB_NAME.substring(4);
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would
 		// leak this worker's process-global RocksDB handles and leave the worker hanging).
-		let recorded = false;
 		try {
 			await jobs.updateJob(jobObj);
-			recorded = true;
 		} catch (updateErr) {
 			harperLogger.error('Error updating job record on job worker exit:', updateErr);
 		}
@@ -113,7 +111,9 @@ const JOB_ID = JOB_NAME.substring(4);
 			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
 		}
 		if (databaseHandlesReleased) notifyJobCleanupComplete();
-		if (recorded && afterRecorded) {
+		// even when the row write failed: the receipt, not the row, owns a deferred job's outcome, and
+		// skipping the restart would leave it to fire at some unrelated later one
+		if (afterRecorded) {
 			try {
 				afterRecorded();
 			} catch (afterError) {

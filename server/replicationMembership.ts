@@ -1,7 +1,14 @@
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
-import { getDatabases } from '../resources/databases.ts';
+import {
+	closeRestoredGeneration,
+	databasesLoaded,
+	getDatabases,
+	openRestoredGeneration,
+	resolveDatabasePath,
+} from '../resources/databases.ts';
+import { existsSync } from 'node:fs';
 import { getThisNodeName } from './nodeName.ts';
 import { getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, SYSTEM_SCHEMA_NAME, SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
@@ -71,12 +78,9 @@ export async function acquireMembershipFence(timeoutMs = MEMBERSHIP_DRAIN_TIMEOU
 export function listReplicationPeers(): string[] {
 	const peers: string[] = [];
 	const thisNode = getThisNodeName();
-	const nodes = getDatabases()[SYSTEM_SCHEMA_NAME]?.[SYSTEM_TABLE_NAMES.NODE_TABLE_NAME] as any;
-	if (nodes?.primaryStore) {
-		for (const { key, value } of nodes.primaryStore.getRange({})) {
-			if (value != null && key !== thisNode) peers.push(String(key));
-		}
-	}
+	forEachNodeRow((key, value) => {
+		if (value != null && key !== thisNode) peers.push(String(key));
+	});
 	const routes = envGet(CONFIG_PARAMS.REPLICATION_ROUTES);
 	if (Array.isArray(routes)) {
 		for (const route of routes) {
@@ -86,6 +90,37 @@ export function listReplicationPeers(): string[] {
 		}
 	}
 	return peers;
+}
+
+/**
+ * Reads `hdb_nodes` from the loaded `system` when this thread has one. The offline CLI has none, and a
+ * scan would open every database — the restore target included, whose RocksDB lock the restore child
+ * must find free — so it opens `system` alone, privately, and closes it again.
+ */
+function forEachNodeRow(visit: (key: unknown, value: unknown) => void): void {
+	if (databasesLoaded()) {
+		const nodes = getDatabases()[SYSTEM_SCHEMA_NAME]?.[SYSTEM_TABLE_NAMES.NODE_TABLE_NAME] as any;
+		for (const { key, value } of nodes?.primaryStore?.getRange({}) ?? []) visit(key, value);
+		return;
+	}
+	const systemPath = resolveDatabasePath(SYSTEM_SCHEMA_NAME);
+	if (!existsSync(join(systemPath, 'CURRENT'))) {
+		// no system database at all means no node rows; one this cannot read must not pass for that
+		if (existsSync(`${systemPath}.mdb`)) {
+			throw new ClientError(
+				`Cannot tell whether this node has replication peers: its system database at ${systemPath}.mdb is LMDB`,
+				409
+			);
+		}
+		return;
+	}
+	const generation = openRestoredGeneration(systemPath, SYSTEM_SCHEMA_NAME);
+	try {
+		const nodes = generation.tables[SYSTEM_TABLE_NAMES.NODE_TABLE_NAME] as any;
+		for (const { key, value } of nodes?.primaryStore?.getRange({}) ?? []) visit(key, value);
+	} finally {
+		closeRestoredGeneration(systemPath, generation);
+	}
 }
 
 export function assertNoReplicationPeers(databaseName: string): void {
