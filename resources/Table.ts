@@ -48,6 +48,7 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 } from './DatabaseTransaction.ts';
+import { readOnlyModeError } from './readOnlyMode.ts';
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
@@ -2092,7 +2093,11 @@ export function makeTable(options): TableResourceClass {
 					const subscribeOnThisThread = source.subscribeOnThisThread
 						? source.subscribeOnThisThread(applicationWorkerIndex(), subscriptionOptions)
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
-					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
+					const subscription =
+						hasSubscribe &&
+						subscribeOnThisThread &&
+						!isReadOnlyMode() &&
+						(await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						const admitsOriginFloors = (event: any) =>
 							event.originFloors?.length > 0 && event.onFailure && event.txnStream !== undefined;
@@ -2637,6 +2642,7 @@ export function makeTable(options): TableResourceClass {
 			const type = primaryKeyAttribute?.type;
 			// the default Resource behavior is to return a GUID, but for a table we can return incrementing numeric keys if the type is (or can be) numeric
 			if (type === 'String' || type === 'ID') return super.getNewId();
+			if (isReadOnlyMode()) throw readOnlyModeError();
 			if (!idIncrementer) {
 				// if there is no id incrementer yet, we get or create one
 				let idAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY)?.value;
@@ -4228,6 +4234,7 @@ export function makeTable(options): TableResourceClass {
 		// on one key coalescing instead of racing to tryLock.
 		async lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
 			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
+			if (isReadOnlyMode()) throw readOnlyModeError();
 			if (options === undefined && isPlainOptions(target)) {
 				options = target as RecordLockOptions;
 				target = undefined;
@@ -7957,6 +7964,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static async addAttributes(attributesToAdd: Attribute[]) {
 			TableResource.assertSchemaMutable('add attributes');
+			if (isReadOnlyMode()) throw readOnlyModeError();
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributesToAdd) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
