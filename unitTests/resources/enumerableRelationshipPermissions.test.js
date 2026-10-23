@@ -342,6 +342,84 @@ describe('Default reads authorize @enumerable relationships against the related 
 		assert.ok(user.lookups <= 2 * tableCount, `${user.lookups} permission lookups for ${tableCount} tables`);
 	});
 
+	function defineGraph(prefix, edges) {
+		const definitions = {};
+		const tables = {};
+		for (const name in edges) definitions[name] = {};
+		for (const [name, targets] of Object.entries(edges)) {
+			const attributes = [{ name: 'id', isPrimaryKey: true }];
+			for (const target of targets) {
+				attributes.push({ name: target + 'Id' });
+				attributes.push({
+					name: 'to' + target,
+					relationship: { from: target + 'Id' },
+					definition: definitions[target],
+					enumerable: true,
+				});
+			}
+			tables[name] = definitions[name].tableClass = table({ table: prefix + name, database: 'test', attributes });
+		}
+		return tables;
+	}
+
+	it('checks cyclic closures entered from alternating selections a bounded number of times', async () => {
+		const length = 20;
+		const edges = { Leaf: [] };
+		for (let i = 0; i < length; i++) {
+			edges['C' + i] = i + 1 < length ? ['C' + i, 'C' + (i + 1)] : ['C' + i];
+			edges['S' + i] = ['Leaf'];
+		}
+		const graph = defineGraph('EnumAlt', edges);
+		const rootAttributes = [{ name: 'id', isPrimaryKey: true }];
+		const selection = ['id'];
+		for (let i = 0; i < length; i++) {
+			for (const name of ['C' + i, 'S' + i]) {
+				rootAttributes.push({ name: name + 'Id' });
+				rootAttributes.push({ name, relationship: { from: name + 'Id' }, definition: { tableClass: graph[name] } });
+				selection.push(name);
+			}
+		}
+		const Root = table({ table: 'EnumAltRoot', database: 'test', attributes: rootAttributes });
+		const tables = { EnumAltRoot: READ };
+		for (const name in graph) tables['EnumAlt' + name] = READ;
+		const user = countingUser(tables);
+		assert.deepStrictEqual(await searchAs(Root, user, selection), []);
+		const tableCount = Object.keys(tables).length;
+		assert.ok(user.lookups <= 3 * tableCount, `${user.lookups} permission lookups for ${tableCount} tables`);
+	});
+
+	it('proves a cycle only after the walk that reached it succeeds', () => {
+		// R reaches A, whose success rests on R, before R reaches the unreadable X
+		const graph = defineGraph('EnumWalk', { R: ['A', 'X'], A: ['R'], X: [], Q: ['L'], L: [] });
+		const tables = { EnumWalkR: READ, EnumWalkA: READ, EnumWalkQ: READ, EnumWalkL: READ };
+		const user = roleWith(tables);
+		graph.R._inReadAdmission(() => {
+			assert.equal(graph.R._readableInFull(user), false);
+			assert.equal(graph.Q._readableInFull(user), true);
+			assert.equal(graph.A._readableInFull(user), false);
+		});
+		const failing = countingUser(tables, 3);
+		graph.R._inReadAdmission(() => {
+			assert.throws(() => graph.R._readableInFull(failing), /permission lookup failed/);
+			assert.equal(graph.Q._readableInFull(user), true);
+			assert.equal(graph.A._readableInFull(user), false);
+		});
+	});
+
+	it('keeps cycle proofs to the principal and permission source that made them', () => {
+		const graph = defineGraph('EnumOwn', { P: ['P2'], P2: ['P'] });
+		const readsCycle = roleWith({ EnumOwnP: READ, EnumOwnP2: READ });
+		const readsOne = roleWith({ EnumOwnP: READ });
+		graph.P._inReadAdmission(() => {
+			assert.equal(graph.P._readableInFull(readsCycle), true);
+			assert.equal(graph.P2._readableInFull(readsOne), false);
+			assert.equal(graph.P._readableInFull(readsOne), false);
+			assert.equal(graph.P2._readableInFull(readsCycle), true);
+			assert.equal(graph.P._readableInFull(readsCycle, { checkPermission: readsOne.role.permission }), false);
+			assert.equal(graph.P._readableInFull(readsCycle, { checkPermission: readsCycle.role.permission }), true);
+		});
+	});
+
 	it('does not reuse a closure proof for another principal within one admission', () => {
 		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ });
 		const empOnly = roleWith({ EnumEmp: READ });
