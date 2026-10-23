@@ -71,6 +71,31 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 		});
 	}
 
+	test('honors write preconditions on an inherited multipart PUT', async () => {
+		const url = `${ctx.harper.httpURL}/StoredUpload/conditional-form`;
+		async function put(text: string, condition: Record<string, string>) {
+			const form = new FormData();
+			form.append('file', new Blob([text], { type: 'text/plain' }), 'conditional.txt');
+			return fetch(url, {
+				method: 'PUT',
+				headers: { Authorization: authorization, ...condition },
+				body: form,
+				signal: AbortSignal.timeout(10000),
+			});
+		}
+		const created = await put('first', { 'If-None-Match': '*' });
+		assert.equal(created.status, 204, await created.text());
+		const stored = await fetch(url, { headers: { Authorization: authorization } });
+		const etag = stored.headers.get('etag');
+		await stored.text();
+		assert(etag);
+		const updated = await put('second', { 'If-Match': etag });
+		assert.equal(updated.status, 204, await updated.text());
+		const stale = await put('rejected', { 'If-Match': etag });
+		assert.equal(stale.status, 412, await stale.text());
+		assert.equal((await read('/ReadUpload/conditional-form')).text, 'second');
+	});
+
 	test('accepts a browser form POST directly into an exported table', async () => {
 		const form = new FormData();
 		form.append('id', 'form-post');
