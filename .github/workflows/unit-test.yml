@@ -139,6 +139,8 @@ jobs:
       # Its own process: the suite runs real installs, which close and recreate the `system`
       # database the other suites share, and the user-change subscriptions on it back off for up to a
       # minute each time that happens. Runs on the lightest shard so no shard's step sum passes the job cap.
+      # Its first CI run (2026-10-23) completed in 12-19s; 3m is the smallest cap that absorbs one such
+      # back-off, not a 1.5x derivation.
       - name: 'Unit tests: install'
         if: "!cancelled() && matrix.shard == 'resources-indexes' && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 3
