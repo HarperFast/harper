@@ -58,6 +58,11 @@ const {
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
+const {
+	componentGrantConstraintRefusal,
+	componentGrantOf,
+	grantCoversComponent,
+} = require('../security/componentGrant.ts');
 
 const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
@@ -535,6 +540,29 @@ async function deployComponent(req) {
 	env.initSync(true);
 	const initiallyIsolated = isIsolatedApplication(req.project);
 	const ownsPayloadRouting = !req.package && PAYLOAD_ROUTING_KEYS.some((key) => req[key] !== undefined);
+	// Only the origin enforces a grant's constraints. A peer's request is marked by a symbol no caller can send;
+	// `_deploymentId` arrives in the body, so it cannot mark one.
+	const componentGrant = req[hdbTerms.REPLICATED_FROM] === undefined ? componentGrantOf(req.hdb_user) : undefined;
+	const assertGrantConstraints = (routing) => {
+		const refusal = componentGrant && componentGrantConstraintRefusal(componentGrant, req.project, routing);
+		if (refusal) throw new ClientError(refusal, HTTP_STATUS_CODES.FORBIDDEN);
+	};
+	const currentRouting = (isolated) => {
+		const entry = readRootConfigEntry(req.project);
+		return { isolated, host: entry?.host, branchedDatabases: entry?.branchedDatabases };
+	};
+	if (componentGrant && !isActivation) {
+		const isolated = requestedIsolation ?? initiallyIsolated;
+		assertGrantConstraints(
+			req.package
+				? { isolated, host: req.host, branchedDatabases: req.branchedDatabases }
+				: {
+						...currentRouting(isolated),
+						...(req.host !== undefined && { host: req.host }),
+						...(req.branchedDatabases !== undefined && { branchedDatabases: req.branchedDatabases }),
+					}
+		);
+	}
 	// Only the originating node rejects admission: replicated peers must commit the same desired config,
 	// then report any node-local inability to run it through component lifecycle status.
 	const assertIsolationAdmission = async (isolated) => {
@@ -780,6 +808,12 @@ async function deployComponent(req) {
 				// `isolated` key, so the effective configuration is the only authority there — a saved `false` must
 				// not admit past an isolation the operator set between the stage and this call.
 				nowIsolated = descriptor.rootConfig || descriptor.routing ? descriptor.isolated : wasIsolated;
+				const published = descriptor.rootConfig ?? descriptor.routing;
+				assertGrantConstraints(
+					published
+						? { isolated: nowIsolated, host: published.host, branchedDatabases: published.branchedDatabases }
+						: currentRouting(nowIsolated)
+				);
 				await assertIsolationAdmission(nowIsolated);
 			},
 			beforePrepare: async () => {
@@ -791,8 +825,18 @@ async function deployComponent(req) {
 				if (!isReplicatedExecution && (req.package || ownsPayloadRouting)) req.isolated = nowIsolated;
 				if (!req.package) {
 					if (ownsPayloadRouting) declaredRouting = payloadRouting(req, nowIsolated);
+					assertGrantConstraints(
+						declaredRouting
+							? {
+									isolated: nowIsolated,
+									host: declaredRouting.host,
+									branchedDatabases: declaredRouting.branchedDatabases,
+								}
+							: currentRouting(nowIsolated)
+					);
 					return;
 				}
+				assertGrantConstraints({ isolated: nowIsolated, host: req.host, branchedDatabases: req.branchedDatabases });
 				const applicationConfig = { package: req.package };
 				if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
 					applicationConfig.install = {
@@ -1343,7 +1387,7 @@ function isSystemDatabaseReplicated() {
  * Gets a JSON directory tree of the components dir and all nested files/folders
  * @returns {Promise<*>}
  */
-async function getComponents() {
+async function getComponents(req) {
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const rootConfig = configUtils.getConfiguration();
@@ -1397,6 +1441,9 @@ async function getComponents() {
 		name: componentsRoot.split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
+	const componentGrant = componentGrantOf(req?.hdb_user);
+	if (componentGrant)
+		results.entries = results.entries.filter((entry) => grantCoversComponent(componentGrant, entry.name));
 	const { getUnsatisfiedEnv } = require('./componentSecrets.ts');
 	for (let entry of results.entries) {
 		// Declared-but-unsatisfied `env:` expectations (#1550) — metadata only (name, description,

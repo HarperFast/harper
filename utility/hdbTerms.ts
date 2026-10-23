@@ -117,6 +117,7 @@ export const RESERVED_DATABASE_NAMES = [
 	'structure_user',
 	'operations',
 	'_expandedOperations',
+	'component_deploy',
 ] as const;
 
 /** Keys that address a plain object's prototype rather than an own entry; refused as new database and table names. */

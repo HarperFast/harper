@@ -19,6 +19,25 @@ import * as path from 'node:path';
 export const PROJECT_NAME_PATTERN = /^[a-zA-Z0-9-_]+$/;
 
 /**
+ * A component-name pattern, as a role's component grant and a deploy credential's grant name one: a project name, or a
+ * non-empty prefix of one followed by a single `*`, which matches one or more further project-name characters.
+ * `shop-pr-*` covers `shop-pr-12`, and neither `shop` nor `shop-pr-`.
+ */
+const COMPONENT_NAME_PATTERN_GRAMMAR = /^[a-zA-Z0-9-_]+\*?$/;
+
+export function isComponentNamePattern(value: unknown): value is string {
+	return typeof value === 'string' && COMPONENT_NAME_PATTERN_GRAMMAR.test(value);
+}
+
+/** Whether `pattern` covers the component `name`; a value that is not a pattern covers nothing. */
+export function componentNameMatches(pattern: unknown, name: string): boolean {
+	if (!isComponentNamePattern(pattern) || !PROJECT_NAME_PATTERN.test(name)) return false;
+	if (!pattern.endsWith('*')) return pattern === name;
+	const prefix = pattern.slice(0, -1);
+	return name.length > prefix.length && name.startsWith(prefix);
+}
+
+/**
  * A credential entry's `host`: a bare host, optionally with a port — `github.com`,
  * `git.example.com:8443`. `normalizeGitHost` reduces most inputs to this form; anything still
  * outside it (an embedded space, a second `@`) is rejected rather than guessed at.

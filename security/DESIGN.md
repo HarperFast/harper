@@ -231,3 +231,12 @@ Synchronous spawning uses a filesystem bakery lock: contenders atomically publis
 Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
 
 Named-process probe and lock failures use `NamedProcessError`, a `ServerError` subtype with the original cause; native child-process argument errors retain their original class and code.
+
+## A component grant answers to its names ahead of every operations listing (`security/componentGrant.ts`)
+
+A role's `component_deploy` grant (harper#3046) reaches `deploy_component`, `drop_component`, `get_deployment`, `list_deployments` and `get_components`, for the components its `names` patterns cover (`componentNameMatches` in `utility/componentNames.ts`, which deploy credentials share, harper#3090).
+
+1. **The names are checked ahead of gate 2.** `verifyPerms` admits an SU-only operation the role's `operations` allowlist lists, for every component. A grant-holding role that also listed `deploy_component` would deploy anything, so the grant's check runs first and its answer is final for those five operations. Gate 1 still applies: a role with an allowlist has to list them too.
+2. **The deploy and drop name is resolved as the handler resolves it** — `canonicalProjectName`, else `projectNameFromPackage` — or the check would be on a different name from the deploy. The reads name no component up front, so their handlers filter (`get_components`, `list_deployments`) or refuse (`get_deployment`, 403) by the grant themselves.
+3. **The constraints hold for the entry the deploy would publish, so `deployComponent` enforces them, on the origin only.** `isolated`, `hostSuffix` and `branchedDatabases: required` are read from what the release would leave in force: a package's declared entry, a payload's owned routing, or the entry as it stands for a payload that owns none. It checks before anything is written, again under the preparation lock, and for an activation against the staged descriptor. A peer applies what the origin allowed, as it does isolation admission.
+4. **The key is `component_deploy`, not `components`.** Role permission keys share a namespace with database names (`RESERVED_DATABASE_NAMES`), and `components` is a plausible database name.

@@ -437,7 +437,8 @@ export async function ingestCredentials(req: any, credentials: any[] | undefined
 		// name from its own identifying key.
 		const name = deriveSecretName(entry, component);
 		// Reuse set_secret's seal-and-store path (encrypt with custody, grant to the component, audit
-		// the mutation). The deploy request is already super_user, which set_secret requires.
+		// the mutation). set_secret requires super_user, which a deploy under a component grant is not; it is refused
+		// a literal token before it gets here.
 		await setSecret({
 			operation: terms.OPERATIONS_ENUM.SET_SECRET,
 			hdb_user: req?.hdb_user,

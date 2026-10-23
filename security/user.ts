@@ -56,6 +56,8 @@ export interface UserRoleNamedPermissions extends Partial<CRUDPermissions> {
 	operations?: string[];
 	/** Pre-expanded Set built from operations at cache-load time. Not persisted. */
 	_expandedOperations?: Set<string>;
+	/** The components this role may deploy and drop (security/componentGrant.ts). */
+	component_deploy?: import('./componentGrant.ts').ComponentGrant;
 }
 
 export interface UserRoleDatabasePermissions {
