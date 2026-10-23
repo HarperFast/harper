@@ -10,8 +10,8 @@ const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
 const { waitFor } = require('../waitFor');
 
-// LMDB stores a merged record at the merging write's older version (harper#3388), so a later out-of-order write
-// compares as in-order there and replaces the refs; these arms hold on RocksDB only until that is fixed.
+// LMDB stores a merged record at the merging write's older version (harper#3388), so a later write older than the
+// original head can compare as in-order there and replace the refs; these arms hold on RocksDB only until that is fixed.
 const itUnlessVersionRewinds = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it;
 
 describe('out-of-order patch on an audit:false table', () => {
@@ -127,14 +127,16 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual(record.extra, 'added');
 	});
 
-	// a source-applied patch, the route that carries the writing node's id
-	function applyFrom(nodeName, id, update, timestamp) {
-		const context = { source: {}, sourceApply: true, timestamp };
+	// a patch as the source-apply handler hands it over: the origin's node id and record version, committed under
+	// the origin's log key
+	function applyFrom(nodeName, id, update, version, logKey = version) {
+		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
 			const resource = await NoAudit.getResource(id, context);
 			await resource._writeUpdate(id, update, false, {
 				isNotification: true,
 				nodeId: getIdOfRemoteNode(nodeName, NoAudit.auditStore),
+				version,
 			});
 		});
 	}
@@ -182,6 +184,27 @@ describe('out-of-order patch on an audit:false table', () => {
 		await NoAuditTrackDeletes.delete(id, { timestamp: now + 100 });
 		await NoAuditTrackDeletes.patch(id, { tag: 'recreated' }, { timestamp: now + 150 });
 		assert.strictEqual((await NoAuditTrackDeletes.get(id))?.tag, 'recreated');
+	});
+
+	it('a patch after a publish to the record in the same transaction still applies', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const context = {};
+		await transaction(context, async () => {
+			await NoAudit.publish(id, { message: 'hello' }, context);
+			await NoAudit.patch(id, { count: { __op__: 'add', value: 1 } }, context);
+		});
+		assert.strictEqual((await NoAudit.get(id)).count, 11);
+	});
+
+	it('a patch after a publish to an absent record in the same transaction creates it', async () => {
+		const id = `noaudit-${nextId++}`;
+		const context = {};
+		await transaction(context, async () => {
+			await NoAudit.publish(id, { message: 'hello' }, context);
+			await NoAudit.patch(id, { tag: 'after-publish' }, context);
+		});
+		assert.strictEqual((await NoAudit.get(id))?.tag, 'after-publish');
 	});
 
 	it('a patch after a delete in the same transaction still applies', async () => {
@@ -264,12 +287,20 @@ describe('out-of-order patch on an audit:false table', () => {
 	itUnlessVersionRewinds('the merged write identity is stored with the record', async () => {
 		const { id, now } = await seedNewerRecord();
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
-		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 4 } }, now + 60);
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 4 } }, now + 60, now + 70);
 		const refs = NoAudit.primaryStore.getEntry(id).additionalAuditRefs.map(({ version, nodeId }) => [version, nodeId]);
 		assert.deepStrictEqual(refs, [
 			[now + 50, 0],
-			[now + 60, getIdOfRemoteNode('origin-a', NoAudit.auditStore)],
+			[now + 70, getIdOfRemoteNode('origin-a', NoAudit.auditStore)],
 		]);
+	});
+
+	itUnlessVersionRewinds('applied writes are identified by the log key a re-delivery carries', async () => {
+		const { id, now } = await seedNewerRecord();
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 3 } }, now + 50, now + 70);
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 4 } }, now + 50, now + 80);
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 3 } }, now + 50, now + 70);
+		assert.strictEqual((await NoAudit.get(id)).count, 19);
 	});
 
 	it('a write staged against the head before an out-of-order merge commits does not overwrite the merge', async () => {
