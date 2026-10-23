@@ -1086,22 +1086,19 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (owed === false) return this.owePubrel(messageId);
 		if (owed !== undefined) return owed;
 		const delivery = this.awaitingAcks?.get(messageId);
-		if (delivery?.qos !== 2) return false;
-		const state = this.topics.get(delivery.topic);
+		if (delivery && delivery.qos !== 2) return false;
+		let state = delivery && this.topics.get(delivery.topic);
 		const sent = state?.unacked.get(messageId);
 		let identity: DeliveryIdentity | undefined = sent && [sent.key, sent.ordinal, sent.id];
-		if (!sent && state) {
-			// sent by a subscription this one replaced, and not yet sent again
-			for (const [slot, resend] of state.resend ?? []) {
-				if (resend[3] !== messageId) continue;
-				state.resend.delete(slot);
-				this.reservedIds.delete(messageId);
-				identity = [resend[0], resend[1], resend[2]];
-				break;
-			}
+		if (!sent) {
+			const resend = this.takeResend(messageId);
+			if (resend) ({ state, identity } = resend);
 		}
+		if (!delivery && !identity) return false;
 		this.dirty = true;
-		this.acknowledge(messageId);
+		// a restored delivery has no `awaitingAcks` entry for acknowledge() to schedule the save
+		if (delivery) this.acknowledge(messageId);
+		else this.scheduleCheckpoint();
 		if (state) {
 			// compacted first, so the receipt limit counts only what is still kept
 			this.compactReceived(state);
@@ -1114,6 +1111,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (failed) return true;
 		this.advancePositions();
 		return this.owePubrel(messageId);
+	}
+	/** A delivery held to be sent again keeps its id reserved; one restored from a record is not in `awaitingAcks`. */
+	takeResend(messageId: number): { state: TopicState; identity: DeliveryIdentity } | undefined {
+		if (!this.reservedIds.has(messageId)) return;
+		for (const state of this.topics.values()) {
+			for (const [slot, resend] of state.resend ?? []) {
+				if (resend[3] !== messageId) continue;
+				state.resend.delete(slot);
+				this.reservedIds.delete(messageId);
+				return { state, identity: [resend[0], resend[1], resend[2]] };
+			}
+		}
 	}
 	owePubrel(messageId: number) {
 		const awaitingCompletion = (this.awaitingCompletion ??= new Map());

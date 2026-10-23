@@ -269,8 +269,8 @@ suite(
 			}
 		});
 
-		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. */
-		async function rawConnect(clientId: string, clean = false) {
+		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. `behind` is sent in the CONNECT's frame. */
+		async function rawConnect(clientId: string, clean = false, behind: any[] = []) {
 			const credentials = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
 			const socket = new WebSocket(mqttURL, 'mqtt', { headers: { Authorization: `Basic ${credentials}` } });
 			const packets: any[] = [];
@@ -282,8 +282,13 @@ suite(
 				socket.once('open', resolvePromise);
 				socket.once('error', reject);
 			});
-			const send = (packet: any) => socket.send(generate(packet, { protocolVersion: 5 }));
-			send({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean });
+			const encode = (packet: any) => generate(packet, { protocolVersion: 5 });
+			const send = (packet: any) => socket.send(encode(packet));
+			socket.send(
+				Buffer.concat(
+					[{ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean }, ...behind].map(encode)
+				)
+			);
 			if (!(await waitFor(() => packets.some((packet) => packet.cmd === 'connack')))) {
 				socket.terminate();
 				throw new Error(`no CONNACK for ${clientId}`);
@@ -405,6 +410,51 @@ suite(
 				await put('Readings', id, 2);
 				ok(await waitFor(() => second.publishes(topic).length > 1), 'a later update is published');
 				deepStrictEqual(second.publishes(topic).map(valueOf), [1, 2]);
+			} finally {
+				await second.drop();
+			}
+		});
+
+		test('a PUBREC for a restored delivery not yet sent again is accepted, and the delivery is not sent again (QoS 2)', async () => {
+			const prefix = `qos2-restored-${randomUUID().slice(0, 6)}`;
+			const [topicA, topicB] = [`Readings/${prefix}-a`, `Readings/${prefix}-b`];
+			await cleanStart(prefix);
+			const first = await rawConnect(prefix);
+			let a, b;
+			try {
+				await first.subscribe('Readings/#', 2);
+				await put('Readings', `${prefix}-a`, 1);
+				await put('Readings', `${prefix}-b`, 2);
+				ok(await waitFor(() => first.publishes(topicB).length > 0), 'both updates are published');
+				[a] = first.publishes(topicA);
+				[b] = first.publishes(topicB);
+			} finally {
+				await first.drop();
+			}
+			ok(
+				await waitFor(async () => (await storedSession(prefix)).subscriptions[0].inFlight?.length === 2),
+				'the closing save keeps both deliveries in flight'
+			);
+
+			// in the CONNECT's frame, so it is handled before the resumed subscription has sent anything again
+			const second = await rawConnect(prefix, false, [{ cmd: 'pubrec', messageId: b.messageId }]);
+			try {
+				strictEqual(second.connack.sessionPresent, true);
+				await resumed((barrier) => second.subscribe(barrier, 1));
+				deepStrictEqual(
+					second.packets
+						.filter((packet) => packet.cmd === 'pubrel')
+						.map((packet) => [packet.messageId, packet.reasonCode]),
+					[[b.messageId, 0]],
+					'the PUBREC is answered as for a delivery already sent'
+				);
+				deepStrictEqual(
+					second.publishes(topicA).map((packet) => [valueOf(packet), packet.messageId, packet.dup]),
+					[[1, a.messageId, true]],
+					'the delivery without a PUBREC is sent again under its packet id'
+				);
+				deepStrictEqual(second.publishes(topicB), [], 'the one PUBREC-ed before its resend is not sent');
+				second.send({ cmd: 'pubrec', messageId: a.messageId });
 			} finally {
 				await second.drop();
 			}
