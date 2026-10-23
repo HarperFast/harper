@@ -3,6 +3,7 @@
 const env = require('../../../utility/environment/environmentManager.ts');
 env.initSync();
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms.ts');
+const { corsAccessListAllows } = require('../../../utility/corsAccessList.ts');
 
 /**
  * Builds CORS options object to pass to cors plugin when/if it needs to be registered with Fastify
@@ -26,7 +27,7 @@ function getCORSOptions() {
 			propsCorsAccesslist[0] !== '*'
 		) {
 			corsOptions.origin = (origin, callback) => {
-				return callback(null, propsCorsAccesslist.indexOf(origin) !== -1);
+				return callback(null, corsAccessListAllows(propsCorsAccesslist, origin));
 			};
 		}
 	}
