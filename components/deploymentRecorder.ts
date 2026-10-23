@@ -552,7 +552,8 @@ export class DeploymentRecorder {
 			this.record.error = stored.error ?? null;
 		}
 		const activations = new Map<string, unknown>();
-		for (const peer of stored.peer_results ?? []) if (peer?.activation) activations.set(peer.node, peer.activation);
+		for (const peer of stored.peer_results ?? [])
+			if (peer?.node != null && peer.activation) activations.set(peer.node, peer.activation);
 		if (activations.size === 0) return;
 		const peers = Array.isArray(this.record.peer_results) ? this.record.peer_results : [];
 		for (const peer of peers) if (activations.has(peer?.node)) peer.activation = activations.get(peer.node);

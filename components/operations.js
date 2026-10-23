@@ -1432,7 +1432,7 @@ async function getComponents() {
 		const liveDeploymentId = await liveDeploymentIdOf(componentsRoot, component.name).catch(() => undefined);
 		if (liveDeploymentId) component.deployment_id = liveDeploymentId;
 		const deployment = await deploymentOfLiveRelease(component.name, liveDeploymentId).catch((error) => {
-			log.debug(`Failed to read the deployment record of ${component.name} for get_components: ${error.message}`);
+			log.debug(`Failed to read the deployment record of ${component.name} for get_components: ${error?.message}`);
 		});
 		if (deployment?.completed_at != null) component.deployed_at = deployment.completed_at;
 		try {

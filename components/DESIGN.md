@@ -583,16 +583,13 @@ deploymentId }` — at the top of every candidate it extracts, after the install
   by the claim. A record whose release is neither live nor kept answers 404, where a missing tree used to answer 409.
 
 **`list_releases` reports what a node holds** (`components/releaseOperations.ts`, #3059): per component, the id the
-live marker names and every dormant build retention would count (`keptReleasesOf`, so residue and other components'
-builds stay out), each with its `state`, `at` (`.complete`'s mtime: built, or for a kept release, replaced) and the
-size of its tree. `state` is `kept` when `.complete` holds `kept`, which `refreshCompletedAt` writes when an
-activation puts a displaced release back, and `staged` otherwise. It lives in the content rather than a new file
-because nothing that settles or retains a build reads that content, while the record's file set is part of what
-recovery checks; an older build ignores it. A release kept before 5.4 reports `staged`. With `replicated: true` the
-operation returns each node's answer, a node that could not answer as an `error`, since a node's answer describes
-only that node. It is a separate operation rather than more fields on `get_components` because it walks each kept
-tree for its size, which `get_components`, polled by Studio, should not pay. It reads without the preparation lock,
-so a build mid-activation can appear or vanish between reads.
+live marker names and every dormant build retention would count (`keptReleasesOf`), each with its `state`, `at`
+(`.complete`'s mtime) and tree size. `state` is `kept` when `.complete` holds `kept`, which `refreshCompletedAt`
+writes when an activation displaces a release, else `staged`; it lives in that file's content because nothing that
+settles or retains a build reads it, while the record's file set is part of what recovery checks. It is its own
+operation, not more `get_components` fields, because sizing each kept tree is a walk Studio's polling should not
+pay. A release kept before 5.4 reports `staged`. It reads without the preparation lock, so a build mid-activation can
+appear or vanish between reads.
 
 **A record is stale only when nothing refers to it.** "Not live" is not enough: a crash after the commit and
 before the re-home leaves the displaced release's record and its tree in `.deploy-aside`, and a boot scan can
@@ -781,108 +778,57 @@ differ while the code matches. This prevents nothing, and a restart can still re
 
 ## The deployment record (`system.hdb_deployment`)
 
-`DeploymentRecorder` (`components/deploymentRecorder.ts`) owns one row per deploy on the node that received it.
-It subscribes to the deploy's `ProgressEmitter`, so every event the deploy emits lands in `event_log`, and a
-streamed `deploy_component` forwards the same events over SSE.
-
-### A live tail ends on the recorder's promise, not on an event
-
-Nothing internal travels through the deploy's emitter. Its subscribers are the record's own `event_log`, the
-streamed `deploy_component` response and any `get_deployment` tail, so an in-band signal reaches all three
-(#3062). The registry of in-progress deploys (`getActiveDeployment`) holds the emitter and a promise that
-`finish()` settles after it writes the terminal row, so the tail's closing re-read sees the final status. The
-tail also stops when its own SSE client disconnects (`ProgressEmitter.signal`).
+`DeploymentRecorder` (`components/deploymentRecorder.ts`) owns one row per deploy on the node that received it, and
+records every event of the deploy's `ProgressEmitter` in `event_log`. Nothing internal travels through that emitter,
+since every subscriber would see it (#3062): a `get_deployment` tail ends on the promise `finish()` settles after its
+terminal write (`getActiveDeployment`), so its closing re-read sees the final status.
 
 ### A rolling deploy's record follows its activation job
 
-A certified rolling deploy answers once the node that received it has taken the release; a `restart_service` job
-then activates it on each other node in turn (`activateDeploymentOnPeers`, `bin/restart.ts`). The record used to be
-finished as `success` before the job ran, so it reported success for a release a node then rejected (#3060). Now:
+The record used to say `success` before the `restart_service` job activated the release on the other nodes
+(`activateDeploymentOnPeers`, `bin/restart.ts`), whatever they then did (#3060). The origin now finishes it
+`rolling_out`, with `restart_job_id`; the job, on the node that wrote the row, adds each peer's outcome to its
+`peer_results` entry as `activation`, then ends the row `success`, or `partial` with `error.nodes`. Two ordering
+rules keep the replicated row convergent:
 
-- The origin finishes the record as `rolling_out`, with the job's id in `restart_job_id` (also set for an uncertified
-  rolling restart's job), and the response carries `status: 'rolling_out'`.
-- The job, which runs on the node that wrote the row, adds each peer's outcome to that peer's `peer_results` entry as
-  `activation: { activated, certification, message, error, completed_at }`, beside the staging outcome the entry
-  already holds, and appends a `peer_activation` event. A peer that left the cluster before its turn is recorded the
-  same way.
-- When every peer has been visited, the job ends the record `success`, or `partial` with `error.nodes` naming each
-  node that did not take the release. `partial` is terminal; `rolling_out` is not.
+- The job waits, once per row and for up to ten minutes, for the origin's `rolling_out` write before its own first,
+  since a later put of the origin's in-memory record would erase it; if the job wrote first anyway, the origin keeps
+  the stored activations and final status (`keepRolloutProgress`).
+- Writes to the row land at least a second apart, the origin's included, because a tight burst to one row can commit
+  out of order on a loaded peer (#1170); the last peer's outcome rides the final write.
 
-Two ordering rules keep the replicated row convergent. The job waits, for up to ten minutes, for the origin's own
-`rolling_out` write before its first one, since the job starts before the origin's terminal write and a later put of
-the origin's in-memory record would erase what the job wrote; should the job have written first anyway, the origin's
-write keeps the activations and final status already stored (`keepRolloutProgress`). And no two writes to the row land close together,
-because a tight burst of writes to one row can commit out of order on a loaded peer (#1170, the reason the recorder
-seals before replicating): the last peer's outcome rides the job's final write, and every job write waits until a
-second has passed since the previous one, the origin's `rolling_out` (its `completed_at`) included, so a peer that
-fails at once cannot produce the burst. A record whose origin failed after starting the job keeps
-its status; the job still records each peer's outcome there. A job that never finishes, because its node restarted
-mid-rollout, is settled `ERROR` at the next boot (`reconcileInterruptedJobs`); `settleInterruptedRollouts` then ends
-each `rolling_out` record this node wrote whose job is no longer running: `success` only when the job completed and
-every peer took the release, otherwise `partial`, naming each peer with no confirmed activation. The job's wait for the
-origin's write happens once per row, so an origin write that never landed delays only the first activation.
+A job cut short by a restart is settled `ERROR` at boot (`reconcileInterruptedJobs`); `settleInterruptedRollouts`
+then ends each `rolling_out` row this node wrote whose job is not running, `partial` unless every peer took the
+release. An origin that failed after starting the job keeps its status, with each peer's outcome.
 
-`harper deploy restart=rolling` follows that record before it exits (`bin/deployRollout.ts`, #3058). When the
-response says `rolling_out`, the CLI polls `get_deployment` on the same connection and credential the deploy used,
-with backoff, printing each node's outcome as it lands, and exits non-zero on `partial`, on a record the origin ended
-`failed`, or on a timeout, naming the nodes that did not take the release. The default bound is ten minutes, a
-node's restart ceiling, for each node the record lists; `wait_timeout=<ms>` replaces it and `wait=false` exits as
-before. It reads the record rather than the job because `hdb_job` does not replicate: behind a load balancer a
-`get_job` poll can land on a node that never had the job, and the record is on every node. For the same reason
-`harper deploy setup=true provider=github-actions` grants its CI role `get_deployment`, keeping `get_job` for
-workflows that still follow the job themselves. A refusal (401/403) ends the wait at once and says which grant is
-missing. The wait reuses the deploy's token rather than running a `harper` command per poll, which under OIDC would
-trade a new identity token each time; an exchanged token lasts an hour, longer than the default wait for up to five
-nodes.
+`harper deploy restart=rolling` follows the record, not the job (`bin/deployRollout.ts`, #3058), because `hdb_job`
+does not replicate: behind a load balancer a `get_job` poll can land on a node that never had the job. It polls
+`get_deployment` with the deploy's own connection and token, since an OIDC exchange per poll would mint a token each
+time, and a 401/403 ends the wait at once, naming the missing grant.
 
 ### A deployment records where it came from
 
-The row's `source` says what produced the release (#3061). `via: 'oidc'` is attested: the OIDC exchange signed the
-policy id and the run's verified claims into the operation token (security/DESIGN.md), and `deploy_component` copies
-them from the principal. `via: 'declared'` is what the client said about itself: the CLI sends the GitHub Actions
-run from `GITHUB_*` when it runs there, and for a directory deploy the checkout's `HEAD` and whether `git status`
-showed changes the commit does not hold (`bin/deploySource.ts`). A package or by-reference deploy names its own
-source, so the directory it ran from adds nothing. `deploymentSource` keeps only the known fields, as strings capped
-at 512 characters plus a boolean `dirty`, forces a declared source to say `declared` whatever it claims, and lets an
-attested one win. The request's `source` is removed after the row is created, so peers never see it.
-`list_deployments { sha }` filters by `source.sha`.
+`source` says what produced the release (#3061). `via: 'oidc'` is attested: the exchange signed the policy id and the
+run's verified claims into the operation token (security/DESIGN.md). `via: 'declared'` is what the client said
+(`bin/deploySource.ts`). `deploymentSource` keeps known fields only, as capped strings, forces a declared source to
+say `declared`, and lets an attested one win; the request's `source` is removed once the row exists.
 
 ### Failed deploys keep their payloads only so long
 
-A successful deploy drops a payload over `deployment_payloadRetention_maxSize` once every peer has installed it; a
-failed one keeps its tarball, since that is what an operator retries or debugs with. Kept forever, a retried
-rollout filled a tenant's quota with copies of one bundle (#2681). `sweepFailedPayloads`
-(`components/payloadRetention.ts`) now drops, per project, every failed payload beyond the newest
-`deployment_payloadRetention_failedMaxCount` (default 2) and every one older than
-`deployment_payloadRetention_failedMaxAge` (default `7d`; seconds, or a number with a `convertToMS` unit; another
-suffix falls back to the default rather than reading as seconds), but never the project's newest,
-and `0` turns a bound off. Rows are ranked across the cluster, so the bound is per project rather than per origin, but each node drops only
-the rows it wrote (`origin_node`), so each is written once; a row whose node has left keeps its payload. A drop is what
-`delete_deployment_payload` does: the row is written with
-`payload_blob: null`, which unlinks the file and replicates so peers drop their copies, and a `payload_dropped` event
-with `reason: 'retention'` says which bound. Only `failed` rows, so in-flight and `staged` rows are never touched. It runs after a deploy's
-failure is recorded, for that project, and once per process at boot (`loadRootComponents`, main thread, not
-awaited, like the interrupted-job sweep), which reaches payloads no later deploy of their project would.
+Kept forever, failed tarballs from a retried rollout filled a tenant's quota (#2681). `sweepFailedPayloads`
+(`components/payloadRetention.ts`) drops a project's `failed` payloads beyond `failedMaxCount` or older than
+`failedMaxAge` (an unknown unit falls back to the default rather than read as seconds), never its newest. Rows rank
+across the cluster, but each node drops only rows it wrote (`origin_node`), so each is written once, as
+`delete_deployment_payload` writes it, after a recorded failure for that project and once at boot.
 
 ### `get_components` says when the live release was deployed and when it last loaded
 
-Each entry carries three fields, all of this node's view (#564):
-
-- `deployment_id` is the id the live tree's provenance marker names, the id `deploy_component { deployment_id }`
-  accepts. It is absent for a tree with no marker.
-- `deployed_at` is the `completed_at` of the record that made that release live: the newest released row (`success`,
-  `rolling_out` or `partial`) whose `deployment_id` or `activated_from` is the marker's id, found by key and by the
-  `activated_from` index rather than a scan of the history. So a node that rejected a newer rolling release still
-  reports the release it serves. With no released row, a `failed` one naming the id counts: a deploy that swapped
-  here and then failed on a peer is recorded failed, yet is live. A tree with no marker reports the project's newest
-  released row, walking its rows newest first.
-- `restarted_at` is the latest time any thread on this node finished loading the application or one of its
-  sub-components, successfully or not (`ComponentStatus.loadedAt`, set by `lifecycle.loaded`/`failed` and kept
-  across later status reports). A restarted worker is a new thread, so a restart refreshes it; nothing persists it.
-
-The issue offered deriving `deployedAt` from configuration history instead. `hdb_deployment` is already the
-replicated record of every deploy, and it covers payload deploys, which change no configuration, so it is the
-source, and no second record of deploys exists.
+This node's view (#564). `deployed_at` is the `completed_at` of the released row (`success`, `rolling_out` or
+`partial`) whose `deployment_id` or `activated_from` is the live marker's id, found by key and index, so a node that
+rejected a newer rolling release reports the one it serves; failing that, a `failed` row naming the id, since a
+deploy that swapped here and then failed on a peer is live. `restarted_at` is `ComponentStatus.loadedAt`, the latest
+load on any thread, successful or not; a restart starts new threads, so nothing persists it. `hdb_deployment` is the
+source, not configuration history, because it replicates and covers payload deploys, which change no configuration.
 
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
@@ -908,18 +854,11 @@ silently either: see the next section.
 
 ## A deploy warns when an entry point its config declares did not arrive (`components/declaredEntryPoints.ts`)
 
-`deploy_component` checks the built candidate, inside `validateCandidate` and so before the swap, for every
-`jsResource.files` and `graphqlSchema.files` pattern the component's own config file declares (`harper-config.yaml`,
-`harperdb-config.yaml` or `config.yaml`, in the loader's order), and names each pattern that matched nothing in a
-`warning` event (the CLI prints it, and it lands in `event_log`) and in the response message (#1719). Only those two
-plugins, because their files are the application's code and schema, so a declaration that matches nothing usually
-means a missing application; `static`, `fastifyRoutes` and `roles` name content an application can legitimately
-lack. Only the component's own config, because `DEFAULT_CONFIG` names optional files and a component without a
-config file declares nothing. A pattern's `ignore` is honored and a leading `/` is read as the component root, as
-the loader does; a pattern the loader would refuse (`..`) is left to it. The glob walk stops at the first match, so
-only a pattern about to fail walks the whole tree. It warns rather than fails because a config naming a file the
-release no longer ships is a legal, resource-less component: deleting an application's only resource file by
-redeploying is a tested workflow (`integrationTests/deploy/redeploy-restart-flag-deletion.test.ts`).
+Before the swap (`validateCandidate`), a deploy warns, in a `warning` event and its response, of each `jsResource` or
+`graphqlSchema` `files` pattern in the component's own config file that matches nothing in the built candidate
+(#1719). Only those two, the application's code and schema; only its own config, because `DEFAULT_CONFIG` names
+optional files. It warns rather than fails because deleting an application's only resource file by redeploying is a
+tested workflow (`integrationTests/deploy/redeploy-restart-flag-deletion.test.ts`).
 
 ## The packer never ships the loader's links to the install (`components/packageComponent.ts`)
 
