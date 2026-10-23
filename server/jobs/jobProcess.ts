@@ -13,6 +13,7 @@ import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
 import * as jobs from './jobs.ts';
+import { DeferredJobCompletion } from './deferredJobCompletion.ts';
 import cloneDeep from 'lodash/cloneDeep.js';
 
 import { pathToFileURL } from 'node:url';
@@ -72,14 +73,22 @@ const JOB_ID = JOB_NAME.substring(4);
 		);
 		harperLogger.trace('Result from job:', JOB_ID, results);
 
-		jobObj.status = hdbTerms.JOB_STATUS_ENUM.COMPLETE;
-		if (typeof results === 'string') jobObj.message = results;
-		else {
-			jobObj.result = results;
-			jobObj.message = 'Successfully completed job: ' + JOB_ID;
+		if (results instanceof DeferredJobCompletion) {
+			jobObj.status = hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS;
+			jobObj.deferred_to = results.owner;
+			jobObj.message = results.message;
+			if (results.result !== undefined) jobObj.result = results.result;
+			harperLogger.notify('Job', JOB_ID, 'continues after this worker:', results.message);
+		} else {
+			jobObj.status = hdbTerms.JOB_STATUS_ENUM.COMPLETE;
+			if (typeof results === 'string') jobObj.message = results;
+			else {
+				jobObj.result = results;
+				jobObj.message = 'Successfully completed job: ' + JOB_ID;
+			}
+			jobObj.end_datetime = Date.now();
+			harperLogger.notify('Successfully completed job:', JOB_ID);
 		}
-		jobObj.end_datetime = Date.now();
-		harperLogger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
 		exitCode = 1;
 		harperLogger.error(err);

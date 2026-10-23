@@ -77,6 +77,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 };
 
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { fenceMembershipChange } from '../replicationMembership.ts';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -496,7 +497,7 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 	} catch (err) {
 		throw handleHDBError(err, `There was an error when trying to choose an operation path`, 500);
 	}
-	return operation_function;
+	return fenceMembershipChange(json, operation_function);
 }
 
 export function getOperationFunction(json: OperationRequestBody): OperationFunctionObject {
