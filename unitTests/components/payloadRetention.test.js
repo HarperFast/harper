@@ -113,6 +113,15 @@ describe('failed deploy payload retention (harper#2681)', () => {
 		]);
 	});
 
+	it("counts other nodes' failed payloads toward the bound, and drops only its own", async () => {
+		failed('elsewhere-newest', 1, { origin_node: 'another-node' });
+		failed('elsewhere-newer', 2, { origin_node: 'another-node' });
+		failed('mine', 3);
+		failed('elsewhere-older', 4, { origin_node: 'another-node' });
+		await sweepFailedPayloads({ now: NOW });
+		assert.deepStrictEqual(kept().sort(), ['elsewhere-newer', 'elsewhere-newest', 'elsewhere-older']);
+	});
+
 	it('keeps every failed payload when both bounds are 0', async () => {
 		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, 0);
 		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT, 0);

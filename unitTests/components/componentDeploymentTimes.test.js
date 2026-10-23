@@ -24,13 +24,12 @@ function installDeploymentRows(rows) {
 	if (!databases.system) databases.system = {};
 	const prior = databases.system[DEPLOYMENT_TABLE];
 	databases.system[DEPLOYMENT_TABLE] = {
-		async *search({ conditions, operator }) {
-			const matches =
-				(row) =>
-				({ attribute, value }) =>
-					row[attribute] === value;
+		async get(id) {
+			return rows.find((row) => row.deployment_id === id);
+		},
+		async *search({ conditions }) {
 			for (const row of rows) {
-				if (operator === 'or' ? conditions.some(matches(row)) : conditions.every(matches(row))) yield row;
+				if (conditions.every(({ attribute, value }) => row[attribute] === value)) yield row;
 			}
 		},
 	};

@@ -553,9 +553,10 @@ export class DeploymentRecorder {
 }
 
 // How long a rolling deploy's activation job waits for the origin's own write of `rolling_out` before it records a
-// peer's outcome over whatever the row holds. The origin writes it right after starting the job, and the first peer's
-// activation is a whole restart, so this is only a bound for an origin that failed in between.
-const ROLLOUT_RECORD_WAIT_MS = 60_000;
+// peer's outcome over whatever the row holds. The origin writes it moments after starting the job; a write of its
+// in-memory row that landed after the job's would erase what the job recorded, so this only bounds an origin that
+// failed in between.
+const ROLLOUT_RECORD_WAIT_MS = 10 * 60_000;
 // The least time between two writes to the row while the job runs. A peer that fails at once (connection refused)
 // would otherwise put two writes moments apart, the burst that can commit out of order on a loaded peer (#1170).
 const ROLLOUT_WRITE_SPACING_MS = 1000;

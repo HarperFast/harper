@@ -253,7 +253,7 @@ export async function exchangeOidcToken(req: any) {
 				operations: policy.operations,
 			},
 			EXCHANGED_TOKEN_LIFETIME_SECONDS,
-			// What a deploy made with this token records as its attested source (#3061).
+			// What a deploy made with this token records as its attested source.
 			attestedSource(policy.id, claims)
 		);
 		if (policy.operations?.length) audit.scoped_operations = policy.operations;

@@ -808,11 +808,13 @@ finished as `success` before the job ran, so it reported success for a release a
 - When every peer has been visited, the job ends the record `success`, or `partial` with `error.nodes` naming each
   node that did not take the release. `partial` is terminal; `rolling_out` is not.
 
-Two ordering rules keep the replicated row convergent. The job waits, bounded, for the origin's own `rolling_out`
-write before its first one, since the job starts before the origin's terminal write and a later put of the origin's
-in-memory record would erase what the job wrote. And the last peer's outcome rides the job's final write instead of
-landing moments before it, because a tight burst of writes to one row can commit out of order on a loaded peer
-(#1170, the reason the recorder seals before replicating). A record whose origin failed after starting the job keeps
+Two ordering rules keep the replicated row convergent. The job waits, for up to ten minutes, for the origin's own
+`rolling_out` write before its first one, since the job starts before the origin's terminal write and a later put of
+the origin's in-memory record would erase what the job wrote. And no two writes to the row land close together,
+because a tight burst of writes to one row can commit out of order on a loaded peer (#1170, the reason the recorder
+seals before replicating): the last peer's outcome rides the job's final write, and every job write waits until a
+second has passed since the previous one, the origin's `rolling_out` (its `completed_at`) included, so a peer that
+fails at once cannot produce the burst. A record whose origin failed after starting the job keeps
 its status; the job still records each peer's outcome there. A job that never finishes, because its node restarted
 mid-rollout, leaves the record `rolling_out`, as it leaves its `hdb_job` row in progress.
 
@@ -849,10 +851,11 @@ rollout filled a tenant's quota with copies of one bundle (#2681). `sweepFailedP
 (`components/payloadRetention.ts`) now drops, per project, every failed payload beyond the newest
 `deployment_payloadRetention_failedMaxCount` (default 2) and every one older than
 `deployment_payloadRetention_failedMaxAge` (default `7d`; a duration, or seconds), but never the project's newest,
-and `0` turns a bound off. A drop is what `delete_deployment_payload` does: the row is written with
+and `0` turns a bound off. Rows are ranked across the cluster, so the bound is per project rather than per origin, but each node drops only
+the rows it wrote (`origin_node`), so each is written once; a row whose node has left keeps its payload. A drop is what
+`delete_deployment_payload` does: the row is written with
 `payload_blob: null`, which unlinks the file and replicates so peers drop their copies, and a `payload_dropped` event
-with `reason: 'retention'` says which bound. Only `failed` rows, so in-flight and `staged` rows are never touched, and
-only rows this node wrote (`origin_node`), so each row is swept once across the cluster. It runs after a deploy's
+with `reason: 'retention'` says which bound. Only `failed` rows, so in-flight and `staged` rows are never touched. It runs after a deploy's
 failure is recorded, for that project, and once per process at boot (`loadRootComponents`, main thread, not
 awaited, like the interrupted-job sweep), which reaches payloads no later deploy of their project would.
 
@@ -863,16 +866,16 @@ Each entry carries three fields, all of this node's view (#564):
 - `deployment_id` is the id the live tree's provenance marker names, the id `deploy_component { deployment_id }`
   accepts. It is absent for a tree with no marker.
 - `deployed_at` is the `completed_at` of the record that made that release live: the newest released row (`success`,
-  `rolling_out` or `partial`) whose `deployment_id` or `activated_from` is the marker's id. So a node that rejected a
-  newer rolling release still reports the release it serves. A tree with no marker reports the project's newest
-  released row.
+  `rolling_out` or `partial`) whose `deployment_id` or `activated_from` is the marker's id, found by key and by the
+  `activated_from` index rather than a scan of the history. So a node that rejected a newer rolling release still
+  reports the release it serves. A tree with no marker reports the project's newest released row.
 - `restarted_at` is the latest time any thread on this node finished loading the application or one of its
   sub-components, successfully or not (`ComponentStatus.loadedAt`, set by `lifecycle.loaded`/`failed` and kept
   across later status reports). A restarted worker is a new thread, so a restart refreshes it; nothing persists it.
 
 The issue offered deriving `deployedAt` from configuration history instead. `hdb_deployment` is already the
 replicated record of every deploy, and it covers payload deploys, which change no configuration, so it is the
-source, and no second record of deploys exists. `get_components` reads it in one scan.
+source, and no second record of deploys exists.
 
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 

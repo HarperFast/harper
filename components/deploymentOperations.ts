@@ -96,39 +96,32 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 }
 
 // A deployment whose release went live on the node that received it; a rolling one may still be reaching the others.
-const RELEASED_STATUSES = ['success', 'rolling_out', 'partial'];
-
-/**
- * Each project's released deployments, newest first by completion. One scan serves a whole `get_components`; an
- * empty map when this node has no deployment table.
- */
-export async function releasedDeploymentsByProject(): Promise<Map<string, any[]>> {
-	const byProject = new Map<string, any[]>();
-	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
-	if (!table) return byProject;
-	const conditions = RELEASED_STATUSES.map((status) => ({ attribute: 'status', value: status }));
-	// Only what get_components reads, so a long history costs a scan of the status index, not a copy of every
-	// row's event_log.
-	const select = ['deployment_id', 'project', 'activated_from', 'completed_at'];
-	for await (const row of table.search({ conditions, operator: 'or', select })) {
-		if (!row?.project) continue;
-		let rows = byProject.get(row.project);
-		if (!rows) byProject.set(row.project, (rows = []));
-		rows.push(row);
-	}
-	for (const rows of byProject.values()) rows.sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
-	return byProject;
-}
+const RELEASED_STATUSES = new Set(['success', 'rolling_out', 'partial']);
+const RELEASE_FIELDS = ['deployment_id', 'project', 'status', 'activated_from', 'completed_at'];
 
 /**
  * The record that made a component's live release live: the newest released deploy or activation naming the id in
- * its tree's provenance marker. A tree without one (installed before 5.3, by `add_component`, or from a `file:` link)
- * is described by the project's newest released deployment.
+ * its tree's provenance marker, found by key and by `activated_from` so a long history is never scanned. A tree without
+ * one (installed before 5.3, by `add_component`, or from a `file:` link) is described by the project's newest
+ * released deployment.
  */
-export function deploymentOfLiveRelease(rows: any[] | undefined, liveDeploymentId: string | undefined): any {
-	if (!rows) return undefined;
-	if (liveDeploymentId === undefined) return rows[0];
-	return rows.find((row) => row.deployment_id === liveDeploymentId || row.activated_from === liveDeploymentId);
+export async function deploymentOfLiveRelease(
+	project: string,
+	liveDeploymentId: string | undefined
+): Promise<{ deployment_id: string; completed_at?: number } | undefined> {
+	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
+	if (!table) return undefined;
+	let newest: any;
+	const consider = (row: any) => {
+		if (!row || row.project !== project || !RELEASED_STATUSES.has(row.status)) return;
+		if (newest === undefined || (row.completed_at ?? 0) > (newest.completed_at ?? 0)) newest = row;
+	};
+	const conditions = liveDeploymentId
+		? [{ attribute: 'activated_from', value: liveDeploymentId }]
+		: [{ attribute: 'project', value: project }];
+	if (liveDeploymentId) consider(await table.get(liveDeploymentId));
+	for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) consider(row);
+	return newest && { deployment_id: newest.deployment_id, completed_at: newest.completed_at };
 }
 
 export async function handleGetDeployment(req: GetRequest): Promise<any> {

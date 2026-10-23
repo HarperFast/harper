@@ -33,8 +33,9 @@ function isSetting(value: unknown): value is string | number {
 /**
  * Drop the payloads of failed deploys beyond the bounds, keeping each row's metadata and `event_log`, as
  * `delete_deployment_payload` does: the row is written with `payload_blob: null`, which unlinks the file here and
- * replicates so peers drop their copies. Only rows this node wrote, so the cluster sweeps each row once. The newest
- * failed payload of each project is always kept. Never throws; returns what it dropped.
+ * replicates so peers drop their copies. Rows are ranked across the cluster but each node drops only the rows it wrote,
+ * so each is written once; a row whose node left the cluster keeps its payload. The newest failed payload of each
+ * project is always kept. Never throws; returns what it dropped.
  */
 export async function sweepFailedPayloads(
 	options: { project?: string; now?: number } = {}
@@ -51,15 +52,17 @@ export async function sweepFailedPayloads(
 		if (options.project) conditions.push({ attribute: 'project', value: options.project });
 		const byProject = new Map<string, any[]>();
 		for await (const row of table.search(conditions)) {
-			if (row?.payload_blob == null || row.origin_node !== origin) continue;
+			if (row?.payload_blob == null) continue;
 			let rows = byProject.get(row.project);
 			if (!rows) byProject.set(row.project, (rows = []));
 			rows.push(row);
 		}
 		for (const rows of byProject.values()) {
 			rows.sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0));
+			// Ranked across every node's rows, so the bound is per project, not per origin; each node drops only the rows
+			// it wrote, so each row is written once.
 			for (const [index, row] of rows.entries()) {
-				if (index === 0) continue;
+				if (index === 0 || row.origin_node !== origin) continue;
 				const tooMany = maxCount > 0 && index >= maxCount;
 				const tooOld = maxAgeMs > 0 && now - (row.completed_at ?? row.started_at ?? now) > maxAgeMs;
 				if (!tooMany && !tooOld) continue;
