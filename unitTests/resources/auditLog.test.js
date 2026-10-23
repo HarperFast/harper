@@ -2797,7 +2797,7 @@ describe('history after record eviction (issue #3164)', () => {
 		let historyTableName;
 		beforeEach(() => {
 			historyTableName = `${tableName}_ttl`;
-			// a table-level expiration, as on any TTL table; long enough that nothing expires during a test
+			// a TTL makes this a table that evicts; long enough that nothing expires during a test
 			HistoryTable = table({
 				database: schema,
 				table: historyTableName,
@@ -2934,16 +2934,14 @@ describe('history after record eviction (issue #3164)', () => {
 			await pastAuditWindow(patchTime);
 			const between = patchTime + 50;
 
-			// evicted: no current entry to walk back from
-			assert.deepStrictEqual(recordAt('rec-1', between), patched);
+			assert.deepStrictEqual(recordAt('rec-1', between), patched, 'evicted: no current entry to walk back from');
 			assert.strictEqual(recordAt('rec-1', putTime - 1), null, 'the record did not exist yet');
 
 			await HistoryTable.put(refetched);
 			const reinsertTime = headOf(HistoryTable, 'rec-1');
 			assert.ok(reinsertTime > between);
 			await HistoryTable.patch('rec-1', { count: 8 });
-			// re-inserted: the walk back from the current entry ends at the unlinked re-insert
-			assert.deepStrictEqual(recordAt('rec-1', between), patched);
+			assert.deepStrictEqual(recordAt('rec-1', between), patched, 'the walk back ends at the unlinked re-insert');
 			assert.deepStrictEqual(recordAt('rec-1', (putTime + patchTime) / 2), initial);
 			assert.strictEqual(recordAt('rec-1', putTime - 1), null);
 			assert.deepStrictEqual(recordAt('rec-1', reinsertTime), refetched);
