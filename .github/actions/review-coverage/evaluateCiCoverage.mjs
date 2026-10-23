@@ -52,6 +52,8 @@ const SEGMENTS = new Map([
 	['rounds', positive('rounds')],
 	['full', positive('full')],
 ]);
+export const PENDING_FIX =
+	'run the pre-push CLI with `--fold-late`, `--final` or another review round, then re-materialize the footer with `pr-body-review-need.mjs --write`; a late leg that self-folds updates the PR body itself';
 const ORDER = [...SEGMENTS.keys()];
 const FIELD = 'Review-Coverage: ';
 
@@ -124,8 +126,6 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const adjudicatorBlocked = footerRead.segments.get('adjudicated')?.split(',').includes('domain')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
-	// The helper writes `pending=` for a late leg whose findings no round has adjudicated yet; the
-	// round that folds it drops the segment. Unlike `blocked=`, the leg may still self-fold.
 	const pendingLegs = footerRead.segments.get('pending')?.split(',') ?? [];
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
@@ -186,7 +186,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		: '';
 	const pendingNote =
 		pendingLegs.length && !classification.draft
-			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — run the pre-push CLI with \`--fold-late\` or \`--final\` (or another review round), or wait for the late leg to self-fold into the PR body, then re-materialize the footer with \`pr-body-review-need.mjs --write\``
+			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — ${PENDING_FIX}`
 			: '';
 	const summary = exempt
 		? `exempt: ${exempt}`
