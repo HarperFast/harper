@@ -5,7 +5,12 @@ import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.js';
 import { convertToMS } from '../utility/common_utils.ts';
-import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
+import {
+	LAST_TIMESTAMP_PLACEHOLDER,
+	HAS_STRUCTURE_UPDATE,
+	PENDING_LOCAL_TIME,
+	RECEIVED_IDENTITY_REF,
+} from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
@@ -1560,7 +1565,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				for (let i = 0; i < count; i++) {
 					const refVersion = decoder.readFloat64();
 					const refNodeId = decoder.readInt();
-					previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
+					// a build that predates the kind bit copies a record's identity refs here as they read
+					if (refNodeId < RECEIVED_IDENTITY_REF)
+						previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
 				}
 			}
 		}

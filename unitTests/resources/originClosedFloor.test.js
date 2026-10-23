@@ -229,7 +229,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert.equal((await Tbl.get('floor-counter')).n, 1, 'the re-delivery of a rekeyed apply is not applied twice');
 		assert.equal(entriesFor('floor-counter').length, 2);
 		assert(
-			Tbl.primaryStore.getEntry('floor-counter').additionalAuditRefs?.some((ref) => ref.version === version),
+			Tbl.primaryStore.getEntry('floor-counter').receivedIdentityRefs?.some((ref) => ref.version === version),
 			'the record keeps the received identity a re-delivery carries'
 		);
 	});

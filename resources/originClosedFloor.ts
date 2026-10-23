@@ -64,7 +64,8 @@ function storeMax(words: BigInt64Array, index: number, value: number): number {
 	}
 }
 
-type Reservation = { registry: ThreadRegistry; key: number; released: boolean };
+// `aroundCallerValue`: the key was minted in place of a caller's value, which stays the record version.
+type Reservation = { registry: ThreadRegistry; key: number; released: boolean; aroundCallerValue: boolean };
 
 /**
  * One thread's view of one root store's floor registry. Outstanding reservations sit in a binary
@@ -220,7 +221,7 @@ class ThreadRegistry {
 			const admissible = explicit == null && bits >= Atomics.load(words, WORD_PROPOSED) && this.admitNative(bits);
 			const key = admissible ? current : this.freshKey();
 			if (key !== current) handle.setTimestamp(key);
-			const reservation: Reservation = { registry: this, key, released: false };
+			const reservation: Reservation = { registry: this, key, released: false, aroundCallerValue: explicit != null };
 			(handle as any)[RESERVATION] = reservation;
 			this.pushHeap(reservation);
 			this.outstanding++;
@@ -331,6 +332,11 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 
 export function reservedLocalKey(handle: RocksTransaction | undefined): number | undefined {
 	return handle && (handle as any)[RESERVATION]?.key;
+}
+
+/** Whether `handle`'s key was minted around a caller's value, so a write's received identity is not its key. */
+export function reservedAroundCallerValue(handle: RocksTransaction | undefined): boolean {
+	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
 }
 
 function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {

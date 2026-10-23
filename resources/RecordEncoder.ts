@@ -103,7 +103,10 @@ export type Entry = {
 	size: number;
 	deref?: () => any;
 	[METADATA]?: any;
+	/** Log keys: the record's audit head when its version is not its key, and out-of-order branch heads. */
 	additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
+	/** What a re-delivery of a write carries when that is not its log key; addresses no entry. */
+	receivedIdentityRefs?: Array<{ version: number; nodeId: number }>;
 };
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
@@ -130,6 +133,10 @@ export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
+// Marks a persisted ref as a received identity rather than a log key, in its node-id word. Node ids are
+// small mapping indexes (nodeIdMapping.ts), so the bit is never part of one; refs written before it
+// existed are all log keys.
+export const RECEIVED_IDENTITY_REF = 0x80000000;
 // A resequenced write keeps the (newer) version it merged onto, so one version identifies two
 // different stored values and version equality proves nothing. The metadata word this is set in is
 // the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
@@ -179,7 +186,8 @@ let timestampNextEncoding = 0,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0,
 	nodeIdAtNextEncoding = -1,
-	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
+	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined,
+	receivedIdentityRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
 /**
@@ -365,8 +373,13 @@ export class RecordEncoder extends StructonEncoder {
 				const expiresAt = expiresAtNextEncoding;
 				const residencyId = residencyIdAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
-				const additionalAuditRefs = additionalAuditRefsNextEncoding;
+				const logKeyRefs = additionalAuditRefsNextEncoding;
+				const identityRefs = receivedIdentityRefsNextEncoding;
+				const logKeyRefCount = logKeyRefs?.length ?? 0;
+				const identityRefCount = identityRefs?.length ?? 0;
 				let auditRefsToEncode = 0;
+				let logKeyRefsToDrop = 0;
+				let identityRefsToDrop = 0;
 				if (metadata >= 0) {
 					valueStart += 4; // make room for metadata bytes
 					metadataInNextEncoding = -1; // reset indicator to mean no metadata
@@ -391,20 +404,22 @@ export class RecordEncoder extends StructonEncoder {
 							throw new Error('Node id included, but not in metadata flags');
 						}
 					}
-					if (additionalAuditRefs && additionalAuditRefs.length > 0) {
+					if (logKeyRefCount + identityRefCount > 0) {
 						// `valueStart` is OR'd into msgpackr's encode options below, where the reserved-space field
 						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
 						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
 						// count is one byte too. Refs are best-effort — a later in-order write drops them outright —
-						// so over budget the MIDDLE is dropped: the first entry is the addressable audit head when
-						// the record and log clocks diverge, and the last is the identity this write is matched on
-						// by the re-delivery guard, so neither end may go. (harper#2642)
-						auditRefsToEncode = Math.min(
-							additionalAuditRefs.length,
-							Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12)
-						);
+						// so over budget the oldest are dropped, never the first log key (the addressable audit head
+						// when the record and log clocks diverge) nor the last of either kind (the newest receipt the
+						// re-delivery guard matches, whichever kind it is). (harper#2642)
+						const budget = Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12);
+						const excess = Math.max(0, logKeyRefCount + identityRefCount - budget);
+						logKeyRefsToDrop = Math.min(excess, Math.max(0, logKeyRefCount - 2));
+						identityRefsToDrop = excess - logKeyRefsToDrop;
+						auditRefsToEncode = logKeyRefCount + identityRefCount - excess;
 						valueStart += 1 + auditRefsToEncode * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
 						additionalAuditRefsNextEncoding = undefined;
+						receivedIdentityRefsNextEncoding = undefined;
 					}
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
@@ -443,16 +458,19 @@ export class RecordEncoder extends StructonEncoder {
 					}
 					if (auditRefsToEncode > 0) {
 						encoded[position++] = auditRefsToEncode;
-						// Written as [0, …tail]: the dropped window is the middle, and it is empty when nothing
-						// had to be dropped.
-						const dropFrom = 1;
-						const dropTo = additionalAuditRefs.length - auditRefsToEncode + 1;
-						for (let index = 0; index < additionalAuditRefs.length; index++) {
-							if (index >= dropFrom && index < dropTo) continue;
-							const ref = additionalAuditRefs[index];
+						for (let index = 0; index < logKeyRefCount; index++) {
+							if (index > 0 && index <= logKeyRefsToDrop) continue;
+							const ref = logKeyRefs[index];
 							dataView.setFloat64(position, ref.version);
 							position += 8;
 							dataView.setUint32(position, ref.nodeId);
+							position += 4;
+						}
+						for (let index = identityRefsToDrop; index < identityRefCount; index++) {
+							const ref = identityRefs[index];
+							dataView.setFloat64(position, ref.version);
+							position += 8;
+							dataView.setUint32(position, ((ref.nodeId ?? 0) | RECEIVED_IDENTITY_REF) >>> 0);
 							position += 4;
 						}
 					}
@@ -631,7 +649,7 @@ export class RecordEncoder extends StructonEncoder {
 					localTime = getTimestamp();
 					nextByte = buffer[position];
 				}
-				let expiresAt, residencyId, nodeId, additionalAuditRefs;
+				let expiresAt, residencyId, nodeId, additionalAuditRefs, receivedIdentityRefs;
 				if (nextByte < 32) {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
@@ -667,13 +685,14 @@ export class RecordEncoder extends StructonEncoder {
 						const dataView =
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 						const count = buffer[position++];
-						additionalAuditRefs = [];
 						for (let i = 0; i < count; i++) {
 							const version = dataView.getFloat64(position);
 							position += 8;
 							const refNodeId = dataView.getUint32(position);
 							position += 4;
-							additionalAuditRefs.push({ version, nodeId: refNodeId });
+							if (refNodeId >= RECEIVED_IDENTITY_REF)
+								(receivedIdentityRefs ??= []).push({ version, nodeId: refNodeId - RECEIVED_IDENTITY_REF });
+							else (additionalAuditRefs ??= []).push({ version, nodeId: refNodeId });
 						}
 					}
 				}
@@ -693,6 +712,7 @@ export class RecordEncoder extends StructonEncoder {
 					residencyId,
 					nodeId,
 					additionalAuditRefs,
+					receivedIdentityRefs,
 					size: end - start,
 					value,
 				} as any;
@@ -755,6 +775,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.residencyId = lastMetadata.residencyId;
 			entry.nodeId = lastMetadata.nodeId;
 			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+			entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
 			entry.size = lastMetadata.size;
 			if (lastMetadata.expiresAt >= 0) {
 				entry.expiresAt = lastMetadata.expiresAt;
@@ -815,6 +836,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.residencyId = lastMetadata.residencyId;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+				entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
 				entry.size = lastMetadata.size;
 				if (lastMetadata.expiresAt >= 0) entry.expiresAt = lastMetadata.expiresAt;
 				lastMetadata = null;
@@ -924,6 +946,7 @@ export function clearNextEncoding() {
 	nodeIdAtNextEncoding = -1;
 	residencyIdAtNextEncoding = 0;
 	additionalAuditRefsNextEncoding = undefined;
+	receivedIdentityRefsNextEncoding = undefined;
 }
 export function recordUpdater(store, tableId, auditStore) {
 	return function (
@@ -998,10 +1021,11 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= HAS_NODE_ID;
 			} else nodeIdAtNextEncoding = -1;
 			const additionalAuditRefs = options?.additionalAuditRefs;
-			if (additionalAuditRefs && additionalAuditRefs.length > 0) {
-				additionalAuditRefsNextEncoding = additionalAuditRefs;
+			const receivedIdentityRefs = options?.receivedIdentityRefs;
+			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
+			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
+			if (additionalAuditRefsNextEncoding || receivedIdentityRefsNextEncoding)
 				metadataInNextEncoding |= HAS_ADDITIONAL_AUDIT_REFS;
-			} else additionalAuditRefsNextEncoding = undefined;
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
 				extendedType |= HAS_ADDITIONAL_AUDIT_REFS_AUDIT;
@@ -1156,9 +1180,6 @@ export function recordUpdater(store, tableId, auditStore) {
 			clearNextEncoding();
 		}
 	};
-}
-export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: number }> | undefined) {
-	additionalAuditRefsNextEncoding = refs;
 }
 export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;

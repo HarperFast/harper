@@ -257,10 +257,8 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 			// Older than the head but above the floor, so every apply goes through the reconciliation walk.
 			const entry = await applyOps(T, 'many', anchor + 1000, 40);
 
-			assert.ok(
-				entry.additionalAuditRefs.length < 20,
-				`ref list must stay bounded; got ${entry.additionalAuditRefs?.length}`
-			);
+			const persistedRefs = (entry.additionalAuditRefs?.length ?? 0) + (entry.receivedIdentityRefs?.length ?? 0);
+			assert.ok(persistedRefs < 20, `ref list must stay bounded; got ${persistedRefs}`);
 			assert.deepEqual(await T.get('many'), { id: 'many', name: 'head', count: 40 });
 		});
 
@@ -273,17 +271,15 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 			const first = Date.now() - 30 * DAY;
 			const entry = await applyOps(T, 'many', first, 40);
 
-			assert.ok(
-				entry.additionalAuditRefs.length < 20,
-				`ref list must stay bounded; got ${entry.additionalAuditRefs?.length}`
-			);
+			const persistedRefs = (entry.additionalAuditRefs?.length ?? 0) + (entry.receivedIdentityRefs?.length ?? 0);
+			assert.ok(persistedRefs < 20, `ref list must stay bounded; got ${persistedRefs}`);
 			assert.deepEqual(await T.get('many'), { id: 'many', name: 'newer', count: 40 });
 			// The bound drops the middle, never the newest: that entry is the only thing standing between a
 			// re-delivery of the last event and a second increment, since the walk no longer runs.
 			const newest = first + 39;
 			assert.ok(
-				entry.additionalAuditRefs.some((ref) => ref.version === newest),
-				`the newest identity must survive the bound; got ${JSON.stringify(entry.additionalAuditRefs)}`
+				entry.receivedIdentityRefs.some((ref) => ref.version === newest),
+				`the newest identity must survive the bound; got ${JSON.stringify(entry.receivedIdentityRefs)}`
 			);
 			await applyFromOrigin(T, 'many', { count: { __op__: 'add', value: 1 } }, { logKey: newest, version: newest });
 			assert.equal((await T.get('many')).count, 40, 'a re-delivery at the bound must not apply twice');

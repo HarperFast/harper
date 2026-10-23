@@ -49,7 +49,7 @@ import {
 	confirmingResidents,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
-import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
+import { releaseLocalKey, reserveLocalKey, reservedAroundCallerValue, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
 	lockAttemptKey,
@@ -1639,25 +1639,6 @@ export function makeTable(options): TableResourceClass {
 				return { txnLogKey: version, nodeId, entry: directHead };
 		}
 		return { txnLogKey: version, nodeId };
-	}
-	/**
-	 * Whether a ref equal to the identity a re-delivery carries is that write's receipt: the identity ref
-	 * a write whose version is not its key keeps on the record (no entry at the key), or an audit head
-	 * whose entry is the same write. The protected first ref is the record's audit head; when its entry is gone it
-	 * is evidence of nothing unless the record still sits at the incoming version.
-	 */
-	function receivedIdentityRefIsReceipt(
-		auditStore: any,
-		tableId: number,
-		id: Id,
-		ref: { version: number; nodeId?: number },
-		index: number,
-		version: number,
-		headVersion: number
-	): boolean {
-		const entry = auditStore.get(ref.version, tableId, id, ref.nodeId);
-		if (entry !== undefined) return entry.version === version;
-		return index > 0 || headVersion === version;
 	}
 	// Teardown rejects every producer; source/replay paths only bypass derived-index lag shedding.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
@@ -5017,6 +4998,9 @@ export function makeTable(options): TableResourceClass {
 					// What a re-delivery of this write carries: the origin's log key for an apply (the context's
 					// timestamp, even when the floor moved this handle's key), the explicit value otherwise.
 					const receivedLogKey = options?.version != null ? ((context as any)?.timestamp ?? txnLogKey) : txnTime;
+					// Decided by provenance, never by comparing the two values: a key minted around a caller's value can
+					// equal it, and that write's identity is still the caller's value.
+					const identityIsNotKey = receivedLogKey !== appendedLogKey || reservedAroundCallerValue(transaction);
 
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
@@ -5041,6 +5025,7 @@ export function makeTable(options): TableResourceClass {
 					// directions; the table default is the final fallback. -1 means no expiration.
 					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
+					let receivedIdentityRefs: Array<{ version: number; nodeId: number }> | undefined;
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
 					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
 					// harper-pro#480). Durability for these (WAL-off) rows comes from an explicit RocksDB flush that
@@ -5074,7 +5059,7 @@ export function makeTable(options): TableResourceClass {
 								!replaying &&
 								precedesExisting === 0 &&
 								receivedLogKey === txnTime &&
-								appendedLogKey === receivedLogKey &&
+								!identityIsNotKey &&
 								isHeadIdentity(
 									(identityRecord = identityBase(write, existingEntry, committedBy)),
 									txnTime,
@@ -5101,6 +5086,8 @@ export function makeTable(options): TableResourceClass {
 							// and stages nothing. Nor when a retry reads back its own prior staging, recognized by its head
 							// ref being the key minted for this handle (a committed competitor carries another minted head;
 							// in an origin's log a competing delivery shares the key, so only a minted key can tell).
+							// Each kind of ref is matched only against this write's value of the same kind: log keys
+							// against the key it appended under, received identities against the identity it carries.
 							let refBase: Partial<Entry> | undefined;
 							let readsOwnStaging = false;
 							if (!priorStaged) {
@@ -5113,28 +5100,18 @@ export function makeTable(options): TableResourceClass {
 									refBase?.additionalAuditRefs != null &&
 									auditRefIndex(refBase.additionalAuditRefs, ownMintedKey, options?.nodeId) >= 0;
 							}
+							const isSameOrigin = (ref: { nodeId?: number }) =>
+								precedesExistingVersion(
+									txnTime,
+									{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: ref.nodeId },
+									options?.nodeId
+								) === 0;
 							if (
 								!priorStaged &&
 								!readsOwnStaging &&
-								refBase?.additionalAuditRefs?.some(
-									(ref, index) =>
-										(ref.version === appendedLogKey ||
-											(ref.version === receivedLogKey &&
-												receivedIdentityRefIsReceipt(
-													auditStore,
-													tableId,
-													id,
-													ref,
-													index,
-													options?.version ?? txnTime,
-													refBase.version
-												))) &&
-										precedesExistingVersion(
-											txnTime,
-											{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: ref.nodeId },
-											options?.nodeId
-										) === 0
-								)
+								(refBase?.additionalAuditRefs?.some((ref) => ref.version === appendedLogKey && isSameOrigin(ref)) ||
+									(identityIsNotKey &&
+										refBase?.receivedIdentityRefs?.some((ref) => ref.version === receivedLogKey && isSameOrigin(ref))))
 							) {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
@@ -5189,6 +5166,8 @@ export function makeTable(options): TableResourceClass {
 							// would find it and skip the write as "already applied" when the record was never committed.
 							// A recommit of the same transaction survived that skip only because the old write batch
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							// For a write whose identity is not its key this finds only an entry `local` keyed by its
+							// explicit value before every local key was minted; a hit still needs both stored clocks to match.
 							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
 								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
@@ -5246,7 +5225,7 @@ export function makeTable(options): TableResourceClass {
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
-									if (isBranchRef(ref, initialAuditHead, existingEntry.version, existingEntry.nodeId))
+									if (isBranchRef(ref, initialAuditHead))
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 								}
 							}
@@ -5257,6 +5236,7 @@ export function makeTable(options): TableResourceClass {
 									additionalAuditRefs.push(ref);
 								}
 							}
+							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
@@ -5278,7 +5258,7 @@ export function makeTable(options): TableResourceClass {
 								if (previousRefs) {
 									const head = resolvePreviousHead(auditRecord);
 									for (const ref of previousRefs) {
-										if (!isBranchRef(ref, head, auditRecord.previousVersion, auditRecord.previousNodeId)) continue;
+										if (!isBranchRef(ref, head)) continue;
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
 											version: ref.version,
@@ -5368,12 +5348,12 @@ export function makeTable(options): TableResourceClass {
 												options?.nodeId
 											);
 											if (precedesExisting === 0) {
-												if (isRocksDB && localTime !== appendedLogKey && receivedLogKey === appendedLogKey) {
+												if (isRocksDB && localTime !== appendedLogKey && !identityIsNotKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
-													// Only for a write filed in a named origin's log under that origin's key. A write that
-													// carries a caller's value or an unmapped origin's key is filed in `local` under a
-													// minted key, so it never takes this branch: its equal version is a re-delivery.
+													// Only for a write whose identity is its key. A write that carries a caller's value or
+													// an unmapped origin's key is filed in `local` under a minted key, so it never takes
+													// this branch: its equal version is a re-delivery.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
@@ -5555,6 +5535,7 @@ export function makeTable(options): TableResourceClass {
 									additionalAuditRefs.push(ref);
 								}
 							}
+							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
 							// Once the walk no longer runs, this ref is what the read-your-writes check above matches a
 							// re-delivery of these ops on. Best-effort, like every other guard here: the encoder bounds
 							// the persisted list, so an identity can age out of it (harper#1148's full-copy convergence
@@ -5689,17 +5670,15 @@ export function makeTable(options): TableResourceClass {
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
 					// A write whose received identity is not its key keeps that identity on the record too, so a
-					// re-delivery matches it without a walk that may stop short; readers tolerate a ref with no entry.
+					// re-delivery matches it without a walk that may stop short.
 					if (
 						isRocksDB &&
 						audit &&
 						!isCopyApply &&
-						receivedLogKey !== appendedLogKey &&
-						!additionalAuditRefs.some(
-							(ref) => ref.version === receivedLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0)
-						)
+						identityIsNotKey &&
+						!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
 					)
-						additionalAuditRefs.push({ version: receivedLogKey, nodeId: options?.nodeId });
+						(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 					writeCommit(true);
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
@@ -5745,6 +5724,7 @@ export function makeTable(options): TableResourceClass {
 								// no per-row db-write analytics for a bulk copy; system tables never track
 								tableToTrack: isCopyApply || databaseName === 'system' ? null : options?.replay ? null : tableName,
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
+								receivedIdentityRefs,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
 							},
@@ -10732,21 +10712,12 @@ function isDescendantId(ancestorId, descendantId): boolean {
 const rest = () => new Promise(setImmediate);
 
 /**
- * Whether a ref in a record's `additionalAuditRefs` is a branch for the out-of-order walk to follow. The
- * list also carries the record's own audit head, which the walk starts from, and, for a write whose
- * version is not its key, the identity a re-delivery carries, which addresses no entry: visiting either
- * is a keyed miss, and a pending one keeps the fully-superseded early-out from seeing an empty branch list.
+ * Whether a log-key ref is a branch for the out-of-order walk to follow: every one but the record's own
+ * audit head, which the walk starts from. A pending visit of the head would keep the fully-superseded
+ * early-out from seeing an empty branch list.
  */
-function isBranchRef(
-	ref: { version: number; nodeId?: number },
-	head: { txnLogKey: number; nodeId?: number },
-	version: number | undefined,
-	nodeId: number | undefined
-): boolean {
-	return (
-		(ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0)) &&
-		(ref.version !== version || (ref.nodeId ?? 0) !== (nodeId ?? 0))
-	);
+function isBranchRef(ref: { version: number; nodeId?: number }, head: { txnLogKey: number; nodeId?: number }): boolean {
+	return ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0);
 }
 
 function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, version: number, nodeId?: number): number {
