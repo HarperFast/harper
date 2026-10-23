@@ -28,6 +28,8 @@ export type StatusValueMap = {
 export interface StatusRecord<T extends StatusId = StatusId> {
 	id: T;
 	status: StatusValueMap[T];
+	// Present on derived responses (e.g. availability reflecting component failure).
+	message?: string;
 	__createdtime__?: number;
 	__updatedtime__?: number;
 }
