@@ -1015,6 +1015,12 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		older.handlers.close();
 		await waitFor(async () => (await T.get('older'))?.value === 'older');
 		assert.ok(!(await T.get('newer')), 'the newer connection is still connected');
+		await waitFor(async () => {
+			for await (const will of databases.system.hdb_session_will.search({})) {
+				if (will.id[0] === clientId && will.topic === `${name}/older`) return false;
+			}
+			return true;
+		});
 		const wills = [];
 		for await (const will of databases.system.hdb_session_will.search({})) {
 			if (will.id[0] === clientId) wills.push(will.topic);
