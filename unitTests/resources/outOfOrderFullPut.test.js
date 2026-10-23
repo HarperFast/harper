@@ -3,13 +3,20 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { existsSync } = require('node:fs');
 const { waitFor } = require('../waitFor');
-const { certifyOriginFloor, publishOriginFloor } = require('#src/resources/originClosedFloor');
+const {
+	certifyOriginFloor,
+	publishOriginFloor,
+	reserveLocalKey,
+	releaseLocalKey,
+} = require('#src/resources/originClosedFloor');
 const {
 	persistOriginClosedFloor,
 	raiseAuditFloor,
 	createAuditEntry,
 	HAS_ADDITIONAL_AUDIT_REFS,
+	ENTRY_DATAVIEW,
 } = require('#src/resources/auditStore');
+const { setNextEncoding } = require('#src/resources/RecordEncoder');
 const { getFileId, getFilePathForBlob, isSaving, setDeletionDelay } = require('#src/resources/blob');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -344,6 +351,78 @@ for (const loadAsInstance of [true, false]) {
 				}
 			);
 		});
+
+		for (const corruption of ['header', 'record ID']) {
+			it(`preserves newer data behind a corrupt RocksDB sibling ${corruption}`, async function () {
+				if (isLMDB) return this.skip();
+				const id = 'aaaaaaaaaa';
+				const timestamp = (nextTimestamp += 1000);
+				await T.put(id, { c: 'retained' }, { timestamp });
+				const root = T.auditStore.rootStore;
+				let handle;
+				try {
+					await root.transaction((native) => {
+						handle = native;
+						assert.equal(reserveLocalKey(root, native, timestamp + 20), timestamp + 20);
+						ENTRY_DATAVIEW.setUint32(0, 0);
+						let encoded = Buffer.from(
+							createAuditEntry(
+								{
+									type: 'patch',
+									tableId: T.tableId,
+									recordId: id,
+									nodeId: 0,
+									version: timestamp + 20,
+									encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ b: 'first' })),
+								},
+								4
+							)
+						);
+						if (corruption === 'header') encoded = encoded.subarray(0, 7);
+						else Buffer.from('13195fb7a854cde125e9', 'hex').copy(encoded, encoded.indexOf(id));
+						T.auditStore.put(null, encoded, { transaction: native });
+						T.auditStore.put(
+							null,
+							{
+								type: 'patch',
+								tableId: T.tableId,
+								recordId: id,
+								nodeId: 0,
+								version: timestamp + 20,
+								previousVersion: timestamp,
+								encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ d: 'last' })),
+							},
+							{ transaction: native }
+						);
+						setNextEncoding(timestamp + 20, 0);
+						T.primaryStore.putSync(
+							id,
+							{ id, c: 'retained', b: 'first', d: 'last' },
+							{
+								transaction: native,
+								version: timestamp + 20,
+							}
+						);
+					});
+				} finally {
+					if (handle) releaseLocalKey(handle);
+				}
+				const entries = [...T.auditStore.getRange({ start: timestamp + 20, exactStart: true, log: 0 })];
+				assert.equal(entries[0].recordId, undefined);
+				assert.equal(entries[0].endTxn, false);
+				assert.equal(entries[1].recordId, id);
+				assert.equal(entries[1].endTxn, true);
+				assert.deepStrictEqual({ ...entries[1].getValue(T.primaryStore) }, { d: 'last' });
+				assert.equal(T.primaryStore.getEntry(id).version, timestamp + 20);
+				assert.equal(T.primaryStore.getEntry(id).localTime, timestamp + 20);
+				assert.equal(T.auditStore.get(timestamp + 20, T.tableId, id, 0).endTxn, true);
+				await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
+				assert.deepStrictEqual(
+					{ ...(await T.get(id)) },
+					{ id, c: 'retained', b: 'first', d: 'last', a: 'replacement' }
+				);
+			});
+		}
 
 		it('preserves a newer sibling whose record ID cannot be decoded', async function () {
 			if (!isLMDB) return this.skip();
