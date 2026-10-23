@@ -1292,10 +1292,7 @@ export function isLockControlType(type: unknown): boolean {
 	return type === 'lockRelease' || type === 'lockBarrier';
 }
 
-/**
- * Audit entries that are not a record's history. `startTime` replay does not use this: it refuses on
- * a `reload` when resuming checked and delivers it otherwise.
- */
+/** `startTime` replay does not use this: it refuses on a `reload` when resuming checked, else delivers it. */
 export function isNonHistoryType(type: unknown): boolean {
 	return type === 'evict' || type === 'reload' || isLockControlType(type);
 }

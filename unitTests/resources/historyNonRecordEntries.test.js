@@ -1,5 +1,4 @@
 const assert = require('assert');
-const sinon = require('sinon');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
@@ -178,22 +177,26 @@ describe('history readers and non-record audit entries', function () {
 					.filter((entry) => entry.type === 'reload')
 					.map((entry) => entry.txnLogKey);
 				assert.strictEqual(markerKeys.length, 2);
-				const errors = sinon.stub(logger, 'error');
+				const loggedErrors = [];
+				const originalError = logger.error;
+				logger.error = (...args) => {
+					loggedErrors.push(args);
+					return originalError?.apply(logger, args);
+				};
 				try {
 					const events = await backfill(T, { id: 'p/', previousCount: 2 });
 					assert.deepStrictEqual(
 						events.map((event) => event.id),
 						['p/2', 'p/3']
 					);
-					// the backfill logs `(message, txnLogKey, error)` for an entry it fails on
-					const markerErrors = errors.getCalls().filter((call) => markerKeys.includes(call.args[1]));
+					const markerErrors = loggedErrors.filter(([, txnLogKey]) => markerKeys.includes(txnLogKey));
 					assert.deepStrictEqual(
-						markerErrors.map((call) => call.args[2]?.message),
+						markerErrors.map(([, , error]) => error?.message),
 						[],
 						'the backfill failed on a marker'
 					);
 				} finally {
-					errors.restore();
+					logger.error = originalError;
 				}
 			});
 		});
