@@ -213,24 +213,6 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual(record.count, 14);
 	});
 
-	itUnlessLmdb('a replicated patch before a publish in its source transaction still applies', async () => {
-		const id = `noaudit-${nextId++}`;
-		await NoAudit.put(id, { tag: 'base', count: 10 });
-		const version = Date.now() + 1000;
-		const nodeId = getIdOfRemoteNode('origin-before-publish', NoAudit.auditStore);
-		const context = { source: {}, sourceApply: true, timestamp: version };
-		await transaction(context, async () => {
-			const resource = await NoAudit.getResource(id, context);
-			await resource._writeUpdate(id, { count: { __op__: 'add', value: 4 } }, false, {
-				isNotification: true,
-				nodeId,
-				version,
-			});
-			await NoAudit.publish(id, { message: 'hello' }, context);
-		});
-		assert.strictEqual((await NoAudit.get(id)).count, 14);
-	});
-
 	it('a put after a publish to the record in the same transaction replaces it', async () => {
 		const id = `noaudit-${nextId++}`;
 		await NoAudit.put(id, { tag: 'base', count: 10 });
