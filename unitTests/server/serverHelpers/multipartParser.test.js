@@ -365,6 +365,50 @@ describe('multipartParser – an upload its response left unread', () => {
 		await waitFor(() => raw.readableEnded, 5000);
 	});
 
+	// harper#3096: a route's pipe that loses its destination after the response leaves the part paused, not destroyed.
+	for (const [description, release] of [
+		['its destination fails', (_payload, destination) => destination.destroy(new Error('disk full'))],
+		['the route unpipes it', (payload, destination) => payload.unpipe(destination)],
+	]) {
+		it(`discards the rest when a part piped after the response loses its destination: ${description}`, async () => {
+			const { request, raw, parsed } = start();
+			const { payload } = await parsed;
+			const destination = new Writable({
+				highWaterMark: 1024,
+				write(_chunk, _encoding, callback) {
+					setTimeout(callback, 20);
+				},
+			});
+			destination.on('error', () => {});
+			payload.pipe(destination);
+			await respond(request);
+			await sleep(100);
+			assert.strictEqual(raw.readableEnded, false, 'a part still piped is left to its consumer');
+			release(payload, destination);
+			await waitFor(() => raw.readableEnded, 5000);
+		});
+	}
+
+	it('leaves a part alone when it gains a second consumer and loses the first', async () => {
+		const { request, raw, parsed } = start();
+		const { payload } = await parsed;
+		const slow = () =>
+			new Writable({
+				highWaterMark: 1024,
+				write(_chunk, _encoding, callback) {
+					setTimeout(callback, 5);
+				},
+			});
+		const first = slow();
+		payload.pipe(first);
+		await respond(request);
+		payload.pipe(slow());
+		payload.unpipe(first);
+		await sleep(200);
+		assert.strictEqual(raw.destroyed, false);
+		raw.on('error', () => {});
+	});
+
 	it('discards the rest when a consumer let the part go before its end', async () => {
 		const { request, raw, parsed } = start();
 		const { payload } = await parsed;

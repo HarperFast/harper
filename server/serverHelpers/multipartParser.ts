@@ -170,7 +170,7 @@ export function parseMultipartRequest(
  * as consuming it, so the rest of an upload the route did not read is discarded here instead. A route
  * keeps the part by reading it before its response finishes: piping it, iterating it, or listening for
  * `data` or `readable`. A part it took but had not started reading is discarded, and so is one it
- * destroys before its end, whenever that happens.
+ * destroys before its end, or stops reading, whenever that happens.
  */
 export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyReply, done: () => void): void {
 	const upload = uploads.get(request);
@@ -178,8 +178,37 @@ export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyRepl
 		uploads.delete(request);
 		upload.responded = true;
 		if (upload.discarding || isAbandoned(upload)) discardUnreadUpload(upload);
+		else watchForAbandonment(upload);
 	}
 	done();
+}
+
+/**
+ * A pipe that loses its destination after the response, by `unpipe()` or a destination error, leaves the part
+ * paused but not destroyed, so its `close` never comes. Node's pipe cleanup removes the part's `data` listener in
+ * both cases, so a removed listener is when to look again; `pause` is no signal, since a part already paused by
+ * backpressure emits none (#3096).
+ */
+function watchForAbandonment(upload: Upload): void {
+	const { file } = upload;
+	if (!file || file.readableEnded || file.destroyed) return;
+	const onRemoved = (event: string | symbol) => {
+		if (event !== 'data' && event !== 'readable') return;
+		// The cleanup removes several listeners and settles `readableFlowing` as it goes; look once it is done.
+		setImmediate(() => {
+			if (upload.discarding || !isAbandoned(upload)) return;
+			stop();
+			discardUnreadUpload(upload);
+		});
+	};
+	const stop = () => {
+		file.off('removeListener', onRemoved);
+		file.off('end', stop);
+		file.off('close', stop);
+	};
+	file.on('removeListener', onRemoved);
+	file.once('end', stop);
+	file.once('close', stop);
 }
 
 function isAbandoned({ httpRequest, file, handedOut }: Upload): boolean {
