@@ -138,6 +138,10 @@ describe('failed deploy payload retention (harper#2681)', () => {
 	it('reads an age only in units it knows, never an unknown suffix as seconds', () => {
 		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, '12h');
 		assert.strictEqual(failedPayloadRetention().maxAgeMs, 12 * 3_600_000);
+		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, ' 7d ');
+		assert.strictEqual(failedPayloadRetention().maxAgeMs, 7 * DAY, 'padding is not read as a unit');
+		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, '1Y');
+		assert.strictEqual(failedPayloadRetention().maxAgeMs, 365 * DAY);
 		for (const unknown of ['7days', '2w', 'soon']) {
 			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, unknown);
 			assert.strictEqual(failedPayloadRetention().maxAgeMs, 7 * DAY, unknown);

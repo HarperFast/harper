@@ -16,8 +16,10 @@ const DEFAULT_FAILED_MAX_COUNT = 2;
 /** `0` turns a bound off; anything that is not a usable value falls back to the default rather than to "drop all". */
 export function failedPayloadRetention(): { maxAgeMs: number; maxCount: number } {
 	const age = getConfigValue(terms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE);
-	const usableAge = typeof age === 'number' || (typeof age === 'string' && DURATION.test(age.trim()));
-	const maxAgeMs = convertToMS(usableAge ? age : DEFAULT_FAILED_MAX_AGE);
+	// Trimmed before both the check and the conversion: convertToMS reads the last character as the unit.
+	const trimmedAge = typeof age === 'string' ? age.trim() : age;
+	const usableAge = typeof trimmedAge === 'number' || (typeof trimmedAge === 'string' && DURATION.test(trimmedAge));
+	const maxAgeMs = convertToMS(usableAge ? trimmedAge : DEFAULT_FAILED_MAX_AGE);
 	const configuredCount = getConfigValue(terms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT);
 	// Number('') and Number(null) are 0, which would turn the bound off rather than leave it at its default.
 	const count = isSetting(configuredCount) ? Number(configuredCount) : NaN;
@@ -32,7 +34,7 @@ function isSetting(value: unknown): value is string | number {
 }
 
 // The units convertToMS knows; it reads any other suffix as seconds, so `7days` would expire payloads after 7s.
-const DURATION = /^\d+(\.\d+)?[yMdDhHm]?$/;
+const DURATION = /^\d+(\.\d+)?[yYMdDhHm]?$/;
 
 /**
  * Drop the payloads of failed deploys beyond the bounds, keeping each row's metadata and `event_log`, as
@@ -42,7 +44,7 @@ const DURATION = /^\d+(\.\d+)?[yMdDhHm]?$/;
  * project is always kept. Never throws; returns what it dropped.
  */
 export async function sweepFailedPayloads(
-	options: { project?: string; now?: number } = {}
+	options: { project?: string; now?: number; onIncomplete?: () => void } = {}
 ): Promise<Array<{ deployment_id: string; freed_bytes: number }>> {
 	const dropped: Array<{ deployment_id: string; freed_bytes: number }> = [];
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
@@ -92,6 +94,7 @@ export async function sweepFailedPayloads(
 		}
 	} catch (error) {
 		logger.warn?.('Failed to expire the payloads of failed deploys', error);
+		options.onIncomplete?.();
 	}
 	if (dropped.length > 0) {
 		logger.info?.(
@@ -106,6 +109,7 @@ let bootSweep: Promise<unknown> | undefined;
 
 /** Once per process, at boot: the age bound expires payloads no later deploy of their project would reach. */
 export function sweepFailedPayloadsOnce(): Promise<unknown> {
-	bootSweep ??= sweepFailedPayloads();
+	// An incomplete pass is not remembered, so the next root reload tries again.
+	bootSweep ??= sweepFailedPayloads({ onIncomplete: () => (bootSweep = undefined) });
 	return bootSweep;
 }

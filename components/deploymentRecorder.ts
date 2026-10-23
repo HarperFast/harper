@@ -590,6 +590,8 @@ const ROLLOUT_RECORD_WAIT_MS = 10 * 60_000;
 // would otherwise put two writes moments apart, the burst that can commit out of order on a loaded peer (#1170).
 const ROLLOUT_WRITE_SPACING_MS = 1000;
 const lastRolloutWrite = new Map<string, number>();
+// Rows whose wait for the origin's write is over, whether a write of the job's then landed or not.
+const handedOff = new Set<string>();
 
 export interface PeerActivation {
 	node: string;
@@ -664,13 +666,14 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 	try {
 		// Once per row: after a wait that saw the origin's write, or gave up on it, the job's own writes are what change
 		// the row, so waiting again would only hold each later activation back by the whole bound.
-		const deadline = lastRolloutWrite.has(deploymentId) ? 0 : Date.now() + ROLLOUT_RECORD_WAIT_MS;
+		const deadline = handedOff.has(deploymentId) ? 0 : Date.now() + ROLLOUT_RECORD_WAIT_MS;
 		let current = await table.get(deploymentId);
 		while (current && !ROLLOUT_RECORD_STATUSES.has(current.status) && Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			current = await table.get(deploymentId);
 		}
 		if (!current) return;
+		handedOff.add(deploymentId);
 		// The origin's own `rolling_out` write is one of them: its finish stamps `completed_at`, on this node's clock.
 		const lastWrite = Math.max(lastRolloutWrite.get(deploymentId) ?? 0, current.completed_at ?? 0);
 		const sinceLastWrite = Date.now() - lastWrite;
@@ -732,6 +735,7 @@ export async function settleInterruptedRollouts(): Promise<number> {
 		}
 	} catch (error) {
 		logger.warn?.('Failed to settle interrupted rolling deploys', error);
+		rolloutSettlement = undefined;
 	}
 	if (settled > 0) logger.warn?.(`Ended ${settled} rolling deploy record(s) whose activation job was interrupted`);
 	return settled;
@@ -739,7 +743,7 @@ export async function settleInterruptedRollouts(): Promise<number> {
 
 let rolloutSettlement: Promise<number> | undefined;
 
-/** Once per process: this function re-runs on every root component reload. */
+/** Once per process, since this re-runs on every root component reload; an incomplete pass tries again on the next. */
 export function settleInterruptedRolloutsOnce(): Promise<number> {
 	rolloutSettlement ??= settleInterruptedRollouts();
 	return rolloutSettlement;
