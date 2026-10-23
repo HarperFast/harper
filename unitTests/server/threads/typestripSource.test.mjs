@@ -1,6 +1,6 @@
 import assert from 'node:assert';
-import { readdirSync, readFileSync } from 'node:fs';
-import { resolve, join, relative } from 'node:path';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { resolve, join, relative, dirname } from 'node:path';
 import ts from 'typescript';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -41,8 +41,9 @@ function hasLocalRequire(call) {
 }
 
 describe('TypeStrip source imports', () => {
-	it('uses an explicit runtime loader for production require calls', () => {
+	it('avoids imports of renamed JavaScript files and bare require calls', () => {
 		const unbound = [];
+		const missingSourceImports = [];
 		for (const directory of sourceDirectories) {
 			const parent = join(root, directory);
 			for (const file of readdirSync(parent, { recursive: true })) {
@@ -59,11 +60,35 @@ describe('TypeStrip source imports', () => {
 						const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
 						unbound.push(`${relative(root, absolute)}:${line + 1}`);
 					}
+					const specifier =
+						(ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly) ||
+						(ts.isExportDeclaration(node) && !node.isTypeOnly)
+							? node.moduleSpecifier
+							: ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+								? node.arguments[0]
+								: undefined;
+					if (
+						specifier &&
+						ts.isStringLiteralLike(specifier) &&
+						specifier.text.startsWith('.') &&
+						specifier.text.endsWith('.js')
+					) {
+						const target = resolve(dirname(absolute), specifier.text);
+						if (!existsSync(target) && existsSync(target.slice(0, -3) + '.ts')) {
+							const { line } = source.getLineAndCharacterOfPosition(specifier.getStart(source));
+							missingSourceImports.push(`${relative(root, absolute)}:${line + 1} (${specifier.text})`);
+						}
+					}
 					ts.forEachChild(node, visit);
 				};
 				visit(source);
 			}
 		}
+		assert.deepStrictEqual(
+			missingSourceImports,
+			[],
+			`Source imports target renamed JavaScript files: ${missingSourceImports.join(', ')}`
+		);
 		assert.deepStrictEqual(unbound, [], `Bare require calls fail in native ESM: ${unbound.join(', ')}`);
 	});
 });
