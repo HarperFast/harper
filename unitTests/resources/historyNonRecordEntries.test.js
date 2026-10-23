@@ -14,8 +14,6 @@ require('#src/server/serverHelpers/serverUtilities');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const schema = 'history_non_record_entries';
 
-// Entries that describe no record (the whole-table reload marker) are not history: every history reader
-// must skip them, and the startTime replay must not try to scope them by record id.
 describe('history readers and non-record audit entries', function () {
 	this.timeout(60_000);
 	let tableIndex = 0;
@@ -34,15 +32,14 @@ describe('history readers and non-record audit entries', function () {
 		});
 	}
 
-	async function auditEntryTypes(T) {
-		const types = [];
+	function auditEntries(T) {
+		const entries = [];
 		for (const entry of T.auditStore.getRange({ start: 1 })) {
-			if (entry.tableId === T.tableId) types.push(entry.type);
+			if (entry.tableId === T.tableId) entries.push({ type: entry.type, txnLogKey: entry.txnLogKey });
 		}
-		return types;
+		return entries;
 	}
 
-	// the audit-log position of a write, usable as a startTime that precedes everything after it
 	async function putAt(T, record) {
 		let position;
 		const live = await T.subscribe({
@@ -62,7 +59,10 @@ describe('history readers and non-record audit entries', function () {
 			await T.put({ id: 'a', name: 'one' });
 			await T.writeReloadMarker();
 			await T.put({ id: 'a', name: 'two' });
-			assert.ok((await auditEntryTypes(T)).includes('reload'), 'the marker is in the audit log');
+			assert.ok(
+				auditEntries(T).some((entry) => entry.type === 'reload'),
+				'the marker is in the audit log'
+			);
 
 			const history = await Array.fromAsync(T.getHistory());
 			assert.deepStrictEqual(
@@ -82,7 +82,10 @@ describe('history readers and non-record audit entries', function () {
 		it('a table with only a marker has no history', async () => {
 			const T = newTable();
 			await T.writeReloadMarker();
-			assert.deepStrictEqual(await auditEntryTypes(T), ['reload']);
+			assert.deepStrictEqual(
+				auditEntries(T).map((entry) => entry.type),
+				['reload']
+			);
 			assert.deepStrictEqual(await Array.fromAsync(T.getHistory()), []);
 			const groups = await Array.fromAsync(
 				await bridge.readAuditLog({ schema, table: T.tableName, search_type: 'timestamp', search_values: [0] })
@@ -109,8 +112,7 @@ describe('history readers and non-record audit entries', function () {
 		});
 
 		it('read_audit_log keeps a transaction group intact when the marker shares the transaction', async function () {
-			// a RocksDB transaction's entries share one log key, which is what groups them
-			if (isLMDB) return this.skip();
+			if (isLMDB) return this.skip(); // LMDB gives each write its own version, so nothing groups
 			const T = newTable();
 			const context = {};
 			await transaction(context, () => {
@@ -172,6 +174,10 @@ describe('history readers and non-record audit entries', function () {
 				if (!isLMDB) return this.skip();
 				const T = newTable();
 				await writeInterleaved(T);
+				const markerKeys = auditEntries(T)
+					.filter((entry) => entry.type === 'reload')
+					.map((entry) => entry.txnLogKey);
+				assert.strictEqual(markerKeys.length, 2);
 				const errors = sinon.stub(logger, 'error');
 				try {
 					const events = await backfill(T, { id: 'p/', previousCount: 2 });
@@ -179,7 +185,13 @@ describe('history readers and non-record audit entries', function () {
 						events.map((event) => event.id),
 						['p/2', 'p/3']
 					);
-					assert.strictEqual(errors.callCount, 0, 'the backfill logged an error for a marker');
+					// the backfill logs `(message, txnLogKey, error)` for an entry it fails on
+					const markerErrors = errors.getCalls().filter((call) => markerKeys.includes(call.args[1]));
+					assert.deepStrictEqual(
+						markerErrors.map((call) => call.args[2]?.message),
+						[],
+						'the backfill failed on a marker'
+					);
 				} finally {
 					errors.restore();
 				}

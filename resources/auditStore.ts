@@ -1293,10 +1293,8 @@ export function isLockControlType(type: unknown): boolean {
 }
 
 /**
- * Entries that are not a record's history: eviction, lock control, and the whole-table `reload`
- * marker (`recordId: null`). The history readers — `getHistory`, `getHistoryOfRecord`, the
- * `previousCount` backfill — skip them. The `startTime` replay does not use this: it refuses on a
- * `reload` when resuming checked and delivers it otherwise.
+ * Audit entries that are not a record's history. `startTime` replay does not use this: it refuses on
+ * a `reload` when resuming checked and delivers it otherwise.
  */
 export function isNonHistoryType(type: unknown): boolean {
 	return type === 'evict' || type === 'reload' || isLockControlType(type);

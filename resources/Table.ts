@@ -7260,7 +7260,7 @@ export function makeTable(options): TableResourceClass {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
-								// a reload marker is whole-table: it has no id to scope by, and reaches every subscriber live
+								// a whole-table marker has no id to scope by
 								if (thisId == null || auditRecord.type === 'reload' || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
@@ -8796,7 +8796,7 @@ export function makeTable(options): TableResourceClass {
 			let nextVersion = isRocksDB
 				? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
 				: entry.localTime;
-			if (!nextVersion) return history; // written without an audit entry (e.g. a base copy): no history to walk
+			if (!nextVersion) return history;
 			const count = 0;
 			const auditWindow = 100;
 			let loggedEntryError = false;
