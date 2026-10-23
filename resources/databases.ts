@@ -73,7 +73,12 @@ import { commonValidators, schemaRegex } from '../validation/common_validators.t
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
-import { registryStatus, RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import {
+	getRegistryStatus,
+	RocksDatabase,
+	supportedCompression,
+	type RocksDatabaseOptions,
+} from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import {
 	databaseCommitsSuspended,
@@ -2956,7 +2961,7 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 		const paths = new Set(rootPaths);
 		for (const rootPath of paths) await retryIncompleteDatabaseClose(rootPath);
 		if (
-			registryStatus().some(
+			getRegistryStatus().some(
 				(entry) => paths.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			)
 		)
@@ -3016,7 +3021,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 		const detachedRootPaths = dropLocks.map((lock) => lock.dbPath).filter((rootPath) => !openedRootPaths.has(rootPath));
 		const detachedRootPathSet = new Set(detachedRootPaths);
 		const detachedRootHasForeignHandle = () =>
-			registryStatus().some(
+			getRegistryStatus().some(
 				(entry) =>
 					detachedRootPathSet.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			);
