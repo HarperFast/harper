@@ -200,6 +200,20 @@ function discardReadResponse(response, sourceData) {
 	discardSerializedStream(response.body);
 }
 
+const VALIDATOR_HEADERS = ['ETag', 'Last-Modified'];
+
+// An event-stream HEAD (CONNECT) is not started: a subscription's first event can be indefinitely far off.
+function readStreamStartup(body, requestMethod: string, method: string) {
+	if (requestMethod === 'GET' || method === 'HEAD') return waitForStreamStartup(body);
+}
+
+function setReadValidators(headers, lastModification: number, httpOptions) {
+	if (!isFinite(lastModification)) return;
+	if (!headers.has('ETag')) headers.set('ETag', versionToEtag(lastModification));
+	if (httpOptions.lastModified && !headers.has('Last-Modified'))
+		headers.set('Last-Modified', new Date(lastModification).toUTCString());
+}
+
 function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
 	const incoming = request.headers.asObject;
@@ -507,6 +521,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		let status = request.response.status;
 		let lastModification = request.lastModified;
+		let deferredRead = false;
 		if (responseData == undefined) {
 			status ??= method === 'GET' || method === 'HEAD' ? 404 : 204;
 			// deleted entries can have a timestamp of when they were deleted
@@ -514,10 +529,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
+			const data = 'data' in responseData ? responseData.data : responseData;
 			const deferred =
-				conditionalRead &&
-				responseData.body === undefined &&
-				isDeferredRead('data' in responseData ? responseData.data : responseData);
+				(method === 'GET' || method === 'HEAD') && responseData.body === undefined && isDeferredRead(data);
 			const response = finalizeResponse(
 				responseData,
 				headers,
@@ -526,26 +540,26 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				method,
 				preconditionsEnabled && !deferred
 			);
+			const startup = readStreamStartup(response.body, request.method, method);
+			if (startup) await startup;
+			if (deferred) {
+				// finalizeResponse copied the context headers before startup, which can set validators of its own
+				for (const name of VALIDATOR_HEADERS) {
+					if (!response.headers.has(name) && headers.has(name)) response.headers.set(name, headers.get(name));
+				}
+				lastModification = request.lastModified;
+				setReadValidators(response.headers, lastModification, httpOptions);
+			}
 			if (request.method === 'HEAD') {
 				discardSerializedStream(response.body);
 				if (!(response instanceof Response)) response.body = undefined;
-			} else if (request.method === 'GET') {
-				const startup = waitForStreamStartup(response.body);
-				if (startup) await startup;
 			}
-			return deferred
-				? applyReadPreconditions(
-						response,
-						request,
-						method,
-						lastModification,
-						'data' in responseData ? responseData.data : responseData
-					)
+			return deferred && conditionalRead
+				? applyReadPreconditions(response, request, method, lastModification, data)
 				: response;
-		} else if (isFinite(lastModification)) {
-			headers.setIfNone('ETag', versionToEtag(lastModification));
-			if ((httpOptions as any).lastModified)
-				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
+		} else {
+			deferredRead = (method === 'GET' || method === 'HEAD') && isDeferredRead(responseData);
+			if (!deferredRead) setReadValidators(headers, lastModification, httpOptions);
 		}
 		if (request.createdResource) status = 201;
 		if (request.newLocation) headers.setIfNone('Location', request.newLocation);
@@ -591,7 +605,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				// returns the count as an array).
 				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
 			}
-			deferredReadConditions = conditionalRead && isDeferredRead(responseData);
+			deferredReadConditions = conditionalRead && deferredRead;
 			const conditional =
 				conditionalRead && !deferredReadConditions
 					? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
@@ -601,12 +615,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				return conditional;
 			}
 			responseObject.body = serialize(responseData, request, responseObject);
+			const startup = readStreamStartup(responseObject.body, request.method, method);
+			if (startup) await startup;
+			if (deferredRead) {
+				lastModification = request.lastModified;
+				setReadValidators(headers, lastModification, httpOptions);
+			}
 			if (request.method === 'HEAD') {
 				discardSerializedStream(responseObject.body);
 				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
-			} else if (request.method === 'GET') {
-				const startup = waitForStreamStartup(responseObject.body);
-				if (startup) await startup;
 			}
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
