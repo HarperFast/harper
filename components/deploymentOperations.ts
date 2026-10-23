@@ -98,6 +98,7 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 // A deployment whose release went live on the node that received it; a rolling one may still be reaching the others.
 const RELEASED_STATUSES = new Set(['success', 'rolling_out', 'partial']);
 const RELEASE_FIELDS = ['deployment_id', 'project', 'status', 'activated_from', 'completed_at'];
+const MARKERLESS_LOOKUP_LIMIT = 100;
 
 /**
  * The record that made a component's live release live: the newest released deploy or activation naming the id in
@@ -132,9 +133,11 @@ export async function deploymentOfLiveRelease(
 		// Newest first, so the walk ends at the first released row rather than at the end of the project's history.
 		const conditions = [{ attribute: 'project', value: project }];
 		const sort = { attribute: 'completed_at', descending: true };
+		let read = 0;
 		for await (const row of table.search({ conditions, sort, select: RELEASE_FIELDS })) {
 			consider(row);
-			if (newest) break;
+			// Bounded even for a project with no released row at all, which would otherwise walk its whole history.
+			if (newest || ++read >= MARKERLESS_LOOKUP_LIMIT) break;
 		}
 	}
 	return newest && { deployment_id: newest.deployment_id, completed_at: newest.completed_at };

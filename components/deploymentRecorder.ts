@@ -612,8 +612,8 @@ export async function recordPeerActivation(deploymentId: string, outcome: PeerAc
  * End a rolling deploy's record once its activation job has visited every peer: `success` when every node took the
  * release, otherwise `partial`, naming the nodes that did not. `unrecorded` are outcomes no earlier write carried; the
  * job hands the last peer's here rather than writing it moments before this, since a tight burst of writes to one row
- * can commit out of order on a loaded peer (#1170). Leaves a row the origin did not leave `rolling_out` (it failed
- * after starting the job) with the status it has.
+ * can commit out of order on a loaded peer (#1170). Leaves a row the origin ended some other way (it failed after
+ * starting the job) with the status it has.
  */
 export async function finishRollout(
 	deploymentId: string,
@@ -622,7 +622,9 @@ export async function finishRollout(
 ): Promise<void> {
 	await updateRolloutRow(deploymentId, (row) => {
 		for (const outcome of unrecorded) applyPeerActivation(row, outcome);
-		if (row.status !== 'rolling_out') return;
+		// A row still short of the origin's write gets the outcome anyway: the origin's write keeps it
+		// (`keepRolloutProgress`). Only a row the origin ended some other way keeps its status.
+		if (ENDED_ROW_STATUSES.has(row.status)) return;
 		const failed = outcomes.filter((outcome) => outcome.error);
 		row.completed_at = Date.now();
 		if (failed.length === 0) {
@@ -687,6 +689,7 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 
 // The origin's terminal write for a rolling deploy, or one that ended it before the job got here.
 const ROLLOUT_RECORD_STATUSES = new Set(['rolling_out', 'success', 'partial', 'failed', 'rolled_back', 'staged']);
+const ENDED_ROW_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
 
 /**
  * End the `rolling_out` records this node wrote whose activation job is no longer running: a restart mid-rollout

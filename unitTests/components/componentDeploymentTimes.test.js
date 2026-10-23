@@ -173,6 +173,7 @@ describe("finding the live release's record in the deployment table (harper#564)
 			deployment_id: 'times-1',
 			completed_at: 100,
 		});
+		assert.strictEqual(await deploymentOfLiveRelease('times-none', undefined), undefined);
 		assert.deepStrictEqual(await deploymentOfLiveRelease('times-p', 'times-6'), {
 			deployment_id: 'times-6',
 			completed_at: 600,

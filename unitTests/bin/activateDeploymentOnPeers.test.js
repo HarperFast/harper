@@ -274,6 +274,16 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 		assert.strictEqual(row.peer_results.filter(({ activation }) => activation?.activated).length, 3);
 	});
 
+	it("ends a row the origin has not written yet, for the origin's late write to keep", async () => {
+		const { finishRollout } = require('#src/components/deploymentRecorder');
+		rows.set(ROW, stagedRow());
+		await activateDeploymentOnPeers(activation);
+		rows.set(ROW, { ...stagedRow('restarting'), peer_results: [] });
+		await finishRollout(ROW, [{ node: 'peer-a', error: 'rejected' }], [{ node: 'peer-a', error: 'rejected' }]);
+		assert.strictEqual(rows.get(ROW).status, 'partial');
+		assert.deepStrictEqual(rows.get(ROW).error.nodes, ['peer-a']);
+	});
+
 	it('names a node that left the cluster before its turn on the record too', async () => {
 		rows.set(ROW, stagedRow());
 		await assert.rejects(activateDeploymentOnPeers({ ...activation, nodes: ['peer-a', 'peer-gone'] }));
