@@ -4158,7 +4158,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const attributesToIndex = [];
 	const indicesToRemove = [];
 	try {
-		if (residency !== undefined || Table?.residency) {
+		if (
+			residency ||
+			Table?.residency ||
+			(residency === null &&
+				persistedPrimaryDescriptor(Table?.dbisDB ?? internalDbisFor(rootStore, target)).descriptor?.residency)
+		) {
 			exclusiveLock();
 			const catalog = Table?.dbisDB ?? internalDbisFor(rootStore, target);
 			const persisted = persistedPrimaryDescriptor(catalog);
