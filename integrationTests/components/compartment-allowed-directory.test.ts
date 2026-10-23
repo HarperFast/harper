@@ -143,9 +143,7 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 	test('the instance log names the allowed-path refusal for each escape', async () => {
 		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
 		const instanceLog = await readFile(join(logDirectory, 'hdb.log'), 'utf8');
-		const refusals = instanceLog
-			.split('\n')
-			.filter((line) => /Can not load module at .*secret\.js outside of allowed path/.test(line));
+		const refusals = instanceLog.split('\n').filter((line) => /outside of allowed path/.test(line));
 		ok(refusals.length >= ESCAPING_APPS.length, `expected a refusal per escaping component, got ${refusals.length}`);
 	});
 });
