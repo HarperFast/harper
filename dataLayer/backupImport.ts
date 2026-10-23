@@ -39,6 +39,7 @@ export const IMPORT_STAGING_DIR = '.staging';
 const OWNER_FILE = 'owner.json';
 const SPOOL_FILE = 'archive';
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
+const IMPORT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ALLOWED_S3_FIELDS = new Set(['bucket', 'key', 'region', 'credentials']);
 
 export function importStagingDir(databaseName: string, importId: string): string {
@@ -53,8 +54,13 @@ export function describeImportSource(request: any): string {
 	return 'upload';
 }
 
+function isUpload(payload: unknown): payload is Readable {
+	return typeof (payload as Readable)?.pipe === 'function';
+}
+
 function countSources(request: any): number {
-	return ['source_file', 'url', 's3', 'staging_id'].filter((field) => request[field] !== undefined).length;
+	const fields = ['source_file', 'url', 's3', 'staging_id'].filter((field) => request[field] !== undefined).length;
+	return fields + (isUpload(request.payload) ? 1 : 0);
 }
 
 /** Request-time validation, before a job row exists: nothing secret-bearing is persisted unvalidated. */
@@ -64,6 +70,10 @@ export function validateImportBackup(request: any): void {
 	requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
 	if (countSources(request) !== 1) {
 		throw new ClientError(`import_backup needs exactly one source: source_file, a multipart upload, url, or s3`);
+	}
+	// the job removes this directory when it finishes, so it must name an area spoolUpload created
+	if (request.staging_id !== undefined && !IMPORT_ID_PATTERN.test(request.staging_id)) {
+		throw new ClientError(`'staging_id' is not a staged upload`);
 	}
 	if (request.source_file !== undefined) {
 		const name = request.source_file;
@@ -161,15 +171,21 @@ function processInstance(): string | undefined {
 /** The operation: spools an upload if there is one, then queues the import job. */
 export async function importBackup(request: any): Promise<{ message: string; job_id: string }> {
 	requireSuperUser(request, hdbTerms.OPERATIONS_ENUM.IMPORT_BACKUP);
-	const databaseName = getDatabaseName(request);
-	let jobRequest = request;
-	if (request.payload && typeof request.payload.pipe === 'function') {
-		const { payload, ...rest } = request;
-		const spooled = await spoolUpload(databaseName, payload, rest.declared_size);
-		jobRequest = { ...rest, staging_id: spooled.importId, upload_digest: spooled.digest };
+	if (request.staging_id !== undefined || request.upload_digest !== undefined) {
+		throw new ClientError(`'staging_id' and 'upload_digest' are set by the server for an upload`);
 	}
+	validateImportBackup(request);
 	const { executeJob } = await import('../server/serverHelpers/serverUtilities.ts');
-	return executeJob(jobRequest);
+	if (!isUpload(request.payload)) return executeJob(request);
+	const databaseName = getDatabaseName(request);
+	const { payload, ...rest } = request;
+	const spooled = await spoolUpload(databaseName, payload, rest.declared_size);
+	try {
+		return await executeJob({ ...rest, staging_id: spooled.importId, upload_digest: spooled.digest });
+	} catch (error) {
+		rmSync(importStagingDir(databaseName, spooled.importId), { recursive: true, force: true });
+		throw error;
+	}
 }
 
 /** Resolves an S3 credential reference: on this thread if it holds custody, else from the main thread. */
@@ -195,12 +211,8 @@ if (isMainThread) {
 	try {
 		const { onMessageByType, onThreadExit } = require('../server/threads/manageThreads.js');
 		onThreadExit((exitedThreadId: number) => {
-			const instance = processInstance();
 			try {
-				sweepImportStaging(
-					(owner) =>
-						owner.owner !== 'thread' || owner.thread_id !== exitedThreadId || owner.process_instance !== instance
-				);
+				sweepExitedThreadStaging(exitedThreadId);
 			} catch (error) {
 				logger.error('Could not sweep the import staging of an exited thread', error);
 			}
@@ -288,7 +300,8 @@ export async function importBackupJob(request: any) {
 
 /**
  * Removes staging that no live import owns: a thread-owned area whose thread is gone (on its exit),
- * and, at boot, any area whose owner is not a running job.
+ * and, at boot, any area whose owner is not a running job. `owner` is undefined for an area with no
+ * owner record — a pull or `source_file` import in flight, or an upload whose record is not yet written.
  */
 export function sweepImportStaging(isOwned: (owner: any) => boolean): number {
 	let removed = 0;
@@ -305,12 +318,20 @@ export function sweepImportStaging(isOwned: (owner: any) => boolean): number {
 			} catch {
 				owner = undefined;
 			}
-			if (owner && isOwned(owner)) continue;
+			if (isOwned(owner)) continue;
 			rmSync(dir, { recursive: true, force: true });
 			removed++;
 		}
 	}
 	return removed;
+}
+
+/** Only an area whose owner record names the exited thread of this process: nothing else is provably dead. */
+export function sweepExitedThreadStaging(exitedThreadId: number): number {
+	const instance = processInstance();
+	return sweepImportStaging(
+		(owner) => owner?.owner !== 'thread' || owner.thread_id !== exitedThreadId || owner.process_instance !== instance
+	);
 }
 
 let startupSweepRan = false;
