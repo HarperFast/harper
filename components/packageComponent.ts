@@ -199,8 +199,7 @@ export function streamPackagedDirectory(
 			const packStream = tar.pack(directory, {
 				dereference,
 				ignore: (name: string) => isExcluded(directory, name, options) || skipped.has(relative(directory, name)),
-				// tar-fs only drops or rewrites the entries it walks; the placeholder has to be added by hand,
-				// after the walk and only once it ends normally, so it is finalized here rather than by tar-fs.
+				// tar-fs can only drop or rewrite walked entries, so the placeholders are added after the walk.
 				finalize: false,
 				finish: (pack) => {
 					for (const link of placeholders) {
