@@ -166,6 +166,7 @@ export async function importArchive(args: ImportArchiveArgs) {
 	let backupId: number;
 	let extracted: Awaited<ReturnType<typeof extractArchive>>;
 	try {
+		mkdirSync(treeDir);
 		extracted = await extractArchive(archivePath, treeDir, {
 			ledger,
 			allowMissingManifest: args.acceptIncompatible,
