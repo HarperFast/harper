@@ -135,6 +135,15 @@ describe('failed deploy payload retention (harper#2681)', () => {
 		assert.strictEqual(kept().length, 3);
 	});
 
+	it('reads an age only in units it knows, never an unknown suffix as seconds', () => {
+		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, '12h');
+		assert.strictEqual(failedPayloadRetention().maxAgeMs, 12 * 3_600_000);
+		for (const unknown of ['7days', '2w', 'soon']) {
+			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, unknown);
+			assert.strictEqual(failedPayloadRetention().maxAgeMs, 7 * DAY, unknown);
+		}
+	});
+
 	it('treats a blank or empty setting as unset, not as 0', () => {
 		for (const blank of ['', '  ', null]) {
 			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, blank);

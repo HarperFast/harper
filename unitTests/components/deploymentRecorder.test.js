@@ -859,3 +859,56 @@ describe("a rolling deploy's own terminal write (harper#3060)", () => {
 		assert.ok(stored.event_log.some((entry) => entry.event === 'peer_activation'));
 	});
 });
+
+describe('ending a rolling deploy record whose activation job was interrupted (harper#3060)', () => {
+	const { settleInterruptedRollouts } = require('#src/components/deploymentRecorder');
+	const { hostname } = require('node:os');
+	const JOB_TABLE = terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME;
+	let installed;
+	let priorJobs;
+	let jobs;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+		installed.mock.search = async function* (conditions) {
+			for (const row of installed.mock.rows.values()) {
+				if (conditions.every(({ attribute, value }) => row[attribute] === value)) yield row;
+			}
+		};
+		jobs = new Map();
+		priorJobs = databases.system[JOB_TABLE];
+		databases.system[JOB_TABLE] = { get: async (id) => jobs.get(id) };
+	});
+	afterEach(() => {
+		installed?.restore();
+		if (databases.system) databases.system[JOB_TABLE] = priorJobs;
+	});
+
+	const rollout = (id, jobStatus, peers, extra = {}) => {
+		jobs.set(`job-${id}`, { id: `job-${id}`, status: jobStatus });
+		installed.mock.rows.set(id, {
+			deployment_id: id,
+			status: 'rolling_out',
+			origin_node: hostname(),
+			restart_job_id: `job-${id}`,
+			peer_results: peers,
+			...extra,
+		});
+	};
+	const took = (node) => ({ node, activation: { activated: true } });
+
+	it('ends each record its interrupted job left, and leaves a running job and another node alone', async () => {
+		rollout('interrupted', 'ERROR', [took('a'), { node: 'b' }]);
+		rollout('finished', 'COMPLETE', [took('a'), took('b')]);
+		rollout('running', 'IN_PROGRESS', [took('a'), { node: 'b' }]);
+		rollout('elsewhere', 'ERROR', [{ node: 'b' }], { origin_node: 'another-node' });
+
+		assert.strictEqual(await settleInterruptedRollouts(), 2);
+		const rows = installed.mock.rows;
+		assert.strictEqual(rows.get('interrupted').status, 'partial');
+		assert.deepStrictEqual(rows.get('interrupted').error.nodes, ['b']);
+		assert.match(rows.get('interrupted').error.message, /job-interrupted ended without finishing this record/);
+		assert.strictEqual(rows.get('finished').status, 'success');
+		assert.strictEqual(rows.get('running').status, 'rolling_out');
+		assert.strictEqual(rows.get('elsewhere').status, 'rolling_out');
+	});
+});

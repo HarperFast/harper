@@ -193,7 +193,8 @@ function watchForAbandonment(upload: Upload): void {
 	const { file } = upload;
 	if (!file || file.readableEnded || file.destroyed) return;
 	const onRemoved = (event: string | symbol) => {
-		if (event !== 'data' && event !== 'readable') return;
+		// Only `data`: a consumer reading with `once(part, 'readable')` holds no listener between reads.
+		if (event !== 'data') return;
 		// The cleanup removes several listeners and settles `readableFlowing` as it goes; look once it is done.
 		setImmediate(() => {
 			if (upload.discarding || !isAbandoned(upload)) return;

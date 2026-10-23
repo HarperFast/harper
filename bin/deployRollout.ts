@@ -61,10 +61,10 @@ export async function awaitRollout(
 		} catch (error) {
 			const { statusCode } = error as { statusCode?: number };
 			if (statusCode === 401 || statusCode === 403) {
+				// An expired token answers 403 as well as a missing grant does.
 				const remedy =
-					statusCode === 403
-						? 'Grant the role get_deployment'
-						: 'The credential is no longer accepted (an exchanged CI token lasts an hour); follow the record with get_deployment';
+					'Grant the role get_deployment, or, if the token expired (an exchanged CI token lasts an hour), follow the ' +
+					'record with get_deployment';
 				return {
 					record,
 					timedOut: false,

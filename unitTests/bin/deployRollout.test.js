@@ -99,7 +99,8 @@ describe("following a rolling deploy's record (harper#3058)", () => {
 	it('stops at once on a refusal, which no retry fixes', async () => {
 		const refusal = Object.assign(new Error('get_deployment answered 403'), { statusCode: 403 });
 		const outcome = await awaitRollout(ID, records(refusal), { ...fast, report, timeoutMs: 60_000 });
-		assert.match(outcome.failure, /Grant the role get_deployment, or pass wait=false/);
+		assert.match(outcome.failure, /Grant the role get_deployment, or, if the token expired/);
+		assert.match(outcome.failure, /or pass wait=false/);
 	});
 
 	it('bounds each read by what is left of the wait', async () => {

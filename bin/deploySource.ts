@@ -28,7 +28,8 @@ export function declaredDeploySource(
 		const head = git(options.directory, ['rev-parse', 'HEAD']);
 		if (head) {
 			source.sha = head;
-			const status = git(options.directory, ['status', '--porcelain']);
+			// Scoped to the deployed directory, which can be one project in a larger repository.
+			const status = git(options.directory, ['status', '--porcelain', '--', '.']);
 			if (status !== undefined) source.dirty = status.length > 0;
 		}
 	}

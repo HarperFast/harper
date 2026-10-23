@@ -38,6 +38,19 @@ describe('what a deploy declares about where it came from (harper#3061)', () => 
 		}
 	});
 
+	it('counts only changes inside the deployed directory as dirty', () => {
+		fs.mkdirSync(path.join(checkout, 'app'), { recursive: true });
+		fs.writeFileSync(path.join(checkout, 'app', 'config.yaml'), 'rest: true\n');
+		git('add', '.');
+		git('commit', '-q', '-m', 'app');
+		fs.writeFileSync(path.join(checkout, 'elsewhere.txt'), '');
+		try {
+			assert.strictEqual(declaredDeploySource({ directory: path.join(checkout, 'app') }, {}).dirty, false);
+		} finally {
+			fs.rmSync(path.join(checkout, 'elsewhere.txt'));
+		}
+	});
+
 	it('names the GitHub Actions run, and the checkout commit over GITHUB_SHA', () => {
 		const env = {
 			GITHUB_ACTIONS: 'true',

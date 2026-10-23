@@ -389,6 +389,34 @@ describe('multipartParser – an upload its response left unread', () => {
 		});
 	}
 
+	it("leaves a part alone that is read with once('readable') across the response", async () => {
+		const { request, raw, parsed } = start();
+		const { payload } = await parsed;
+		const errors = [];
+		payload.on('error', (error) => errors.push(error));
+		let read = 0;
+		const ended = once(payload, 'end');
+		const reading = (async () => {
+			for (;;) {
+				const chunk = payload.read();
+				if (chunk !== null) {
+					read += chunk.length;
+					// Holds no listener while it writes, between its reads.
+					await sleep(1);
+					continue;
+				}
+				if ((await Promise.race([once(payload, 'readable'), ended.then(() => 'end')])) === 'end') return;
+			}
+		})();
+		// The response lands while the reader waits on `readable`, so the part is held.
+		await waitFor(() => payload.listenerCount('readable') > 0, 2000);
+		await respond(request);
+		await reading;
+		assert.deepStrictEqual(errors, []);
+		assert.strictEqual(read, 4 * 1024 * 1024);
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
 	it('leaves a part alone when it gains a second consumer and loses the first', async () => {
 		const { request, raw, parsed } = start();
 		const { payload } = await parsed;

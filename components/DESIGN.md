@@ -817,7 +817,10 @@ seals before replicating): the last peer's outcome rides the job's final write, 
 second has passed since the previous one, the origin's `rolling_out` (its `completed_at`) included, so a peer that
 fails at once cannot produce the burst. A record whose origin failed after starting the job keeps
 its status; the job still records each peer's outcome there. A job that never finishes, because its node restarted
-mid-rollout, leaves the record `rolling_out`, as it leaves its `hdb_job` row in progress.
+mid-rollout, is settled `ERROR` at the next boot (`reconcileInterruptedJobs`); `settleInterruptedRollouts` then ends
+each `rolling_out` record this node wrote whose job is no longer running: `success` only when the job completed and
+every peer took the release, otherwise `partial`, naming each peer with no confirmed activation. The job's wait for the
+origin's write happens once per row, so an origin write that never landed delays only the first activation.
 
 `harper deploy restart=rolling` follows that record before it exits (`bin/deployRollout.ts`, #3058). When the
 response says `rolling_out`, the CLI polls `get_deployment` on the same connection and credential the deploy used,
@@ -851,7 +854,8 @@ failed one keeps its tarball, since that is what an operator retries or debugs w
 rollout filled a tenant's quota with copies of one bundle (#2681). `sweepFailedPayloads`
 (`components/payloadRetention.ts`) now drops, per project, every failed payload beyond the newest
 `deployment_payloadRetention_failedMaxCount` (default 2) and every one older than
-`deployment_payloadRetention_failedMaxAge` (default `7d`; a duration, or seconds), but never the project's newest,
+`deployment_payloadRetention_failedMaxAge` (default `7d`; seconds, or a number with a `convertToMS` unit; another
+suffix falls back to the default rather than reading as seconds), but never the project's newest,
 and `0` turns a bound off. Rows are ranked across the cluster, so the bound is per project rather than per origin, but each node drops only
 the rows it wrote (`origin_node`), so each is written once; a row whose node has left keeps its payload. A drop is what
 `delete_deployment_payload` does: the row is written with

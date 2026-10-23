@@ -660,7 +660,9 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 	if (!table) return;
 	try {
-		const deadline = Date.now() + ROLLOUT_RECORD_WAIT_MS;
+		// Once per row: after a wait that saw the origin's write, or gave up on it, the job's own writes are what change
+		// the row, so waiting again would only hold each later activation back by the whole bound.
+		const deadline = lastRolloutWrite.has(deploymentId) ? 0 : Date.now() + ROLLOUT_RECORD_WAIT_MS;
 		let current = await table.get(deploymentId);
 		while (current && !ROLLOUT_RECORD_STATUSES.has(current.status) && Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
@@ -685,6 +687,60 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 
 // The origin's terminal write for a rolling deploy, or one that ended it before the job got here.
 const ROLLOUT_RECORD_STATUSES = new Set(['rolling_out', 'success', 'partial', 'failed', 'rolled_back', 'staged']);
+
+/**
+ * End the `rolling_out` records this node wrote whose activation job is no longer running: a restart mid-rollout
+ * settles the job as ERROR (jobOwnership.ts), and nothing would end its record. `success` only when the job finished
+ * and every peer took the release; otherwise `partial`, naming each peer with no confirmed activation. Run at boot,
+ * after interrupted jobs are settled. Returns how many it ended; never throws.
+ */
+export async function settleInterruptedRollouts(): Promise<number> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	const jobs = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
+	if (!table || !jobs) return 0;
+	let settled = 0;
+	try {
+		const origin = hostname();
+		const rows = [];
+		for await (const row of table.search([{ attribute: 'status', value: 'rolling_out' }])) {
+			if (row?.origin_node === origin) rows.push(row);
+		}
+		for (const row of rows) {
+			const job = row.restart_job_id ? await jobs.get(row.restart_job_id) : undefined;
+			if (job?.status === terms.JOB_STATUS_ENUM.CREATED || job?.status === terms.JOB_STATUS_ENUM.IN_PROGRESS) continue;
+			const unconfirmed = (row.peer_results ?? [])
+				.filter((peer: any) => peer?.activation?.activated !== true)
+				.map((peer: any) => peer?.node ?? 'unknown');
+			const updated: Record<string, any> = { ...row, completed_at: Date.now() };
+			if (job?.status === terms.JOB_STATUS_ENUM.COMPLETE && unconfirmed.length === 0) {
+				updated.status = 'success';
+			} else {
+				updated.status = 'partial';
+				updated.error = {
+					message:
+						`The activation job ${row.restart_job_id ?? '(none recorded)'} ended without finishing this record` +
+						(unconfirmed.length ? `; not confirmed on: ${unconfirmed.join(', ')}` : ''),
+					nodes: unconfirmed,
+					phase: 'restart',
+				};
+			}
+			await withIsolatedTransaction(() => table.put(updated));
+			settled++;
+		}
+	} catch (error) {
+		logger.warn?.('Failed to settle interrupted rolling deploys', error);
+	}
+	if (settled > 0) logger.warn?.(`Ended ${settled} rolling deploy record(s) whose activation job was interrupted`);
+	return settled;
+}
+
+let rolloutSettlement: Promise<number> | undefined;
+
+/** Once per process: this function re-runs on every root component reload. */
+export function settleInterruptedRolloutsOnce(): Promise<number> {
+	rolloutSettlement ??= settleInterruptedRollouts();
+	return rolloutSettlement;
+}
 
 // Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,
 // heavyweight, user-initiated operation, and the `system`-table replication channel can be

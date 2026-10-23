@@ -16,7 +16,8 @@ const DEFAULT_FAILED_MAX_COUNT = 2;
 /** `0` turns a bound off; anything that is not a usable value falls back to the default rather than to "drop all". */
 export function failedPayloadRetention(): { maxAgeMs: number; maxCount: number } {
 	const age = getConfigValue(terms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE);
-	const maxAgeMs = convertToMS(isSetting(age) ? age : DEFAULT_FAILED_MAX_AGE);
+	const usableAge = typeof age === 'number' || (typeof age === 'string' && DURATION.test(age.trim()));
+	const maxAgeMs = convertToMS(usableAge ? age : DEFAULT_FAILED_MAX_AGE);
 	const configuredCount = getConfigValue(terms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT);
 	// Number('') and Number(null) are 0, which would turn the bound off rather than leave it at its default.
 	const count = isSetting(configuredCount) ? Number(configuredCount) : NaN;
@@ -29,6 +30,9 @@ export function failedPayloadRetention(): { maxAgeMs: number; maxCount: number }
 function isSetting(value: unknown): value is string | number {
 	return (typeof value === 'string' && value.trim() !== '') || typeof value === 'number';
 }
+
+// The units convertToMS knows; it reads any other suffix as seconds, so `7days` would expire payloads after 7s.
+const DURATION = /^\d+(\.\d+)?[yMdDhHm]?$/;
 
 /**
  * Drop the payloads of failed deploys beyond the bounds, keeping each row's metadata and `event_log`, as
