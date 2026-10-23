@@ -1,4 +1,3 @@
-import { transaction } from './transaction.ts';
 import { databases, getDatabases, table } from './databases.ts';
 import { server } from '../server/Server.ts';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -132,6 +131,7 @@ export async function installResidencyMap(
 		const previous = Maps.primaryStore.getSync(database);
 		if (previous?.digest === snapshot.digest) return validateResidencyMap(previous, database);
 		validateResidencyMapWrite(database, snapshot, previous);
+		const { transaction } = await import('./transaction.ts');
 		const context = {};
 		await transaction(context, async () => {
 			const resource = await Maps.getResource(database, context);
