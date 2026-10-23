@@ -289,6 +289,73 @@ for (const loadAsInstance of [true, false]) {
 			);
 		});
 
+		it('keeps a full PUT after a same-record message in the same transaction', async () => {
+			const id = 'message-then-put';
+			const timestamp = (nextTimestamp += 1000);
+			await T.put(id, { a: 'old', c: 'stale' }, { timestamp });
+			const context = { timestamp: timestamp + 20 };
+			await transaction(context, async () => {
+				await T.publish(id, { notice: 'message' }, context);
+				await T.put(id, { a: 'replacement' }, context);
+			});
+			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, a: 'replacement' });
+		});
+
+		for (const laterPatch of [false, true]) {
+			it(`replays a newer patch after a same-record message (later patch=${laterPatch})`, async () => {
+				const id = 'message-before-patch';
+				const timestamp = (nextTimestamp += 1000);
+				await T.put(id, { c: 'stale', counter: 10 }, { timestamp });
+				const context = { timestamp: timestamp + 20 };
+				await transaction(context, async () => {
+					await T.publish(id, { notice: 'message' }, context);
+					await T.patch(id, { b: 'newer', counter: { __op__: 'add', value: 5 } }, context);
+				});
+				assert.equal((await T.get(id)).b, 'newer');
+				if (laterPatch) await T.patch(id, { d: 'latest' }, { timestamp: timestamp + 30 });
+				await T.put(id, { a: 'replacement', counter: 100 }, { timestamp: timestamp + 10 });
+				assert.deepStrictEqual(
+					{ ...(await T.get(id)) },
+					{
+						id,
+						a: 'replacement',
+						b: 'newer',
+						counter: 105,
+						...(laterPatch ? { d: 'latest' } : {}),
+					}
+				);
+				const audit = [...T.auditStore.getRange({ start: 0, end: Infinity })].find(
+					(entry) => entry.tableId === T.tableId && entry.recordId === id && entry.version === timestamp + 10
+				);
+				assert.ok(audit);
+				assert.deepStrictEqual({ ...audit.getValue(T.primaryStore) }, { id, a: 'replacement', counter: 100 });
+			});
+		}
+
+		it('keeps current data when a mixed-version frame cannot resolve its audit head', async function () {
+			if (isLMDB) return this.skip();
+			const id = 'mixed-frame-versions';
+			const timestamp = (nextTimestamp += 1000);
+			await T.put(id, { c: 'stale' }, { timestamp });
+			const nodeId = getIdOfRemoteNode('mixed-frame-origin', T.auditStore);
+			const context = { timestamp: timestamp + 30, source: true, sourceApply: true };
+			await transaction(context, async () => {
+				for (const [version, value] of [
+					[timestamp + 5, { early: 'older' }],
+					[timestamp + 20, { b: 'newer' }],
+				]) {
+					const resource = await T.getResource(id, context);
+					await resource._writeUpdate(id, value, false, { isNotification: true, nodeId, version });
+				}
+			});
+			const first = T.auditStore.get(timestamp + 30, T.tableId, id, nodeId);
+			assert.equal(first.version, timestamp + 5);
+			assert.equal(first.endTxn, false);
+			assert.equal((await T.get(id)).b, 'newer');
+			await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, c: 'stale', early: 'older', b: 'newer' });
+		});
+
 		it('retains fields beyond the transaction scan budget', async () => {
 			const timestamp = (nextTimestamp += 100_000);
 			nextTimestamp += 2000;
@@ -352,7 +419,14 @@ for (const loadAsInstance of [true, false]) {
 			);
 		});
 
-		for (const corruption of ['header', 'record ID']) {
+		for (const corruption of [
+			'header',
+			'record ID',
+			'missing body',
+			'version',
+			'reference clock',
+			'missing predecessor',
+		]) {
 			it(`preserves newer data behind a corrupt RocksDB sibling ${corruption}`, async function () {
 				if (isLMDB) return this.skip();
 				const id = 'aaaaaaaaaa';
@@ -372,15 +446,34 @@ for (const loadAsInstance of [true, false]) {
 									tableId: T.tableId,
 									recordId: id,
 									nodeId: 0,
-									version: timestamp + 20,
+									version: corruption === 'version' ? NaN : timestamp + 20,
+									extendedType: corruption === 'reference clock' ? HAS_ADDITIONAL_AUDIT_REFS : undefined,
+									previousAdditionalAuditRefs: [{ version: NaN, nodeId: 0 }],
 									encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ b: 'first' })),
 								},
 								4
 							)
 						);
 						if (corruption === 'header') encoded = encoded.subarray(0, 7);
-						else Buffer.from('13195fb7a854cde125e9', 'hex').copy(encoded, encoded.indexOf(id));
-						T.auditStore.put(null, encoded, { transaction: native });
+						else if (corruption === 'record ID')
+							Buffer.from('13195fb7a854cde125e9', 'hex').copy(encoded, encoded.indexOf(id));
+						else if (corruption === 'missing body')
+							encoded = encoded.subarray(0, encoded.length - T.primaryStore.encoder.encode({ b: 'first' }).length);
+						T.auditStore.put(
+							null,
+							corruption === 'missing predecessor'
+								? {
+										type: 'patch',
+										tableId: T.tableId,
+										recordId: id,
+										nodeId: 0,
+										version: timestamp + 20,
+										previousVersion: timestamp + 15,
+										encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ b: 'first' })),
+									}
+								: encoded,
+							{ transaction: native }
+						);
 						T.auditStore.put(
 							null,
 							{
@@ -408,18 +501,25 @@ for (const loadAsInstance of [true, false]) {
 					if (handle) releaseLocalKey(handle);
 				}
 				const entries = [...T.auditStore.getRange({ start: timestamp + 20, exactStart: true, log: 0 })];
-				assert.equal(entries[0].recordId, undefined);
+				const unreadableId = corruption === 'header' || corruption === 'record ID';
+				assert.equal(entries[0].recordId, unreadableId ? undefined : id);
+				if (corruption === 'missing body') assert.equal(entries[0].getValue(T.primaryStore), undefined);
+				if (corruption === 'version') assert.ok(Number.isNaN(entries[0].version));
+				if (corruption === 'reference clock')
+					assert.ok(Number.isNaN(entries[0].previousAdditionalAuditRefs[0].version));
+				if (corruption === 'missing predecessor')
+					assert.equal(T.auditStore.get(timestamp + 15, T.tableId, id, 0), undefined);
 				assert.equal(entries[0].endTxn, false);
 				assert.equal(entries[1].recordId, id);
 				assert.equal(entries[1].endTxn, true);
 				assert.deepStrictEqual({ ...entries[1].getValue(T.primaryStore) }, { d: 'last' });
 				assert.equal(T.primaryStore.getEntry(id).version, timestamp + 20);
 				assert.equal(T.primaryStore.getEntry(id).localTime, timestamp + 20);
-				assert.equal(T.auditStore.get(timestamp + 20, T.tableId, id, 0).endTxn, true);
+				assert.equal(T.auditStore.get(timestamp + 20, T.tableId, id, 0).endTxn, unreadableId);
 				await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
 				assert.deepStrictEqual(
 					{ ...(await T.get(id)) },
-					{ id, c: 'retained', b: 'first', d: 'last', a: 'replacement' }
+					{ id, c: 'retained', b: 'first', d: 'last', ...(corruption === 'version' ? {} : { a: 'replacement' }) }
 				);
 			});
 		}

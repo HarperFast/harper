@@ -5147,6 +5147,7 @@ export function makeTable(options): TableResourceClass {
 							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
+							const succeedingFrames = fullUpdate && isRocksDB ? [] : null;
 							let succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = existingEntry.additionalAuditRefs
 								? existingEntry.additionalAuditRefs.map((ref) => ({ localTime: ref.version, nodeId: ref.nodeId }))
@@ -5261,10 +5262,29 @@ export function makeTable(options): TableResourceClass {
 											isAdditionalAuditRef &&
 											visitedAuditVersions?.has(auditIdentity) &&
 											getAuditFloor(auditStore) <= txnTime;
-										if (!receiptAlreadyCollected) auditHistoryMissing = true;
+										// A preceding same-key message is not in the committed log yet.
+										const ownPendingHead =
+											isRocksDB &&
+											!isAdditionalAuditRef &&
+											!replaying &&
+											precedesExisting === 0 &&
+											localTime === appendedLogKey &&
+											(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
+											transaction.hasStagedLog &&
+											write.priorWrite &&
+											!write.priorWrite.skipped;
+										if (!receiptAlreadyCollected && !ownPendingHead) auditHistoryMissing = true;
 										break;
 									}
 									isAdditionalAuditRef = false;
+									if (succeedingFrames && auditRecord.endTxn !== true) {
+										// A message or older version can precede newer mutations in this frame.
+										succeedingFrames.push({
+											version: auditRecord.version,
+											nodeId: auditRecord.nodeId ?? 0,
+											logKey: auditRecord.txnLogKey ?? localTime,
+										});
+									}
 									if (!auditRecord.type || !Number.isFinite(auditRecord.version)) auditHistoryMissing = true;
 									visitedAuditVersions?.add(`${auditRecord.nodeId ?? 0}:${auditRecord.version}`);
 									queuePreviousAuditRefs(auditRecord);
@@ -5402,16 +5422,23 @@ export function makeTable(options): TableResourceClass {
 								);
 							}
 							if (fullUpdate && !auditWalkCapped && !auditHistoryMissing) {
-								let frameUpdates;
+								const frameUpdates = [];
 								const collectedKeys = isRocksDB ? null : new Set<number>();
-								for (let index = 0; index < succeedingUpdates.length; index++) {
-									const update = succeedingUpdates[index];
+								const scannedFrames = succeedingFrames?.length ? new Set<string>() : null;
+								const updatesToScan = succeedingFrames?.length
+									? succeedingUpdates.concat(succeedingFrames)
+									: succeedingUpdates;
+								for (const update of updatesToScan) {
+									if (scannedFrames) {
+										const identity = `${update.nodeId}:${update.logKey}`;
+										if (scannedFrames.has(identity)) continue;
+										scannedFrames.add(identity);
+									}
 									if (isRocksDB && update.endTxn === true) {
-										frameUpdates?.push(update);
+										frameUpdates.push(update);
 										continue;
 									}
 									if (collectedKeys?.has(update.logKey)) continue;
-									frameUpdates ??= succeedingUpdates.slice(0, index);
 									let complete = !isRocksDB;
 									let foundRecord = false;
 									let frameSteps = 0;
@@ -5448,6 +5475,7 @@ export function makeTable(options): TableResourceClass {
 												if (entry.type === 'patch') {
 													const value = entry.getValue(primaryStore);
 													if (value == null) auditHistoryMissing = true;
+													auditRecordToStore = recordUpdate;
 													frameUpdates.push({
 														version: entry.version,
 														nodeId: entry.nodeId ?? 0,
@@ -5466,11 +5494,12 @@ export function makeTable(options): TableResourceClass {
 									if (!complete || !foundRecord) auditHistoryMissing = true;
 									if (auditWalkCapped || auditHistoryMissing) break;
 								}
-								if (frameUpdates && !auditWalkCapped && !auditHistoryMissing) succeedingUpdates = frameUpdates;
+								if (!auditWalkCapped && !auditHistoryMissing) succeedingUpdates = frameUpdates;
 							}
 							if (auditWalkCapped) {
 								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
 								// history, seen during a replication full-copy of a large-history database — issue #1114).
+								// For full PUTs, depth counts scanned entries, including unrelated transaction siblings.
 								// Walking and buffering the whole chain per record OOMs the worker, so we stopped at the cap
 								// and reconcile against only the most recent MAX_OUT_OF_ORDER_AUDIT_DEPTH updates (the fold
 								// below). That is an approximation for histories deeper than the cap — updates older than the
