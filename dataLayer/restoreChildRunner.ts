@@ -190,7 +190,7 @@ export function runRestoreChild<T = any>(
 		}, timeoutMs);
 		child.on('message', (message: ChildToParent) => {
 			// after a timeout or failure the claim may already be released: a late child gets nothing
-			if (settled) {
+			if (settled || timedOut) {
 				if (message?.type === 'ready' || message?.type === 'destroying') killGroup(child);
 				return;
 			}
