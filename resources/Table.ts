@@ -5075,8 +5075,10 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							// Without explicit refs, the committed head's log key is its record version, so a matching
+							// delivery is already applied. Decided from the record because its log entry can be absent
+							// (a base copy writes none), and an absent exact-start key scans to end-of-log (harper#3467).
 							if (
-								stagedOwnAuditEntry &&
 								committedBy?.sourceApply &&
 								isRocksDB &&
 								!replaying &&
