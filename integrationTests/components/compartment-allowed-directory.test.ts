@@ -1,12 +1,7 @@
 /**
- * Under `applications.moduleLoader: compartment` with the default `allowedDirectory: app`, a component
- * cannot import a plain file outside its own directory, by relative path, absolute path or symlink, and a
- * refused component does not take the instance or its sibling components down. A CommonJS dependency
- * whose `module.exports` names are assigned dynamically supports named imports.
- *
- * On the unfixed loader the compartment `importHook` read plain files without the allowed-path check, so
- * the three escaping components loaded and served the outside file's contents, and the named import from
- * the CommonJS dependency failed with "does not provide an export named".
+ * `applications.moduleLoader: compartment` with the default `allowedDirectory: app` refuses plain files
+ * outside the component (relative, absolute, symlink) without affecting sibling components, and a
+ * CommonJS dependency with dynamically assigned `module.exports` names supports named imports.
  *
  * Run: npm run test:integration -- "integrationTests/components/compartment-allowed-directory.test.ts"
  */
@@ -54,6 +49,7 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 		const dataRootDir = await mkdtemp(
 			join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 		);
+		ctx.harper = { dataRootDir };
 		const componentsDir = join(dataRootDir, 'components');
 		const outsideDir = join(dataRootDir, 'outside');
 		const secretPath = join(outsideDir, 'secret.js');
@@ -101,7 +97,6 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 			"module.exports = {};\nfor (const name of ['alpha', 'beta']) module.exports[name] = `${name}!`;\n"
 		);
 
-		ctx.harper = { dataRootDir };
 		await startHarper(ctx, { config: { applications: { moduleLoader: 'compartment' }, threads: { count: 1 } } });
 
 		const deadline = Date.now() + 30_000;

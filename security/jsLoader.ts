@@ -434,14 +434,30 @@ function normalizeImportedModule(importedModule: any): any {
 }
 
 /**
- * The names a CommonJS module assigns to `module.exports` at runtime, which the namespace from a native
- * `import()` lacks when Node's static analysis cannot see them. Node 22 gives such a namespace no
- * `'module.exports'` key, so the module is identified by its `require.cache` entry instead.
+ * The names a CommonJS module assigns to `module.exports` at runtime that the namespace from a native
+ * `import()` lacks. Node 22 gives such a namespace no `'module.exports'` key, so the module is identified
+ * by its `require.cache` entry instead.
  */
 function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, unknown> {
 	if (!moduleUrl.startsWith('file:')) return {};
-	const cjsModule = require.cache[fileURLToPath(moduleUrl)];
-	return cjsModule && cjsModule.exports === namespace.default ? { ...cjsModule.exports } : {};
+	let path = fileURLToPath(moduleUrl);
+	try {
+		path = realpathSync(path);
+	} catch {}
+	const cjsExports = require.cache[path]?.exports;
+	if (!cjsExports || cjsExports !== namespace.default) return {};
+	if (typeof cjsExports !== 'object' && typeof cjsExports !== 'function') return {};
+	if (Array.isArray(cjsExports) || ArrayBuffer.isView(cjsExports)) return {};
+	const names: Record<string, unknown> = {};
+	for (const name of Object.keys(cjsExports)) {
+		if (name in namespace) continue;
+		try {
+			names[name] = cjsExports[name];
+		} catch {
+			// a throwing getter leaves its own name out instead of failing the import
+		}
+	}
+	return names;
 }
 
 /**
@@ -909,7 +925,6 @@ async function getCompartment(scope: ApplicationScope, globals) {
 						},
 					};
 				}
-				// Ahead of branch selection so that no branch can load a module without it
 				checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
 				if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
 					const nativeModule = createRequire(moduleSpecifier)(fileURLToPath(moduleSpecifier));
@@ -944,7 +959,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
 					const namespace = await import(moduleSpecifier);
-					const moduleExports = { ...dynamicCjsExports(namespace, moduleSpecifier), ...namespace };
+					const moduleExports = { ...namespace, ...dynamicCjsExports(namespace, moduleSpecifier) };
 					return {
 						imports: [],
 						exports: Object.keys(moduleExports),
