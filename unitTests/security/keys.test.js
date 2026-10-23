@@ -1463,6 +1463,95 @@ describe('Test keys module', () => {
 			const record = await certTable.get(certCn);
 			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
 		});
+
+		describe('ciphers and uses follow config while the certificate file is unchanged', () => {
+			const AES128 = 'TLS_AES_128_GCM_SHA256';
+			const AES256 = 'TLS_AES_256_GCM_SHA384';
+			const stubTlsConfig = (config) => {
+				sandbox.restore();
+				sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+					if (key === 'tls') return config;
+					if (key === 'rootPath') return root_path;
+					return undefined;
+				});
+			};
+			const entry = (extra) => ({ certificate: test_cert_path, privateKey: test_private_key_path, ...extra });
+			const loadFromNewerFile = async (extra) => {
+				await certTable.put({ ...originalRecord, file_timestamp: Date.now() - 24 * 60 * 60 * 1000 });
+				fs.utimesSync(test_cert_path, new Date(), new Date());
+				stubTlsConfig(entry(extra));
+				await reloadCertificates();
+			};
+			const reloadWith = async (config) => {
+				stubTlsConfig(config);
+				await reloadCertificates();
+				return certTable.get(certCn);
+			};
+
+			it('updates ciphers and uses on the record when config changes and the file does not', async () => {
+				await loadFromNewerFile({ ciphers: AES128, uses: ['https'] });
+				let record = await certTable.get(certCn);
+				expect(record.ciphers).to.equal(AES128);
+				expect(record.uses).to.deep.equal(['https']);
+				const { file_timestamp, certificate } = record;
+
+				record = await reloadWith(entry({ ciphers: AES256, uses: ['https', 'operations-api'] }));
+				expect(record.ciphers).to.equal(AES256);
+				expect(record.uses).to.deep.equal(['https', 'operations-api']);
+				expect(record.file_timestamp, 'the unchanged file keeps its timestamp').to.equal(file_timestamp);
+				expect(record.certificate).to.equal(certificate);
+				expect(keys.resolveEffectiveTlsCiphers([], [record], 'https', false)).to.equal(AES256);
+			});
+
+			it('clears ciphers on the record when config no longer sets them', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				expect((await certTable.get(certCn)).ciphers).to.equal(AES128);
+
+				expect((await reloadWith(entry({}))).ciphers).to.not.be.ok;
+			});
+
+			it('keeps ciphers an operator set through setCertTable across a reload', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				await keys.setCertTable({ ...(await certTable.get(certCn)), name: certCn, ciphers: 'DEFAULT@SECLEVEL=0' });
+
+				const record = await reloadWith(entry({ ciphers: AES256 }));
+				expect(record.ciphers).to.equal('DEFAULT@SECLEVEL=0');
+				expect(record.file_timestamp, 'the API write keeps file_timestamp, so it is not the ownership signal').to.be.ok;
+			});
+
+			it('keeps following config after a setCertTable write that sets neither field', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				const { certificate } = await certTable.get(certCn);
+				await keys.setCertTable({ name: certCn, certificate });
+
+				const record = await reloadWith(entry({ ciphers: AES256 }));
+				expect(record.ciphers).to.equal(AES256);
+			});
+
+			it('adopts a record from before the ownership marker only when it already matches config', async () => {
+				const { from_config: _marker, ...legacy } = originalRecord;
+				const seedLegacy = (ciphers) =>
+					certTable.put({ ...legacy, ciphers, uses: ['https'], file_timestamp: Date.now() + 24 * 60 * 60 * 1000 });
+				fs.utimesSync(test_cert_path, new Date(), new Date());
+
+				await seedLegacy('DEFAULT@SECLEVEL=0');
+				let record = await reloadWith(entry({ ciphers: AES256, uses: ['https'] }));
+				expect(record.ciphers, 'a differing unmarked record may be an operator edit').to.equal('DEFAULT@SECLEVEL=0');
+
+				await seedLegacy(AES128);
+				record = await reloadWith(entry({ ciphers: AES128, uses: ['https'] }));
+				expect(record.from_config).to.equal(true);
+				record = await reloadWith(entry({ ciphers: AES256, uses: ['https'] }));
+				expect(record.ciphers).to.equal(AES256);
+			});
+
+			it('lets the first config entry for a shared certificate file own the record', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+
+				const record = await reloadWith([entry({ ciphers: AES256 }), entry({ ciphers: 'HIGH' })]);
+				expect(record.ciphers).to.equal(AES256);
+			});
+		});
 	});
 
 	describe('loadAndWatch periodic re-read safety net (#586)', () => {

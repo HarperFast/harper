@@ -263,6 +263,110 @@ describe('Permissions through Resource API', () => {
 		}
 		assert(caught_error.message.includes('Unauthorized access'));
 	});
+	it('Rejects promised updates with a restricted attribute', async function () {
+		await assert.rejects(
+			async () =>
+				TestTable.put('id-8', Promise.resolve({ prop1: 'forbidden' }), {
+					user: attribute_authorized_role,
+					authorize: true,
+				}),
+			/Unauthorized access/
+		);
+		assert.equal((await TestTable.get('id-8')).prop1, 'test');
+	});
+	it('Rejects promised creates with a restricted attribute', async function () {
+		await assert.rejects(
+			async () =>
+				TestTable.post(new RequestTarget('/'), Promise.resolve({ prop1: 'forbidden' }), {
+					user: attribute_authorized_role,
+					authorize: true,
+				}),
+			/Unauthorized access/
+		);
+	});
+	it('Allows promised writes with permitted attributes', async function () {
+		await TestTable.put('id-9', Promise.resolve({ name: 'permitted' }), {
+			user: attribute_authorized_role,
+			authorize: true,
+		});
+		assert.equal((await TestTable.get('id-9')).name, 'permitted');
+		const id = await TestTable.post(new RequestTarget('/'), Promise.resolve({ name: 'permitted create' }), {
+			user: attribute_authorized_role,
+			authorize: true,
+		});
+		assert.equal((await TestTable.get(id)).name, 'permitted create');
+	});
+	it('Keeps concrete-record attribute checks synchronous', function () {
+		const context = { user: attribute_authorized_role, authorize: true };
+		const record = new TestTable('id-8', context);
+		const collection = new TestTable(new RequestTarget('/'), context);
+		assert.strictEqual(record.allowUpdate(attribute_authorized_role, { name: 'permitted' }, context), true);
+		assert.strictEqual(record.allowUpdate(attribute_authorized_role, { prop1: 'forbidden' }, context), false);
+		assert.strictEqual(collection.allowCreate(attribute_authorized_role, { name: 'permitted' }, context), true);
+		assert.strictEqual(collection.allowCreate(attribute_authorized_role, { prop1: 'forbidden' }, context), false);
+	});
+	for (const method of ['allowUpdate', 'allowCreate']) {
+		it(`does not re-enter a delegating ${method} override`, async function () {
+			let calls = 0;
+			class DelegatingTable extends TestTable {
+				[method](user, data, context) {
+					assert.equal(++calls, 1, 'Authorization override must run once');
+					return super[method](user, Promise.resolve(data), context);
+				}
+			}
+			const context = { user: attribute_authorized_role, authorize: true };
+			const target = method === 'allowCreate' ? new RequestTarget('/') : 'id-8';
+			const resource = await DelegatingTable.getResource(target, context, { isCollection: method === 'allowCreate' });
+			assert.equal(!!resource.isCollection, method === 'allowCreate');
+			assert.strictEqual(
+				await resource[method](attribute_authorized_role, Promise.resolve({ name: 'allowed' }), context),
+				true
+			);
+			assert.equal(calls, 1);
+		});
+	}
+	it('preserves explicitly readonly fields on a promised full PUT', async function () {
+		const permission = attribute_authorized_role.role.permission.test.tables.TestTable;
+		const user = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							TestTable: {
+								...permission,
+								attribute_permissions: [
+									...permission.attribute_permissions,
+									{
+										attribute_name: 'prop1',
+										read: true,
+										insert: false,
+										update: false,
+									},
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		await TestTable.put({ id: 'readonly-promised', name: 'before', prop1: 'preserved' });
+		await TestTable.put('readonly-promised', Promise.resolve({ name: 'after' }), { user, authorize: true });
+		const record = await TestTable.get('readonly-promised');
+		assert.equal(record.name, 'after');
+		assert.equal(record.prop1, 'preserved');
+	});
+	it('applies the same restricted-attribute decision to concrete and promised arrays', async function () {
+		const context = { user: attribute_authorized_role, authorize: true };
+		for (const [method, target] of [
+			['allowUpdate', 'id-8'],
+			['allowCreate', new RequestTarget('/')],
+		]) {
+			const resource = await TestTable.getResource(target, context, { isCollection: method === 'allowCreate' });
+			const records = [{ name: 'array record' }];
+			assert.strictEqual(resource[method](attribute_authorized_role, records, context), false);
+			assert.strictEqual(await resource[method](attribute_authorized_role, Promise.resolve(records), context), false);
+		}
+	});
 });
 
 describe('Bare collection POST authorization', () => {

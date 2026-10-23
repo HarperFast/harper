@@ -156,6 +156,7 @@ export function isBlobReceiveInFlight(fileId: string | null | undefined, store: 
 }
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
+const blobNameHasSetter = Boolean(Object.getOwnPropertyDescriptor(Blob.prototype, 'name')?.set);
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
@@ -3330,6 +3331,14 @@ addExtension({
 	unpack: function (buffer) {
 		const blobInfo = copyingUnpacker.unpack(buffer);
 		const blob = new FileBackedBlob();
+		// Bun's inherited name setter would hide this stored property from the next encoding.
+		if (blobNameHasSetter && blobInfo[0] && Object.hasOwn(blobInfo[0], 'name'))
+			Object.defineProperty(blob, 'name', {
+				value: blobInfo[0].name,
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
 		Object.assign(blob, blobInfo[0]); // copy any properties
 		if (typeof blobInfo[1] !== 'object') {
 			// this is a reference, not followed by any buffer

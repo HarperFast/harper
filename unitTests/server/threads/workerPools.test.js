@@ -76,8 +76,10 @@ describe('dedicated worker pools', () => {
 
 	describe('admittedWorkerPools', () => {
 		const env = () => require('#src/utility/environment/environmentManager');
+		const harperLogger = () => require('#src/utility/logging/harper_logger');
 		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 		const settings = {
+			[CONFIG_PARAMS.THREADS_COUNT]: undefined,
 			[CONFIG_PARAMS.REPLICATION_THREADS]: undefined,
 			[CONFIG_PARAMS.REPLICATION_PORT]: undefined,
 			[CONFIG_PARAMS.REPLICATION_SECUREPORT]: undefined,
@@ -96,40 +98,112 @@ describe('dedicated worker pools', () => {
 		const configure = (values) => {
 			for (const key in settings) env().setProperty(key, values[key] ?? null);
 		};
-		const admitted = () => require('#src/server/threads/socketRouter').admittedWorkerPools();
+		const admitted = (httpThreadCount) =>
+			require('#src/server/threads/socketRouter').admittedWorkerPools(httpThreadCount);
+		const threadCount = (httpThreadCount) =>
+			require('#src/server/threads/socketRouter').replicationThreadCount(httpThreadCount);
+		const effectiveHttp = (httpThreadCount, platform) =>
+			require('#src/server/threads/socketRouter').effectiveHttpThreadCount(httpThreadCount, platform);
 
-		it('starts no pool by default', () => {
+		it('defaults replication.threads to floor(threads.count / 2) for threads.count >= 2 and 0 otherwise', () => {
 			configure({ [CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933 });
-			assert.deepStrictEqual(admitted(), []);
+			const cases = [
+				[0, 0],
+				[1, 0],
+				[2, 1],
+				[3, 1],
+				[4, 2],
+				[5, 2],
+				[8, 4],
+			];
+			for (const [httpThreads, expected] of cases) {
+				assert.deepStrictEqual(threadCount(httpThreads), { count: expected, explicit: false });
+				assert.deepStrictEqual(admitted(httpThreads), expected > 0 ? [{ type: 'replication', count: expected }] : []);
+			}
 		});
 
-		it('admits the configured replication pool', () => {
+		it('normalizes effective HTTP worker count for DEV_MODE (1) and win32 (1) before deriving default pool size', () => {
+			configure({ [CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933 });
+			assert.deepStrictEqual(admitted(1), []);
+			assert.strictEqual(effectiveHttp(4, 'win32'), 1);
+			assert.strictEqual(effectiveHttp(0, 'win32'), 0);
+			assert.strictEqual(effectiveHttp(4, 'linux'), 4);
+			assert.deepStrictEqual(admitted(effectiveHttp(4, 'win32')), []);
+			assert.deepStrictEqual(admitted(effectiveHttp(4, 'linux')), [{ type: 'replication', count: 2 }]);
+		});
+
+		it('honors explicit replication.threads: 0 even when threads.count >= 2', () => {
 			configure({
-				[CONFIG_PARAMS.REPLICATION_THREADS]: 2,
+				[CONFIG_PARAMS.REPLICATION_THREADS]: 0,
+				[CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933,
+			});
+			assert.deepStrictEqual(threadCount(4), { count: 0, explicit: true });
+			assert.deepStrictEqual(admitted(4), []);
+		});
+
+		it('admits the explicitly configured replication pool', () => {
+			configure({
+				[CONFIG_PARAMS.REPLICATION_THREADS]: 3,
 				[CONFIG_PARAMS.REPLICATION_SECUREPORT]: '127.0.0.1:9933',
 				[CONFIG_PARAMS.HTTP_PORT]: 9926,
 				[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925,
 			});
-			assert.deepStrictEqual(admitted(), [{ type: 'replication', count: 2 }]);
+			assert.deepStrictEqual(threadCount(4), { count: 3, explicit: true });
+			assert.deepStrictEqual(admitted(1), [{ type: 'replication', count: 3 }]);
 		});
 
-		it('refuses a pool with no replication port of its own', () => {
+		it('refuses an explicitly configured pool with no replication port of its own', () => {
 			configure({ [CONFIG_PARAMS.REPLICATION_THREADS]: 2, [CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925 });
-			assert.throws(admitted, /requires replication\.port or replication\.securePort/);
+			assert.throws(() => admitted(4), /requires replication\.port or replication\.securePort/);
 		});
 
-		it('refuses a replication port shared with HTTP or the operations API', () => {
+		it('falls back to 0 and warns when a defaulted pool has no dedicated replication port', () => {
+			configure({ [CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925 });
+			const warnings = [];
+			const logger = harperLogger();
+			const originalWarn = logger.warn;
+			logger.warn = (...args) => warnings.push(args.join(' '));
+			try {
+				assert.deepStrictEqual(admitted(4), []);
+			} finally {
+				logger.warn = originalWarn;
+			}
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /requires replication\.port or replication\.securePort/);
+			assert.match(warnings[0], /falling back to replication\.threads: 0/);
+		});
+
+		it('refuses an explicitly configured replication port shared with HTTP or the operations API', () => {
 			configure({
 				[CONFIG_PARAMS.REPLICATION_THREADS]: 1,
 				[CONFIG_PARAMS.REPLICATION_SECUREPORT]: '127.0.0.1:9925',
 				[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925,
 			});
-			assert.throws(admitted, /port 9925 is also operationsApi\.network\.port/);
+			assert.throws(() => admitted(4), /port 9925 is also operationsApi\.network\.port/);
+		});
+
+		it('falls back to 0 and warns when a defaulted pool shares a port with HTTP or the operations API', () => {
+			configure({
+				[CONFIG_PARAMS.REPLICATION_SECUREPORT]: '127.0.0.1:9925',
+				[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925,
+			});
+			const warnings = [];
+			const logger = harperLogger();
+			const originalWarn = logger.warn;
+			logger.warn = (...args) => warnings.push(args.join(' '));
+			try {
+				assert.deepStrictEqual(admitted(4), []);
+			} finally {
+				logger.warn = originalWarn;
+			}
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /port 9925 is also operationsApi\.network\.port/);
+			assert.match(warnings[0], /falling back to replication\.threads: 0/);
 		});
 
 		it('refuses a count that is not a non-negative integer', () => {
 			configure({ [CONFIG_PARAMS.REPLICATION_THREADS]: 1.5, [CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933 });
-			assert.throws(admitted, /non-negative integer/);
+			assert.throws(() => admitted(4), /non-negative integer/);
 		});
 	});
 

@@ -703,6 +703,7 @@ export type TransactionWrite = {
 	stagedIn?: DatabaseTransaction;
 	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
 	priorWrite?: TransactionWrite;
+	keyId?: unknown;
 	// set only by a write that BOTH reads priorStagedWrite() and publishes stagedEntry; addWrite orders
 	// those against earlier same-key writes. A write that does one or neither would be ordered against a
 	// basis it cannot consume.
@@ -1302,7 +1303,7 @@ export class DatabaseTransaction implements Transaction {
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
-		const keyId = writeKeyId(operation.key);
+		const keyId = (operation.keyId = writeKeyId(operation.key));
 		const priorWrite = writesForStore.get(keyId);
 		if (priorWrite) operation.priorWrite = priorWrite;
 		writesForStore.set(keyId, operation);
