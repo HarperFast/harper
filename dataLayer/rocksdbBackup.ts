@@ -45,6 +45,7 @@ import {
 	readBackupPins,
 	unpinBackup,
 	withBackupRepositoryLock,
+	withBackupRepositoryReadAccess,
 } from './backupRepository.ts';
 import {
 	ARCHIVE_MANIFEST_ENTRY,
@@ -603,6 +604,7 @@ export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
 	requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
+	requireBooleanOption(request.immutable_source, 'immutable_source');
 	const databaseName = getDatabaseName(request);
 	if (databaseName === 'system') {
 		throw new ClientError(
@@ -665,13 +667,15 @@ export async function restoreBackup(request: any) {
 	const blobRoots = getBlobPathsForDatabaseName(databaseName);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
-	const pinId = restorePinId(databaseDir);
+	const immutableSource = requireBooleanOption(request.immutable_source, 'immutable_source');
+	const pinId = immutableSource ? undefined : restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
+	if (immutableSource) warnImmutableSource(databaseName, backupDir);
 	// Selection and every check derived from it run under the repository lock, so they apply to the
 	// backup the claim pins; the claim is published before the marker under both locks, so a crash
 	// cannot leave a marked database with an unprotected source.
-	const { lock, backupId, manifest, waived } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+	const { lock, backupId, manifest, waived } = await withRepository(immutableSource)(backupDir, databaseName, async () => {
 		// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
 		// tells us whether blobs were captured so we restore them only when they were
 		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName, acceptIncompatible);
@@ -679,9 +683,9 @@ export async function restoreBackup(request: any) {
 		// restoring it would mis-address blobs (records persist their root index)
 		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
 		assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: selected.manifest.blobs, allowEngineOnly });
-		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, backupDir, () =>
-			pinBackup(backupDir, pinId, selected.backupId, `restore of database '${databaseName}'`, databaseDir)
-		);
+		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, backupDir, () => {
+			if (pinId) pinBackup(backupDir, pinId, selected.backupId, `restore of database '${databaseName}'`, databaseDir);
+		});
 		return { lock: claimed, ...selected };
 	});
 	logCompatibilityWaived(databaseName, backupId, manifest, waived);
@@ -759,7 +763,23 @@ export async function restoreBackup(request: any) {
 		backup_id: backupId,
 		...(allowEngineOnly ? { allow_engine_only: true } : {}),
 		...(waived.length > 0 ? { compatibility_waived: waived } : {}),
+		...(immutableSource ? { immutable_source: true } : {}),
 	};
+}
+
+/**
+ * How a restore holds its repository: the management lock, or — for a repository the operator
+ * declared immutable — read access alone, with no lock and no write of any kind.
+ */
+function withRepository(immutableSource: boolean) {
+	return immutableSource ? withBackupRepositoryReadAccess : withBackupRepositoryLock;
+}
+
+function warnImmutableSource(databaseName: string, backupDir: string): void {
+	logger.warn(
+		`Restoring database '${databaseName}' with immutable_source: the backup repository at ${backupDir} is ` +
+			`neither locked nor claimed, so nothing stops another writer from changing it during the restore`
+	);
 }
 
 /**
@@ -769,11 +789,16 @@ export async function restoreBackup(request: any) {
  * delete. Both happen under the restore lock, so no later attempt can have written a claim at this
  * same id yet; one stranded after the marker is gone simply lapses and is swept.
  */
-function releaseRestoreClaim(backupDir: string, pinId: string, lock: RestoreLock, databaseName: string): void {
+function releaseRestoreClaim(
+	backupDir: string,
+	pinId: string | undefined,
+	lock: RestoreLock,
+	databaseName: string
+): void {
 	try {
 		clearRestoringMarker(lock);
 		try {
-			unpinBackup(backupDir, pinId);
+			if (pinId) unpinBackup(backupDir, pinId);
 		} catch (error) {
 			logger.error(
 				`Could not release the backup claim after restoring '${databaseName}'; it lapses with the marker`,
@@ -1284,22 +1309,25 @@ export async function restoreBackupOffline(
 	requestedBackupId?: number,
 	targetDatabase?: string,
 	allowEngineOnlyOption?: boolean,
-	acceptIncompatibleOption?: boolean
+	acceptIncompatibleOption?: boolean,
+	immutableSourceOption?: boolean
 ) {
-	// Validated the same way the online path validates it, so a malformed opt-in is refused rather than
-	// silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
+	// Validated the same way the online path validates them, so a malformed opt-in is refused rather
+	// than silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
 	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
 	const acceptIncompatible = requireBooleanOption(acceptIncompatibleOption, 'accept_incompatible_backup');
+	const immutableSource = requireBooleanOption(immutableSourceOption, 'immutable_source');
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
 	if (targetDatabase !== undefined) validateDatabaseName(targetDatabase);
 	const databaseDir = resolveDatabasePath(targetDatabase ?? databaseName);
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
-	const pinId = restorePinId(databaseDir);
+	const pinId = immutableSource ? undefined : restorePinId(databaseDir);
 	let destructionStarted = false;
+	if (immutableSource) warnImmutableSource(targetDatabase ?? databaseName, backupDir);
 	// Unlike online, verify before the claim: with no live writers to refuse, a crash mid-verify then
 	// leaves the database loadable. Claim before marking under both locks, and mark before probing.
-	const { lock, backupId, manifest, waived } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+	const { lock, backupId, manifest, waived } = await withRepository(immutableSource)(backupDir, databaseName, async () => {
 		// resolve to the latest complete backup (or the requested id, rejected if incomplete)
 		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName, acceptIncompatible);
 		// reject a backup with more blob roots than the target's current config before anything
@@ -1326,13 +1354,15 @@ export async function restoreBackupOffline(
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
 			// check and then lose the database it just made.
 			assertTargetClaimable(target, backupDir, preexisting);
-			pinBackup(
-				backupDir,
-				pinId,
-				selected.backupId,
-				`restore of database '${targetDatabase ?? databaseName}'`,
-				databaseDir
-			);
+			if (pinId) {
+				pinBackup(
+					backupDir,
+					pinId,
+					selected.backupId,
+					`restore of database '${targetDatabase ?? databaseName}'`,
+					databaseDir
+				);
+			}
 		});
 		return { lock: claimed, ...selected };
 	});
@@ -1399,6 +1429,7 @@ export async function restoreBackupOffline(
 		restored_to: databaseDir,
 		...(allowEngineOnly ? { allow_engine_only: true } : {}),
 		...(waived.length > 0 ? { compatibility_waived: waived } : {}),
+		...(immutableSource ? { immutable_source: true } : {}),
 	};
 }
 

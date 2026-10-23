@@ -248,4 +248,19 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 			return true;
 		});
 	});
+
+	it('passes immutable_source through to the offline restore', async () => {
+		cliCredentialsModule.loadCredentials = () => null;
+		processMgmtModule.getHdbPid = () => null;
+		trackRouting();
+		let args;
+		rocksdbBackupModule.restoreBackupOffline = async (...received) => {
+			args = received;
+			return {};
+		};
+		process.argv = ['node', 'harper', 'restore_backup', 'database=dev', 'immutable_source=true'];
+		await runBackupCommand('restore_backup');
+		assert.strictEqual(args[0], 'dev');
+		assert.strictEqual(args[5], true);
+	});
 });

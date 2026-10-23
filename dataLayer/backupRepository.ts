@@ -62,21 +62,24 @@ export interface BackupPin {
 
 /** Codes that mean the repository cannot be written at all, not that this attempt lost a race. */
 const REPOSITORY_NOT_WRITABLE = new Set(['EROFS', 'EACCES', 'EPERM']);
-const { W_OK } = constants;
+const REPOSITORY_NOT_READABLE = new Set(['EACCES', 'EPERM']);
+const { R_OK, W_OK, X_OK } = constants;
 
 /**
  * A repository Harper cannot write is refused by name rather than by whatever errno surfaced first.
- * Every managed operation — restore included, which only reads the backup itself — records a lock
- * and a claim inside the repository, so read-only media (a `ro` snapshot mount, a read-only share)
- * cannot be used in place. Inferring "immutable, so no claim needed" from a failed write would be
- * wrong: a read-only *view* of a repository another writer can still purge looks identical.
+ * Every managed operation records a lock and, for a restore, a claim inside the repository. Only the
+ * operator can waive that for a restore (`immutable_source`): inferring "immutable, so no claim
+ * needed" from a failed write would be wrong, because a read-only *view* of a repository another
+ * writer can still purge looks identical.
  */
 function assertRepositoryWritable(databaseName: string, error: any): never {
 	if (!REPOSITORY_NOT_WRITABLE.has(error?.code)) throw error;
 	throw new ClientError(
 		`Backup repository for database '${databaseName}' is not writable (${error.code}). Harper records a ` +
-			`management lock and a claim inside the repository for every backup operation, including restore, so ` +
-			`it cannot be used read-only. Remount it writable, or copy it to writable storage, and retry.`,
+			`management lock and a claim inside the repository for every backup operation, so it cannot be used ` +
+			`read-only. Remount it writable, or copy it to writable storage, and retry. To restore from it as it ` +
+			`is, pass immutable_source=true to restore_backup — only if nothing can modify the repository until ` +
+			`the restore finishes.`,
 		409
 	);
 }
@@ -131,6 +134,31 @@ export async function withBackupRepositoryLock<T>(
 	} finally {
 		fileLockRelease(token);
 	}
+}
+
+/**
+ * The read-only counterpart of `withBackupRepositoryLock`, for a restore whose operator declared the
+ * repository immutable (`immutable_source`): it takes no lock and writes nothing, so the repository
+ * may be read-only media. That declaration is what stands in for the lock and the claim; only a
+ * repository this process cannot read is refused.
+ */
+export async function withBackupRepositoryReadAccess<T>(
+	backupDir: string,
+	databaseName: string,
+	operation: () => Promise<T>
+): Promise<T> {
+	if (existsSync(backupDir)) {
+		try {
+			accessSync(backupDir, R_OK | X_OK);
+		} catch (error: any) {
+			if (!REPOSITORY_NOT_READABLE.has(error?.code)) throw error;
+			throw new ClientError(
+				`Backup repository for database '${databaseName}' is not readable (${error.code}); a restore needs to read it`,
+				409
+			);
+		}
+	}
+	return operation();
 }
 
 function pinPath(backupDir: string, pinId: string): string {

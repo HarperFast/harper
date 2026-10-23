@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
+const { createHash } = require('node:crypto');
 const {
 	chmodSync,
 	existsSync,
@@ -9,9 +10,11 @@ const {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } = require('node:fs');
-const { dirname, join, resolve } = require('node:path');
+const { dirname, join, relative, resolve } = require('node:path');
+const sinon = require('sinon');
 const { tmpdir } = require('node:os');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { writeUnsupportedTableFormat: sharedWriteUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
@@ -64,13 +67,9 @@ const {
 	restoreMarkerPresent,
 	restoreSourceId,
 } = require('#src/dataLayer/restoreMarker');
-const {
-	managementLockPath,
-	pinBackup,
-	readBackupPins,
-	unpinBackup,
-	withBackupRepositoryLock,
-} = require('#src/dataLayer/backupRepository');
+const backupRepositoryModule = require('#src/dataLayer/backupRepository');
+const { backupPinsDir, managementLockPath, pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } =
+	backupRepositoryModule;
 const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { closeLoadedDatabases, table } = require('#src/resources/databases');
 const {
@@ -692,6 +691,86 @@ describe('rocksdbBackup', function () {
 			}
 			assert.strictEqual(deletion?.statusCode, 409, `the claimed backup must be pinned, got ${deletion}`);
 		});
+
+		// Read-only media cannot be simulated with chmod: the binding takes a mere EACCES to mean a more
+		// privileged writer could be racing, and refuses. So the proof is that the restore leaves the
+		// repository exactly as it found it.
+		describe('immutable_source', function () {
+			const immutableRestores = {
+				offline: (backupId) => restoreBackupOffline(VERIFIED, backupId, undefined, undefined, undefined, true),
+				online: (backupId) => restoreBackup({ ...SU, database: VERIFIED, backup_id: backupId, immutable_source: true }),
+			};
+
+			function snapshotTree(root) {
+				const tree = { '.': statSync(root).mtimeMs };
+				(function walk(dir) {
+					for (const entry of readdirSync(dir, { withFileTypes: true })) {
+						const path = join(dir, entry.name);
+						const { mtimeMs } = statSync(path);
+						if (entry.isDirectory()) {
+							tree[relative(root, path)] = mtimeMs;
+							walk(path);
+						} else {
+							tree[relative(root, path)] = [mtimeMs, createHash('sha256').update(readFileSync(path)).digest('hex')];
+						}
+					}
+				})(root);
+				return tree;
+			}
+
+			for (const mode of ['offline', 'online']) {
+				it(`${mode}: restores without locking, claiming, or writing anything in the repository`, async function () {
+					this.timeout(30000);
+					const backupId = await seed();
+					const backupDir = backupDirForDatabase(VERIFIED);
+					rmSync(managementLockPath(backupDir));
+					assert.ok(!existsSync(backupPinsDir(backupDir)), 'precondition: nothing has claimed a backup');
+					const before = snapshotTree(backupDir);
+					const lockSpy = sinon.spy(backupRepositoryModule, 'withBackupRepositoryLock');
+					const warnSpy = sinon.spy(harperLogger, 'warn');
+					let result;
+					try {
+						result = await immutableRestores[mode](backupId);
+					} finally {
+						lockSpy.restore();
+						warnSpy.restore();
+					}
+					assert.strictEqual(lockSpy.callCount, 0, 'the management lock must never be entered');
+					assert.deepStrictEqual(snapshotTree(backupDir), before, 'the repository must be byte- and mtime-identical');
+					assert.ok(!existsSync(managementLockPath(backupDir)), 'no lock file');
+					assert.ok(!existsSync(backupPinsDir(backupDir)), 'no claim');
+					assert.strictEqual(result.immutable_source, true);
+					assert.ok(
+						warnSpy.getCalls().some((call) => /immutable_source/.test(String(call.args[0]))),
+						'the waived lock and claim are logged at warn'
+					);
+					assert.strictEqual(checkRestoreState(verifiedDir()), 'clear');
+					await closeLoadedDatabases();
+					assertRestoredFromBackup();
+				});
+			}
+
+			it('offline: records the repository on the marker, so a rerun proves its debris without a claim', async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const realRestore = backups.restore;
+				let source;
+				backups.restore = async () => {
+					source = readRestoringMarkerSource(verifiedDir());
+					throw new Error('injected copy failure');
+				};
+				try {
+					await assert.rejects(immutableRestores.offline(backupId), /rerun restore_backup to recover/);
+				} finally {
+					backups.restore = realRestore;
+				}
+				assert.strictEqual(source, restoreSourceId(backupDirForDatabase(VERIFIED)));
+				assert.ok(!existsSync(backupPinsDir(backupDirForDatabase(VERIFIED))), 'no claim');
+				await immutableRestores.offline(backupId);
+				assert.strictEqual(checkRestoreState(verifiedDir()), 'clear');
+				assertRestoredFromBackup();
+			});
+		});
 	});
 
 	describe('online restore_backup validation', function () {
@@ -700,6 +779,20 @@ describe('rocksdbBackup', function () {
 				await assert.rejects(
 					fn({ database: 'system', ...SU }),
 					(error) => error.statusCode === 400 && /restore_backup database=system/.test(error.message)
+				);
+			}
+		});
+
+		it('rejects a non-boolean immutable_source rather than reading it as "no"', async function () {
+			for (const restore of [
+				validateRestoreBackup,
+				restoreBackup,
+				(request) =>
+					restoreBackupOffline(request.database, undefined, undefined, undefined, undefined, request.immutable_source),
+			]) {
+				await assert.rejects(
+					restore({ database: DB_NAME, immutable_source: 'true', ...SU }),
+					(error) => error.statusCode === 400 && /'immutable_source' must be a boolean/.test(error.message)
 				);
 			}
 		});

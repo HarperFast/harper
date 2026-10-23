@@ -247,6 +247,12 @@ rechecks the source under that lock, then `claimRestore` takes the destination l
 synchronous callback that durably writes the source claim; the restoring marker follows only
 immediately before the purge. A crash after publication therefore leaves both marker and claim; a
 crash before it leaves only a claim that lapses once neither the lock nor a marker holds it. Failed claims preserve any preexisting marker.
+A restore with `immutable_source` is the one exception: the operator asserts nothing can modify the
+repository until it finishes, so it takes no management lock and writes no claim — nothing at all
+in the repository (`withBackupRepositoryReadAccess`), which is what lets it read `ro` media. The
+destination lock and marker are unchanged, and the marker's source line, not a pin, proves the rerun
+owns its debris. rocksdb-js 2.12 `backups.restore` degrades its shared `.backup.lock` to a no-op only
+on `EROFS`; a repository merely denied to this user (`EACCES`) still fails in the binding, by design.
 Delete and purge reconcile Harper-managed files even after engine failure: a cleanup failure must
 propagate when the engine succeeded, but remains secondary when the engine already failed.
 
