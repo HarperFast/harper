@@ -20,7 +20,7 @@ import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
 import type {} from 'ses';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, realpathSync } from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, realpathSync, statSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import {
 	NamedProcessError,
@@ -152,40 +152,192 @@ function parseJsonModule(source: string, url: string): any {
 	}
 }
 
-/**
- * Walk an exports-map entry (string, array, or conditions object) with the given
- * condition priority list and return the first matching path string, or null.
- */
-function walkExportsConditions(entry: unknown, conditions: readonly string[]): string | null {
-	if (typeof entry === 'string') return entry;
-	if (Array.isArray(entry)) {
-		for (const e of entry) {
-			const r = walkExportsConditions(e, conditions);
-			if (r !== null) return r;
-		}
-		return null;
+class PackageResolutionError extends Error {
+	code: string;
+	statusCode = 500;
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = 'PackageResolutionError';
+		this.code = code;
 	}
-	if (entry !== null && typeof entry === 'object') {
-		for (const cond of conditions) {
-			const val = (entry as Record<string, unknown>)[cond];
-			if (val !== undefined) {
-				const r = walkExportsConditions(val, conditions);
-				if (r !== null) return r;
-			}
-		}
-	}
-	return null;
+}
+
+const NODE_IMPORT_CONDITIONS: ReadonlySet<string> = new Set(['node', 'import']);
+const BUN_IMPORT_CONDITIONS: ReadonlySet<string> = new Set(['bun', 'node', 'import']);
+// A `.`, `..` or `node_modules` path segment, percent-encoded or not. Node only deprecates empty segments, so they pass.
+const INVALID_SEGMENT =
+	/(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/i;
+
+function invalidPackageTarget(packageJsonUrl: URL, target: unknown): PackageResolutionError {
+	const mustStartWithDotSlash = typeof target === 'string' && !target.startsWith('./');
+	return new PackageResolutionError(
+		'ERR_INVALID_PACKAGE_TARGET',
+		`Invalid "exports" target ${JSON.stringify(target)} in the package config ${fileURLToPath(packageJsonUrl)}` +
+			(mustStartWithDotSlash ? '; targets must start with "./"' : '')
+	);
+}
+
+function isArrayIndex(key: string): boolean {
+	const index = Number(key);
+	return `${index}` === key && index >= 0 && index < 0xffff_ffff;
 }
 
 /**
- * Resolve a bare package specifier to a file:// URL using the package's exports map
- * with ESM import conditions. Used as a fallback when the runtime's CommonJS resolver
- * cannot match a pure-ESM package (exports map with only "import" conditions).
+ * Whether an `exports` value is the main entry's target itself rather than a map of subpaths.
+ */
+function isConditionalExportsMainSugar(packageJsonUrl: URL, exports: unknown): boolean {
+	if (typeof exports === 'string' || Array.isArray(exports)) return true;
+	if (typeof exports !== 'object' || exports === null) return false;
+	let isConditionalSugar: boolean | undefined;
+	for (const key of Object.keys(exports)) {
+		const isCondition = key === '' || key[0] !== '.';
+		if (isConditionalSugar === undefined) isConditionalSugar = isCondition;
+		else if (isCondition !== isConditionalSugar) {
+			throw new PackageResolutionError(
+				'ERR_INVALID_PACKAGE_CONFIG',
+				`Invalid package config ${fileURLToPath(packageJsonUrl)}: "exports" cannot contain some keys starting with '.' and some not`
+			);
+		}
+	}
+	return isConditionalSugar === true;
+}
+
+function resolvePackageTargetString(packageJsonUrl: URL, target: string, patternMatch: string | null): URL {
+	if (!target.startsWith('./') || INVALID_SEGMENT.test(target.slice(2))) {
+		throw invalidPackageTarget(packageJsonUrl, target);
+	}
+	const resolved = new URL(target, packageJsonUrl);
+	if (!resolved.pathname.startsWith(new URL('.', packageJsonUrl).pathname)) {
+		throw invalidPackageTarget(packageJsonUrl, target);
+	}
+	if (patternMatch === null) return resolved;
+	if (INVALID_SEGMENT.test(patternMatch)) {
+		throw new PackageResolutionError(
+			'ERR_INVALID_MODULE_SPECIFIER',
+			`Invalid module "${patternMatch}" is not a valid match for an "exports" pattern in ${fileURLToPath(packageJsonUrl)}`
+		);
+	}
+	return new URL(resolved.href.replaceAll('*', () => patternMatch));
+}
+
+/**
+ * Node's PACKAGE_TARGET_RESOLVE: a URL, `null` when the target blocks the subpath, or `undefined`
+ * when no condition matched (so an enclosing conditions object moves on to its next key).
+ */
+function resolvePackageTarget(
+	packageJsonUrl: URL,
+	target: unknown,
+	patternMatch: string | null,
+	conditions: ReadonlySet<string>
+): URL | null | undefined {
+	if (typeof target === 'string') return resolvePackageTargetString(packageJsonUrl, target, patternMatch);
+	if (Array.isArray(target)) {
+		if (target.length === 0) return null;
+		let lastFailure: PackageResolutionError | null | undefined;
+		for (const item of target) {
+			let resolved: URL | null | undefined;
+			try {
+				resolved = resolvePackageTarget(packageJsonUrl, item, patternMatch, conditions);
+			} catch (error) {
+				if ((error as PackageResolutionError).code !== 'ERR_INVALID_PACKAGE_TARGET') throw error;
+				lastFailure = error as PackageResolutionError;
+				continue;
+			}
+			if (resolved) return resolved;
+			if (resolved === null) lastFailure = null;
+		}
+		if (lastFailure) throw lastFailure;
+		return lastFailure === null ? null : undefined;
+	}
+	if (target === null) return null;
+	if (typeof target === 'object') {
+		const keys = Object.keys(target);
+		if (keys.some(isArrayIndex)) {
+			throw new PackageResolutionError(
+				'ERR_INVALID_PACKAGE_CONFIG',
+				`Invalid package config ${fileURLToPath(packageJsonUrl)}: "exports" cannot contain numeric property keys`
+			);
+		}
+		for (const key of keys) {
+			if (key !== 'default' && !conditions.has(key)) continue;
+			const resolved = resolvePackageTarget(packageJsonUrl, target[key], patternMatch, conditions);
+			if (resolved !== undefined) return resolved;
+		}
+		return undefined;
+	}
+	throw invalidPackageTarget(packageJsonUrl, target);
+}
+
+/**
+ * Node's PACKAGE_EXPORTS_RESOLVE: an exact subpath key, else the most specific single-`*` pattern key.
+ * `null` or `undefined` means the subpath is not exported.
+ */
+function resolvePackageExports(
+	packageJsonUrl: URL,
+	subpath: string,
+	exports: unknown,
+	conditions: ReadonlySet<string>
+): URL | null | undefined {
+	const exportsMap = (isConditionalExportsMainSugar(packageJsonUrl, exports) ? { '.': exports } : exports) as Record<
+		string,
+		unknown
+	>;
+	if (Object.hasOwn(exportsMap, subpath) && !subpath.includes('*') && !subpath.endsWith('/')) {
+		return resolvePackageTarget(packageJsonUrl, exportsMap[subpath], null, conditions);
+	}
+	let bestMatch = '';
+	let bestPatternIndex = -1;
+	for (const key of Object.keys(exportsMap)) {
+		const patternIndex = key.indexOf('*');
+		if (patternIndex === -1 || patternIndex !== key.lastIndexOf('*') || subpath.length < key.length) continue;
+		if (!subpath.startsWith(key.slice(0, patternIndex)) || !subpath.endsWith(key.slice(patternIndex + 1))) continue;
+		if (patternIndex > bestPatternIndex || (patternIndex === bestPatternIndex && key.length > bestMatch.length)) {
+			bestMatch = key;
+			bestPatternIndex = patternIndex;
+		}
+	}
+	if (!bestMatch) return undefined;
+	const patternMatch = subpath.slice(bestPatternIndex, subpath.length - (bestMatch.length - bestPatternIndex - 1));
+	return resolvePackageTarget(packageJsonUrl, exportsMap[bestMatch], patternMatch, conditions);
+}
+
+/**
+ * Turn a resolved `exports` URL into the module URL, as Node's ESM resolver finalizes it: the real path,
+ * keeping the target's query and fragment.
+ */
+function finalizePackageResolution(resolved: URL, referrer: string): string {
+	if (/%2f|%5c/i.test(resolved.pathname)) {
+		throw new PackageResolutionError(
+			'ERR_INVALID_MODULE_SPECIFIER',
+			`Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${referrer}`
+		);
+	}
+	const path = fileURLToPath(resolved);
+	const stats = statSync(path, { throwIfNoEntry: false });
+	if (!stats) {
+		throw new PackageResolutionError('ERR_MODULE_NOT_FOUND', `Cannot find module '${path}' imported from ${referrer}`);
+	}
+	if (stats.isDirectory()) {
+		throw new PackageResolutionError(
+			'ERR_UNSUPPORTED_DIR_IMPORT',
+			`Directory import '${path}' is not supported resolving ES modules imported from ${referrer}`
+		);
+	}
+	const moduleUrl = pathToFileURL(realpathSync(path));
+	moduleUrl.search = resolved.search;
+	moduleUrl.hash = resolved.hash;
+	return moduleUrl.href;
+}
+
+/**
+ * Resolve a bare package specifier through the package's `exports` map with the given import conditions.
+ * Used as a fallback when the runtime's CommonJS resolver cannot match an import-only package.
+ * Returns null when no package with an `exports` map is found, or the subpath is not exported.
  */
 function resolveESMPackageExports(
 	specifier: string,
-	fromDir: string,
-	preferRequireConditions = false
+	referrer: string,
+	conditions: ReadonlySet<string>
 ): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
@@ -193,7 +345,7 @@ function resolveESMPackageExports(
 	const subpathParts = parts.slice(isScoped ? 2 : 1);
 	const subpath = subpathParts.length > 0 ? './' + subpathParts.join('/') : '.';
 
-	let dir = fromDir;
+	let dir = referrer.startsWith('file:') ? dirname(fileURLToPath(referrer)) : dirname(referrer);
 	while (true) {
 		const pkgRoot = join(dir, 'node_modules', packageName);
 		let pkgJson: any;
@@ -209,49 +361,24 @@ function resolveESMPackageExports(
 			continue;
 		}
 
-		if (!pkgJson.exports) return null;
-
-		const exportsMap = pkgJson.exports;
-		let entry: unknown;
-		if (typeof exportsMap === 'string') {
-			entry = subpath === '.' ? exportsMap : undefined;
-		} else if (exportsMap !== null && typeof exportsMap === 'object') {
-			const firstKey = Object.keys(exportsMap)[0];
-			if (firstKey?.startsWith('.')) {
-				// subpath map: { ".": ..., "./foo": ... }
-				entry = (exportsMap as Record<string, unknown>)[subpath];
-			} else {
-				// conditions map at root: { "import": ..., "require": ... }
-				entry = subpath === '.' ? exportsMap : undefined;
-			}
-		}
-
-		if (!entry) return null;
-
-		const relative = preferRequireConditions
-			? (walkExportsConditions(entry, ['bun', 'require', 'node', 'default']) ??
-				walkExportsConditions(entry, ['bun', 'import', 'node', 'default']))
-			: walkExportsConditions(entry, ['import', 'node', 'default']);
-		if (!relative) return null;
-
-		let resolvedPath = join(pkgRoot, relative);
-		if (preferRequireConditions && !existsSync(resolvedPath)) {
-			// The runtime's preferred condition (Bun's `require`) named a target that isn't
-			// actually on disk -- fall back to the plain ESM `import` condition instead of
-			// failing resolution outright.
-			const importRelative = walkExportsConditions(entry, ['import', 'node', 'default']);
-			if (importRelative) resolvedPath = join(pkgRoot, importRelative);
-		}
+		if (pkgJson.exports == null) return null;
+		const resolved = resolvePackageExports(pathToFileURL(packageJsonPath), subpath, pkgJson.exports, conditions);
+		if (!resolved) return null;
 
 		return {
-			resolvedUrl: pathToFileURL(realpathSync(resolvedPath)).toString(),
+			resolvedUrl: finalizePackageResolution(resolved, referrer),
 			packageJsonUrl: pathToFileURL(realpathSync(packageJsonPath)).toString(),
 			packageJsonSource,
 		};
 	}
 }
 
-function resolveModule(specifier: string, referrer: string, scope: ApplicationScope): string {
+function resolveModule(
+	specifier: string,
+	referrer: string,
+	scope: ApplicationScope,
+	kind: 'import' | 'require' = 'import'
+): string {
 	if (HARPER_MODULE_IDS.has(specifier)) {
 		return 'harper'; // resolve any harper package as an alias to a single synthetic module
 	}
@@ -281,16 +408,18 @@ function resolveModule(specifier: string, referrer: string, scope: ApplicationSc
 		const errorCode = (err as { code?: string })?.code;
 		const isBarePackage = !specifier.startsWith('.') && !isAbsolute(specifier) && !specifier.includes(':');
 		if (
+			kind === 'import' &&
 			isBarePackage &&
 			(errorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (process.versions.bun && errorCode === 'MODULE_NOT_FOUND'))
 		) {
-			// Pure-ESM package: CJS resolver cannot match an exports map that only has
-			// "import" conditions (no "require"). Resolve the entry file by walking
-			// the filesystem and evaluating the exports map with ESM import conditions.
-			const referrerDir = resolveReferrer.startsWith('file:')
-				? dirname(fileURLToPath(resolveReferrer))
-				: dirname(resolveReferrer);
-			const esmResolved = resolveESMPackageExports(specifier, referrerDir, errorCode === 'MODULE_NOT_FOUND');
+			// The CommonJS resolver applied require conditions, which an import-only package does not
+			// match; an import resolves the package's exports with import conditions instead. A require
+			// keeps the CommonJS resolver's verdict, which is the runtime's own require resolution.
+			const esmResolved = resolveESMPackageExports(
+				specifier,
+				resolveReferrer,
+				process.versions.bun ? BUN_IMPORT_CONDITIONS : NODE_IMPORT_CONDITIONS
+			);
 			if (esmResolved) {
 				scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
 				scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
@@ -377,7 +506,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		const require = createRequire(requireUrl);
 
 		const cjsRequire = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url, scope);
+			const resolvedUrl = resolveModule(spec, url, scope, 'require');
 			if (resolvedUrl === 'harper') {
 				return getHarperExports(scope);
 			}
@@ -395,7 +524,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return require(resolvedUrl);
 		};
 		cjsRequire.resolve = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url, scope);
+			const resolvedUrl = resolveModule(spec, url, scope, 'require');
 			if (resolvedUrl.startsWith('file://')) return fileURLToPath(resolvedUrl);
 			return resolvedUrl;
 		};
@@ -645,7 +774,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				errorMessage.includes('Cannot use import statement') ||
 				errorMessage.includes('Unexpected token');
 
-			if (!isEsmSyntaxError) {
+			// A coded error, such as a rejected require() whose message names "exports", is never ESM syntax
+			if (!isEsmSyntaxError || typeof cjsErr?.code === 'string') {
 				// This was a real error (not ESM syntax), rethrow it
 				throw cjsErr;
 			}
