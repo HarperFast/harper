@@ -1,3 +1,5 @@
+import { compareKeys } from 'ordered-binary';
+
 // Single definition of the numeric `add` fold, shared by the storage-time merge (crdt.add, via
 // updateAndFreeze) and the read/serialize path (tracked.ts Addition.update). One implementation
 // keeps the two from diverging: a numeric string was concatenated on the storage path but coerced
@@ -166,8 +168,9 @@ export function applyForward(record, update, skipUnseededOps = false) {
  * (missing/evicted `currentEntry`, a reverse walk that crosses a `put` or `delete`, or a post-eviction
  * re-insert with a broken `previousVersion` chain) and when filling `unknowns` on a live record.
  *
- * `fromPosition` is the starting audit position; the walk follows the previous links from there.
- * Entries newer than `timestamp` are skipped (the cutoff may fall between entries). Returns `null`
+ * `fromPosition` is the starting audit position, carrying its `entry` when the caller already read
+ * it; the walk follows the previous links from there. Entries newer than `timestamp` are skipped (the
+ * cutoff may fall between entries). Returns `null`
  * if the record did not exist at `timestamp` (the nearest in-range history boundary is a delete
  * with no surviving writes, or there is no in-range history). When a prior link leads to a pruned
  * entry, returns `undefined` if `allowPartial` is false (history is incomplete for a whole-record
@@ -190,9 +193,9 @@ function reconstructForward(
 	// such as `invalidate` are ignored).
 	const entries = [];
 	let truncated = false;
-	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
+	let { txnLogKey: auditTime, nodeId: auditNodeId, entry: auditEntry } = fromPosition;
 	while (auditTime > 0) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
+		auditEntry ??= auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (!auditEntry) {
 			if (allowPartial) {
 				truncated = true;
@@ -216,6 +219,7 @@ function reconstructForward(
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
+		auditEntry = undefined;
 	}
 	if (entries.length === 0) return null; // record did not exist at `timestamp`
 	// Replay oldest-first. The base is the put if the chain reached one; otherwise an empty record
@@ -234,6 +238,29 @@ function reconstructForward(
 	}
 	return record;
 }
+
+/**
+ * Reconstruct the record at `timestamp` from the audit entry that state was last written by: the
+ * record's own entry at that exact key (what history reads pass), else its newest put, patch or delete
+ * before it. The log is keyed by time alone, so the second case scans everything before `timestamp`.
+ */
+function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: any, timestamp, nodeId) {
+	const isOfRecord = (auditEntry) => auditEntry.tableId === tableId && compareKeys(auditEntry.recordId, recordId) === 0;
+	let start = auditStore.get(timestamp, tableId, recordId, nodeId);
+	// LMDB's get ignores the table and record arguments
+	if (start && isOfRecord(start)) start = { txnLogKey: timestamp, nodeId, entry: start };
+	else {
+		start = undefined;
+		for (const auditEntry of auditStore.getRange({ start: 1, end: timestamp + 0.001 })) {
+			if (auditEntry.txnLogKey > timestamp) break;
+			if (STATE_TYPES.has(auditEntry.type) && isOfRecord(auditEntry))
+				start = { txnLogKey: auditEntry.txnLogKey, nodeId: auditEntry.nodeId, entry: auditEntry };
+		}
+		if (!start) return null; // record did not exist at `timestamp`
+	}
+	return reconstructForward(auditStore, store, tableId, recordId, start, timestamp);
+}
+const STATE_TYPES = new Set(['put', 'patch', 'delete']);
 
 function resolveAuditPosition(auditStore, tableId: number, recordId: any, version, nodeId, refs) {
 	if (!refs?.length) return { txnLogKey: version, nodeId };
@@ -276,9 +303,7 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
  */
 export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any, nodeId?: number) {
 	const auditStore = store.rootStore.auditStore;
-	if (!currentEntry) {
-		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
-	}
+	if (!currentEntry) return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId);
 	let record = { ...currentEntry.value };
 	// `localTime` is the record's audit head on both engines: the audit-store key on LMDB, where it
 	// is a different clock than the record version, and the transaction-log key on RocksDB. Only a
@@ -315,7 +340,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		auditNodeId = previousPosition.nodeId;
 	}
 	if (!(auditTime > 0 && auditTime <= timestamp)) {
-		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+		return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId);
 	}
 	if (replaced) {
 		return reconstructForward(
