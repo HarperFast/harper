@@ -804,6 +804,19 @@ landing moments before it, because a tight burst of writes to one row can commit
 its status; the job still records each peer's outcome there. A job that never finishes, because its node restarted
 mid-rollout, leaves the record `rolling_out`, as it leaves its `hdb_job` row in progress.
 
+`harper deploy restart=rolling` follows that record before it exits (`bin/deployRollout.ts`, #3058). When the
+response says `rolling_out`, the CLI polls `get_deployment` on the same connection and credential the deploy used,
+with backoff, printing each node's outcome as it lands, and exits non-zero on `partial`, on a record the origin ended
+`failed`, or on a timeout, naming the nodes that did not take the release. The default bound is ten minutes, a
+node's restart ceiling, for each node the record lists; `wait_timeout=<ms>` replaces it and `wait=false` exits as
+before. It reads the record rather than the job because `hdb_job` does not replicate: behind a load balancer a
+`get_job` poll can land on a node that never had the job, and the record is on every node. For the same reason
+`harper deploy setup=true provider=github-actions` grants its CI role `get_deployment`, keeping `get_job` for
+workflows that still follow the job themselves. A refusal (401/403) ends the wait at once and says which grant is
+missing. The wait reuses the deploy's token rather than running a `harper` command per poll, which under OIDC would
+trade a new identity token each time; an exchanged token lasts an hour, longer than the default wait for up to five
+nodes.
+
 ### `get_components` says when the live release was deployed and when it last loaded
 
 Each entry carries three fields, all of this node's view (#564):
