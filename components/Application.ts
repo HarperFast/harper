@@ -126,10 +126,11 @@ interface ApplicationConfig {
 	 * The fork is durable: it lives at a path derived from the application and database names, is
 	 * adopted again on restart, and is invisible to other applications.
 	 *
-	 * The application must reach its data through `import { databases } from 'harper'`. The bare
-	 * `databases`/`tables` globals are shared process-wide by the default `vm-current-context` loader
-	 * and cannot be scoped, so an application that uses them reads and writes the BASE — silently.
-	 * Per-application globals are a property of thread-level isolation, not of branching.
+	 * `import { databases } from 'harper'` reaches the fork under every loader. The bare
+	 * `databases`/`tables` globals do under `vm` and `compartment`, which give each application a global
+	 * object of its own, and in an isolated application's dedicated worker. In a shared
+	 * worker under the default `vm-current-context` loader they are the thread's, so an application that
+	 * uses them there reads and writes the BASE — silently.
 	 */
 	branchedDatabases?: string[] | true;
 	/** Run in a worker thread of its own that loads no other application. */

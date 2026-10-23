@@ -39,7 +39,7 @@ import {
 	thisThreadOwnsApplication,
 } from '../server/threads/isolatedApplications.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
-import { scopedImport } from '../security/jsLoader.ts';
+import { bindIsolatedApplicationGlobals, scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
 import { scopedTableFactory } from '../resources/databases.ts';
@@ -896,6 +896,7 @@ export async function loadComponent(
 				options.branchedDatabases,
 				applicationScope.mode
 			);
+			bindIsolatedApplicationGlobals(applicationScope);
 		}
 
 		// For non-root components with empty/null config (e.g., comment-only YAML),

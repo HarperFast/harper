@@ -34,7 +34,7 @@ import {
 	writePidRecord,
 } from './spawnPidFile.ts';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
-import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
+import { thisThreadOwnsApplication, thisThreadsIsolatedApplication } from '../server/threads/isolatedApplications.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
@@ -840,6 +840,7 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 	}
 	// now assign Harper scope-specific variables
 	Object.assign(appGlobal, {
+		...scopedDatabaseBindings(scope),
 		server: scope.server ?? server,
 		logger: scope.logger ?? logger,
 		resources: scope.resources,
@@ -896,6 +897,25 @@ function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 	return function (name: string, shape: any, options?: any) {
 		return defineTableUsing(declareTable, name, shape, options);
 	} as typeof defineTable;
+}
+
+/**
+ * An isolated application's own worker loads nothing else, so its global object belongs to that application, and the
+ * bare `databases` and `tables` globals can take its branch view — the only way to reach them under
+ * `vm-current-context`, whose modules share the thread's global. Harper's own modules import `databases` rather than
+ * read the global, and a name the application did not branch, `system` included, still resolves to the base.
+ * Replication places nothing on a dedicated worker (harper-pro#974), so no peer's writes land in the branch. Returns
+ * whether it bound them.
+ */
+export function bindIsolatedApplicationGlobals(
+	scope: ApplicationScope,
+	owner: string | undefined = thisThreadsIsolatedApplication()
+): boolean {
+	if (!scope.branches?.size || !thisThreadOwnsApplication(scope.name, owner)) return false;
+	const bindings = scopedDatabaseBindings(scope);
+	(globalThis as any).databases = bindings.databases;
+	(globalThis as any).tables = bindings.tables;
+	return true;
 }
 
 /** Everything an application sees differently because of what it declared. Built once, at load. */
