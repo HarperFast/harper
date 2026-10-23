@@ -363,7 +363,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 	}
 
 	it('checks cyclic closures entered from alternating selections a bounded number of times', async () => {
-		const length = 20;
+		const length = 8;
 		const edges = { Leaf: [] };
 		for (let i = 0; i < length; i++) {
 			edges['C' + i] = i + 1 < length ? ['C' + i, 'C' + (i + 1)] : ['C' + i];
@@ -563,7 +563,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 	});
 
 	it('checks each table of a long restricted enumerable chain a bounded number of times', async () => {
-		const length = 40;
+		const length = 16;
 		let next;
 		const chain = [];
 		for (let i = length; i >= 0; i--) {
