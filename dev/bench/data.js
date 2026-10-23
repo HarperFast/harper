@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792747271043,
+  "lastUpdate": 1792747275638,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -30103,6 +30103,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 764.8,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "489eebcf02c35d9b66fa75e8ec7b226aa92348ea",
+          "message": "Adopt rocksdb-js getRegistryStatus() in place of the deprecated registryStatus() alias (#3429)\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kriszyp@gmail.com>",
+          "timestamp": "2026-10-23T05:18:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/489eebcf02c35d9b66fa75e8ec7b226aa92348ea"
+        },
+        "date": 1792747274300,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3254.08,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3254.08,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 638.7,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 2422.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 3213.4,
             "unit": "ms"
           }
         ]
