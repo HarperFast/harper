@@ -106,14 +106,16 @@ directive @table(
 	"""
 	scanInterval: Int
 	"""
-	Lifetime in seconds for a fetched local replica, defaulting to 3600. Set to 0
+	RocksDB-only lifetime in seconds for a fetched local replica, defaulting to 3600. Set to 0
 	to stop new admissions and the replica sweep. Existing replicas remain until
-	overwritten or evicted.
+	overwritten or evicted. LMDB always proxies remote reads without storing replicas.
+	Reload workers after changes; existing classes can retain their previous settings.
 	"""
 	replicaExpiration: Float
 	"""
-	Fraction of the replica lifetime after which a read can renew it, defaulting to
-	0.5. Must be greater than 0 and at most 1; 1 keeps a fixed lifetime.
+	RocksDB-only fraction of the replica lifetime after which a read can renew it, defaulting to
+	0.5. Must be greater than 0 and at most 1; 1 keeps a fixed lifetime. Reload workers
+	after changes; existing classes can retain their previous settings.
 	"""
 	replicaRefreshFraction: Float
 	"""

@@ -137,6 +137,20 @@ describe('Replica storage engine support', function () {
 		await Reloaded.closeMaintenance();
 	});
 
+	it('drops a table with replica catalog metadata on either engine', async () => {
+		const Dropped = table({
+			database: 'test',
+			table: 'ReplicaEngineDropped',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const catalog = Dropped.dbisDB;
+		const name = Dropped.tableName;
+		catalog.putSync(`${name}/@replicas`, { auxiliary: '@replicas', tableId: Dropped.tableId });
+		await Dropped.dropTable();
+		assert.equal(catalog.getSync(`${name}/@replicas`), undefined);
+		assert.equal(catalog.getSync(`${name}/`), undefined);
+	});
+
 	it('rejects a replicaRefreshFraction outside (0, 1]', () => {
 		for (const value of [0, -1, 1.5, 'half', NaN, true])
 			assert.throws(() => Records.setTTLExpiration({ replicaRefreshFraction: value }));

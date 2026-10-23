@@ -276,9 +276,9 @@ export interface DefineTableOptions {
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
-	/** Seconds a record fetched from a resident is kept as a local replica; 0 keeps reads as proxy reads. */
+	/** RocksDB-only replica lifetime in seconds; 0 disables admission. LMDB always proxies. Reload workers after changes. */
 	replicaExpiration?: number;
-	/** Fraction of the replica lifetime after which a read hit renews it, in (0, 1]; 1 never renews. */
+	/** RocksDB-only renewal fraction in (0, 1]; 1 never renews. Reload workers after changes. */
 	replicaRefreshFraction?: number;
 	splitSegments?: boolean;
 	trackDeletes?: boolean;

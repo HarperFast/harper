@@ -3409,8 +3409,6 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
-					const deadlines = openReplicaDeadlines();
-					if (deadlines) drops.push(deadlines.drop().catch(ignoreAlreadyDropped));
 					await Promise.all(drops);
 					removed = removeTombstonedCatalog();
 					if (removed) await dbisDb.committed;
@@ -10971,8 +10969,8 @@ export function makeTable(options): TableResourceClass {
 	 * residency, identity and record expiry it already carries. No audit entry, nothing replicates. A
 	 * sweep passes the deadline it acted on; it is read again where no refresh or new admission can
 	 * interleave (after taking the entry's write lock, from the committed state), so a replica renewed
-	 * since the sweep read it is kept. The body's blobs are
-	 * released only once the rewrite is known to have committed.
+	 * since the sweep read it is kept. The body's blobs are released only once the rewrite is known to
+	 * have committed.
 	 */
 	function demoteReplica(entry: Entry, transaction: any, observedDeadline?: number): Promise<unknown> {
 		const stub = residencyStub(entry.value) ?? {};

@@ -87,6 +87,8 @@ describe('Replica maintenance transaction lifetime', function () {
 	});
 
 	it('releases an orphan-cleanup transaction after a native retryable commit failure', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 3600 });
+		await admit(await stub('failure-holder'));
 		await Records.closeMaintenance();
 		const store = openReplicaDeadlineStore(
 			Records.primaryStore.rootStore,
