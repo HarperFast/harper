@@ -778,7 +778,7 @@ describe('compartment importHook', () => {
 			assert.strictEqual(result.wrapped, 'X');
 		});
 
-		it('does not read a getter that throws', async () => {
+		it('does not fail the import for a getter that throws', async () => {
 			writePackage(
 				'getterpkg',
 				{
