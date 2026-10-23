@@ -359,6 +359,54 @@ describe('Declarative residency', function () {
 		for (const row of audit) assert.equal(row.residencySlot, 65535);
 	});
 
+	for (const mode of ['write', 'write-unflushed-map'])
+		(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+			`replays attribute slots before peer discovery after an unclean exit (${mode})`,
+			async function () {
+				this.timeout(90_000);
+				const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
+				const { join } = require('node:path');
+				const { tmpdir } = require('node:os');
+				const { spawn } = require('node:child_process');
+				const root = mkdtempSync(join(tmpdir(), 'residency-replay-'));
+				const marker = join(root, 'result');
+				async function run(mode) {
+					const child = spawn(
+						process.execPath,
+						[join(__dirname, 'declarativeResidency-crash.js'), root, marker, mode],
+						{
+							stdio: ['ignore', 'ignore', 'pipe'],
+						}
+					);
+					let stderr = '';
+					child.stderr.on('data', (chunk) => (stderr += chunk));
+					const timer = setTimeout(() => child.kill('SIGTERM'), 40_000);
+					try {
+						return await new Promise((resolve, reject) => {
+							child.once('error', reject);
+							child.once('exit', (code, signal) => resolve({ code, signal, stderr }));
+						});
+					} finally {
+						clearTimeout(timer);
+					}
+				}
+				try {
+					const written = await run(mode);
+					assert.equal(written.signal, 'SIGKILL', written.stderr);
+					assert.equal(readFileSync(marker, 'utf8'), 'written');
+					const replay = await run('replay');
+					assert.equal(replay.code, 0, replay.stderr);
+					const result = JSON.parse(readFileSync(marker, 'utf8'));
+					assert.ok(result.replayed >= 4, JSON.stringify(result));
+					assert.deepEqual(result.rows.local, { slot: 0, body: 'complete', region: 0 }, replay.stderr);
+					assert.deepEqual(result.rows.remote, { slot: 1, region: 1 });
+					assert.equal(result.rows.deleted.body, undefined);
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}
+		);
+
 	for (const slots of ['0', '65537', '1.5']) {
 		it(`rejects slot count ${slots}`, async () => {
 			await assert.rejects(declare('SlotInvalidCount', `@residency(slots: ${slots})`), /slots/);

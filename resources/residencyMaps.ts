@@ -109,11 +109,12 @@ export function readResidencyMap(database: string): ResidencyMapSnapshot | undef
 	return databases.system?.[RESIDENCY_MAP_TABLE]?.primaryStore.getSync(database);
 }
 
-export function validateResidencyMapWrite(database: string, value: any, previous: any): void {
+export function validateResidencyMapWrite(database: string, value: any, previous: any, replay = false): void {
 	const next = validateResidencyMap(value, database);
 	const activeSlots = activeResidencySlots(database);
 	if (previous) assertResidencyMapChange(validateResidencyMap(previous, database), next, activeSlots);
-	else if (activeSlots) residencyFailure(database, 'the installed map is missing; restore it before placing writes');
+	else if (activeSlots && !replay)
+		residencyFailure(database, 'the installed map is missing; restore it before placing writes');
 }
 
 const installations = new Map<string, Promise<ResidencyMapSnapshot>>();
@@ -176,7 +177,8 @@ export async function prepareResidencyDeclaration(
 }
 
 export function getResidencyMap(database: string, requiredSlots = 1) {
-	const Maps = databases.system?.[RESIDENCY_MAP_TABLE];
+	// User database replay can precede the directory scan opening the system database.
+	const Maps = getResidencyMapTable();
 	const row = Maps?.primaryStore.getSync(database);
 	assertResidencyConfiguration(database, !!row);
 	if (!row) residencyFailure(database, 'no residency map is installed');
@@ -210,6 +212,12 @@ export function residencyOwners(database: string, slot: number, slots: number): 
 	}
 	placementGuard?.(database, owners);
 	return owners;
+}
+
+export function residencyIsLocal(database: string, slot: number, slots: number): boolean {
+	if (!Number.isInteger(slot) || slot < 0 || slot >= slots)
+		residencyFailure(database, 'missing or invalid record residency slot');
+	return getResidencyMap(database, slots).shards[slot] === getResidencyConfiguration().shard;
 }
 
 export function requireConnectedResidencyOwner(database: string, owners: readonly string[]): void {

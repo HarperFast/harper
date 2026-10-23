@@ -296,6 +296,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				context.transaction = transaction;
 				const options = {
 					context,
+					isReplay: true,
 					residencyId,
 					residencySlot,
 					nodeId,

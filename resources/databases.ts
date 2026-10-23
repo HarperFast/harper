@@ -1077,6 +1077,7 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
+let deferredResidencyReplays: Array<() => void> | undefined;
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
@@ -1106,6 +1107,7 @@ export function getDatabases(): Databases {
 		return databases;
 	}
 	loadedDatabases = true;
+	deferredResidencyReplays = [];
 
 	definedDatabases = new Map();
 	relationshipsToHydrate = [];
@@ -1253,6 +1255,10 @@ export function getDatabases(): Databases {
 			//TODO: Iterate configured table paths
 		}
 	}
+	// Declarative rows depend on the system snapshot, including its unflushed audit tail.
+	const replays = deferredResidencyReplays;
+	deferredResidencyReplays = undefined;
+	for (const replay of replays) replay();
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
 		if (databaseUsesPreparedRoot(dbName)) continue;
@@ -1583,7 +1589,13 @@ function readRocksMetaDb(
 			// before the branch is published to any reader. See the contract note on
 			// `openBranchDatabase` (harper#643).
 			if (!isReadOnlyMode() && !destination) {
-				replayLogs(rootStore, databases[databaseName]);
+				const tables = databases[databaseName];
+				const replay = () => {
+					void replayLogs(rootStore, tables);
+				};
+				if (deferredResidencyReplays && Object.values(tables).some((Table) => Table.residency))
+					deferredResidencyReplays.push(replay);
+				else replay();
 			}
 		}
 		return rootStore;
