@@ -58,6 +58,19 @@ describe('declared entry points (harper#1719)', () => {
 		assert.doesNotMatch(warning, /resources\.js'/);
 	});
 
+	it('reads a negated pattern as an exclusion of the others, not one that must match', async () => {
+		const dir = await at({
+			'config.yaml': "jsResource:\n  files: ['src/**/*.js', '!src/**/*.test.js']\n",
+			'src/index.js': '',
+		});
+		assert.strictEqual(await missingEntryPointsWarning('web', dir), undefined);
+		const onlyExcluded = await at({
+			'config.yaml': "jsResource:\n  files: ['src/**/*.js', '!src/**/*.test.js']\n",
+			'src/index.test.js': '',
+		});
+		assert.match(await missingEntryPointsWarning('web', onlyExcluded), /'src\/\*\*\/\*\.js'/);
+	});
+
 	it("honors a declaration's ignore", async () => {
 		const dir = await at({
 			'config.yaml': "jsResource:\n  files:\n    source: 'src/*.js'\n    ignore: 'src/skip.js'\n",

@@ -45,7 +45,9 @@ export async function awaitRollout(
 	const maxIntervalMs = options.maxIntervalMs ?? 10_000;
 	let intervalMs = options.initialIntervalMs ?? 1000;
 	const started = Date.now();
-	let deadline = options.timeoutMs === undefined ? undefined : started + options.timeoutMs;
+	const deadlineFor = (record?: RolloutRecord) =>
+		started + (options.timeoutMs ?? Math.max(1, record?.peer_results?.length ?? 0) * ROLLOUT_WAIT_PER_NODE_MS);
+	let deadline = deadlineFor();
 	const reported = new Set<string>();
 	let record: RolloutRecord | undefined;
 	let lastError: Error | undefined;
@@ -82,7 +84,8 @@ export async function awaitRollout(
 			);
 		}
 		if (record && record.status !== 'rolling_out') return { record, timedOut: false, failure: failureOf(record) };
-		deadline ??= started + Math.max(1, record?.peer_results?.length ?? 0) * ROLLOUT_WAIT_PER_NODE_MS;
+		// A first read that failed knew no nodes; the bound grows once a read says how many there are.
+		deadline = Math.max(deadline, deadlineFor(record));
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) {
 			const waiting = (record?.peer_results ?? []).filter((peer) => peer?.node && !peer.activation);

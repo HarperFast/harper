@@ -32,8 +32,14 @@ export async function missingEntryPointsWarning(componentName: string, treePath:
 	for (const plugin of ENTRY_POINT_PLUGINS) {
 		const files = config?.[plugin]?.files as FilesOption | undefined;
 		if (typeof files !== 'string' && (typeof files !== 'object' || files === null)) continue;
-		const { source, ignore } = deriveGlobOptions(files);
+		const { source, ignore: declaredIgnore } = deriveGlobOptions(files);
+		// fast-glob reads a negated pattern in `source` as an exclusion of the others, not as one that must match.
+		const ignore = [
+			...declaredIgnore,
+			...source.filter((pattern) => pattern?.startsWith('!')).map((pattern) => pattern.slice(1)),
+		];
 		for (const pattern of source) {
+			if (pattern?.startsWith('!')) continue;
 			if (typeof pattern !== 'string' || pattern.length === 0 || pattern.includes('..')) continue;
 			const relative = pattern === '/' ? '.' : pattern.replace(/^\//, '');
 			if (!(await matchesAnything(treePath, relative, ignore))) missing.push(`${plugin}.files '${pattern}'`);

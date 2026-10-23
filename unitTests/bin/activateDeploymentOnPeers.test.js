@@ -185,7 +185,7 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 				return rows.get(id);
 			},
 			async put(row) {
-				puts.push(structuredClone(row));
+				puts.push({ ...structuredClone(row), at: Date.now() });
 				rows.set(row.deployment_id, row);
 			},
 		};
@@ -236,6 +236,16 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 			['rolling_out', 'rolling_out', 'partial'],
 			"the last peer's outcome rides the final write rather than landing just before it"
 		);
+	});
+
+	it('spaces its writes to the row when the last peer fails at once', async () => {
+		rows.set(ROW, { ...stagedRow(), completed_at: Date.now() });
+		global.server.nodes = [{ name: getThisNodeName() }, { name: 'peer-a' }, { name: 'peer-b' }];
+		answers['peer-b'] = new Error('connect ECONNREFUSED');
+		await assert.rejects(activateDeploymentOnPeers(activation), /peer-b/);
+		assert.strictEqual(puts.length, 2);
+		assert.ok(puts[1].at - puts[0].at >= 900, `writes ${puts[1].at - puts[0].at}ms apart`);
+		assert.strictEqual(rows.get(ROW).status, 'partial');
 	});
 
 	it('ends the record success once every node took the release', async () => {

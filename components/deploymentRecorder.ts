@@ -500,10 +500,12 @@ export class DeploymentRecorder {
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		const active = activeDeployments.get(this.deploymentId);
-		activeDeployments.delete(this.deploymentId);
 		try {
 			await this.writeTerminal(status, error);
 		} finally {
+			// Removed only now, so a tail that arrives during the terminal write waits for it instead of reading the
+			// row before it lands.
+			activeDeployments.delete(this.deploymentId);
 			active?.finished.resolve();
 		}
 	}
@@ -554,6 +556,10 @@ export class DeploymentRecorder {
 // peer's outcome over whatever the row holds. The origin writes it right after starting the job, and the first peer's
 // activation is a whole restart, so this is only a bound for an origin that failed in between.
 const ROLLOUT_RECORD_WAIT_MS = 60_000;
+// The least time between two writes to the row while the job runs. A peer that fails at once (connection refused)
+// would otherwise put two writes moments apart, the burst that can commit out of order on a loaded peer (#1170).
+const ROLLOUT_WRITE_SPACING_MS = 1000;
+const lastRolloutWrite = new Map<string, number>();
 
 export interface PeerActivation {
 	node: string;
@@ -631,9 +637,17 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 			current = await table.get(deploymentId);
 		}
 		if (!current) return;
+		// The origin's own `rolling_out` write is one of them: its finish stamps `completed_at`, on this node's clock.
+		const lastWrite = Math.max(lastRolloutWrite.get(deploymentId) ?? 0, current.completed_at ?? 0);
+		const sinceLastWrite = Date.now() - lastWrite;
+		if (sinceLastWrite < ROLLOUT_WRITE_SPACING_MS) {
+			await new Promise((resolve) => setTimeout(resolve, ROLLOUT_WRITE_SPACING_MS - sinceLastWrite));
+			current = (await table.get(deploymentId)) ?? current;
+		}
 		const row = { ...current };
 		update(row);
 		await withIsolatedTransaction(() => table.put(row));
+		lastRolloutWrite.set(deploymentId, Date.now());
 	} catch (error) {
 		logger.warn?.(`Failed to record the rollout of deployment ${deploymentId}`, error);
 	}

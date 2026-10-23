@@ -17,6 +17,7 @@ testUtils.preTestPrep();
 const { handleGetDeploymentPayload, handleDeleteDeploymentPayload } = require('#src/components/deploymentOperations');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
+const { waitFor } = require('../waitFor.js');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 const SUPER_USER = { username: 'admin', role: { permission: { super_user: true } } };
@@ -225,6 +226,23 @@ describe('handleGetDeployment live tail (harper#3062)', () => {
 			forwarded.every((name) => !name.startsWith('_')),
 			`forwarded: ${forwarded.join(', ')}`
 		);
+	});
+
+	it('waits for a terminal write already under way when the tail arrives', async () => {
+		let releaseTerminalWrite;
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter: new ProgressEmitter() });
+		const put = installed.mock.put;
+		installed.mock.put = async (row) => {
+			if (row.status === 'success') await new Promise((resolve) => (releaseTerminalWrite = resolve));
+			return put.call(installed.mock, row);
+		};
+		const finishing = recorder.finish('success');
+		await waitFor(() => releaseTerminalWrite, 2000);
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, progress: new ProgressEmitter() });
+		await new Promise((resolve) => setImmediate(resolve));
+		releaseTerminalWrite();
+		await finishing;
+		assert.strictEqual((await tail).status, 'success');
 	});
 
 	it('stops waiting when the SSE client disconnects', async () => {

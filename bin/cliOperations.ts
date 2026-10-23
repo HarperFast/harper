@@ -581,6 +581,10 @@ const PREPARE_OPERATION: any = {
 		req._waitTimeout = req.wait_timeout;
 		delete req.wait;
 		delete req.wait_timeout;
+		// Checked before anything is sent: a deploy that went live and then refused its own wait would read as failed.
+		if (req._waitTimeout !== undefined && !(typeof req._waitTimeout === 'number' && req._waitTimeout >= 0)) {
+			throw new Error(`wait_timeout must be a number of milliseconds, got ${JSON.stringify(req._waitTimeout)}`);
+		}
 		if (req.deployment_id) {
 			// `by_ref`/`ref` are consumed here and never transmitted, so the server's validator cannot see
 			// this conflict.
@@ -904,8 +908,7 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
  */
 async function followRollout(options: any, response: any, waitTimeout: unknown): Promise<RolloutOutcome | undefined> {
 	if (response?.status !== 'rolling_out' || typeof response.deployment_id !== 'string') return undefined;
-	const timeoutMs = waitTimeout === undefined ? undefined : Number(waitTimeout);
-	if (timeoutMs !== undefined && !(timeoutMs >= 0)) throw new Error(`wait_timeout must be a number of milliseconds`);
+	const timeoutMs = waitTimeout as number | undefined;
 	const pollOptions = {
 		...options,
 		timeout: CLI_OPERATION_TIMEOUT_MS,

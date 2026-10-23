@@ -747,6 +747,13 @@ describe('cliOperations', () => {
 			assert.ok(errorLines.some((line) => line.startsWith('error: Not activated on 1 of 2 peer node(s): peer-b')));
 		});
 
+		it('refuses a wait_timeout it cannot use before sending anything', async () => {
+			const calls = cluster([{ deployment_id: ID, status: 'success' }]);
+			await assert.rejects(deploy({ wait_timeout: '10m' }), (error) => error instanceof ProcessExitSignal);
+			assert.ok(errorLines.some((line) => line.includes('wait_timeout must be a number of milliseconds')));
+			assert.strictEqual(calls.filter(({ req }) => req.operation === 'deploy_component').length, 0);
+		});
+
 		it('keeps the old behavior with wait=false', async () => {
 			const calls = cluster([{ deployment_id: ID, status: 'partial' }]);
 			const result = await deploy({ wait: false });

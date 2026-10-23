@@ -107,11 +107,14 @@ export async function releasedDeploymentsByProject(): Promise<Map<string, any[]>
 	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
 	if (!table) return byProject;
 	const conditions = RELEASED_STATUSES.map((status) => ({ attribute: 'status', value: status }));
-	for await (const row of table.search({ conditions, operator: 'or' })) {
+	// Only what get_components reads, so a long history costs a scan of the status index, not a copy of every
+	// row's event_log.
+	const select = ['deployment_id', 'project', 'activated_from', 'completed_at'];
+	for await (const row of table.search({ conditions, operator: 'or', select })) {
 		if (!row?.project) continue;
 		let rows = byProject.get(row.project);
 		if (!rows) byProject.set(row.project, (rows = []));
-		rows.push(stripBlob(row));
+		rows.push(row);
 	}
 	for (const rows of byProject.values()) rows.sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
 	return byProject;
@@ -158,7 +161,7 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 			? live.emitter.subscribe((event) => {
 					const t = Date.now();
 					if (!replayed) liveBuffer.push({ t, event });
-					else if (t > lastReplayedTs) sse.emit(event.event, event.data);
+					else sse.emit(event.event, event.data);
 				})
 			: null;
 

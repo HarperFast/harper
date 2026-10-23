@@ -126,6 +126,14 @@ describe('failed deploy payload retention (harper#2681)', () => {
 		assert.strictEqual(kept().length, 3);
 	});
 
+	it('treats a blank or empty setting as unset, not as 0', () => {
+		for (const blank of ['', '  ', null]) {
+			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, blank);
+			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT, blank);
+			assert.deepStrictEqual(failedPayloadRetention(), { maxAgeMs: 7 * DAY, maxCount: 2 }, JSON.stringify(blank));
+		}
+	});
+
 	it('falls back to the defaults for a value it cannot use, rather than dropping everything', () => {
 		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE, '');
 		env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT, 'lots');

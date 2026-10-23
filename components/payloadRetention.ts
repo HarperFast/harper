@@ -16,14 +16,18 @@ const DEFAULT_FAILED_MAX_COUNT = 2;
 /** `0` turns a bound off; anything that is not a usable value falls back to the default rather than to "drop all". */
 export function failedPayloadRetention(): { maxAgeMs: number; maxCount: number } {
 	const age = getConfigValue(terms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE);
-	const maxAgeMs = convertToMS(
-		(typeof age === 'string' && age.trim() !== '') || typeof age === 'number' ? age : DEFAULT_FAILED_MAX_AGE
-	);
-	const count = Number(getConfigValue(terms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT));
+	const maxAgeMs = convertToMS(isSetting(age) ? age : DEFAULT_FAILED_MAX_AGE);
+	const configuredCount = getConfigValue(terms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT);
+	// Number('') and Number(null) are 0, which would turn the bound off rather than leave it at its default.
+	const count = isSetting(configuredCount) ? Number(configuredCount) : NaN;
 	return {
 		maxAgeMs: Number.isFinite(maxAgeMs) && maxAgeMs >= 0 ? maxAgeMs : convertToMS(DEFAULT_FAILED_MAX_AGE),
 		maxCount: Number.isInteger(count) && count >= 0 ? count : DEFAULT_FAILED_MAX_COUNT,
 	};
+}
+
+function isSetting(value: unknown): value is string | number {
+	return (typeof value === 'string' && value.trim() !== '') || typeof value === 'number';
 }
 
 /**
