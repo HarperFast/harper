@@ -589,7 +589,7 @@ export class DeploymentRecorder {
 const ROLLOUT_RECORD_WAIT_MS = 10 * 60_000;
 // The least time between two writes to the row while the job runs. A peer that fails at once (connection refused)
 // would otherwise put two writes moments apart, the burst that can commit out of order on a loaded peer (#1170).
-const ROLLOUT_WRITE_SPACING_MS = 1000;
+export const rolloutTiming = { writeSpacingMs: 1000 };
 const lastRolloutWrite = new Map<string, number>();
 // Rows whose wait for the origin's write is over, whether a write of the job's then landed or not.
 const handedOff = new Set<string>();
@@ -678,8 +678,8 @@ async function updateRolloutRow(deploymentId: string, update: (row: Record<strin
 		// The origin's own `rolling_out` write is one of them: its finish stamps `completed_at`, on this node's clock.
 		const lastWrite = Math.max(lastRolloutWrite.get(deploymentId) ?? 0, current.completed_at ?? 0);
 		const sinceLastWrite = Date.now() - lastWrite;
-		if (sinceLastWrite < ROLLOUT_WRITE_SPACING_MS) {
-			await new Promise((resolve) => setTimeout(resolve, ROLLOUT_WRITE_SPACING_MS - sinceLastWrite));
+		if (sinceLastWrite < rolloutTiming.writeSpacingMs) {
+			await new Promise((resolve) => setTimeout(resolve, rolloutTiming.writeSpacingMs - sinceLastWrite));
 			current = (await table.get(deploymentId)) ?? current;
 		}
 		const row = { ...current };

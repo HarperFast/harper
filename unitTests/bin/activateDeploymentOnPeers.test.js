@@ -175,6 +175,8 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	const { databases } = require('#src/resources/databases');
 	const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 	const DEPLOYMENT_TABLE = SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
+	const { rolloutTiming } = require('#src/components/deploymentRecorder');
+	const writeSpacingMs = rolloutTiming.writeSpacingMs;
 	let previousServer;
 	let previousTable;
 	let rows;
@@ -185,6 +187,8 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	let activation;
 
 	beforeEach(() => {
+		// The spacing between the job's writes, shortened so these tests do not each wait it out.
+		rolloutTiming.writeSpacingMs = 50;
 		ROW = randomUUID();
 		activation = { project: 'web', deployment_id: DEPLOYMENT, deployment_row: ROW };
 		previousServer = global.server;
@@ -215,6 +219,7 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 		};
 	});
 	afterEach(() => {
+		rolloutTiming.writeSpacingMs = writeSpacingMs;
 		global.server = previousServer;
 		if (databases.system) databases.system[DEPLOYMENT_TABLE] = previousTable;
 	});
@@ -278,9 +283,10 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 		rows.set(ROW, { ...stagedRow(), completed_at: Date.now() });
 		global.server.nodes = [{ name: getThisNodeName() }, { name: 'peer-a' }, { name: 'peer-b' }];
 		answers['peer-b'] = new Error('connect ECONNREFUSED');
+		rolloutTiming.writeSpacingMs = 400;
 		await assert.rejects(activateDeploymentOnPeers(activation), /peer-b/);
 		assert.strictEqual(puts.length, 2);
-		assert.ok(puts[1].at - puts[0].at >= 900, `writes ${puts[1].at - puts[0].at}ms apart`);
+		assert.ok(puts[1].at - puts[0].at >= 390, `writes ${puts[1].at - puts[0].at}ms apart`);
 		assert.strictEqual(rows.get(ROW).status, 'partial');
 	});
 
