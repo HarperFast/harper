@@ -11893,7 +11893,6 @@ export function makeTable(options): TableResourceClass {
 				}, LOCK_TIMEOUT);
 			});
 			clearTimeout(timer);
-			// Hopefully the other resolution has saved a value we can use now.
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
