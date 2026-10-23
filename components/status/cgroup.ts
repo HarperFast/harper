@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
-import { availableParallelism, cpus } from 'node:os';
+import { cpus } from 'node:os';
 
 export async function cgroupPaths(root = '/sys/fs/cgroup', membership = '/proc/self/cgroup'): Promise<string[]> {
 	const group = (await readFile(membership, 'utf8'))
@@ -30,10 +30,33 @@ export interface CPUSample {
 	basis: 'cgroup quota' | 'cgroup affinity';
 }
 
+async function optionalFile(path: string): Promise<string | undefined> {
+	try {
+		return await readFile(path, 'utf8');
+	} catch (error) {
+		if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+	}
+}
+
+function cpuSetSize(text: string): number {
+	let count = 0;
+	let previous = -1;
+	for (const part of text.trim().split(',')) {
+		const match = part.match(/^(\d+)(?:-(\d+))?$/);
+		if (!match) throw new Error('CPU set is unavailable');
+		const start = Number(match[1]);
+		const end = Number(match[2] ?? match[1]);
+		if (!Number.isSafeInteger(end) || !(start > previous) || end < start) throw new Error('CPU set is unavailable');
+		count += end - start + 1;
+		previous = end;
+	}
+	if (!Number.isSafeInteger(count) || !(count > 0)) throw new Error('CPU set is unavailable');
+	return count;
+}
+
 export async function readCgroupCPU(
 	root = '/sys/fs/cgroup',
 	membership = '/proc/self/cgroup',
-	parallelism = availableParallelism(),
 	hostCPUs = cpus().length
 ): Promise<CPUSample | undefined> {
 	let paths: string[];
@@ -44,35 +67,35 @@ export async function readCgroupCPU(
 		throw error;
 	}
 	const groups: CPUGroup[] = [];
-	let affinityGroup: CPUGroup;
+	let hasQuota = false;
 	for (const path of paths) {
-		let maximum: string;
-		try {
-			maximum = await readFile(resolve(path, 'cpu.max'), 'utf8');
-		} catch (error) {
-			if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
-			throw error;
+		const [maximum, cpuSet] = await Promise.all([
+			optionalFile(resolve(path, 'cpu.max')),
+			optionalFile(resolve(path, 'cpuset.cpus.effective')),
+		]);
+		let quota = Infinity;
+		if (maximum !== undefined) {
+			const match = maximum.trim().match(/^(max|\d+)\s+(\d+)$/);
+			if (
+				!match ||
+				!Number.isSafeInteger(Number(match[2])) ||
+				!(Number(match[2]) > 0) ||
+				(match[1] !== 'max' && (!Number.isSafeInteger(Number(match[1])) || !(Number(match[1]) > 0)))
+			)
+				throw new Error('CPU quota is unavailable');
+			if (match[1] !== 'max') quota = Number(match[1]) / Number(match[2]);
 		}
-		const match = maximum.trim().match(/^(max|\d+)\s+(\d+)$/);
-		if (
-			!match ||
-			!Number.isSafeInteger(Number(match[2])) ||
-			!(Number(match[2]) > 0) ||
-			(match[1] !== 'max' && (!Number.isSafeInteger(Number(match[1])) || !(Number(match[1]) > 0)))
-		)
-			throw new Error('CPU quota is unavailable');
-		const quota = match[1] === 'max' ? Infinity : Number(match[1]) / Number(match[2]);
-		if (!Number.isFinite(quota) && (affinityGroup || !(parallelism < hostCPUs))) continue;
+		const capacity = Math.min(quota, cpuSet === undefined ? hostCPUs : cpuSetSize(cpuSet), hostCPUs);
+		if (!(capacity > 0)) throw new Error('CPU capacity is unavailable');
+		if (!Number.isFinite(quota) && capacity === hostCPUs) continue;
 		const stats = await readFile(resolve(path, 'cpu.stat'), 'utf8');
 		const rawUsage = stats.match(/^usage_usec\s+(\d+)\s*$/m)?.[1];
 		const usage = Number(rawUsage);
 		if (rawUsage === undefined || !Number.isSafeInteger(usage)) throw new Error('CPU usage is unavailable');
-		const group = { path, usage, capacity: Math.min(quota, parallelism) };
-		if (Number.isFinite(quota)) groups.push(group);
-		else affinityGroup ??= group;
+		groups.push({ path, usage, capacity });
+		hasQuota ||= Number.isFinite(quota);
 	}
-	if (groups.length) return { time: performance.now(), groups, basis: 'cgroup quota' };
-	if (affinityGroup) return { time: performance.now(), groups: [affinityGroup], basis: 'cgroup affinity' };
+	if (groups.length) return { time: performance.now(), groups, basis: hasQuota ? 'cgroup quota' : 'cgroup affinity' };
 }
 
 export function getCPUUtilization(previous: CPUSample, current: CPUSample): number | undefined {
