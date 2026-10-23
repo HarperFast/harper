@@ -279,7 +279,6 @@ function reconstructForward(
 	return record;
 }
 
-/** Rebuild the state at `timestamp` from the newest put, patch or delete of the record at or before it. */
 function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: any, timestamp, nodeId) {
 	const isOfRecord = (auditEntry) => auditEntry.tableId === tableId && compareKeys(auditEntry.recordId, recordId) === 0;
 	let start = auditStore.get(timestamp, tableId, recordId, nodeId);
@@ -293,7 +292,13 @@ function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: an
 		let windowStart = Number.isFinite(timestamp) ? timestamp : 1;
 		for (let width = 100; !start && windowEnd > 1; windowStart -= width, width *= 2) {
 			for (const auditEntry of auditStore.getRange({ start: Math.max(windowStart, 1), end: windowEnd })) {
-				if (auditEntry.txnLogKey <= timestamp && STATE_TYPES.has(auditEntry.type) && isOfRecord(auditEntry))
+				if (
+					auditEntry.txnLogKey <= timestamp &&
+					STATE_TYPES.has(auditEntry.type) &&
+					isOfRecord(auditEntry) &&
+					// two origins can write at one key; keep the requested origin's entry
+					!(nodeId != null && start?.txnLogKey === auditEntry.txnLogKey && (start.nodeId ?? 0) === nodeId)
+				)
 					start = auditEntry;
 			}
 			windowEnd = windowStart;
