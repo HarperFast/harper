@@ -471,11 +471,12 @@ describe('Transactions', () => {
 
 		it('Traverse multiple audit logs using additional refs', async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
-			const context = {};
+			// Keep record versions behind append times so the test always traverses the audit log.
+			const now = Date.now() - 1000;
+			const context = { timestamp: now };
 			await transaction(context, () => {
 				TxnTest.put(63, { name: 'original', count: 0 }, context);
 			});
-			let now = Date.now();
 
 			// Create a complex out-of-order scenario
 			// Timeline: original -> update1 (t+20) -> update2 (t+40) -> update3 (t+60) -> update4 (t+80)
