@@ -8,6 +8,8 @@
 import { Encoder } from 'msgpackr';
 import { createStructon, SOURCE_SYMBOL } from 'structon';
 import {
+	HAS_CURRENT_RESIDENCY_SLOT,
+	HAS_PREVIOUS_RESIDENCY_SLOT,
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_EXPIRATION_EXTENDED_TYPE,
@@ -100,6 +102,7 @@ export type Entry = {
 	metadataFlags: number;
 	nodeId: number;
 	residencyId: number;
+	residencySlot?: number;
 	size: number;
 	deref?: () => any;
 	[METADATA]?: any;
@@ -126,6 +129,7 @@ export const TIMESTAMP_ASSIGN_PREVIOUS = 3;
 export const TIMESTAMP_RECORD_PREVIOUS = 4;
 export const HAS_EXPIRATION = 16;
 export const HAS_RESIDENCY_ID = 32;
+export const HAS_RESIDENCY_SLOT = 0x200;
 export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
@@ -178,6 +182,7 @@ let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0,
+	residencySlotAtNextEncoding: number | undefined,
 	nodeIdAtNextEncoding = -1,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
@@ -364,6 +369,7 @@ export class RecordEncoder extends StructonEncoder {
 				let metadata = metadataInNextEncoding;
 				const expiresAt = expiresAtNextEncoding;
 				const residencyId = residencyIdAtNextEncoding;
+				const residencySlot = residencySlotAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
 				const additionalAuditRefs = additionalAuditRefsNextEncoding;
 				let auditRefsToEncode = 0;
@@ -383,6 +389,11 @@ export class RecordEncoder extends StructonEncoder {
 						if (!(metadata & HAS_RESIDENCY_ID)) {
 							throw new Error('Residency id included, but not in metadata flags');
 						}
+					}
+					if (residencySlot !== undefined) {
+						valueStart += 2;
+						residencySlotAtNextEncoding = undefined;
+						if (!(metadata & HAS_RESIDENCY_SLOT)) throw new Error('Residency slot missing its metadata flag');
 					}
 					if (nodeId >= 0) {
 						valueStart += 4; // make room for node id
@@ -436,6 +447,10 @@ export class RecordEncoder extends StructonEncoder {
 					if (residencyId) {
 						dataView.setUint32(position, residencyId);
 						position += 4;
+					}
+					if (residencySlot !== undefined) {
+						dataView.setUint16(position, residencySlot);
+						position += 2;
 					}
 					if (nodeId >= 0) {
 						dataView.setUint32(position, nodeId);
@@ -631,7 +646,7 @@ export class RecordEncoder extends StructonEncoder {
 					localTime = getTimestamp();
 					nextByte = buffer[position];
 				}
-				let expiresAt, residencyId, nodeId, additionalAuditRefs;
+				let expiresAt, residencyId, residencySlot, nodeId, additionalAuditRefs;
 				if (nextByte < 32) {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
@@ -654,6 +669,10 @@ export class RecordEncoder extends StructonEncoder {
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 						residencyId = dataView.getUint32(position);
 						position += 4;
+					}
+					if (metadataFlags & HAS_RESIDENCY_SLOT) {
+						residencySlot = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength).getUint16(position);
+						position += 2;
 					}
 					if (metadataFlags & HAS_NODE_ID) {
 						// we need to read the node id
@@ -696,6 +715,7 @@ export class RecordEncoder extends StructonEncoder {
 					size: end - start,
 					value,
 				} as any;
+				if (residencySlot !== undefined) lastMetadata.residencySlot = residencySlot;
 				if (this.isRocksDB) return lastMetadata;
 				return value;
 			} // else a normal entry
@@ -753,6 +773,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.metadataFlags = lastMetadata[METADATA];
 			entry.localTime = lastMetadata.localTime;
 			entry.residencyId = lastMetadata.residencyId;
+			if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 			entry.nodeId = lastMetadata.nodeId;
 			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
 			entry.size = lastMetadata.size;
@@ -813,6 +834,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.metadataFlags = lastMetadata[METADATA];
 				entry.localTime = lastMetadata.localTime;
 				entry.residencyId = lastMetadata.residencyId;
+				if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
 				entry.size = lastMetadata.size;
@@ -903,12 +925,20 @@ export function setReadTxnExpiration(ms: number) {
 	READ_TXN_TIMEOUT_TICKS = Math.round(ms / 15000);
 	return trackedTxns;
 }
-export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
+export function setNextEncoding(
+	timestamp: number,
+	metadata: number,
+	expiresAt = -1,
+	nodeId = -1,
+	residencyId = 0,
+	residencySlot?: number
+) {
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
 	expiresAtNextEncoding = expiresAt;
 	nodeIdAtNextEncoding = nodeId;
 	residencyIdAtNextEncoding = residencyId;
+	residencySlotAtNextEncoding = residencySlot;
 }
 /**
  * Reset the module-level "next encoding" metadata to its no-metadata defaults. These globals are
@@ -923,6 +953,7 @@ export function clearNextEncoding() {
 	expiresAtNextEncoding = -1;
 	nodeIdAtNextEncoding = -1;
 	residencyIdAtNextEncoding = 0;
+	residencySlotAtNextEncoding = undefined;
 	additionalAuditRefsNextEncoding = undefined;
 }
 export function recordUpdater(store, tableId, auditStore) {
@@ -986,6 +1017,17 @@ export function recordUpdater(store, tableId, auditStore) {
 		let extendedType = 0;
 		try {
 			let previousResidencyId = existingEntry?.residencyId;
+			const residencySlot = options?.residencySlot ?? existingEntry?.residencySlot;
+			const previousResidencySlot = existingEntry?.residencySlot;
+			if (residencySlot !== undefined) {
+				if (!Number.isInteger(residencySlot) || residencySlot < 0 || residencySlot > 65535)
+					throw new RangeError('Invalid residency slot');
+				residencySlotAtNextEncoding = residencySlot;
+				metadataInNextEncoding |= HAS_RESIDENCY_SLOT;
+				extendedType |= HAS_CURRENT_RESIDENCY_SLOT;
+			} else residencySlotAtNextEncoding = undefined;
+			if (previousResidencySlot !== undefined && (previousResidencySlot !== residencySlot || type === 'delete'))
+				extendedType |= HAS_PREVIOUS_RESIDENCY_SLOT;
 			const residencyId = options?.residencyId; //getResidency(record, previousResidencyId);
 			if (residencyId) {
 				residencyIdAtNextEncoding = residencyId;
@@ -1098,6 +1140,8 @@ export function recordUpdater(store, tableId, auditStore) {
 								extendedType,
 								residencyId,
 								previousResidencyId,
+								residencySlot,
+								previousResidencySlot,
 								expiresAt,
 								structureVersion,
 								previousAdditionalAuditRefs,
@@ -1121,6 +1165,8 @@ export function recordUpdater(store, tableId, auditStore) {
 						extendedType,
 						residencyId,
 						previousResidencyId,
+						residencySlot,
+						previousResidencySlot,
 						expiresAt,
 						structureVersion,
 						originatingOperation: options?.originatingOperation,

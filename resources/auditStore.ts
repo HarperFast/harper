@@ -51,6 +51,8 @@ export type AuditRecord = {
 	encodedRecord?: Buffer;
 	extendedType?: number;
 	residencyId?: number;
+	residencySlot?: number;
+	previousResidencySlot?: number;
 	previousResidencyId?: number;
 	expiresAt: number | null;
 	originatingOperation: string;
@@ -1195,6 +1197,8 @@ export const REMOTE_SEQUENCE_UPDATE = 11;
  */
 export const LOCK_RELEASE = 12;
 export const LOCK_BARRIER = 13;
+export const HAS_CURRENT_RESIDENCY_SLOT = 0x10000;
+export const HAS_PREVIOUS_RESIDENCY_SLOT = 0x20000;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
@@ -1271,6 +1275,8 @@ function isDecodableAction(action: number) {
 		HAS_RECORD |
 		HAS_PARTIAL_RECORD |
 		HAS_STRUCTURE_UPDATE |
+		HAS_CURRENT_RESIDENCY_SLOT |
+		HAS_PREVIOUS_RESIDENCY_SLOT |
 		HAS_CURRENT_RESIDENCY_ID |
 		HAS_PREVIOUS_RESIDENCY_ID |
 		HAS_ORIGINATING_OPERATION |
@@ -1334,6 +1340,8 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		extendedType,
 		residencyId,
 		previousResidencyId,
+		residencySlot,
+		previousResidencySlot,
 		expiresAt,
 		originatingOperation,
 		previousAdditionalAuditRefs,
@@ -1409,6 +1417,8 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	position += 8;
 	if (extendedType & HAS_CURRENT_RESIDENCY_ID) writeInt(residencyId);
 	if (extendedType & HAS_PREVIOUS_RESIDENCY_ID) writeInt(previousResidencyId);
+	if (extendedType & HAS_CURRENT_RESIDENCY_SLOT) writeInt(residencySlot);
+	if (extendedType & HAS_PREVIOUS_RESIDENCY_SLOT) writeInt(previousResidencySlot);
 	if (extendedType & HAS_EXPIRATION_EXTENDED_TYPE) {
 		ENTRY_DATAVIEW.setFloat64(position, expiresAt);
 		position += 8;
@@ -1539,13 +1549,22 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const recordIdEnd = (decoder.position += length);
 		// TODO: Once we support multiple format versions, we can conditionally read the version (and the previousResidencyId)
 		const version = decoder.readFloat64();
-		let residencyId, previousResidencyId, expiresAt, originatingOperation, previousAdditionalAuditRefs;
+		let residencyId,
+			previousResidencyId,
+			residencySlot,
+			previousResidencySlot,
+			expiresAt,
+			originatingOperation,
+			previousAdditionalAuditRefs;
 		if (action & HAS_CURRENT_RESIDENCY_ID) {
 			residencyId = decoder.readInt();
 		}
 		if (action & HAS_PREVIOUS_RESIDENCY_ID) {
 			previousResidencyId = decoder.readInt();
 		}
+		if (action & HAS_CURRENT_RESIDENCY_SLOT) residencySlot = decoder.readInt();
+		if (action & HAS_PREVIOUS_RESIDENCY_SLOT) previousResidencySlot = decoder.readInt();
+		if (residencySlot > 65535 || previousResidencySlot > 65535) throw new RangeError('Invalid audit residency slot');
 		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
 			expiresAt = decoder.readFloat64();
 		}
@@ -1656,6 +1675,8 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			extendedType: action,
 			residencyId,
 			previousResidencyId,
+			...(residencySlot === undefined ? {} : { residencySlot }),
+			...(previousResidencySlot === undefined ? {} : { previousResidencySlot }),
 			expiresAt,
 			originatingOperation,
 			previousAdditionalAuditRefs,

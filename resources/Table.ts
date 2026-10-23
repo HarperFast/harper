@@ -7,6 +7,18 @@
 import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS, THREAD_TYPES } from '../utility/hdbTerms.ts';
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
+import {
+	compileResidencyPolicy,
+	normalizeResidencyPolicy,
+	sameResidencyPolicy,
+	type ResidencyPolicy,
+} from './residencyPolicy.ts';
+import {
+	residencyOwners,
+	requireConnectedResidencyOwner,
+	validateResidencyMapWrite,
+	RESIDENCY_MAP_TABLE,
+} from './residencyMaps.ts';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -47,6 +59,7 @@ import {
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
+	confirmingOwnerNames,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
@@ -877,6 +890,10 @@ interface TableResourceClass {
 	sourceOptions: any;
 	intermediateSource: boolean;
 	getResidencyById: (id: Id) => number | void;
+	readonly residency: Readonly<ResidencyPolicy> | undefined;
+	_setResidencyPolicy(policy: ResidencyPolicy): void;
+	getResidencySlot(id: Id, record?: object): number;
+	getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined;
 	get expirationMS(): any;
 	get evictionMS(): any;
 	dbisDB: any;
@@ -1449,6 +1466,9 @@ export function makeTable(options): TableResourceClass {
 	const tableRootPath = tableRootStore.path;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	const isRocksDB = primaryStore instanceof RocksDatabase;
+	let residencyPolicy: Readonly<ResidencyPolicy> | undefined =
+		options.residency && normalizeResidencyPolicy(options.residency);
+	let calculateResidencySlot = residencyPolicy && compileResidencyPolicy(residencyPolicy);
 	let replicaExpirationMs = isRocksDB ? (options.replicaExpirationMS ?? DEFAULT_REPLICA_EXPIRATION_MS) : 0;
 	let replicaRefreshFraction = options.replicaRefreshFraction ?? DEFAULT_REPLICA_REFRESH_FRACTION;
 	// id → deadline (ms) for every REPLICA row, opened on the first replica stored or at load from its catalog row
@@ -1972,6 +1992,26 @@ export function makeTable(options): TableResourceClass {
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
+		static get residency() {
+			return residencyPolicy;
+		}
+		static _setResidencyPolicy(policy: ResidencyPolicy) {
+			const normalized = normalizeResidencyPolicy(policy);
+			if (residencyPolicy && !sameResidencyPolicy(residencyPolicy, normalized))
+				throw new ClientError(`The @residency policy of ${databaseName}.${tableName} is immutable`, 409);
+			residencyPolicy = normalized;
+			calculateResidencySlot = compileResidencyPolicy(normalized);
+		}
+		static getResidencySlot(id: Id, record?: object): number {
+			return calculateResidencySlot(id, record);
+		}
+		static getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined {
+			if (residencyPolicy) {
+				const slot = residencyPolicy.byAttribute ? entry.residencySlot : calculateResidencySlot(entry.key);
+				return residencyOwners(databaseName, slot, residencyPolicy.slots);
+			}
+			return entry.residencyId ? TableResource.getResidencyRecord(entry.residencyId) : undefined;
+		}
 		static get expirationMS() {
 			return expirationMs;
 		}
@@ -2096,7 +2136,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					event.source = source;
 					const options = {
-						residencyId: getResidencyId(event.residencyList),
+						residencyId: Table.residency ? undefined : getResidencyId(event.residencyList),
+						residencySlot: event.residencySlot,
 						isNotification: true,
 						ensureLoaded: false,
 						nodeId: event.nodeId,
@@ -3016,6 +3057,7 @@ export function makeTable(options): TableResourceClass {
 			);
 		}
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
+			if (residencyPolicy) throw new ClientError(`Cannot call setResidency on @residency table ${tableName}`, 409);
 			if (typeof getResidency === 'function') TableResource.#reportResidencyPoolHook('setResidency');
 			TableResource.getResidency = getResidency
 				? (record: object, context: Context) => {
@@ -3029,6 +3071,7 @@ export function makeTable(options): TableResourceClass {
 				: defaultGetResidency;
 		}
 		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
+			if (residencyPolicy) throw new ClientError(`Cannot call setResidencyById on @residency table ${tableName}`, 409);
 			if (typeof getResidencyById === 'function') TableResource.#reportResidencyPoolHook('setResidencyById');
 			TableResource.getResidencyById =
 				getResidencyById &&
@@ -3116,6 +3159,8 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean> {
+			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
+				throw new ClientError('Installed residency maps cannot be cleared or dropped', 409);
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -4053,6 +4098,12 @@ export function makeTable(options): TableResourceClass {
 					write.superseded = false;
 					const priorStagedOp = priorStagedWrite(write);
 					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
+					const residencySlot = residencyPolicy?.byAttribute
+						? (options?.residencySlot ?? priorStagedOp?.stagedEntry.residencySlot ?? existingEntry?.residencySlot)
+						: undefined;
+					const owners =
+						residencyPolicy &&
+						captureResidencyOwners(write, residencyPolicy.byAttribute ? residencySlot : calculateResidencySlot(id));
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					// A base copy from a stub holder must not downgrade the same full record at a resident.
 					if (
@@ -4061,8 +4112,8 @@ export function makeTable(options): TableResourceClass {
 							precedesExisting === 0 &&
 							existingEntry?.value &&
 							!(existingEntry.metadataFlags & (INVALIDATED | REPLICA)) &&
-							options?.residencyId &&
-							TableResource.getResidencyRecord(options.residencyId)?.includes(server.hostname))
+							(residencyPolicy || options?.residencyId) &&
+							(owners || TableResource.getRecordResidency({ key: id, ...options }))?.includes(server.hostname))
 					) {
 						write.skipped = true;
 						return;
@@ -4071,7 +4122,7 @@ export function makeTable(options): TableResourceClass {
 					// only a local/cache invalidation carries forward the committed indexed fields.
 					partialRecord = incomingRecord
 						? Object.create(null)
-						: options?.residencyId && primaryKey
+						: (residencyPolicy || options?.residencyId) && primaryKey
 							? { [primaryKey]: id }
 							: null;
 					if (incomingRecord) for (const name in incomingRecord) partialRecord[name] = incomingRecord[name];
@@ -4081,7 +4132,9 @@ export function makeTable(options): TableResourceClass {
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 						const incomingValue = incomingRecord?.[name];
 						partialRecord[name] =
-							incomingValue === undefined && !options?.residencyId ? existingRecord?.[name] : incomingValue;
+							incomingValue === undefined && !incomingRecord && options?.nodeId === undefined && !options?.residencyId
+								? existingRecord?.[name]
+								: incomingValue;
 					}
 					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
 					// Computed indexes need the full record's inputs; keep them as committed until a full write.
@@ -4097,7 +4150,8 @@ export function makeTable(options): TableResourceClass {
 						audit,
 						{
 							user: (context as any)?.user,
-							residencyId: options?.residencyId,
+							residencyId: residencyPolicy ? undefined : options?.residencyId,
+							residencySlot,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
@@ -4111,7 +4165,12 @@ export function makeTable(options): TableResourceClass {
 						},
 						'invalidate'
 					);
-					write.stagedEntry = { value: partialRecord, metadataFlags: INVALIDATED, residencyId: options?.residencyId };
+					write.stagedEntry = {
+						value: partialRecord,
+						metadataFlags: INVALIDATED,
+						residencyId: residencyPolicy ? undefined : options?.residencyId,
+						residencySlot,
+					};
 					write.blobsAuditReferenced = Boolean(audit);
 					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
@@ -4150,7 +4209,12 @@ export function makeTable(options): TableResourceClass {
 						write.skipped = true;
 						return;
 					}
-					const residency = TableResource.getResidencyRecord(options.residencyId);
+					const residencySlot = residencyPolicy?.byAttribute
+						? (options?.residencySlot ?? existingEntry?.residencySlot)
+						: undefined;
+					const residency = residencyPolicy
+						? captureResidencyOwners(write, residencyPolicy.byAttribute ? residencySlot : calculateResidencySlot(id))
+						: TableResource.getRecordResidency({ key: id, ...options });
 					let metadata = 0;
 					let newRecord = null;
 					const existingRecord = existingEntry?.value;
@@ -4176,7 +4240,8 @@ export function makeTable(options): TableResourceClass {
 						audit,
 						{
 							user: (context as any)?.user,
-							residencyId: options.residencyId,
+							residencyId: residencyPolicy ? undefined : options.residencyId,
+							residencySlot,
 							nodeId: options.nodeId,
 							viaNodeId: options?.viaNodeId,
 							expiresAt: options.expiresAt,
@@ -4205,9 +4270,9 @@ export function makeTable(options): TableResourceClass {
 		 */
 		static _storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean> {
 			if (
-				TableResource.getResidencyById ||
+				(residencyPolicy ? !Object.keys(indices).length : TableResource.getResidencyById) ||
 				!replicaExpirationMs ||
-				!existingEntry?.residencyId ||
+				!(residencyPolicy ? existingEntry : existingEntry?.residencyId) ||
 				entry?.value == null ||
 				entry.version == null
 			)
@@ -4901,6 +4966,7 @@ export function makeTable(options): TableResourceClass {
 				};
 			}
 			const reloadsCommitBase = options?.isCopyApply !== true;
+			const loadedEntry = this.#entry;
 			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
 			const baseReadTxn = this.#commitBaseTxn(id);
 			const writeToSource = () => {
@@ -5064,7 +5130,34 @@ export function makeTable(options): TableResourceClass {
 					// audit refs (see the re-delivery check below).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
-					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
+					let existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
+					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
+						if (!fullUpdate) throw new ClientError('A residency map must be written as a complete snapshot', 400);
+						validateResidencyMapWrite(String(id), recordUpdate, existingRecord);
+						if (existingRecord?.digest === recordUpdate.digest) {
+							write.skipped = true;
+							return;
+						}
+					}
+					if (
+						residencyPolicy?.byAttribute &&
+						writtenHere &&
+						!fullUpdate &&
+						(priorStaged ?? existingEntry)?.metadataFlags & INVALIDATED
+					) {
+						if (
+							priorStaged ||
+							!loadedEntry?.value ||
+							loadedEntry.metadataFlags & INVALIDATED ||
+							loadedEntry.version !== existingEntry.version ||
+							loadedEntry.nodeId !== existingEntry.nodeId
+						)
+							throw new ClientError(
+								'Load the current complete record before changing attribute residency; retry the write',
+								409
+							);
+						existingRecord = loadedEntry.value;
+					}
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -5103,8 +5196,9 @@ export function makeTable(options): TableResourceClass {
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
-					const type = fullUpdate ? 'put' : 'patch';
+					let type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
+					let residencySlot: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
 					// options/context expiresAt are the most specific overrides; a record @expiresAt field
 					// (resolved below, once recordToStore is merged) overrides the table default in both
@@ -5627,8 +5721,36 @@ export function makeTable(options): TableResourceClass {
 					const patchesStub =
 						!fullUpdate &&
 						!TableResource.getResidencyById &&
-						Boolean(baseEntry?.metadataFlags & (INVALIDATED | REPLICA));
-					if (patchesStub) {
+						Boolean(baseEntry?.metadataFlags & (residencyPolicy ? INVALIDATED : INVALIDATED | REPLICA)) &&
+						!(residencyPolicy && writtenHere && existingRecord === loadedEntry?.value);
+					if (residencyPolicy) {
+						const slot =
+							residencyPolicy.byAttribute && patchesStub
+								? (options?.residencySlot ?? baseEntry.residencySlot)
+								: calculateResidencySlot(id, recordToStore);
+						const owners = captureResidencyOwners(write, slot);
+						residencyId = undefined;
+						if (residencyPolicy.byAttribute) residencySlot = slot;
+						omitLocalRecord = patchesStub || !owners.includes(server.hostname);
+						if (
+							residencyPolicy.byAttribute &&
+							baseEntry?.residencySlot !== undefined &&
+							baseEntry.residencySlot !== slot
+						) {
+							if (writtenHere && omitLocalRecord) {
+								requireConnectedResidencyOwner(databaseName, owners);
+								const committer = committedBy ?? transaction;
+								committer.replicatedConfirmation = Math.max(committer.replicatedConfirmation || 0, 1);
+								const checkOwners = write.checkResidency;
+								write.checkResidency = () => {
+									checkOwners();
+									requireConnectedResidencyOwner(databaseName, owners);
+								};
+							}
+							auditRecordToStore = recordToStore;
+							type = 'put';
+						}
+					} else if (patchesStub) {
 						omitLocalRecord = true;
 						residencyId ??= baseEntry.residencyId;
 					} else if (residencyId == undefined) {
@@ -5644,9 +5766,11 @@ export function makeTable(options): TableResourceClass {
 						residencyId = getResidencyId(residency);
 					}
 					// a caller that catches the refusal must not be able to commit it, even on a retry
-					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
+					if ((residencyId || write.residencyOwners) && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
 						try {
-							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
+							if (write.residencyOwners)
+								confirmingOwnerNames(primaryStore, write.residencyOwners, committedBy.replicatedConfirmation, id);
+							else confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
 						} catch (error) {
 							write.skipped = true;
 							write.skipReplicationConfirmation = true;
@@ -5658,7 +5782,13 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (omitLocalRecord) {
 						auditRecordToStore ??= recordToStore;
-						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore);
+						recordToStore = residencyPolicy
+							? Object.keys(indices).length
+								? residencyStub(recordToStore)
+								: undefined
+							: TableResource.getResidencyById
+								? undefined
+								: residencyStub(recordToStore);
 					}
 					if (expiresAt == undefined) {
 						// A schema @expiresAt attribute makes the record field authoritative over the table
@@ -5670,7 +5800,7 @@ export function makeTable(options): TableResourceClass {
 						const fieldDeadline = fieldExpiresAtMs(recordToStore);
 						expiresAt = Number.isFinite(fieldDeadline) ? fieldDeadline : expirationMs ? expirationMs + Date.now() : -1;
 					}
-					if (!fullUpdate) {
+					if (!fullUpdate && type !== 'put') {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
 						auditRecordToStore = recordUpdate;
 					}
@@ -5746,6 +5876,7 @@ export function makeTable(options): TableResourceClass {
 								omitLocalRecord,
 								user: (context as any)?.user,
 								residencyId,
+								residencySlot,
 								expiresAt,
 								recordVersion: txnTime,
 								recordNodeId: precedesExisting < 0 ? existingEntry?.nodeId : options?.nodeId,
@@ -5770,8 +5901,8 @@ export function makeTable(options): TableResourceClass {
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
 							write.stagedEntry = omitLocalRecord
-								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
-								: { value: recordToStore };
+								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId, residencySlot }
+								: { value: recordToStore, ...(residencySlot === undefined ? {} : { residencySlot }) };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
 							// then owns their lifetime; and any record an earlier write in this transaction
 							// stored is now replaced, so mark those writes for the superseded-blob cleanup
@@ -5880,6 +6011,8 @@ export function makeTable(options): TableResourceClass {
 		}
 		_writeDelete(id: Id, options?: any): MaybePromise<boolean> {
 			this.#assertLiveHandle(id);
+			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
+				throw new ClientError('Installed residency maps cannot be deleted', 409);
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
@@ -5934,7 +6067,20 @@ export function makeTable(options): TableResourceClass {
 						write.skipped = true;
 						return;
 					}
-					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
+					let residencySlot: number | undefined;
+					if (residencyPolicy) {
+						residencySlot = residencyPolicy.byAttribute
+							? (options?.residencySlot ?? priorStaged?.residencySlot ?? existingEntry?.residencySlot)
+							: undefined;
+						// An already-absent attribute row has no placement to delete.
+						if (residencyPolicy.byAttribute && residencySlot === undefined && !existingRecord) {
+							write.skipped = true;
+							return;
+						}
+						const slot = residencySlot ?? calculateResidencySlot(id);
+						captureResidencyOwners(write, slot);
+					}
+					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId, residencySlot };
 					if (
 						existingRecord == null &&
 						isAuditEntryWrite(removalBefore(write, existingEntry), { txnLogKey, nodeId: options?.nodeId })
@@ -5955,6 +6101,7 @@ export function makeTable(options): TableResourceClass {
 							audit,
 							{
 								user: (context as any)?.user,
+								residencySlot,
 								nodeId: options?.nodeId,
 								viaNodeId: options?.viaNodeId,
 								transaction,
@@ -6852,7 +6999,12 @@ export function makeTable(options): TableResourceClass {
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					record = entry.deref ? entry.deref() : entry.value;
-					if (entry.metadataFlags & INVALIDATED && context.replicateFrom === false && canSkip && entry.residencyId) {
+					if (
+						entry.metadataFlags & INVALIDATED &&
+						context.replicateFrom === false &&
+						canSkip &&
+						(residencyPolicy || entry.residencyId)
+					) {
 						return SKIP;
 					}
 					if (checkLoaded && entry.metadataFlags & REPLICA && record) refreshReplicaOnRead(entry);
@@ -7783,7 +7935,8 @@ export function makeTable(options): TableResourceClass {
 						true,
 						{
 							user: (context as any)?.user,
-							residencyId: options?.residencyId,
+							residencyId: residencyPolicy ? undefined : options?.residencyId,
+							residencySlot: residencyPolicy?.byAttribute ? options?.residencySlot : undefined,
 							expiresAt: context?.expiresAt,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
@@ -8912,6 +9065,8 @@ export function makeTable(options): TableResourceClass {
 			return history.reverse();
 		}
 		static async clear() {
+			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
+				throw new ClientError('Installed residency maps cannot be cleared or dropped', 409);
 			const rootStore = primaryStore.rootStore;
 			const assertNoFullTextDeclaration = () => {
 				const namedPrimaryDescriptor = (dbisDb as any).getSync(`${tableName}/${primaryKey}`);
@@ -9180,10 +9335,17 @@ export function makeTable(options): TableResourceClass {
 		return typeof target === 'object' && target && (target as RequestTarget).isCollection;
 	}
 	function loadLocalRecord(id, context, options, sync, withEntry) {
-		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
+		if (
+			((residencyPolicy && !residencyPolicy.byAttribute && !Object.keys(indices).length) ||
+				TableResource.getResidencyById) &&
+			options.ensureLoaded &&
+			context?.replicateFrom !== false
+		) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
 			// allow for a fast path to load the record from the correct node
-			const residency = residencyFromFunction(TableResource.getResidencyById(id));
+			const residency = residencyPolicy
+				? residencyOwners(databaseName, calculateResidencySlot(id), residencyPolicy.slots)
+				: residencyFromFunction(TableResource.getResidencyById(id));
 			if (residency) {
 				if (!residency.includes(server.hostname) && sourceLoad) {
 					// this record is not on this node, so we shouldn't load it here
@@ -9216,6 +9378,17 @@ export function makeTable(options): TableResourceClass {
 			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 			// issues
 			freezeRecord(entry?.value);
+			if (
+				!entry?.value &&
+				residencyPolicy &&
+				!residencyPolicy.byAttribute &&
+				options.ensureLoaded &&
+				context?.replicateFrom !== false
+			) {
+				const owners = residencyOwners(databaseName, calculateResidencySlot(id), residencyPolicy.slots);
+				if (!owners.includes(server.hostname) && sourceLoad)
+					return sourceLoad({ key: id, residency: owners }).then((entry) => withEntry(entry, id));
+			}
 			if (options.ensureLoaded && needsResidentLoad(entry, context)) {
 				// load from other node
 				return sourceLoad(entry).then((entry) => withEntry(entry, id));
@@ -10058,7 +10231,9 @@ export function makeTable(options): TableResourceClass {
 						dropReplicaDeadline(id, existingEntry, transaction);
 						if (updatedRecord) {
 							if (existingEntry) {
-								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
+								context.previousResidency = Array.from(
+									TableResource.getRecordResidency({ ...existingEntry, key: id }) ?? []
+								);
 							}
 							let auditRecord: any;
 							let omitLocalRecord = false;
@@ -10084,15 +10259,20 @@ export function makeTable(options): TableResourceClass {
 												: recordVersion;
 								}
 							}
-							const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
+							const slot = residencyPolicy && calculateResidencySlot(id, updatedRecord);
+							const residency = residencyPolicy
+								? captureResidencyOwners(sourceWrite, slot)
+								: residencyFromFunction(TableResource.getResidency(updatedRecord, context));
 							if (residency) {
 								if (!residency.includes(server.hostname)) {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
 									auditRecord = updatedRecord;
 									omitLocalRecord = true;
-									updatedRecord = TableResource.getResidencyById ? undefined : residencyStub(auditRecord);
+									updatedRecord = (residencyPolicy ? !Object.keys(indices).length : TableResource.getResidencyById)
+										? undefined
+										: residencyStub(auditRecord);
 								}
-								residencyId = getResidencyId(residency);
+								if (!residencyPolicy) residencyId = getResidencyId(residency);
 							}
 							logger.trace?.(
 								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
@@ -10110,6 +10290,7 @@ export function makeTable(options): TableResourceClass {
 									user: (sourceContext as any)?.user,
 									expiresAt: sourceContext.expiresAt,
 									residencyId,
+									residencySlot: residencyPolicy?.byAttribute ? slot : undefined,
 									transaction,
 									tableToTrack: tableName,
 									additionalAuditRefs:
@@ -10565,6 +10746,16 @@ export function makeTable(options): TableResourceClass {
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
 		);
 	}
+	function captureResidencyOwners(write: any, slot: number): readonly string[] {
+		const owners = residencyOwners(databaseName, slot, residencyPolicy.slots);
+		write.residencyOwners = owners;
+		write.checkResidency = () => {
+			const current = residencyOwners(databaseName, slot, residencyPolicy.slots);
+			if (current.length !== owners.length || current.some((name) => !owners.includes(name)))
+				throw new ClientError('Residency owners changed before commit; retry the write', 409);
+		};
+		return owners;
+	}
 	function residencyStub(record: any) {
 		let stub = null;
 		for (const name in indices) {
@@ -10582,7 +10773,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function needsResidentLoad(entry: Partial<Entry> | undefined, context: Context | undefined): boolean {
 		return Boolean(
-			entry?.residencyId &&
+			(residencyPolicy || entry?.residencyId) &&
 			sourceLoad &&
 			context?.replicateFrom !== false &&
 			entry.metadataFlags & INVALIDATED &&
@@ -10756,7 +10947,12 @@ export function makeTable(options): TableResourceClass {
 		let committed = false;
 		try {
 			const current: Entry = primaryStore.getEntry(id, options);
-			if (!current?.residencyId || !(current.metadataFlags & (INVALIDATED | REPLICA))) return Promise.resolve(false);
+			if (!(residencyPolicy ? current : current?.residencyId) || !(current.metadataFlags & (INVALIDATED | REPLICA)))
+				return Promise.resolve(false);
+			if (residencyPolicy && TableResource.getRecordResidency(current).includes(server.hostname))
+				return Promise.resolve(false);
+			if (residencyPolicy?.byAttribute && calculateResidencySlot(id, body) !== current.residencySlot)
+				return Promise.resolve(false);
 			if (responseVersion < current.version) return Promise.resolve(false);
 			if (current.metadataFlags & REPLICA && responseVersion === current.version) return Promise.resolve(false);
 			// Two writers can share a timestamp; the stub holds the winner. An answer at that timestamp is
@@ -10771,6 +10967,7 @@ export function makeTable(options): TableResourceClass {
 			const writeOptions = {
 				expiresAt: rowExpiresAt,
 				residencyId: current.residencyId,
+				residencySlot: current.residencySlot,
 				recordNodeId: current.nodeId,
 				additionalAuditRefs: current.additionalAuditRefs,
 				transaction,
@@ -10985,6 +11182,7 @@ export function makeTable(options): TableResourceClass {
 		const writeOptions = {
 			expiresAt: entry.expiresAt,
 			residencyId: entry.residencyId,
+			residencySlot: entry.residencySlot,
 			recordNodeId: entry.nodeId,
 			additionalAuditRefs: entry.additionalAuditRefs,
 			transaction,

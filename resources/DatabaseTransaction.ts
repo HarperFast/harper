@@ -479,7 +479,21 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 	return residents;
 }
 
-let confirmReplication;
+const confirmingGroups = new WeakMap<readonly string[], string[]>();
+export function confirmingOwnerNames(store: any, owners: readonly string[], count: number, key: Id): string[] {
+	let peers = confirmingGroups.get(owners);
+	if (!peers) {
+		peers = Object.freeze(owners.filter((name) => name !== server.hostname)) as string[];
+		confirmingGroups.set(owners, peers);
+	}
+	if (count > peers.length)
+		throw new ClientError(
+			`Cannot confirm replication to ${count} node(s) for record ${describeKey(key)} in database "${store.rootStore.databaseName}": it has ${peers.length} other owners`
+		);
+	return peers;
+}
+
+export let confirmReplication;
 let confirmationFeasibility:
 	((databaseName: string, confirmationCount: number, residentPeerLists?: string[][]) => void) | undefined;
 /**
@@ -664,6 +678,8 @@ export type TransactionWrite = {
 	key: Id;
 	store: any; // using any here because of circular dependency and complex RootDatabaseKind
 	invalidated?: boolean;
+	residencyOwners?: readonly string[];
+	checkResidency?: () => unknown;
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
@@ -1903,10 +1919,18 @@ export class DatabaseTransaction implements Transaction {
 	 * adds no list: N confirmations from any list already come from N distinct peers.
 	 */
 	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
-		let lists: Map<number, string[]> | undefined;
+		let lists: Map<number | readonly string[], string[]> | undefined;
 		for (const write of this.writes) {
-			if (!write?.saved || !write.residencyId || write.skipReplicationConfirmation || lists?.has(write.residencyId))
+			if (!write?.saved || write.skipReplicationConfirmation) continue;
+			if (write.residencyOwners) {
+				if (submitted && write.appendedTo !== submitted) continue;
+				(lists ??= new Map()).set(
+					write.residencyOwners,
+					confirmingOwnerNames(write.store, write.residencyOwners, this.replicatedConfirmation, write.key)
+				);
 				continue;
+			}
+			if (!write.residencyId || lists?.has(write.residencyId)) continue;
 			// a residency recorded in a round whose batch an iterator replay discarded names no append
 			if (submitted && write.appendedTo !== submitted) continue;
 			(lists ??= new Map()).set(
@@ -1922,17 +1946,19 @@ export class DatabaseTransaction implements Transaction {
 	 * Confirmation requested after a write was saved skipped that write's own refusal, so the lists are
 	 * checked again here, and kept for the waiter.
 	 */
-	refuseUnconfirmable(transaction: RocksTransaction): void {
+	refuseUnconfirmable(transaction?: RocksTransaction): void {
 		// a retry of a submitted attempt (the same handle) must reach its native outcome
-		if ((transaction as RocksTransactionWithRetry).isRetry) return;
+		if ((transaction as RocksTransactionWithRetry)?.isRetry) return;
 		this.checkedResidentPeerLists = undefined;
 		this.checkedFor = transaction;
-		if (
-			!this.replicatedConfirmation ||
-			!this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation)
-		)
-			return;
 		try {
+			for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
+			if (
+				!this.replicatedConfirmation ||
+				!this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation)
+			)
+				return;
+
 			const residentPeerLists = this.residentPeerLists(transaction);
 			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
 			if (databaseName) {
@@ -1944,6 +1970,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 			this.checkedResidentPeerLists = residentPeerLists ?? null;
 		} catch (error) {
+			if (!transaction) throw error;
 			abortNativeTransaction(
 				transaction,
 				'aborting a transaction whose confirmation was refused',

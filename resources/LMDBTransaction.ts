@@ -8,6 +8,7 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	confirmReplication,
 	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
@@ -28,10 +29,7 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-let confirmReplication;
-export function replicationConfirmation(callback) {
-	confirmReplication = callback;
-}
+export { replicationConfirmation } from './DatabaseTransaction.ts';
 
 export class LMDBTransaction extends DatabaseTransaction {
 	stagesWriteOnSave = false;
@@ -253,7 +251,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 		const doWrite = (write) => {
 			let completion;
 			try {
-				completion = write.commit(txnTime, write.entry, retries);
+				completion = write.commit(txnTime, write.entry, retries, undefined, this);
+				write.saved = !write.skipped;
 			} finally {
 				closeWriteInstance(write);
 			}
@@ -288,6 +287,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				for (const write of this.writes) {
 					doWrite(write);
 				}
+				this.refuseUnconfirmable();
 			}
 		};
 
@@ -321,6 +321,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						write.entry = write.store.getEntry(write.key);
 						doWrite(write);
 					}
+					this.refuseUnconfirmable();
 					return true; // success. always success
 				});
 				resolution = transactionResolution.then((committed) =>
@@ -344,10 +345,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
-						const lastEntry = this.lastConfirmableEntry();
-						if (confirmReplication && databaseName && lastEntry)
+						const target = confirmReplication && databaseName ? this.confirmationTarget(txnTime) : undefined;
+						if (target)
 							confirmation = confirmReplicationAfterCommit(() =>
-								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
+								confirmReplication(databaseName, target.version, this.replicatedConfirmation, target.residentPeerLists)
 							);
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,

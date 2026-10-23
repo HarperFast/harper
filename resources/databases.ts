@@ -4,6 +4,13 @@ import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import type { Database, RootDatabase } from 'lmdb';
 import { compareKeys } from 'ordered-binary';
+import {
+	normalizeResidencyPolicy,
+	compileResidencyPolicy,
+	sameResidencyPolicy,
+	type ResidencyPolicy,
+} from './residencyPolicy.ts';
+import { readResidencyMap } from './residencyMaps.ts';
 import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
@@ -1850,6 +1857,7 @@ function initStores(
 		);
 		const fullTextIndexRetirements = persistedFullTextIndexNames(primaryAttribute.fullTextIndexRetirements);
 		if (table && !recreateTable) {
+			if (primaryAttribute.residency) table._setResidencyPolicy(primaryAttribute.residency);
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
 			// Absent means unchanged, not `replicates`: NON_REPLICATING_SYSTEM_TABLES sets `replicate = false`
 			// on the live class and stores nothing, so an unconditional refresh would clear that override.
@@ -2009,6 +2017,7 @@ function initStores(
 					tableName,
 					tableId,
 					primaryKey: primaryAttribute.name,
+					residency: primaryAttribute.residency,
 					databasePath: isLegacy ? `${databaseName}/${tableName}` : databaseName,
 					databaseName,
 					storageGeneration: primaryAttribute.generation,
@@ -2553,6 +2562,7 @@ export function resetDatabases() {
 
 interface TableDefinition {
 	table: string;
+	residency?: ResidencyPolicy | null;
 	database?: string;
 	path?: string;
 	/** Kept when a peer's definition creates the table here, so every copy of a generation shares one stamp. */
@@ -3857,6 +3867,7 @@ export function reloadBranchAt(path: string): Tables | undefined {
 function declareTable<TableResourceType>(target: TableTarget, tableDefinition: TableDefinition): TableResourceType {
 	let {
 		table: tableName,
+		residency,
 		database: databaseName,
 		expiration,
 		eviction,
@@ -4106,6 +4117,35 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const attributesToIndex = [];
 	const indicesToRemove = [];
 	try {
+		if (residency !== undefined || Table?.residency) {
+			exclusiveLock();
+			const catalog = Table?.dbisDB ?? internalDbisFor(rootStore, target);
+			const persisted = persistedPrimaryDescriptor(catalog);
+			const previous = persisted.descriptor?.residency;
+			residency = residency === undefined ? previous : residency;
+			if (residency) {
+				if (schemaDefined === false) throw new ClientError('@residency requires a schema-defined table', 400);
+				residency = normalizeResidencyPolicy(residency);
+				compileResidencyPolicy(residency);
+				if (
+					residency.byAttribute &&
+					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey) &&
+					!(origin === 'cluster' && Object.keys(Table?.indices ?? {}).length)
+				)
+					throw new ClientError('@residency byAttribute requires a secondary index', 400);
+				const map = readResidencyMap(databaseName);
+				if (!map || map.slots < residency.slots)
+					throw new ClientError(
+						`Install a residency map covering ${residency.slots} slots before declaring ${databaseName}.${tableName}`,
+						503
+					);
+			}
+			if (previous && !sameResidencyPolicy(previous, residency ?? undefined))
+				throw new ClientError(
+					`The @residency policy of ${databaseName}.${tableName} cannot be changed or removed`,
+					409
+				);
+		}
 		if (Table) {
 			refreshedLiveAttributes = true;
 			primaryKey = Table.primaryKey;
@@ -4555,6 +4595,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			if (residency) primaryKeyAttribute.residency = residency;
 			if (fullTextFieldsForPersistence.length > 0) primaryKeyAttribute.fullTextFields = fullTextFieldsForPersistence;
 			else delete primaryKeyAttribute.fullTextFields;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
@@ -4748,6 +4789,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				fullTextIndexRetirements: fullTextIndexRetirementNames ?? [],
 				schemaDefined,
 				dbisDB: attributesDbi,
+				residency,
 				description,
 				properties,
 				hidden,
@@ -5212,6 +5254,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					hasChanges = true;
 				}
 			}
+		}
+		if (residency && !deferredPrimaryRow) {
+			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
+			if (descriptor && !descriptor.residency) {
+				attributesDbi.putSync(key, { ...descriptor, residency });
+				hasChanges = true;
+			}
+			Table._setResidencyPolicy(residency);
 		}
 		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
 		// runs mid-create skips the table instead of building (and announcing) a partial one. It already

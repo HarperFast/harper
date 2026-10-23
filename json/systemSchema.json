@@ -569,5 +569,28 @@
 				"attribute": "id"
 			}
 		]
+	},
+	"hdb_residency_slots": {
+		"hash_attribute": "database",
+		"name": "hdb_residency_slots",
+		"schema": "system",
+		"residence": ["*"],
+		"attributes": [
+			{
+				"attribute": "database"
+			},
+			{
+				"attribute": "version"
+			},
+			{
+				"attribute": "digest"
+			},
+			{
+				"attribute": "slots"
+			},
+			{
+				"attribute": "ranges"
+			}
+		]
 	}
 }
