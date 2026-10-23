@@ -128,6 +128,39 @@ describe('Permissions through Resource API', () => {
 		}
 		assert(caught_error.message.includes('Unauthorized access'));
 	});
+	it('loadAsInstance=false get settles an async allowRead before returning a delegated search', async function () {
+		class DeniedGet extends TestTable {
+			static loadAsInstance = false;
+			async allowRead() {
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				return false;
+			}
+			get(target) {
+				return this.search(target);
+			}
+		}
+		class DeniedEnvelopeGet extends DeniedGet {
+			get(target) {
+				return { headers: { 'X-Envelope': 'true' }, data: this.search(target) };
+			}
+		}
+		class AllowedGet extends DeniedGet {
+			async allowRead() {
+				return true;
+			}
+		}
+		const context = () => ({ user: authorized_role, authorize: true });
+		for (const Denied of [DeniedGet, DeniedEnvelopeGet]) {
+			await assert.rejects(
+				Denied.get(new RequestTarget('?name=name-1'), context()),
+				(error) => error.name === 'AccessViolation' && error.statusCode === 403,
+				Denied.name
+			);
+		}
+		const ids = [];
+		for await (const record of await AllowedGet.get(new RequestTarget('?name=name-1'), context())) ids.push(record.id);
+		assert.deepStrictEqual(ids, ['id-1']);
+	});
 	it('Can not write without permission', async function () {
 		let caught_error;
 		try {
