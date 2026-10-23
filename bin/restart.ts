@@ -19,6 +19,7 @@ const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
 import { rmSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
@@ -30,7 +31,7 @@ const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 let calledFromCli;
 
-export { restart, restartService, activateDeploymentOnPeers };
+export { restart, restartService, activateDeploymentOnPeers, restartEachPeer };
 
 // Add ITC event listener to main thread which will be called from child that receives restart request.
 if (isMainThread) {
@@ -205,6 +206,93 @@ async function activateEachPeer(peers: any[], { project, deploymentId, deploymen
 	}
 }
 
+const PEER_RESTART_TIMING = {
+	attempts: 3,
+	retryDelayMs: 1000,
+	dispatchTimeoutMs: 60 * 1000,
+	pollIntervalMs: 250,
+	pollTimeoutMs: 30 * 1000,
+	jobDeadlineMs: 10 * 60 * 1000,
+};
+// A peer that refused the operation for write back-pressure never started it. Errors cross replication as
+// text, and 5.3 peers word it "too long of queue".
+const WRITE_QUEUE_BACK_PRESSURE = /Outstanding write transactions have too long (?:a|of) queue/;
+
+/**
+ * A rolling restart: restarts each peer in turn, waiting for its restart job before starting the next. The
+ * job completes only if every peer's restart completed; otherwise it fails naming each peer that did not
+ * restart, with every peer's outcome in `result.replicated`. A peer whose restart ran and failed or timed out
+ * halts the roll (the code being rolled out may be what failed), so the peers after it are skipped.
+ */
+async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART_TIMING) {
+	const replication = (global as any).server.replication;
+	const replicated = [];
+	const queue = peers.map((node) => ({ node, attempt: 1, retryAt: 0 }));
+	let haltedBy: string | undefined;
+	while (queue.length > 0) {
+		const { node, attempt, retryAt } = queue.shift();
+		if (haltedBy) {
+			replicated.push({ node: node.name, error: `skipped: the restart of ${haltedBy} did not complete` });
+			continue;
+		}
+		if (retryAt > Date.now()) await delay(retryAt - Date.now());
+		let jobId;
+		try {
+			({ job_id: jobId } = await replication.sendOperationToNode(node, request, {
+				timeoutMs: timing.dispatchTimeoutMs,
+			}));
+		} catch (error) {
+			const message = error?.message ?? String(error);
+			if (attempt < timing.attempts && WRITE_QUEUE_BACK_PRESSURE.test(message)) {
+				hdbLogger.warn(`Restart of ${node.name} was refused (${message}); retrying after the other nodes`);
+				queue.push({ node, attempt: attempt + 1, retryAt: Date.now() + timing.retryDelayMs * 2 ** (attempt - 1) });
+			} else replicated.push({ node: node.name, error: message });
+			continue;
+		}
+		const outcome = jobId
+			? await awaitPeerJob(replication, node, jobId, timing)
+			: { node: node.name, error: 'it answered without a restart job id' };
+		replicated.push(outcome);
+		if (outcome.error !== undefined) haltedBy = node.name;
+	}
+	const failed = replicated.filter((outcome) => outcome.error !== undefined);
+	if (failed.length > 0) {
+		const error: any = new Error(
+			`Restart of ${request.service} did not complete on ${failed.length} of ${replicated.length} peer node(s): ` +
+				failed
+					.map(({ node, error }) => `${node} (${typeof error === 'string' ? error : JSON.stringify(error)})`)
+					.join('; ')
+		);
+		error.result = { replicated };
+		throw error;
+	}
+	return { replicated };
+}
+
+async function awaitPeerJob(replication: any, node: any, jobId: string, timing: typeof PEER_RESTART_TIMING) {
+	const deadline = Date.now() + timing.jobDeadlineMs;
+	while (Date.now() < deadline) {
+		await delay(timing.pollIntervalMs);
+		let response;
+		try {
+			response = await replication.sendOperationToNode(
+				node,
+				{ operation: 'get_job', id: jobId },
+				{ timeoutMs: Math.max(1, Math.min(timing.pollTimeoutMs, deadline - Date.now())) }
+			);
+		} catch (error) {
+			// The peer drops this connection while it restarts its own workers.
+			hdbLogger.debug?.(`Polling restart job ${jobId} on ${node.name} failed, still waiting:`, error?.message);
+			continue;
+		}
+		const job = response?.results?.[0];
+		if (!job) return { node: node.name, error: `its restart job ${jobId} was not found` };
+		if (job.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE) return { node: node.name, message: job.message };
+		if (job.status === hdbTerms.JOB_STATUS_ENUM.ERROR) return { node: node.name, error: job.message };
+	}
+	return { node: node.name, error: `Timed out waiting for restart job ${jobId} to complete` };
+}
+
 /**
  * Used to restart a particular service, services includes - httpWorkers
  * @param req
@@ -291,53 +379,10 @@ async function restartService(req: any) {
 				}
 			});
 		});
-		let replicatedResponses;
 		if (req.replicated) {
-			req.replicated = false; // don't send a replicated flag to the nodes we are sending to
-			replicatedResponses = [];
-			for (let node of (global as any).server.nodes) {
-				if (node.name === getThisNodeName()) continue;
-				// for now, only one at a time
-				let job_id;
-				try {
-					({ job_id } = await (global as any).server.replication.sendOperationToNode(node, req));
-				} catch (err) {
-					// If request to node fails, add the error to the response and continue to the next node
-					replicatedResponses.push({ node: node.name, message: err.message });
-					continue;
-				}
-				// wait for the job to finish by polling for the completion of the job
-				replicatedResponses.push(
-					await new Promise((resolve, reject) => {
-						const RETRY_INTERVAL = 250;
-						let retriesLeft = 2400; // 10 minutes
-						let interval = setInterval(async () => {
-							if (retriesLeft-- <= 0) {
-								clearInterval(interval);
-								let error: any = new Error('Timed out waiting for restart job to complete');
-								error.replicated = replicatedResponses; // report the finished restarts
-								reject(error);
-							}
-							let response = await (global as any).server.replication.sendOperationToNode(node, {
-								operation: 'get_job',
-								id: job_id,
-							});
-							const jobResult = response.results[0];
-							if (jobResult.status === 'COMPLETE') {
-								clearInterval(interval);
-								resolve({ node: node.name, message: jobResult.message });
-							}
-							if (jobResult.status === 'ERROR') {
-								clearInterval(interval);
-								let error: any = new Error(jobResult.message);
-								error.replicated = replicatedResponses; // report the finished restarts
-								reject(error);
-							}
-						}, RETRY_INTERVAL);
-					})
-				);
-			}
-			return { replicated: replicatedResponses };
+			const thisNode = getThisNodeName();
+			const peers = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
+			return restartEachPeer(peers, { ...req, replicated: false });
 		}
 		return;
 	}

@@ -596,21 +596,18 @@ interface JobResult {
 export async function executeJob(json: OperationRequestBody): Promise<JobResult> {
 	transformReq(json);
 
-	let newJobObject;
-	let result;
 	try {
-		result = await jobs.addJob(json);
-		if (result) {
-			newJobObject = result.createdJob;
-			operationLog.info('addJob result', result);
-			const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
-			const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
+		const result = await jobs.addJob(json);
+		const newJobObject = result.createdJob;
+		if (!newJobObject) throw new Error(result.error || result.message || `Unable to create a ${json.operation} job`);
+		operationLog.info('addJob result', result);
+		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
+		const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
 
-			return {
-				message: returnMessage ?? `Starting job with id ${newJobObject.id}`,
-				job_id: newJobObject.id,
-			};
-		}
+		return {
+			message: returnMessage ?? `Starting job with id ${newJobObject.id}`,
+			job_id: newJobObject.id,
+		};
 	} catch (err) {
 		// errors that already carry a statusCode (e.g. ClientError from job validation) are
 		// client-facing as-is; wrapping them here would turn a 400/404/409 into a 500

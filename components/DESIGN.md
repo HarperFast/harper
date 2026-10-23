@@ -770,6 +770,18 @@ may still have them open, and a later drop of the now-absent application discard
 restart replaces is answered just before it, with any retention already decided and `null` for what is not done yet;
 a later failure to remove branches is only logged, and a second drop retries it (harper#3091).
 
+## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
+
+The job behind `restart: 'rolling'` (a replicated `restart_service`) restarts one peer at a time and polls
+each peer's own restart job. It ends `COMPLETE` only when every peer's job did; otherwise `ERROR`, naming
+each peer that failed or was skipped, with one `result.replicated` entry per peer in both outcomes
+(`{ node, message }` restarted, `{ node, error }` not). A peer that could not be asked is recorded and the
+roll moves on; a peer whose restart ran and failed or timed out halts it, since the release being rolled
+out may be what failed. Only the write-queue back-pressure refusal is retried (after the other peers, three
+attempts): it is the one refusal known to precede execution, and errors cross replication only as text.
+`COMPLETE` means each peer's restart job completed, not that every worker there took new code. Enforced by
+`unitTests/bin/restartEachPeer.test.js` and `replicatedRestartService.test.js` (harper#3468).
+
 ## A replicated deploy reports each node's install fingerprint, and never acts on it
 
 Every node of a replicated `deploy_component` resolves and installs the release itself, so two nodes can end

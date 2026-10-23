@@ -172,14 +172,7 @@ export async function addJob(jsonBody: any) {
 		['id']
 	);
 
-	let foundJob;
-	try {
-		foundJob = Array.from(await pSearchByValue(searchObj));
-	} catch (e) {
-		let message = `There was an error inserting a new job: ${e}`;
-		log.error(message);
-		return result;
-	}
+	let foundJob: any = Array.from(await pSearchByValue(searchObj));
 	//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
 	let foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
 
@@ -188,13 +181,7 @@ export async function addJob(jsonBody: any) {
 	// that we will just throw an error assuming there is bad input causing the issue.
 	if (foundValues && foundValues.length > 0) {
 		newJob.id = uuidV4();
-		try {
-			foundJob = await pSearchByValue(searchObj);
-		} catch (e) {
-			let message = `There was an error inserting a new job: ${e}`;
-			log.error(message);
-			return result;
-		}
+		foundJob = await pSearchByValue(searchObj);
 		//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
 		foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
 		if (foundValues && foundValues.length > 0) {
@@ -216,14 +203,7 @@ export async function addJob(jsonBody: any) {
 		'id',
 		[newJob]
 	);
-	let insertResult;
-	try {
-		insertResult = await pInsert(insertObject);
-	} catch (e) {
-		log.error(`There was an error inserting a job for job type: ${jsonBody.operation} -- ${e}`);
-		result.success = false;
-		return result;
-	}
+	const insertResult = await pInsert(insertObject);
 
 	if (insertResult.inserted_hashes.length === 0) {
 		result.message = `Had a problem creating a job with type ${newJob.operation} and id ${newJob.id}`;
