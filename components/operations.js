@@ -48,6 +48,7 @@ const {
 	withRootConfigPublicationLock,
 } = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
+const { deploymentSource } = require('./deploymentSource.ts');
 const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
@@ -630,6 +631,7 @@ async function deployComponent(req) {
 				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
 				// Reference form only — the rollback source for re-resolving the credential.
 				credentials: credentialReferences.length ? credentialReferences : null,
+				source: deploymentSource(req.hdb_user?.deploySource, req.source),
 				emitter,
 				// Reuse the same `deployment_timeout` knob operators already have for the
 				// peer-side row/blob waits to size the origin's payload-ingest write
@@ -637,6 +639,8 @@ async function deployComponent(req) {
 				ingestTimeoutMs: req.deployment_timeout,
 			});
 	if (recorder) req._deploymentId = recorder.deploymentId;
+	// Recorded once, on the row; peers have no use for what the client declared about itself.
+	delete req.source;
 
 	const emit = (event, data) => emitter?.emit(event, data);
 

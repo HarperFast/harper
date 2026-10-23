@@ -22,6 +22,8 @@ const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back', 'staged',
 interface ListRequest {
 	project?: string;
 	status?: string;
+	/** The commit a deploy's `source` names. */
+	sha?: string;
 	since?: number;
 	until?: number;
 	limit?: number;
@@ -79,6 +81,7 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 
 	const collected: any[] = [];
 	for await (const row of table.search(conditions)) {
+		if (req.sha != null && row?.source?.sha !== req.sha) continue;
 		collected.push(stripBlob(row));
 	}
 	// Newest first by started_at; ties broken by deployment_id for stability.

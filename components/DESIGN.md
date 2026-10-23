@@ -829,6 +829,18 @@ missing. The wait reuses the deploy's token rather than running a `harper` comma
 trade a new identity token each time; an exchanged token lasts an hour, longer than the default wait for up to five
 nodes.
 
+### A deployment records where it came from
+
+The row's `source` says what produced the release (#3061). `via: 'oidc'` is attested: the OIDC exchange signed the
+policy id and the run's verified claims into the operation token (security/DESIGN.md), and `deploy_component` copies
+them from the principal. `via: 'declared'` is what the client said about itself: the CLI sends the GitHub Actions
+run from `GITHUB_*` when it runs there, and for a directory deploy the checkout's `HEAD` and whether `git status`
+showed changes the commit does not hold (`bin/deploySource.ts`). A package or by-reference deploy names its own
+source, so the directory it ran from adds nothing. `deploymentSource` keeps only the known fields, as strings capped
+at 512 characters plus a boolean `dirty`, forces a declared source to say `declared` whatever it claims, and lets an
+attested one win. The request's `source` is removed after the row is created, so peers never see it.
+`list_deployments { sha }` filters by `source.sha`.
+
 ### `get_components` says when the live release was deployed and when it last loaded
 
 Each entry carries three fields, all of this node's view (#564):

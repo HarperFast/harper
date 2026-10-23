@@ -17,6 +17,7 @@ import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { awaitRollout, summarizeRollout, type RolloutOutcome } from './deployRollout.ts';
+import { declaredDeploySource } from './deploySource.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
@@ -593,6 +594,7 @@ const PREPARE_OPERATION: any = {
 			return;
 		}
 		if (req.package) {
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
@@ -600,10 +602,12 @@ const PREPARE_OPERATION: any = {
 		// Templates scaffold `by_ref=true`; without the flag the payload path below is unchanged.
 		if (req.by_ref || req.ref) {
 			prepareDeployByRef(req);
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
 		const projectPath = process.cwd();
+		req.source ??= declaredDeploySource({ directory: projectPath });
 		if (!req.project) req.project = directoryProjectName(projectPath);
 		const packageOptions = {
 			skip_node_modules: req.skip_node_modules !== false,
