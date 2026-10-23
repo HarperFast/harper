@@ -25,7 +25,7 @@ describe('Every local-origin transaction has a unique log key', () => {
 		if (isLMDB) this.skip();
 	});
 
-	// ahead of the clock: the floor used to admit such a value unchanged as the key
+	// ahead of the clock, where only issuance can keep it off the key
 	const futureTimestamp = (offset = 0) => Date.now() + 1000 + offset;
 	const lookup = (key, id, nodeId = 0, Resource = Tbl) => Resource.auditStore.get(key, Resource.tableId, id, nodeId);
 	function entriesFor(id, Resource = Tbl) {
