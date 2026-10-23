@@ -5042,12 +5042,13 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							// An earlier unskipped write to this key may have restamped the head without staging it.
 							if (
-								stagedOwnAuditEntry &&
 								committedBy?.sourceApply &&
 								isRocksDB &&
 								!replaying &&
 								precedesExisting === 0 &&
+								priorWritesSkipped(write) &&
 								receivedLogKey === txnTime &&
 								appendedLogKey === receivedLogKey &&
 								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
@@ -9605,6 +9606,13 @@ export function makeTable(options): TableResourceClass {
 			if (!prior.skipped) return;
 		}
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
+	}
+
+	function priorWritesSkipped(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return false;
+		}
+		return true;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {

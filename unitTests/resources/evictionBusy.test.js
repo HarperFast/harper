@@ -5,7 +5,7 @@ const { table } = require('#src/resources/databases');
 const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
 const { suspendDatabaseCommits, setTxnExpiration, getTxnExpiration } = require('#src/resources/DatabaseTransaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { registryStatus } = require('@harperfast/rocksdb-js');
+const { getRegistryStatus } = require('@harperfast/rocksdb-js');
 
 // Regression for #1287 (RocksDB leg). The cleanup scan's batcher retries ERR_BUSY, but the two
 // fire-and-forget evict() call sites (the read-path expiry check and runRecordExpirationEviction on
@@ -142,7 +142,7 @@ describe('evict() owns its RocksDB handle end to end', () => {
 			[],
 			'no transaction may stay registered with the monitor after an eviction settles'
 		);
-		const database = registryStatus().find(({ path }) => path === OwnedTable.primaryStore.rootStore.path);
+		const database = getRegistryStatus().find(({ path }) => path === OwnedTable.primaryStore.rootStore.path);
 		assert.ok(database, 'the fixture database must be in the native registry');
 		assert.deepStrictEqual(database.transactionDetails, [], 'no native handle may outlive an eviction');
 	}
