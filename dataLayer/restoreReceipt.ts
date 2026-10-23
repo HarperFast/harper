@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 import { restoreMetaFilePath, type RestoreLock } from './restoreMarker.ts';
 
 export const RESTORE_RECEIPT_SUFFIX = '.intent';
-// Not a `.intent` suffix, so a torn temp is never read as a receipt.
+// Not a `.intent` suffix, so a torn temp is never read as a receipt. Keyed per database like the
+// receipt: databases under one root share the metadata directory but not a lock.
 const RESTORE_RECEIPT_TEMP_SUFFIX = '.intent-tmp';
 export const RESTORE_RECEIPT_VERSION = 1;
 export const DEFAULT_RESTORE_MAX_ATTEMPTS = 3;
@@ -135,7 +137,11 @@ function assertLockMatches(lock: RestoreLock, receipt: { database_path: string }
 export function writeRestoreReceipt(lock: RestoreLock, receipt: RestoreReceipt): RestoreReceipt {
 	assertLockMatches(lock, receipt);
 	const written = { ...receipt, updated_at: Date.now() };
-	writeFileDurably(restoreReceiptPath(receipt.database_path), JSON.stringify(written), RESTORE_RECEIPT_TEMP_SUFFIX);
+	writeFileDurably(
+		restoreReceiptPath(receipt.database_path),
+		JSON.stringify(written),
+		basename(restoreMetaFilePath(receipt.database_path, RESTORE_RECEIPT_TEMP_SUFFIX))
+	);
 	return written;
 }
 
