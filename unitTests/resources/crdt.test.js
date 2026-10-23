@@ -4,7 +4,8 @@ const { getRecordAtTime, applyForward, addValues, remainingAgainstRecord } = req
 // Build a mock audit history and the `store` shape getRecordAtTime expects. Each event is
 // { version, type: 'put'|'patch'|'delete', value, previousVersion }. The audit store resolves an
 // entry by its exact version, as the real store does for the previousVersion chain, and scans by
-// log key for a timestamp that is not one. All events belong to the record being reconstructed.
+// log key for a timestamp that is not one. An event belongs to the record being reconstructed unless
+// it names its own `recordId`; like LMDB's, `get` returns whatever entry is at the key.
 function makeStore(events) {
 	let tableId;
 	let recordId;
@@ -20,7 +21,7 @@ function makeStore(events) {
 	}
 	const toEntry = (event) => ({
 		tableId,
-		recordId,
+		recordId: event.recordId ?? recordId,
 		txnLogKey: event.txnLogKey ?? event.version,
 		type: event.type,
 		version: event.version,
@@ -806,18 +807,23 @@ describe('crdt getRecordAtTime', () => {
 		it('reconstructs at a timestamp that is not an audit key, from the newest state change before it', () => {
 			const history = makeStore([
 				...events,
-				// a derived-index eviction marker is not a state change
+				{ version: 33, type: 'put', value: { id: 'F', name: 'other record' }, recordId: 'F' },
+				// a derived-index eviction marker: not a state change, and linked to nothing
 				{ version: 35, type: 'evict', value: undefined, previousVersion: undefined },
 				{ version: 50, type: 'delete', value: null, previousVersion: 30 },
 				{ version: 60, type: 'put', value: { id: 'E', name: 'reinserted' }, previousVersion: 0 },
 			]);
 			const atPatch = { id: 'E', name: 'patched', count: 3 };
+			const atLater = { ...atPatch, extra: 'later' };
 			assert.deepStrictEqual(getRecordAtTime(undefined, 25, history, 1, 'E'), atPatch);
-			assert.deepStrictEqual(getRecordAtTime(undefined, 40, history, 1, 'E'), { ...atPatch, extra: 'later' });
+			assert.deepStrictEqual(getRecordAtTime(undefined, 40, history, 1, 'E'), atLater);
+			assert.deepStrictEqual(getRecordAtTime(undefined, 33, history, 1, 'E'), atLater, 'another record at the key');
+			assert.deepStrictEqual(getRecordAtTime(undefined, 35, history, 1, 'E'), atLater, 'an eviction marker at the key');
 			assert.strictEqual(getRecordAtTime(undefined, 5, history, 1, 'E'), null, 'before the first write');
 			assert.strictEqual(getRecordAtTime(undefined, 55, history, 1, 'E'), null, 'after the delete');
 			const reinserted = currentEntry({ id: 'E', name: 'reinserted' }, 60);
 			assert.deepStrictEqual(getRecordAtTime(reinserted, 25, history, 1, 'E'), atPatch);
+			assert.deepStrictEqual(getRecordAtTime(reinserted, 35, history, 1, 'E'), atLater);
 		});
 
 		it('reconstructs forward when currentEntry has a null value (tombstone), including in-between timestamps', () => {

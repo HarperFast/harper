@@ -280,15 +280,16 @@ function reconstructForward(
 }
 
 /**
- * Reconstruct the record at `timestamp` from the audit entry that state was last written by: the
- * record's own entry at that exact key (what history reads pass), else its newest put, patch or delete
- * before it. The log is keyed by time alone, so the second case scans everything before `timestamp`.
+ * Rebuild the state at `timestamp` from the record's entry at that key, else from its newest put,
+ * patch or delete before it, which takes a scan: the log is keyed by time alone.
  */
 function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: any, timestamp, nodeId) {
 	const isOfRecord = (auditEntry) => auditEntry.tableId === tableId && compareKeys(auditEntry.recordId, recordId) === 0;
 	let start = auditStore.get(timestamp, tableId, recordId, nodeId);
-	// LMDB's get ignores the table and record arguments
-	if (start && isOfRecord(start)) start = { txnLogKey: timestamp, nodeId, entry: start };
+	// LMDB's get ignores the table and record arguments; an unlinked control entry, such as an eviction
+	// marker, reaches no state
+	if (start && isOfRecord(start) && (STATE_TYPES.has(start.type) || start.previousVersion))
+		start = { txnLogKey: timestamp, nodeId, entry: start };
 	else {
 		start = undefined;
 		for (const auditEntry of auditStore.getRange({ start: 1, end: timestamp + 0.001 })) {
@@ -296,7 +297,7 @@ function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: an
 			if (STATE_TYPES.has(auditEntry.type) && isOfRecord(auditEntry))
 				start = { txnLogKey: auditEntry.txnLogKey, nodeId: auditEntry.nodeId, entry: auditEntry };
 		}
-		if (!start) return null; // record did not exist at `timestamp`
+		if (!start) return null;
 	}
 	return reconstructForward(auditStore, store, tableId, recordId, start, timestamp);
 }

@@ -10620,8 +10620,7 @@ export function makeTable(options): TableResourceClass {
 			const historyEntry = historyEntryReader();
 			const isEntryOfRecord = (auditRecord) =>
 				isHistoryEntry(auditRecord) && compareKeys(auditRecord.recordId, id) === 0;
-			// Entries of the record below `end` that no previousVersion link reaches. The log is keyed by
-			// time alone, so the only way to them is a scan.
+			// the log is keyed by time alone, so entries no previousVersion link reaches take a scan
 			const unlinkedEntries = async (end: number) => {
 				const entries = [];
 				let sinceYield = 0;
@@ -10635,7 +10634,7 @@ export function makeTable(options): TableResourceClass {
 				return entries;
 			};
 			const entry = primaryStore.getEntry(id);
-			// evicted: the primary entry is gone but its audit entries are retained
+			// eviction removes the primary entry but not the audit entries
 			if (!entry) return unlinkedEntries(Infinity);
 			let nextVersion = isRocksDB
 				? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
@@ -10643,14 +10642,16 @@ export function makeTable(options): TableResourceClass {
 			if (!nextVersion) throw new Error('The entry does not have a local audit time');
 			const auditWindow = 100;
 			let start: number;
-			let windowHeldEntries: boolean;
+			let endsAtUnlinkedWrite: boolean;
 			do {
 				await rest(); // yield to other async operations
 				let insertionPoint = history.length;
 				let highestPreviousVersion = 0;
 				start = nextVersion - auditWindow;
+				endsAtUnlinkedWrite = false;
 				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
 					if (isEntryOfRecord(auditRecord)) {
+						const oldestInWindow = history.length === insertionPoint;
 						history.splice(insertionPoint, 0, historyEntry(auditRecord));
 						const previousVersion = isRocksDB
 							? resolveAuditHead(
@@ -10660,18 +10661,17 @@ export function makeTable(options): TableResourceClass {
 									auditRecord.previousAdditionalAuditRefs
 								).txnLogKey
 							: auditRecord.previousVersion;
+						if (oldestInWindow) endsAtUnlinkedWrite = !previousVersion;
 						if (previousVersion > highestPreviousVersion && previousVersion < start) {
 							highestPreviousVersion = previousVersion;
 						}
 					}
 				}
-				windowHeldEntries = history.length > insertionPoint;
 				nextVersion = highestPreviousVersion;
 			} while (nextVersion);
 			history.reverse();
-			// The chain ended at a write with no predecessor rather than at a pruned one. A re-insert after
-			// eviction is such a write, so a record that can have been evicted may have older history.
-			if (windowHeldEntries && (evictsRecords() || entry.expiresAt != undefined))
+			// a re-insert after eviction has no predecessor link, so an evictable record may have older history
+			if (endsAtUnlinkedWrite && (evictsRecords() || entry.expiresAt != undefined))
 				return (await unlinkedEntries(start)).concat(history);
 			return history;
 		}
@@ -11302,8 +11302,8 @@ export function makeTable(options): TableResourceClass {
 		return auditRecord.tableId === tableId && auditRecord.type !== 'evict' && !isLockControlType(auditRecord.type);
 	}
 	/**
-	 * A history-entry builder for one history read. Each entry carries the record image as of its own log
-	 * position (issue #1330); a failed reconstruction leaves `value` undefined and is logged once per read.
+	 * Entries carry the record image at their own log position (issue #1330). A failed reconstruction
+	 * leaves `value` undefined and is logged once per reader.
 	 */
 	function historyEntryReader() {
 		let loggedEntryError = false;
