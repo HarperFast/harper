@@ -436,7 +436,6 @@ suite(
 				'the closing save keeps both deliveries in flight'
 			);
 
-			// in the CONNECT's frame, so it is handled before the resumed subscription has sent anything again
 			const second = await rawConnect(prefix, false, [{ cmd: 'pubrec', messageId: b.messageId }]);
 			try {
 				strictEqual(second.connack.sessionPresent, true);

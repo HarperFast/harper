@@ -1595,7 +1595,6 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		const open = mqttListener();
 		const clientId = `qos2-restored-pubrec-${name}`;
 		const [a, b, c] = await restoredWithInFlight(open, clientId, T, name, ['a', 'b', 'c']);
-		// right behind the CONNECT, so it arrives before the replay has sent anything again
 		const second = open();
 		second.handlers.message(
 			connectWith(
@@ -1646,6 +1645,22 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		);
 		assert.deepStrictEqual(ofCommand(third, 'publish').map(payloadValue), ['a', 'c', 'after', 'last']);
 		third.handlers.close();
+	});
+
+	it('keeps the receipt of a restored delivery when the session already holds as many receipts as it keeps', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-restored-cap-${name}`;
+		const [, b] = await restoredWithInFlight(open, clientId, T, name, ['a', 'b']);
+		await storedEntry(clientId, (entry) => entry.inFlight?.length === 2);
+		const { session } = await connect(clientId);
+		session.receivedCount = 1000;
+		assert.strictEqual(await session.received(b.messageId, false), true);
+		const [entry] = (await stored(clientId)).subscriptions;
+		assert.ok(entry.received?.length || entry.receivedRuns?.length, 'recorded as received despite the limit');
+		assert.ok(!entry.inFlight.some((delivery) => delivery[3] === b.messageId), 'no longer to be sent again');
+		session.disconnect(true);
 	});
 
 	it('ends a restored delivery whose PUBREC failed, without a PUBREL or sending it again', async () => {

@@ -946,14 +946,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	messageIdInUse(messageId: number): boolean {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
-	addReceived(state: TopicState, identity: DeliveryIdentity) {
+	addReceived(state: TopicState, identity: DeliveryIdentity, replacesResend = false) {
 		const [key, ordinal] = identity;
 		const runs = (state.receivedRuns ??= new Map());
 		let run = runs.get(key) ?? 0;
 		if (ordinal < run) return;
 		if (ordinal === run) {
 			if (run === 0) {
-				if (this.receivedCount >= RECEIVED_LIMIT) return;
+				if (!replacesResend && this.receivedCount >= RECEIVED_LIMIT) return;
 				this.receivedCount++;
 			}
 			run++;
@@ -966,7 +966,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		const slot = slotOf(key, ordinal);
 		if (!state.received?.has(slot)) {
-			if (this.receivedCount >= RECEIVED_LIMIT) return;
+			if (!replacesResend && this.receivedCount >= RECEIVED_LIMIT) return;
 			this.receivedCount++;
 		}
 		(state.received ??= new Map()).set(slot, identity);
@@ -1090,21 +1090,19 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		let state = delivery && this.topics.get(delivery.topic);
 		const sent = state?.unacked.get(messageId);
 		let identity: DeliveryIdentity | undefined = sent && [sent.key, sent.ordinal, sent.id];
-		if (!sent) {
-			const resend = this.takeResend(messageId);
-			if (resend) ({ state, identity } = resend);
-		}
+		const held = sent ? undefined : this.takeResend(messageId);
+		if (held) ({ state, identity } = held);
 		if (!delivery && !identity) return false;
 		this.dirty = true;
-		// a restored delivery has no `awaitingAcks` entry for acknowledge() to schedule the save
-		if (delivery) this.acknowledge(messageId);
-		else this.scheduleCheckpoint();
+		this.acknowledge(messageId);
+		this.scheduleCheckpoint();
 		if (state) {
 			// compacted first, so the receipt limit counts only what is still kept
 			this.compactReceived(state);
 			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
 			if (identity) {
-				this.addReceived(state, identity);
+				// the record already keeps it as a resend entry, so its receipt adds nothing to the record
+				this.addReceived(state, identity, Boolean(held));
 				this.compactReceived(state);
 			}
 		}
