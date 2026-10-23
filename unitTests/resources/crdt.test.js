@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { getRecordAtTime, applyForward, addValues } = require('#src/resources/crdt');
+const { getRecordAtTime, applyForward, addValues, remainingAgainstRecord } = require('#src/resources/crdt');
 
 // Build a mock audit history and the `store` shape getRecordAtTime expects. Each event is
 // { version, type: 'put'|'patch'|'delete', value, previousVersion }. The audit store resolves an
@@ -285,6 +285,121 @@ describe('crdt getRecordAtTime', () => {
 		});
 	});
 
+	describe('a put newer than the requested timestamp (harper#1413)', () => {
+		const frozen = (value) => Object.freeze(value);
+		const base = {
+			version: 10,
+			type: 'put',
+			value: frozen({ id: 'U', title: 'v1', count: 5, extra: 'keep' }),
+			previousVersion: 0,
+		};
+		const patch = { version: 20, type: 'patch', value: { count: 15 }, previousVersion: 10 };
+		const put = { version: 30, type: 'put', value: frozen({ id: 'U', title: 'v3', count: 300 }), previousVersion: 20 };
+
+		it('returns the patched state, not the later put (put, patch, put)', () => {
+			const store = makeStore([base, patch, put]);
+			const current = currentEntry({ id: 'U', title: 'v3', count: 300 }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'U'), {
+				id: 'U',
+				title: 'v1',
+				count: 15,
+				extra: 'keep',
+			});
+			assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'U'), base.value);
+		});
+
+		it('resolves unknown fields across a newer put instead of assigning to its frozen image', () => {
+			const events = [
+				base,
+				patch,
+				put,
+				{ version: 40, type: 'patch', value: { count: 350 }, previousVersion: 30 },
+				{ version: 50, type: 'put', value: frozen({ id: 'U', title: 'v5', count: 500 }), previousVersion: 40 },
+			];
+			const store = makeStore(events);
+			const current = currentEntry({ id: 'U', title: 'v5', count: 500 }, 50);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'U'), {
+				id: 'U',
+				title: 'v1',
+				count: 15,
+				extra: 'keep',
+			});
+			assert.deepStrictEqual(getRecordAtTime(current, 40, store, 1, 'U'), { id: 'U', title: 'v3', count: 350 });
+		});
+
+		it('crosses a newer put on the dual-clock (log key != version) shape', () => {
+			const events = [
+				{ ...base, txnLogKey: 100 },
+				{ ...patch, txnLogKey: 200, previousVersion: 100 },
+				{ ...put, txnLogKey: 300, previousVersion: 200 },
+			];
+			const store = makeStore(events);
+			const current = currentEntry({ id: 'U', title: 'v3', count: 300 }, 300, { version: 30 });
+			assert.deepStrictEqual(getRecordAtTime(current, 200, store, 1, 'U'), {
+				id: 'U',
+				title: 'v1',
+				count: 15,
+				extra: 'keep',
+			});
+		});
+
+		it('reports an unrecoverable state when history before the crossed put has been pruned', () => {
+			const current = currentEntry({ id: 'U', title: 'v3', count: 300 }, 30);
+			assert.strictEqual(getRecordAtTime(current, 25, makeStore([put]), 1, 'U'), null);
+			assert.strictEqual(getRecordAtTime(current, 25, makeStore([patch, put]), 1, 'U'), undefined);
+		});
+
+		it('reverses a patch newer than the put before crossing it', () => {
+			const events = [base, patch, put, { version: 40, type: 'patch', value: { count: 350 }, previousVersion: 30 }];
+			const store = makeStore(events);
+			const current = currentEntry({ id: 'U', title: 'v3', count: 350 }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'U'), {
+				id: 'U',
+				title: 'v1',
+				count: 15,
+				extra: 'keep',
+			});
+		});
+
+		it('recovers a state older than an unlinked put (re-insert after eviction), even under later linked puts', () => {
+			const reinsert = { version: 40, type: 'put', value: frozen({ id: 'U', title: 'v4' }), previousVersion: 0 };
+			const later = { version: 50, type: 'put', value: frozen({ id: 'U', title: 'v5' }), previousVersion: 40 };
+			const expected = { id: 'U', title: 'v1', count: 15, extra: 'keep' };
+			assert.deepStrictEqual(
+				getRecordAtTime(currentEntry({ id: 'U', title: 'v4' }, 40), 20, makeStore([base, patch, reinsert]), 1, 'U'),
+				expected
+			);
+			assert.deepStrictEqual(
+				getRecordAtTime(
+					currentEntry({ id: 'U', title: 'v5' }, 50),
+					20,
+					makeStore([base, patch, reinsert, later]),
+					1,
+					'U'
+				),
+				expected
+			);
+		});
+
+		it('recovers a state older than an unlinked re-insert put when a delete follows it', () => {
+			const reinsert = { version: 30, type: 'put', value: frozen({ id: 'U', title: 'v3' }), previousVersion: 0 };
+			const del = { version: 40, type: 'delete', value: null, previousVersion: 30 };
+			const store = makeStore([base, patch, reinsert, del]);
+			assert.deepStrictEqual(getRecordAtTime(currentEntry(null, 40), 20, store, 1, 'U'), {
+				id: 'U',
+				title: 'v1',
+				count: 15,
+				extra: 'keep',
+			});
+		});
+
+		it('reports the record absent before a first put that has no earlier history', () => {
+			const store = makeStore([base]);
+			const current = currentEntry({ id: 'U', title: 'v1', count: 5, extra: 'keep' }, 10);
+			assert.strictEqual(getRecordAtTime(current, 5, store, 1, 'U'), null);
+		});
+	});
+
 	it('starts the reverse walk from the audit-store key when the record version is a different clock (LMDB)', () => {
 		// On LMDB the audit-store key (`localTime`) and the record version are separate clocks and
 		// the entry carries no additionalAuditRefs. Seeding the walk from `version` misses the head
@@ -519,5 +634,57 @@ describe('crdt addValues', () => {
 		// number + bigint would otherwise throw a TypeError on the apply path.
 		assert.strictEqual(addValues(5, 3n), 8);
 		assert.strictEqual(typeof addValues(5, 3n), 'number');
+	});
+});
+
+describe('remainingAgainstRecord', () => {
+	const add = { __op__: 'add', value: 1 };
+
+	it('keeps operations and absent keys and drops plain keys the record holds', () => {
+		const remaining = remainingAgainstRecord({ held: 'old', count: add, fresh: 'new' }, { held: 'newer', count: 5 });
+		assert.deepStrictEqual(remaining, { count: add, fresh: 'new' });
+	});
+
+	it('returns null when nothing remains and the update itself when nothing was dropped', () => {
+		assert.strictEqual(remainingAgainstRecord({ held: 'old' }, { held: 'newer' }), null);
+		const update = { count: add, fresh: 'new' };
+		assert.strictEqual(remainingAgainstRecord(update, { count: 5 }), update);
+	});
+
+	it('does not treat inherited Object.prototype names or prototype methods as stored fields', () => {
+		class Row {
+			toJSON() {}
+		}
+		const record = Object.assign(new Row(), { held: 'newer' });
+		assert.deepStrictEqual(remainingAgainstRecord({ toString: 'a', toJSON: 'b', held: 'c' }, record), {
+			toString: 'a',
+			toJSON: 'b',
+		});
+	});
+
+	it('counts an accessor installed on the record prototype as a stored field', () => {
+		const record = Object.create({
+			get held() {
+				return 'newer';
+			},
+		});
+		assert.strictEqual(remainingAgainstRecord({ held: 'old' }, record), null);
+	});
+
+	it('keeps an own __proto__ key as data instead of adopting its value as a prototype', () => {
+		const update = JSON.parse('{"held":"old","__proto__":{"__op__":"add","value":1,"tag":"stale"}}');
+		const remaining = remainingAgainstRecord(update, { held: 'newer' });
+		assert.deepStrictEqual(Object.keys(remaining), ['__proto__']);
+		assert.strictEqual(Object.getPrototypeOf(remaining), Object.prototype);
+		assert.strictEqual(remaining.tag, undefined);
+	});
+
+	it('leaves nothing for an empty update', () => {
+		assert.strictEqual(remainingAgainstRecord({}, { held: 'newer' }), null);
+	});
+
+	it('passes the update through when there is no record to compare with', () => {
+		const update = { held: 'old' };
+		assert.strictEqual(remainingAgainstRecord(update, undefined), update);
 	});
 });

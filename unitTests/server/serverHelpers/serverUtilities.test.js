@@ -70,6 +70,18 @@ describe('Test serverUtilities.js module ', () => {
 			}
 		});
 
+		it('refuses replication directives from a non-super-user writer with 403 (harper#2898)', function () {
+			for (const directives of [{ replicateTo: 0 }, { replicatedConfirmation: 2 }]) {
+				const request = { ...testUtils.deepClone(TEST_JSON_NON_SU), ...directives };
+				assert.throws(
+					() => serverUtilities.chooseOperation(request),
+					(error) => error.statusCode === 403 && /replicateTo or replicatedConfirmation/.test(error.message)
+				);
+			}
+			const superUserRequest = { ...testUtils.deepClone(TEST_JSON_SUPER_USER), replicateTo: 0 };
+			assert.doesNotThrow(() => serverUtilities.chooseOperation(superUserRequest));
+		});
+
 		it('accepts authorization bypass only through separate trusted dispatch state', function () {
 			const request = testUtils.deepClone(TEST_JSON_NON_SU);
 			request.operation = 'add_user';
@@ -1204,6 +1216,14 @@ describe('redactForOperationLog', () => {
 	it('handles operation names that collide with object prototype properties', () => {
 		const body = { operation: 'valueOf', key: 'auditable-identifier' };
 		assert.deepStrictEqual(redactForOperationLog(body), body);
+	});
+
+	it('strips model blocks and JSON strings while preserving the configuration request', () => {
+		for (const models of [{ generative: { default: { apiKey: 'model-secret' } } }, '{"apiKey":"model-secret"}']) {
+			const body = { operation: 'set_configuration', models, MODELS: models, logging_level: 'info' };
+			assert.deepStrictEqual(redactForOperationLog(body), { operation: 'set_configuration', logging_level: 'info' });
+			assert.strictEqual(body.models, models);
+		}
 	});
 
 	it('keeps environment variable names while stripping their values', () => {

@@ -1160,8 +1160,10 @@ suite(
 					{ case: 'null-throw', wantStatus: 500, desc: 'throw null' },
 				];
 
+				const statuses: Record<string, number> = {};
 				for (const c of cases) {
 					const r = await rawGet(`/ThrowMatrix/?case=${c.case}`);
+					statuses[c.case] = r.status;
 					const parsed = tryParse(r.text);
 					const problemType = parsed?.type ?? '';
 					const problemTitle = parsed?.title ?? '';
@@ -1218,8 +1220,7 @@ suite(
 					}
 				}
 
-				// No hard assertion on throw-response since it's a discovery probe
-				ok(true, 'throw matrix recorded');
+				deepStrictEqual(statuses, Object.fromEntries(cases.map((c) => [c.case, c.wantStatus])));
 			});
 
 			// -------------------------------------------------------------------------
@@ -1228,10 +1229,10 @@ suite(
 			test('POST throw shapes: plain-error, statusCode-400, ClientError, obj-statusCode, obj-status', async () => {
 				const postCases = [
 					{ case: 'plain-error', wantStatus: 500, desc: 'POST throw Error' },
-					{ case: 'statuscode-400', wantStatus: 400, desc: 'POST Error{.statusCode=400}', isDefectIf500: true },
-					{ case: 'client-error-def', wantStatus: 400, desc: 'POST ClientError', isDefectIf500: true },
-					{ case: 'obj-statusCode', wantStatus: 409, desc: 'POST throw {statusCode:409}', isDefectIf500: true },
-					{ case: 'obj-status', wantStatus: 400, desc: 'POST throw {status:400}', isDefectIf500: true },
+					{ case: 'statuscode-400', wantStatus: 400, desc: 'POST Error{.statusCode=400}' },
+					{ case: 'client-error-def', wantStatus: 400, desc: 'POST ClientError' },
+					{ case: 'obj-statusCode', wantStatus: 409, desc: 'POST throw {statusCode:409}' },
+					{ case: 'obj-status', wantStatus: 400, desc: 'POST throw {status:400}' },
 				];
 
 				for (const c of postCases) {
@@ -1239,18 +1240,15 @@ suite(
 					const parsed = tryParse(r.text);
 					const row = `${c.desc.padEnd(30)} -> ${r.status} [want ${c.wantStatus}]  title=${pfx(parsed?.title ?? r.text, 50)}`;
 					postPutMatrix.push(row);
-
-					if ((c as any).isDefectIf500) {
-						strictEqual(r.status, c.wantStatus, `POST ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
-					}
+					strictEqual(r.status, c.wantStatus, `POST ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
 				}
 
 				const putCases = [
 					{ case: 'plain-error', wantStatus: 500, desc: 'PUT throw Error' },
-					{ case: 'statuscode-400', wantStatus: 400, desc: 'PUT Error{.statusCode=400}', isDefectIf500: true },
-					{ case: 'client-error-def', wantStatus: 400, desc: 'PUT ClientError', isDefectIf500: true },
-					{ case: 'obj-statusCode', wantStatus: 422, desc: 'PUT throw {statusCode:422}', isDefectIf500: true },
-					{ case: 'obj-status', wantStatus: 400, desc: 'PUT throw {status:400}', isDefectIf500: true },
+					{ case: 'statuscode-400', wantStatus: 400, desc: 'PUT Error{.statusCode=400}' },
+					{ case: 'client-error-def', wantStatus: 400, desc: 'PUT ClientError' },
+					{ case: 'obj-statusCode', wantStatus: 422, desc: 'PUT throw {statusCode:422}' },
+					{ case: 'obj-status', wantStatus: 400, desc: 'PUT throw {status:400}' },
 				];
 
 				for (const c of putCases) {
@@ -1258,13 +1256,8 @@ suite(
 					const parsed = tryParse(r.text);
 					const row = `${c.desc.padEnd(30)} -> ${r.status} [want ${c.wantStatus}]  title=${pfx(parsed?.title ?? r.text, 50)}`;
 					postPutMatrix.push(row);
-
-					if ((c as any).isDefectIf500) {
-						strictEqual(r.status, c.wantStatus, `PUT ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
-					}
+					strictEqual(r.status, c.wantStatus, `PUT ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
 				}
-
-				ok(true, 'POST/PUT throw matrix recorded');
 			});
 
 			// -------------------------------------------------------------------------
@@ -1276,9 +1269,7 @@ suite(
 					const r = await rawGet(`/StatusViaContext/?code=${code}`);
 					const xqa = r.headers['x-qa195'] || '';
 					statusMatrix.push(`context code=${code} -> ${r.status} [want ${code}]  X-QA195=${xqa}`);
-					if (r.status !== code) {
-						defectList.push(`[STATUS] context code=${code} ignored -> got ${r.status}`);
-					}
+					strictEqual(r.status, code, `status set via context: code=${code}`);
 				}
 
 				// 4b. Status via returned Response
@@ -1286,25 +1277,17 @@ suite(
 					const r = await rawGet(`/StatusViaResponse/?code=${code}`);
 					const xqa = r.headers['x-qa195'] || '';
 					statusMatrix.push(`returned-Response code=${code} -> ${r.status} [want ${code}]  X-QA195=${xqa}`);
-					if (r.status !== code) {
-						defectList.push(`[STATUS] returned Response code=${code} ignored -> got ${r.status}`);
-					}
+					strictEqual(r.status, code, `status set via a returned Response: code=${code}`);
 				}
 
-				// 4c. Status via {status, data} object (no headers field)
+				// 4c. A returned {status, data} object has no `headers` field, so REST serializes it as data
+				// (only a response-like envelope with headers sets the status): 200 with the object as body.
 				for (const code of [202, 404]) {
 					const r = await rawGet(`/StatusViaObjStatus/?code=${code}`);
-					statusMatrix.push(`obj-{status,data} code=${code} -> ${r.status} [want ${code}]  body=${pfx(r.text, 40)}`);
-					if (r.status !== code) {
-						statusMatrix.push(`  ^ NOTE: {status,data} (no headers field) code=${code} not honored -> ${r.status}`);
-						// This is a discovery finding, not necessarily a defect — document it
-						defectList.push(
-							`[STATUS NOTE] obj-{status,data} without headers: code=${code} not honored (got ${r.status}). REST.ts requires headers field for status branch.`
-						);
-					}
+					statusMatrix.push(`obj-{status,data} code=${code} -> ${r.status}  body=${pfx(r.text, 40)}`);
+					strictEqual(r.status, 200, `{status:${code}, data} without headers is data, not a status`);
+					strictEqual(tryParse(r.text)?.status, code, `{status:${code}, data} should be the response body`);
 				}
-
-				ok(true, 'status pattern matrix recorded');
 			});
 
 			// -------------------------------------------------------------------------
@@ -1364,7 +1347,12 @@ suite(
 					defectList.push(`[LEAK] 400 body "title" field leaks internal error message: "${p400.title}"`);
 				}
 
-				ok(true, 'problem detail structure recorded');
+				strictEqual(r500.status, 500, 'plain-error status');
+				ok(hasType && hasTitle && hasInstance, `500 problem detail needs type/title/instance: ${r500.text}`);
+				strictEqual(p500.status, 500, `500 problem detail status: ${r500.text}`);
+				strictEqual(r400.status, 400, 'statuscode-400 status');
+				ok(typeof p400?.type === 'string' && typeof p400?.title === 'string', `400 problem detail: ${r400.text}`);
+				strictEqual(p400.status, 400, `400 problem detail status: ${r400.text}`);
 			});
 
 			// -------------------------------------------------------------------------
