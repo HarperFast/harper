@@ -1274,7 +1274,10 @@ export function transformForSelect(select, resource) {
 							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
 								? propertyResolvers[property.name]?.definition?.tableClass
 								: undefined;
-						const innerTransform = subSelect ? transformForSelect(subSelect, targetResource) : (v) => v;
+						const innerTransform =
+							subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
+								? transformForSelect(subSelect, targetResource)
+								: (v) => v;
 						const sort = typeof property.sort === 'object' ? property.sort : null;
 						const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
 						const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
