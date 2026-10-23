@@ -1761,6 +1761,9 @@ export interface RestoredGeneration {
  * empty, which would make a truncated restore look loaded.
  */
 export function openRestoredGeneration(path: string, databaseName: string): RestoredGeneration {
+	if (!existsSync(join(path, 'CURRENT'))) {
+		throw new Error(`No restored ${databaseName} database was found at ${path}`);
+	}
 	const rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as RocksRootDatabase;
 	const openedStores: any[] = [];
 	const tables: Tables = {};

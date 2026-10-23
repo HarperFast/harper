@@ -152,8 +152,12 @@ describeUnlessLmdb('restore child', function () {
 		return child;
 	}
 
-	function writeReceipt(databasePath, fields = {}) {
-		const lock = acquireRestoreLock(databasePath);
+	// `asIfClaimed` writes the way a claimant would without taking the claim, for the cases where a
+	// live child is exactly what makes every claim refuse.
+	function writeReceipt(databasePath, fields = {}, { asIfClaimed = false } = {}) {
+		const lock = asIfClaimed
+			? { token: 0, dbPath: databasePath, preexisting: false }
+			: acquireRestoreLock(databasePath);
 		try {
 			const receipt = newRestoreReceipt({
 				route: 'online',
@@ -169,7 +173,7 @@ describeUnlessLmdb('restore child', function () {
 			receipt.attempts = fields.attempts ?? 1;
 			return writeRestoreReceipt(lock, receipt);
 		} finally {
-			releaseRestoreLock(lock);
+			if (!asIfClaimed) releaseRestoreLock(lock);
 		}
 	}
 
@@ -317,8 +321,10 @@ describeUnlessLmdb('restore child', function () {
 				const target = targetWithSentinel('superseded-while-stopped');
 				const before = snapshotTree(target);
 				const child = await stoppedAuthorizedChild(target);
-				// a later restore of the same database finished and recorded its own decision
-				writeReceipt(target, { state: 'committed' });
+				// no claim can be taken while this child lives, but a receipt naming another operation is
+				// what it must refuse to act on however it got there
+				assert.throws(() => acquireRestoreLock(target), /a restore process for it is still running/);
+				writeReceipt(target, { state: 'committed' }, { asIfClaimed: true });
 				child.kill('SIGCONT');
 				assert.deepStrictEqual(await child.exited, { code: 77, signal: null });
 				assert.deepStrictEqual(
@@ -336,7 +342,8 @@ describeUnlessLmdb('restore child', function () {
 				const token = tryFileLock(restoreChildLockPath(target));
 				if (token) fileLockRelease(token);
 				assert.strictEqual(token, 0, 'a stopped child still holds the database');
-				writeReceipt(target, { state: 'committed' });
+				assert.throws(() => acquireRestoreLock(target), /a restore process for it is still running/);
+				writeReceipt(target, { state: 'committed' }, { asIfClaimed: true });
 				child.kill('SIGCONT');
 				const { code } = await child.exited;
 				assert.ok([70, 77].includes(code), `exited ${code}, not as an orphaned or unauthorized child`);

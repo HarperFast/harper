@@ -404,12 +404,13 @@ describe('restoreMarker', function () {
 			completeRestore(beginRestore(dbPath));
 		});
 
-		it("keeps an interrupted restore's source when a restore from another repository claims it", function () {
+		it('records the claiming repository once a restore from another one is admitted over its marker', function () {
 			abandonRestore(beginRestore(dbPath, undefined, repositoryB));
 			const lock = beginRestore(dbPath, undefined, repositoryA);
 			try {
 				assert.strictEqual(lock.preexisting, true);
-				assert.strictEqual(readRestoringMarkerSource(dbPath), restoreSourceId(repositoryB));
+				// the admitted claim owns the target now, so its own rerun must be able to prove that
+				assert.strictEqual(readRestoringMarkerSource(dbPath), restoreSourceId(repositoryA));
 			} finally {
 				abandonRestore(lock);
 			}

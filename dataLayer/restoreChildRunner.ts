@@ -154,9 +154,11 @@ export function runRestoreChild<T = any>(
 			else resolve(value as T);
 		};
 		const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+		let timedOut = false;
+		// settled from the exit handler, so a retry never races the child it is replacing
 		const timer = setTimeout(() => {
+			timedOut = true;
 			killGroup(child);
-			settle(new RestoreChildError(`The restore child running ${command} did not finish within ${timeoutMs}ms`));
 		}, timeoutMs);
 		child.on('message', (message: ChildToParent) => {
 			if (message?.type === 'ready') {
@@ -181,6 +183,11 @@ export function runRestoreChild<T = any>(
 			settle(new RestoreChildError(`The restore child running ${command} failed`, undefined, error));
 		});
 		child.on('exit', (code, signal) => {
+			if (timedOut) {
+				return settle(
+					new RestoreChildError(`The restore child running ${command} did not finish within ${timeoutMs}ms`)
+				);
+			}
 			if (outcome?.type === 'result' && code === 0) return settle(undefined, outcome.result);
 			if (outcome?.type === 'error') {
 				const error: any =
