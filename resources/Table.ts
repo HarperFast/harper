@@ -3663,7 +3663,7 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to update data from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables take the record, not a promise of it.
+		// @ts-expect-error The base class types the body as a promise; Tables also accept the record itself.
 		// eslint-disable-next-line no-unused-vars
 		allowUpdate(user: User, updatedData: Record, context: Context): boolean | Promise<boolean> {
 			this.#updatableAttributes = undefined;
@@ -3694,7 +3694,7 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables take the record, not a promise of it.
+		// @ts-expect-error The base class types the body as a promise; Tables also accept the record itself.
 		allowCreate(user: User, newData: Record, context: Context): boolean | Promise<boolean> {
 			if (this.isCollection) {
 				const tablePermission = getTablePermissions(user);
