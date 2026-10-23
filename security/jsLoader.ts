@@ -440,11 +440,14 @@ function normalizeImportedModule(importedModule: any): any {
  */
 function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, unknown> {
 	if (!moduleUrl.startsWith('file:')) return {};
-	let path = fileURLToPath(moduleUrl);
-	try {
-		path = realpathSync(path);
-	} catch {}
-	const cjsExports = require.cache[path]?.exports;
+	const path = fileURLToPath(moduleUrl);
+	let cjsModule = require.cache[path];
+	if (!cjsModule) {
+		try {
+			cjsModule = require.cache[realpathSync(path)];
+		} catch {}
+	}
+	const cjsExports = cjsModule?.exports;
 	if (!cjsExports || cjsExports !== namespace.default) return {};
 	if (typeof cjsExports !== 'object' && typeof cjsExports !== 'function') return {};
 	if (Array.isArray(cjsExports) || ArrayBuffer.isView(cjsExports)) return {};
@@ -453,9 +456,7 @@ function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, un
 		if (name in namespace) continue;
 		try {
 			names[name] = cjsExports[name];
-		} catch {
-			// a throwing getter leaves its own name out instead of failing the import
-		}
+		} catch {}
 	}
 	return names;
 }
