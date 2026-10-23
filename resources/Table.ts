@@ -30,7 +30,7 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect, defaultAllowReads } from './Resource.ts';
+import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -730,7 +730,7 @@ interface TableResourceInstance<Record extends object = any> {
 	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
 	_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any): any;
 	delete(target: RequestTargetOrId): Promise<boolean>;
-	_writeDelete(id: Id, options?: any): boolean;
+	_writeDelete(id: Id, options?: any): MaybePromise<boolean>;
 	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
 	subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>>;
 	doesExist(): boolean;
@@ -1697,6 +1697,35 @@ export function makeTable(options): TableResourceClass {
 		return { key, descriptor };
 	}
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
+	function conditionForWrite(context, id: Id) {
+		const condition = context?.[WRITE_CONDITION];
+		const matches =
+			condition?.Resource.primaryStore === primaryStore &&
+			condition.prepared &&
+			writeKeyId(id) === writeKeyId(condition.id);
+		if (matches && condition.finished) throw new ClientError('Conditional request already completed', 409);
+		return matches ? condition : undefined;
+	}
+	function lockConditionalWrite(resource, id: Id, condition) {
+		if (!condition?.lock || !isRocksDB || condition.locked) return;
+		return (condition.locking ??= resource.lock(id, { hold: true }).then((locked) => {
+			if (condition.finished)
+				return locked.unlock().then(() => {
+					throw new ClientError('Conditional request already completed', 409);
+				});
+			const link = txnForContext(resource.getContext());
+			if (link?.transaction) {
+				if (link.writes.length === 0 && link.readTxnsUsed <= 1) {
+					link.releaseReadTxn();
+					link.snapshotFree = true;
+				} else if (link.timestamp && reservedLocalKey(link.transaction) === undefined) {
+					link.transaction.setTimestamp(link.timestamp);
+				}
+			}
+			condition.locked = true;
+			condition.release = () => locked.unlock();
+		}));
+	}
 	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
 		if (loadedEntry != null) return loadedEntry;
 		if (isRocksDB && reloadsCommitBase) {
@@ -1727,6 +1756,7 @@ export function makeTable(options): TableResourceClass {
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
+		#entryLoaded = false;
 		#savingOperation?: any; // operation for the record is currently being saved
 		#baseReadTxn?: any; // staging handle this instance's uncached pre-load read through
 		#baseReadEntry?: Entry; // what that read returned, reusable as the commit base only while it is still #entry
@@ -1734,6 +1764,17 @@ export function makeTable(options): TableResourceClass {
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
 		declare getProperty: (name: string) => any;
+		#evaluateWriteCondition(id: Id, condition: any, transaction: any): void {
+			if (!condition) return;
+			if (condition.finished) throw new ClientError('Conditional request already completed', 409);
+			if (!condition.checked) {
+				if (!this.#entryLoaded) {
+					TableResource._updateResource(this, primaryStore.getEntry(id, { transaction: transaction.getReadTxn() }));
+				}
+				condition.check(this.#entry);
+				condition.checked = true;
+			}
+		}
 		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
 			if (!generation) return;
 			if (generation.internalWrites > 0) return;
@@ -2525,6 +2566,25 @@ export function makeTable(options): TableResourceClass {
 					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
 				);
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
+			const condition = request?.[WRITE_CONDITION];
+			if (condition?.Resource === this && !condition.prepared) {
+				condition.prepared = true;
+				if (
+					target.id == null ||
+					target.isCollection ||
+					target.property ||
+					target.select ||
+					this.source ||
+					this.get !== Resource.get ||
+					this.prototype.get !== TableResource.prototype.get
+				)
+					throw new ClientError(
+						'Conditional writes require a single local table record with its default representation',
+						501
+					);
+				condition.id = target.id;
+				txnForContext(request);
+			}
 			if (this.loadAsInstance !== false) {
 				return resource._loadRecord(target, request, resourceOptions);
 			}
@@ -2569,7 +2629,10 @@ export function makeTable(options): TableResourceClass {
 					(entry) => {
 						if (entry) {
 							TableResource._updateResource(this, entry);
-						} else this.#record = null;
+						} else {
+							this.#entryLoaded = true;
+							this.#record = null;
+						}
 						if (readsCommitBase) {
 							this.#baseReadTxn = readTxn;
 							this.#baseReadEntry = entry;
@@ -2615,6 +2678,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _updateResource(resource, entry) {
 			resource.#entry = entry;
+			resource.#entryLoaded = true;
 			resource.#record = entry?.value ?? null;
 			resource.#version = entry?.version;
 		}
@@ -4511,7 +4575,13 @@ export function makeTable(options): TableResourceClass {
 			return acquisition.then(
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					return this.#reloadLocked(id, handle);
+					try {
+						return this.#reloadLocked(id, handle);
+					} catch (error) {
+						link.unregisterRecordLock(handle);
+						handle.release();
+						throw error;
+					}
 				},
 				(error) => {
 					link.unregisterPendingLock(primaryStore, keyId);
@@ -4563,6 +4633,8 @@ export function makeTable(options): TableResourceClass {
 			// Store the handle for both scoped and hold locks; undefined (re-entrant hold fast-path)
 			// must not clear a handle already set.
 			if (holdHandle != null) this.#lockHandle = holdHandle;
+			this.#baseReadTxn = undefined;
+			this.#baseReadEntry = undefined;
 			TableResource._updateResource(this, entryForReload);
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload.
@@ -4635,6 +4707,8 @@ export function makeTable(options): TableResourceClass {
 						}
 						// standard path, handle arrays as multiple updates, and otherwise do a direct update
 						if (Array.isArray(record)) {
+							if (context?.[WRITE_CONDITION]?.Resource.primaryStore === primaryStore)
+								throw new ClientError('Conditional writes require a single record body', 501);
 							// Capture each element's operation synchronously (before any async `@embed`
 							// hook resolves): `#savingOperation` is a single field that parallel writes
 							// would otherwise clobber, so a deferred `save()` would commit the wrong op
@@ -4722,7 +4796,18 @@ export function makeTable(options): TableResourceClass {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
+			const condition = conditionForWrite(context, id);
+			const locking = lockConditionalWrite(this, id, condition);
+			if (locking) {
+				const changes = this.#changes;
+				const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
+				return locking.then(() => {
+					this.#changes = changes;
+					return this._writeUpdate(id, updates, fullUpdate, options);
+				});
+			}
 			const transaction = txnForContext(context);
+			this.#evaluateWriteCondition(id, condition, transaction);
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
 			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
@@ -5680,6 +5765,7 @@ export function makeTable(options): TableResourceClass {
 				return Promise.reject(err);
 			}
 			const proceed = (): any => {
+				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
 				write.beforeIntermediate = preCommitBlobsForRecordBefore(
@@ -5689,7 +5775,9 @@ export function makeTable(options): TableResourceClass {
 					undefined,
 					options?.isNotification
 				);
-				return transaction.addWrite(write as any);
+				const result = transaction.addWrite(write as any);
+				if (condition) condition.consumed = true;
+				return result;
 			};
 			return modelHooksBefore ? modelHooksBefore((context as any)?.signal).then(proceed) : proceed();
 		}
@@ -5718,7 +5806,8 @@ export function makeTable(options): TableResourceClass {
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
 				for await (const entry of this.search(scanTarget)) {
-					this._writeDelete((entry as any).$id);
+					const deletion = this._writeDelete((entry as any).$id);
+					if (deletion instanceof Promise) await deletion;
 				}
 				return true;
 			}
@@ -5734,17 +5823,22 @@ export function makeTable(options): TableResourceClass {
 						throw new AccessViolation((context as any).user);
 					}
 					const id = requestTargetToId(target as any);
-					this._writeDelete(id);
-					return true;
+					const deletion = this._writeDelete(id);
+					return deletion instanceof Promise ? deletion.then(() => true) : true;
 				}) as any;
 			}
-			this._writeDelete(this.getId());
+			const deletion = this._writeDelete(this.getId());
+			if (deletion instanceof Promise) await deletion;
 			return Boolean(this.#record);
 		}
-		_writeDelete(id: Id, options?: any) {
+		_writeDelete(id: Id, options?: any): MaybePromise<boolean> {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
+			const condition = conditionForWrite(context, id);
+			const locking = lockConditionalWrite(this, id, condition);
+			if (locking) return locking.then(() => this._writeDelete(id, options));
 			const transaction = txnForContext(context);
+			this.#evaluateWriteCondition(id, condition, transaction);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
@@ -5841,6 +5935,7 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			transaction.addWrite(write);
+			if (condition) condition.consumed = true;
 			return true;
 		}
 

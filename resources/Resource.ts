@@ -41,6 +41,7 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+export const WRITE_CONDITION = Symbol('writeCondition');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
