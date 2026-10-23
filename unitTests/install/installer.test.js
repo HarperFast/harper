@@ -629,7 +629,6 @@ describe('install storage.engine resolution', () => {
 	let savedEnv;
 	let savedArgv;
 	let savedSystemDb;
-	let savedSystemPath;
 	let savedRocksCompression;
 
 	async function runBootInitialize() {
@@ -647,20 +646,9 @@ describe('install storage.engine resolution', () => {
 		}
 	}
 
-	function systemStorePath(systemTables) {
-		for (const table of Object.values(systemTables ?? {})) {
-			const storePath = table?.primaryStore?.rootStore?.path;
-			if (storePath) return storePath;
-		}
-	}
-
 	async function closeSystemDatabase() {
 		const systemTables = getDatabases().system;
-		// Deleting databases.system makes getDatabases() reopen the suite's own system store under a new object.
-		// Closing that would break the handles other suites still hold, so only unregister it.
-		if (systemTables && systemTables !== savedSystemDb && systemStorePath(systemTables) === savedSystemPath) {
-			delete databases.system;
-		} else if (systemTables && systemTables !== savedSystemDb) {
+		if (systemTables && systemTables !== savedSystemDb) {
 			for (const table of Object.values(systemTables)) {
 				if (table?.dbisDB && table.dbisDB.status !== 'closed') {
 					await table.dbisDB.close?.();
@@ -673,8 +661,6 @@ describe('install storage.engine resolution', () => {
 	before(() => {
 		setAnalyticsEnabled(false);
 		savedSystemDb = databases.system;
-		savedSystemPath = systemStorePath(savedSystemDb);
-		savedRocksCompression = getRocksCompression();
 		if (savedSystemDb) {
 			delete databases.system;
 		}
@@ -730,6 +716,7 @@ describe('install storage.engine resolution', () => {
 	}
 
 	beforeEach(async () => {
+		savedRocksCompression = getRocksCompression();
 		sandbox = sinon.createSandbox();
 		tempBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-engine-'));
 		const fakeHome = path.join(tempBaseDir, 'home');
@@ -1221,6 +1208,7 @@ describe('install storage.engine resolution', () => {
 		fs.writeFileSync(propsFilePath, propsContent, 'utf8');
 
 		realInstaller.setIgnoreExisting(true);
+		process.env.STORAGE_ENGINE = 'lmdb';
 		sandbox
 			.stub(config_utils, 'writeStagedInstallConfig')
 			.throws(new Error('simulated writeStagedInstallConfig failure'));
