@@ -108,6 +108,7 @@ const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
 // record of why a request was failed. Mutates only when it grants, so a caller with its own
 // suppression as well (checkOverloaded's per-node `logged`) must test that first.
 const lastStuckCommitLogAt = { shed: -Infinity, abandon: -Infinity, overdue: -Infinity };
+let lastOverloadStatusAt = -Infinity;
 function allowStuckCommitLog(site: 'shed' | 'abandon' | 'overdue', now: number): boolean {
 	if (now - lastStuckCommitLogAt[site] <= OVERLOAD_LOG_MIN_INTERVAL_MS) return false;
 	lastStuckCommitLogAt[site] = now;
@@ -1861,6 +1862,10 @@ export class DatabaseTransaction implements Transaction {
 						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
+			}
+			if (now - lastOverloadStatusAt > 15_000) {
+				lastOverloadStatusAt = now;
+				harperLogger.status({ problem: 'database.write-queue-overloaded', expires: 60 });
 			}
 			throw new ServerError('Outstanding write transactions have too long a queue, please try again later', 503);
 		}
@@ -4345,6 +4350,7 @@ function startMonitoringTxns() {
 					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
 					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
 					// those, keep the prior force-commit behavior below.
+					harperLogger.status({ problem: 'database.txn-open-too-long', expires: 120 });
 					harperLogger.error(
 						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
 							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +

@@ -1893,7 +1893,7 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 			const coreGetUser = serverModule.server.getUser;
 			serverModule.server.getUser = async (username, ...rest) => {
 				if (username !== 'slow-lookup-user') return coreGetUser(username, ...rest);
-				await null;
+				await Promise.resolve();
 				clockOffsetMs = 60_000;
 				return { username, active: true, role: { permission: { super_user: false } } };
 			};

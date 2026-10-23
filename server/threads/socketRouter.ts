@@ -17,6 +17,7 @@ import { lifecycle as componentLifecycle } from '../../components/status/index.t
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
+import { startHealthChecks } from '../../components/status/healthChecks.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
@@ -97,6 +98,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				// startServers() schedules listener startup after loading components; await its cached
 				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
 				await threadServer.listenOnPorts();
+				startHealthChecks();
 				return Promise.resolve([]);
 			}
 			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
@@ -140,6 +142,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			void watchDedicatedStart(application, slot);
 		}
 		await Promise.all(workerSlots.filter((slot) => !slot.application).map((slot) => slot.ready));
+		startHealthChecks();
 	} finally {
 		for (const slot of workerSlots) if (!slot.application) slot.finishStartup();
 		threadsHaveStarted(undefined as any);
