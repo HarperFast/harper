@@ -200,7 +200,7 @@ describe('Test configValidator module', () => {
 				config.storage.maxLockClockSkew = value;
 				assert.strictEqual(configValidator(config).error, undefined, `${value} is accepted`);
 			}
-			for (const value of ['5 ms', '-1s', '1e400', 'Infinity', '1M', '1y', `${'9'.repeat(400)}s`]) {
+			for (const value of ['5 ms', '-1s', '1e400', 'Infinity', '1M', '1y', `${'9'.repeat(400)}s`, Number.MAX_VALUE]) {
 				const config = testUtils.deepClone(FAKE_CONFIG);
 				config.storage.maxLockClockSkew = value;
 				assert.ok(configValidator(config).error, `${value} is rejected`);

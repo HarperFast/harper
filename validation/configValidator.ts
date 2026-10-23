@@ -599,12 +599,15 @@ export function configValidator(configJson, skipFsValidation = false) {
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
 			maxLockClockSkew: Joi.alternatives([
-				number.min(0),
-				string
-					.pattern(/^\d+(?:\.\d+)?(?:ms|[smhd])?$/)
-					.custom((value, helpers) =>
-						Number.isFinite(Number.parseFloat(value)) ? value : helpers.error('any.invalid')
-					),
+				number
+					.min(0)
+					.custom((value, helpers) => (Number.isFinite(value * 1000) ? value : helpers.error('any.invalid'))),
+				string.pattern(/^\d+(?:\.\d+)?(?:ms|[smhd])?$/).custom((value, helpers) => {
+					const unit = value.endsWith('ms') ? 'ms' : value.slice(-1);
+					const millisecondsPerUnit = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+					const multiplier = millisecondsPerUnit[unit] ?? 1000;
+					return Number.isFinite(Number.parseFloat(value) * multiplier) ? value : helpers.error('any.invalid');
+				}),
 			]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
