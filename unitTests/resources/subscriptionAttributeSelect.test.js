@@ -237,4 +237,49 @@ describe('Attribute read permissions on subscription deliveries', () => {
 		assert.deepStrictEqual(events.at(-1).value, { id: 'schema', title: 'after' });
 		assert.strictEqual(laterCalls, 0);
 	});
+
+	it('typed random-access records are projected from every delivery source', async () => {
+		const Typed = table({
+			database: 'subselect',
+			table: 'SelectTyped',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true, randomAccessFields: true }, { name: 'title' }, { name: 'secret' }],
+		});
+		const typedUser = {
+			role: {
+				permission: {
+					subselect: {
+						tables: {
+							SelectTyped: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: [
+									{ attribute_name: 'id', read: true },
+									{ attribute_name: 'title', read: true },
+									{ attribute_name: 'secret', read: false },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		for (let i = 0; i < 40; i++) await Typed.put(`typed-${i}`, { title: `t${i}`, secret: 's', [`extra${i}`]: i });
+		Typed.primaryStore.cache?.clear?.();
+		const requests = [
+			{ isCollection: true },
+			{ isCollection: true, startTime: 1 },
+			{ id: 'typed-0', rawEvents: true, startTime: 1 },
+			{ id: 'typed-0', startTime: 1, includeSuperseded: true },
+		];
+		for (const request of requests) {
+			const events = await subscribe(Typed, request, { user: typedUser, authorize: true });
+			await waitFor(() => delivered(events, 't0'), {
+				message: () => `${JSON.stringify(request)}: ${JSON.stringify(events)}`,
+			});
+			for (const { value } of recordEvents(events)) assert.ok(!('secret' in value), JSON.stringify(value));
+		}
+	});
 });
