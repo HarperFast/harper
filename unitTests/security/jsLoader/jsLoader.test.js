@@ -830,6 +830,31 @@ for (const mode of ['vm-current-context', 'vm']) {
 			expect(loadedModules.has(loadedUrl(pendingProbePath))).to.equal(false);
 		});
 
+		it('keeps the native route a require() took while a native import of the file failed', async () => {
+			const probeRoot = join(runtimeRoot, 'node_modules', 'thenable-probe');
+			mkdirSync(probeRoot, { recursive: true });
+			writeFileSync(join(probeRoot, 'package.json'), JSON.stringify({ name: 'thenable-probe', main: 'index.js' }));
+			// import() adopts the then export, so a native import of this file rejects while require() of it succeeds
+			writeFileSync(
+				join(probeRoot, 'index.js'),
+				"exports.then = (resolve, reject) => reject(new Error('rejected by then'));\n"
+			);
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				'exports.load = async () => {\n' +
+					"\tconst pending = import('thenable-probe');\n" +
+					"\tconst duringImport = require('./node_modules/thenable-probe/index.js');\n" +
+					"\tconst failure = await pending.then(() => 'loaded', (error) => error.message);\n" +
+					"\treturn { duringImport, failure, afterImport: require('./node_modules/thenable-probe/index.js') };\n" +
+					'};\n'
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			const { duringImport, failure, afterImport } = await result.load();
+			expect(failure).to.equal('rejected by then');
+			expect(afterImport).to.equal(duringImport);
+			expect(loadedModules.has(loadedUrl(join(probeRoot, 'index.js')))).to.equal(false);
+		});
+
 		it('imports a CommonJS module that exports null', async () => {
 			writeFileSync(join(runtimeRoot, 'nothing.cjs'), 'module.exports = null;\n');
 			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { default as nothing } from './nothing.cjs';\n");

@@ -847,7 +847,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		return import(url).then(
 			(importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)),
 			(error) => {
-				if (reservesRoute) nativeModules.delete(url);
+				// a require() of the file while the import was pending may have loaded it natively anyway
+				if (reservesRoute && !require.cache[fileURLToPath(url)]) nativeModules.delete(url);
 				throw error;
 			}
 		);
