@@ -61,7 +61,8 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#configFilePath = configFilePath;
 		const watchTarget = resolveWatchTarget(this.#configFilePath);
 		this.#watchPath = watchTarget.path;
-		this.#usingPolling = watchTarget.mustPoll;
+		// config/DESIGN.md: `RootConfigWatcher` polls under Bun
+		this.#usingPolling = watchTarget.mustPoll || Boolean(process.versions.bun);
 		this.#closed = false;
 		this.ready = once(this, 'ready');
 		this.#openWatcher();

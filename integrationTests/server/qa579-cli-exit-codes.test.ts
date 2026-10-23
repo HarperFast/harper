@@ -1,6 +1,6 @@
 /**
  * Promoted from qa-explorer (QA-579 / P-374): pins CLI failure paths exiting non-zero
- * (regression anchor for merged PR #1801) via a 5-cell exit-code matrix spawning the real
+ * (regression anchor for merged PR #1801) via a 6-cell exit-code matrix spawning the real
  * dist/bin/harper.js, with a hard-kill safety net so a regression-to-hang surfaces as an
  * explicit kill, not a false exit 0.
  *
