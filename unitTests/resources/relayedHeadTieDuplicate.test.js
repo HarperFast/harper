@@ -4,6 +4,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor.js');
+const { transaction } = require('#src/resources/transaction');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -65,6 +66,11 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		const reads = [];
 		const originalGet = T.auditStore.getSync;
 		const originalRange = T.auditStore.getRange;
+		const originalEntry = T.primaryStore.getEntry;
+		T.primaryStore.getEntry = function (id, options, ...args) {
+			if (id === 'r' && options?.uncachedRead && !options.transaction) reads.push({ committedRead: id });
+			return originalEntry.call(this, id, options, ...args);
+		};
 		T.auditStore.getSync = function (key, ...args) {
 			if (key === logKey) reads.push({ getSync: key });
 			return originalGet.call(this, key, ...args);
@@ -79,6 +85,7 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 			restore() {
 				T.auditStore.getSync = originalGet;
 				T.auditStore.getRange = originalRange;
+				T.primaryStore.getEntry = originalEntry;
 			},
 		};
 	}
@@ -115,7 +122,7 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		} finally {
 			spy.restore();
 		}
-		assert.deepEqual(spy.reads, [], 'the duplicate must be decided from the committed record');
+		assert.deepEqual(spy.reads, [], 'a sole write is decided from its commit base, with no log or committed read');
 		assert.equal((await T.getHistoryOfRecord('r')).length, 0, 'the duplicate must not be appended to the log');
 		assert.equal((await T.get('r')).name, 'copied');
 	});
@@ -158,6 +165,8 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 					writes: putFirst ? [put, otherWrite] : [otherWrite, put],
 				});
 				assert.equal((await T.get('r')).name, 'new');
+				const puts = (await T.getHistoryOfRecord('r')).filter((entry) => entry.type === 'put');
+				assert.equal(puts.length, 2, 'the put is applied and logged, not skipped');
 			});
 		}
 	}
@@ -177,7 +186,16 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		await apply(transaction());
 		const puts = async () => (await T.getHistoryOfRecord('r')).filter((entry) => entry.type === 'put').length;
 		const putsBefore = await puts();
-		await apply(transaction());
+		const spy = spyRecordLogReads(T, version, origin);
+		try {
+			await apply(transaction());
+		} finally {
+			spy.restore();
+		}
+		assert.ok(
+			spy.reads.some((read) => read.committedRead),
+			'a key written twice is decided from committed state'
+		);
 		assert.equal(await puts(), putsBefore, 'the re-delivered put must not be logged again');
 		assert.equal((await T.get('r')).name, 'first');
 	});
@@ -202,8 +220,43 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		} finally {
 			spy.restore();
 		}
-		assert.deepEqual(spy.reads, [], 'both writes are decided from the committed record');
+		assert.deepEqual(
+			spy.reads.filter((read) => !read.committedRead),
+			[],
+			'both writes are decided from the committed record, without reading the log'
+		);
 		assert.equal((await T.getHistoryOfRecord('r')).length, history);
 		assert.equal((await T.get('r')).name, 'second');
+	});
+	it('converges when a competing delivery commits while a same-key publish is staged', async function () {
+		if (isLMDB) return this.skip();
+		const { T, apply, origin } = replicatedTable('CompetingDelivery');
+		const before = Date.now() - 60000;
+		await apply({
+			type: 'put',
+			id: 'r',
+			value: { id: 'r', name: 'old' },
+			timestamp: before,
+			version: before,
+			nodeId: origin,
+		});
+		const version = before + 1000;
+		const options = { isNotification: true, nodeId: origin, version };
+		function deliver(afterStage) {
+			const context = { source: {}, sourceApply: true, timestamp: version };
+			return transaction(context, async () => {
+				const resource = await T.getResource('r', context);
+				resource._writePublish('r', { id: 'r', name: 'published' }, options);
+				resource._writeUpdate('r', { id: 'r', name: 'new' }, true, options);
+				await afterStage?.(context.transaction);
+			});
+		}
+		let outer;
+		await deliver(async (txn) => {
+			outer = txn.transaction;
+			await deliver();
+		});
+		assert.ok(outer.retries > 0, 'the competing commit must force a retry');
+		assert.equal((await T.get('r')).name, 'new');
 	});
 });

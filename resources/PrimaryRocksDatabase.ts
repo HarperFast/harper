@@ -129,6 +129,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		// Commit-path base reads must reflect the caller's transaction snapshot; the cache vouch
 		// answers "latest committed" — the wrong question there, and wrong outright for a version a
 		// resequenced write reused — so read the store directly, touching neither cache nor VT.
+		// Without a transaction this is the stored committed record, for the same reused-version reason.
 		if (options?.uncachedRead) {
 			if (options.async) return when(super.get(id, options), (result) => this.#processEntry(result, id));
 			return this.#processEntry(super.getSync(id, options), id);

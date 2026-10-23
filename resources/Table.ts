@@ -276,6 +276,7 @@ const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
 const EVICTION_BATCH_SIZE = 100;
+const COMMITTED_READ = { uncachedRead: true };
 // Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
@@ -5063,7 +5064,7 @@ export function makeTable(options): TableResourceClass {
 								precedesExisting === 0 &&
 								receivedLogKey === txnTime &&
 								appendedLogKey === receivedLogKey &&
-								isCommittedHead(id, txnTime, options?.nodeId)
+								isHeadIdentity(identityBase(write, existingEntry, committedBy), txnTime, options?.nodeId)
 							) {
 								write.skipped = true;
 								return;
@@ -9633,13 +9634,19 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
-	// Outside the transaction: its commit base can already carry a same-key publish or relocate it saved.
-	function isCommittedHead(id: Id, version: number, nodeId?: number): boolean {
-		const committed = primaryStore.getEntry(id, { uncachedRead: true });
+	// The commit base is the committed record only for a key's sole write in the transaction: another
+	// write to the key can restamp it without staging (a publish or relocate saves when it is added).
+	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
+		const soleWrite =
+			!write.priorWrite && transaction?.writesByKey?.get(write.store)?.get(writeKeyId(write.key)) === write;
+		return soleWrite ? existingEntry : primaryStore.getEntry(write.key, COMMITTED_READ);
+	}
+
+	function isHeadIdentity(entry: Partial<Entry> | undefined, version: number, nodeId?: number): boolean {
 		return (
-			committed?.version === version &&
-			(committed.nodeId ?? 0) === (nodeId ?? getThisNodeId(auditStore)) &&
-			!committed.additionalAuditRefs?.length
+			entry?.version === version &&
+			(entry.nodeId ?? 0) === (nodeId ?? getThisNodeId(auditStore)) &&
+			!entry.additionalAuditRefs?.length
 		);
 	}
 
