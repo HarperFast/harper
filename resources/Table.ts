@@ -5230,13 +5230,33 @@ export function makeTable(options): TableResourceClass {
 									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
 									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
 									// shortcut below would not apply — keep its exact, unbounded reconciliation.
-									if (isRocksDB && ++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+									if (isRocksDB && !fullUpdate && ++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
 										auditWalkCapped = true;
 										break;
 									}
-									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
+									let auditRecord;
+									if (isRocksDB && fullUpdate) {
+										// A keyed lookup hides unreadable siblings before its first match.
+										for (const entry of auditStore.getRange({ start: localTime, exactStart: true, log: nodeId })) {
+											if (entry.txnLogKey !== localTime) break;
+											if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+												auditWalkCapped = true;
+												break;
+											}
+											if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+											if (entry.tableId === tableId) {
+												const entryId = entry.recordId;
+												if (entryId === undefined) auditHistoryMissing = true;
+												if (entryId === id) {
+													auditRecord = entry;
+													break;
+												}
+											}
+										}
+										if (auditWalkCapped) break;
+									} else auditRecord = auditStore.get(localTime, tableId, id, nodeId);
 									if (!auditRecord) {
-										// A pruned log key can alias a collected record version.
+										// A floor-rekeyed receipt can alias a collected record version.
 										const receiptAlreadyCollected =
 											isAdditionalAuditRef &&
 											visitedAuditVersions?.has(auditIdentity) &&
