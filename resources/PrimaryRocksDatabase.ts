@@ -238,7 +238,11 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	}
 
 	open(): PrimaryRocksDatabase {
-		return super.open() as PrimaryRocksDatabase;
+		super.open();
+		if (this.#enc && this.store.sharedStructuresKey !== undefined) {
+			this.#enc.rocksStore = this;
+		}
+		return this;
 	}
 
 	static open(pathOrStore: string | Store, options?: RocksDatabaseOptions): PrimaryRocksDatabase {

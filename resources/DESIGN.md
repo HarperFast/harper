@@ -326,6 +326,10 @@ To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `Reco
 - The struct **read** hook is left intact, so records a prior v5 already wrote in struct mode still decode (read-compat); only new writes switch to records mode.
 - Companion change in `structon`: `prepareStructures` saves the shared structures in the legacy plain-array form when there are no typed structs (instead of the `{named, typed}` Map), so the `Symbol.for('structures')` buffer for a records-mode `__dbis__` is also v4-decodable.
 
+## Non-`initStore` structure saves read inside their own transaction (`PrimaryRocksDatabase`/`RecordEncoder`)
+
+A `PrimaryRocksDatabase` store that never runs `initStore` (notably `__dbis__`) binds `encoder.rocksStore` in `open()` so `RecordEncoder.saveStructures` reads `sharedStructuresKey` inside its compare-and-put transaction, pinning the optimistic snapshot before writing instead of falling back to `rocksdb-js`'s untracked read, and writes pre-encoded bytes (`asBinary`) so `txn.putSync` never re-enters the active `RecordEncoder.encode` mid-pack. `encoder.isRocksDB` must never be set on `__dbis__` because it moves the structure key to `[Symbol.for('structures'), name]` and strips leading byte `0x42` (classic structure `#2`) as a RocksDB version header (`unitTests/resources/recordEncoder.test.js`).
+
 ## getFromSource() timing: promise resolves before commit runs
 
 In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution.
