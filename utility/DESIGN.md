@@ -12,6 +12,8 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 Core-owned files resolve from their runtime module tree, including lazy plugin URLs and the shared compiler-emitted `systemSchema.js` JSON asset. Package metadata, public relative-worker paths and compiled product startup keep their package owner. `packageUtils.test.js` and `typestrip-runtime.test.mjs` enforce these boundaries with standalone/embedded builds, real workers and one product CLI invocation.
 
+`loadNativePackage(name)` retains ordinary `require(name)` resolution, including its missing-module error. A trusted entry filename as its second argument loads that file beside the installed package's exported manifest. HTTP uses this boundary lazily on Bun to bypass the builtin `ws` substitution; a missing installed package fails startup instead of falling back to that substitution.
+
 ## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
 
 libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with

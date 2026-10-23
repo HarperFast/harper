@@ -7,6 +7,9 @@ import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 import { waitFor } from '../../unitTests/waitFor.js';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -284,6 +287,158 @@ for (const mode of ['compiled', 'typestrip']) {
 					ws.terminate();
 				}
 			});
+
+			if (!bigInt) {
+				const requestResource = async (path: string, method = 'GET') => {
+					const response = await fetch(`${ctx.harper.httpURL}/${path}/`, {
+						method,
+						headers: {
+							'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+							'Content-Type': 'application/json',
+						},
+						...(method === 'POST' ? { body: '{}' } : {}),
+						signal: AbortSignal.timeout(10000),
+					});
+					ok(response.ok, await response.clone().text());
+					return response.json();
+				};
+				const openStalled = () => {
+					const socket = new WebSocket(`${ctx.harper.httpURL.replace(/^http/, 'ws')}/SendPressure/`, {
+						headers: {
+							Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+						},
+					});
+					socket.on('open', () => socket.pause());
+					return socket;
+				};
+
+				test(
+					'bounds and resumes a stalled subscription, then releases its producer on disconnect',
+					{ timeout: 40000 },
+					async () => {
+						let expectedThreadId: number;
+						const status = async () => {
+							const state = await requestResource('SendPressure');
+							ok(state.threadId > 0);
+							if (expectedThreadId !== undefined) strictEqual(state.threadId, expectedThreadId);
+							return state;
+						};
+						const assertStalled = async () => {
+							await waitFor(
+								async () => {
+									const state = await status();
+									return state.active && state.produced > 0;
+								},
+								{ timeout: 10000 }
+							);
+							// A paused reader must not let the bounded producer finish.
+							await new Promise((resolve) => setTimeout(resolve, 1000));
+							const state = await status();
+							strictEqual(state.active, true);
+							ok(state.produced < 128, `producer must wait for its consumer: ${JSON.stringify(state)}`);
+							return state;
+						};
+						const received: number[] = [];
+						const threadIds = new Set<number>();
+						const draining = openStalled();
+						draining.on('message', (data) => {
+							const message = JSON.parse(data.toString());
+							received.push(message.id);
+							threadIds.add(message.threadId);
+						});
+						try {
+							await once(draining, 'open', { signal: AbortSignal.timeout(10000) });
+							expectedThreadId = (await assertStalled()).threadId;
+							draining.resume();
+							await waitFor(() => received.length >= 128, { timeout: 15000 });
+							deepStrictEqual(
+								received,
+								Array.from({ length: 128 }, (_, id) => id)
+							);
+							deepStrictEqual([...threadIds], [expectedThreadId]);
+						} finally {
+							draining.terminate();
+						}
+						await waitFor(async () => !(await status()).active, { timeout: 10000 });
+
+						const disconnecting = openStalled();
+						try {
+							await once(disconnecting, 'open', { signal: AbortSignal.timeout(10000) });
+							await assertStalled();
+						} finally {
+							disconnecting.terminate();
+						}
+						await waitFor(async () => !(await status()).active, { timeout: 10000 });
+					}
+				);
+
+				test('returns a subscription that resolves after the client disconnected', { timeout: 30000 }, async () => {
+					const socket = new WebSocket(`${ctx.harper.httpURL.replace(/^http/, 'ws')}/DelayedConnect/`, {
+						headers: {
+							Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+						},
+					});
+					try {
+						await once(socket, 'open', { signal: AbortSignal.timeout(10000) });
+						await waitFor(async () => (await requestResource('DelayedConnect')).awaiting, { timeout: 10000 });
+						socket.terminate();
+						await waitFor(async () => (await requestResource('DelayedConnect')).disconnected, { timeout: 10000 });
+						await requestResource('DelayedConnect', 'POST');
+						await waitFor(async () => (await requestResource('DelayedConnect')).closed, { timeout: 10000 });
+					} finally {
+						socket.terminate();
+						await requestResource('DelayedConnect', 'POST');
+					}
+				});
+			}
+		});
+	}
+}
+
+if (process.env.HARPER_RUNTIME === 'bun') {
+	for (const mode of ['compiled', 'typestrip']) {
+		test(`Bun listener calls share one native bind (${mode})`, { timeout: 30000 }, async () => {
+			const runtime = mode === 'typestrip' ? '' : 'dist/';
+			const extension = mode === 'typestrip' ? 'ts' : 'js';
+			const url = (path: string) =>
+				pathToFileURL(resolve(import.meta.dirname, '../..', runtime + path + '.' + extension)).href;
+			const helper = resolve(import.meta.dirname, '../../unitTests/perPidRoot.js');
+			const code = `
+				const { createRequire } = await import('node:module');
+				const require = createRequire(${JSON.stringify(pathToFileURL(helper).href)});
+				const { materializePerPidRoot, removePerPidRoot } = require(${JSON.stringify(helper)});
+				process.env.ROOTPATH = materializePerPidRoot();
+				let server;
+				try {
+					const assert = (await import('node:assert')).default;
+					const http = await import(${JSON.stringify(url('server/http'))});
+					const { listenOnPorts } = await import(${JSON.stringify(url('server/threads/threadServer'))});
+					const { SERVERS } = await import(${JSON.stringify(url('server/serverRegistry'))});
+					const key = '127.0.0.1:0';
+					http.bunServeConfigs[key] = { fetch: () => new Response('ready'), reusePort: true };
+					const first = listenOnPorts();
+					assert.strictEqual(listenOnPorts(), first);
+					await first;
+					server = SERVERS[key];
+					assert.strictEqual(typeof server.stop, 'function');
+					const port = server.port;
+					await Promise.all([listenOnPorts(), listenOnPorts()]);
+					assert.strictEqual(listenOnPorts(), first);
+					assert.strictEqual(SERVERS[key], server);
+					assert.strictEqual(server.port, port);
+					assert.strictEqual(await (await fetch('http://127.0.0.1:' + port)).text(), 'ready');
+					console.log('Bun native bind complete');
+				} finally { server?.stop(true); removePerPidRoot(); }
+				process.exit(0);
+			`;
+			const { stdout } = await promisify(execFile)(
+				'bun',
+				[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--eval', code],
+				{
+					timeout: 20000,
+				}
+			);
+			ok(stdout.includes('Bun native bind complete'), stdout);
 		});
 	}
 }

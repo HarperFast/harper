@@ -10,7 +10,7 @@ const {
 } = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration, LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const {
@@ -22,7 +22,7 @@ const {
 const { setTimeout: delay } = require('node:timers/promises');
 const { PassThrough } = require('node:stream');
 const { getEventListeners } = require('node:events');
-const { RocksDatabase, registryStatus, constants } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, registryStatus, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { RETRY_NOW_VALUE } = constants;
 const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';

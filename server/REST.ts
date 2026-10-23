@@ -571,15 +571,27 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				incomingMessages.push(data);
 			});
 			let iterator;
+			const socket = (ws as any)._socket;
+			let closed = false;
+			let resolveDrain: (() => void) | undefined;
+			const onDrain = () => {
+				const resolve = resolveDrain;
+				resolveDrain = undefined;
+				socket?.off('drain', onDrain);
+				resolve?.();
+			};
 			(ws as any).on('close', () => {
+				closed = true;
+				onDrain();
 				connectionCount--;
 				recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
 				incomingMessages.emit('close');
-				if (iterator) iterator.return();
+				iterator?.return?.();
 				request._abort?.();
 			});
 			try {
 				await chainCompletion;
+				if (closed) return;
 				// before the route lookup: the same credential is a 401 over HTTP, so a rejected client
 				// must not learn from the close code whether the resource exists
 				assertNoDeferredCredentialRejection(request);
@@ -610,14 +622,22 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						return resource.connect(resourceRequest, incomingMessages, request);
 					});
 					iterator = responseStream[Symbol.asyncIterator]();
+					if (closed) {
+						await iterator.return?.();
+						return;
+					}
 
 					let result;
-					while (!(result = await iterator.next()).done) {
+					while (!closed && !(result = await iterator.next()).done) {
 						const messageBinary = await serializeMessage(result.value, request);
+						if (closed) break;
 						ws.send(messageBinary as string | Buffer<ArrayBuffer>);
 						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
-						if ((ws as any)._socket.writableNeedDrain) {
-							await new Promise((resolve) => (ws as any)._socket.once('drain', resolve));
+						if (socket?.writableNeedDrain && !closed) {
+							await new Promise<void>((resolve) => {
+								resolveDrain = resolve;
+								socket.once('drain', onDrain);
+							});
 						}
 					}
 				}

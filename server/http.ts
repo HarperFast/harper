@@ -49,9 +49,11 @@ import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
+import { loadNativePackage } from '../utility/packageUtils.js';
 
 const { errorToString, errorForLog } = harperLogger;
 const websocketServers = {};
+let bunWebSocketServer;
 const httpServers = {},
 	httpChain = {},
 	httpResponders: {
@@ -1850,7 +1852,10 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
 			installUwsWsHandler(uwsServeConfigs[port]);
 		} else if (!websocketServers[port]) {
-			websocketServers[port] = new WebSocketServer({
+			const WebSocketServerForPort = isBun
+				? (bunWebSocketServer ??= loadNativePackage('ws', 'index.js').WebSocketServer)
+				: WebSocketServer;
+			websocketServers[port] = new WebSocketServerForPort({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB

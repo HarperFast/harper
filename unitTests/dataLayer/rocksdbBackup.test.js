@@ -2,11 +2,12 @@
 
 const assert = require('node:assert');
 const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
-const { dirname, join } = require('node:path');
+const { dirname, join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
 const { extract } = require('tar-stream');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const {
 	backupDirForDatabase,
 	createBackupOffline,
@@ -30,7 +31,7 @@ const {
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
-const blobBackupModule = require('#src/dataLayer/blobBackup');
+const blobBackupModule = require('#js/dataLayer/blobBackup');
 const { blobSnapshotDir } = blobBackupModule;
 const { deleteBackupManifest, isBackupComplete } = require('#src/dataLayer/backupManifest');
 const backupManifestModule = require('#src/dataLayer/backupManifest');
@@ -41,7 +42,7 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
-const { backups } = require('@harperfast/rocksdb-js');
+const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { closeLoadedDatabases } = require('#src/resources/databases');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
@@ -716,7 +717,7 @@ describe('rocksdbBackup', function () {
 					const { dirname } = require('node:path');
 					const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
 					env.initSync();
-					env.setProperty('storage.backupPath', ${JSON.stringify(getBackupsRoot())});
+					env.setProperty(${JSON.stringify(CONFIG_PARAMS.STORAGE_BACKUPPATH)}, ${JSON.stringify(resolve(getBackupsRoot()))});
 					const { fsyncDirectory } = require(${JSON.stringify(require.resolve('#src/utility/durableFile'))});
 					const rename = fs.renameSync;
 					fs.renameSync = (from, to) => {

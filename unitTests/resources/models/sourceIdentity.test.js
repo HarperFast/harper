@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { join } = require('node:path');
 const { setupTestDBPath } = require('../../testUtils');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { createGenerativeDecisionBackend } = require('#src/resources/models/generativeDecision');
 const { bootstrapModels, resetModelsProjection } = require('#src/resources/models/bootstrap');
 const {

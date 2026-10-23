@@ -1,6 +1,4 @@
-'use strict';
-
-const { requireAwsSdk } = require('./awsSdkLoader.ts');
+import { requireAwsSdk } from './awsSdkLoader.ts';
 
 let s3Sdk;
 
@@ -9,12 +7,7 @@ function loadClientS3() {
 	return s3Sdk;
 }
 
-module.exports = {
-	getFileStreamFromS3,
-	getS3AuthObj,
-};
-
-async function getFileStreamFromS3(jsonMessage) {
+export async function getFileStreamFromS3(jsonMessage) {
 	const { s3 } = jsonMessage;
 	const params = {
 		Bucket: s3.bucket,
@@ -26,7 +19,7 @@ async function getFileStreamFromS3(jsonMessage) {
 	return item.Body;
 }
 
-function getS3AuthObj(accessKeyId, secretKey, region) {
+export function getS3AuthObj(accessKeyId, secretKey, region) {
 	const { S3 } = loadClientS3();
 	return new S3({
 		credentials: {

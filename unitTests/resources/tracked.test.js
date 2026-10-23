@@ -6,7 +6,7 @@ const {
 	collapseData,
 	GenericTrackedObject,
 } = require('#src/resources/tracked');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger = require('#js/utility/logging/harper_logger');
 describe('Tracked Object', () => {
 	let source = {
 		str: 'string',

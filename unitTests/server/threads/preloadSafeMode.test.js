@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const envMgr = require('#src/utility/environment/environmentManager');
 const hdbTerms = require('#src/utility/hdbTerms');
-const { startWorker } = require('#js/server/threads/manageThreads');
+const { startWorker } = require('#src/server/threads/manageThreads');
 
 const FIXTURES = path.join(__dirname, 'preloadSafeMode-fixtures');
 const WORKER_FIXTURE = path.join(FIXTURES, 'worker.cjs');

@@ -12,6 +12,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
 const { Readable } = require('node:stream');
+const { once } = require('node:events');
+const { waitFor } = require('../../waitFor.js');
 
 // A Readable that emits the given chunks one per read() tick (async), then ends.
 function chunkStream(chunks) {
@@ -818,6 +820,74 @@ try {
 					done(error);
 				}
 			});
+		});
+
+		it('resumes a backpressured producer and releases it when the reader disconnects', async function () {
+			this.timeout(20000);
+			const connections = [];
+			const pressurePort = port + 2;
+			const pressureServer = await createUwsServer({
+				port: pressurePort,
+				handler: () => ({ status: 200, body: 'http' }),
+				wsHandler: (ws) => {
+					const state = { ws, produced: 0, finished: false, error: undefined };
+					connections.push(state);
+					const controller = new AbortController();
+					ws.once('close', () => controller.abort());
+					(async () => {
+						for (let id = 0; id < 128 && !controller.signal.aborted; id++) {
+							const message = Buffer.alloc(512 * 1024);
+							message.writeUInt32BE(id);
+							ws.send(message);
+							state.produced++;
+							if (ws._socket.writableNeedDrain) {
+								await once(ws._socket, 'drain', { signal: controller.signal });
+							}
+						}
+					})()
+						.catch((error) => {
+							if (!controller.signal.aborted) state.error = error;
+						})
+						.finally(() => {
+							state.finished = true;
+						});
+				},
+			});
+			const clients = [];
+			const openStalled = () => {
+				const client = new WebSocket(`ws://127.0.0.1:${pressurePort}/`);
+				client.once('open', () => client.pause());
+				clients.push(client);
+				return client;
+			};
+			try {
+				const client = openStalled();
+				const received = [];
+				client.on('message', (message) => received.push(message.readUInt32BE()));
+				await once(client, 'open', { signal: AbortSignal.timeout(5000) });
+				await waitFor(() => connections[0]?.ws._socket.writableNeedDrain, 5000);
+				assert.ok(connections[0].produced < 128);
+				client.resume();
+				await waitFor(() => received.length >= 128 && connections[0].finished, 10000);
+				assert.ifError(connections[0].error);
+				assert.deepStrictEqual(
+					received,
+					Array.from({ length: 128 }, (_, id) => id)
+				);
+				client.terminate();
+
+				const disconnected = openStalled();
+				await once(disconnected, 'open', { signal: AbortSignal.timeout(5000) });
+				await waitFor(() => connections[1]?.ws._socket.writableNeedDrain, 5000);
+				assert.ok(connections[1].produced < 128);
+				disconnected.terminate();
+				await waitFor(() => connections[1].finished, 5000);
+				assert.ifError(connections[1].error);
+				assert.strictEqual(connections[1].ws._socket.listenerCount('drain'), 0);
+			} finally {
+				for (const client of clients) client.terminate();
+				pressureServer.close();
+			}
 		});
 	}
 );

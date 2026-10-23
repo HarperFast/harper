@@ -137,6 +137,8 @@ export type {
 
 import runtimeGlobals from './globals.js';
 import './server/threads/threadServer.ts';
+import { initSync } from './utility/environment/environmentManager.ts';
+import { getDatabases } from './resources/databases.ts';
 import type { contentTypes as ContentTypesImport } from './server/serverHelpers/contentTypes.ts';
 import type { createBlob as CreateBlobImport } from './resources/blob.ts';
 import type { databases as DatabasesImport } from './resources/databases.ts';
@@ -177,6 +179,9 @@ declare global {
 	const threads: ThreadsImport;
 	const transaction: typeof TransactionImport;
 }
+
+initSync();
+getDatabases();
 
 // The CommonJS default is the live object; its ESM namespace named properties are early snapshots.
 export const contentTypes = runtimeGlobals.contentTypes as typeof ContentTypesImport;

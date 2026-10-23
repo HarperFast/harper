@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 
-const { startWorker } = require('#js/server/threads/manageThreads');
+const { startWorker } = require('#src/server/threads/manageThreads');
 
 const WORKER_FIXTURE = path.join(__dirname, 'workerSourceMaps-fixture.cjs');
 

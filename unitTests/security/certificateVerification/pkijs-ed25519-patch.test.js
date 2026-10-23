@@ -17,7 +17,7 @@ describe('certificateVerification/pkijs-ed25519-patch.ts', function () {
 	const RSA_OID = '1.2.840.113549.1.1.1'; // RSA for comparison
 
 	before(function () {
-		patchModule = require('#src/security/certificateVerification/pkijs-ed25519-patch');
+		patchModule = require('#js/security/certificateVerification/pkijs-ed25519-patch');
 		pkijs = patchModule.loadPkijs();
 	});
 

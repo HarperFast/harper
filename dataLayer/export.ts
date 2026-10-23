@@ -1,7 +1,7 @@
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 
 import * as search from './search.ts';
-import * as AWSConnector from '../utility/AWS/AWSConnector.js';
+import * as AWSConnector from '../utility/AWS/AWSConnector.ts';
 import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.ts';
 import * as stream from 'node:stream';
 import * as hdbUtils from '../utility/common_utils.ts';

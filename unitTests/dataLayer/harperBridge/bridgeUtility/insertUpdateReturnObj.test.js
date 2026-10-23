@@ -2,7 +2,7 @@
 const testUtils = require('../../../testUtils.js');
 testUtils.preTestPrep();
 
-const returnObject = require('#js/dataLayer/harperBridge/bridgeUtility/insertUpdateReturnObj');
+const returnObject = require('#src/dataLayer/harperBridge/bridgeUtility/insertUpdateReturnObj.js');
 const chai = require('chai');
 const { expect } = chai;
 
