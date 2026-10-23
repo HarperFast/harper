@@ -11,8 +11,11 @@ import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS, SSH_KEY_DIR_NAME } from '../utility/
 import {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
+	isPayloadRoutingShape,
 	isRootConfigEffect,
+	PAYLOAD_ROUTING_KEYS,
 	rootConfigEffectFromDeclaration,
+	type PayloadRouting,
 	type RootConfigEffect,
 } from './rootConfigPublication.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -274,6 +277,23 @@ export function assertIsolationConfig(applicationName: string, isolated: unknown
 			`Invalid 'isolated' for application ${applicationName}: expected a boolean, got ${typeof isolated}`
 		);
 	}
+}
+
+/** The routing keys a payload build owns, as its descriptor or journal records them: `null` where the entry has none. */
+export function assertPayloadRouting(applicationName: string, routing: unknown): asserts routing is PayloadRouting {
+	if (!isPayloadRoutingShape(routing)) {
+		throw new TypeError(
+			`Invalid routing for application ${applicationName}: expected an object of ${PAYLOAD_ROUTING_KEYS.join(', ')}`
+		);
+	}
+	const valueOf = (key: (typeof PAYLOAD_ROUTING_KEYS)[number]) => (routing[key] === null ? undefined : routing[key]);
+	for (const key of ['host', 'urlPath'] as const) {
+		if (valueOf(key) !== undefined && typeof routing[key] !== 'string') {
+			throw new TypeError(`Invalid '${key}' for application ${applicationName}: expected a string`);
+		}
+	}
+	assertIsolationConfig(applicationName, valueOf('isolated'));
+	assertBranchedDatabases(applicationName, valueOf('branchedDatabases'));
 }
 
 /**
@@ -1417,6 +1437,8 @@ export type ArtifactDescriptor = {
 	component: string;
 	/** The root-config entry to publish with the activation; `null` for a payload build, which owns none. */
 	rootConfig: Record<string, unknown> | null;
+	/** A payload build that set any routing key owns all of them; absent for one that set none. */
+	routing?: PayloadRouting;
 	installationIsOpaque: boolean;
 	isolated: boolean;
 };
@@ -1463,10 +1485,27 @@ async function readArtifactDescriptor(
 	}
 	// Admission reads one field and publication writes the other, so two authorities that disagree would
 	// admit one isolation and then publish the opposite.
-	if (parsed.rootConfig && Boolean(parsed.rootConfig.isolated) !== parsed.isolated) {
+	if (parsed.routing !== undefined) {
+		if (parsed.rootConfig !== null) {
+			throw unusable(`Artifact descriptor ${descriptorPath} records both a root-config entry and payload routing`);
+		}
+		try {
+			assertPayloadRouting(componentName, parsed.routing);
+		} catch (error) {
+			throw unusable(
+				`Artifact descriptor ${descriptorPath} records routing that cannot be published: ${errorMessage(error)}`
+			);
+		}
+	}
+	const publishedIsolation = parsed.rootConfig
+		? Boolean(parsed.rootConfig.isolated)
+		: parsed.routing
+			? parsed.routing.isolated === true
+			: undefined;
+	if (publishedIsolation !== undefined && publishedIsolation !== parsed.isolated) {
 		throw unusable(
 			`Artifact descriptor ${descriptorPath} admits isolated=${parsed.isolated} but publishes ` +
-				`isolated=${Boolean(parsed.rootConfig.isolated)}`
+				`isolated=${publishedIsolation}`
 		);
 	}
 	return parsed as ArtifactDescriptor;
@@ -1797,16 +1836,19 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 		// effect the descriptor still records; an immediate deploy published before it built, so there is
 		// nothing left to do for it.
 		const descriptor = await readArtifactDescriptor(dirname(journalPath), parsed.component);
-		rootConfig = descriptor ? rootConfigEffectFromDeclaration(descriptor.rootConfig) : { kind: 'keep' };
+		rootConfig = descriptor
+			? rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing)
+			: { kind: 'keep' };
 	} else {
 		if (!isRootConfigEffect(parsed.rootConfig) || parsed.rootConfig.kind === 'remove') {
 			throw new Error(`Activation journal ${journalPath} does not record its root-config effect`);
 		}
 		rootConfig = parsed.rootConfig;
 	}
-	if (rootConfig.kind === 'set') {
+	if (rootConfig.kind === 'set' || (rootConfig.kind === 'unset-package' && rootConfig.routing)) {
 		try {
-			assertApplicationConfig(parsed.component, rootConfig.entry as any);
+			if (rootConfig.kind === 'set') assertApplicationConfig(parsed.component, rootConfig.entry as any);
+			else assertPayloadRouting(parsed.component, rootConfig.routing);
 		} catch (error) {
 			throw new Error(
 				`Activation journal ${journalPath} records a root-config entry that cannot be published: ${errorMessage(error)}`,
@@ -3208,7 +3250,9 @@ export async function activateCandidateApplication(
 	const rootConfig = options.rootConfig ?? { kind: 'keep' };
 	// Before anything is on disk: a journal recovery would refuse to read is one it could never settle.
 	if (rootConfig.kind === 'set') assertApplicationConfig(application.name, rootConfig.entry as any);
-	else if (rootConfig.kind === 'remove') {
+	else if (rootConfig.kind === 'unset-package' && rootConfig.routing) {
+		assertPayloadRouting(application.name, rootConfig.routing);
+	} else if (rootConfig.kind === 'remove') {
 		throw new Error(`Cannot activate ${application.name}: an activation never removes its root-config entry`);
 	}
 	await assertRootConfigEffectPublishable(application.name, rootConfig);
@@ -4806,7 +4850,7 @@ export type PrepareApplicationOptions = {
 	 * caller installing FROM root config needs. A callback rather than a value because `beforePrepare` is
 	 * what determines it, and that runs after these options have been constructed.
 	 */
-	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
+	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; routing?: PayloadRouting; isolated: boolean };
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
 	fingerprintInstall?: boolean;
@@ -5025,6 +5069,7 @@ export async function prepareApplication(application: Application, options: Prep
 								v: ARTIFACT_DESCRIPTOR_VERSION,
 								component: application.name,
 								rootConfig: declared.rootConfig,
+								routing: declared.routing,
 								installationIsOpaque: application.installationIsOpaque,
 								isolated: declared.isolated,
 							});
@@ -5043,6 +5088,7 @@ export async function prepareApplication(application: Application, options: Prep
 								v: ARTIFACT_DESCRIPTOR_VERSION,
 								component: application.name,
 								rootConfig: described.rootConfig,
+								routing: described.routing,
 								installationIsOpaque: application.installationIsOpaque,
 								isolated: described.isolated,
 							});
@@ -5053,7 +5099,7 @@ export async function prepareApplication(application: Application, options: Prep
 						await activateCertifying(
 							application,
 							artifactId,
-							declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
+							declared ? rootConfigEffectFromDeclaration(declared.rootConfig, declared.routing) : { kind: 'keep' },
 							described ? options.certification : undefined
 						);
 						application.installedTree = linked ? `link:${linkedTo}` : artifactId;
@@ -5169,7 +5215,7 @@ async function activateStagedArtifact(
 	await activateCertifying(
 		application,
 		artifactId,
-		rootConfigEffectFromDeclaration(descriptor.rootConfig),
+		rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing),
 		options.certification
 	);
 }

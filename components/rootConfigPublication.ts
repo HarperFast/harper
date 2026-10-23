@@ -23,11 +23,19 @@ import { isThreadRunning } from '../server/threads/manageThreads.js';
  * - `set`: a package deploy publishes the entry its build was declared with.
  * - `unset-package`: a payload deploy owns no registry provenance, so the keys that say how to install the
  *   component from one no longer describe what is live. "No package" is an opinion: left in place, a cold
- *   install resolves the old package over the payload release.
+ *   install resolves the old package over the payload release. A payload deploy that set any routing key also
+ *   carries `routing`: every one of `PAYLOAD_ROUTING_KEYS`, `null` for a key the entry does not have.
  * - `remove`: `drop_component`. Never journaled, because no activation removes a whole entry.
  */
 export type RootConfigEffect =
-	{ kind: 'keep' } | { kind: 'set'; entry: Record<string, unknown> } | { kind: 'unset-package' } | { kind: 'remove' };
+	| { kind: 'keep' }
+	| { kind: 'set'; entry: Record<string, unknown> }
+	| { kind: 'unset-package'; routing?: PayloadRouting }
+	| { kind: 'remove' };
+
+/** The root-config keys a payload deploy can set on its component's entry. */
+export const PAYLOAD_ROUTING_KEYS = ['host', 'urlPath', 'isolated', 'branchedDatabases'] as const;
+export type PayloadRouting = Partial<Record<(typeof PAYLOAD_ROUTING_KEYS)[number], unknown>>;
 
 const ROOT_CONFIG_EFFECT_KINDS = new Set(['keep', 'set', 'unset-package', 'remove']);
 const PACKAGE_INSTALL_KEYS = ['package', 'install', 'credentials'];
@@ -44,17 +52,29 @@ export function isRootConfigEffect(value: unknown): value is RootConfigEffect {
 	if (!isPlainObject(value) || typeof value.kind !== 'string' || !ROOT_CONFIG_EFFECT_KINDS.has(value.kind)) {
 		return false;
 	}
+	if (value.kind === 'unset-package') return value.routing === undefined || isPayloadRoutingShape(value.routing);
 	return value.kind !== 'set' || isPlainObject(value.entry);
 }
 
+/** Shape only: the values are validated as application config by whoever journals or reads them. */
+export function isPayloadRoutingShape(value: unknown): value is PayloadRouting {
+	return (
+		isPlainObject(value) && Object.keys(value).every((key) => (PAYLOAD_ROUTING_KEYS as readonly string[]).includes(key))
+	);
+}
+
 /**
- * The effect a deploy's declaration amounts to: an entry to publish, or `null` for a payload build. The entry
- * goes through the same JSON round trip the journal does, so what an activation applies in-process is exactly
- * what recovery would apply from the journal — an `undefined` install option would otherwise make the two
- * differ.
+ * The effect a deploy's declaration amounts to: an entry to publish, or `null` for a payload build, with the
+ * routing keys it owns when it set any. Both go through the same JSON round trip the journal does, so what an
+ * activation applies in-process is exactly what recovery would apply from the journal — an `undefined` install
+ * option would otherwise make the two differ.
  */
-export function rootConfigEffectFromDeclaration(rootConfig: Record<string, unknown> | null): RootConfigEffect {
-	return rootConfig ? { kind: 'set', entry: JSON.parse(JSON.stringify(rootConfig)) } : { kind: 'unset-package' };
+export function rootConfigEffectFromDeclaration(
+	rootConfig: Record<string, unknown> | null,
+	routing?: PayloadRouting
+): RootConfigEffect {
+	if (rootConfig) return { kind: 'set', entry: JSON.parse(JSON.stringify(rootConfig)) };
+	return routing ? { kind: 'unset-package', routing: JSON.parse(JSON.stringify(routing)) } : { kind: 'unset-package' };
 }
 
 /**
@@ -156,6 +176,11 @@ export function hasRootConfigEntry(component: string): boolean {
 	}
 }
 
+/** The component's entry as the root config file on disk has it, which is what an effect is applied to. */
+export function readRootConfigEntry(component: string): unknown {
+	return readRootConfigChange(component, { kind: 'keep' }).configDoc.toJSON()?.[component];
+}
+
 /**
  * Refuse an effect this node could not publish, or that would not last, while refusing still changes nothing: the
  * publish runs after the commit rename, and a document that does not parse, a directory this process cannot write,
@@ -232,9 +257,9 @@ function assertEnvLayersKeepEffect(
 
 /**
  * The keys, as paths into the component's entry, that contradict what the effect wants of it; none when the
- * effect holds. For a payload deploy and a drop that is only `package`: a start installs a component from its entry
- * only when the entry names one, so the other keys a variable keeps for the name, `install` and `credentials`
- * included, reinstall nothing.
+ * effect holds. For a payload deploy and a drop that is only `package`, plus the routing keys a payload deploy
+ * owns: a start installs a component from its entry only when the entry names one, so the other keys a variable
+ * keeps for the name, `install` and `credentials` included, reinstall nothing.
  */
 function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] {
 	switch (effect.kind) {
@@ -245,8 +270,16 @@ function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] 
 				(keyPath) => !isDeepStrictEqual(valueAt(entry, keyPath), valueAt(effect.entry, keyPath))
 			);
 		case 'unset-package':
-		case 'remove':
-			return isPlainObject(entry) && 'package' in entry ? [['package']] : [];
+		case 'remove': {
+			const contradicted = isPlainObject(entry) && 'package' in entry ? [['package']] : [];
+			if (effect.kind === 'unset-package') {
+				for (const [key, wanted] of Object.entries(effect.routing ?? {})) {
+					const actual = isPlainObject(entry) ? entry[key] : undefined;
+					if (wanted === null ? actual !== undefined : !isDeepStrictEqual(actual, wanted)) contradicted.push([key]);
+				}
+			}
+			return contradicted;
+		}
 	}
 }
 
@@ -294,11 +327,25 @@ function applyEffectToDocument(configDoc: any, component: string, effect: RootCo
 			else configDoc.addIn([component], effect.entry);
 			return true;
 		case 'unset-package': {
-			if (!isPlainObject(current)) return false;
-			const installKeys = PACKAGE_INSTALL_KEYS.filter((key) => key in current);
-			if (installKeys.length === 0) return false;
-			if (Object.keys(current).length === installKeys.length) configDoc.deleteIn([component]);
-			else for (const key of installKeys) configDoc.deleteIn([component, key]);
+			const entry = isPlainObject(current) ? current : undefined;
+			const removed = new Set(entry ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry) : []);
+			const written: [string, unknown][] = [];
+			for (const [key, wanted] of Object.entries(effect.routing ?? {})) {
+				if (wanted === null) {
+					if (entry && key in entry) removed.add(key);
+				} else if (!isDeepStrictEqual(entry?.[key], wanted)) written.push([key, wanted]);
+			}
+			if (removed.size === 0 && written.length === 0) return false;
+			if (!entry) {
+				const created = Object.fromEntries(written);
+				if (configDoc.hasIn([component])) configDoc.setIn([component], created);
+				else configDoc.addIn([component], created);
+			} else if (written.length === 0 && Object.keys(entry).every((key) => removed.has(key))) {
+				configDoc.deleteIn([component]);
+			} else {
+				for (const key of removed) configDoc.deleteIn([component, key]);
+				for (const [key, wanted] of written) configDoc.setIn([component, key], wanted);
+			}
 			return true;
 		}
 		case 'remove':

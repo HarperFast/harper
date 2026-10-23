@@ -45,6 +45,8 @@ const {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
 	hasRootConfigEntry,
+	PAYLOAD_ROUTING_KEYS,
+	readRootConfigEntry,
 	withRootConfigPublicationLock,
 } = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
@@ -532,20 +534,7 @@ async function deployComponent(req) {
 	// this thread's cached config may predate an earlier deploy that changed the entry without a restart
 	env.initSync(true);
 	const initiallyIsolated = isIsolatedApplication(req.project);
-	if (requestedIsolation !== undefined && !req.package) {
-		throw handleHDBError(
-			new Error(),
-			`'isolated' is only supported for package deployments; set it on the application's root config entry instead`,
-			HTTP_STATUS_CODES.BAD_REQUEST
-		);
-	}
-	if (req.branchedDatabases !== undefined && !req.package) {
-		throw handleHDBError(
-			new Error(),
-			`'branchedDatabases' is only supported for package deployments; set it on the application's root config entry instead`,
-			HTTP_STATUS_CODES.BAD_REQUEST
-		);
-	}
+	const ownsPayloadRouting = !req.package && PAYLOAD_ROUTING_KEYS.some((key) => req[key] !== undefined);
 	// Only the originating node rejects admission: replicated peers must commit the same desired config,
 	// then report any node-local inability to run it through component lifecycle status.
 	const assertIsolationAdmission = async (isolated) => {
@@ -606,6 +595,7 @@ async function deployComponent(req) {
 	}
 	let wasIsolated;
 	let nowIsolated;
+	let declaredRouting;
 
 	// Create a hdb_deployment row up front so the deploy is observable and auditable
 	// even if the CLI disconnects. The row also holds the payload in a Blob attribute,
@@ -777,15 +767,19 @@ async function deployComponent(req) {
 			// not the new row's.
 			artifactId: req.deployment_id ?? req._deploymentId,
 			mode,
-			describeArtifact: () => ({ rootConfig: declaredRootConfig, isolated: Boolean(nowIsolated) }),
+			describeArtifact: () => ({
+				rootConfig: declaredRootConfig,
+				routing: declaredRouting,
+				isolated: Boolean(nowIsolated),
+			}),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
-				// A package artifact publishes its own root-config entry, so its recorded intent is what will
-				// be in force. A payload artifact owns no `isolated` key, so the effective configuration is the
-				// only authority there — a saved `false` must not admit past an isolation the operator set
-				// between the stage and this call.
-				nowIsolated = descriptor.rootConfig ? descriptor.isolated : wasIsolated;
+				// A package artifact publishes its own root-config entry, and a payload artifact that set routing owns
+				// those keys, so the recorded intent is what will be in force. Any other payload artifact owns no
+				// `isolated` key, so the effective configuration is the only authority there — a saved `false` must
+				// not admit past an isolation the operator set between the stage and this call.
+				nowIsolated = descriptor.rootConfig || descriptor.routing ? descriptor.isolated : wasIsolated;
 				await assertIsolationAdmission(nowIsolated);
 			},
 			beforePrepare: async () => {
@@ -794,8 +788,11 @@ async function deployComponent(req) {
 				wasIsolated = isIsolatedApplication(req.project);
 				nowIsolated = requestedIsolation ?? wasIsolated;
 				await assertIsolationAdmission(nowIsolated);
-				if (!isReplicatedExecution && req.package) req.isolated = nowIsolated;
-				if (!req.package) return;
+				if (!isReplicatedExecution && (req.package || ownsPayloadRouting)) req.isolated = nowIsolated;
+				if (!req.package) {
+					if (ownsPayloadRouting) declaredRouting = payloadRouting(req, nowIsolated);
+					return;
+				}
 				const applicationConfig = { package: req.package };
 				if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
 					applicationConfig.install = {
@@ -1129,6 +1126,22 @@ async function deployComponent(req) {
 		// A worker that asked for its own restart answers, or fails, before main replaces it.
 		await releaseRequester?.();
 	}
+}
+
+/**
+ * Every routing key a payload deploy owns once it sets any: what it sets, else what the entry holds now, `null`
+ * where neither has one. Owning all of them is what lets a restore of this release put back the routing it
+ * replaced, as a package release's whole entry does.
+ */
+function payloadRouting(req, nowIsolated) {
+	const entry = readRootConfigEntry(req.project);
+	const current = entry && typeof entry === 'object' ? entry : {};
+	return {
+		host: req.host ?? current.host ?? null,
+		urlPath: req.urlPath ?? current.urlPath ?? null,
+		isolated: nowIsolated ? true : null,
+		branchedDatabases: req.branchedDatabases ?? current.branchedDatabases ?? null,
+	};
 }
 
 /**

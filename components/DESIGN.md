@@ -393,10 +393,14 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 - `unset-package` — a payload build removes `package`, `install` and `credentials` and keeps the rest
   (`isolated`, `urlPath`, `host`, `branchedDatabases`), removing the entry if nothing remains. "No package"
   is an opinion: left in place, a cold install resolves the old package over the payload release that is
-  live. This is a behaviour change operators can see. A payload deploy keeps those four but cannot set them,
-  since its build declares no entry, so `deploy_component` refuses each one without a `package` (400) rather
-  than drop it: a dropped `branchedDatabases` would leave the application reading and writing the base
-  databases it asked to fork (harper#3044). Accepting them is harper#3043.
+  live. This is a behaviour change operators can see. A payload deploy that sets any of those four routing
+  keys (harper#3043) owns all four: `deploy_component` records each as requested, else as the entry has it
+  now, else `null`, in the artifact descriptor's `routing` and the effect, and the activation writes them and
+  removes the `null` ones. Owning all four, rather than only the ones it named, is what lets a canary restore of
+  the release it replaced put that release's routing back, as a package release's whole entry does. A payload
+  deploy that sets none owns none, so isolation an operator set on the entry by hand survives it and its
+  restore. A predecessor that owns none restores none, so a rejected release's routing outlives the restore
+  there, as it does after a package release replaces a payload one.
 - `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
   clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
   writer.

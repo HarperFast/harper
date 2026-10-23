@@ -607,8 +607,6 @@ function deployComponentValidator(req) {
 			'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
 		}),
 	})
-		.with('urlPath', 'package')
-		.with('host', 'package')
 		// An activation has no build inputs and takes no routing or packaging opinions: the artifact's own
 		// descriptor is the authority for what it publishes, and silently ignoring these would hide that.
 		.without('deployment_id', [
