@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const { activateDeploymentOnPeers } = require('#src/bin/restart');
 const { getThisNodeName } = require('#src/server/nodeName');
+const { server: coreServer } = require('#src/server/Server');
 
 const DEPLOYMENT = '11111111-1111-1111-1111-111111111111';
 const ROW = '22222222-2222-2222-2222-222222222222';
@@ -101,14 +102,17 @@ describe('activating a staged release on each peer in turn', () => {
 	});
 
 	it('has nothing to do on a node without peers, which has no replication to ask', async () => {
-		global.server = {
-			replication: {
-				monitorNodeCAs() {
-					throw new Error('Replication not implemented.');
-				},
-			},
-		};
+		global.server = { replication: coreServer.replication };
 		assert.deepStrictEqual(await activateDeploymentOnPeers(activation()), { activated: [] });
+	});
+
+	it('fails rather than take a node list it could not load for an empty one', async () => {
+		global.server.nodes = [];
+		global.server.replication.monitorNodeCAs = () => {
+			throw new Error('hdb_nodes could not be read');
+		};
+		await assert.rejects(activateDeploymentOnPeers(activation()), /hdb_nodes could not be read/);
+		assert.deepStrictEqual(sent, []);
 	});
 
 	it('activates only the nodes it was given', async () => {

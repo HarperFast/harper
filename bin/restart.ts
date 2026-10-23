@@ -24,6 +24,7 @@ import { withComponentPreparationLock } from '../components/componentPreparation
 import { awaitRestart } from '../components/awaitRestart.ts';
 import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
+import { REPLICATION_NOT_IMPLEMENTED } from '../server/Server.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
 envMgr.initSync();
@@ -215,8 +216,9 @@ async function activateDeploymentOnPeers(activation: any) {
 	try {
 		// A job thread starts with an empty `server.nodes`; subscribing to node updates fills it from hdb_nodes.
 		(global as any).server.replication.monitorNodeCAs();
-	} catch {
-		// Harper core alone has no replication, so no peers.
+	} catch (error) {
+		// Harper core alone has no replication, so no peers; any other failure leaves the list unknown, not empty.
+		if (error?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
 	}
 	const thisNode = getThisNodeName();
 	const otherNodes = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
