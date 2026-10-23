@@ -5104,7 +5104,8 @@ export function makeTable(options): TableResourceClass {
 							let refBase: Partial<Entry> | undefined;
 							let readsOwnStaging = false;
 							if (!priorStaged) {
-								refBase = identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
+								refBase =
+									identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
 								const ownMintedKey = isRocksDB ? reservedLocalKey(transaction) : undefined;
 								readsOwnStaging =
 									stagedOwnAuditEntry &&
