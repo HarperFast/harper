@@ -841,8 +841,17 @@ skipped only when it resolves to `PACKAGE_ROOT` (harper#3207), because a nested 
 as a component is that package's dependency, and the target does not reinstall a shipped `node_modules`.
 `scanPackageDirectory()` finds them in its async walk, so `tar-fs`'s synchronous `ignore` does no I/O and the size
 estimate leaves out exactly what the packer does. A scan is not a snapshot: a link created or replaced between the scan
-and the pack is classified by the tree the scan saw. `harperdb` is different: the loader only repairs a link that
-already exists, so omitting one loses it on the target (harper#2577).
+and the pack is classified by the tree the scan saw.
+
+`harperdb` is the same link under the legacy name, with one difference: the loader only repairs a `node_modules/harperdb`
+that already exists, and `installApplication` skips installing when `node_modules` does. An archive that merely omits the
+link therefore loses it on the target. So a `harperdb` link that resolves to `PACKAGE_ROOT`, at the root or under a loaded
+package, is install-owned too (harper#2577), but is replaced by an empty directory entry (mode 0755) that the loader turns
+back into the link. A real `harperdb` directory, or a link elsewhere, is the component's own and ships as it is. The entry is
+injected after the walk (`finalize: false` plus `finish`), not by rewriting the link's header in `map`: `tar-fs` sets
+`linkname` after `map` runs, which would put the install's absolute path into the archive under `skip_symlinks`. The name is
+joined with `/` because a direct `pack.entry` skips `tar-fs`'s separator conversion. Only an archive extracted into a fresh
+directory is covered; extracting a directory entry over a live install link would follow it.
 
 ## Deploy watcher generations preserve logical entry events
 
