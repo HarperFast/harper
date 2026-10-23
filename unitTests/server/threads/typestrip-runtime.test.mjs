@@ -1294,8 +1294,10 @@ describe('TypeStrip canary admission', () => {
 					process.env.HARPER_BUILTIN_COMPONENTS = 'admissionScopeProbe=' + ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, 'fixtures/admission-scope.cjs')).href)};
 					const worker = new Worker(${JSON.stringify(workerPath)}, {
 						execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])},
-						workerData: { addPorts: [], addThreadIds: [], reportsLoad: true, holdProbeLoad: true, probePort: port, probePool: pool, name: pool ? 'replication' : 'http', poolIndex: 0, workerPools: pool ? ['replication'] : [] },
+						stdout: true,
+						workerData: { addPorts: [], addThreadIds: [], reportsLoad: true, holdProbeLoad: true, probePort: port, probePool: pool, name: pool ? 'replication' : 'http', workerIndex: 0, workerCount: 1, poolIndex: 0, workerPools: pool ? ['replication'] : [] },
 					});
+					worker.stdout.resume();
 					const messages = [];
 					let workerError, exited;
 					worker.on('message', message => messages.push(message));

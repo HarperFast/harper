@@ -3,15 +3,16 @@ const { setTimeout: delay } = require('node:timers/promises');
 
 exports.handleApplication = async (scope) => {
 	try {
+		const listener = `127.0.0.1:${workerData.probePort}`;
 		scope.server.socket((socket) => socket.end('admitted'), {
-			port: workerData.probePort,
+			port: listener,
 			name: 'admission-scope',
 			...(workerData.probePool ? { threadType: 'replication' } : {}),
 		});
 		if (workerData.probePool) {
 			const { SERVERS } = require('#src/server/serverRegistry');
-			SERVERS[workerData.probePort].noReusePort = true;
-			SERVERS[workerData.probePort].on('error', (error) => {
+			SERVERS[listener].noReusePort = true;
+			SERVERS[listener].on('error', (error) => {
 				if (error.code === 'EADDRINUSE') parentPort.postMessage({ type: 'admission-bind-error' });
 			});
 		}
