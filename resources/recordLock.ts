@@ -85,7 +85,7 @@ export interface RecordLockHandle {
 	 * timestamp, or the stamp above the state the lock was admitted on.
 	 */
 	noteCandidateFloor(version: number): void;
-	/** Compute a holder-write version without advancing the floor until that write commits. */
+	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
 	clusterTsR?: number;

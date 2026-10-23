@@ -698,7 +698,9 @@ interface TableResourceInstance<Record extends object = any> {
 	/**
 	 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 	 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
-	 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
+	 * in process memory and does not write a lock record or audit entry. A lock admitted above the local
+	 * clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart cannot reuse
+	 * a key. Phase 0 contract: lock() is mutually exclusive
 	 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
 	 * gated or blocked. The generation expires after `lease` if it is never released.
 	 *
@@ -4233,7 +4235,9 @@ export function makeTable(options): TableResourceClass {
 		/**
 		 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
-		 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
+		 * in process memory and does not write a lock record or audit entry. A lock admitted above the local
+		 * clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart cannot reuse
+		 * a key. Phase 0 contract: lock() is mutually exclusive
 		 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
 		 * gated or blocked. The generation expires after `lease` if it is never released.
 		 *

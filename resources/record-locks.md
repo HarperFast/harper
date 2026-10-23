@@ -12,11 +12,12 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 `table.lock(id, options?, context?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
 write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
-map keyed by `[Symbol.for('record-lock'), tableId, id]`. No write goes to the store or audit log for
-`lock()` or `unlock()`. The record's version and stored bytes are unchanged when a lock is acquired or
-released; only the native key is locked in memory. This design eliminates all durable lock state from
-the on-disk format: durable LOCK/UNLOCK writes would produce version bumps that peers interpret as
-out-of-order duplicates and discard.
+map keyed by `[Symbol.for('record-lock'), tableId, id]`. No lock record or audit entry is written for
+`lock()` or `unlock()`. A lock admitted above the local clock within `storage.maxLockClockSkew` may
+persist an issuance ceiling so a restart cannot reuse a key. The record's version and stored bytes are
+unchanged when a lock is acquired or released; only the native key is locked in memory. This design
+eliminates durable lock state from the on-disk format: durable LOCK/UNLOCK writes would produce version
+bumps that peers interpret as out-of-order duplicates and discard.
 
 **Phase 0 contract.** `lock()` is mutually exclusive only with other `lock()` calls on the same key.
 Plain writes (`put`, `patch`, `delete`, `create`, `invalidate`, `relocate`) are never gated, parked,
@@ -26,6 +27,10 @@ unpinned mixed explicit transaction. That transaction's later timestamp becomes 
 so the holder cannot lose its own subsequent writes; ordering against plain writes between acquisition
 and that transaction timestamp is best-effort. Use `lock()` when the caller needs to read-then-
 conditionally-write without another holder interleaving, not to serialize arbitrary writers.
+
+If persisting the issuance ceiling for a holder-write stamp fails, that save rejects and its unsaved
+operation is detached from the transaction. The caller must unlock and acquire a fresh lock before
+retrying the change; the refused operation cannot be reused through the same record instance.
 
 Consequences that shape the code:
 
