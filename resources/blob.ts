@@ -3969,6 +3969,7 @@ const REPORTED_BLOB_FAILURES = 20;
  */
 export async function assessBlobReferences(database: Record<string, any>): Promise<BlobReferenceAssessment> {
 	const { HAS_BLOBS } = await import('./auditStore.ts');
+	const { decodeStrictly } = await import('./RecordEncoder.ts');
 	const assessment: BlobReferenceAssessment = {
 		blobIntegrity: 'verified',
 		recordsScanned: {},
@@ -3983,8 +3984,12 @@ export async function assessBlobReferences(database: Record<string, any>): Promi
 		const table = database[tableName];
 		let scanned = 0;
 		let entry: any;
+		const entries = table.primaryStore.getRange({ versions: true, snapshot: false })[Symbol.iterator]();
 		try {
-			for (entry of table.primaryStore.getRange({ versions: true, snapshot: false })) {
+			// strict only for the synchronous read of each entry: the scan yields between entries, and
+			// reads by anything else on this thread keep the lenient decode
+			for (let step = decodeStrictly(() => entries.next()); !step.done; step = decodeStrictly(() => entries.next())) {
+				entry = step.value;
 				scanned++;
 				const value = entry.value;
 				if (entry.metadataFlags & HAS_BLOBS && value) {
@@ -4014,6 +4019,8 @@ export async function assessBlobReferences(database: Record<string, any>): Promi
 				`Could not read record ${scanned + 1} of table ${tableName}${entry ? ` (after id ${JSON.stringify(entry.key)})` : ''} while checking its blob references`,
 				{ cause: error }
 			);
+		} finally {
+			entries.return?.();
 		}
 		assessment.recordsScanned[tableName] = scanned;
 	}

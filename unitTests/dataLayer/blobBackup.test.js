@@ -14,6 +14,7 @@ const {
 	restoreBlobSnapshot,
 	deleteBlobSnapshot,
 	purgeBlobSnapshots,
+	fsyncTree,
 } = require('#src/dataLayer/blobBackup');
 const { classifyBlobFileForCapture, isSystemicIoError } = require('#src/resources/blob');
 
@@ -336,11 +337,47 @@ describe('blobBackup', function () {
 			);
 		});
 
+		it('restores the same bytes when asked to make them durable', async function () {
+			const nested = writeBlob(rootA, '001/002/003', 'original');
+			const second = writeBlob(rootB, 'b/b/b', 'x'.repeat(70000));
+			const expected = [readFileSync(nested), readFileSync(second)];
+			await snapshotBlobs(backupDir, 1, [rootA, rootB]);
+			rmSync(rootA, { recursive: true, force: true });
+			writeBlob(rootB, '009/009/009', 'added-after-backup');
+
+			await restoreBlobSnapshot(backupDir, 1, 'testdb', [rootA, rootB], { durable: true });
+
+			assert.deepStrictEqual([readFileSync(nested), readFileSync(second)], expected);
+			assert.ok(!existsSync(join(rootB, '009/009/009')), 'a durable restore is still an exact one');
+		});
+
 		it('leaves live blobs untouched when the backup has no blob snapshot (engine-only backup)', async function () {
 			writeBlob(rootA, '001/002/003', 'live');
 			// no snapshotBlobs call for backup 2
 			await restoreBlobSnapshot(backupDir, 2, 'testdb', [rootA]);
 			assert.strictEqual(blobBody(join(rootA, '001/002/003')), 'live', 'existing blobs must be preserved');
+		});
+	});
+
+	describe('fsyncTree', function () {
+		it('flushes a nested tree and leaves every file as it was', async function () {
+			const files = [
+				writeBlob(rootA, '001/002/003', 'one'),
+				writeBlob(rootA, '001/004', 'two'),
+				writeBlob(rootA, 'top', 'three'),
+			];
+			const before = files.map((file) => readFileSync(file));
+			await fsyncTree(rootA);
+			assert.deepStrictEqual(
+				files.map((file) => readFileSync(file)),
+				before
+			);
+		});
+
+		it('accepts a root that does not exist or holds no files', async function () {
+			await fsyncTree(join(tempDir, 'never-created'));
+			mkdirSync(join(rootA, 'empty', 'nested'), { recursive: true });
+			await fsyncTree(rootA);
 		});
 	});
 

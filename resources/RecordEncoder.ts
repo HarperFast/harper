@@ -190,6 +190,20 @@ let timestampNextEncoding = 0,
 	receivedIdentityRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
+let strictDecodeDepth = 0;
+
+/**
+ * Runs a synchronous read with record decode failures thrown instead of read as `null`, for a caller
+ * that must not mistake an undecodable record for a deleted one.
+ */
+export function decodeStrictly<T>(read: () => T): T {
+	strictDecodeDepth++;
+	try {
+		return read();
+	} finally {
+		strictDecodeDepth--;
+	}
+}
 /**
  * A resolver owns its attribute's name, so no durable form of a record may carry a value under it.
  * A value gets there either through the response `toJSON` the table installs on the record prototype
@@ -722,6 +736,7 @@ export class RecordEncoder extends StructonEncoder {
 			} // else a normal entry
 			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
+			if (strictDecodeDepth > 0) throw error;
 			const hexPreview = buffer.slice(0, 40).toString('hex');
 			if (isMissingStructureError(error)) {
 				// This record references a shared structure that is genuinely absent on this node — the
