@@ -60,6 +60,9 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// list_deployments: components/deploymentOperations.ts:50 — Deployment history with filtering and pagination.
 	list_deployments:
 		'Lists deployments from system.hdb_deployment with optional filtering by project, status, and date range, plus pagination.',
+	// list_releases: components/releaseOperations.ts — What is live and kept on disk, per node.
+	list_releases:
+		"Lists, per component and per node, the deployment_id of the live release and the staged or kept releases deploy_component can activate by deployment_id (id, state, time, size). With replicated: true, returns every node's answer.",
 	// list_backups: dataLayer/rocksdbBackup.ts (listBackups) — Managed RocksDB backup metadata for a database.
 	list_backups:
 		'Lists the managed RocksDB directory backups for a database (id, timestamp, size, file count). Requires super_user; RocksDB databases only.',

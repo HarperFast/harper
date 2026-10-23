@@ -582,6 +582,18 @@ deploymentId }` — at the top of every candidate it extracts, after the install
   replicated deploy of an id this node already holds — only a hand-crafted `_deploymentId` produces one — is refused
   by the claim. A record whose release is neither live nor kept answers 404, where a missing tree used to answer 409.
 
+**`list_releases` reports what a node holds** (`components/releaseOperations.ts`, #3059): per component, the id the
+live marker names and every dormant build retention would count (`keptReleasesOf`, so residue and other components'
+builds stay out), each with its `state`, `at` (`.complete`'s mtime: built, or for a kept release, replaced) and the
+size of its tree. `state` is `kept` when `.complete` holds `kept`, which `refreshCompletedAt` writes when an
+activation puts a displaced release back, and `staged` otherwise. It lives in the content rather than a new file
+because nothing that settles or retains a build reads that content, while the record's file set is part of what
+recovery checks; an older build ignores it. A release kept before 5.4 reports `staged`. With `replicated: true` the
+operation returns each node's answer, a node that could not answer as an `error`, since a node's answer describes
+only that node. It is a separate operation rather than more fields on `get_components` because it walks each kept
+tree for its size, which `get_components`, polled by Studio, should not pay. It reads without the preparation lock,
+so a build mid-activation can appear or vanish between reads.
+
 **A record is stale only when nothing refers to it.** "Not live" is not enough: a crash after the commit and
 before the re-home leaves the displaced release's record and its tree in `.deploy-aside`, and a boot scan can
 reach the record before the journal that will re-home into it — the record would be deleted and its only tree

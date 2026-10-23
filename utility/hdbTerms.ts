@@ -363,6 +363,7 @@ export const OPERATIONS_ENUM = {
 	CLEAR_STATUS: 'clear_status',
 	LIST_DEPLOYMENTS: 'list_deployments',
 	GET_DEPLOYMENT: 'get_deployment',
+	LIST_RELEASES: 'list_releases',
 	SET_SECRET: 'set_secret',
 	GRANT_SECRET: 'grant_secret',
 	REVOKE_SECRET: 'revoke_secret',
