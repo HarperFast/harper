@@ -18,7 +18,7 @@ describe('cgroup CPU accounting', function () {
 		await writeFile(membership, '0::/tenant/worker\n');
 	});
 	afterEach(async function () {
-		await rm(root, { recursive: true, force: true });
+		if (root) await rm(root, { recursive: true, force: true });
 	});
 	async function group(relative, quota, usage) {
 		const path = join(root, relative);
@@ -43,7 +43,11 @@ describe('cgroup CPU accounting', function () {
 	});
 
 	it('does not divide shared-parent usage by a narrow child affinity', async function () {
-		if (process.platform !== 'linux' || spawnSync('taskset', ['--version']).error?.code === 'ENOENT') this.skip();
+		if (
+			process.platform !== 'linux' ||
+			spawnSync('taskset', ['--version'], { timeout: 5000, killSignal: 'SIGKILL' }).error?.code === 'ENOENT'
+		)
+			this.skip();
 		const allowed = readFileSync('/proc/self/status', 'utf8').match(/^Cpus_allowed_list:\s*(.+)$/m)[1];
 		const [first, last = first] = allowed.split(',')[0].split('-').map(Number);
 		const mask = first < last ? `${first},${first + 1}` : String(first);
@@ -70,7 +74,7 @@ describe('cgroup CPU accounting', function () {
 		const result = spawnSync(
 			'taskset',
 			['--cpu-list', mask, process.execPath, '--eval', script, root, membership, join(parent, 'cpu.stat')],
-			{ encoding: 'utf8', timeout: 15_000 }
+			{ encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL' }
 		);
 		assert.equal(result.status, 0, result.stdout + result.stderr);
 	});

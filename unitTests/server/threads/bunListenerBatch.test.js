@@ -8,7 +8,7 @@ const { ENV_DIR_PATH } = require('../../perPidRoot.js');
 describe('Bun listener batch ownership', function () {
 	this.timeout(60_000);
 	before(function () {
-		if (spawnSync('bun', ['--version']).error?.code === 'ENOENT') this.skip();
+		if (spawnSync('bun', ['--version'], { timeout: 5000, killSignal: 'SIGKILL' }).error?.code === 'ENOENT') this.skip();
 	});
 	for (const mode of ['success', 'failure']) {
 		it(
@@ -19,6 +19,7 @@ describe('Bun listener batch ownership', function () {
 				const result = spawnSync('bun', [join(__dirname, 'fixtures/bunListenerBatch.cjs'), mode], {
 					encoding: 'utf8',
 					timeout: 45_000,
+					killSignal: 'SIGKILL',
 				});
 				if (result.pid) rmSync(join(ENV_DIR_PATH, String(result.pid)), { recursive: true, force: true });
 				assert.equal(result.status, 0, result.stdout + result.stderr);
