@@ -899,17 +899,17 @@ envelope format, key model and client flow are user-facing and belong in HarperF
 
 ## Closing an LMDB database closes its environment, never its dbis (`databases.ts` `closeDatabase`)
 
-Database aliases that resolve to one path share one LMDB root store, but each alias opens its own
-dbi handles. `mdb_env_close` releases every dbi, while lmdb-js's native `DbiWrap.close()` calls
-`mdb_dbi_close` on the `MDB_env*` it captured at open, so closing a dbi after another alias closed the
-environment is a use-after-free (an intermittent segfault in the lmdb unit run). `closeDatabase` closes
-an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
-column families are independently refcounted handles, so they are still closed one by one. Enforced by
-the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
+Aliases of one path share an LMDB root but open separate dbi handles. `mdb_env_close` releases every dbi; a later `DbiWrap.close()` calls `mdb_dbi_close` on the freed environment, causing intermittent unit-test segfaults.
+`closeDatabase` closes an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB column families are independently refcounted, so they still close individually.
+Enforced by the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
 
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 
-Redeclaring attributes (via insert, `addAttributes` or a cluster definition) used to replace `__dbis__` and indexed-column-family wrappers without closing them. Their native handles held the process-global refCount up until collection, so online `restore_backup` refused the database after its 3 s closure wait. `declareTable` now reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a
+A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) used to reopen
+`__dbis__` and every indexed column family, overwriting the references the table graph holds. rocksdb-js
+releases a native handle only on close or garbage collection, so the replaced wrappers held the
+process-global refCount up and online `restore_backup` (which waits 3 s for closure) refused the database
+as held open. `declareTable` now reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a
 redeclare, a plain index's open wrapper on an unchanged store (`indexFor`); a custom index (HNSW) is
 always reopened, since `openIndex` builds its state from the current options, and is never reused for a
 plain declaration. Every wrapper `initStores` or `declareTable` opens for a global RocksDB root is
