@@ -36,6 +36,27 @@ export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 export const MAX_LOCK_TIMEOUT_MS = 300_000;
 const LOCK_KEY_PREFIX = Symbol.for('record-lock');
 
+// An ImmediateTransaction can rotate after a refused write, and callers may retain the old resource
+// instance. Keep the refusal attached to the native key until its handle releases that key.
+const refusedWriteKeys = new WeakMap<object, Set<unknown>>();
+
+export function markRecordLockWriteRefused(store: object, keyId: unknown): void {
+	let keys = refusedWriteKeys.get(store);
+	if (!keys) refusedWriteKeys.set(store, (keys = new Set()));
+	keys.add(keyId);
+}
+
+export function isRecordLockWriteRefused(store: object, keyId: unknown): boolean {
+	return refusedWriteKeys.get(store)?.has(keyId) ?? false;
+}
+
+export function clearRecordLockWriteRefused(store: object, keyId: unknown): void {
+	const keys = refusedWriteKeys.get(store);
+	if (!keys) return;
+	keys.delete(keyId);
+	if (keys.size === 0) refusedWriteKeys.delete(store);
+}
+
 export interface RecordLockOptions {
 	/** Lease in ms; the lock expires on its own if the holder never releases it (default 30 s, max 5 min) */
 	lease?: number;
@@ -495,6 +516,7 @@ class KeyLockHandle implements RecordLockHandle {
 	release(): boolean {
 		if (this.released) return false;
 		this.released = true;
+		clearRecordLockWriteRefused(this.store, this.keyId);
 		clearTimeout(this.#timer);
 		if (this.#commitHolds > 0) {
 			return this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');
@@ -505,10 +527,10 @@ class KeyLockHandle implements RecordLockHandle {
 
 	upgradeToHold(lease: number): void {
 		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets a step past acquiredAt rather than acquiredAt again
-		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
-		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
-		// First, since a step can claim a key and so throw, before anything here becomes a hold.
+		// enclosing transaction commits) gets a step past acquiredAt rather than acquiredAt again.
+		// Without this, a post-commit save and any in-transaction save both get acquiredAt, causing
+		// a LWW tie that drops the write. Compute before mutating the hold state so a failure leaves
+		// the handle scoped.
 		this.nextHolderVersion();
 		this.hold = true;
 		clearTimeout(this.#timer);

@@ -28,6 +28,10 @@ so the holder cannot lose its own subsequent writes; ordering against plain writ
 and that transaction timestamp is best-effort. Use `lock()` when the caller needs to read-then-
 conditionally-write without another holder interleaving, not to serialize arbitrary writers.
 
+Admission above a caller-supplied transaction timestamp can raise that timestamp to the admitted
+version. When the version is within `storage.maxLockClockSkew`, the local issuance clock can also move
+ahead of wall time, affecting unrelated local writes until the clock catches up.
+
 If persisting the issuance ceiling for a holder-write stamp fails, that save rejects and its unsaved
 operation is detached from the transaction. The caller must unlock and acquire a fresh lock before
 retrying the change; the refused operation cannot be reused through the same record instance.
