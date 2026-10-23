@@ -27,6 +27,7 @@ import {
 	settleDeferredCredentialRejection,
 } from '../security/deferredAuthentication.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
+import { completeMultipartBody, cancelMultipartBody } from './serverHelpers/multipartForm.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
@@ -413,12 +414,13 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const dispatch = () => {
 			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
-				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
+				// TODO: Support cancellation for buffered request bodies.
 				try {
-					request.data = (getDeserializer(headersObject['content-type'] as any, true) as any)(
-						request.body,
-						request.headers
-					);
+					request.data = getDeserializer(
+						headersObject['content-type'] as any,
+						true,
+						true
+					)(request.body, request.signal);
 					// Resource loading can outlive body parsing; preserve the rejection until it is awaited.
 					if (writeCondition && typeof request.data?.then === 'function') request.data.then(undefined, () => {});
 				} catch (error) {
@@ -430,7 +432,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (url === OPENAPI_DOMAIN && method === 'GET') {
 				target = {} as any;
 				if (request?.user?.role?.permission?.super_user) {
-					return generateJsonApi(resources, `${request.protocol}://${request.hostname}`);
+					return completeMultipartBody(
+						request.data,
+						generateJsonApi(resources, `${request.protocol}://${request.hostname}`)
+					);
 				} else {
 					throw new ServerError(`Forbidden`, 403);
 				}
@@ -440,15 +445,30 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			switch (method) {
 				case 'GET':
 				case 'HEAD':
-					return resource.get ? resource.get(target, request) : missingMethod(resource, 'get');
+					return completeMultipartBody(
+						request.data,
+						resource.get ? resource.get(target, request) : missingMethod(resource, 'get')
+					);
 				case 'POST':
-					return resource.post ? resource.post(target, request.data, request) : missingMethod(resource, 'post');
+					return completeMultipartBody(
+						request.data,
+						resource.post ? resource.post(target, request.data, request) : missingMethod(resource, 'post')
+					);
 				case 'PUT':
-					return resource.put ? resource.put(target, request.data, request) : missingMethod(resource, 'put');
+					return completeMultipartBody(
+						request.data,
+						resource.put ? resource.put(target, request.data, request) : missingMethod(resource, 'put')
+					);
 				case 'DELETE':
-					return resource.delete ? resource.delete(target, request) : missingMethod(resource, 'delete');
+					return completeMultipartBody(
+						request.data,
+						resource.delete ? resource.delete(target, request) : missingMethod(resource, 'delete')
+					);
 				case 'PATCH':
-					return resource.patch ? resource.patch(target, request.data, request) : missingMethod(resource, 'patch');
+					return completeMultipartBody(
+						request.data,
+						resource.patch ? resource.patch(target, request.data, request) : missingMethod(resource, 'patch')
+					);
 				case 'OPTIONS': // used primarily for CORS
 					headers.setIfNone(
 						'Allow',
@@ -456,22 +476,30 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 							.map((method) => method.toUpperCase())
 							.join(', ')
 					);
-					return;
+					return completeMultipartBody(request.data, undefined);
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource.connect ? resource.connect(target, null, request) : missingMethod(resource, 'connect');
+					return completeMultipartBody(
+						request.data,
+						resource.connect ? resource.connect(target, null, request) : missingMethod(resource, 'connect')
+					);
 				case 'TRACE':
-					return 'Harper is the terminating server';
+					return completeMultipartBody(request.data, 'Harper is the terminating server');
 				case 'QUERY':
-					return resource.query ? resource.query(target, request.data, request) : missingMethod(resource, 'query');
+					return completeMultipartBody(
+						request.data,
+						resource.query ? resource.query(target, request.data, request) : missingMethod(resource, 'query')
+					);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource.copy
-						? resource.copy(target, headersObject.destination, request)
-						: missingMethod(resource, 'copy');
+					return completeMultipartBody(
+						request.data,
+						resource.copy ? resource.copy(target, headersObject.destination, request) : missingMethod(resource, 'copy')
+					);
 				case 'MOVE':
-					return resource.move
-						? resource.move(target, headersObject.destination, request)
-						: missingMethod(resource, 'move');
+					return completeMultipartBody(
+						request.data,
+						resource.move ? resource.move(target, headersObject.destination, request) : missingMethod(resource, 'move')
+					);
 				case 'BREW': // RFC 2324
 					throw new ClientError("Harper is short and stout and can't brew coffee", 418);
 				default:
@@ -617,6 +645,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
 	} catch (error) {
+		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
 		if (error instanceof Response) {

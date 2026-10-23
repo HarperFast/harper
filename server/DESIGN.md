@@ -251,6 +251,10 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
 
+### Multipart request bodies
+
+The header-aware `getDeserializer` in `contentTypes.ts` selects built-in multipart decoding outside the synchronous `server.contentTypes` registry. That registry has no built-in `multipart/form-data` entry; a custom unary deserializer registered under that type takes precedence, and deleting it restores built-in request decoding. Multipart REST static handlers receive ordered `{ name, value }` parts directly, with files as Blobs carrying `type` and `name`. The inherited POST/PUT/PATCH wrappers collect the object (repeated names become arrays) and consume files into replayable Blobs before calling `allow*` and the instance method with the same object. GraphQL POST retains buffered form-object delivery. This replaces the previous raw-byte envelope in REST and the shared GraphQL POST decoder; a custom multipart deserializer can restore raw-byte delivery. Cached-source Responses retain their opaque Blob fallback. Media types are normalized, including fallback envelopes, while exact custom registrations retain precedence. Synchronous WebSocket/MQTT decoders retain opaque multipart envelopes. `Request<Body>` describes the body with `ResourceBody<Body>` while its default preserves middleware's existing `any` type. A custom static streaming handler takes over authorization and must authorize individual fields, for example by passing a fresh context with `authorize: true` to each table static write (the entry call consumes that flag). Preserve the request's signal and transaction in that context. `multipartForm.ts` requires each streaming file's source to be consumed before advancing; an unread file fails rather than being silently drained. Applications saving a file must await that write too; source consumption alone does not establish durability. Consume the body during the custom static handler, before returning a response; its staged writes require an explicit transaction commit before advancing on both RocksDB and LMDB. Delegating to the inherited wrapper needs no per-file application commits. Delegation must be the body’s first and only consumer: returned, partially read, exhausted or already-claimed multipart bodies fail with `ServerError` (500) before authorization or a write. Direct reads while delegation is running are unsupported and are not detected. Advancing or abandoning a save before consuming the file is a handler fault (`ServerError`, 500); malformed input remains a client fault. Explicit commits can leave earlier files durable if a later part fails, and existing transaction time limits apply. Parser errors, truncation and unsafe names fail the form; busboy limits each field to 1 MiB, with field/file/part limits of 64/64/128. The existing global HTTP body limit applies in both modes. Cancellation fails active files and drains the remainder only within the remaining body budget, pausing further intake at the cap while the response remains open. A one-second discard grace applies, starting after response completion on Node because destroying an unread request closes its socket. A handler may deliberately stop iteration and return a successful response; errors from discarding queued files must not replace that result. Failures recorded before cancellation still reach the handler. Bun and uWS can buffer incoming bytes independently of decoder backpressure; the byte cap bounds decoder consumption, not those transport buffers. The multipart unit tests and `integrationTests/resources/multipart-form.test.ts` pin this contract.
+
 ### Streaming startup errors
 
 SSE and NDJSON serializers eagerly take and hold their first iterator step for GET requests. `REST.ts` waits through the next event-loop turn for that step: an immediate rejection remains an HTTP error rendered as Problem Details, while a first item or the cutoff commits the stream. Mutating requests do not use the startup-status gate because their transaction has already committed by this point; all of their stream failures use the in-band form. Later GET failures are terminal, format-valid records (`event: harper-error` for SSE and a reserved control record for NDJSON). Keep the decision in the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract; transports must not independently prefetch the iterator.
@@ -856,16 +860,28 @@ uWS force-closes a completed `Connection: close` response while an upload is sti
 
 ## Dedicated worker pools own their listeners and load no applications (`server/threads/workerPools.ts`)
 
-A dedicated pool (today only `replication`, sized by `replication.threads`) is a set of workers of
+A dedicated pool (today only `replication`, sized by `replication.threads` in `server/threads/socketRouter.ts`) is a set of workers of
 a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0
 and last-worker duties never land on one. The invariants:
 
+- **Default sizing and port admission.** When `replication.threads` is unset (`undefined`, `null`, or
+  `''`), `replicationThreadCount(n)` defaults it to `Math.floor(n / 2)` for `n >= 2` and `0` for
+  `n < 2`, where `n` is the effective HTTP worker count after `DEV_MODE` (`bin/run.ts`) and the `win32`
+  single-worker clamp (`effectiveHttpThreadCount`). An explicit non-negative integer (`0` or positive)
+  is honored as-is. A `replication` pool requires a dedicated `replication.port` or
+  `replication.securePort` that is not shared with `http` or `operationsApi.network`; when
+  `replication.threads` was explicitly set, a missing or shared replication port throws in
+  `admittedWorkerPools`, whereas a defaulted pool logs a warning and falls back to `0` (`[]`). With
+  `threads.count: 0` there is no pool, and an explicit `replication.threads > 0` is logged and ignored.
 - **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted
   built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
-  Anything an application installs per thread (for example `Table.setResidencyById`, or a
-  `setComputedAttribute` resolver) is absent there; `Table.unresolvedComputedIndexes()` names the
-  indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly, and a pool
-  worker that resolves one anyway throws instead of indexing `undefined`.
+  Anything an application installs per thread (for example `Table.setResidency`,
+  `Table.setResidencyById`, or a `setComputedAttribute` resolver) is absent there. Registering
+  `Table.setResidency`, `Table.setResidencyById`, or an indexed `Table.setComputedAttribute` function
+  while `isWorkerPoolActive('replication')` is true logs a once-per-table-per-thread error naming
+  `replication.threads: 0` in `harper-config.yaml` as the opt-out; `Table.unresolvedComputedIndexes()`
+  names the indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly,
+  and a pool worker that resolves one anyway throws instead of indexing `undefined`.
 - **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
   `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
   that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.
@@ -879,7 +895,6 @@ and last-worker duties never land on one. The invariants:
 - **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` (an
   operator restart) restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts
   overlap like HTTP ones.
-- With `threads.count: 0` there is no pool: the setting is logged and ignored.
 
 ## An unread multipart upload is discarded once its response has finished (`server/serverHelpers/multipartParser.ts`)
 

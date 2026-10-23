@@ -92,7 +92,8 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			const { loadRootComponents } = await import('../loadRootComponents.ts');
 			if (isProcessShuttingDown()) return [];
 			if (threadCount === 0) {
-				if (configuredReplicationThreads() > 0)
+				const { count, explicit } = replicationThreadCount(0);
+				if (explicit && count > 0)
 					harperLogger.warn(
 						'replication.threads is ignored because threads.count is 0: replication runs on the main thread'
 					);
@@ -106,8 +107,11 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				await threadServer.listenOnPorts();
 				return Promise.resolve([]);
 			}
+			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
+			// Normalize before admittedWorkerPools() so the default pool size uses the effective count.
+			threadCount = effectiveHttpThreadCount(threadCount);
 			if (!dedicatedPoolsStarted) {
-				dedicatedPools = admittedWorkerPools();
+				dedicatedPools = admittedWorkerPools(threadCount);
 				setActiveWorkerPools(dedicatedPools.map((pool) => pool.type));
 			}
 			await loadRootComponents();
@@ -115,8 +119,6 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			const { listenOnPorts } = await import('./threadServer.ts');
 			if (isProcessShuttingDown()) return [];
 			await listenOnPorts();
-			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
-			if (process.platform === 'win32') threadCount = 1;
 		}
 		if (isProcessShuttingDown()) return [];
 		poolSize = threadCount;
@@ -291,8 +293,19 @@ if (isMainThread) {
 	setRunningIsolatedApplicationsGetter(() => [...isolatedSlots.keys()]);
 }
 
-function configuredReplicationThreads(): number {
-	return Number(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_THREADS) ?? 0);
+export function effectiveHttpThreadCount(threadCount: number, platform: NodeJS.Platform = process.platform): number {
+	return platform === 'win32' && threadCount > 0 ? 1 : threadCount;
+}
+
+export function replicationThreadCount(httpThreadCount: number): { count: number; explicit: boolean } {
+	const configured = env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_THREADS);
+	if (configured === undefined || configured === null || configured === '') {
+		return {
+			count: Number.isFinite(httpThreadCount) && httpThreadCount >= 2 ? Math.floor(httpThreadCount / 2) : 0,
+			explicit: false,
+		};
+	}
+	return { count: Number(configured), explicit: true };
 }
 
 function portNumberOf(port: unknown): number | undefined {
@@ -303,13 +316,14 @@ function portNumberOf(port: unknown): number | undefined {
 }
 
 /**
- * The dedicated pools to start, refusing a configuration the pool cannot serve. A replication pool
+ * The dedicated pools to start, refusing an explicit configuration the pool cannot serve and
+ * falling back to 0 with a warning when `replication.threads` was defaulted. A replication pool
  * needs a replication port of its own: without one, replication falls back to the operations API
  * ports, which only the main thread binds, and a port shared with HTTP or the operations API cannot
  * be owned by one worker type.
  */
-export function admittedWorkerPools(): { type: string; count: number }[] {
-	const count = configuredReplicationThreads();
+export function admittedWorkerPools(httpThreadCount: number): { type: string; count: number }[] {
+	const { count, explicit } = replicationThreadCount(httpThreadCount);
 	if (!Number.isInteger(count) || count < 0)
 		throw new Error(`replication.threads must be a non-negative integer, got ${count}`);
 	if (count === 0) return [];
@@ -317,10 +331,13 @@ export function admittedWorkerPools(): { type: string; count: number }[] {
 		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_PORT)),
 		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_SECUREPORT)),
 	].filter((port) => port !== undefined);
-	if (replicationPorts.length === 0)
-		throw new Error(
-			'replication.threads requires replication.port or replication.securePort: without a dedicated replication port, replication shares the operations API port, which only the main thread binds'
-		);
+	if (replicationPorts.length === 0) {
+		const reason =
+			'replication.threads requires replication.port or replication.securePort: without a dedicated replication port, replication shares the operations API port, which only the main thread binds';
+		if (explicit) throw new Error(reason);
+		harperLogger.warn(`${reason}; falling back to replication.threads: 0`);
+		return [];
+	}
 	const sharedPorts = [
 		['http.port', hdbTerms.CONFIG_PARAMS.HTTP_PORT],
 		['http.securePort', hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT],
@@ -329,8 +346,12 @@ export function admittedWorkerPools(): { type: string; count: number }[] {
 	];
 	for (const [label, param] of sharedPorts) {
 		const port = portNumberOf(env.get(param));
-		if (port !== undefined && replicationPorts.includes(port))
-			throw new Error(`replication.threads requires a replication port of its own, but port ${port} is also ${label}`);
+		if (port !== undefined && replicationPorts.includes(port)) {
+			const reason = `replication.threads requires a replication port of its own, but port ${port} is also ${label}`;
+			if (explicit) throw new Error(reason);
+			harperLogger.warn(`${reason}; falling back to replication.threads: 0`);
+			return [];
+		}
 	}
 	if (count > 1 && (process.platform === 'darwin' || process.platform === 'win32'))
 		harperLogger.warn(

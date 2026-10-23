@@ -4,7 +4,7 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS, THREAD_TYPES } from '../utility/hdbTerms.ts';
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
@@ -82,7 +82,7 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.ts';
-import { isDedicatedPoolWorker } from '../server/threads/workerPools.ts';
+import { isDedicatedPoolWorker, isWorkerPoolActive } from '../server/threads/workerPools.ts';
 import {
 	databases,
 	table,
@@ -198,6 +198,7 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
 	Blob,
+	createBlob,
 	collectRetainedFileIds,
 	deleteBlobsInObject,
 	findBlobsInObject,
@@ -665,11 +666,13 @@ interface TableResourceInstance<Record extends object = any> {
 	 * @deprecated Override the resource operation for application-specific authorization.
 	 */
 	allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+	allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
 	/**
 	 * Determine if the user is allowed to create new data in the current resource
 	 * @deprecated Override the resource operation for application-specific authorization.
 	 */
 	allowCreate(user: User, newData: Record, context: Context): boolean;
+	allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
 	/**
 	 * Determine if the user is allowed to delete from the current resource
 	 * @deprecated Override the resource operation for application-specific authorization.
@@ -2921,7 +2924,20 @@ export function makeTable(options): TableResourceClass {
 			return (dbisDb as any).getSync([Symbol.for('residency_by_id'), id]);
 		}
 
+		static #residencyPoolErrorLogged = false;
+		static #reportResidencyPoolHook(hookName: 'setResidency' | 'setResidencyById') {
+			if (TableResource.#residencyPoolErrorLogged || !isWorkerPoolActive(THREAD_TYPES.REPLICATION)) return;
+			TableResource.#residencyPoolErrorLogged = true;
+			const consequence =
+				hookName === 'setResidencyById'
+					? 'outbound replication sends invalidation entries (residency partials) and inbound replication stores residency stubs for non-resident records instead of evaluating the callback'
+					: 'replicated writes that do not carry a residency list fall back to default residency placement on replication workers instead of evaluating the callback';
+			harperLogger.error?.(
+				`Table '${tableName}' registered ${hookName} while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and cannot evaluate residency functions, so ${consequence}. Set replication.threads: 0 in harper-config.yaml if this table requires custom residency functions.`
+			);
+		}
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
+			if (typeof getResidency === 'function') TableResource.#reportResidencyPoolHook('setResidency');
 			TableResource.getResidency = getResidency
 				? (record: object, context: Context) => {
 						try {
@@ -2934,6 +2950,7 @@ export function makeTable(options): TableResourceClass {
 				: defaultGetResidency;
 		}
 		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
+			if (typeof getResidencyById === 'function') TableResource.#reportResidencyPoolHook('setResidencyById');
 			TableResource.getResidencyById =
 				getResidencyById &&
 				((id: Id) => {
@@ -3645,56 +3662,20 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to update data from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowUpdate checks.
-		// eslint-disable-next-line no-unused-vars
-		allowUpdate(user: User, updatedData: Record, context: Context): boolean {
-			const tablePermission = getTablePermissions(user);
-			if (tablePermission?.update) {
-				const attribute_permissions = tablePermission.attribute_permissions;
-				if (attribute_permissions?.length > 0) {
-					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-					const attrsForType = attributesAsObject(attribute_permissions, 'update');
-					for (const key in updatedData) {
-						if (!attrsForType[key]) return false;
-					}
-					// if this is a full put operation that removes missing properties, we don't want to remove properties
-					// that the user doesn't have permission to remove
-					for (const permission of attribute_permissions) {
-						const key = permission.attribute_name;
-						if (!permission.update && !fullTextFieldNames?.has(key) && !(key in updatedData)) {
-							updatedData[key] = this.getProperty(key);
-						}
-					}
-				}
-				return true;
-			}
+		allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, _context: Context): boolean | Promise<boolean> {
+			return allowTableUpdate(this, user, updatedData);
 		}
 
 		/**
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowCreate checks.
-		allowCreate(user: User, newData: Record, context: Context): boolean {
-			if (this.isCollection) {
-				const tablePermission = getTablePermissions(user);
-				if (tablePermission?.insert) {
-					const attribute_permissions = tablePermission.attribute_permissions;
-					if (attribute_permissions?.length > 0) {
-						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
-						for (const key in newData) {
-							if (!attrsForType[key]) return false;
-						}
-					}
-					return true;
-				}
-			} else {
-				// creating *within* a record resource just means we are adding some data to a current record, which is
-				// an update to the record, it is not an insert of a new record into the table, so not a table create operation
-				// so does not use table insert permissions
-				return this.allowUpdate(user, newData, context);
-			}
+		allowCreate(user: User, newData: Record, context: Context): boolean;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
+			return allowTableCreate(this, user, newData, context);
 		}
 
 		/**
@@ -5078,12 +5059,13 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							// An earlier unskipped write to this key may have restamped the head without staging it.
 							if (
-								stagedOwnAuditEntry &&
 								committedBy?.sourceApply &&
 								isRocksDB &&
 								!replaying &&
 								precedesExisting === 0 &&
+								priorWritesSkipped(write) &&
 								receivedLogKey === txnTime &&
 								appendedLogKey === receivedLogKey &&
 								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
@@ -8604,6 +8586,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			return unresolved;
 		}
+		static #computedPoolErrorLogged = false;
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
 			if (!attribute) {
@@ -8613,6 +8596,19 @@ export function makeTable(options): TableResourceClass {
 			if (!attribute.computed) {
 				console.error(`The attribute "${attribute_name}" is not defined as computed in the table "${tableName}"`);
 				return;
+			}
+			if (
+				typeof resolver === 'function' &&
+				!resolver.unresolved &&
+				!attribute.computedFromExpression &&
+				Boolean(indices[attribute_name] || attribute.indexed) &&
+				!TableResource.#computedPoolErrorLogged &&
+				isWorkerPoolActive(THREAD_TYPES.REPLICATION)
+			) {
+				TableResource.#computedPoolErrorLogged = true;
+				harperLogger.error?.(
+					`Table '${tableName}' registered setComputedAttribute (e.g. '${attribute_name}') for an indexed @computed attribute while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and cannot compute this index, so applying a replicated write to this table fails (see Table.unresolvedComputedIndexes()). Set replication.threads: 0 in harper-config.yaml if this table requires replicated updates to maintain this computed index.`
+				);
 			}
 			this.userResolvers[attribute_name] = resolver;
 		}
@@ -9230,6 +9226,66 @@ export function makeTable(options): TableResourceClass {
 			}
 		});
 	}
+	function allowTableUpdate<Record extends object>(
+		resource: TableResource<Record>,
+		user: User,
+		updatedData: Record | Promise<Record>
+	): boolean | Promise<boolean> {
+		const tablePermission = getTablePermissions(user);
+		if (tablePermission?.update) {
+			const attribute_permissions = tablePermission.attribute_permissions;
+			if (attribute_permissions?.length > 0) {
+				if (typeof (updatedData as Promise<Record>)?.then === 'function') {
+					return (updatedData as Promise<Record>).then((data) => allowTableUpdate(resource, user, data));
+				}
+				const attrsForType = attributesAsObject(attribute_permissions, 'update');
+				for (const key in updatedData) {
+					if (!attrsForType[key]) return false;
+				}
+				// if this is a full put operation that removes missing properties, we don't want to remove properties
+				// that the user doesn't have permission to remove
+				for (const permission of attribute_permissions) {
+					const key = permission.attribute_name;
+					if (!permission.update && !fullTextFieldNames?.has(key) && !(key in updatedData)) {
+						updatedData[key] = resource.getProperty(key);
+					}
+				}
+			}
+			return true;
+		}
+	}
+
+	function allowTableCreate<Record extends object>(
+		resource: TableResource<Record>,
+		user: User,
+		newData: Record | Promise<Record>,
+		context: Context
+	): boolean | Promise<boolean> {
+		if (resource.isCollection) {
+			const tablePermission = getTablePermissions(user);
+			if (tablePermission?.insert) {
+				const attribute_permissions = tablePermission.attribute_permissions;
+				if (attribute_permissions?.length > 0) {
+					if (typeof (newData as Promise<Record>)?.then === 'function') {
+						return (newData as Promise<Record>).then((data) => allowTableCreate(resource, user, data, context));
+					}
+					const attrsForType = attributesAsObject(attribute_permissions, 'insert');
+					for (const key in newData) {
+						if (!attrsForType[key]) return false;
+					}
+					return true;
+				} else {
+					return true;
+				}
+			}
+		} else {
+			// creating *within* a record resource just means we are adding some data to a current record, which is
+			// an update to the record, it is not an insert of a new record into the table, so not a table create operation
+			// so does not use table insert permissions
+			return resource.allowUpdate(user, newData, context);
+		}
+	}
+
 	function getTablePermissions(user: User, target?: RequestTarget) {
 		let permission = target?.checkPermission; // first check to see the request target specifically provides the permissions to authorize
 		if (typeof permission !== 'object') {
@@ -9581,6 +9637,13 @@ export function makeTable(options): TableResourceClass {
 			if (!prior.skipped) return;
 		}
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
+	}
+
+	function priorWritesSkipped(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return false;
+		}
+		return true;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {

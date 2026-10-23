@@ -45,6 +45,33 @@ describe('defineResource / Resource.withSchema — runtime request contract', ()
 		});
 	});
 
+	describe('named multipart body validation', () => {
+		for (const variant of ['function', 'class']) {
+			it(`resolves named fields before validating the ${variant} contract`, async () => {
+				const contract = { post: { body: t.object({ title: t.string }) } };
+				const Api =
+					variant === 'function'
+						? defineResource(contract, {
+								post(_target, data) {
+									return data;
+								},
+							})
+						: class extends Resource.withSchema(contract) {
+								post(_target, data) {
+									return data;
+								}
+							};
+				const body = (value) => ({
+					async *[Symbol.asyncIterator]() {
+						yield { name: 'title', value };
+					},
+				});
+				assert.deepStrictEqual(await Api.post(new RequestTarget('/'), body('valid')), { title: 'valid' });
+				await assert.rejects(Api.post(new RequestTarget('/'), body(42)), (error) => error.name === 'ValidationError');
+			});
+		}
+	});
+
 	describe('narrowed target — path param + query coercion', () => {
 		let captured;
 		const Widget = defineResource(

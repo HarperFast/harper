@@ -1,3 +1,4 @@
+import { resolveBody } from './resolveBody.ts';
 import { Resource } from './Resource.ts';
 import type { Scope } from '../components/Scope.ts';
 
@@ -13,7 +14,7 @@ function getLoginClass() {
 			// TODO: Return a login page
 		}
 		static async post(_id, body, request) {
-			const { username, password, token } = (await body) ?? {};
+			const { username, password, token } = (await resolveBody(body)) ?? {};
 			return {
 				data: await request.login(username, password, token),
 			};
