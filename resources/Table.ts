@@ -4072,7 +4072,7 @@ export function makeTable(options): TableResourceClass {
 							committedBy?.sourceApply &&
 							isRocksDB &&
 							txnLogKey === txnTime &&
-							isHeadIdentity(committedEntry(id), txnTime, options?.nodeId))
+							isHeadIdentity(identityBase(write, existingEntry, committedBy), txnTime, options?.nodeId))
 					) {
 						write.skipped = true;
 						return;
