@@ -1316,7 +1316,10 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		after(async () => {
 			if (isLMDB) return;
 			const rootStore = ClusterLockTest.primaryStore.rootStore;
-			while (rootStore.getMonotonicTimestamp() <= readLocalIssuanceCeiling(ClusterLockTest.auditStore)) await delay(10);
+			await waitFor(
+				() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(ClusterLockTest.auditStore),
+				30_000
+			);
 		});
 
 		it('stamps a holder write above a future-stamped stored version', async function () {

@@ -10,7 +10,7 @@ import {
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
-import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
+import { lockNotHeldError, markRecordLockWriteRefused, type RecordLockHandle } from './recordLock.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -1317,6 +1317,7 @@ export class DatabaseTransaction implements Transaction {
 	detachWrite(operation: TransactionWrite): void {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
+		if (!operation.lockHandle) this.unlockedWriteScan = undefined;
 		this.ownedWrites?.delete(operation);
 		if (operation.stagedIn === this) operation.stagedIn = undefined;
 		if (operation.key === undefined) return;
@@ -1728,7 +1729,7 @@ export class DatabaseTransaction implements Transaction {
 
 	/**
 	 * Whether an unlocked write is staged. Resumes where the last call stopped, so a transaction that
-	 * takes N locks scans its writes once in all; a detached write it already counted stays counted.
+	 * takes N locks scans its writes once in all; detaching an unlocked write resets the cached scan.
 	 */
 	hasUnlockedWrite(): boolean {
 		const writes = this.writes;
@@ -2191,6 +2192,7 @@ export class DatabaseTransaction implements Transaction {
 					try {
 						operation.lockStamp = lockHandle.holderVersionCandidate();
 					} catch (error) {
+						markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
 						if (!operation.saved) {
 							operation.dropped = true;
 							this.detachWrite(operation);
@@ -2270,6 +2272,8 @@ export class DatabaseTransaction implements Transaction {
 			// log key, which a replica applies the write at; refuse it before staging so a retry gets its own key.
 			const joinedKey = operation.lockStamp && !operation.saved ? reservedLocalKey(transaction) : undefined;
 			if (joinedKey !== undefined && joinedKey < operation.lockStamp) {
+				operation.dropped = true;
+				if (lockHandle) markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
 				this.detachWrite(operation);
 				throw new ClientError(
 					'Record lock write joined a commit already in flight under an earlier log key; unlock, then lock and retry once it settles',
@@ -2284,7 +2288,13 @@ export class DatabaseTransaction implements Transaction {
 				}
 			} catch (error) {
 				// A refused write left attached would be staged by the next commit sweep after its caller saw the error.
-				if (!operation.saved) this.detachWrite(operation);
+				if (!operation.saved) {
+					if (lockHandle) {
+						operation.dropped = true;
+						markRecordLockWriteRefused(lockHandle.store, lockHandle.keyId);
+					}
+					this.detachWrite(operation);
+				}
 				if (immediateCommit)
 					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
 				throw error;

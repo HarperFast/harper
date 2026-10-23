@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -420,7 +421,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			readLocalIssuanceCeiling(auditStore) > entry.txnLogKey,
 			'every claim and later key is covered for a restart'
 		);
-		while (rootStore.getMonotonicTimestamp() <= readLocalIssuanceCeiling(auditStore)) await sleep(10);
+		await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
 	});
 
 	it('issuance after a persisted ceiling (simulated in-process) starts above it and covers what it issues', async () => {
@@ -434,7 +435,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			readLocalIssuanceCeiling(auditStore) > entry.txnLogKey,
 			'a key issued ahead of the clock is persisted first'
 		);
-		while (rootStore.getMonotonicTimestamp() <= readLocalIssuanceCeiling(auditStore)) await sleep(10);
+		await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
 	});
 
 	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {

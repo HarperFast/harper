@@ -7,7 +7,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
-const { seedLocalIssuance } = require('#src/resources/originClosedFloor');
+const { localIssuanceRatchet, seedLocalIssuance } = require('#src/resources/originClosedFloor');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { PassThrough } = require('node:stream');
 const { createBlob } = require('#src/resources/blob');
@@ -1836,6 +1836,10 @@ describe('Record locks (harper#483)', () => {
 				!context.transaction.writes.some((write) => write && write.key === lockedId && !write.saved),
 				'the refused write left nothing staged'
 			);
+			await assert.rejects(
+				async () => holder.save(),
+				(error) => error.statusCode === 409
+			);
 			stream.end('payload');
 			await blobbed;
 			assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier commit landed');
@@ -1856,12 +1860,10 @@ describe('Record locks (harper#483)', () => {
 			await LockTest.put({ id: lockedId, n: 0 });
 			const context = {};
 			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
-			holder.set('n', 1);
-			await holder.save();
-
 			const rootStore = LockTest.primaryStore.rootStore;
-			const coverageLead = rootStore.getMonotonicTimestamp() + 10_000;
+			const coverageLead = Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore)) + 1000;
 			aheadUntil = Math.max(aheadUntil, coverageLead);
+			assert.ok(context.transaction instanceof ImmediateTransaction);
 			let failedCover = false;
 			let coverInstalled = false;
 			try {
@@ -1873,15 +1875,24 @@ describe('Record locks (harper#483)', () => {
 					return coverLocalIssuance(LockTest.auditStore, key);
 				});
 				coverInstalled = true;
-				handleOf(context.transaction).noteHolderVersion(entryOf(lockedId).version);
-				holder.set('n', 2);
-				await assert.rejects(async () => holder.save(), /simulated issuance-ceiling failure/);
-				assert.ok(failedCover, 'the second holder stamp needed a new durable ceiling');
+				handleOf(context.transaction).noteHolderVersion(coverageLead);
+				holder.set('n', 1);
+				context.transaction.isCommitting = true;
+				try {
+					await assert.rejects(async () => holder.save(), /simulated issuance-ceiling failure/);
+				} finally {
+					context.transaction.isCommitting = false;
+				}
+				assert.ok(failedCover, 'the holder stamp needed a new durable ceiling');
 				assert.ok(
 					!context.transaction.writes.some((write) => write && write.key === lockedId && !write.saved),
 					'the refused operation was removed from the transaction'
 				);
-				assert.strictEqual(entryOf(lockedId).value.n, 1, 'the refused write did not land');
+				await assert.rejects(
+					async () => holder.save(),
+					(error) => error.statusCode === 409
+				);
+				assert.strictEqual(entryOf(lockedId).value.n, 0, 'the refused write did not land');
 
 				seedLocalIssuance(rootStore, readLocalIssuanceCeiling(LockTest.auditStore), (key) =>
 					coverLocalIssuance(LockTest.auditStore, key)
@@ -1889,9 +1900,9 @@ describe('Record locks (harper#483)', () => {
 				coverInstalled = false;
 				await holder.unlock();
 				const retry = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, {});
-				retry.set('n', 2);
+				retry.set('n', 1);
 				await retry.save();
-				assert.strictEqual(entryOf(lockedId).value.n, 2, 'a fresh lock retried the refused change');
+				assert.strictEqual(entryOf(lockedId).value.n, 1, 'a fresh lock retried the refused change');
 				await retry.unlock();
 			} finally {
 				if (coverInstalled)
