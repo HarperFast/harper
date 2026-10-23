@@ -2213,15 +2213,15 @@ describe('Test configUtils module', () => {
 				);
 
 				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
-				expect(configJson).to.not.have.property('mqtt');
-				expect(configJson).to.not.have.property('applications');
-				expect(configJson).to.not.have.property('authentication');
-				expect(configJson.http.port).to.equal(9000);
-				expect(configJson.http.securePort).to.equal(9926);
-				expect(configJson.storage.caching).to.equal(true);
-				expect(configJson.localStudio.enabled).to.equal(true);
-				expect(configJson.logging.level).to.equal('warn');
-				expect(configJson.operationsApi.network.securePort).to.equal(9925);
+				plainAssert.equal(Object.hasOwn(configJson, 'mqtt'), false);
+				plainAssert.equal(Object.hasOwn(configJson, 'applications'), false);
+				plainAssert.equal(Object.hasOwn(configJson, 'authentication'), false);
+				plainAssert.equal(configJson.http.port, 9000);
+				plainAssert.equal(configJson.http.securePort, 9926);
+				plainAssert.equal(configJson.storage.caching, true);
+				plainAssert.equal(configJson.localStudio.enabled, true);
+				plainAssert.equal(configJson.logging.level, 'warn');
+				plainAssert.equal(configJson.operationsApi.network.securePort, 9925);
 			} finally {
 				fs.removeSync(hdbConfigTemplatePath);
 			}
@@ -2241,11 +2241,11 @@ describe('Test configUtils module', () => {
 				);
 
 				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
-				expect(configJson.authentication.authorizeLocal).to.equal(true);
-				expect(configJson.authentication.cacheTTL).to.equal(30000);
-				expect(configJson.mqtt.network.port).to.equal(1884);
-				expect(configJson.mqtt.network.securePort).to.equal(8883);
-				expect(configJson).to.not.have.property('applications');
+				plainAssert.equal(configJson.authentication.authorizeLocal, true);
+				plainAssert.equal(configJson.authentication.cacheTTL, 30000);
+				plainAssert.equal(configJson.mqtt.network.port, 1884);
+				plainAssert.equal(configJson.mqtt.network.securePort, 8883);
+				plainAssert.equal(Object.hasOwn(configJson, 'applications'), false);
 			} finally {
 				delete process.env.HARPER_SET_CONFIG;
 				fs.removeSync(hdbConfigTemplatePath);
