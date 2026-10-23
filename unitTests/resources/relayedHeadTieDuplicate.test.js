@@ -172,6 +172,27 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 	}
 
 	for (const putFirst of [false, true]) {
+		it(`applies a put ${putFirst ? 'before' : 'after'} a same-key message whose log key differs from its version`, async function () {
+			if (isLMDB) return this.skip();
+			const { T, apply, origin } = replicatedTable(`RekeyedMessage${putFirst ? 'AfterPut' : 'ThenPut'}`);
+			const before = Date.now() - 60000;
+			await apply({
+				type: 'put',
+				id: 'r',
+				value: { id: 'r', name: 'old' },
+				timestamp: before,
+				version: before,
+				nodeId: origin,
+			});
+			const version = before + 1000;
+			const put = { type: 'put', id: 'r', value: { id: 'r', name: 'new' }, nodeId: origin, version };
+			const message = { type: 'message', id: 'r', value: { id: 'r', name: 'published' }, nodeId: origin, version };
+			await apply({ type: 'transaction', timestamp: version + 5, writes: putFirst ? [put, message] : [message, put] });
+			assert.equal((await T.get('r')).name, 'new');
+		});
+	}
+
+	for (const putFirst of [false, true]) {
 		it(`re-delivers a put ${putFirst ? 'before' : 'after'} a non-resident relocate without changing the record`, async function () {
 			if (isLMDB) return this.skip();
 			const { T, apply, origin } = replicatedTable(`NonResidentRelocate${putFirst ? 'AfterPut' : 'ThenPut'}`);
@@ -192,8 +213,10 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 			};
 			await apply(transaction());
 			const delivered = T.primaryStore.getEntry('r');
+			const history = (await T.getHistoryOfRecord('r')).length;
 			await apply(transaction());
 			const redelivered = T.primaryStore.getEntry('r');
+			assert.equal((await T.getHistoryOfRecord('r')).length, history, 'the re-delivery must not be logged');
 			assert.deepEqual(
 				{ value: redelivered?.value, flags: redelivered?.metadataFlags, version: redelivered?.version },
 				{ value: delivered?.value, flags: delivered?.metadataFlags, version: delivered?.version }

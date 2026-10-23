@@ -5093,9 +5093,10 @@ export function makeTable(options): TableResourceClass {
 							// transaction to this key: every write in it shares one log key, so the ref that write left is
 							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
 							// and stages nothing.
+							let refBase: Partial<Entry> | undefined;
 							if (
 								!priorStaged &&
-								existingEntry.additionalAuditRefs?.some(
+								(refBase = identityBase(write, existingEntry, committedBy))?.additionalAuditRefs?.some(
 									(ref, index) =>
 										(ref.version === appendedLogKey ||
 											(ref.version === receivedLogKey &&
@@ -5106,7 +5107,7 @@ export function makeTable(options): TableResourceClass {
 													ref,
 													index,
 													options?.version ?? txnTime,
-													existingEntry.version
+													refBase.version
 												))) &&
 										precedesExistingVersion(
 											txnTime,
