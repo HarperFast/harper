@@ -126,12 +126,16 @@ entry's key in the per-origin transaction log: write identity, the record→log 
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and
 `#2409`'s `recordVersion` alias is now absorbed back into `version`.
 
+<<<<<<< HEAD
 They hold the same value for every write whose record version is its own commit timestamp, which is
 every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
 (`getFromSource`, core #2065): the record is stored at the source-reported version while its log
 entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
 when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that
 compatibility pointer with a dedicated log-key word.
+=======
+They match for every ordinary local write (its record version is its own commit timestamp), so confusing them stays invisible until a **source fill** (`getFromSource`, core #2065) stores the record at the source-reported version and keys its log entry at the fill's commit. A RocksDB record keeps its version in the existing word and, when the clocks diverge, its audit head in `additionalAuditRefs`; stage 2 can replace that pointer with a dedicated log-key word.
+>>>>>>> ed89e94ce (docs: reuse upstream design-note trim to restore lint budget)
 
 Consequences worth knowing:
 
@@ -164,9 +168,7 @@ Consequences worth knowing:
   replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
   commit. Other consumers still treat a second commit at one key as a duplicate
   (`resumePastExactStart`, the derived-index runtime, subscription delivery).
-- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
-  history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
-  no on-disk or on-wire identifier changes in this stage.
+- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and stay unchanged.
 
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 
@@ -253,23 +255,15 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 ## Conventions
 
 - Single-record nested selections use `Resource.transformForSelect`; searches use
-  `Table.transformEntryForSelect`. Generic recursion needs no target table for plain JSON;
-  classless primitive array items and whole selected Dates keep their values; Date-array
-  subselects retain the existing search projection policy. Missing targets
-  preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object projection. Promise and
-  `getRecord` detection requires callable values; ordinary method-like JSON keys are data.
-  Generic fallback projections treat function values as absent while retaining inherited data and getters;
-  registered resolver results stay unchanged.
-- The native missing-value contract is pinned by
+  `Table.transformEntryForSelect`. Plain JSON needs no target table; classless primitive array items
+  and whole selected Dates keep their values (Date-array subselects keep the search projection policy).
+  Missing targets preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object
+  projection. Only callable values count as a Promise or `getRecord`, so method-like JSON keys are data;
+  generic fallbacks treat function values as absent but keep inherited data and getters, and registered
+  resolver results pass through unchanged. Resolver dictionaries are read by own entries, the private
+  transform cache has no prototype, and a selected own `__proto__` is a data property on a normal response object. Pinned by
   `../unitTests/resources/nestedSelectMissingValues.test.js` and
-  `../integrationTests/resources/relationship-and-status-contract.test.ts`.
-  `Resource.transformForSelect` resolver dictionaries use own entries, the private transform cache has no prototype, and
-  a selected own `__proto__` is a data property on a normal response object.
-  [REST select projection crashes on missing targets and non-relationship fields](https://github.com/HarperFast/harper/issues/1415)
-  remains open for singleton-selector parsing and invalid-subselect policy outside this helper.
-  [Nested Resource projection fails to settle asynchronous arrays and forceNulls](https://github.com/HarperFast/harper/issues/3168)
-  and [Prototype-chain key/attribute names: one **proto** PK poisons SQL/index reads table-wide; proto-named attributes falsely rejected at insert](https://github.com/HarperFast/harper/issues/1295)
-  track separate asynchronous projection and table-wide key boundaries.
+  `../integrationTests/resources/relationship-and-status-contract.test.ts`. Still open, outside these helpers: [singleton-selector parsing and invalid-subselect policy](https://github.com/HarperFast/harper/issues/1415); separately, [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168) and [a `__proto__` key poisoning a table, and proto-named attributes rejected at insert](https://github.com/HarperFast/harper/issues/1295).
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
@@ -811,6 +805,42 @@ an LMDB root once, only while `open`, skips its dbis, and closes every alias sha
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
 
+<<<<<<< HEAD
+=======
+## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
+
+A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) used to reopen
+`__dbis__` and every indexed column family, overwriting the references the table graph holds. rocksdb-js
+releases a native handle only on close or garbage collection, so the replaced wrappers held the
+process-global refCount up and online `restore_backup` (which waits 3 s for closure) refused the database
+as held open. `declareTable` now reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a
+redeclare, a plain index's open wrapper on an unchanged store (`indexFor`); a custom index (HNSW) is
+always reopened, since `openIndex` builds its state from the current options, and is never reused for a
+plain declaration. Every wrapper `initStores` or `declareTable` opens for a global RocksDB root is
+recorded in `ownedRocksStores` under the root path, as a `WeakRef` so collection still releases an
+unreachable one. `closeDatabaseStores` closes the live entries before the root, and drains the record
+again afterward for a declaration that resolved the root mid-close. A wrapper whose close failed
+(including a custom index's cleanup close after its setup threw) is held strongly, since collection may
+not release it; the record is keyed by path because a lenient close discards the root object even after
+a failure. A wrapper is never closed when the graph stops pointing at it: a query that took it before
+the redeclare still opens ranges through it, and a closed wrapper would refuse them (a range already open
+keeps reading either way). Short-lived wrappers (column-family drops, the blob sweep) close themselves
+and are not recorded; `destroy()` closes every wrapper on the root, so a drop only forgets the record.
+Enforced by the redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.test.js`
+and, end to end, `integrationTests/database/restore-backup-online.test.ts`.
+
+## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
+
+A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` file at the top level
+of the storage path and of every configured database path, and each one a directory below the storage
+path as a legacy `<schema>/<table>.mdb` table. lmdb-js (3.5.6, and still 3.5.7) crashes the process
+when `mdb_env_open` fails: the failure path in `EnvWrap::openEnv` frees its `ExtendedEnv`, then
+`closeEnv` frees it again. A file there that is not an LMDB environment therefore takes the process
+down with SIGSEGV and no stack, at whatever moment the next rescan runs. Until lmdb-js returns the
+open error instead, tests keep non-database fixtures outside those paths;
+`unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists (harper#2669).
+
+>>>>>>> ed89e94ce (docs: reuse upstream design-note trim to restore lint budget)
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
 `LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's
