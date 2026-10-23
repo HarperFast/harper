@@ -319,6 +319,12 @@ suite(
 				await sleep(250);
 			}
 			strictEqual(job?.status, 'COMPLETE', JSON.stringify(job));
+
+			// The record says the rollout ran until the job ended it (harper#3060).
+			strictEqual(body.status, 'rolling_out');
+			const record = await operation(ctx, { operation: 'get_deployment', deployment_id: body.deployment_id });
+			strictEqual(record.status, 'success', JSON.stringify(record));
+			strictEqual(record.restart_job_id, body.restartJobId);
 		});
 
 		test("a worker the rollout has not reached yet imports lazily from the live tree: the canary certifies only a boot's load", async () => {

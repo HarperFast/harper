@@ -65,6 +65,11 @@ type DeploymentStatus =
 	| 'success'
 	| 'failed'
 	| 'rolled_back'
+	// A rolling deploy took its release on the node that received it, and its activation job is taking it on the
+	// others; the job ends it as `success` or `partial`.
+	| 'rolling_out'
+	// Terminal: some node did not take the release a rolling deploy activated; `error.nodes` names them.
+	| 'partial'
 	// Terminal: the build is complete and certified on disk but was not activated. Terminal rather than
 	// in-flight because nothing further happens to THIS deployment — activating its artifact is a separate
 	// operator action with a row of its own.
@@ -483,7 +488,10 @@ export class DeploymentRecorder {
 		this.sealed = true;
 	}
 
-	async finish(status: 'success' | 'failed' | 'rolled_back' | 'staged', error?: unknown): Promise<void> {
+	async finish(
+		status: 'success' | 'failed' | 'rolled_back' | 'staged' | 'rolling_out',
+		error?: unknown
+	): Promise<void> {
 		if (this.finished) return;
 		this.finished = true;
 		this.unsubscribe?.();
@@ -538,6 +546,98 @@ export class DeploymentRecorder {
 		await withIsolatedTransaction(() => table.put(this.record), timeoutMs);
 	}
 }
+
+// How long a rolling deploy's activation job waits for the origin's own write of `rolling_out` before it records a
+// peer's outcome over whatever the row holds. The origin writes it right after starting the job, and the first peer's
+// activation is a whole restart, so this is only a bound for an origin that failed in between.
+const ROLLOUT_RECORD_WAIT_MS = 60_000;
+
+export interface PeerActivation {
+	node: string;
+	certification?: unknown;
+	message?: string;
+	error?: string;
+}
+
+/**
+ * Record one peer's outcome of a rolling deploy's activation job on the deployment's row, beside the staging outcome
+ * its `peer_results` entry already holds. Runs in the job, on the node that wrote the row, one peer at a time, so
+ * each write lands seconds apart and replicates like the origin's own. Never throws: the job's own result is the
+ * authority, and a lost write costs only the record.
+ */
+export async function recordPeerActivation(deploymentId: string, outcome: PeerActivation): Promise<void> {
+	await updateRolloutRow(deploymentId, (row) => applyPeerActivation(row, outcome));
+}
+
+/**
+ * End a rolling deploy's record once its activation job has visited every peer: `success` when every node took the
+ * release, otherwise `partial`, naming the nodes that did not. `unrecorded` are outcomes no earlier write carried; the
+ * job hands the last peer's here rather than writing it moments before this, since a tight burst of writes to one row
+ * can commit out of order on a loaded peer (#1170). Leaves a row the origin did not leave `rolling_out` (it failed
+ * after starting the job) with the status it has.
+ */
+export async function finishRollout(
+	deploymentId: string,
+	outcomes: PeerActivation[],
+	unrecorded: PeerActivation[] = []
+): Promise<void> {
+	await updateRolloutRow(deploymentId, (row) => {
+		for (const outcome of unrecorded) applyPeerActivation(row, outcome);
+		if (row.status !== 'rolling_out') return;
+		const failed = outcomes.filter((outcome) => outcome.error);
+		row.completed_at = Date.now();
+		if (failed.length === 0) {
+			row.status = 'success';
+			return;
+		}
+		row.status = 'partial';
+		row.error = {
+			message:
+				`Not activated on ${failed.length} of ${outcomes.length} peer node(s): ` +
+				failed.map((outcome) => `${outcome.node} (${outcome.error})`).join('; '),
+			nodes: failed.map((outcome) => outcome.node),
+			phase: 'restart',
+		};
+	});
+}
+
+function applyPeerActivation(row: Record<string, any>, outcome: PeerActivation): void {
+	const activation = {
+		activated: !outcome.error,
+		certification: outcome.certification ?? null,
+		message: outcome.message ?? null,
+		error: outcome.error ?? null,
+		completed_at: Date.now(),
+	};
+	const peers = Array.isArray(row.peer_results) ? [...row.peer_results] : [];
+	const index = peers.findIndex((peer) => peer?.node === outcome.node);
+	if (index >= 0) peers[index] = { ...peers[index], activation };
+	else peers.push({ node: outcome.node, status: null, error: null, activation });
+	row.peer_results = peers;
+	row.event_log = [...(row.event_log ?? []), { t: Date.now(), event: 'peer_activation', data: outcome }];
+}
+
+async function updateRolloutRow(deploymentId: string, update: (row: Record<string, any>) => void): Promise<void> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return;
+	try {
+		const deadline = Date.now() + ROLLOUT_RECORD_WAIT_MS;
+		let current = await table.get(deploymentId);
+		while (current && !ROLLOUT_RECORD_STATUSES.has(current.status) && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			current = await table.get(deploymentId);
+		}
+		if (!current) return;
+		const row = { ...current };
+		update(row);
+		await withIsolatedTransaction(() => table.put(row));
+	} catch (error) {
+		logger.warn?.(`Failed to record the rollout of deployment ${deploymentId}`, error);
+	}
+}
+
+// The origin's terminal write for a rolling deploy, or one that ended it before the job got here.
+const ROLLOUT_RECORD_STATUSES = new Set(['rolling_out', 'success', 'partial', 'failed', 'rolled_back', 'staged']);
 
 // Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,
 // heavyweight, user-initiated operation, and the `system`-table replication channel can be

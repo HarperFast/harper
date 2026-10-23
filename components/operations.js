@@ -946,6 +946,7 @@ async function deployComponent(req) {
 			});
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.restartJobId = jobResponse.job_id;
+			if (recorder) recorder.row.restart_job_id = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, activating it on each other node in turn`;
 		} else if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
@@ -973,6 +974,7 @@ async function deployComponent(req) {
 			emit('phase', { phase: 'restart', status: 'done' });
 
 			response.restartJobId = jobResponse.job_id;
+			if (recorder) recorder.row.restart_job_id = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else {
 			// Deployed without restarting: for a component that had no directory before this
@@ -1070,7 +1072,9 @@ async function deployComponent(req) {
 				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
 			}
 			emit('phase', { phase: mode === 'stage' ? 'staged' : 'success', status: 'done' });
-			await recorder.finish(mode === 'stage' ? 'staged' : 'success');
+			// The activation job ends a rolling deploy's record once each other node has taken the release, or not.
+			await recorder.finish(mode === 'stage' ? 'staged' : rollingActivation ? 'rolling_out' : 'success');
+			if (rollingActivation) response.status = 'rolling_out';
 			if (mode === 'stage') {
 				response.message =
 					`Staged: ${application.name}. Deploy it with deploy_component ` + `deployment_id=${recorder.deploymentId}`;
@@ -1410,9 +1414,9 @@ async function getComponents() {
 		log.debug(`Failed to get component status from threads: ${error.message}`);
 	}
 
-	const { successfulDeploymentsByProject, deploymentOfLiveRelease } = require('./deploymentOperations.ts');
+	const { releasedDeploymentsByProject, deploymentOfLiveRelease } = require('./deploymentOperations.ts');
 	const { liveDeploymentIdOf } = require('./Application.ts');
-	const deploymentsByProject = await successfulDeploymentsByProject().catch((error) => {
+	const deploymentsByProject = await releasedDeploymentsByProject().catch((error) => {
 		log.debug(`Failed to read deployment records for get_components: ${error.message}`);
 		return new Map();
 	});

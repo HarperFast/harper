@@ -151,3 +151,125 @@ describe('activating a staged release on each peer in turn', () => {
 		assert.equal(sent.length, 3, 'a refusal on one peer does not stop the others');
 	});
 });
+
+describe("recording each peer's activation on the deployment's row (harper#3060)", () => {
+	const { databases } = require('#src/resources/databases');
+	const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
+	const DEPLOYMENT_TABLE = SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
+	let previousServer;
+	let previousTable;
+	let rows;
+	let puts;
+	let answers;
+
+	beforeEach(() => {
+		previousServer = global.server;
+		answers = {};
+		global.server = {
+			nodes: [{ name: getThisNodeName() }, { name: 'peer-a' }, { name: 'peer-b' }, { name: 'peer-c' }],
+			replication: {
+				monitorNodeCAs() {},
+				async sendOperationToNode(node) {
+					const answer = answers[node.name] ?? { message: 'Successfully deployed: web', certification: 'certified' };
+					if (answer instanceof Error) throw answer;
+					return answer;
+				},
+			},
+		};
+		rows = new Map();
+		puts = [];
+		if (!databases.system) databases.system = {};
+		previousTable = databases.system[DEPLOYMENT_TABLE];
+		databases.system[DEPLOYMENT_TABLE] = {
+			async get(id) {
+				return rows.get(id);
+			},
+			async put(row) {
+				puts.push(structuredClone(row));
+				rows.set(row.deployment_id, row);
+			},
+		};
+	});
+	afterEach(() => {
+		global.server = previousServer;
+		databases.system[DEPLOYMENT_TABLE] = previousTable;
+	});
+
+	const stagedRow = (status = 'rolling_out') => ({
+		deployment_id: ROW,
+		project: 'web',
+		status,
+		event_log: [],
+		peer_results: ['peer-a', 'peer-b', 'peer-c'].map((node) => ({ node, status: 'success', error: null })),
+	});
+	const activation = { project: 'web', deployment_id: DEPLOYMENT, deployment_row: ROW };
+
+	it('ends the record partial, naming the node whose canary rejected the release, and keeps each staging outcome', async () => {
+		rows.set(ROW, stagedRow());
+		answers['peer-b'] = new Error('web was not deployed on this node: release failed to load in its canary worker');
+		await assert.rejects(activateDeploymentOnPeers(activation), /peer-b/);
+
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'partial');
+		assert.deepStrictEqual(row.error.nodes, ['peer-b']);
+		assert.match(row.error.message, /peer-b \(web was not deployed on this node/);
+		assert.deepStrictEqual(
+			row.peer_results.map(({ node, status, activation }) => ({
+				node,
+				status,
+				activated: activation.activated,
+				certification: activation.certification,
+			})),
+			[
+				{ node: 'peer-a', status: 'success', activated: true, certification: 'certified' },
+				{ node: 'peer-b', status: 'success', activated: false, certification: null },
+				{ node: 'peer-c', status: 'success', activated: true, certification: 'certified' },
+			]
+		);
+		assert.match(row.peer_results[1].activation.error, /canary worker/);
+		assert.deepStrictEqual(
+			row.event_log.map(({ event, data }) => `${event}:${data.node}`),
+			['peer_activation:peer-a', 'peer_activation:peer-b', 'peer_activation:peer-c']
+		);
+		assert.deepStrictEqual(
+			puts.map(({ status }) => status),
+			['rolling_out', 'rolling_out', 'partial'],
+			"the last peer's outcome rides the final write rather than landing just before it"
+		);
+	});
+
+	it('ends the record success once every node took the release', async () => {
+		rows.set(ROW, stagedRow());
+		await activateDeploymentOnPeers(activation);
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'success');
+		assert.strictEqual(row.error, undefined);
+		assert.ok(row.peer_results.every(({ activation }) => activation.activated));
+		assert.ok(typeof row.completed_at === 'number');
+	});
+
+	it("waits for the origin's own write of rolling_out before writing over the row", async () => {
+		rows.set(ROW, stagedRow('restarting'));
+		setTimeout(() => rows.set(ROW, stagedRow()), 300);
+		await activateDeploymentOnPeers(activation);
+		assert.strictEqual(rows.get(ROW).status, 'success');
+		assert.ok(puts.every((put) => put.status !== 'restarting'));
+	});
+
+	it('records outcomes on a row the origin ended some other way, and leaves its status', async () => {
+		rows.set(ROW, stagedRow('failed'));
+		await activateDeploymentOnPeers(activation);
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'failed');
+		assert.strictEqual(row.peer_results.filter(({ activation }) => activation?.activated).length, 3);
+	});
+
+	it('names a node that left the cluster before its turn on the record too', async () => {
+		rows.set(ROW, stagedRow());
+		await assert.rejects(activateDeploymentOnPeers({ ...activation, nodes: ['peer-a', 'peer-gone'] }));
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'partial');
+		assert.deepStrictEqual(row.error.nodes, ['peer-gone']);
+		assert.strictEqual(row.peer_results.find(({ node }) => node === 'peer-gone').activation.activated, false);
+	});
+});

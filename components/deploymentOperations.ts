@@ -16,7 +16,8 @@ const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 // `staged` belongs here: the build is complete on disk and nothing further happens to this deployment, so
 // an SSE tail must finish and `delete_deployment_payload` must not refuse a tarball nobody is installing
 // from any more. Activating the artifact is a separate deployment with a row of its own.
-const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back', 'staged']);
+// `partial` ends a rolling deploy some node did not take; `rolling_out` is still in progress, on the activation job.
+const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back', 'staged', 'partial']);
 
 interface ListRequest {
 	project?: string;
@@ -91,15 +92,19 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 	return { deployments: collected.slice(offset, offset + limit), total };
 }
 
+// A deployment whose release went live on the node that received it; a rolling one may still be reaching the others.
+const RELEASED_STATUSES = ['success', 'rolling_out', 'partial'];
+
 /**
- * Each project's successful deployments, newest first by completion. One scan serves a whole `get_components`; an
+ * Each project's released deployments, newest first by completion. One scan serves a whole `get_components`; an
  * empty map when this node has no deployment table.
  */
-export async function successfulDeploymentsByProject(): Promise<Map<string, any[]>> {
+export async function releasedDeploymentsByProject(): Promise<Map<string, any[]>> {
 	const byProject = new Map<string, any[]>();
 	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
 	if (!table) return byProject;
-	for await (const row of table.search([{ attribute: 'status', value: 'success' }])) {
+	const conditions = RELEASED_STATUSES.map((status) => ({ attribute: 'status', value: status }));
+	for await (const row of table.search({ conditions, operator: 'or' })) {
 		if (!row?.project) continue;
 		let rows = byProject.get(row.project);
 		if (!rows) byProject.set(row.project, (rows = []));
@@ -110,9 +115,9 @@ export async function successfulDeploymentsByProject(): Promise<Map<string, any[
 }
 
 /**
- * The record that made a component's live release live: the newest successful deploy or activation naming the id in
+ * The record that made a component's live release live: the newest released deploy or activation naming the id in
  * its tree's provenance marker. A tree without one (installed before 5.3, by `add_component`, or from a `file:` link)
- * is described by the project's newest successful deployment.
+ * is described by the project's newest released deployment.
  */
 export function deploymentOfLiveRelease(rows: any[] | undefined, liveDeploymentId: string | undefined): any {
 	if (!rows) return undefined;

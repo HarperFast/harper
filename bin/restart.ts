@@ -215,14 +215,19 @@ async function activateDeploymentOnPeers(activation: any) {
 	const thisNode = getThisNodeName();
 	const otherNodes = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
 	const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
+	const { finishRollout } = await import('../components/deploymentRecorder.ts');
 	const results = [];
-	if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results);
+	const unrecorded = [];
+	if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results, unrecorded);
 	// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
 	for (const name of nodes ?? []) {
 		if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
-			results.push({ node: name, error: 'it is no longer one of the nodes in this cluster' });
+			const result = { node: name, error: 'it is no longer one of the nodes in this cluster' };
+			results.push(result);
+			unrecorded.push(result);
 		}
 	}
+	await finishRollout(deploymentRow, results, unrecorded);
 	const failed = results.filter((result) => result.error);
 	if (failed.length > 0) {
 		const error: any = new Error(
@@ -236,10 +241,17 @@ async function activateDeploymentOnPeers(activation: any) {
 	return { activated: results };
 }
 
-async function activateEachPeer(peers: any[], { project, deploymentId, deploymentRow }, results: any[]) {
+/** Records each peer's outcome on the deployment row as it lands, except the last, which `unrecorded` hands on. */
+async function activateEachPeer(
+	peers: any[],
+	{ project, deploymentId, deploymentRow },
+	results: any[],
+	unrecorded: any[]
+) {
 	const replication = (global as any).server.replication;
 	replication.monitorNodeCAs();
 	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.js');
+	const { recordPeerActivation } = await import('../components/deploymentRecorder.ts');
 	const timeoutMs = peerDeployAnswerTimeoutMs({ restart: true });
 	for (const node of peers) {
 		try {
@@ -260,6 +272,9 @@ async function activateEachPeer(peers: any[], { project, deploymentId, deploymen
 		} catch (error) {
 			results.push({ node: node.name, error: error?.message ?? String(error) });
 		}
+		const result = results[results.length - 1];
+		if (node === peers[peers.length - 1]) unrecorded.push(result);
+		else await recordPeerActivation(deploymentRow, result);
 	}
 }
 

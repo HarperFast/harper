@@ -24,9 +24,13 @@ function installDeploymentRows(rows) {
 	if (!databases.system) databases.system = {};
 	const prior = databases.system[DEPLOYMENT_TABLE];
 	databases.system[DEPLOYMENT_TABLE] = {
-		async *search(conditions) {
+		async *search({ conditions, operator }) {
+			const matches =
+				(row) =>
+				({ attribute, value }) =>
+					row[attribute] === value;
 			for (const row of rows) {
-				if (conditions.every(({ attribute, value }) => row[attribute] === value)) yield row;
+				if (operator === 'or' ? conditions.some(matches(row)) : conditions.every(matches(row))) yield row;
 			}
 		},
 	};
@@ -101,12 +105,14 @@ describe('get_components deployment times (harper#564)', () => {
 		await component('web', 'b');
 		await component('legacy');
 		await component('never-deployed');
+		await component('rolling', 'g');
 		restoreTable = installDeploymentRows([
 			{ deployment_id: 'a', project: 'web', status: 'success', completed_at: 100 },
 			{ deployment_id: 'b', project: 'web', status: 'staged', completed_at: 200 },
 			{ deployment_id: 'c', project: 'web', status: 'success', activated_from: 'b', completed_at: 300 },
 			// newer, but rejected here: this node still serves b
-			{ deployment_id: 'd', project: 'web', status: 'success', completed_at: 400 },
+			{ deployment_id: 'd', project: 'web', status: 'partial', completed_at: 400 },
+			{ deployment_id: 'g', project: 'rolling', status: 'rolling_out', completed_at: 500 },
 			{ deployment_id: 'e', project: 'legacy', status: 'success', completed_at: 50 },
 			{ deployment_id: 'f', project: 'legacy', status: 'failed', completed_at: 60 },
 		]);
@@ -124,6 +130,9 @@ describe('get_components deployment times (harper#564)', () => {
 		assert.strictEqual(legacy.deployment_id, undefined);
 		assert.strictEqual(legacy.deployed_at, 50);
 		assert.strictEqual(legacy.restarted_at, undefined);
+
+		const rolling = entries.find((entry) => entry.name === 'rolling');
+		assert.strictEqual(rolling.deployed_at, 500, 'a release still rolling out is live where it went live');
 
 		const neverDeployed = entries.find((entry) => entry.name === 'never-deployed');
 		assert.strictEqual(neverDeployed.deployed_at, undefined);

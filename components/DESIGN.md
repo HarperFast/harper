@@ -781,15 +781,39 @@ streamed `deploy_component` response and any `get_deployment` tail, so an in-ban
 `finish()` settles after it writes the terminal row, so the tail's closing re-read sees the final status. The
 tail also stops when its own SSE client disconnects (`ProgressEmitter.signal`).
 
+### A rolling deploy's record follows its activation job
+
+A certified rolling deploy answers once the node that received it has taken the release; a `restart_service` job
+then activates it on each other node in turn (`activateDeploymentOnPeers`, `bin/restart.ts`). The record used to be
+finished as `success` before the job ran, so it reported success for a release a node then rejected (#3060). Now:
+
+- The origin finishes the record as `rolling_out`, with the job's id in `restart_job_id` (also set for an uncertified
+  rolling restart's job), and the response carries `status: 'rolling_out'`.
+- The job, which runs on the node that wrote the row, adds each peer's outcome to that peer's `peer_results` entry as
+  `activation: { activated, certification, message, error, completed_at }`, beside the staging outcome the entry
+  already holds, and appends a `peer_activation` event. A peer that left the cluster before its turn is recorded the
+  same way.
+- When every peer has been visited, the job ends the record `success`, or `partial` with `error.nodes` naming each
+  node that did not take the release. `partial` is terminal; `rolling_out` is not.
+
+Two ordering rules keep the replicated row convergent. The job waits, bounded, for the origin's own `rolling_out`
+write before its first one, since the job starts before the origin's terminal write and a later put of the origin's
+in-memory record would erase what the job wrote. And the last peer's outcome rides the job's final write instead of
+landing moments before it, because a tight burst of writes to one row can commit out of order on a loaded peer
+(#1170, the reason the recorder seals before replicating). A record whose origin failed after starting the job keeps
+its status; the job still records each peer's outcome there. A job that never finishes, because its node restarted
+mid-rollout, leaves the record `rolling_out`, as it leaves its `hdb_job` row in progress.
+
 ### `get_components` says when the live release was deployed and when it last loaded
 
 Each entry carries three fields, all of this node's view (#564):
 
 - `deployment_id` is the id the live tree's provenance marker names, the id `deploy_component { deployment_id }`
   accepts. It is absent for a tree with no marker.
-- `deployed_at` is the `completed_at` of the record that made that release live: the newest `success` row whose
-  `deployment_id` or `activated_from` is the marker's id. So a node that rejected a newer rolling release still
-  reports the release it serves. A tree with no marker reports the project's newest `success` row.
+- `deployed_at` is the `completed_at` of the record that made that release live: the newest released row (`success`,
+  `rolling_out` or `partial`) whose `deployment_id` or `activated_from` is the marker's id. So a node that rejected a
+  newer rolling release still reports the release it serves. A tree with no marker reports the project's newest
+  released row.
 - `restarted_at` is the latest time any thread on this node finished loading the application or one of its
   sub-components, successfully or not (`ComponentStatus.loadedAt`, set by `lifecycle.loaded`/`failed` and kept
   across later status reports). A restarted worker is a new thread, so a restart refreshes it; nothing persists it.
