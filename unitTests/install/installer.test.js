@@ -594,6 +594,7 @@ describe('install storage.engine resolution', () => {
 		closeDatabase,
 		databases,
 		getDatabases,
+		getRocksCompression,
 		resetDatabases,
 		resetRocksCompression,
 	} = require('#js/resources/databases');
@@ -628,6 +629,7 @@ describe('install storage.engine resolution', () => {
 	let savedEnv;
 	let savedArgv;
 	let savedSystemDb;
+	let savedRocksCompression;
 
 	async function runBootInitialize() {
 		const beforeListeners = new Map(PROCESS_EVENTS.map((ev) => [ev, new Set(process.listeners(ev))]));
@@ -727,6 +729,7 @@ describe('install storage.engine resolution', () => {
 			publicKey: 'test-public-key',
 		});
 
+		savedRocksCompression = getRocksCompression();
 		savedEnv = {};
 		for (const k of ENV_KEYS) {
 			savedEnv[k] = process.env[k];
@@ -772,12 +775,16 @@ describe('install storage.engine resolution', () => {
 			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, undefined);
 			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
 			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
-			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
-			resetRocksCompression();
 			initPaths.resetPaths();
+			// Earlier files in this process leave the test system database open under their codec, and
+			// RocksDB rejects a reopen under a different one.
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, savedRocksCompression);
+			resetRocksCompression();
 			testUtils.setupTestDBPath();
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
+			resetRocksCompression();
 			env_manager.initSync(true);
 			hdb_logger.initLogSettings(true);
 			if (tempBaseDir) {
