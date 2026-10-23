@@ -74,8 +74,11 @@ suite('Records shaped like a pass-through envelope', { skip: skipSuite }, (ctx: 
 	function subscribe(mqttClient: MqttClient, topic: string, qos: 1 | 2) {
 		return new Promise<void>((resolvePromise, reject) => {
 			const timer = setTimeout(() => reject(new Error(`subscribe to ${topic} timed out`)), 10_000);
+			const onClose = () => reject(new Error(`connection closed before the SUBACK for ${topic}`));
+			mqttClient.once('close', onClose);
 			mqttClient.subscribe(topic, { qos, rh: 2 }, (error) => {
 				clearTimeout(timer);
+				mqttClient.removeListener('close', onClose);
 				if (error) reject(error);
 				else resolvePromise();
 			});
@@ -146,11 +149,14 @@ suite('Records shaped like a pass-through envelope', { skip: skipSuite }, (ctx: 
 			const first = await connect(clientId, protocolVersion, (delivery) => live.push(delivery));
 			await end(first.mqttClient);
 			const subscriber = await connect(clientId, protocolVersion, (delivery) => live.push(delivery));
-			await subscribe(subscriber.mqttClient, 'Item/#', qos);
-			await putItem(`seed-${suffix}`, 'seed');
-			ok(await waitFor(() => live.length > 0), 'the live message arrives');
-			ok(await waitFor(async () => (await savedPosition(clientId)) !== undefined), 'the session position is saved');
-			await end(subscriber.mqttClient);
+			try {
+				await subscribe(subscriber.mqttClient, 'Item/#', qos);
+				await putItem(`seed-${suffix}`, 'seed');
+				ok(await waitFor(() => live.length > 0), 'the live message arrives');
+				ok(await waitFor(async () => (await savedPosition(clientId)) !== undefined), 'the session position is saved');
+			} finally {
+				await end(subscriber.mqttClient);
+			}
 
 			await putItem(`object-${suffix}`, { a: 1 });
 			await putItem(`number-${suffix}`, 5);
