@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (72 on Node 22/24, 69 on Node 26), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 73
+    # sum (75 on Node 22/24, 72 on Node 26), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 76
     strategy:
       fail-fast: false
       matrix:
