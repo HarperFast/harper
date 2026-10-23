@@ -7,6 +7,9 @@ const { setImmediate: nextTurn } = require('node:timers/promises');
 const { Request, BunRequest, UwsRequestBody } = require('#src/server/serverHelpers/Request');
 const { getDeserializer, contentTypes, findBestSerializer } = require('#src/server/serverHelpers/contentTypes');
 const { completeMultipartBody } = require('#src/server/serverHelpers/multipartForm');
+const { Resource } = require('#src/resources/Resource');
+const { RequestTarget } = require('#src/resources/RequestTarget');
+const { resolveBody } = require('#src/resources/resolveBody');
 const { table } = require('#src/resources/databases');
 const { saveBlob, isSaving } = require('#src/resources/blob');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -333,6 +336,83 @@ describe('REST multipart form decoding', function () {
 		const pending = body.next();
 		await body.return();
 		assert.equal((await pending).done, true);
+	});
+
+	for (const mode of ['returned', 'partially consumed', 'exhausted']) {
+		it(`rejects ${mode} multipart delegation before authorization`, async function () {
+			let authorized = 0;
+			let written = 0;
+			class Receiver extends Resource {
+				allowCreate() {
+					authorized++;
+					return true;
+				}
+				post() {
+					written++;
+				}
+			}
+			const body = getDeserializer(
+				contentType,
+				true,
+				true
+			)(
+				Readable.from([
+					encodeForm([
+						{ name: 'first', value: 'one' },
+						{ name: 'second', value: 'two' },
+					]),
+				])
+			);
+			if (mode === 'returned') await body.return();
+			else if (mode === 'partially consumed') await body.next();
+			else await collect(body);
+			await assert.rejects(
+				Receiver.post(new RequestTarget('/'), body, { authorize: true }),
+				(error) => error instanceof ServerError
+			);
+			assert.equal(authorized, 0);
+			assert.equal(written, 0);
+		});
+	}
+
+	it('rejects cancellation after multipart materialization claims the body', async function () {
+		const body = getDeserializer(
+			contentType,
+			true,
+			true
+		)(
+			Readable.from([
+				encodeForm([
+					{ name: 'first', value: 'one' },
+					{ name: 'second', value: 'two' },
+				]),
+			])
+		);
+		await nextTurn();
+		const collecting = resolveBody(body);
+		const rejected = assert.rejects(collecting, (error) => error instanceof ServerError);
+		await body.return();
+		await rejected;
+	});
+
+	it('rejects a second multipart materialization without disturbing the first', async function () {
+		const body = getDeserializer(
+			contentType,
+			true,
+			true
+		)(
+			Readable.from([
+				encodeForm([
+					{ name: 'first', value: 'one' },
+					{ name: 'second', value: 'two' },
+				]),
+			])
+		);
+		const first = resolveBody(body);
+		const rejected = assert.rejects(resolveBody(body), (error) => error instanceof ServerError);
+		const result = await first;
+		await rejected;
+		assert.deepStrictEqual(result, { first: 'one', second: 'two' });
 	});
 
 	it('observes ignored buffered form failures while retaining their rejection for consumers', async function () {

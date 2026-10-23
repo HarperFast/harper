@@ -148,3 +148,17 @@ export class ReleaseUpload extends Resource {
 		return true;
 	}
 }
+
+export class CanceledDelegation extends tables.StoredUpload {
+	static async put(target, data, context) {
+		await data.return();
+		return super.put(target, data, context);
+	}
+}
+
+export class ConsumedDelegation extends tables.StoredUpload {
+	static async put(target, data, context) {
+		await data.next();
+		return super.put(target, data, context);
+	}
+}

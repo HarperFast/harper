@@ -54,6 +54,7 @@ export function cancelMultipartBody(data: unknown): void {
 class MultipartFormBody implements AsyncIterableIterator<ResourceBodyPart<FormValue>> {
 	#error?: Error;
 	#stopped = false;
+	#started = false;
 	#parts: Readable;
 	#iterator: AsyncIterator<FormPart>;
 	#previousFile?: Readable;
@@ -200,6 +201,7 @@ class MultipartFormBody implements AsyncIterableIterator<ResourceBodyPart<FormVa
 	}
 
 	async next(): Promise<IteratorResult<ResourceBodyPart<FormValue>>> {
+		this.#started = true;
 		if (this.#error) throw this.#error;
 		if (this.#stopped || (this.#parts.destroyed && !this.#parts.readableEnded)) return { value: undefined, done: true };
 		if (this.#previousFile && !this.#previousFile.readableEnded) {
@@ -220,12 +222,22 @@ class MultipartFormBody implements AsyncIterableIterator<ResourceBodyPart<FormVa
 	}
 
 	async [RESOLVE_BODY](): Promise<Record<string, unknown>> {
-		return collectFormData(this, async (value: Blob & { name?: string }) => {
+		this.#assertCollectable();
+		if (this.#started) throw new ServerError('Cannot collect a multipart body after consumption has started');
+		this.#started = true;
+		const form = await collectFormData(this, async (value: Blob & { name?: string }) => {
 			if (!this.#previousFile) return value;
 			const chunks: Buffer[] = [];
 			for await (const chunk of this.#previousFile) chunks.push(chunk);
 			return withFileName(createBlob(Buffer.concat(chunks), { type: value.type }), value.name);
 		});
+		this.#assertCollectable();
+		return form;
+	}
+
+	#assertCollectable() {
+		if (this.#error) throw this.#error;
+		if (this.#stopped) throw new ServerError('Cannot collect a canceled multipart body');
 	}
 
 	async return(): Promise<IteratorResult<ResourceBodyPart<FormValue>>> {

@@ -96,6 +96,47 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 		assert.equal((await read('/ReadUpload/conditional-form')).text, 'second');
 	});
 
+	for (const route of ['CanceledDelegation', 'ConsumedDelegation']) {
+		test(`keeps the record unchanged when ${route} delegates an unavailable body`, async () => {
+			const id = `unavailable-${route}`;
+			const url = `${ctx.harper.httpURL}/StoredUpload/${id}`;
+			const original = new FormData();
+			original.append('title', 'kept');
+			original.append('file', new Blob(['original bytes'], { type: 'text/plain' }), 'original.txt');
+			const seeded = await fetch(url, {
+				method: 'PUT',
+				headers: { Authorization: authorization },
+				body: original,
+				signal: AbortSignal.timeout(10000),
+			});
+			assert.equal(seeded.status, 204, await seeded.text());
+			const before = await fetch(url, {
+				headers: { Authorization: authorization },
+				signal: AbortSignal.timeout(10000),
+			});
+			const etag = before.headers.get('etag');
+			assert(etag);
+			const record = await before.json();
+			const file = await read(`/ReadUpload/${id}`);
+			const replacement = new FormData();
+			replacement.append('title', 'discarded');
+			replacement.append('file', new Blob(['replacement bytes']), 'replacement.txt');
+			const response = await fetch(`${ctx.harper.httpURL}/${route}/${id}`, {
+				method: 'PUT',
+				headers: { Authorization: authorization },
+				body: replacement,
+				signal: AbortSignal.timeout(10000),
+			});
+			const error = await response.text();
+			assert.equal(response.status, 500, error);
+			assert.match(error, /ServerError/);
+			const after = await fetch(url, { headers: { Authorization: authorization }, signal: AbortSignal.timeout(10000) });
+			assert.equal(after.headers.get('etag'), etag);
+			assert.deepStrictEqual(await after.json(), record);
+			assert.deepStrictEqual(await read(`/ReadUpload/${id}`), file);
+		});
+	}
+
 	test('accepts a browser form POST directly into an exported table', async () => {
 		const form = new FormData();
 		form.append('id', 'form-post');
