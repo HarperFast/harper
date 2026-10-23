@@ -13,6 +13,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
+import * as backupImport from '../../dataLayer/backupImport.ts';
 import * as opAuth from '../../utility/operation_authorization.ts';
 import * as jobs from '../jobs/jobs.ts';
 import * as terms from '../../utility/hdbTerms.ts';
@@ -118,6 +119,8 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
 	['set_configuration', new Set(['models'])],
+	// a presigned URL is a bearer credential, and an S3 object names its secret
+	['import_backup', new Set(['url', 's3', 'payload'])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
 ]);
@@ -605,7 +608,8 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 		const result = await jobs.addJob(json);
 		const newJobObject = result.createdJob;
 		if (!newJobObject) throw new Error(result.error || result.message || `Unable to create a ${json.operation} job`);
-		operationLog.info('addJob result', result);
+		// the created job carries the request, which can hold a presigned URL
+		operationLog.info('addJob result', { id: newJobObject.id, type: newJobObject.type });
 		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
 		const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
 
@@ -838,6 +842,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.RESTORE_BACKUP,
 		new OperationFunctionObject(executeJob, rocksdbBackup.restoreBackup)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.IMPORT_BACKUP,
+		new OperationFunctionObject(backupImport.importBackup, backupImport.importBackupJob)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 

@@ -1,6 +1,7 @@
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import * as jobOwnershipRuntimeModule from './jobs/jobOwnership.ts';
 import * as restoreIntentRuntimeModule from '../dataLayer/restoreIntent.ts';
+import * as backupImportRuntimeModule from '../dataLayer/backupImport.ts';
 import { isMainThread, workerData } from 'node:worker_threads';
 import { getTables } from '../resources/databases.ts';
 import {
@@ -115,6 +116,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
 		} catch (error) {
 			console.error(errorForLog(error));
 		}
+		backupImportRuntimeModule.sweepImportStagingAtStartup();
 		jobOwnershipRuntimeModule
 			.reconcileInterruptedJobsOnce(restoreOwnedJobs)
 			.catch((error) => console.error(errorForLog(error)));

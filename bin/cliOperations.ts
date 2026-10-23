@@ -8,6 +8,7 @@ import { httpRequest } from '../utility/common_utils.ts';
 import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
 import fs from 'fs-extra';
 import dotenv from 'dotenv';
+import * as path from 'node:path';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
@@ -578,6 +579,16 @@ export function prepareDeployByRef(req: any): void {
 }
 
 const PREPARE_OPERATION: any = {
+	import_backup: async (req) => {
+		if (req.file === undefined) return;
+		const archivePath = path.resolve(String(req.file));
+		const archiveSize = (await fs.promises.stat(archivePath)).size;
+		// a plain tar's size is its extracted size; a compressed one's is only a lower bound, so it is not declared
+		if (req.declared_size === undefined && !/\.(tgz|gz)$/i.test(archivePath)) req.declared_size = archiveSize;
+		delete req.file;
+		req._uploadFile = archivePath;
+		req._multipart = true;
+	},
 	deploy_component: async (req) => {
 		if (req.deployment_id) {
 			// `by_ref`/`ref` are consumed here and never transmitted, so the server's validator cannot see
@@ -938,9 +949,20 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		// One renderer owns the (future) upload bar and the SSE event rendering for a
 		// multipart deploy. Created here so the upload-stream tap and the SSE consumer
 		// below share the same instance.
-		const renderer = req._multipart ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
+		const renderer =
+			req._multipart && !req._uploadFile ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
 		let body;
-		if (req._multipart) {
+		if (req._uploadFile) {
+			const multipart = buildMultipartBody(operationFields(req), {
+				name: 'payload',
+				filename: path.basename(req._uploadFile),
+				contentType: /\.(tgz|gz)$/i.test(req._uploadFile) ? 'application/gzip' : 'application/x-tar',
+				stream: fs.createReadStream(req._uploadFile),
+			});
+			options.headers['Content-Type'] = multipart.contentType;
+			options.headers['Transfer-Encoding'] = 'chunked';
+			body = multipart.stream;
+		} else if (req._multipart) {
 			// Create the package stream here — after the renderer exists — so we can pass
 			// renderer.countUploadBytes as the onBytes callback. Both progress and total are
 			// uncompressed bytes, so the bar tracks accurately to 100% without premature snapping.

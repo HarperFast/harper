@@ -108,7 +108,7 @@ export class BackupInProgressError extends ClientError {
  * job operations (create/verify/restore) this runs in the request-context validator, before any job
  * record is created.
  */
-function requireSuperUser(request: any, operationName: string): void {
+export function requireSuperUser(request: any, operationName: string): void {
 	if (!request?.hdb_user?.role?.permission?.super_user) {
 		throw new ClientError(`Operation '${operationName}' is restricted to super_user roles`, 403);
 	}
@@ -121,7 +121,7 @@ export function getBackupsRoot(): string {
 	return getBackupDirPath(getHdbBasePath());
 }
 
-function getDatabaseName(request: any): string {
+export function getDatabaseName(request: any): string {
 	const databaseName = request.database || request.schema || 'data';
 	validateDatabaseName(databaseName);
 	return databaseName;

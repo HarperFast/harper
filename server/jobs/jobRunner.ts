@@ -8,6 +8,7 @@ import * as jobs from './jobs.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
+import * as backupImport from '../../dataLayer/backupImport.ts';
 import * as threadsStart from '../threads/manageThreads.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as restart from '../../bin/restart.ts';
@@ -87,6 +88,9 @@ async function parseMessage(runnerMessage: any) {
 			break;
 		case hdbTerms.JOB_TYPE_ENUM.restore_backup:
 			await runJob(runnerMessage, rocksdbBackup.restoreBackup);
+			break;
+		case hdbTerms.JOB_TYPE_ENUM.import_backup:
+			await runJob(runnerMessage, backupImport.importBackupJob);
 			break;
 		case hdbTerms.JOB_TYPE_ENUM.restart_service:
 			await runJob(runnerMessage, restart.restartService);

@@ -355,6 +355,7 @@ export const OPERATIONS_ENUM = {
 	DELETE_BACKUP: 'delete_backup',
 	PURGE_BACKUPS: 'purge_backups',
 	RESTORE_BACKUP: 'restore_backup',
+	IMPORT_BACKUP: 'import_backup',
 	CLEANUP_ORPHAN_BLOBS: 'cleanup_orphan_blobs',
 	GET_ANALYTICS: 'get_analytics',
 	LIST_METRICS: 'list_metrics',
@@ -929,6 +930,7 @@ export const JOB_TYPE_ENUM = {
 	create_backup: OPERATIONS_ENUM.CREATE_BACKUP,
 	verify_backup: OPERATIONS_ENUM.VERIFY_BACKUP,
 	restore_backup: OPERATIONS_ENUM.RESTORE_BACKUP,
+	import_backup: OPERATIONS_ENUM.IMPORT_BACKUP,
 } as const;
 
 /** Specifies values for licenses */
@@ -1027,6 +1029,8 @@ export const ITC_EVENT_TYPES = {
 	CHILD_ADMITTED: 'child_admitted',
 	CERTIFICATION_REQUEST: 'certification_request',
 	CERTIFICATION_RESPONSE: 'certification_response',
+	IMPORT_SECRET_REQUEST: 'import_secret_request',
+	IMPORT_SECRET_RESPONSE: 'import_secret_response',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
 	METRICS: 'metrics',

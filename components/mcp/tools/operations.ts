@@ -183,6 +183,7 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'set_configuration',
 	'remove_node',
 	'restore_backup',
+	'import_backup',
 	'delete_backup',
 	'purge_backups',
 	'delete_deployment_payload',
