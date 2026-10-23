@@ -269,8 +269,8 @@ suite(
 			}
 		});
 
-		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. `behind` is sent in the CONNECT's frame. */
-		async function rawConnect(clientId: string, clean = false, behind: any[] = []) {
+		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. */
+		async function rawConnect(clientId: string, clean = false, inConnectFrame: any[] = []) {
 			const credentials = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
 			const socket = new WebSocket(mqttURL, 'mqtt', { headers: { Authorization: `Basic ${credentials}` } });
 			const packets: any[] = [];
@@ -286,7 +286,7 @@ suite(
 			const send = (packet: any) => socket.send(encode(packet));
 			socket.send(
 				Buffer.concat(
-					[{ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean }, ...behind].map(encode)
+					[{ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean }, ...inConnectFrame].map(encode)
 				)
 			);
 			if (!(await waitFor(() => packets.some((packet) => packet.cmd === 'connack')))) {

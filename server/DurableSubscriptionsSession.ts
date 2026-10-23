@@ -1112,7 +1112,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.advancePositions();
 		return this.owePubrel(messageId);
 	}
-	/** A delivery held to be sent again keeps its id reserved; one restored from a record is not in `awaitingAcks`. */
 	takeResend(messageId: number): { state: TopicState; identity: DeliveryIdentity } | undefined {
 		if (!this.reservedIds.has(messageId)) return;
 		for (const state of this.topics.values()) {

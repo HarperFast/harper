@@ -1631,7 +1631,6 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 			assert.deepStrictEqual([resent.messageId, resent.dup], [original.messageId, true], `${value} keeps its id`);
 		}
 		second.handlers.close();
-		// the receipt survives another reconnect, which still owes the PUBREL
 		const third = open();
 		third.handlers.message(connectPacket(clientId));
 		await T.put('last', { value: 'last' });
