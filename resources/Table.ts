@@ -10817,6 +10817,13 @@ export function makeTable(options): TableResourceClass {
 		return false;
 	}
 
+	function priorWritesSkipped(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return false;
+		}
+		return true;
+	}
+
 	// The commit base is the committed record unless another write to the key already saved without being
 	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
