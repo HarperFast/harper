@@ -72,6 +72,18 @@ SES loads once via `loadSES` from `ses/index.js` ESM shims (shared by lockdown a
 
 In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `importModuleDynamically` hooks, CommonJS `cjsRequire`) apply in order: `'harper'` alias, `checkAllowedModulePath` (`allowedDirectory`, `allowedBuiltInModules`, substitutes like constrained `child_process`), `shouldUseApplicationLoader`, and `readApplicationModule` (byte tracking + TS strip); `require()` differs only in sync native `require(path)` vs `import()`. New entry points/branches owe all four. URL-keyed `cjsCache` (app CommonJS) and `nativeModules` (registered before native `require()`/`import()`, released if failed unloaded) share one instance per scope across `require()` and `import`, returning post-check hits directly. Only a wrapper compile error triggers `createModuleFromSource`'s ESM retry; evaluation throws propagate. Uncovered: app-loaded ESM stays in `moduleCache` only (bare `require()` under `dependencyLoader: native` gets Node's `require(esm)` instance; JSON imports stay default-only), compartment `importHook`, and transitive `require()` in native packages (`CommonJS require` in `unitTests/security/jsLoader/jsLoader.test.js`, `integrationTests/components/cjs-require-loader.test.ts`, `integrationTests/components/require-confinement-parity.test.ts`).
 
+## The compartment `importHook` checks `allowedPath` before any branch loads a module (`security/jsLoader.ts`)
+
+`checkAllowedModulePath` runs once at the top of the compartment `importHook`, after the synthetic `harper`
+return and ahead of branch selection, so the `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
+branches cannot load a module it has not approved, and a branch added later inherits it. Each branch used to
+make its own call and the plain-file branch made none, so compartment mode loaded any file a relative,
+absolute or symlinked specifier reached while VM mode (`createModule`) refused it. This applies the existing
+prefix test only; it is not a containment boundary (#1929 and #2970 track that test's prefix and realpath
+gaps), and files a natively loaded dependency loads itself are outside it. Enforced by the
+`compartment importHook` block in `unitTests/security/jsLoader/jsLoader.test.js` and
+`integrationTests/components/compartment-allowed-directory.test.ts`.
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves mTLS cert CN, `Authorization`, and `hdb_session` via overridable `server.getUser`. Every failure routes through `settleAuthFailure()` / `rejectAuthenticationInPlace()`, never throws (escaped throws unwind to `server/http.ts` as plain text, harper#2703): internal faults and operations-API routes answer 401 in place; tagged credential rejections defer to the route owner.
