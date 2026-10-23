@@ -4148,6 +4148,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				if (schemaDefined === false) throw new ClientError('@residency requires a schema-defined table', 400);
 				residency = normalizeResidencyPolicy(residency);
 				compileResidencyPolicy(residency);
+				if (residency.byAttribute && persisted.descriptor && !previous)
+					throw new ClientError(
+						'Cannot activate attribute residency on an existing table; its records have no stored slots',
+						409
+					);
 				if (
 					residency.byAttribute &&
 					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey) &&

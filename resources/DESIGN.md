@@ -986,7 +986,7 @@ Every audited write stamps the writing node's short id, so `getThisNodeId` sits 
 
 ## Declarative residency resolves fixed slots through an authoritative database map
 
-`residencyPolicy.ts` owns normalization, FNV key hashing, per-thread expression compilation and canonical snapshot validation. `graphql.ts` installs a map before declaring a policy; `databases.ts` persists and refuses policy changes/removal. Existing-table adoption requires a custom map even on an empty non-owner. `compareResidencyPlacement` reads the actual legacy function without rewriting records.
+`residencyPolicy.ts` owns normalization, FNV key hashing, per-thread expression compilation and canonical snapshot validation. `graphql.ts` installs a map before declaring a policy; `databases.ts` persists and refuses policy changes/removal. Existing-table adoption requires a custom map even on an empty non-owner and supports key policies only: existing rows have no attribute-slot metadata. `compareResidencyPlacement` reads the actual legacy function without rewriting records. After activation, old function hooks cannot bypass declarative stub handling or indexed replica reads.
 
 `residencyMaps.ts` caches a complete `system.hdb_residency_slots` snapshot and expanded Uint16 map per store/database. Default version 1 depends only on slot count and sorted configured shards. Commit-time validation rejects divergent versions before LWW and protects active assignments; lost maps are never reconstructed from current configuration. Declaration markers in the local system catalog retain failed first activations for status reporting; they do not decide ownership. Per-condition shared atomic flags deduplicate failure logs across threads.
 

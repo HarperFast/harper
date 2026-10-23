@@ -333,9 +333,48 @@ describe('Declarative residency', function () {
 			}
 			await converted.put('new2', { id: 'new2', tag: 'new', body: 'after conversion' });
 			assert.equal(converted.primaryStore.getEntry('new2').residencySlot, undefined);
+			await converted.put('new6', { id: 'new6', tag: 'new', body: 'remote body' });
+			const stub = converted.primaryStore.getEntry('new6');
+			assert.equal(
+				await converted._storeReplica(stub, {
+					...stub,
+					originNode: server.hostname,
+					value: { id: 'new6', tag: 'new', body: 'remote body' },
+				}),
+				true
+			);
+			converted.sourcedFrom(
+				{ load: () => assert.fail('The former by-id hook must not bypass an indexed replica') },
+				{ intermediateSource: true }
+			);
+			assert.equal((await converted.get('new6')).body, 'remote body');
 		} finally {
 			env.setProperty('replication_shards', [1, 0]);
 		}
+	});
+
+	it('refuses attribute-policy adoption because existing rows have no stored slots', async () => {
+		const Legacy = table({
+			database: 'slot_attribute_adoption',
+			table: 'Legacy',
+			schemaDefined: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'region', indexed: true }, { name: 'body' }],
+		});
+		await Legacy.put('existing', { id: 'existing', region: 0, body: 'retained' });
+		await initializeResidencySlots({
+			database: 'slot_attribute_adoption',
+			slots: 2,
+			ranges: [{ start: 0, end: 2, shard: 0 }],
+		});
+		await assert.rejects(
+			loadGQLSchema(`type Legacy @table(database: "slot_attribute_adoption")
+				@residency(slots: 2, byAttribute: true, slotFrom: "region") {
+				id: ID @primaryKey region: Int @indexed body: String }`),
+			/existing table.*attribute|attribute.*existing table/i
+		);
+		assert.equal(Legacy.residency, undefined);
+		assert.equal(Legacy.dbisDB.getSync('Legacy/').residency, undefined);
+		assert.equal(Legacy.primaryStore.getEntry('existing').value.body, 'retained');
 	});
 
 	it('refuses invalid slot results before a record is stored', async () => {

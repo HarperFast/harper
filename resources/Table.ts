@@ -5737,7 +5737,7 @@ export function makeTable(options): TableResourceClass {
 					const baseEntry = priorStaged ?? existingEntry;
 					const patchesStub =
 						!fullUpdate &&
-						!TableResource.getResidencyById &&
+						(residencyPolicy || !TableResource.getResidencyById) &&
 						Boolean(baseEntry?.metadataFlags & (residencyPolicy ? INVALIDATED : INVALIDATED | REPLICA)) &&
 						!(residencyPolicy && writtenHere && existingRecord === loadedEntry?.value);
 					if (residencyPolicy) {
@@ -9361,8 +9361,9 @@ export function makeTable(options): TableResourceClass {
 	}
 	function loadLocalRecord(id, context, options, sync, withEntry) {
 		if (
-			((residencyPolicy && !residencyPolicy.byAttribute && !Object.keys(indices).length) ||
-				TableResource.getResidencyById) &&
+			(residencyPolicy
+				? !residencyPolicy.byAttribute && !Object.keys(indices).length
+				: TableResource.getResidencyById) &&
 			options.ensureLoaded &&
 			context?.replicateFrom !== false
 		) {
