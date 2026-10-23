@@ -4,9 +4,6 @@ const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
-const sinon = require('sinon');
-const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
-const { ServerError } = require('#src/utility/errors/hdbError');
 const { executeJob } = require('#src/server/serverHelpers/serverUtilities');
 
 describe('executeJob', function () {
@@ -16,19 +13,14 @@ describe('executeJob', function () {
 		await testUtils.ensureSystemTables();
 	});
 
-	afterEach(function () {
-		sinon.restore();
-	});
-
 	it('surfaces the error that kept its job row from being written', async function () {
-		const backPressure = new ServerError(
-			'Outstanding write transactions have too long a queue, please try again later',
-			503
+		// The job row stores the request, and a symbol cannot be encoded into it.
+		await assert.rejects(
+			executeJob({ operation: 'restart_service', service: 'http', unencodable: Symbol() }),
+			(error) => {
+				assert.match(error.message, /Unknown type: symbol/);
+				return true;
+			}
 		);
-		sinon.stub(harperBridge, 'createRecords').rejects(backPressure);
-		await assert.rejects(executeJob({ operation: 'restart_service', service: 'http' }), (error) => {
-			assert.strictEqual(error, backPressure);
-			return true;
-		});
 	});
 });

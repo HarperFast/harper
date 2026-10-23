@@ -11,13 +11,14 @@ const TIMING = {
 	pollTimeoutMs: 1000,
 	jobDeadlineMs: 500,
 };
+const CLOSED_FIRST = (operation) =>
+	`The connection to wss://peer:9933 closed (1006) before ${operation} was answered; its outcome there is unknown`;
 const BACK_PRESSURE = 'ServerError: Outstanding write transactions have too long a queue, please try again later';
 
 describe('a rolling restart of each peer', function () {
 	this.timeout(10000);
 	let previousServer;
 	let sent;
-	// per node: a list of answers to its restart_service requests, then to its get_job polls
 	let dispatchAnswers;
 	let pollAnswers;
 
@@ -62,16 +63,16 @@ describe('a rolling restart of each peer', function () {
 	});
 
 	it('fails naming a peer that could not be asked to restart, after restarting the others', async () => {
-		dispatchAnswers['peer-b'] = [new Error('Error: Connection closed 1006')];
+		dispatchAnswers['peer-b'] = [new Error('Error: connect ECONNREFUSED 10.0.0.2:9933')];
 		await assert.rejects(restartEachPeer(peers, request, TIMING), (error) => {
 			assert.match(
 				error.message,
-				/did not complete on 1 of 3 peer node\(s\): peer-b \(Error: Connection closed 1006\)/
+				/did not complete on 1 of 3 peer node\(s\): peer-b \(Error: connect ECONNREFUSED 10.0.0.2:9933\)/
 			);
 			assert.deepStrictEqual(error.result, {
 				replicated: [
 					restarted('peer-a'),
-					{ node: 'peer-b', error: 'Error: Connection closed 1006' },
+					{ node: 'peer-b', error: 'Error: connect ECONNREFUSED 10.0.0.2:9933' },
 					restarted('peer-c'),
 				],
 			});
@@ -115,7 +116,7 @@ describe('a rolling restart of each peer', function () {
 		process.on('unhandledRejection', onUnhandled);
 		try {
 			pollAnswers['peer-a'] = [
-				new Error('Error: Connection closed 1006'),
+				new Error(CLOSED_FIRST('get_job')),
 				new Error('Client network socket disconnected before secure TLS connection was established'),
 				{ results: [{ status: 'IN_PROGRESS' }] },
 			];
@@ -190,5 +191,57 @@ describe('a rolling restart of each peer', function () {
 			restartEachPeer(peers, request, TIMING),
 			/peer-a \(its restart job job-peer-a was not found\)/
 		);
+	});
+
+	it('halts at a peer whose restart may have started, since its outcome is unknown', async () => {
+		dispatchAnswers['peer-a'] = [new Error(CLOSED_FIRST('restart_service'))];
+		await assert.rejects(restartEachPeer(peers, request, TIMING), (error) => {
+			assert.deepStrictEqual(
+				error.result.replicated.map(({ node, error }) => [node, error.startsWith('skipped') ? 'skipped' : 'failed']),
+				[
+					['peer-a', 'failed'],
+					['peer-b', 'skipped'],
+					['peer-c', 'skipped'],
+				]
+			);
+			return true;
+		});
+		assert.deepStrictEqual(
+			sent.map((s) => s.node),
+			['peer-a']
+		);
+	});
+
+	it('halts at a peer that answered without a job id', async () => {
+		dispatchAnswers['peer-a'] = [undefined];
+		await assert.rejects(restartEachPeer(peers, request, TIMING), (error) => {
+			assert.deepStrictEqual(error.result.replicated[0], {
+				node: 'peer-a',
+				error: 'it answered without a restart job id',
+			});
+			assert.match(error.result.replicated[1].error, /^skipped/);
+			return true;
+		});
+	});
+
+	it('halts at a peer whose restart job failed without a message', async () => {
+		pollAnswers['peer-a'] = [{ results: [{ status: 'ERROR' }] }];
+		await assert.rejects(restartEachPeer(peers, request, TIMING), /peer-a \(its restart job job-peer-a failed\)/);
+	});
+
+	it('halts at a peer whose restart job reports a status it does not know', async () => {
+		pollAnswers['peer-a'] = [{ results: [{}] }];
+		await assert.rejects(
+			restartEachPeer(peers, request, TIMING),
+			/peer-a \(its restart job job-peer-a reported status undefined\)/
+		);
+	});
+
+	it('reports the last poll failure when a peer never answers in time', async () => {
+		pollAnswers['peer-a'] = Array.from({ length: 100000 }, () => new Error(CLOSED_FIRST('get_job')));
+		await assert.rejects(restartEachPeer(peers, request, { ...TIMING, jobDeadlineMs: 50 }), (error) => {
+			assert.match(error.result.replicated[0].error, /Timed out .*; the last poll failed: The connection to/);
+			return true;
+		});
 	});
 });

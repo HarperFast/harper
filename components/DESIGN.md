@@ -772,13 +772,21 @@ a later failure to remove branches is only logged, and a second drop retries it 
 
 ## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
 
-The job behind `restart: 'rolling'` (a replicated `restart_service`) restarts one peer at a time and polls
-each peer's own restart job. It ends `COMPLETE` only when every peer's job did; otherwise `ERROR`, naming
-each peer that failed or was skipped, with one `result.replicated` entry per peer in both outcomes
-(`{ node, message }` restarted, `{ node, error }` not). A peer that could not be asked is recorded and the
-roll moves on; a peer whose restart ran and failed or timed out halts it, since the release being rolled
-out may be what failed. Only the write-queue back-pressure refusal is retried (after the other peers, three
-attempts): it is the one refusal known to precede execution, and errors cross replication only as text.
+The job behind an uncertified `restart: 'rolling'` deploy (a replicated `restart_service`) restarts one
+peer at a time and polls each peer's own restart job. It ends `COMPLETE` only when every peer's job did;
+otherwise `ERROR`, naming each peer that failed or was skipped, with one `result.replicated` entry per peer
+in both outcomes (`{ node, message }` restarted, `{ node, error }` not). A certified rolling deploy runs
+`activateDeploymentOnPeers` instead, which reports through `http_resp_msg`.
+
+- A peer that refused before running anything is recorded and the roll moves on.
+- A peer that may be restarting halts the roll, so two peers never restart at once: the replicator's
+  "outcome there is unknown" (a timeout, or the connection closed before the answer), or an answer with no
+  job id. So does a peer whose restart failed or timed out, since the release being rolled out may be what
+  failed. Every peer after it is recorded as skipped.
+- Only the write-queue back-pressure refusal is retried (after the other peers, three attempts): it is the
+  one refusal known to precede execution. Errors cross replication only as text, so both classifications
+  match wording.
+
 `COMPLETE` means each peer's restart job completed, not that every worker there took new code. Enforced by
 `unitTests/bin/restartEachPeer.test.js` and `replicatedRestartService.test.js` (harper#3468).
 

@@ -217,12 +217,13 @@ const PEER_RESTART_TIMING = {
 // A peer that refused the operation for write back-pressure never started it. Errors cross replication as
 // text, and 5.3 peers word it "too long of queue".
 const WRITE_QUEUE_BACK_PRESSURE = /Outstanding write transactions have too long (?:a|of) queue/;
+// How the replicator words a request that may have run there: it timed out, or its connection closed first.
+const OUTCOME_UNKNOWN = /outcome there is unknown/;
+const PEER_JOB_PENDING: string[] = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
 
 /**
- * A rolling restart: restarts each peer in turn, waiting for its restart job before starting the next. The
- * job completes only if every peer's restart completed; otherwise it fails naming each peer that did not
- * restart, with every peer's outcome in `result.replicated`. A peer whose restart ran and failed or timed out
- * halts the roll (the code being rolled out may be what failed), so the peers after it are skipped.
+ * Restarts each peer in turn, one at a time (components/DESIGN.md, "A rolling restart job completes only if
+ * every peer restarted"). A peer that may be restarting, or whose restart failed, halts the roll.
  */
 async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART_TIMING) {
 	const replication = (global as any).server.replication;
@@ -238,15 +239,17 @@ async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART
 		if (retryAt > Date.now()) await delay(retryAt - Date.now());
 		let jobId;
 		try {
-			({ job_id: jobId } = await replication.sendOperationToNode(node, request, {
-				timeoutMs: timing.dispatchTimeoutMs,
-			}));
+			const answer = await replication.sendOperationToNode(node, request, { timeoutMs: timing.dispatchTimeoutMs });
+			jobId = answer?.job_id;
 		} catch (error) {
 			const message = error?.message ?? String(error);
 			if (attempt < timing.attempts && WRITE_QUEUE_BACK_PRESSURE.test(message)) {
 				hdbLogger.warn(`Restart of ${node.name} was refused (${message}); retrying after the other nodes`);
 				queue.push({ node, attempt: attempt + 1, retryAt: Date.now() + timing.retryDelayMs * 2 ** (attempt - 1) });
-			} else replicated.push({ node: node.name, error: message });
+			} else {
+				replicated.push({ node: node.name, error: message });
+				if (OUTCOME_UNKNOWN.test(message)) haltedBy = node.name;
+			}
 			continue;
 		}
 		const outcome = jobId
@@ -271,6 +274,7 @@ async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART
 
 async function awaitPeerJob(replication: any, node: any, jobId: string, timing: typeof PEER_RESTART_TIMING) {
 	const deadline = Date.now() + timing.jobDeadlineMs;
+	let lastPollError;
 	while (Date.now() < deadline) {
 		await delay(timing.pollIntervalMs);
 		let response;
@@ -282,15 +286,24 @@ async function awaitPeerJob(replication: any, node: any, jobId: string, timing: 
 			);
 		} catch (error) {
 			// The peer drops this connection while it restarts its own workers.
-			hdbLogger.debug?.(`Polling restart job ${jobId} on ${node.name} failed, still waiting:`, error?.message);
+			lastPollError = error?.message ?? String(error);
+			hdbLogger.debug?.(`Polling restart job ${jobId} on ${node.name} failed, still waiting:`, lastPollError);
 			continue;
 		}
 		const job = response?.results?.[0];
 		if (!job) return { node: node.name, error: `its restart job ${jobId} was not found` };
 		if (job.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE) return { node: node.name, message: job.message };
-		if (job.status === hdbTerms.JOB_STATUS_ENUM.ERROR) return { node: node.name, error: job.message };
+		if (job.status === hdbTerms.JOB_STATUS_ENUM.ERROR)
+			return { node: node.name, error: job.message ?? `its restart job ${jobId} failed` };
+		if (!PEER_JOB_PENDING.includes(job.status))
+			return { node: node.name, error: `its restart job ${jobId} reported status ${job.status}` };
 	}
-	return { node: node.name, error: `Timed out waiting for restart job ${jobId} to complete` };
+	return {
+		node: node.name,
+		error:
+			`Timed out waiting for restart job ${jobId} to complete` +
+			(lastPollError ? `; the last poll failed: ${lastPollError}` : ''),
+	};
 }
 
 /**

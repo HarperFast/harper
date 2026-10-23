@@ -18,18 +18,22 @@ function runReplicatedRestart(workerData) {
 	});
 }
 
+const POLL_CLOSED =
+	'The connection to wss://peer-a:9933 closed (1006) before get_job was answered; its outcome there is unknown';
 const BACK_PRESSURE = 'ServerError: Outstanding write transactions have too long a queue, please try again later';
 
 describe('a replicated restart_service job', function () {
 	this.timeout(30000);
 
 	it('fails naming the peer it could not restart, keeping every peer outcome', async () => {
-		const outcome = await runReplicatedRestart({ dispatchFailures: { 'peer-b': ['Error: Connection closed 1006'] } });
+		const outcome = await runReplicatedRestart({
+			dispatchFailures: { 'peer-b': ['Error: connect ECONNREFUSED 10.0.0.2:9933'] },
+		});
 		assert.strictEqual(outcome.completed, undefined, 'a restart that missed a peer must not complete');
-		assert.match(outcome.failed.message, /peer-b \(Error: Connection closed 1006\)/);
+		assert.match(outcome.failed.message, /peer-b \(Error: connect ECONNREFUSED 10.0.0.2:9933\)/);
 		assert.deepStrictEqual(outcome.failed.result.replicated, [
 			{ node: 'peer-a', message: 'restarted peer-a' },
-			{ node: 'peer-b', error: 'Error: Connection closed 1006' },
+			{ node: 'peer-b', error: 'Error: connect ECONNREFUSED 10.0.0.2:9933' },
 		]);
 	});
 
@@ -45,7 +49,7 @@ describe('a replicated restart_service job', function () {
 
 	it('keeps polling, with no unhandled rejection, when a restarting peer drops the connection', async () => {
 		const outcome = await runReplicatedRestart({
-			pollFailures: { 'peer-a': ['Error: Connection closed 1006'] },
+			pollFailures: { 'peer-a': [POLL_CLOSED] },
 		});
 		assert.deepStrictEqual(outcome.unhandled, []);
 		assert.strictEqual(outcome.completed.replicated.length, 2);
