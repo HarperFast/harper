@@ -129,7 +129,7 @@ export function applyForward(record, update, skipUnseededOps = false) {
 /**
  * Reconstruct the record state at `timestamp` by walking the audit history forward from the most
  * recent full `put` at or before `timestamp`. Used when `getRecordAtTime` has no usable live base
- * (missing/evicted `currentEntry`, a reverse walk that crosses a `delete`, or a post-eviction
+ * (missing/evicted `currentEntry`, a reverse walk that crosses a `put` or `delete`, or a post-eviction
  * re-insert with a broken `previousVersion` chain) and when filling `unknowns` on a live record.
  *
  * `fromPosition` is the starting audit position; the walk follows the previous links from there.
@@ -263,28 +263,18 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	let auditNodeId = initialPosition.nodeId;
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
+	let replaced = false;
 	while (auditTime > timestamp) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (!auditEntry) break;
 		switch (auditEntry.type) {
 			case 'put':
-				record = auditEntry.getValue(store);
+			case 'delete':
+				replaced = true;
 				break;
 			case 'patch':
-				applyReverse(record, auditEntry.getValue(store), unknowns);
+				if (!replaced) applyReverse(record, auditEntry.getValue(store), unknowns);
 				break;
-			case 'delete':
-				// The reverse walk reached a delete that is newer than `timestamp`. There is no
-				// base record to keep reversing patches against, so reconstruct the pre-delete
-				// state forward instead (issue #1330: a key deleted then re-inserted).
-				return reconstructForward(
-					auditStore,
-					store,
-					tableId,
-					recordId,
-					previousAuditPosition(auditStore, tableId, recordId, auditEntry),
-					timestamp
-				);
 		}
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
 		auditTime = previousPosition.txnLogKey;
@@ -292,6 +282,16 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	}
 	if (!(auditTime > 0 && auditTime <= timestamp)) {
 		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+	}
+	if (replaced) {
+		return reconstructForward(
+			auditStore,
+			store,
+			tableId,
+			recordId,
+			{ txnLogKey: auditTime, nodeId: auditNodeId },
+			timestamp
+		);
 	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
