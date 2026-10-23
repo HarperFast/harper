@@ -49,7 +49,7 @@ const {
 } = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
 const { deploymentSource } = require('./deploymentSource.ts');
-const { assertDeclaredEntryPoints } = require('./declaredEntryPoints.ts');
+const { missingEntryPointsWarning } = require('./declaredEntryPoints.ts');
 const { sweepFailedPayloads } = require('./payloadRetention.ts');
 const {
 	DeploymentRecorder,
@@ -659,6 +659,7 @@ async function deployComponent(req) {
 	const installCapture = createInstallCapture();
 	let stagedOnOrigin = false;
 	let releaseRequester;
+	let entryPointWarning;
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -818,7 +819,8 @@ async function deployComponent(req) {
 				declaredRootConfig = applicationConfig;
 			},
 			validateCandidate: async (candidateDirPath) => {
-				await assertDeclaredEntryPoints(req.project, candidateDirPath);
+				entryPointWarning = await missingEntryPointsWarning(req.project, candidateDirPath);
+				if (entryPointWarning) emit('warning', { message: entryPointWarning });
 				emit('phase', { phase: 'prepare', status: 'done' });
 			},
 			fingerprintInstall: !isActivation,
@@ -1088,6 +1090,7 @@ async function deployComponent(req) {
 			}
 		}
 		if (installDrift) response.message = `${response.message} ${installDrift}`;
+		if (entryPointWarning) response.message = `${response.message} ${entryPointWarning}`;
 		if (mode !== 'stage') response.certification = certificationOutcome;
 		return response;
 	} catch (err) {

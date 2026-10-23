@@ -1,7 +1,8 @@
-// A deploy fails, before its release goes live, when an entry point its own config declares matched nothing in the
-// built tree (#1719). A truncated tarball once reported success with half the application missing (#1718); this
+// A deploy says so, before its release goes live, when an entry point its own config declares matched nothing in
+// the built tree (#1719). A truncated tarball once reported success with half the application missing (#1718); this
 // catches that failure whatever its cause. Only the component's own config counts: DEFAULT_CONFIG names optional
-// files, and a component without a config file declares nothing.
+// files, and a component without a config file declares nothing. It warns rather than fails: a config that names a
+// file the release no longer ships is a legal, if resource-less, component (redeploy-restart-flag-deletion.test.ts).
 
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -9,7 +10,6 @@ import { readFile } from 'node:fs/promises';
 import fg from 'fast-glob';
 import { parseDocument } from 'yaml';
 import { deriveGlobOptions, type FilesOption } from './deriveGlobOptions.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
 
 // The plugins whose files are the application's code and schema, so a declaration that matches nothing is a missing
 // application rather than an optional extra.
@@ -17,15 +17,16 @@ const ENTRY_POINT_PLUGINS = ['jsResource', 'graphqlSchema'];
 // The order componentLoader reads them in.
 const CONFIG_FILES = ['harper-config.yaml', 'harperdb-config.yaml', 'config.yaml'];
 
-export async function assertDeclaredEntryPoints(componentName: string, treePath: string): Promise<void> {
+/** The warning to give when a declared entry point matched nothing in the tree, or undefined when none is missing. */
+export async function missingEntryPointsWarning(componentName: string, treePath: string): Promise<string | undefined> {
 	const configFile = CONFIG_FILES.find((name) => existsSync(join(treePath, name)));
-	if (!configFile) return;
+	if (!configFile) return undefined;
 	let config: any;
 	try {
 		config = parseDocument(await readFile(join(treePath, configFile), 'utf8')).toJSON();
 	} catch {
 		// The load reports an unreadable config; this check has nothing to compare against.
-		return;
+		return undefined;
 	}
 	const missing: string[] = [];
 	for (const plugin of ENTRY_POINT_PLUGINS) {
@@ -38,11 +39,10 @@ export async function assertDeclaredEntryPoints(componentName: string, treePath:
 			if (!(await matchesAnything(treePath, relative, ignore))) missing.push(`${plugin}.files '${pattern}'`);
 		}
 	}
-	if (missing.length === 0) return;
-	throw new ClientError(
+	if (missing.length === 0) return undefined;
+	return (
 		`The release of ${componentName} is missing entry points its ${configFile} declares: ${missing.join(', ')} ` +
-			`matched no file. Nothing was made live. Check that the payload carries them; a truncated or partial ` +
-			`package reports exactly this.`
+		`matched no file. Check that the payload carries them; a truncated or partial package looks exactly like this.`
 	);
 }
 

@@ -1,6 +1,6 @@
 'use strict';
 
-// harper#1719: a deploy fails before its release goes live when an entry point its config declares is missing.
+// harper#1719: a deploy warns, before its release goes live, when an entry point its config declares is missing.
 
 const assert = require('node:assert');
 const fs = require('node:fs/promises');
@@ -15,8 +15,9 @@ const { dropComponentDirectory } = require('#src/components/Application');
 const { server } = require('#src/server/Server');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
-const { assertDeclaredEntryPoints } = require('#src/components/declaredEntryPoints');
+const { missingEntryPointsWarning } = require('#src/components/declaredEntryPoints');
 const { deployComponent } = require('#src/components/operations');
+const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const { preserveRootConfig } = require('../rootConfigFixture.js');
 
 async function tree(files) {
@@ -37,30 +38,24 @@ describe('declared entry points (harper#1719)', () => {
 	};
 	after(() => Promise.all(dirs.map((dir) => fs.rm(dir, { recursive: true, force: true }))));
 
-	it('accepts a tree holding every file its config declares', async () => {
+	it('says nothing of a tree holding every file its config declares', async () => {
 		const dir = await at({
 			'config.yaml': "jsResource:\n  files: resources.js\ngraphqlSchema:\n  files: '*.graphql'\n",
 			'resources.js': '',
 			'schema.graphql': '',
 		});
-		await assertDeclaredEntryPoints('web', dir);
+		assert.strictEqual(await missingEntryPointsWarning('web', dir), undefined);
 	});
 
-	it('refuses a tree missing a declared entry point, naming each', async () => {
+	it('names each declared entry point a tree is missing', async () => {
 		const dir = await at({
 			'config.yaml':
 				"jsResource:\n  files: [resources.js, 'lib/*.js']\ngraphqlSchema:\n  files:\n    source: '/*.graphql'\nrest: true\n",
 			'resources.js': '',
 		});
-		await assert.rejects(assertDeclaredEntryPoints('web', dir), (error) => {
-			assert.strictEqual(error.statusCode, 400);
-			assert.match(
-				error.message,
-				/jsResource\.files 'lib\/\*\.js', graphqlSchema\.files '\/\*\.graphql' matched no file/
-			);
-			assert.doesNotMatch(error.message, /resources\.js'/);
-			return true;
-		});
+		const warning = await missingEntryPointsWarning('web', dir);
+		assert.match(warning, /jsResource\.files 'lib\/\*\.js', graphqlSchema\.files '\/\*\.graphql' matched no file/);
+		assert.doesNotMatch(warning, /resources\.js'/);
 	});
 
 	it("honors a declaration's ignore", async () => {
@@ -68,12 +63,13 @@ describe('declared entry points (harper#1719)', () => {
 			'config.yaml': "jsResource:\n  files:\n    source: 'src/*.js'\n    ignore: 'src/skip.js'\n",
 			'src/skip.js': '',
 		});
-		await assert.rejects(assertDeclaredEntryPoints('web', dir), /'src\/\*\.js'/);
+		assert.match(await missingEntryPointsWarning('web', dir), /'src\/\*\.js'/);
 	});
 
 	it('checks nothing for a tree without a config of its own, or for plugins that are not entry points', async () => {
-		await assertDeclaredEntryPoints('web', await at({ 'index.js': '' }));
-		await assertDeclaredEntryPoints('web', await at({ 'config.yaml': "static:\n  files: 'web/**'\nrest: true\n" }));
+		assert.strictEqual(await missingEntryPointsWarning('web', await at({ 'index.js': '' })), undefined);
+		const staticOnly = await at({ 'config.yaml': "static:\n  files: 'web/**'\nrest: true\n" });
+		assert.strictEqual(await missingEntryPointsWarning('web', staticOnly), undefined);
 	});
 
 	describe('through deploy_component', function () {
@@ -89,31 +85,39 @@ describe('declared entry points (harper#1719)', () => {
 			server.replication.replicateOperation = async () => ({ message: '' });
 		});
 		after(async () => {
-			server.replication.replicateOperation = originalReplicateOperation;
+			if (originalReplicateOperation) server.replication.replicateOperation = originalReplicateOperation;
 			resetRestartNeeded();
 			await dropComponentDirectory(live(), PROJECT).catch(() => {});
 		});
 
-		const deploy = async (files) =>
+		const deploy = async (files, progress) =>
 			deployComponent({
 				operation: 'deploy_component',
 				project: PROJECT,
 				restart: false,
+				progress,
 				payload: (await packageDirectory(await at(files), { skip_node_modules: true })).toString('base64'),
 			});
 		const CONFIG = 'jsResource:\n  files: resources.js\nrest: true\n';
 
-		it('fails a release missing its resources and leaves the one it would have replaced serving', async () => {
+		it('warns about a release missing its resources, in its response and its progress, and still deploys it', async () => {
 			await deploy({ 'config.yaml': CONFIG, 'resources.js': 'export const version = 1;\n' });
-			await assert.rejects(deploy({ 'config.yaml': CONFIG }), (error) => {
-				assert.strictEqual(error.http_resp_msg.phase, 'prepare');
-				assert.match(
-					error.message,
-					/missing entry points its config\.yaml declares: jsResource\.files 'resources\.js'/
-				);
-				return true;
-			});
-			assert.strictEqual(await fs.readFile(path.join(live(), 'resources.js'), 'utf8'), 'export const version = 1;\n');
+			const warnings = [];
+			const progress = new ProgressEmitter();
+			progress.subscribe(({ event, data }) => event === 'warning' && warnings.push(data.message));
+			const response = await deploy({ 'config.yaml': CONFIG }, progress);
+			assert.match(
+				response.message,
+				/missing entry points its config\.yaml declares: jsResource\.files 'resources\.js'/
+			);
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /jsResource\.files 'resources\.js' matched no file/);
+			await assert.rejects(fs.access(path.join(live(), 'resources.js')), { code: 'ENOENT' });
+		});
+
+		it('says nothing when the release carries what its config declares', async () => {
+			const response = await deploy({ 'config.yaml': CONFIG, 'resources.js': 'export const version = 2;\n' });
+			assert.strictEqual(response.message, `Successfully deployed: ${PROJECT}`);
 		});
 	});
 });

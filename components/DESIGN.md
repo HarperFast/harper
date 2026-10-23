@@ -894,22 +894,22 @@ one is just as capable of tripping the same early-finalize — skipping recursio
 dirs there would silently reintroduce the bug for that case. Circular directory symlinks are not
 guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existing tar-fs limitation
 this fix doesn't attempt to solve. A truncation from some other cause no longer reports success
-either: see the next section.
+silently either: see the next section.
 
-## A deploy fails when an entry point its config declares did not arrive (`components/declaredEntryPoints.ts`)
+## A deploy warns when an entry point its config declares did not arrive (`components/declaredEntryPoints.ts`)
 
 `deploy_component` checks the built candidate, inside `validateCandidate` and so before the swap, for every
 `jsResource.files` and `graphqlSchema.files` pattern the component's own config file declares (`harper-config.yaml`,
-`harperdb-config.yaml` or `config.yaml`, in the loader's order), and fails with a 400 in the `prepare` phase naming
-each pattern that matched nothing (#1719). The release it would have replaced keeps serving, and peers run the same
-check on their own build. Only those two plugins, because their files are the application's code and schema, so a
-declaration that matches nothing means a missing application; `static`, `fastifyRoutes` and `roles` name content
-an application can legitimately lack. Only the component's own config, because `DEFAULT_CONFIG` names optional
-files and a component without a config file declares nothing. A pattern's `ignore` is honored and a leading `/`
-is read as the component root, as the loader does; a pattern the loader would refuse (`..`) is left to it. The
-glob walk stops at the first match, so only a pattern about to fail walks the whole tree. This is a behavior
-change: an application whose config names a resource file it no longer ships used to deploy and serve nothing
-from it, and now fails until the declaration is fixed.
+`harperdb-config.yaml` or `config.yaml`, in the loader's order), and names each pattern that matched nothing in a
+`warning` event (the CLI prints it, and it lands in `event_log`) and in the response message (#1719). Only those two
+plugins, because their files are the application's code and schema, so a declaration that matches nothing usually
+means a missing application; `static`, `fastifyRoutes` and `roles` name content an application can legitimately
+lack. Only the component's own config, because `DEFAULT_CONFIG` names optional files and a component without a
+config file declares nothing. A pattern's `ignore` is honored and a leading `/` is read as the component root, as
+the loader does; a pattern the loader would refuse (`..`) is left to it. The glob walk stops at the first match, so
+only a pattern about to fail walks the whole tree. It warns rather than fails because a config naming a file the
+release no longer ships is a legal, resource-less component: deleting an application's only resource file by
+redeploying is a tested workflow (`integrationTests/deploy/redeploy-restart-flag-deletion.test.ts`).
 
 ## The packer never ships the loader's links to the install (`components/packageComponent.ts`)
 
