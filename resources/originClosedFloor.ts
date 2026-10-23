@@ -334,7 +334,6 @@ export function reservedLocalKey(handle: RocksTransaction | undefined): number |
 	return handle && (handle as any)[RESERVATION]?.key;
 }
 
-/** Whether `handle`'s key was minted around a caller's value, so a write's received identity is not its key. */
 export function reservedAroundCallerValue(handle: RocksTransaction | undefined): boolean {
 	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
 }

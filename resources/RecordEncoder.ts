@@ -134,8 +134,8 @@ export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
 // Marks a persisted ref as a received identity rather than a log key, in its node-id word. Node ids are
-// small mapping indexes (nodeIdMapping.ts), so the bit is never part of one; refs written before it
-// existed are all log keys.
+// small mapping indexes (nodeIdMapping.ts), so the bit is never part of one. Released builds before it
+// wrote log keys only.
 export const RECEIVED_IDENTITY_REF = 0x80000000;
 // A resequenced write keeps the (newer) version it merged onto, so one version identifies two
 // different stored values and version equality proves nothing. The metadata word this is set in is

@@ -417,6 +417,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		const replayed = await runCrashChild([...childArgs('replayer-root'), 'replay-explicit', version]);
 		assert.strictEqual(replayed.code, 0, replayed.stderr);
 		assert.deepStrictEqual(JSON.parse(readFileSync(path.join(crashDir, 'marker'), 'utf8')), {
+			replayed: true,
 			version: true,
 			headRef: true,
 			n: 1,

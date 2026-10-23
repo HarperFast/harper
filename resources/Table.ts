@@ -10710,11 +10710,7 @@ function isDescendantId(ancestorId, descendantId): boolean {
 // wait for an event turn (via a promise)
 const rest = () => new Promise(setImmediate);
 
-/**
- * Whether a log-key ref is a branch for the out-of-order walk to follow: every one but the record's own
- * audit head, which the walk starts from. A pending visit of the head would keep the fully-superseded
- * early-out from seeing an empty branch list.
- */
+// The head is where the walk starts; queued, it would keep the fully-superseded early-out from firing.
 function isBranchRef(ref: { version: number; nodeId?: number }, head: { txnLogKey: number; nodeId?: number }): boolean {
 	return ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0);
 }

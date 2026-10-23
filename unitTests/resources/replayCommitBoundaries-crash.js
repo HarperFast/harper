@@ -145,6 +145,7 @@ if (require.main === module) {
 			writeFileSync(
 				markerPath,
 				JSON.stringify({
+					replayed: replayCommits.some(({ timestamp }) => timestamp === headKey),
 					version: entry.version === version,
 					headRef: entry.additionalAuditRefs?.some((ref) => ref.version === headKey) ?? false,
 					n: (await Tbl.get('x')).n,
