@@ -243,6 +243,11 @@ requiredPermissions.set(
 	rocksdbBackup.restoreBackup.name,
 	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
 );
+// keyed by both: the handler spools an upload before it queues the job the dispatcher checks
+requiredPermissions.set(
+	backupImport.importBackup.name,
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.IMPORT_BACKUP)
+);
 requiredPermissions.set(
 	backupImport.importBackupJob.name,
 	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.IMPORT_BACKUP)
