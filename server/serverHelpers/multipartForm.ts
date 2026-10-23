@@ -225,14 +225,16 @@ class MultipartFormBody implements AsyncIterableIterator<ResourceBodyPart<FormVa
 		this.#assertCollectable();
 		if (this.#started) throw new ServerError('Cannot collect a multipart body after consumption has started');
 		this.#started = true;
-		const form = await collectFormData(this, async (value: Blob & { name?: string }) => {
-			if (!this.#previousFile) return value;
-			const chunks: Buffer[] = [];
-			for await (const chunk of this.#previousFile) chunks.push(chunk);
-			return withFileName(createBlob(Buffer.concat(chunks), { type: value.type }), value.name);
-		});
-		this.#assertCollectable();
-		return form;
+		try {
+			return await collectFormData(this, async (value: Blob & { name?: string }) => {
+				if (!this.#previousFile) return value;
+				const chunks: Buffer[] = [];
+				for await (const chunk of this.#previousFile) chunks.push(chunk);
+				return withFileName(createBlob(Buffer.concat(chunks), { type: value.type }), value.name);
+			});
+		} finally {
+			this.#assertCollectable();
+		}
 	}
 
 	#assertCollectable() {

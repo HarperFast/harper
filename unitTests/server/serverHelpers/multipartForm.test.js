@@ -415,6 +415,17 @@ describe('REST multipart form decoding', function () {
 		assert.deepStrictEqual(result, { first: 'one', second: 'two' });
 	});
 
+	it('reports ServerError when collection is canceled while waiting for a part', async function () {
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input);
+		const collecting = resolveBody(body);
+		const rejected = assert.rejects(collecting, (error) => error instanceof ServerError && error.statusCode === 500);
+		await nextTurn();
+		await body.return();
+		input.end();
+		await rejected;
+	});
+
 	it('observes ignored buffered form failures while retaining their rejection for consumers', async function () {
 		const body = getDeserializer(
 			contentType,

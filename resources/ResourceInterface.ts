@@ -15,7 +15,8 @@ export type ResourceBodyPart<Value = unknown> = { name: string; value: Value };
 /**
  * Inherited writes collect named parts before authorization and instance dispatch.
  * Static consumers own destination authorization and must commit staged Blob saves before advancing.
- * Finish consuming or return the iterator before responding, or delegate to the inherited static method.
+ * Delegate to the inherited static method before reading or returning the iterator, with no concurrent consumer.
+ * Direct consumers must finish consuming or return the iterator before responding.
  */
 export type ResourceBody<T> = T | AsyncIterable<ResourceBodyPart> | Promise<T | AsyncIterable<ResourceBodyPart>>;
 
