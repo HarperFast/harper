@@ -16,7 +16,12 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import mqtt, { type MqttClient } from 'mqtt';
 import { encode as cborEncode } from 'cbor-x';
 
-import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import {
+	setupHarperWithFixture,
+	teardownHarper,
+	sendOperation,
+	type ContextWithHarper,
+} from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 // @ts-expect-error lifecycle.mjs has no type declarations; runtime resolves fine
@@ -68,7 +73,12 @@ suite('Records shaped like a pass-through envelope', { skip: skipSuite }, (ctx: 
 
 	function subscribe(mqttClient: MqttClient, topic: string, qos: 1 | 2) {
 		return new Promise<void>((resolvePromise, reject) => {
-			mqttClient.subscribe(topic, { qos, rh: 2 }, (error) => (error ? reject(error) : resolvePromise()));
+			const timer = setTimeout(() => reject(new Error(`subscribe to ${topic} timed out`)), 10_000);
+			mqttClient.subscribe(topic, { qos, rh: 2 }, (error) => {
+				clearTimeout(timer);
+				if (error) reject(error);
+				else resolvePromise();
+			});
 		});
 	}
 
@@ -83,13 +93,24 @@ suite('Records shaped like a pass-through envelope', { skip: skipSuite }, (ctx: 
 		});
 	}
 
-	async function waitFor(predicate: () => boolean, timeoutMs = 8_000) {
+	async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 8_000) {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
-			if (predicate()) return true;
+			if (await predicate()) return true;
 			await sleep(30);
 		}
 		return predicate();
+	}
+
+	async function savedPosition(clientId: string) {
+		const [session] = await sendOperation(ctx.harper, {
+			operation: 'search_by_id',
+			database: 'system',
+			table: 'hdb_durable_session',
+			ids: [clientId],
+			get_attributes: ['*'],
+		});
+		return session?.subscriptions?.[0]?.databaseGeneration;
 	}
 
 	async function putItem(id: string, data: unknown) {
@@ -128,7 +149,7 @@ suite('Records shaped like a pass-through envelope', { skip: skipSuite }, (ctx: 
 			await subscribe(subscriber.mqttClient, 'Item/#', qos);
 			await putItem(`seed-${suffix}`, 'seed');
 			ok(await waitFor(() => live.length > 0), 'the live message arrives');
-			await sleep(500); // the acknowledged position is saved
+			ok(await waitFor(async () => (await savedPosition(clientId)) !== undefined), 'the session position is saved');
 			await end(subscriber.mqttClient);
 
 			await putItem(`object-${suffix}`, { a: 1 });
@@ -152,7 +173,6 @@ suite('Records shaped like a pass-through envelope', { skip: skipSuite }, (ctx: 
 				);
 				strictEqual(JSON.parse(byTopic.get(`Item/number-${suffix}`)!.toString()).data, 5);
 				strictEqual(byTopic.get(`Item/text-${suffix}`)!.toString(), 'plain', 'a real text envelope is still its data');
-				await sleep(300); // the acknowledgements are saved
 			} finally {
 				await end(resumed.mqttClient);
 			}
