@@ -26,7 +26,13 @@ import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { redactUrl } from '../utility/safeFetch.ts';
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { backupDirForDatabase, getDatabaseName, requireBooleanOption, requireSuperUser } from './rocksdbBackup.ts';
+import {
+	backupDirForDatabase,
+	getBackupsRoot,
+	getDatabaseName,
+	requireBooleanOption,
+	requireSuperUser,
+} from './rocksdbBackup.ts';
 
 export const IMPORT_SOURCE_DIR = '.import';
 export const IMPORT_STAGING_DIR = '.staging';
@@ -286,7 +292,6 @@ export async function importBackupJob(request: any) {
  */
 export function sweepImportStaging(isOwned: (owner: any) => boolean): number {
 	let removed = 0;
-	const { getBackupsRoot } = require('./rocksdbBackup.ts');
 	const backupsRoot: string = getBackupsRoot();
 	if (!existsSync(backupsRoot)) return 0;
 	for (const database of readdirSync(backupsRoot)) {
