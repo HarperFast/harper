@@ -21,8 +21,6 @@ import { verifyCertificate } from './certificateVerification/index.ts';
 import {
 	credentialRejectionError,
 	deferCredentialRejection,
-	getDeferredCredentialRejection,
-	isCredentialRejection,
 	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
@@ -84,7 +82,7 @@ export function bypassAuth() {
  * `undefined` once the rejection has been deferred for the route owner to settle (#2703).
  */
 function settleAuthFailure(request, error, strategy: string): { status: number; body: any } | undefined {
-	const internalFault = !isCredentialRejection(error);
+	const internalFault = error?.credentialRejection !== true;
 	if (request.isOperationsServer || internalFault) {
 		if (internalFault) authLogger.error('Authentication failed internally', errorForLog(error));
 		const message = internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : error.message;
@@ -309,7 +307,7 @@ export async function authentication(request, nextHandler) {
 											deferredRefreshError = refreshError;
 											// Preserve refresh-validation faults; only a tagged rejection permits falling
 											// back to the original operation-token rejection.
-											if (!isCredentialRejection(refreshError)) {
+											if (refreshError?.credentialRejection !== true) {
 												warnDeferredTokenRejection(error);
 												throw refreshError;
 											}
@@ -464,7 +462,7 @@ export async function authentication(request, nextHandler) {
 		if (response.status === 401) {
 			wasUnauthorized = true;
 			// Downstream owns the challenge or redirect after Harper deferred the credential decision.
-			if (!getDeferredCredentialRejection(request)) {
+			if (!request.deferredCredentialRejection) {
 				if (
 					headers['user-agent']?.startsWith('Mozilla') &&
 					headers.accept?.startsWith('text/html') &&
@@ -488,7 +486,7 @@ export async function authentication(request, nextHandler) {
 		// response must never be stored by a shared cache and served to a different principal (#1565)
 		const rejectedAuth = response?.status === 401 || wasUnauthorized;
 		// A downstream response produced under the untouched credential remains identity-dependent (#1565).
-		const identityDependent = !!request.user || rejectedAuth || !!getDeferredCredentialRejection(request);
+		const identityDependent = !!request.user || rejectedAuth || !!request.deferredCredentialRejection;
 		// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
 		// its absence when no Origin was sent is origin-dependent too — so a shared cache must
 		// partition on Origin either way (#1518)

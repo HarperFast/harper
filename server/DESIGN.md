@@ -257,17 +257,20 @@ So a rejection is recorded rather than answered:
 - **No credentials** continue anonymously. Unchanged.
 - **A syntactically valid credential Harper does not recognize** leaves `request.user` unset, leaves
   the inbound `Authorization` header byte-for-byte intact, and records request-local state through
-  `security/deferredAuthentication.ts`. The state lives behind a module-private `Symbol`. Its
-  descriptor and value are immutable and non-enumerable, so downstream middleware cannot clear it
-  and it does not leak through request copies or serialization.
+  `security/deferredAuthentication.ts` as `request.deferredCredentialRejection`. Its descriptor and
+  value are immutable and non-enumerable, so downstream middleware cannot clear it and it does not
+  leak through request copies or serialization.
 - **An internal authentication fault** — unreadable or malformed JWT key material, a storage failure,
   an unexpected error type — is never deferred, and fails closed with the in-line 401.
 - **The operations API** never defers: `request.isOperationsServer` short-circuits to the in-line
   401, because every operations route is Harper-owned and there is nothing to defer to.
 
-**Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` holds a
-module-private `Symbol` tag; only the code that actually concludes "this credential is unacceptable"
-sets it, and `isCredentialRejection()` reads nothing else. Status ranges cannot carry that meaning:
+**Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` sets a
+non-enumerable `credentialRejection: true` on the error; only the code that actually concludes "this
+credential is unacceptable" sets it, and authentication reads nothing else. The tag is a plain
+property, not a module-private symbol, so a plugin's copy of the module and core agree on it; code
+that could forge it can already present no credential and be anonymous, which is all a deferral
+yields. Status ranges cannot carry that meaning:
 user resolution touches system-table searches (`listUsers()`) that raise a default-status-400
 `ClientError` when `system.hdb_role`/`system.hdb_user` is unavailable, so a 4xx test would classify a
 storage outage as an unknown credential and hand it to application authorization. The tag is set at

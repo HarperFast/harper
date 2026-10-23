@@ -19,8 +19,21 @@ export {
 } from './resources/replicatedApplyFailure.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
 // An untagged error from a `server.getUser` override is treated as an internal fault; these tag one
-// as a rejected credential, which authentication defers to the route owner instead (#2703).
-export { markCredentialRejection, credentialRejectionError } from './security/credentialRejection.ts';
+// as a rejected credential (`error.credentialRejection`), which authentication defers to the route
+// owner instead (#2703).
+export {
+	markCredentialRejection,
+	credentialRejectionError,
+	type CredentialRejection,
+} from './security/credentialRejection.ts';
+export { verifyCertificate } from './security/certificateVerification/index.ts';
+export type { PeerCertificate, CertificateVerificationResult } from './security/certificateVerification/types.ts';
+export {
+	assertNoDeferredCredentialRejection,
+	settleDeferredCredentialRejection,
+	type AuthenticationRejectedInPlace,
+	type DeferredCredentialRejection,
+} from './security/deferredAuthentication.ts';
 // Code-first schema authoring: declare a table as a TypeScript value; the returned
 // handle is the live, registered table class with per-verb shapes inferred from the definition.
 export { defineTable, types } from './resources/defineTable.ts';

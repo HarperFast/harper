@@ -21,11 +21,7 @@ import { verifyCertificate } from '../security/certificateVerification/index.ts'
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
-import {
-	assertNoDeferredCredentialRejection,
-	getAuthenticationRejectedInPlace,
-	getDeferredCredentialRejection,
-} from '../security/deferredAuthentication.ts';
+import { assertNoDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 /** RFC 6455 private-use close code Harper already maps HTTP 401 to (see server/REST.ts). */
 const WEBSOCKET_UNAUTHORIZED_CLOSE_CODE = 3000;
@@ -91,7 +87,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					mqttLog.info?.('Closing MQTT WebSocket connection, authentication was rejected', error);
 					// read the records rather than the error: both hold a client-safe message, while an
 					// arbitrary chain rejection landing here would not
-					const rejection = getDeferredCredentialRejection(request) ?? getAuthenticationRejectedInPlace(request);
+					const rejection = request?.deferredCredentialRejection ?? request?.authenticationRejectedInPlace;
 					ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, toCloseReason(rejection?.message ?? 'Unauthorized'));
 				});
 				const { onMessage, onClose } = onSocket(

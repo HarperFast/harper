@@ -19,6 +19,8 @@ import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
+import { assertNoDeferredCredentialRejection, settleDeferredCredentialRejection } from './deferredAuthentication.ts';
+import { verifyCertificate } from './certificateVerification/index.ts';
 import type {} from 'ses';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, realpathSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
@@ -939,6 +941,9 @@ function getHarperExports(scope: ApplicationScope) {
 		contentTypes,
 		markCredentialRejection,
 		credentialRejectionError,
+		assertNoDeferredCredentialRejection,
+		settleDeferredCredentialRejection,
+		verifyCertificate,
 		Attribute: undefined,
 		Config: undefined,
 		ConfigValue: undefined,

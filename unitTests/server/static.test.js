@@ -13,11 +13,7 @@ const { httpServer, pipeBodyToResponse } = require('#src/server/http');
 const analyticsWrite = require('#src/resources/analytics/write');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { waitFor } = require('../waitFor');
-const {
-	credentialRejectionError,
-	deferCredentialRejection,
-	getDeferredCredentialRejection,
-} = require('#src/security/deferredAuthentication');
+const { credentialRejectionError, deferCredentialRejection } = require('#src/security/deferredAuthentication');
 
 // A minimal Scope stand-in: captures the http registration and warning log so tests can
 // assert on the middleware ordering options the plugin passes to the server.
@@ -517,7 +513,7 @@ describe('static plugin deferred credential rejection', () => {
 		const result = state.listener(request, next);
 
 		assert.strictEqual(result, NEXT_HANDLER);
-		assert.equal(getDeferredCredentialRejection(request).status, 401);
+		assert.equal(request.deferredCredentialRejection.status, 401);
 		assert.equal(request.headers.get('authorization'), BASIC);
 		assert.equal(request.user, undefined);
 	});
@@ -530,7 +526,7 @@ describe('static plugin deferred credential rejection', () => {
 		request.method = 'POST';
 
 		assert.strictEqual(state.listener(request, next), NEXT_HANDLER);
-		assert.equal(getDeferredCredentialRejection(request).status, 401);
+		assert.equal(request.deferredCredentialRejection.status, 401);
 	});
 });
 
