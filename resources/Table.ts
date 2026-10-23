@@ -6677,7 +6677,7 @@ export function makeTable(options): TableResourceClass {
 						// Evaluate at most once per table (on the first expiring write); later writes short-circuit on one check.
 						if (!expirationWarningChecked) {
 							expirationWarningChecked = true;
-							if (!expirationMs && !evictionMs && !expirationScanScheduled && !expiresAtProperty && !hasSourceGet) {
+							if (!evictsRecords()) {
 								logger.warn?.(
 									`A per-record expiresAt was set on table "${tableName}" which has no table-level expiration/eviction, no expiresAt attribute, and no source; expiration will not be reliably enforced (the eviction scan is only armed best-effort on write and does not survive a restart with no writes). Configure a table-level expiration/eviction or an indexed expiresAt attribute for reliable eviction.`
 								);
@@ -10605,79 +10605,53 @@ export function makeTable(options): TableResourceClass {
 			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
-			let loggedEntryError = false;
+			const historyEntry = historyEntryReader();
 			for (const auditRecord of auditStore.getRange({
 				start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
 				end: endTime,
 			})) {
 				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict' || isLockControlType(auditRecord.type))
-					continue;
-				let value;
-				try {
-					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
-				} catch (error) {
-					if (!loggedEntryError) {
-						loggedEntryError = true;
-						logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
-					}
-				}
-				yield {
-					id: auditRecord.recordId,
-					// Compatibility-facing LMDB history has always reported/grouped by record version.
-					localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
-					version: auditRecord.version,
-					type: auditRecord.type,
-					value,
-					user: auditRecord.user,
-					operation: auditRecord.originatingOperation,
-				};
+				if (isHistoryEntry(auditRecord)) yield historyEntry(auditRecord);
 			}
 		}
 		static async getHistoryOfRecord(id) {
 			const history = [];
 			if (id == undefined) throw new Error('An id is required');
+			const historyEntry = historyEntryReader();
+			const isEntryOfRecord = (auditRecord) =>
+				isHistoryEntry(auditRecord) && compareKeys(auditRecord.recordId, id) === 0;
+			// Entries of the record below `end` that no previousVersion link reaches. The log is keyed by
+			// time alone, so the only way to them is a scan.
+			const unlinkedEntries = async (end: number) => {
+				const entries = [];
+				let sinceYield = 0;
+				for (const auditRecord of auditStore.getRange({ start: 1, end })) {
+					if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+						sinceYield = 0;
+						await rest();
+					}
+					if (auditRecord.txnLogKey < end && isEntryOfRecord(auditRecord)) entries.push(historyEntry(auditRecord));
+				}
+				return entries;
+			};
 			const entry = primaryStore.getEntry(id);
-			if (!entry) return history;
+			// evicted: the primary entry is gone but its audit entries are retained
+			if (!entry) return unlinkedEntries(Infinity);
 			let nextVersion = isRocksDB
 				? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
 				: entry.localTime;
 			if (!nextVersion) throw new Error('The entry does not have a local audit time');
-			const count = 0;
 			const auditWindow = 100;
-			let loggedEntryError = false;
+			let start: number;
+			let windowHeldEntries: boolean;
 			do {
 				await rest(); // yield to other async operations
 				let insertionPoint = history.length;
 				let highestPreviousVersion = 0;
-				const start = nextVersion - auditWindow;
+				start = nextVersion - auditWindow;
 				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
-					if (
-						auditRecord.tableId === tableId &&
-						auditRecord.type !== 'evict' &&
-						!isLockControlType(auditRecord.type) &&
-						compareKeys(auditRecord.recordId, id) === 0
-					) {
-						let value;
-						try {
-							// reconstruct each entry's record image as of its own log position, not the audit
-							// window boundary (nextVersion), matching getHistory (issue #1330)
-							value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
-						} catch (error) {
-							if (!loggedEntryError) {
-								loggedEntryError = true;
-								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
-							}
-						}
-						history.splice(insertionPoint, 0, {
-							id: auditRecord.recordId,
-							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
-							version: auditRecord.version,
-							type: auditRecord.type,
-							value,
-							user: auditRecord.user,
-							operation: auditRecord.originatingOperation,
-						});
+					if (isEntryOfRecord(auditRecord)) {
+						history.splice(insertionPoint, 0, historyEntry(auditRecord));
 						const previousVersion = isRocksDB
 							? resolveAuditHead(
 									id,
@@ -10691,9 +10665,15 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 				}
+				windowHeldEntries = history.length > insertionPoint;
 				nextVersion = highestPreviousVersion;
-			} while (count < 1000 && nextVersion);
-			return history.reverse();
+			} while (nextVersion);
+			history.reverse();
+			// The chain ended at a write with no predecessor rather than at a pruned one. A re-insert after
+			// eviction is such a write, so a record that can have been evicted may have older history.
+			if (windowHeldEntries && (evictsRecords() || entry.expiresAt != undefined))
+				return (await unlinkedEntries(start)).concat(history);
+			return history;
 		}
 		static async clear() {
 			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
@@ -11314,6 +11294,40 @@ export function makeTable(options): TableResourceClass {
 	}
 	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
 		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
+	}
+	function evictsRecords() {
+		return Boolean(expirationMs || evictionMs || expirationScanScheduled || expiresAtProperty || hasSourceGet);
+	}
+	function isHistoryEntry(auditRecord): boolean {
+		return auditRecord.tableId === tableId && auditRecord.type !== 'evict' && !isLockControlType(auditRecord.type);
+	}
+	/**
+	 * A history-entry builder for one history read. Each entry carries the record image as of its own log
+	 * position (issue #1330); a failed reconstruction leaves `value` undefined and is logged once per read.
+	 */
+	function historyEntryReader() {
+		let loggedEntryError = false;
+		return (auditRecord) => {
+			let value;
+			try {
+				value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
+			} catch (error) {
+				if (!loggedEntryError) {
+					loggedEntryError = true;
+					logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+				}
+			}
+			return {
+				id: auditRecord.recordId,
+				// Compatibility-facing LMDB history has always reported/grouped by record version.
+				localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
+				version: auditRecord.version,
+				type: auditRecord.type,
+				value,
+				user: auditRecord.user,
+				operation: auditRecord.originatingOperation,
+			};
+		};
 	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
