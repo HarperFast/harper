@@ -41,6 +41,7 @@ const OWNER_FILE = 'owner.json';
 const SPOOL_FILE = 'archive';
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const SECRET_REQUEST_TIMEOUT_MS = 30_000;
+const IMPORT_CHILD_TIMEOUT_MS = 30 * 60 * 60 * 1000;
 const IMPORT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ALLOWED_S3_FIELDS = new Set(['bucket', 'key', 'region', 'credentials']);
 
@@ -178,7 +179,14 @@ export async function importBackup(request: any): Promise<{ message: string; job
 	}
 	validateImportBackup(request);
 	const { executeJob } = await import('../server/serverHelpers/serverUtilities.ts');
-	if (!isUpload(request.payload)) return executeJob(request);
+	if (!isUpload(request.payload)) {
+		// A presigned URL is a bearer credential: the job row, which get_job and every later system backup
+		// can read, keeps only its origin and path, and the full URL reaches the job thread in memory.
+		if (typeof request.url === 'string' && redactUrl(request.url) !== request.url) {
+			return executeJob({ ...request, url: redactUrl(request.url) }, { url: request.url });
+		}
+		return executeJob(request);
+	}
 	const databaseName = getDatabaseName(request);
 	const { payload, ...rest } = request;
 	const spooled = await spoolUpload(databaseName, payload, rest.declared_size);
@@ -287,19 +295,24 @@ export async function importBackupJob(request: any) {
 		}
 	}
 	try {
-		const result: any = await runRestoreChild('import-archive', {
-			databaseName,
-			backupDir,
-			importId,
-			stagingDir: importStagingDir(databaseName, importId),
-			sourceFile: request.source_file,
-			url: request.url,
-			s3,
-			// an upload's own digest pins the bytes the job reads back from staging
-			sha256: request.sha256 ?? request.upload_digest ?? undefined,
-			acceptIncompatible: request.accept_incompatible_backup === true,
-			importedFrom: describeImportSource(request),
-		});
+		const result: any = await runRestoreChild(
+			'import-archive',
+			{
+				databaseName,
+				backupDir,
+				importId,
+				stagingDir: importStagingDir(databaseName, importId),
+				sourceFile: request.source_file,
+				url: request.url,
+				s3,
+				// an upload's own digest pins the bytes the job reads back from staging
+				sha256: request.sha256 ?? request.upload_digest ?? undefined,
+				acceptIncompatible: request.accept_incompatible_backup === true,
+				importedFrom: describeImportSource(request),
+			},
+			// a pull may itself take a day, before extraction and conversion
+			{ timeoutMs: IMPORT_CHILD_TIMEOUT_MS }
+		);
 		return { ...result, missing_roles: await rolesMissingLocally(result.roles) };
 	} finally {
 		rmSync(importStagingDir(databaseName, importId), { recursive: true, force: true });

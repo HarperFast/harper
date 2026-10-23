@@ -28,6 +28,7 @@ import { verifyBackupFiles } from './rocksdbBackup.ts';
 
 const FETCH_TOTAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const FETCH_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const PULL_CHARGE_BATCH_BYTES = 8 * 1024 * 1024;
 
 export interface ImportArchiveArgs {
 	databaseName: string;
@@ -65,6 +66,14 @@ async function sha256File(path: string): Promise<string> {
 	return hash.digest('hex');
 }
 
+function withTimeout<T>(ms: number, message: string, promise: Promise<T>): Promise<T> {
+	let timer: NodeJS.Timeout;
+	const timedOut = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new ClientError(message, 504)), ms);
+	});
+	return Promise.race([promise, timedOut]).finally(() => clearTimeout(timer));
+}
+
 async function fetchFromS3(
 	s3: NonNullable<ImportArchiveArgs['s3']>,
 	destination: string,
@@ -72,15 +81,19 @@ async function fetchFromS3(
 ): Promise<void> {
 	if (!s3.credentials) throw new ClientError(`'s3' needs credentials: { secret: '<name>' }`);
 	const { getFileStreamFromS3 } = require('../utility/AWS/AWSConnector.js');
-	const body = await getFileStreamFromS3({
-		s3: {
-			bucket: s3.bucket,
-			key: s3.key,
-			region: s3.region,
-			aws_access_key_id: s3.credentials.accessKeyId,
-			aws_secret_access_key: s3.credentials.secretAccessKey,
-		},
-	});
+	const body = await withTimeout<NodeJS.ReadableStream>(
+		FETCH_IDLE_TIMEOUT_MS,
+		`S3 did not answer for ${s3.bucket}/${s3.key}`,
+		getFileStreamFromS3({
+			s3: {
+				bucket: s3.bucket,
+				key: s3.key,
+				region: s3.region,
+				aws_access_key_id: s3.credentials.accessKeyId,
+				aws_secret_access_key: s3.credentials.secretAccessKey,
+			},
+		})
+	);
 	await pipeline(
 		body,
 		ledgerMeter(ledger, destination, { idleMs: FETCH_IDLE_TIMEOUT_MS }),
@@ -151,15 +164,31 @@ export async function importArchive(args: ImportArchiveArgs) {
 	} else {
 		archivePath = join(stagingDir, 'archive');
 		if (args.url !== undefined) {
-			// bounded by what the staging device can take, so a pull cannot fill the databases' device
+			// bounded by what the staging device can take, so a pull cannot fill the databases' device, and
+			// charged as it lands, since the room sampled at the start goes stale over a long transfer
 			const { bytes: room } = await ledger.remaining(stagingDir);
-			const fetched = await safeFetchToFile(args.url, archivePath, {
+			const refused = new AbortController();
+			let uncharged = 0;
+			let charging = Promise.resolve();
+			const charge = (bytes: number) => {
+				charging = charging.then(() => ledger.debit(stagingDir, bytes)).catch((error) => refused.abort(error));
+			};
+			await safeFetchToFile(args.url, archivePath, {
 				totalTimeoutMs: FETCH_TOTAL_TIMEOUT_MS,
 				idleTimeoutMs: FETCH_IDLE_TIMEOUT_MS,
 				maxBytes: Math.max(0, room),
 				sha256: args.sha256,
+				signal: refused.signal,
+				onBytes(bytes) {
+					uncharged += bytes;
+					if (uncharged < PULL_CHARGE_BATCH_BYTES) return;
+					charge(uncharged);
+					uncharged = 0;
+				},
 			});
-			await ledger.debit(stagingDir, fetched.bytes);
+			if (uncharged > 0) charge(uncharged);
+			await charging;
+			if (refused.signal.aborted) throw refused.signal.reason;
 		} else if (args.s3 !== undefined) {
 			await fetchFromS3(args.s3, archivePath, ledger);
 		} else if (!existsSync(archivePath)) {

@@ -601,7 +601,7 @@ interface JobResult {
 	job_id: string;
 }
 
-export async function executeJob(json: OperationRequestBody): Promise<JobResult> {
+export async function executeJob(json: OperationRequestBody, transient?: Record<string, unknown>): Promise<JobResult> {
 	transformReq(json);
 
 	try {
@@ -610,7 +610,7 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 		if (!newJobObject) throw new Error(result.error || result.message || `Unable to create a ${json.operation} job`);
 		// the created job carries the request, which can hold a presigned URL
 		operationLog.info('addJob result', { id: newJobObject.id, type: newJobObject.type });
-		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
+		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json, transient);
 		const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
 
 		return {

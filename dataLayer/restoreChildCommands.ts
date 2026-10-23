@@ -38,15 +38,6 @@ export function assertReceiptAuthorizes(authorization: ReceiptAuthorization): bo
 	);
 }
 
-export interface VerifyArgs {
-	backupDir: string;
-	backupId: number;
-	manifest: BackupManifest;
-	databaseName: string;
-	verifyWithChecksum: boolean;
-	verifyTables: boolean;
-}
-
 export interface ApplyAndProveArgs {
 	databaseName: string;
 	sourceDatabase: string;

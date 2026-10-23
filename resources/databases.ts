@@ -1105,17 +1105,10 @@ export function getTables(): Tables {
 }
 
 /**
- * This provides the main entry point for getting the set of all Harper tables (organized by schemas/databases).
- * This proactively scans the known
- * databases/schemas directories and finds any databases and opens them. This done proactively so that there is a fast
- * object available to all consumers that doesn't require runtime checks for database open states.
- * This also attaches the audit store associated with table. Note that legacy tables had a single audit table per db table
- * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
- * can span any tables in the database.
- */
 // Register getter in the shared registry so common_utils.ts can access databases
 // without importing this module directly (which would create a circular dep).
 setDatabasesGetter(() => getDatabases());
+
 /**
  * Every directory database directories live in: the storage root and each configured database path.
  * Resolved from config alone, so startup recovery can find restore records before anything opens.
@@ -1129,7 +1122,7 @@ export function databaseRoots(): string[] {
 		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
 		(defaultPath && (existsSync(defaultPath) ? defaultPath : join(hdbBasePath, LEGACY_DATABASES_DIR_NAME)));
 	if (storagePath) roots.add(resolve(storagePath));
-	const schemaConfigs = { ...(envGet(CONFIG_PARAMS.DATABASES) || {}) };
+	const schemaConfigs = { ...envGet(CONFIG_PARAMS.DATABASES) };
 	if (process.env.SCHEMAS_DATA_PATH) schemaConfigs.data = { path: process.env.SCHEMAS_DATA_PATH };
 	for (const name in schemaConfigs) {
 		if (schemaConfigs[name]?.path) roots.add(resolve(schemaConfigs[name].path));
@@ -1142,6 +1135,15 @@ export function databasesLoaded(): boolean {
 	return loadedDatabases;
 }
 
+/**
+ * This provides the main entry point for getting the set of all Harper tables (organized by schemas/databases).
+ * This proactively scans the known
+ * databases/schemas directories and finds any databases and opens them. This done proactively so that there is a fast
+ * object available to all consumers that doesn't require runtime checks for database open states.
+ * This also attaches the audit store associated with table. Note that legacy tables had a single audit table per db table
+ * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
+ * can span any tables in the database.
+ */
 export function getDatabases(): Databases {
 	if (loadedDatabases) {
 		return databases;

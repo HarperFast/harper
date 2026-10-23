@@ -13,6 +13,7 @@ import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
 import * as jobs from './jobs.ts';
+import { JOB_TRANSIENT_ENV } from './jobRunner.ts';
 import { recordJobResult } from './deferredJobCompletion.ts';
 import cloneDeep from 'lodash/cloneDeep.js';
 
@@ -62,6 +63,11 @@ const JOB_ID = JOB_NAME.substring(4);
 			throw new Error('Did not find job request in hdb_job table, unable to proceed');
 		}
 		request = cloneDeep(request);
+		const transient = process.env[JOB_TRANSIENT_ENV];
+		if (transient) {
+			delete process.env[JOB_TRANSIENT_ENV];
+			Object.assign(request, JSON.parse(transient));
+		}
 		// The worker re-enters from the persisted row rather than re-dispatching, so a row queued before
 		// the dispatch-time strip existed — or written directly — is sanitized here.
 		stripSuppliedParsedSqlObject(request);

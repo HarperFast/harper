@@ -1217,11 +1217,6 @@ restore_backup): https://docs.harperdb.io/reference/v5/operations-api/operations
 // --- offline CLI paths (server stopped) ---
 
 /**
- * Offline create: open the RocksDatabase directly, run an ordinary incremental directory backup
- * into the configured backup root, and close. RocksDB is single-writer, so this collides on the
- * database lock if the server is running — callers guard on the server being stopped.
- */
-/**
  * The rollback copy a restart restore takes of the database it is about to replace. Everything else
  * that would back up a database a restore has reserved is refused (createBackupOffline); this is the
  * one caller allowed through, and only for the operation whose pending receipt reserves it.
@@ -1263,6 +1258,11 @@ export async function createPreRestoreBackup(
 	}
 }
 
+/**
+ * Offline create: open the RocksDatabase directly, run an ordinary incremental directory backup
+ * into the configured backup root, and close. RocksDB is single-writer, so this collides on the
+ * database lock if the server is running — callers guard on the server being stopped.
+ */
 export async function createBackupOffline(databaseName: string, excludeBlobs = false) {
 	validateDatabaseName(databaseName);
 	const databaseDir = resolveDatabasePath(databaseName);

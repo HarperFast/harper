@@ -20,7 +20,7 @@ import {
 	assertNoReplicationPeers,
 	listReplicationPeers,
 } from '../server/replicationMembership.ts';
-import { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
+import { pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
 import { readAllManifests } from './backupManifest.ts';
 import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
 import {
@@ -48,6 +48,7 @@ import type { RestoreEvidence } from './restoreChildCommands.ts';
 import {
 	finishCommittedRestore,
 	finishOutstandingRestore,
+	releaseReceiptPins,
 	preRestorePinId,
 	settleRestoreJob,
 } from './restorePublication.ts';
@@ -187,37 +188,43 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 				}
 				// a restore that did not finish, or no database at all, leaves no generation to keep
 				const nothingToRetain = restoreMarkerPresent(databaseDir) || !existsSync(join(databaseDir, 'CURRENT'));
+				const planned = newRestoreReceipt({
+					route: 'on_restart',
+					state: 'pending',
+					database: databaseName,
+					database_path: databaseDir,
+					source_database: databaseName,
+					backup_dir: backupDir,
+					backup_id: selected.backupId,
+					job_id: request.jobId,
+					requested_by: request.requestedBy,
+					retain_previous: superseded || nothingToRetain ? false : request.retainPrevious,
+					superseded_from: superseded?.operation_id,
+					pre_restore_backup_id: superseded?.pre_restore_backup_id,
+					pre_restore_pin_id: superseded?.pre_restore_pin_id,
+					expected_tables: selected.manifest.tables,
+					options: {
+						accept_unverified_blobs: request.acceptUnverifiedBlobs,
+						allow_engine_only: request.allowEngineOnly,
+						accept_incompatible_backup: request.acceptIncompatible,
+					},
+				});
+				const sourcePinId = `restore-intent-${planned.operation_id}`;
+				planned.source_pin_id = sourcePinId;
+				// its own pin first, then the receipt that names it, and only then the superseded one's release:
+				// a crash at any point leaves every receipt that exists with its source pinned
 				pinBackup(
 					backupDir,
-					restorePinId(databaseDir),
+					sourcePinId,
 					selected.backupId,
 					`restart restore of database '${databaseName}'`,
 					databaseDir
 				);
-				receipt = writeRestoreReceipt(
-					lock,
-					newRestoreReceipt({
-						route: 'on_restart',
-						state: 'pending',
-						database: databaseName,
-						database_path: databaseDir,
-						source_database: databaseName,
-						backup_dir: backupDir,
-						backup_id: selected.backupId,
-						job_id: request.jobId,
-						requested_by: request.requestedBy,
-						retain_previous: superseded || nothingToRetain ? false : request.retainPrevious,
-						superseded_from: superseded?.operation_id,
-						pre_restore_backup_id: superseded?.pre_restore_backup_id,
-						pre_restore_pin_id: superseded?.pre_restore_pin_id,
-						expected_tables: selected.manifest.tables,
-						options: {
-							accept_unverified_blobs: request.acceptUnverifiedBlobs,
-							allow_engine_only: request.allowEngineOnly,
-							accept_incompatible_backup: request.acceptIncompatible,
-						},
-					})
-				);
+				receipt = writeRestoreReceipt(lock, planned);
+				if (superseded) {
+					const supersededPinId = superseded.source_pin_id ?? restorePinId(databaseDir);
+					if (supersededPinId !== sourcePinId) unpinBackup(backupDir, supersededPinId);
+				}
 			} finally {
 				releaseRestoreLock(lock);
 			}
@@ -271,13 +278,6 @@ export async function resumeRestartRestore(
 	return deferredUntilRestart(receipt, `Restore of database '${databaseName}' resumes at the next startup`);
 }
 
-function releaseIntentPins(receipt: RestoreReceipt): void {
-	const sourcePinId = restorePinId(receipt.database_path);
-	const pin = readBackupPins(receipt.backup_dir).find((candidate) => candidate.pin_id === sourcePinId);
-	if (pin && pin.backup_id === receipt.backup_id) unpinBackup(receipt.backup_dir, sourcePinId);
-	if (receipt.pre_restore_pin_id) unpinBackup(receipt.backup_dir, receipt.pre_restore_pin_id);
-}
-
 export async function cancelRestartRestore(databaseName: string, databaseDir: string) {
 	const lock = claimTarget(databaseName, databaseDir);
 	let cancelled: RestoreReceipt | undefined;
@@ -298,7 +298,7 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 			cancelled = read.receipt;
 			// a target this restore began replacing stays blocked by its marker, and its source and its
 			// rollback copy stay pinned with it: the pins name the database, so they lapse with the marker
-			if (!restoreMarkerPresent(databaseDir)) releaseIntentPins(cancelled);
+			if (!restoreMarkerPresent(databaseDir)) releaseReceiptPins(cancelled);
 			removeRestoreReceipt(lock, cancelled.operation_id);
 		}
 	} finally {
@@ -456,7 +456,13 @@ async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: s
 async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 	const lock = acquireRestoreLock(found.database_path);
 	lock.source = restoreSourceId(found.backup_dir);
-	let receipt = writeRestoreReceipt(lock, { ...found, attempts: found.attempts + 1 });
+	let receipt: RestoreReceipt;
+	try {
+		receipt = writeRestoreReceipt(lock, { ...found, attempts: found.attempts + 1 });
+	} catch (error) {
+		releaseRestoreLock(lock);
+		throw error;
+	}
 	let committed = false;
 	try {
 		const peers = listReplicationPeers();

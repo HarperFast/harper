@@ -17,13 +17,26 @@ import { onMessageByType } from '../threads/manageThreads.ts';
 import { join } from 'node:path';
 import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 
+export const JOB_TRANSIENT_ENV = 'HARPER_JOB_TRANSIENT';
+
 class RunnerMessage {
 	job: any;
 	json: any;
-	constructor(jobObject, messageJson) {
+	/** Request fields the job needs but its persisted row must not hold (a bearer URL); never written. */
+	transient?: Record<string, unknown>;
+	constructor(jobObject, messageJson, transient?: Record<string, unknown>) {
 		this.job = jobObject;
 		this.json = messageJson;
+		this.transient = transient;
 	}
+}
+
+function jobEnv(jobId: string, transient?: Record<string, unknown>) {
+	return {
+		...process.env,
+		[hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${jobId}`,
+		...(transient ? { [JOB_TRANSIENT_ENV]: JSON.stringify(transient) } : {}),
+	};
 }
 
 /**
@@ -113,7 +126,7 @@ async function runJob(runnerMessage: any, operation: any) {
 		// Update with "IN PROGRESS"
 		await jobs.updateJob(runnerMessage.job);
 		// Run the operation.
-		await launchJobThread(runnerMessage.job.id);
+		await launchJobThread(runnerMessage.job.id, runnerMessage.transient);
 	} catch (e) {
 		let errMessage = e.message !== undefined ? e.message : e;
 		if (typeof errMessage === 'string') {
@@ -143,18 +156,19 @@ async function runJob(runnerMessage: any, operation: any) {
  * @param job_id
  * @returns {Promise<void>}
  */
-async function launchJobThread(job_id: any) {
+async function launchJobThread(job_id: any, transient?: Record<string, unknown>) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
 		threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
 			autoRestart: false,
 			name: 'job',
-			env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
+			env: jobEnv(job_id, transient),
 		});
 	} else {
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.START_JOB,
 			jobId: job_id,
+			transient,
 		});
 	}
 }
@@ -164,7 +178,7 @@ if (isMainThread) {
 			threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
 				autoRestart: false,
 				name: 'job',
-				env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },
+				env: jobEnv(message.jobId, message.transient),
 			});
 		} catch (e) {
 			log.error(`Failed to start worker for job ${message.jobId}:`, e);

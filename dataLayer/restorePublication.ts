@@ -18,6 +18,7 @@ import {
 	clearRestoringMarker,
 	markRestoreDestructive,
 	releaseRestoreLock,
+	restoreMarkerPresent,
 	type RestoreLock,
 } from './restoreMarker.ts';
 import {
@@ -94,8 +95,8 @@ export async function finishCommittedRestore(lock: RestoreLock, receipt: Restore
 	removeRestoreReceipt(lock, receipt.operation_id);
 }
 
-function releaseReceiptPins(receipt: RestoreReceipt): void {
-	const sourcePinId = restorePinId(receipt.database_path);
+export function releaseReceiptPins(receipt: RestoreReceipt): void {
+	const sourcePinId = receipt.source_pin_id ?? restorePinId(receipt.database_path);
 	try {
 		// Only a pin this receipt's backup holds: another restore of the same target pins the same id.
 		const pin = readBackupPins(receipt.backup_dir).find((candidate) => candidate.pin_id === sourcePinId);
@@ -282,7 +283,14 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	try {
 		await finishCommittedRestore(lock, receipt);
 	} catch (error) {
-		// Published already: what is left is bookkeeping, which the next claim or startup finishes.
+		// The committed receipt survives either way, so the next claim or startup finishes the rest. Only a
+		// cleared marker means the restore is published; if it is still there, this restore has not been.
+		if (restoreMarkerPresent(databaseDir)) {
+			throw new Error(
+				`Restore of database '${targetDatabase}' was applied and proven but could not be published; it is published by the next restore_backup of it or the next restart`,
+				{ cause: error }
+			);
+		}
 		logger.error(`Restore of '${targetDatabase}' is published, but finishing its record failed`, error);
 	} finally {
 		releaseRestoreLock(lock);
@@ -340,8 +348,9 @@ async function abandonOrRelease(
 	}
 	try {
 		clearRestoringMarker(lock);
-		if (pinId) unpinBackup(request.backupDir, pinId);
+		// the receipt first: a pin left behind lapses on its own, an applying receipt reserves the database
 		removeRestoreReceipt(lock, receipt.operation_id);
+		if (pinId) unpinBackup(request.backupDir, pinId);
 	} catch (cleanupError) {
 		logger.error(`Could not release the claim of the failed restore of '${request.targetDatabase}'`, cleanupError);
 	} finally {

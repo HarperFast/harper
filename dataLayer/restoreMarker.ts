@@ -287,7 +287,13 @@ function assertNoRestoreChild(dbPath: string, heldToken: number): void {
 	const childLockPath = restoreChildLockPath(dbPath);
 	// only a child creates this file, so its absence means none has ever run for this database
 	if (!pathPresent(childLockPath)) return;
-	const childToken = tryFileLock(childLockPath);
+	let childToken: number;
+	try {
+		childToken = tryFileLock(childLockPath);
+	} catch (error) {
+		fileLockRelease(heldToken);
+		throw error;
+	}
 	if (childToken !== 0) {
 		fileLockRelease(childToken);
 		return;

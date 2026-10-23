@@ -43,6 +43,8 @@ export interface SafeFetchOptions {
 	maxBytes?: number;
 	sha256?: string;
 	onBytes?: (bytes: number) => void;
+	/** Fails the transfer with the signal's reason, e.g. when the bytes it is writing no longer fit. */
+	signal?: AbortSignal;
 	allowPrivateNetworks?: boolean;
 	resume?: boolean;
 	[SAFE_FETCH_TEST_TRANSPORT]?: TestTransport;
@@ -364,6 +366,7 @@ async function receiveBody(
 			if (!out.write(chunk)) {
 				transfer.pauseIdle();
 				await transfer.race(once(out, 'drain'));
+				transfer.touch();
 			}
 		}
 		return true;
@@ -393,6 +396,12 @@ export async function safeFetchToFile(
 	const target = parseHttpsUrl(url);
 	const redacted = redactUrl(target);
 	const transfer = new Transfer(redacted, options.idleTimeoutMs, options.totalTimeoutMs);
+	const abort = () =>
+		transfer.fail(
+			options.signal!.reason instanceof Error ? options.signal!.reason : new Error(String(options.signal!.reason))
+		);
+	if (options.signal?.aborted) abort();
+	else options.signal?.addEventListener('abort', abort, { once: true });
 	const resume = options.resume ?? true;
 	const state = { bytes: 0, hash: createHash('sha256') };
 	let identity: Identity = {};

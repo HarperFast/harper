@@ -8,7 +8,7 @@ import logger from '../utility/logging/harper_logger.ts';
 
 const RESTORE_CHILD_SLOT_FILE = '.restore-child.lock';
 const OUTPUT_CAP_BYTES = 64 * 1024;
-const DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const AUTHORIZE_TIMEOUT_MS = 30_000;
 const DEFAULT_HEAP_MB = 1024;
 // Native budgets for the child's own RocksDB handles. The server's default (25% of memory) is per
@@ -189,6 +189,11 @@ export function runRestoreChild<T = any>(
 			killGroup(child);
 		}, timeoutMs);
 		child.on('message', (message: ChildToParent) => {
+			// after a timeout or failure the claim may already be released: a late child gets nothing
+			if (settled) {
+				if (message?.type === 'ready' || message?.type === 'destroying') killGroup(child);
+				return;
+			}
 			if (message?.type === 'ready') {
 				const authorize: ParentToChild = { type: 'authorize', command, args, receipt: options.receipt };
 				child.send(authorize);

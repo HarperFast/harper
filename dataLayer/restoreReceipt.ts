@@ -39,6 +39,8 @@ export interface RestoreReceipt {
 	job_id?: string;
 	retain_previous?: boolean;
 	pre_restore_started_at?: number;
+	/** The pin protecting `backup_id`; a restart restore's is its own, so a supersede never overwrites it. */
+	source_pin_id?: string;
 	pre_restore_backup_id?: number;
 	/** Kept with the id: a supersede carries the rollback copy, and its pin, into a new operation. */
 	pre_restore_pin_id?: string;
