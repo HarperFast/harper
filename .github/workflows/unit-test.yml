@@ -136,6 +136,14 @@ jobs:
         timeout-minutes: ${{ matrix.timeout }}
         run: npm run ${{ matrix.script }}
 
+      # Its own process: the suite runs real installs, which close and recreate the `system`
+      # database the other suites share, and the user-change subscriptions on it back off for up to a
+      # minute each time that happens.
+      - name: 'Unit tests: install'
+        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 3
+        run: npm run test:unit:install
+
       - name: 'Unit tests: apitests'
         if: "!cancelled() && matrix.shard == 'components' && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 3
