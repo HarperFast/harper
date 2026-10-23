@@ -214,19 +214,18 @@ const CONNACK_REFUSALS = {
 	notAuthorized: { reasonCode: 0x87, returnCode: 5 },
 	unspecified: { reasonCode: 0x80, returnCode: 3 }, // 3.1.1 has no generic refusal; "server unavailable" is closest
 };
-/** The reason codes MQTT 5 allows in a CONNACK. */
 const V5_CONNACK_REFUSAL_CODES = new Set([
 	0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8c, 0x90, 0x95, 0x97, 0x99, 0x9a, 0x9b, 0x9c,
 	0x9d, 0x9f,
 ]);
-/** A code the error names reaches the client only if its own protocol version allows it; an HTTP status is never written raw. */
-function connackRefusalFor(error: any, protocolVersion: number | undefined) {
+/** The code goes into one byte: an HTTP status written raw would wrap into an unrelated code. */
+function connackRefusalFor(error: any, protocolVersion: number | undefined, fallback = CONNACK_REFUSALS.unspecified) {
 	const { code } = error ?? {};
 	const allowed =
 		protocolVersion === 5 ? V5_CONNACK_REFUSAL_CODES.has(code) : Number.isInteger(code) && code >= 1 && code <= 5;
 	if (allowed) return { reasonCode: code, returnCode: code };
 	if (isNotAuthorized(error) || code === 401 || code === 403) return CONNACK_REFUSALS.notAuthorized;
-	return CONNACK_REFUSALS.unspecified;
+	return fallback;
 }
 /** Only failures this layer maps to a code of their own are safe to describe: any other carries an internal message. */
 const hasClientSafeMessage = (error: any) => isNotAuthorized(error) || error?.statusCode === 404;
@@ -487,9 +486,24 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							...CONNACK_REFUSALS.badCredentials,
 						});
 					}
+					const refuseConnect = (error, fallback?) => {
+						mqttLog.error?.(error);
+						emitEvent('auth-failed', packet, socket, error);
+						recordActionBinary(false, 'connection', 'mqtt', 'connect');
+						return generateAndSendPacket({
+							// Send a connection acknowledgment with indication of auth failure
+							cmd: 'connack',
+							...connackRefusalFor(error, packet.protocolVersion, fallback),
+						});
+					};
 					try {
 						// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used) or is this sufficient?
-						mqttSettings.authorizeClient?.(packet, user);
+						try {
+							mqttSettings.authorizeClient?.(packet, user);
+						} catch (error) {
+							// a hook refuses by throwing, and a bare Error is a denial, not a server fault
+							return refuseConnect(error, CONNACK_REFUSALS.notAuthorized);
+						}
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
 						if (packet.will) {
@@ -559,14 +573,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							releaseClaim?.();
 						}
 					} catch (error) {
-						mqttLog.error?.(error);
-						emitEvent('auth-failed', packet, socket, error);
-						recordActionBinary(false, 'connection', 'mqtt', 'connect');
-						return generateAndSendPacket({
-							// Send a connection acknowledgment with indication of auth failure
-							cmd: 'connack',
-							...connackRefusalFor(error, packet.protocolVersion),
-						});
+						return refuseConnect(error);
 					}
 					emitEvent('connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
