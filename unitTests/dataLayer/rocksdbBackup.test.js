@@ -18,6 +18,7 @@ const sinon = require('sinon');
 const { tmpdir } = require('node:os');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { writeUnsupportedTableFormat: sharedWriteUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
+const { isolatedInstall } = require('./fixtures/isolatedInstall.js');
 const { fork, spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
@@ -81,7 +82,6 @@ const restoreChildRunnerModule = require('#src/dataLayer/restoreChildRunner');
 const env = require('#src/utility/environment/environmentManager');
 const signalling = require('#src/utility/signalling');
 const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
-const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const restoreMarkerModule = require('#src/dataLayer/restoreMarker');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
@@ -127,7 +127,12 @@ describe('rocksdbBackup', function () {
 		setAnalyticsEnabled(true);
 		if (savedStoragePath === undefined) delete process.env.STORAGE_PATH;
 		else process.env.STORAGE_PATH = savedStoragePath;
-		rmSync(storageDir, { recursive: true, force: true });
+		// An analytics aggregation an earlier suite scheduled outlives setAnalyticsEnabled(false), and can
+		// declare its tables in a `system` under this storage path. Closing that would strand the analytics
+		// tables bound to it, so it stays open, and its files go only once the exit flush has run.
+		const dir = storageDir;
+		if (existsSync(join(dir, 'system'))) process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+		else rmSync(dir, { recursive: true, force: true });
 		rmSync(backupDirForDatabase(DB_NAME), { recursive: true, force: true });
 	});
 
@@ -148,21 +153,6 @@ describe('rocksdbBackup', function () {
 	}
 
 	const writeRecords = (records) => harperDatabase.writeRecords(DB_NAME, records);
-
-	// A fresh Node process running `source` from a file, as the CLI runs: it inherits this process's
-	// environment (ROOTPATH, STORAGE_PATH) but has loaded nothing. Not -e, because the restore child is
-	// forked with its parent's execArgv and would run the script again.
-	const scriptDirs = [];
-	after(function () {
-		for (const dir of scriptDirs) rmSync(dir, { recursive: true, force: true });
-	});
-	function spawnScript(source, { timeout = 15000 } = {}) {
-		const dir = mkdtempSync(join(tmpdir(), 'harper.unit-test.rocksdb-backup-script-'));
-		scriptDirs.push(dir);
-		const file = join(dir, 'script.cjs');
-		writeFileSync(file, source);
-		return spawn(process.execPath, [file], { timeout });
-	}
 
 	/** Whether no restore child holds the target's child-lifetime lock: none is running for it. */
 	function noRestoreChild(dbPath) {
@@ -1488,77 +1478,78 @@ describe('rocksdbBackup', function () {
 		}
 
 		for (const mode of ['online', 'offline']) {
+			// In an install of its own: the killed process scans its storage, and must find nothing this
+			// process holds open there.
 			it(`protects the source after ${mode} restore dies immediately after publishing its marker`, async function () {
-				this.timeout(30000);
-				const { first } = await seedTwoBackups();
-				const flagDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.rocksdb-backup-handshake-'));
-				scriptDirs.push(flagDir);
-				const handshakeFlag = join(flagDir, 'destroying');
-				const child = spawnScript(`
-					const fs = require('node:fs');
-					const { dirname } = require('node:path');
-					const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
-					env.initSync();
-					env.setProperty(${JSON.stringify(CONFIG_PARAMS.STORAGE_BACKUPPATH)}, ${JSON.stringify(resolve(getBackupsRoot()))});
-					const { fsyncDirectory } = require(${JSON.stringify(require.resolve('#src/utility/durableFile'))});
-					const rename = fs.renameSync;
-					fs.renameSync = (from, to) => {
-						rename(from, to);
-						if (to.endsWith('.restoring')) {
-							fsyncDirectory(dirname(to));
-							process.kill(process.pid, 'SIGKILL');
-						}
-					};
-					require('node:module').syncBuiltinESMExports();
-					// the marker is published in the child's destroying handshake, so the restore child is running
-					const runner = require(${JSON.stringify(require.resolve('#src/dataLayer/restoreChildRunner'))});
-					const run = runner.runRestoreChild;
-					runner.runRestoreChild = (command, args, options) =>
-						run(command, args, {
-							...options,
-							beforeDestruction: () => {
-								fs.writeFileSync(${JSON.stringify(handshakeFlag)}, command);
-								options.beforeDestruction();
-							},
-						});
-					const backup = require(${JSON.stringify(require.resolve('#src/dataLayer/rocksdbBackup'))});
-					const operation = ${JSON.stringify(mode)} === 'offline'
-						? backup.restoreBackupOffline(${JSON.stringify(PINNED)}, ${first.backup_id})
-						: backup.restoreBackup({ database: ${JSON.stringify(PINNED)}, backup_id: ${first.backup_id} });
-					operation.then(() => process.exit(2), error => { console.error(error); process.exit(3); });
-				`);
-				let stderr = '';
-				child.stderr.on('data', (data) => {
-					stderr += data;
-				});
+				this.timeout(120000);
+				const install = isolatedInstall();
 				try {
-					const signal = await new Promise((resolve, reject) => {
-						child.once('error', reject);
-						child.once('exit', (code, signal) =>
-							signal ? resolve(signal) : reject(new Error(`child exited ${code}: ${stderr}`))
-						);
-					});
-					assert.strictEqual(signal, 'SIGKILL');
+					const { databaseDir, first } = await install.runToReport(`
+						const fixture = require(paths.fixture);
+						const backup = require(paths.rocksdbBackup);
+						await fixture.writeRecords(${JSON.stringify(PINNED)}, [['rec', { value: 1 }]]);
+						const first = await backup.createBackupOffline(${JSON.stringify(PINNED)});
+						await backup.createBackupOffline(${JSON.stringify(PINNED)});
+						const databaseDir = require(paths.databases).resolveDatabasePath(${JSON.stringify(PINNED)});
+						report({ databaseDir, first: first.backup_id });
+					`);
+					const handshakeFlag = join(install.root, 'destroying');
+					const killed = await install.run(`
+						const fs = require('node:fs');
+						const { dirname } = require('node:path');
+						const { fsyncDirectory } = require(paths.durableFile);
+						const rename = fs.renameSync;
+						fs.renameSync = (from, to) => {
+							rename(from, to);
+							if (to.endsWith('.restoring')) {
+								fsyncDirectory(dirname(to));
+								process.kill(process.pid, 'SIGKILL');
+							}
+						};
+						require('node:module').syncBuiltinESMExports();
+						// the marker is published in the child's destroying handshake, so the restore child is running
+						const runner = require(paths.restoreChildRunner);
+						const run = runner.runRestoreChild;
+						runner.runRestoreChild = (command, args, options) =>
+							run(command, args, {
+								...options,
+								beforeDestruction: () => {
+									fs.writeFileSync(${JSON.stringify(handshakeFlag)}, command);
+									options.beforeDestruction();
+								},
+							});
+						const backup = require(paths.rocksdbBackup);
+						await (${JSON.stringify(mode)} === 'offline'
+							? backup.restoreBackupOffline(${JSON.stringify(PINNED)}, ${first})
+							: backup.restoreBackup({ database: ${JSON.stringify(PINNED)}, backup_id: ${first} }));
+						report({ restored: true });
+					`);
+					assert.strictEqual(killed.signal, 'SIGKILL', `exited ${killed.code}: ${killed.stderr}`);
 					assert.strictEqual(
 						readFileSync(handshakeFlag, 'utf8'),
 						'apply-and-prove',
 						'killed as it marked the target for the child about to purge it'
 					);
-					assert.strictEqual(checkRestoreState(join(storageDir, PINNED)), 'incomplete');
-					assert.strictEqual(
-						readRestoreReceipt(join(storageDir, PINNED)).receipt?.state,
-						'applying',
-						'the decision is recorded before the marker it outlives'
-					);
-					await assert.rejects(deleteBackupOffline(PINNED, first.backup_id), (error) => error.statusCode === 409);
-					await assert.rejects(purgeBackupsOffline(PINNED, 0), (error) => error.statusCode === 409);
 					// never permitted to purge, the orphaned child exits on its own once its parent is gone
-					await waitFor(() => noRestoreChild(join(storageDir, PINNED)), {
+					await waitFor(() => noRestoreChild(databaseDir), {
 						timeout: 15000,
 						message: 'the orphaned restore child did not exit',
 					});
+					const after = await install.runToReport(`
+						const backup = require(paths.rocksdbBackup);
+						const dir = ${JSON.stringify(databaseDir)};
+						const outcome = (operation) => operation.then(() => 'removed', (error) => error.statusCode);
+						report({
+							state: require(paths.restoreMarker).checkRestoreState(dir),
+							receipt: require(paths.restoreReceipt).readRestoreReceipt(dir).receipt?.state,
+							deleted: await outcome(backup.deleteBackupOffline(${JSON.stringify(PINNED)}, ${first})),
+							purged: await outcome(backup.purgeBackupsOffline(${JSON.stringify(PINNED)}, 0)),
+						});
+					`);
+					// the receipt: the decision is recorded before the marker it outlives
+					assert.deepStrictEqual(after, { state: 'incomplete', receipt: 'applying', deleted: 409, purged: 409 });
 				} finally {
-					child.kill('SIGKILL');
+					install.remove();
 				}
 			});
 		}
