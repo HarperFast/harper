@@ -724,6 +724,7 @@ export type TransactionWrite = {
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
+	dropped?: boolean;
 	// The origin record version carried by an applied or replayed write. Bound it by the origin's
 	// transaction-log key so malformed or historical overloaded values cannot move ordering past the write.
 	recordVersion?: number;
@@ -2294,7 +2295,17 @@ export class DatabaseTransaction implements Transaction {
 				// the same context before the commit resets it — a concurrent write in the caller's
 				// own Promise.all, or the next operation in a retry/replay save loop — with the
 				// lock's version, which LWW then silently drops against a newer record version.
-				if (!operation.lockStamp) operation.lockStamp = lockHandle.holderVersionCandidate();
+				if (!operation.lockStamp) {
+					try {
+						operation.lockStamp = lockHandle.holderVersionCandidate();
+					} catch (error) {
+						if (!operation.saved) {
+							operation.dropped = true;
+							this.detachWrite(operation);
+						}
+						throw error;
+					}
+				}
 			}
 		}
 		let txnTime =

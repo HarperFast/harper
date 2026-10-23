@@ -6,7 +6,8 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
-const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
+const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
+const { seedLocalIssuance } = require('#src/resources/originClosedFloor');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { PassThrough } = require('node:stream');
 const { createBlob } = require('#src/resources/blob');
@@ -1948,7 +1949,10 @@ describe('Record locks (harper#483)', () => {
 				n: 1,
 				blob: createBlob(stream),
 			});
-			await delay(100); // the commit is staged and waiting on the stream
+			await waitFor(
+				() => context.transaction.writes.some((write) => write && write.key === blobbedId && write.saved),
+				1000
+			);
 			holder.set('n', 2);
 			await assert.rejects(
 				async () => holder.save(),
@@ -1970,6 +1974,58 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual(stored.value.n, 2, 'the retry landed');
 			assert.ok(stored.version > predecessorTimestamp, 'the retry is above its predecessor');
 			assert.ok(auditOf(lockedId, stored.version).txnLogKey >= stored.version, 'its log key covers its version');
+		});
+
+		it('detaches a holder write when allocating its next stamp fails, and retries after reacquiring the lock', async function () {
+			if (isLMDB) return this.skip();
+			const lockedId = id();
+			await LockTest.put({ id: lockedId, n: 0 });
+			const context = {};
+			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
+			holder.set('n', 1);
+			await holder.save();
+
+			const rootStore = LockTest.primaryStore.rootStore;
+			const coverageLead = rootStore.getMonotonicTimestamp() + 10_000;
+			aheadUntil = Math.max(aheadUntil, coverageLead);
+			let failedCover = false;
+			let coverInstalled = false;
+			try {
+				seedLocalIssuance(rootStore, coverageLead, (key) => {
+					if (!failedCover) {
+						failedCover = true;
+						throw new Error('simulated issuance-ceiling failure');
+					}
+					return coverLocalIssuance(LockTest.auditStore, key);
+				});
+				coverInstalled = true;
+				handleOf(context.transaction).noteHolderVersion(entryOf(lockedId).version);
+				holder.set('n', 2);
+				await assert.rejects(async () => holder.save(), /simulated issuance-ceiling failure/);
+				assert.ok(failedCover, 'the second holder stamp needed a new durable ceiling');
+				assert.ok(
+					!context.transaction.writes.some((write) => write && write.key === lockedId && !write.saved),
+					'the refused operation was removed from the transaction'
+				);
+				assert.strictEqual(entryOf(lockedId).value.n, 1, 'the refused write did not land');
+
+				seedLocalIssuance(rootStore, readLocalIssuanceCeiling(LockTest.auditStore), (key) =>
+					coverLocalIssuance(LockTest.auditStore, key)
+				);
+				coverInstalled = false;
+				await holder.unlock();
+				const retry = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, {});
+				retry.set('n', 2);
+				await retry.save();
+				assert.strictEqual(entryOf(lockedId).value.n, 2, 'a fresh lock retried the refused change');
+				await retry.unlock();
+			} finally {
+				if (coverInstalled)
+					seedLocalIssuance(rootStore, readLocalIssuanceCeiling(LockTest.auditStore), (key) =>
+						coverLocalIssuance(LockTest.auditStore, key)
+					);
+				await holder.unlock();
+			}
 		});
 
 		it('an unlocked write on an immediate context with a lock keeps the clock when a lock stamp is far ahead', async function () {
