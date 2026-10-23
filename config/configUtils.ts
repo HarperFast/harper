@@ -516,6 +516,8 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 		userPaths,
 		deferStateCommit: true,
 	});
+	// A root section the template omitted but an arg or env layer introduced still needs its sibling defaults
+	if (baseConfigPath) backfillMissingDefaults(configDoc, defaultDoc);
 
 	return { configDoc, commitEnvConfigState };
 }

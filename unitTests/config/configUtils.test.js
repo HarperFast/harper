@@ -2227,6 +2227,31 @@ describe('Test configUtils module', () => {
 			}
 		});
 
+		it('backfills defaults under an optional root section that an install arg or env layer introduces', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-introduced-section.yaml');
+			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\n', 'utf8');
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ mqtt: { network: { port: 1884 } } });
+
+			try {
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{ ROOTPATH: HDB_ROOT, AUTHENTICATION_AUTHORIZELOCAL: true },
+						hdbConfigTemplatePath
+					)
+				);
+
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				expect(configJson.authentication.authorizeLocal).to.equal(true);
+				expect(configJson.authentication.cacheTTL).to.equal(30000);
+				expect(configJson.mqtt.network.port).to.equal(1884);
+				expect(configJson.mqtt.network.securePort).to.equal(8883);
+				expect(configJson).to.not.have.property('applications');
+			} finally {
+				delete process.env.HARPER_SET_CONFIG;
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
 		it('expands numeric threads: 4 shorthand in HDB_CONFIG when CLI/env THREADS_COUNT or THREADS_DEBUG is passed without HARPER_SET_CONFIG', () => {
 			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-threads.yaml');
 			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nhttp:\n  mtls: false\nstorage:\n  engine: lmdb\n', 'utf8');
