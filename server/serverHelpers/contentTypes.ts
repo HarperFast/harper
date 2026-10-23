@@ -736,8 +736,15 @@ function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 }
 
 export function discardSerializedStream(stream) {
+	if (typeof stream?.then === 'function') {
+		Promise.resolve(stream).then(discardSerializedStream, () => {});
+		return;
+	}
 	stream?.[streamStartup]?.cancel?.();
+	// Nothing else will ever listen to a discarded stream, so its teardown error must not go uncaught.
+	if (typeof stream?.on === 'function') stream.on('error', () => {});
 	stream?.destroy?.();
+	if (typeof stream?.cancel === 'function') Promise.resolve(stream.cancel()).catch(() => {});
 }
 
 export function waitForStreamStartup(stream) {
