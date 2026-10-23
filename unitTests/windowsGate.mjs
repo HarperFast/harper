@@ -52,6 +52,7 @@ const GROUPS = [
 	'unitTests/utility/**/*test.*js',
 	'unitTests/validation/**/*test.*js',
 	// Individually verified files from directories not yet covered wholesale.
+	'unitTests/dataLayer/archiveExtraction.test.js',
 	'unitTests/dataLayer/diskLedger.test.js',
 	'unitTests/dataLayer/restoreChild.test.js',
 	'unitTests/dataLayer/restoreMarker.test.js',

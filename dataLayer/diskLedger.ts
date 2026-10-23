@@ -113,10 +113,11 @@ export class DiskLedger {
 		return bytes;
 	}
 
-	/** Charge a directory: one allocation block and one inode. */
-	async debitDirectory(path: string): Promise<void> {
+	/** Charge a directory: one allocation block and one inode. Returns the bytes charged. */
+	async debitDirectory(path: string): Promise<number> {
 		const { budget, bytes } = await this.#admit(path, 1, (bsize) => bsize);
 		this.#record(budget, bytes, 1);
+		return bytes;
 	}
 
 	/**

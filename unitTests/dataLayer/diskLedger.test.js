@@ -71,7 +71,7 @@ describe('DiskLedger', function () {
 	it('charges a directory one block and one inode', async function () {
 		const volume = fakeVolume({ bsize: 4096 });
 		const { ledger } = ledgerFor(volume);
-		await ledger.debitDirectory('/staging/dir');
+		assert.strictEqual(await ledger.debitDirectory('/staging/dir'), 4096);
 		const remaining = await ledger.remaining('/staging');
 		assert.strictEqual(remaining.bytes, 10_000_000 - 4096);
 		assert.strictEqual(remaining.inodes, 1_000_000 - 1);
