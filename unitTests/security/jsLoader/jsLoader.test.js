@@ -725,10 +725,30 @@ describe('native addon delegation', () => {
 for (const mode of ['vm-current-context', 'vm']) {
 	describe(`CommonJS require (${mode})`, () => {
 		let runtimeRoot;
-		const loaderScope = (options = {}) => ({ mode, runtimeRoot, allowedPath: runtimeRoot, resources: {}, ...options });
+		let loadedModules;
+		let nativeRuntimeMarked;
+		const loaderScope = (options = {}) => ({
+			mode,
+			runtimeRoot,
+			allowedPath: runtimeRoot,
+			resources: {},
+			recordLoadedModule: (url, source) => loadedModules.set(url, source.toString()),
+			markNativeRuntime: () => (nativeRuntimeMarked = true),
+			...options,
+		});
+		const writePackage = (name, packageJson = {}) => {
+			const packageRoot = join(runtimeRoot, 'node_modules', name);
+			mkdirSync(packageRoot, { recursive: true });
+			writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name, main: 'index.js', ...packageJson }));
+			writeFileSync(join(packageRoot, 'index.js'), 'module.exports = { marker: {} };\n');
+			return join(packageRoot, 'index.js');
+		};
+		const loadedUrl = (path) => pathToFileURL(path).toString();
 
 		beforeEach(() => {
 			runtimeRoot = mkdtempSync(join(realpathSync(tmpdir()), 'harper-js-loader-cjs-'));
+			loadedModules = new Map();
+			nativeRuntimeMarked = false;
 		});
 		afterEach(() => rmSync(runtimeRoot, { recursive: true, force: true }));
 
@@ -738,6 +758,74 @@ for (const mode of ['vm-current-context', 'vm']) {
 			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
 			expect(result.filename).to.equal(join(runtimeRoot, 'paths.cjs'));
 			expect(result.dirname).to.equal(runtimeRoot);
+		});
+
+		it('strips TypeScript types from a required .ts file and records its source as read', async () => {
+			const typedSource = "interface Shape { value: string }\nconst shape: Shape = { value: 'stripped' };\nmodule.exports = shape;\n";
+			writeFileSync(join(runtimeRoot, 'typed.ts'), typedSource);
+			writeFileSync(join(runtimeRoot, 'entry.cjs'), "module.exports = require('./typed.ts');\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.value).to.equal('stripped');
+			expect(loadedModules.get(loadedUrl(join(runtimeRoot, 'typed.ts')))).to.equal(typedSource);
+		});
+
+		it('still strips TypeScript types from an imported ESM .ts file', async () => {
+			writeFileSync(join(runtimeRoot, 'typed.ts'), "export const value: string = 'stripped';\n");
+			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from './typed.ts';\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope());
+			expect(result.value).to.equal('stripped');
+		});
+
+		it('requires a dependency natively under dependencyLoader: native, as import() does', async () => {
+			const probePath = writePackage('native-probe');
+			writeFileSync(join(runtimeRoot, 'local.cjs'), 'module.exports = {};\n');
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.viaRequire = require('native-probe');\n" +
+					"exports.viaImport = () => import('native-probe');\n" +
+					"exports.local = require('./local.cjs');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.viaRequire).to.equal(require(probePath));
+			expect((await result.viaImport()).default).to.equal(result.viaRequire);
+			expect(loadedModules.has(loadedUrl(join(runtimeRoot, 'local.cjs')))).to.equal(true);
+			expect(nativeRuntimeMarked).to.equal(false);
+		});
+
+		it('routes required dependencies by whether they depend on harper under dependencyLoader: auto', async () => {
+			const plainPath = writePackage('plain-probe');
+			const harperDependentPath = writePackage('@scoped/harper-probe', { dependencies: { harper: '*' } });
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.plain = require('plain-probe');\nexports.harperDependent = require('@scoped/harper-probe');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.plain).to.equal(require(plainPath));
+			expect(loadedModules.has(loadedUrl(plainPath))).to.equal(false);
+			expect(loadedModules.has(loadedUrl(harperDependentPath))).to.equal(true);
+		});
+
+		it('keeps required dependencies in the application loader under dependencyLoader: app', async () => {
+			const probePath = writePackage('app-probe');
+			writeFileSync(join(runtimeRoot, 'entry.cjs'), "module.exports = require('app-probe');\n");
+			await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'app' }));
+			expect(loadedModules.has(loadedUrl(probePath))).to.equal(true);
+		});
+
+		it('marks the runtime opaque before natively evaluating an application-local module', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'package.json'),
+				JSON.stringify({ name: 'native-local', imports: { '#helper': './helper.cjs' } })
+			);
+			writeFileSync(join(runtimeRoot, 'helper.cjs'), "throw new Error('helper failed');\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"try { require('#helper'); } catch (error) { exports.failure = error.message; }\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.failure).to.equal('helper failed');
+			expect(nativeRuntimeMarked).to.equal(true);
+			expect(loadedModules.has(loadedUrl(join(runtimeRoot, 'helper.cjs')))).to.equal(false);
 		});
 	});
 }
