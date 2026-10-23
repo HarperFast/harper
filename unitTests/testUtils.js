@@ -206,7 +206,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  *
  * It deliberately does NOT remove the per-PID root. Removing the root removes the files of every
  * database the process has open, not just the tables passed in — `system`, `dev`, and whatever
- * else the suite touched, each still held dozens of handles deep (`registryStatus()` reports
+ * else the suite touched, each still held dozens of handles deep (`getRegistryStatus()` reports
  * refCounts in the tens after this runs). Those stores go on writing into unlinked files and then
  * fail their flush whenever they finally close, which rocksdb-js reports as "Failed to flush
  * database during close": an uncaught throw out of the exit listener, attributed to no test.

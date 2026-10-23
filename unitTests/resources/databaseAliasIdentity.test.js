@@ -8,7 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
-const { registryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { getRegistryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	abandonDatabaseDrop,
 	abandonRestore,
@@ -239,7 +239,7 @@ describe('shared root-store database identity', function () {
 		loadedAliases = ['physicalalias', 'configuredalias'];
 		const { path } = databases.physicalalias[tableName].primaryStore.rootStore;
 		assert.strictEqual(databases.configuredalias[tableName].primaryStore.rootStore.path, path);
-		const handlesOn = () => registryStatus().find((db) => db.path === path)?.refCount ?? 0;
+		const handlesOn = () => getRegistryStatus().find((db) => db.path === path)?.refCount ?? 0;
 		assert(handlesOn() > 0);
 
 		assert.strictEqual(await closeDatabase('physicalalias'), true);
@@ -293,7 +293,7 @@ describe('shared root-store database identity', function () {
 
 		try {
 			await prepareDatabaseDrop('physicalalias', preparationId, 0, rootPaths);
-			assert.strictEqual(registryStatus().find((entry) => entry.path === path)?.refCount ?? 0, 0);
+			assert.strictEqual(getRegistryStatus().find((entry) => entry.path === path)?.refCount ?? 0, 0);
 			for (const name of databaseNames) {
 				assert.throws(
 					() => database({ database: name }),
@@ -468,7 +468,7 @@ describe('shared root-store database identity', function () {
 		});
 
 		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'physicalalias' });
-		assert.strictEqual(registryStatus().find((database) => database.path === path)?.refCount ?? 0, 0);
+		assert.strictEqual(getRegistryStatus().find((database) => database.path === path)?.refCount ?? 0, 0);
 		const localDatabases = getDatabases();
 		assert.strictEqual(localDatabases.physicalalias, undefined);
 		assert.strictEqual(localDatabases.configuredalias, undefined);

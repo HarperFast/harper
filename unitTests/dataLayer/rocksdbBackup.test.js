@@ -16,7 +16,7 @@ const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const { extract } = require('tar-stream');
-const { RocksDatabase, fileLockRelease, registryStatus, tryFileLock } =
+const { RocksDatabase, fileLockRelease, getRegistryStatus, tryFileLock } =
 	require('../rocksdbBindings.mts').rocksdbBindings();
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const {
@@ -506,7 +506,7 @@ describe('rocksdbBackup', function () {
 						repositoryLocked: token === 0,
 						claimed: restoreLockHeldExclusively(verifiedDir()),
 						marked: restoreMarkerPresent(verifiedDir()),
-						open: registryStatus().some((entry) => entry.path === verifiedDir() && entry.refCount > 0),
+						open: getRegistryStatus().some((entry) => entry.path === verifiedDir() && entry.refCount > 0),
 					});
 					return realVerify.apply(backups, args);
 				};

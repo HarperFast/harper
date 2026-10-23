@@ -9,7 +9,7 @@ const { setRegistryStatusForTests } = require('#src/resources/longLivedTransacti
 const harperLogger = require('#js/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
 const { setTimeout: delay } = require('node:timers/promises');
-const { registryStatus, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { constants } = require('../rocksdbBindings.mts').rocksdbBindings();
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 
 // rocksdb-js parks a coordinated-retry commit on a conflicting write intent and returns control
@@ -167,7 +167,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			({ outcome, error } = await outcomeOf(writePastBudget('retry-now', singleStoreWrite)));
 		} finally {
 			harperLogger.error = originalError;
-			setRegistryStatusForTests(registryStatus);
+			setRegistryStatusForTests();
 		}
 		assert.strictEqual(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
 		assert.strictEqual(error.statusCode, 503);

@@ -22,7 +22,7 @@ const {
 const { setTimeout: delay } = require('node:timers/promises');
 const { PassThrough } = require('node:stream');
 const { getEventListeners } = require('node:events');
-const { RocksDatabase, registryStatus, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { RocksDatabase, getRegistryStatus, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { RETRY_NOW_VALUE } = constants;
 const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -606,7 +606,7 @@ describe('Write txn timeout', () => {
 			if (isLMDB) this.skip();
 			const store = IndexedResource.primaryStore;
 			const rootStore = store.rootStore;
-			const liveTxns = () => registryStatus().reduce((total, db) => total + db.transactions, 0);
+			const liveTxns = () => getRegistryStatus().reduce((total, db) => total + db.transactions, 0);
 			const snapshots = () => rootStore.getDBIntProperty('rocksdb.num-snapshots');
 
 			const baselineTxns = liveTxns();

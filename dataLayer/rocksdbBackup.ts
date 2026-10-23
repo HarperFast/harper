@@ -10,7 +10,7 @@ import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
-import { RocksDatabase, backups, registryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
+import { RocksDatabase, backups, getRegistryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
 import { stampDatabaseDirectory } from '../resources/auditStore.ts';
 import {
@@ -801,7 +801,7 @@ async function verifyDatabaseClosed(databaseDir: string, databaseName: string): 
 	const targetPath = resolve(databaseDir);
 	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
 	for (;;) {
-		const stillOpen = registryStatus().some(
+		const stillOpen = getRegistryStatus().some(
 			(instance) => resolve(instance.path) === targetPath && instance.refCount > 0
 		);
 		if (!stillOpen) return;

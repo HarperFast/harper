@@ -7,7 +7,7 @@ import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { copyTree } from '../dataLayer/blobBackup.ts';
 import { getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
-import { registryStatus, type RocksDatabase } from '@harperfast/rocksdb-js';
+import { getRegistryStatus, type RocksDatabase } from '@harperfast/rocksdb-js';
 import {
 	BRANCH_REMOVING_SUFFIX,
 	BRANCH_ROOT_DIR,
@@ -593,7 +593,7 @@ function branchReferenceCount(branchPath: string): number {
 		throw error;
 	}
 	return (
-		registryStatus().find((entry: any) => entry.path === resolved || canonicalOrSelf(entry.path) === resolved)
+		getRegistryStatus().find((entry: any) => entry.path === resolved || canonicalOrSelf(entry.path) === resolved)
 			?.refCount ?? 0
 	);
 }

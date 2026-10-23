@@ -296,11 +296,11 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
 	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
-	const { registryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
+	const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 	// the real observable for a released handle: rocksdb-js's registry is process-global and its
 	// refCount only drops to zero once every column family opened under a path has been closed
-	const refCountFor = (dbPath) => registryStatus().find((entry) => entry.path === dbPath)?.refCount ?? 0;
+	const refCountFor = (dbPath) => getRegistryStatus().find((entry) => entry.path === dbPath)?.refCount ?? 0;
 
 	let checkpointDir;
 	let scratchRoot;
