@@ -17,6 +17,7 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 
 	function replicatedTable(name) {
 		const pending = [];
+		let lastMarker = 0;
 		let wake;
 		const T = table({
 			table: name,
@@ -43,7 +44,7 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 			T,
 			origin,
 			async apply(...events) {
-				const markerKey = Date.now();
+				const markerKey = (lastMarker = Math.max(Date.now(), lastMarker + 1));
 				pending.push(...events, {
 					type: 'put',
 					id: 'marker',
@@ -134,29 +135,31 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		assert.equal((await T.getHistoryOfRecord('r')).length, 1, 'a distinct write is applied and logged');
 	});
 
-	it('applies a put that follows a same-key publish in its source transaction', async function () {
-		if (isLMDB) return this.skip();
-		const { T, apply, origin } = replicatedTable('PublishThenPut');
-		const before = Date.now() - 60000;
-		await apply({
-			type: 'put',
-			id: 'r',
-			value: { id: 'r', name: 'old' },
-			timestamp: before,
-			version: before,
-			nodeId: origin,
+	for (const prior of ['message', 'relocate']) {
+		it(`applies a put that follows a same-key ${prior} in its source transaction`, async function () {
+			if (isLMDB) return this.skip();
+			const { T, apply, origin } = replicatedTable(`${prior}ThenPut`);
+			const before = Date.now() - 60000;
+			await apply({
+				type: 'put',
+				id: 'r',
+				value: { id: 'r', name: 'old' },
+				timestamp: before,
+				version: before,
+				nodeId: origin,
+			});
+			const version = before + 1000;
+			await apply({
+				type: 'transaction',
+				timestamp: version,
+				writes: [
+					{ type: prior, id: 'r', value: { id: 'r', name: 'published' }, nodeId: origin, version },
+					{ type: 'put', id: 'r', value: { id: 'r', name: 'new' }, nodeId: origin, version },
+				],
+			});
+			assert.equal((await T.get('r')).name, 'new');
 		});
-		const version = before + 1000;
-		await apply({
-			type: 'transaction',
-			timestamp: version,
-			writes: [
-				{ type: 'message', id: 'r', value: { id: 'r', name: 'published' }, nodeId: origin, version },
-				{ type: 'put', id: 'r', value: { id: 'r', name: 'new' }, nodeId: origin, version },
-			],
-		});
-		assert.equal((await T.get('r')).name, 'new');
-	});
+	}
 
 	it('skips every write of a re-delivered transaction that writes one key twice', async function () {
 		if (isLMDB) return this.skip();
