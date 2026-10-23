@@ -82,6 +82,20 @@ describe("following a rolling deploy's record (harper#3058)", () => {
 		assert.strictEqual(summarizeRollout(outcome).status, 'timed_out');
 	});
 
+	it("keeps waiting through a lagging node's earlier status, which is no ending", async () => {
+		const outcome = await awaitRollout(
+			ID,
+			records(
+				{ status: 'restarting', peer_results: [peer('a')] },
+				{ status: 'rolling_out', peer_results: [peer('a')] },
+				{ deployment_id: ID, status: 'success', peer_results: [peer('a', { activated: true })] }
+			),
+			{ ...fast, report }
+		);
+		assert.strictEqual(outcome.failure, undefined);
+		assert.strictEqual(outcome.record.status, 'success');
+	});
+
 	it('stops at once on a refusal, which no retry fixes', async () => {
 		const refusal = Object.assign(new Error('get_deployment answered 403'), { statusCode: 403 });
 		const outcome = await awaitRollout(ID, records(refusal), { ...fast, report, timeoutMs: 60_000 });

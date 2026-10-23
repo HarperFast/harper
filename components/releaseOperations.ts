@@ -33,12 +33,20 @@ export async function handleListReleases(
 	if (project !== undefined && (typeof project !== 'string' || !/^[^./\\][^/\\]*$/.test(project))) {
 		throw new ClientError(`'project' must be a component name`);
 	}
-	// Asked of the other nodes first, so they read while this one does.
+	// Asked of the other nodes first, so they read while this one does. Settled into a value at once, so a rejection
+	// that lands during the local read is never an unhandled one.
 	const whenReplicated =
-		req.replicated === true ? server.replication.replicateOperation({ ...req, replicated: true }) : undefined;
+		req.replicated === true
+			? server.replication.replicateOperation({ ...req, replicated: true }).then(
+					(response) => ({ response }),
+					(error) => ({ error })
+				)
+			: undefined;
 	const local: NodeReleases = { node: getThisNodeName(), components: await releasesOnThisNode(project) };
 	if (!whenReplicated) return local;
-	const response: any = await whenReplicated;
+	const settled: { response?: any; error?: unknown } = await whenReplicated;
+	if ('error' in settled) throw settled.error;
+	const { response } = settled;
 	const nodes = [local];
 	for (const peer of response?.replicated ?? []) {
 		if (peer?.status === 'failed') {

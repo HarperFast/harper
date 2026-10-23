@@ -7,6 +7,8 @@
 // Each node's turn is a worker restart with its canary's decision, which the server bounds by its restart ceiling.
 export const ROLLOUT_WAIT_PER_NODE_MS = 10 * 60 * 1000;
 
+const ENDED_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
+
 export interface RolloutRecord {
 	deployment_id?: string;
 	status?: string;
@@ -83,7 +85,8 @@ export async function awaitRollout(
 					: `  ${peer.node}: did not take the release: ${error ?? 'unknown error'}`
 			);
 		}
-		if (record && record.status !== 'rolling_out') return { record, timedOut: false, failure: failureOf(record) };
+		// Only an ending ends the wait: a node whose copy of the row lags still shows the origin's earlier status.
+		if (record && ENDED_STATUSES.has(record.status)) return { record, timedOut: false, failure: failureOf(record) };
 		// A first read that failed knew no nodes; the bound grows once a read says how many there are.
 		deadline = Math.max(deadline, deadlineFor(record));
 		const remaining = deadline - Date.now();

@@ -4,7 +4,7 @@
 // itself, so a reader can tell the two apart.
 
 /** The identity token claims an attested source carries, in GitHub's names; another issuer supplies what it has. */
-export const SOURCE_FIELDS = [
+const SOURCE_FIELDS = [
 	'repository',
 	'sha',
 	'ref',
@@ -40,7 +40,7 @@ export function attestedSource(policyId: string, claims: Record<string, unknown>
 }
 
 /** A signed claim read back off a verified token; anything else it might hold is dropped. */
-export function readAttestedSource(claim: unknown): DeploymentSource | undefined {
+function readAttestedSource(claim: unknown): DeploymentSource | undefined {
 	if (!claim || typeof claim !== 'object' || (claim as any).via !== 'oidc' || typeof (claim as any).policy !== 'string')
 		return undefined;
 	return attestedSource((claim as any).policy, claim as Record<string, unknown>);

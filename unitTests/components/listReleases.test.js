@@ -127,6 +127,21 @@ describe('list_releases (harper#3059)', () => {
 		);
 	});
 
+	it('raises a replication that fails outright, once the local read is done', async () => {
+		previousReplicate = server.replication.replicateOperation;
+		server.replication.replicateOperation = () => Promise.reject(new Error('Replication not implemented.'));
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			await assert.rejects(handleListReleases({ project: 'web', replicated: true }), /Replication not implemented/);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
 	it('refuses a project that is not a component name', async () => {
 		await assert.rejects(handleListReleases({ project: '../etc' }), /must be a component name/);
 	});
