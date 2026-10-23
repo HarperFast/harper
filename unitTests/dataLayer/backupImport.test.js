@@ -685,19 +685,13 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		it('at startup removes every area, once per process', function () {
-			const modulePath = require.resolve('#src/dataLayer/backupImport');
-			const cached = require.cache[modulePath];
-			delete require.cache[modulePath];
-			try {
-				const fresh = require('#src/dataLayer/backupImport');
-				fresh.sweepImportStagingAtStartup();
-				assert.deepStrictEqual(stagingEntries(DB), []);
-				area('later');
-				fresh.sweepImportStagingAtStartup();
-				assert.deepStrictEqual(stagingEntries(DB), ['later'], 'a later call is a no-op');
-			} finally {
-				require.cache[modulePath] = cached;
-			}
+			const backupImport = require('#src/dataLayer/backupImport');
+			backupImport.resetImportStagingSweepForTesting();
+			backupImport.sweepImportStagingAtStartup();
+			assert.deepStrictEqual(stagingEntries(DB), []);
+			area('later');
+			backupImport.sweepImportStagingAtStartup();
+			assert.deepStrictEqual(stagingEntries(DB), ['later'], 'a later call is a no-op');
 		});
 	});
 });
@@ -815,20 +809,14 @@ describe('import_backup operation logging', function () {
 		const harperLogger = require('#src/utility/logging/harper_logger');
 		const jobs = require('#src/server/jobs/jobs');
 		const jobRunner = require('#src/server/jobs/jobRunner');
-		const modulePath = require.resolve('#src/server/serverHelpers/serverUtilities');
 		let restoreLogConfig;
 		let originalLogLevel;
-		let originalCacheEntry;
-		let fresh;
 		let sandbox;
 
 		before(function () {
 			restoreLogConfig = pinLogConfig({ level: 'info' });
 			originalLogLevel = harperLogger.logLevel;
 			harperLogger.logLevel = 'info';
-			originalCacheEntry = require.cache[modulePath];
-			delete require.cache[modulePath];
-			fresh = require('#src/server/serverHelpers/serverUtilities');
 			sandbox = sinon.createSandbox();
 		});
 
@@ -836,7 +824,6 @@ describe('import_backup operation logging', function () {
 			sandbox.restore();
 			harperLogger.logLevel = originalLogLevel;
 			restoreLogConfig?.();
-			require.cache[modulePath] = originalCacheEntry;
 		});
 
 		it('logs the job id and type, not the request that carries a presigned URL', async function () {
@@ -851,7 +838,9 @@ describe('import_backup operation logging', function () {
 			const logPath = harperLogger.getLogFilePath();
 			const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
 
-			assert.strictEqual((await fresh.executeJob(request)).job_id, marker);
+			// the loaded module, not a fresh copy: re-requiring it rebinds server.operation and
+			// server.registerOperation to the copy for every later test
+			assert.strictEqual((await serverUtilities.executeJob(request)).job_id, marker);
 
 			const written = await waitFor(
 				() => {

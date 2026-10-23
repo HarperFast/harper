@@ -339,6 +339,10 @@ export function sweepExitedThreadStaging(exitedThreadId: number): number {
 
 let startupSweepRan = false;
 
+export function resetImportStagingSweepForTesting(): void {
+	startupSweepRan = false;
+}
+
 /** Before anything serves: every import job of an earlier process is dead, so none of its staging is owned. */
 export function sweepImportStagingAtStartup(): void {
 	if (startupSweepRan) return;
