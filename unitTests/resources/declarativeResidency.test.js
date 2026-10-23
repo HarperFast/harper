@@ -1,6 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { setupTestDBPath, ensureSystemTables } = require('../testUtils');
+const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { databases, table } = require('#src/resources/databases');
 const { server } = require('#src/server/Server');
@@ -23,9 +23,8 @@ const { transaction } = require('#src/resources/transaction');
 describe('Declarative residency', function () {
 	this.timeout(20_000);
 	let oldShards, oldConfiguredShards, oldShard;
-	before(async () => {
+	before(() => {
 		setupTestDBPath();
-		await ensureSystemTables();
 		oldShards = server.shards;
 		oldConfiguredShards = env.get('replication_shards');
 		oldShard = env.get('replication_shard');
