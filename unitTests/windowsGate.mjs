@@ -55,6 +55,7 @@ const GROUPS = [
 	'unitTests/dataLayer/archiveExtraction.test.js',
 	'unitTests/dataLayer/diskLedger.test.js',
 	'unitTests/dataLayer/restoreChild.test.js',
+	'unitTests/dataLayer/restoreIntent.test.js',
 	'unitTests/dataLayer/restoreMarker.test.js',
 	'unitTests/dataLayer/restoreReceipt.test.js',
 	'unitTests/resources/blob.test.js',

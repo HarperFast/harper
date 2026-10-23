@@ -185,6 +185,8 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					}
 					if (existing.receipt.route === 'on_restart') superseded = existing.receipt;
 				}
+				// a restore that did not finish, or no database at all, leaves no generation to keep
+				const nothingToRetain = restoreMarkerPresent(databaseDir) || !existsSync(join(databaseDir, 'CURRENT'));
 				pinBackup(
 					backupDir,
 					restorePinId(databaseDir),
@@ -204,7 +206,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 						backup_id: selected.backupId,
 						job_id: request.jobId,
 						requested_by: request.requestedBy,
-						retain_previous: superseded ? false : request.retainPrevious,
+						retain_previous: superseded || nothingToRetain ? false : request.retainPrevious,
 						superseded_from: superseded?.operation_id,
 						pre_restore_backup_id: superseded?.pre_restore_backup_id,
 						pre_restore_pin_id: superseded?.pre_restore_pin_id,
@@ -378,6 +380,8 @@ export async function recoverRestoresAtStartup(): Promise<Set<string>> {
 		} catch (error) {
 			logger.error(`Could not recover the restore of '${receipt.database}'`, error);
 			if (receipt.job_id && receipt.route === 'on_restart') owned.add(receipt.job_id);
+			// a failure after its commit may already have published; rescanning a still-blocked name is harmless
+			published = true;
 		}
 	}
 	if (published) resetDatabases();
@@ -445,6 +449,7 @@ async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 	const lock = acquireRestoreLock(found.database_path);
 	lock.source = restoreSourceId(found.backup_dir);
 	let receipt = writeRestoreReceipt(lock, { ...found, attempts: found.attempts + 1 });
+	let committed = false;
 	try {
 		const peers = listReplicationPeers();
 		if (peers.length > 0) {
@@ -489,10 +494,19 @@ async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 			}
 		);
 		receipt = writeRestoreReceipt(lock, { ...receipt, state: 'committed', evidence: { ...evidence } });
+		committed = true;
 		await finishCommittedRestore(lock, receipt);
 		logger.notify?.(`Restored database '${receipt.database}' from backup ${receipt.backup_id} at startup`);
 		return true;
 	} catch (error: any) {
+		// Past the commit only bookkeeping failed, which the next startup finishes: counted as an attempt, it
+		// could turn a published restore terminal and fail its job.
+		if (committed) {
+			throw new Error(
+				`Restored database '${receipt.database}' from backup ${receipt.backup_id}, but could not finish its record; the next startup finishes it`,
+				{ cause: error }
+			);
+		}
 		await failAttempt(lock, receipt, error?.message ?? String(error), receipt.attempts >= receipt.max_attempts);
 		return false;
 	} finally {
