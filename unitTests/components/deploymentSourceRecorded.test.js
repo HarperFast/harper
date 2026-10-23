@@ -9,7 +9,8 @@ const path = require('node:path');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const env = require('#src/utility/environment/environmentManager');
+const { getConfigPath } = require('#src/config/configUtils');
+const { dropComponentDirectory } = require('#src/components/Application');
 const { CONFIG_PARAMS, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const { server } = require('#src/server/Server');
 const { databases } = require('#src/resources/databases');
@@ -25,21 +26,16 @@ describe('deploy_component records its source (harper#3061)', function () {
 	this.timeout(30_000);
 	preserveRootConfig();
 	const PROJECT = 'deployment-source-app';
-	let root;
 	let source;
-	let priorComponentsRoot;
 	let originalReplicateOperation;
 	let replicated;
 	let payload;
 
 	before(async () => {
-		root = await fs.mkdtemp(path.join(os.tmpdir(), 'deployment-source-'));
 		source = await fs.mkdtemp(path.join(os.tmpdir(), 'deployment-source-src-'));
 		await fs.writeFile(path.join(source, 'resources.js'), 'export {};\n');
 		await fs.writeFile(path.join(source, 'package.json'), JSON.stringify({ name: PROJECT, version: '1.0.0' }));
 		payload = (await packageDirectory(source, { skip_node_modules: true })).toString('base64');
-		priorComponentsRoot = env.get(CONFIG_PARAMS.COMPONENTSROOT);
-		env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, root);
 		originalReplicateOperation = server.replication.replicateOperation;
 		server.replication.replicateOperation = async (request) => {
 			replicated.push({ ...request });
@@ -50,9 +46,10 @@ describe('deploy_component records its source (harper#3061)', function () {
 	beforeEach(() => (replicated = []));
 	after(async () => {
 		server.replication.replicateOperation = originalReplicateOperation;
-		env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, priorComponentsRoot);
+		await dropComponentDirectory(path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), PROJECT), PROJECT).catch(
+			() => {}
+		);
 		resetRestartNeeded();
-		await fs.rm(root, { recursive: true, force: true });
 		await fs.rm(source, { recursive: true, force: true });
 	});
 

@@ -49,6 +49,7 @@ const {
 } = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
 const { deploymentSource } = require('./deploymentSource.ts');
+const { assertDeclaredEntryPoints } = require('./declaredEntryPoints.ts');
 const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
@@ -815,7 +816,8 @@ async function deployComponent(req) {
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 				declaredRootConfig = applicationConfig;
 			},
-			validateCandidate: async () => {
+			validateCandidate: async (candidateDirPath) => {
+				await assertDeclaredEntryPoints(req.project, candidateDirPath);
 				emit('phase', { phase: 'prepare', status: 'done' });
 			},
 			fingerprintInstall: !isActivation,
