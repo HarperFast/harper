@@ -5575,7 +5575,11 @@ export function makeTable(options): TableResourceClass {
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
 							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
-							if (auditRefIndex(additionalAuditRefs, receivedLogKey, options?.nodeId) < 0)
+							// only a commutative op applies again on re-delivery; the plain keys merged here are dropped then
+							if (
+								commutativeOpsOf(incrementalUpdateToApply) &&
+								auditRefIndex(additionalAuditRefs, receivedLogKey, options?.nodeId) < 0
+							)
 								additionalAuditRefs.push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
