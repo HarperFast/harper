@@ -741,7 +741,7 @@ export async function restoreBackup(request: any) {
 				// Block new blob saves, drain in-flight saves, and close the target across all worker threads.
 				// Each thread also rescans, and the held restore lock (later the marker) keeps it from reloading.
 				try {
-					await signalling.signalSchemaChange(restoreSchemaEvent(targetDatabase, 'close', restoreToken));
+					await signalling.signalSchemaChange(restoreSchemaEvent(targetDatabase, databaseDir, 'close', restoreToken));
 				} catch {
 					throw new BackupInProgressError(
 						`Cannot restore database '${targetDatabase}': not every worker completed the blob-save barrier before the acknowledgement deadline. Retry the restore after the stalled work has cleared.`
@@ -752,8 +752,11 @@ export async function restoreBackup(request: any) {
 				await verifyDatabaseClosed(databaseDir, targetDatabase);
 			},
 			release: (generationReplaced) =>
-				signalling.signalSchemaChange(restoreSchemaEvent(targetDatabase, 'reload', restoreToken, generationReplaced)),
-			publish: () => signalling.signalSchemaChange(restoreSchemaEvent(targetDatabase, 'reload', restoreToken)),
+				signalling.signalSchemaChange(
+					restoreSchemaEvent(targetDatabase, databaseDir, 'reload', restoreToken, generationReplaced)
+				),
+			publish: () =>
+				signalling.signalSchemaChange(restoreSchemaEvent(targetDatabase, databaseDir, 'reload', restoreToken)),
 		},
 	});
 }
@@ -804,16 +807,19 @@ export function releaseRestoreClaim(
 /**
  * `restoreToken` identifies the restore that owns the blob fence. Two restores of the same database
  * can overlap, so a worker releases the fence only for the token that established it -- see
- * `resumeBlobSavesAfterRestore`.
+ * `resumeBlobSavesForRestore`.
  */
 export function restoreSchemaEvent(
 	databaseName: string,
+	databaseDir: string,
 	restorePhase: 'close' | 'reload',
 	restoreToken: string,
 	generationReplaced = true
 ) {
 	const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName);
 	message.restorePhase = restorePhase;
+	// a thread that loaded this directory only under a sibling alias still has to close it
+	message.databaseDir = databaseDir;
 	message.restoreToken = restoreToken;
 	// Tells a worker whether the blob roots it fenced were actually replaced. A restore that failed its
 	// admission checks destroyed nothing, so that worker's queued reclamations are still valid.

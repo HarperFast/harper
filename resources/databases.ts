@@ -3378,6 +3378,41 @@ export function databaseDropPreparationTargets(databaseName: string): {
 	};
 }
 
+/** Every name this thread has loaded over one of `rootPaths`, whichever alias it was loaded under. */
+export function loadedDatabaseNamesAt(rootPaths: Iterable<string>): string[] {
+	const resolvedPaths = new Set([...rootPaths].map((path) => resolve(path)));
+	const atPath = (rootStore: any) => rootStore?.path !== undefined && resolvedPaths.has(resolve(rootStore.path));
+	return Object.keys(databases).filter(
+		(name) =>
+			atPath((definedDatabases?.get(name) as any)?.rootStore) ||
+			Object.values(databases[name]).some((table: any) => atPath(table?.primaryStore?.rootStore))
+	);
+}
+
+/**
+ * What a restore of the directory at `rootPath` must fence and close on this thread. A thread may have
+ * loaded that directory only under a sibling alias, so the names are found by path, not by the name the
+ * restore was requested under; and blob saves and reclamation are keyed by each root's own
+ * `databaseName`, so every name and root identity that closes, detached roots included, is fenced.
+ */
+export function restoreCloseTargets(
+	databaseName: string,
+	rootPath?: string
+): { databaseNames: string[]; blobDatabaseNames: string[] } {
+	const databaseNames = new Set(rootPath === undefined ? [] : loadedDatabaseNamesAt([rootPath]));
+	if (databases[databaseName]) databaseNames.add(databaseName);
+	const blobDatabaseNames = new Set([databaseName]);
+	if (rootPath !== undefined)
+		for (const rootStore of registeredRootsAt(rootPath))
+			if (rootStore.databaseName) blobDatabaseNames.add(rootStore.databaseName);
+	for (const name of databaseNames) {
+		const graph = collectDatabaseGraph(name);
+		for (const graphName of graph.databaseNames) blobDatabaseNames.add(graphName);
+		for (const rootStore of graph.rootStores) if (rootStore.databaseName) blobDatabaseNames.add(rootStore.databaseName);
+	}
+	return { databaseNames: [...databaseNames], blobDatabaseNames: [...blobDatabaseNames] };
+}
+
 export function prepareDatabaseDrop(
 	databaseName: string,
 	preparationId: string,
@@ -3391,22 +3426,7 @@ export function prepareDatabaseDrop(
 		const graph = collectDatabaseGraph(databaseName);
 		for (const rootStore of graph.rootStores) rootPaths.add(rootStore.path);
 	}
-	const names: string[] = [];
-	for (const name of Object.keys(databases)) {
-		const definedRoot = (definedDatabases?.get(name) as any)?.rootStore;
-		if (definedRoot && rootPaths.has(definedRoot.path)) {
-			names.push(name);
-			continue;
-		}
-		const tables = databases[name];
-		if (
-			Object.values(tables).some((table: any) => {
-				const rootStore = table?.primaryStore?.rootStore;
-				return rootStore && rootPaths.has(rootStore.path);
-			})
-		)
-			names.push(name);
-	}
+	const names = loadedDatabaseNamesAt(rootPaths);
 	const paths = [...rootPaths];
 	claimDatabaseDropPreparations(paths, preparationId, ownerThreadId, databaseName);
 	const task = (async () => {
@@ -3519,7 +3539,39 @@ export async function closeDatabase(
 	{ requireClosed = false }: { requireClosed?: boolean } = {}
 ): Promise<boolean> {
 	if (!databases[databaseName]) return false;
-	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
+	return closeDatabaseGraph(databaseName, collectDatabaseGraph(databaseName), requireClosed);
+}
+
+/**
+ * Close every root this thread still has registered at `rootPath` that no loaded name reaches. A rescan
+ * that finds the directory held by a restore drops its tables from the catalog, but cannot close their
+ * handles (it is synchronous), so a close by name would miss them.
+ */
+export async function closeDetachedDatabaseRoots(rootPath: string): Promise<void> {
+	const detached = new Set(
+		registeredRootsAt(rootPath).filter(
+			(rootStore) => !Object.keys(databases).some((name) => databaseUsesRootStore(name, rootStore))
+		)
+	);
+	if (detached.size === 0) return;
+	const label = [...detached][0].databaseName ?? basename(rootPath);
+	await closeDatabaseGraph(label, { databaseNames: new Set(), dbTables: {}, rootStores: detached }, false);
+}
+
+function registeredRootsAt(rootPath: string): any[] {
+	const target = resolve(rootPath);
+	const roots: any[] = [];
+	for (const envs of [rocksdbDatabaseEnvs, lmdbDatabaseEnvs] as Map<string, any>[]) {
+		for (const [path, rootStore] of envs) if (resolve(path) === target) roots.push(rootStore);
+	}
+	return roots;
+}
+
+async function closeDatabaseGraph(
+	databaseName: string,
+	{ databaseNames, dbTables, rootStores }: ReturnType<typeof collectDatabaseGraph>,
+	requireClosed: boolean
+): Promise<boolean> {
 	const releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
 	let databaseClosed = false;
 	let handleCloseStarted = false;

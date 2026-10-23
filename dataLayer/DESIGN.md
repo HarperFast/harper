@@ -134,8 +134,8 @@ Several non-obvious mechanics keep that safe:
   handle can close while a `saveBlob` file pipeline it started is still pending, because blob roots
   live outside RocksDB and streamed saves settle independently of the record write; a queued
   reclamation is worse still, being a timer that never consults the database at all. The restore
-  signal therefore has explicit `close` and `reload` phases: every worker refuses new saves for that
-  database, stops draining reclamations for it, stops any `cleanup_orphan_blobs` walk in progress
+  signal therefore has explicit `close` and `reload` phases: every worker refuses new saves under each
+  name it holds the directory by, stops draining reclamations for them, stops any `cleanup_orphan_blobs` walk in progress
   (its "nothing references this path" verdict was reached against the generation being replaced),
   awaits the saves and unlinks already dispatched -- including a save-failure cleanup's -- then
   closes the store and acknowledges. Restore signals are the one schema broadcast that includes job

@@ -19,6 +19,8 @@ import {
 	databases,
 	resetDatabases,
 	closeDatabase as _closeDatabase,
+	closeDetachedDatabaseRoots,
+	restoreCloseTargets,
 	prepareDatabaseDrop,
 	completeDatabaseDropPreparation,
 	reloadBranchAt,
@@ -26,13 +28,13 @@ import {
 } from '../../resources/databases.ts';
 import {
 	blockBlobSavesForRestore as _blockBlobSavesForRestore,
-	resumeBlobSavesAfterRestore as _resumeBlobSavesAfterRestore,
+	resumeBlobSavesForRestore as _resumeBlobSavesForRestore,
 } from '../../resources/blob.ts';
 
 const cleanLmdbMap = _cleanLmdbMap;
 const closeDatabase = _closeDatabase;
 const blockBlobSavesForRestore = _blockBlobSavesForRestore;
-const resumeBlobSavesAfterRestore = _resumeBlobSavesAfterRestore;
+const resumeBlobSavesForRestore = _resumeBlobSavesForRestore;
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*)}}
@@ -117,20 +119,31 @@ async function schemaHandler(event?: any) {
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
 		if (event.message.restorePhase === 'reload') {
 			resumeBlobSavesFor = {
-				database: event.message.schema,
 				token: event.message.restoreToken,
 				generationReplaced: event.message.generationReplaced !== false,
 			};
 		} else {
+			const { schema, databaseDir, restoreToken } = event.message;
 			// Stop and drain blob writes before releasing the handles: closing a database is not a
 			// write barrier on its own, because a save's file pipeline outlives the handle it started from.
-			await blockBlobSavesForRestore(event.message.schema, event.message.restoreToken);
-			try {
-				await closeDatabase(event.message.schema);
-			} catch (error) {
-				// Let the originator's process-wide closure check fail the restore immediately instead of
-				// withholding this worker's acknowledgement until the broadcast timeout.
-				hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+			const { blobDatabaseNames } = restoreCloseTargets(schema, databaseDir);
+			await Promise.all(blobDatabaseNames.map((name) => blockBlobSavesForRestore(name, restoreToken)));
+			// resolved again: a rescan during the drain can load another alias over the still-open root
+			for (const name of restoreCloseTargets(schema, databaseDir).databaseNames) {
+				try {
+					await closeDatabase(name);
+				} catch (error) {
+					// Let the originator's process-wide closure check fail the restore immediately instead of
+					// withholding this worker's acknowledgement until the broadcast timeout.
+					hdbLogger.error(`Could not release database '${name}' for restore`, error);
+				}
+			}
+			if (databaseDir) {
+				try {
+					await closeDetachedDatabaseRoots(databaseDir);
+				} catch (error) {
+					hdbLogger.error(`Could not release database '${schema}' for restore`, error);
+				}
 			}
 		}
 	}
@@ -138,12 +151,7 @@ async function schemaHandler(event?: any) {
 		await cleanLmdbMap(event.message);
 		await syncSchemaMetadata(event.message);
 	} finally {
-		if (resumeBlobSavesFor)
-			resumeBlobSavesAfterRestore(
-				resumeBlobSavesFor.database,
-				resumeBlobSavesFor.token,
-				resumeBlobSavesFor.generationReplaced
-			);
+		if (resumeBlobSavesFor) resumeBlobSavesForRestore(resumeBlobSavesFor.token, resumeBlobSavesFor.generationReplaced);
 	}
 	for (let listener of schemaListeners) {
 		try {

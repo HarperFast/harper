@@ -1887,7 +1887,18 @@ export function resumeBlobSavesAfterRestore(
 ): void {
 	// Only the owner may lift the fence; a superseded restore's reload arriving late does nothing.
 	if (blobRestoreFences.get(databaseName) !== restoreToken) return;
-	blobRestoreFences.delete(databaseName);
+	liftBlobRestoreFences([databaseName], generationReplaced);
+}
+
+/** Release every fence one restore holds on this thread: it fences each name in the closed alias graph. */
+export function resumeBlobSavesForRestore(restoreToken: string, generationReplaced = true): void {
+	const owned: string[] = [];
+	for (const [databaseName, token] of blobRestoreFences) if (token === restoreToken) owned.push(databaseName);
+	if (owned.length > 0) liftBlobRestoreFences(owned, generationReplaced);
+}
+
+function liftBlobRestoreFences(databaseNames: string[], generationReplaced: boolean): void {
+	for (const databaseName of databaseNames) blobRestoreFences.delete(databaseName);
 	// A drain that ran while the fence was up skipped these entries without recording a next deadline,
 	// so nothing is scheduled to come back for them. Whatever survives below needs a wakeup.
 	if (pendingReclamation.size > 0) scheduleReclamation(Date.now());
@@ -1898,7 +1909,7 @@ export function resumeBlobSavesAfterRestore(
 	// Every queued reclamation for this database belongs to the generation the restore just replaced:
 	// its file paths were condemned against records that no longer exist. Draining them now would
 	// unlink restored bytes at the same paths, so they are dropped rather than resumed.
-	discardReclamationForDatabase(databaseName);
+	discardReclamationForDatabases(new Set(databaseNames));
 }
 
 function isBlobRestoreFenced(store: any): boolean {
@@ -1926,10 +1937,10 @@ export function blobRestoreGenerationChanged(since: { database?: string; epoch: 
 	return (blobRestoreEpochs.get(since.database) ?? 0) !== since.epoch;
 }
 
-function discardReclamationForDatabase(databaseName: string): void {
+function discardReclamationForDatabases(databaseNames: Set<string>): void {
 	for (const [filePath, pending] of [...pendingReclamation]) {
 		if (pending.unlinking) continue; // already dispatched; its callback owns the entry
-		if (blobSaveDatabaseName(pending.fileInfo?.store) !== databaseName) continue;
+		if (!databaseNames.has(blobSaveDatabaseName(pending.fileInfo?.store))) continue;
 		pendingReclamation.delete(filePath);
 		settleReclamationWaiters(pending);
 	}

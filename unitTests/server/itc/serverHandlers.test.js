@@ -73,7 +73,11 @@ describe('Test hdbChildIpcHandler module', () => {
 					calls.push(`block:${databaseName}`);
 					await draining;
 				},
-				resumeBlobSavesAfterRestore: (databaseName) => calls.push(`resume:${databaseName}`),
+				resumeBlobSavesForRestore: (restoreToken) => calls.push(`resume:${restoreToken}`),
+				restoreCloseTargets: (databaseName) => ({
+					databaseNames: [databaseName],
+					blobDatabaseNames: [databaseName],
+				}),
 				closeDatabase: (databaseName) => calls.push(`close:${databaseName}`),
 				cleanLmdbMap: async () => {},
 				syncSchemaMetadata: async () => {},
@@ -91,9 +95,15 @@ describe('Test hdbChildIpcHandler module', () => {
 
 				await schema_handler({
 					type: 'schema',
-					message: { originator: 12345, operation: 'restore_backup', schema: 'orders', restorePhase: 'reload' },
+					message: {
+						originator: 12345,
+						operation: 'restore_backup',
+						schema: 'orders',
+						restorePhase: 'reload',
+						restoreToken: 'orders-restore',
+					},
 				});
-				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders']);
+				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders-restore']);
 			} finally {
 				restore();
 			}
