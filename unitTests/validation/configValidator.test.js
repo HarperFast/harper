@@ -6,7 +6,7 @@ const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
 const config_val = rewire('#js/validation/configValidator');
-const { configValidator, routesValidator } = config_val;
+const { configValidator, routesValidator, REQUIRED_ROOT_CONFIG_KEYS } = config_val;
 const path = require('path');
 const testUtils = require('../testUtils.js');
 const fs = require('fs-extra');
@@ -144,6 +144,15 @@ describe('Test configValidator module', () => {
 	const sandbox = sinon.createSandbox();
 
 	describe('Test config schema in configValidator function', () => {
+		it('REQUIRED_ROOT_CONFIG_KEYS lists exactly the root keys the schema requires', () => {
+			// rootPath is given because the schema's path defaults throw without it
+			const { error } = configValidator({ rootPath: HDB_ROOT }, true);
+			const required = error.details
+				.filter((detail) => detail.type === 'any.required' && detail.path.length === 1)
+				.map((detail) => detail.path[0]);
+			expect([...required, 'rootPath'].sort()).to.eql([...REQUIRED_ROOT_CONFIG_KEYS].sort());
+		});
+
 		it('Test itc and localStudio in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.itc.network.port = 'bad_port';
