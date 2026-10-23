@@ -33,6 +33,7 @@ const {
 	restoreMarkerPresent,
 	readRestoringMarkerSource,
 	restoreSourceId,
+	restoreChildLockPath,
 	restoreLockPath,
 	restoringMarkerPath,
 	droppingMarkerPath,
@@ -622,6 +623,15 @@ describe('restoreMarker', function () {
 			} finally {
 				completeRestore(lock);
 			}
+		});
+
+		it('releases the claim it took when the restore child lock cannot be probed', function () {
+			// a directory where only a child ever creates the lock file: probing it fails to open it
+			mkdirSync(restoreChildLockPath(dbPath), { recursive: true });
+			assert.throws(() => acquireRestoreLock(dbPath), /open failed/);
+			rmSync(restoreChildLockPath(dbPath), { recursive: true });
+
+			releaseRestoreLock(acquireRestoreLock(dbPath));
 		});
 	});
 

@@ -303,6 +303,26 @@ describeUnlessLmdb('restore child', function () {
 			assert.deepStrictEqual(await runRestoreChild('verify', verifyArgs()), { ok: true });
 		});
 
+		it('kills a child whose destroying message arrives after the run settled, and never lets it destroy', async function () {
+			const pidFile = join(tempDir, 'late-child.pid');
+			let destructions = 0;
+			// the child inherits the parent's runtime flags: this one preloads the late-messaging fixture
+			const savedExecArgv = process.execArgv;
+			process.execArgv = [...savedExecArgv, '--require', require.resolve('./fixtures/lateRestoreChild.cjs')];
+			process.env.HARPER_LATE_CHILD_PID_FILE = pidFile;
+			let pending;
+			try {
+				pending = runRestoreChild('verify', verifyArgs(), { beforeDestruction: () => destructions++ });
+			} finally {
+				process.execArgv = savedExecArgv;
+				delete process.env.HARPER_LATE_CHILD_PID_FILE;
+			}
+			await assert.rejects(pending, (error) => error.statusCode === 409);
+			const pid = Number(readFileSync(pidFile, 'utf8'));
+			await waitFor(() => !alive(pid), { timeout: CHILD_START_MS, message: `late child ${pid} was never killed` });
+			assert.strictEqual(destructions, 0, 'no marker for a child the runner had already given up on');
+		});
+
 		describe('a child stopped before its authorization arrives', function () {
 			async function stoppedAuthorizedChild(target) {
 				const receipt = writeReceipt(target);
