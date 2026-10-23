@@ -100,8 +100,8 @@ describe('Table.getRecordCount caller impact', () => {
 		const originalCount = store.estimateCount;
 		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
 		const ownedCount = Object.hasOwn(store, 'estimateCount');
-		// An underestimated base: 2,100 is enough below LIVE_ROWS (3000) that the halfway escape still
-		// fires, but the resulting upper bound undershoots the true count.
+		// A base of 2,100 keeps the 1,000-entry sample below halfway while leaving enough unsampled
+		// rows for the heuristic upper bound to undershoot the true count.
 		store.createCountEstimator = () => ({ advance() {}, estimate: () => ({ count: 2100, confidence: 0.9 }) });
 		store.estimateCount = () => ({ count: 1000, confidence: 0.9 });
 		try {
