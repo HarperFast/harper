@@ -144,10 +144,6 @@ export class DiskLedger {
 	}
 
 	/** The allocation unit of the device holding `path`. */
-	async blockSize(path: string): Promise<number> {
-		return (await this.#budgetFor(path)).bsize;
-	}
-
 	/** What is left on the device holding `path` after charges, holds and the reserve. */
 	async remaining(path: string): Promise<{ bytes: number; inodes: number; basis: StorageSpaceStats['basis'] }> {
 		const budget = await this.#budgetFor(path);

@@ -937,6 +937,49 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
+		it('releases the blob fence as a replaced generation when an online restore commits but cannot publish', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			const markerPath = restoringMarkerPath(fixture.dir);
+			const signalling = require('#src/utility/signalling');
+			const signalSchemaChange = signalling.signalSchemaChange;
+			const restoreSignals = [];
+			// restoreBackup reads it through the module object; recorded, then passed on to the real one
+			const restoreSignalling = replaceExport(signalling, 'signalSchemaChange', (message) => {
+				if (message?.restorePhase) restoreSignals.push([message.restorePhase, message.generationReplaced]);
+				return signalSchemaChange(message);
+			});
+			let marker;
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (...args) => {
+				const evidence = await runRestoreChild(...args);
+				marker = readFileSync(markerPath);
+				rmSync(markerPath);
+				mkdirSync(join(markerPath, 'occupied'), { recursive: true });
+				return evidence;
+			});
+			try {
+				await assert.rejects(
+					restoreBackup({ ...SU, database: fixture.name, backup_id: backupId }),
+					/was applied and proven but could not be published/
+				);
+			} finally {
+				restoreRunner();
+				restoreSignalling();
+			}
+
+			// the replaced generation's queued unlinks must not survive into the next restore of it
+			assert.deepStrictEqual(restoreSignals, [
+				['close', true],
+				['reload', true],
+			]);
+			assert.strictEqual(receiptOf(fixture.dir).state, 'committed');
+
+			rmSync(markerPath, { recursive: true });
+			writeFileSync(markerPath, marker);
+			await finishOutstandingRestore(fixture.dir);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+		});
+
 		it('removes its receipt before its pin when it fails before destroying anything', async function () {
 			const fixture = await seededDatabase();
 			const [backupId] = fixture.backupIds;

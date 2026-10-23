@@ -180,8 +180,7 @@ export async function importBackup(request: any): Promise<{ message: string; job
 	validateImportBackup(request);
 	const { executeJob } = await import('../server/serverHelpers/serverUtilities.ts');
 	if (!isUpload(request.payload)) {
-		// A presigned URL is a bearer credential: the job row, which get_job and every later system backup
-		// can read, keeps only its origin and path, and the full URL reaches the job thread in memory.
+		// a presigned URL is a bearer credential, and the job row outlives the job in every system backup
 		if (typeof request.url === 'string' && redactUrl(request.url) !== request.url) {
 			return executeJob({ ...request, url: redactUrl(request.url) }, { url: request.url });
 		}

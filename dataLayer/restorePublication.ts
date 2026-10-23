@@ -286,6 +286,9 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 		// The committed receipt survives either way, so the next claim or startup finishes the rest. Only a
 		// cleared marker means the restore is published; if it is still there, this restore has not been.
 		if (restoreMarkerPresent(databaseDir)) {
+			// the marker still blocks the database, so lifting the fence admits no saves; keeping it would
+			// carry the replaced generation's queued unlinks into whatever restore runs next
+			await releaseFence(request, true);
 			throw new Error(
 				`Restore of database '${targetDatabase}' was applied and proven but could not be published; it is published by the next restore_backup of it or the next restart`,
 				{ cause: error }

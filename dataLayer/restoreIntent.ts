@@ -223,7 +223,12 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 				receipt = writeRestoreReceipt(lock, planned);
 				if (superseded) {
 					const supersededPinId = superseded.source_pin_id ?? restorePinId(databaseDir);
-					if (supersededPinId !== sourcePinId) unpinBackup(backupDir, supersededPinId);
+					try {
+						if (supersededPinId !== sourcePinId) unpinBackup(backupDir, supersededPinId);
+					} catch (error) {
+						// once no receipt or marker names the database the pin lapses on its own
+						logger.warn(`Could not release the pin of superseded restore ${superseded.operation_id}`, error);
+					}
 				}
 			} finally {
 				releaseRestoreLock(lock);
