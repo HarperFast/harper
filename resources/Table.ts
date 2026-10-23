@@ -1611,8 +1611,7 @@ export function makeTable(options): TableResourceClass {
 		nodeId: number | undefined,
 		refs?: Array<{ version: number; nodeId: number }>
 	) {
-		// an unaudited record's refs are write identities, not log keys
-		if (!audit || !refs?.length) return { txnLogKey: version, nodeId };
+		if (!refs?.length) return { txnLogKey: version, nodeId };
 		const visited = new Set<string>();
 		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
 			if (!candidateRefs) return;
@@ -5550,14 +5549,15 @@ export function makeTable(options): TableResourceClass {
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
-							// Without a log, the head's own identity (a tie) and the refs folded into it are the only record
-							// of what was already applied. A head holding no record (a delete, or a publish to an absent key) keeps none.
+							// Without a log, the head's own identity (a tie) and the refs folded into it are the only record of
+							// what was already applied, and a head holding no record (a delete, or a publish to an absent key)
+							// keeps none. An earlier write of this transaction that restamped the head orders this one after it.
 							if (
-								precedesExisting === 0 ||
-								existingRecord == null ||
-								(!priorStaged &&
-									existingEntry.additionalAuditRefs &&
-									auditRefIndex(existingEntry.additionalAuditRefs, txnTime, options?.nodeId) >= 0)
+								priorWritesSkipped(write) &&
+								(precedesExisting === 0 ||
+									existingRecord == null ||
+									(existingEntry.additionalAuditRefs &&
+										auditRefIndex(existingEntry.additionalAuditRefs, receivedLogKey, options?.nodeId) >= 0))
 							) {
 								write.skipped = true;
 								return writeCommit(false);
@@ -5571,10 +5571,9 @@ export function makeTable(options): TableResourceClass {
 							// fields dropped from the update leave their pre-saved blobs unreferenced; the commit's
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
-							// keyed by txnTime, the version a re-delivery carries: there is no log key to address
 							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
-							if (auditRefIndex(additionalAuditRefs, txnTime, options?.nodeId) < 0)
-								additionalAuditRefs.push({ version: txnTime, nodeId: options?.nodeId });
+							if (auditRefIndex(additionalAuditRefs, receivedLogKey, options?.nodeId) < 0)
+								additionalAuditRefs.push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
