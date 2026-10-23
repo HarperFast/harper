@@ -42,6 +42,7 @@ const {
 	scanBlockedDatabaseDrops,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
+const { newRestoreReceipt, restoreReceiptPath, writeRestoreReceipt } = require('#src/dataLayer/restoreReceipt');
 
 describe('restoreMarker', function () {
 	let tempDir;
@@ -742,6 +743,57 @@ describe('restoreMarker', function () {
 			const retry = beginDatabaseDrop(dbPath, 'catalog');
 			cancelDatabaseDrop(retry);
 			assert.ok(existsSync(droppingMarkerPath(dbPath)));
+			completeDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+		});
+
+		// drop_database honours a receipt as it does a marker: a restart restore that has not run yet
+		// would otherwise run against a dropped database, or bring it back
+		function recordReceipt(state) {
+			const lock = acquireRestoreLock(dbPath);
+			try {
+				writeRestoreReceipt(lock, {
+					...newRestoreReceipt({
+						route: 'on_restart',
+						state,
+						database: 'catalog',
+						database_path: dbPath,
+						source_database: 'catalog',
+						backup_dir: join(tempDir, 'backups'),
+						backup_id: 1,
+						options: {},
+					}),
+				});
+			} finally {
+				releaseRestoreLock(lock);
+			}
+		}
+
+		for (const state of ['pending', 'applying', 'terminal']) {
+			it(`refuses while a restore receipt in state ${state} reserves the database, writing no drop marker`, function () {
+				mkdirSync(dbPath);
+				recordReceipt(state);
+				assert.throws(
+					() => beginDatabaseDrop(dbPath, 'catalog'),
+					(error) => error.statusCode === 409 && /reserved by a restore that has not finished/.test(error.message)
+				);
+				assert.ok(!existsSync(droppingMarkerPath(dbPath)));
+				assert.strictEqual(restoreLockHeldExclusively(dbPath), false, 'the refusal releases the lock');
+			});
+		}
+
+		it('refuses while an unreadable receipt might reserve the database', function () {
+			mkdirSync(dbPath);
+			recordReceipt('pending');
+			writeFileSync(restoreReceiptPath(dbPath), '{"version":1,"state":');
+			assert.throws(
+				() => beginDatabaseDrop(dbPath, 'catalog'),
+				(error) => error.statusCode === 409 && /reserved by a restore/.test(error.message)
+			);
+		});
+
+		it('drops a database whose restore receipt is committed, which reserves nothing', function () {
+			mkdirSync(dbPath);
+			recordReceipt('committed');
 			completeDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
 		});
 
