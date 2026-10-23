@@ -946,14 +946,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	messageIdInUse(messageId: number): boolean {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
-	addReceived(state: TopicState, identity: DeliveryIdentity, replacesResend = false) {
+	addReceived(state: TopicState, identity: DeliveryIdentity) {
 		const [key, ordinal] = identity;
 		const runs = (state.receivedRuns ??= new Map());
 		let run = runs.get(key) ?? 0;
 		if (ordinal < run) return;
 		if (ordinal === run) {
 			if (run === 0) {
-				if (!replacesResend && this.receivedCount >= RECEIVED_LIMIT) return;
+				if (this.receivedCount >= RECEIVED_LIMIT) return;
 				this.receivedCount++;
 			}
 			run++;
@@ -966,7 +966,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		const slot = slotOf(key, ordinal);
 		if (!state.received?.has(slot)) {
-			if (!replacesResend && this.receivedCount >= RECEIVED_LIMIT) return;
+			if (this.receivedCount >= RECEIVED_LIMIT) return;
 			this.receivedCount++;
 		}
 		(state.received ??= new Map()).set(slot, identity);
@@ -1101,8 +1101,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.compactReceived(state);
 			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
 			if (identity) {
-				// the record already keeps it as a resend entry, so its receipt adds nothing to the record
-				this.addReceived(state, identity, Boolean(held));
+				this.addReceived(state, identity);
 				this.compactReceived(state);
 			}
 		}
