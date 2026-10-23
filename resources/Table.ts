@@ -5232,7 +5232,12 @@ export function makeTable(options): TableResourceClass {
 									}
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
 									if (!auditRecord) {
-										if (!isAdditionalAuditRef || !visitedAuditVersions?.has(auditIdentity)) auditHistoryMissing = true;
+										// A pruned log key can alias a collected record version.
+										const receiptAlreadyCollected =
+											isAdditionalAuditRef &&
+											visitedAuditVersions?.has(auditIdentity) &&
+											getAuditFloor(auditStore) <= txnTime;
+										if (!receiptAlreadyCollected) auditHistoryMissing = true;
 										break;
 									}
 									isAdditionalAuditRef = false;
@@ -5377,7 +5382,7 @@ export function makeTable(options): TableResourceClass {
 								const collectedKeys = isRocksDB ? null : new Set<number>();
 								for (let index = 0; index < succeedingUpdates.length; index++) {
 									const update = succeedingUpdates[index];
-									if (isRocksDB && update.endTxn !== false) {
+									if (isRocksDB && update.endTxn === true) {
 										frameUpdates?.push(update);
 										continue;
 									}

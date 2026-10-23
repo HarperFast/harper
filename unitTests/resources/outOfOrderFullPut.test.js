@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { existsSync } = require('node:fs');
 const { waitFor } = require('../waitFor');
 const { certifyOriginFloor, publishOriginFloor } = require('#src/resources/originClosedFloor');
-const { persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { persistOriginClosedFloor, raiseAuditFloor } = require('#src/resources/auditStore');
 const { getFileId, getFilePathForBlob, isSaving, setDeletionDelay } = require('#src/resources/blob');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -204,7 +204,34 @@ for (const loadAsInstance of [true, false]) {
 			);
 		});
 
-		it('applies an empty PUT on a keyless table beneath a deep patch history', async () => {
+		it('keeps the merge for a missing receipt when prior retention is unknown', async function () {
+			if (isLMDB) return this.skip();
+			const Unknown = table({
+				table: 'UnknownHistory',
+				database: `unknownPutHistory${loadAsInstance}`,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			Unknown.loadAsInstance = loadAsInstance;
+			const timestamp = Date.now();
+			await Unknown.put('unknown', { c: 'retained' }, { timestamp });
+			let floor;
+			await waitFor(() => {
+				floor = certifyOriginFloor(Unknown.primaryStore.rootStore);
+				return floor && floor > timestamp + 20;
+			});
+			persistOriginClosedFloor(Unknown.auditStore, floor);
+			publishOriginFloor(Unknown.primaryStore.rootStore, floor);
+			await Unknown.patch('unknown', { b: 'newer' }, { timestamp: timestamp + 20 });
+			raiseAuditFloor(Unknown.auditStore, Infinity);
+			await Unknown.put('unknown', { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual(
+				{ ...(await Unknown.get('unknown')) },
+				{ id: 'unknown', c: 'retained', b: 'newer', a: 'replacement' }
+			);
+		});
+
+		it('applies an empty PUT on a keyless table beneath newer patches', async () => {
 			const Keyless = table({
 				table: `Keyless${loadAsInstance}`,
 				database: 'fullPutBoundaries',
@@ -219,11 +246,12 @@ for (const loadAsInstance of [true, false]) {
 			const timestamp = (nextTimestamp += 2000);
 			nextTimestamp += 2000;
 			await Keyless.put('keyless', { stale: 'old' }, { timestamp });
-			for (let index = 1; index <= 999; index++) {
+			const patchCount = isLMDB ? 2 : 999;
+			for (let index = 1; index <= patchCount; index++) {
 				await Keyless.patch('keyless', { sequence: index }, { timestamp: timestamp + index + 1 });
 			}
 			await Keyless.put('keyless', {}, { timestamp: timestamp + 1 });
-			assert.deepStrictEqual({ ...(await Keyless.get('keyless')) }, { sequence: 999 });
+			assert.deepStrictEqual({ ...(await Keyless.get('keyless')) }, { sequence: patchCount });
 		});
 
 		it('replays every newer same-key patch within one transaction', async () => {
@@ -245,6 +273,25 @@ for (const loadAsInstance of [true, false]) {
 					d: 'second',
 					counter: 112,
 				}
+			);
+		});
+
+		it('retains fields beyond the transaction scan budget', async () => {
+			const timestamp = (nextTimestamp += 100_000);
+			nextTimestamp += 2000;
+			await T.put('large-frame', { c: 'stale' }, { timestamp });
+			const context = { timestamp: timestamp + 20 };
+			await transaction(context, async () => {
+				await T.patch('large-frame', { b: 'first' }, context);
+				for (let index = 0; index < 1005; index++) {
+					await T.put(`unrelated-${index}`, { value: index }, context);
+				}
+				await T.patch('large-frame', { d: 'last' }, context);
+			});
+			await T.put('large-frame', { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual(
+				{ ...(await T.get('large-frame')) },
+				{ id: 'large-frame', c: 'stale', b: 'first', d: 'last', a: 'replacement' }
 			);
 		});
 

@@ -167,7 +167,7 @@ Consequences worth knowing:
 
 ## Full PUT resequencing
 
-`Table._writeUpdate` replays retained newer patches onto the PUT body and stores a replacement. Collect all same-key mutations in each newer transaction, then order by record version, origin-name tie-break and same-origin log/program order. A floor-rekeyed receipt needs no entry when its origin/version was already collected; genuinely missing entries, unavailable patch bodies or bounded walks keep the previous best-effort merge so uncollected newer fields survive. `outOfOrderFullPut.test.js` covers both engines, omissions, additions, indexes, metadata, blobs, transaction siblings and history boundaries ([#3404](https://github.com/HarperFast/harper/issues/3404)).
+`Table._writeUpdate` replays retained newer patches onto the PUT body and stores a replacement. Collect all same-key mutations in each newer transaction, then order by record version, origin-name tie-break and same-origin log/program order. The RocksDB walk/frame budget counts all scanned entries; LMDB bounds each equal-version cohort. A floor-rekeyed receipt needs no entry when its origin/version was already collected and the retention floor is known not to exceed the incoming version; genuinely missing entries, unavailable patch bodies or bounded walks keep the previous best-effort merge so uncollected newer fields survive. `outOfOrderFullPut.test.js` covers both engines, omissions, additions, indexes, metadata, blobs, transaction siblings and history boundaries ([#3404](https://github.com/HarperFast/harper/issues/3404)).
 
 ## Database generation and resumable positions
 
