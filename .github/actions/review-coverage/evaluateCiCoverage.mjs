@@ -34,6 +34,7 @@ const SEGMENTS = new Map([
 				: `has \`authored=${value}\`, not claude, codex, gemini or unknown`,
 	],
 	['ran', (value) => (value === 'none' ? '' : legList('ran', COVERAGE_LEGS)(value))],
+	['pending', legList('pending', COVERAGE_LEGS)],
 	['adjudicated', legList('adjudicated', new Set(['domain']))],
 	[
 		'blocked',
@@ -123,6 +124,9 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const adjudicatorBlocked = footerRead.segments.get('adjudicated')?.split(',').includes('domain')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
+	// The helper writes `pending=` for a late leg whose findings no round has adjudicated yet; the
+	// round that folds it drops the segment. Unlike `blocked=`, the leg may still self-fold.
+	const pendingLegs = footerRead.segments.get('pending')?.split(',') ?? [];
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
@@ -150,17 +154,21 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 				? `${field}: ${footer[1]} @ head`
 				: `${field} footer is stale (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
 
+	const pendingList = pendingLegs.map((leg) => `\`${leg}\``).join(', ');
 	const classification = classifyPullRequest(pr);
 	const waiver = easyDiffWaiver(pr, easy);
 	const aiAuthored = isAiAuthored(prose);
 	// Waives ONE leg, not "all but one": a consumer asking for three still gets two.
-	const easyWaived = waiver.waived && !adjudicatorBlocked && enforceable >= Math.max(1, required - 1);
+	const easyWaived =
+		waiver.waived && !adjudicatorBlocked && !pendingLegs.length && enforceable >= Math.max(1, required - 1);
 	const exempt =
 		classification.exempt ||
-		(classification.draft ? 'draft — checked again at ready-for-review' : '') ||
+		(classification.draft
+			? `draft — checked again at ready-for-review${pendingLegs.length ? `; late review leg ${pendingList} must be adjudicated first` : ''}`
+			: '') ||
 		(!aiAuthored ? 'not AI-authored — coverage is reported, not required' : '') ||
 		(easyWaived ? `Complexity: easy on a ${waiver.lines}-line diff — one outside review is enough` : '');
-	const compliant = enforceable >= required && !adjudicatorBlocked;
+	const compliant = enforceable >= required && !adjudicatorBlocked && !pendingLegs.length;
 	const pass = mode !== 'enforce' || Boolean(exempt) || compliant;
 	const proseNote = !hasFooter
 		? count > 0
@@ -176,6 +184,10 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const adjudicationNote = adjudicatorBlocked
 		? `; the Harper adjudicator (\`domain\`) is blocked (${adjudicatorBlocked}) in every round, so no outside finding was adjudicated — rerun the pre-push review until \`domain\` completes and re-materialize the footer`
 		: '';
+	const pendingNote =
+		pendingLegs.length && !classification.draft
+			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — run the pre-push CLI with \`--fold-late\` (or another review round), or wait for the late leg to self-fold into the PR body, then re-materialize the footer with \`pr-body-review-need.mjs --write\``
+			: '';
 	const summary = exempt ? `exempt: ${exempt}` : adjudicatorBlocked ? `${coverage}; adjudication blocked` : coverage;
 	return {
 		pass,
@@ -185,7 +197,8 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		families,
 		aiAuthored,
 		adjudicatorBlocked,
+		pendingLegs,
 		summary,
-		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}${adjudicationNote}`,
+		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}${adjudicationNote}${pendingNote}`,
 	};
 }
