@@ -2203,6 +2203,30 @@ describe('Test configUtils module', () => {
 			}
 		});
 
+		it('leaves optional root sections an HDB_CONFIG template omits absent while backfilling required ones', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-optional-sections.yaml');
+			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\nhttp:\n  port: 9000\n', 'utf8');
+
+			try {
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig({ ROOTPATH: HDB_ROOT }, hdbConfigTemplatePath)
+				);
+
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				expect(configJson).to.not.have.property('mqtt');
+				expect(configJson).to.not.have.property('applications');
+				expect(configJson).to.not.have.property('authentication');
+				expect(configJson.http.port).to.equal(9000);
+				expect(configJson.http.securePort).to.equal(9926);
+				expect(configJson.storage.caching).to.equal(true);
+				expect(configJson.localStudio.enabled).to.equal(true);
+				expect(configJson.logging.level).to.equal('warn');
+				expect(configJson.operationsApi.network.securePort).to.equal(9925);
+			} finally {
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
 		it('expands numeric threads: 4 shorthand in HDB_CONFIG when CLI/env THREADS_COUNT or THREADS_DEBUG is passed without HARPER_SET_CONFIG', () => {
 			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-threads.yaml');
 			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nhttp:\n  mtls: false\nstorage:\n  engine: lmdb\n', 'utf8');

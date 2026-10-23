@@ -6,6 +6,7 @@ import {
 	configValidator,
 	getDomainSocketPathLengthWarning,
 	isLegacySqlApplicationEntry,
+	REQUIRED_ROOT_CONFIG_KEYS,
 } from '../validation/configValidator.ts';
 import { isReservedComponentName } from '../utility/componentNames.ts';
 import _fs from 'fs-extra';
@@ -340,6 +341,7 @@ function backfillMissingDefaults(targetDoc: YAML.Document, defaultsDoc: YAML.Doc
 		const key = String((pair.key as any)?.value ?? pair.key);
 		const keyPath = [...prefix, key];
 		if (!targetDoc.hasIn(keyPath)) {
+			if (prefix.length === 0 && !REQUIRED_ROOT_CONFIG_KEYS.has(key)) continue;
 			const defaultNode = defaultsDoc.getIn(keyPath, true);
 			const defaultVal =
 				defaultNode && typeof (defaultNode as any).toJSON === 'function'
