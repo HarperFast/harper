@@ -13,7 +13,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
+import mqtt, { type MqttClient } from 'mqtt';
 import { encode as cborEncode } from 'cbor-x';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
