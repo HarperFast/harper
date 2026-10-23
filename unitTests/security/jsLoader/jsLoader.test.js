@@ -827,5 +827,44 @@ for (const mode of ['vm-current-context', 'vm']) {
 			expect(nativeRuntimeMarked).to.equal(true);
 			expect(loadedModules.has(loadedUrl(join(runtimeRoot, 'helper.cjs')))).to.equal(false);
 		});
+
+		it('propagates an evaluation error instead of retrying the module as ESM', async () => {
+			writeFileSync(join(runtimeRoot, 'bad.cjs'), 'module.exports.value ====\n');
+			writeFileSync(join(runtimeRoot, 'requires-bad.cjs'), "module.exports = require('./bad.cjs');\n");
+			writeFileSync(join(runtimeRoot, 'throws.cjs'), "module.exports = {};\nthrow new Error('failed to import settings');\n");
+			const failure = (file) =>
+				scopedImport(join(runtimeRoot, file), loaderScope()).then(
+					() => expect.fail(`${file} should not load`),
+					(error) => error
+				);
+			expect((await failure('throws.cjs')).message).to.equal('failed to import settings');
+			const syntaxError = await failure('requires-bad.cjs');
+			expect(syntaxError.name).to.equal('SyntaxError');
+			expect(syntaxError.stack).to.include('bad.cjs');
+		});
+
+		it('evaluates a module again after its evaluation threw, as Node does', async () => {
+			writeFileSync(join(runtimeRoot, 'failing.cjs'), "throw new Error('evaluation failed');\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"const attempt = () => { try { require('./failing.cjs'); return 'loaded'; } catch (error) { return error.message; } };\n" +
+					'exports.first = attempt();\nexports.second = attempt();\n'
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.first).to.equal('evaluation failed');
+			expect(result.second).to.equal('evaluation failed');
+		});
+
+		it('hands a circular require the incomplete module and repeats return one instance', async () => {
+			writeFileSync(join(runtimeRoot, 'a.cjs'), "exports.name = 'a';\nexports.fromB = require('./b.cjs').fromA;\n");
+			writeFileSync(join(runtimeRoot, 'b.cjs'), "exports.fromA = require('./a.cjs').name;\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.fromB = require('./a.cjs').fromB;\nexports.same = require('./b.cjs') === require('./b.cjs');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.fromB).to.equal('a');
+			expect(result.same).to.equal(true);
+		});
 	});
 }

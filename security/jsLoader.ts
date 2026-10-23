@@ -478,28 +478,64 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	 * Load a CommonJS module in our context (private or current)
 	 */
 	function loadCJS(url: string, source: string): { exports: any } {
-		// Check cache first to handle circular dependencies
-		if (cjsCache.has(url)) {
-			return cjsCache.get(url)!;
+		const cachedModule = cjsCache.get(url);
+		if (cachedModule) return cachedModule;
+		if (url.endsWith('.json')) {
+			const jsonModule = { exports: parseJsonModule(source, url) };
+			cjsCache.set(url, jsonModule);
+			return jsonModule;
 		}
+		return evaluateCJS(url, compileCJS(url, source));
+	}
 
-		// Create module object and cache it immediately (before execution)
-		// This allows circular dependencies to get a reference to the incomplete module
+	/**
+	 * Compile a CommonJS module's wrapper function in our context (private or current). A SyntaxError from here
+	 * is about this module's own source, unlike an error thrown while evaluating it.
+	 */
+	function compileCJS(url: string, source: string): Function {
+		const cjsWrapper = `
+			(function(module, exports, require, __filename, __dirname) {
+				${source}
+			})
+		`;
+
+		const runOptions = {
+			filename: url,
+			async importModuleDynamically(specifier: string, script) {
+				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url, scope);
+				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
+				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
+				return dynamicModule;
+			},
+		};
+
+		// If contextObject is undefined, use current context with runInThisContext
+		return contextObject
+			? runInContext(cjsWrapper, contextObject, runOptions)
+			: runInThisContext(cjsWrapper, runOptions);
+	}
+
+	/**
+	 * Evaluate a compiled CommonJS module. It is cached before execution so circular dependencies get a reference
+	 * to the incomplete module, and uncached if execution throws so the next require evaluates it again, as Node does.
+	 */
+	function evaluateCJS(url: string, wrappedFn: Function): { exports: any } {
 		const cjsModule = { exports: {} };
 		cjsCache.set(url, cjsModule);
+		const filename = url.startsWith('file://') ? fileURLToPath(url) : url;
 		try {
-			return evaluateCJS(cjsModule, url, source);
+			wrappedFn(cjsModule, cjsModule.exports, createCJSRequire(url), filename, dirname(filename));
 		} catch (error) {
-			// As in Node's CommonJS loader, a module that failed to load is not served from the cache later
 			cjsCache.delete(url);
 			throw error;
 		}
+		return cjsModule;
 	}
-	function evaluateCJS(cjsModule: { exports: any }, url: string, source: string): { exports: any } {
-		if (url.endsWith('.json')) {
-			cjsModule.exports = parseJsonModule(source, url);
-			return cjsModule;
-		}
+
+	/**
+	 * Create the require function for a CommonJS module the application loader evaluates
+	 */
+	function createCJSRequire(url: string) {
 		let requireUrl = url;
 		if (url.startsWith('file://')) {
 			try {
@@ -535,46 +571,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			if (resolvedUrl.startsWith('file://')) return fileURLToPath(resolvedUrl);
 			return resolvedUrl;
 		};
-
-		const cjsWrapper = `
-			(function(module, exports, require, __filename, __dirname) {
-				${source}
-			})
-		`;
-
-		const runOptions = {
-			filename: url,
-			async importModuleDynamically(specifier: string, script) {
-				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url, scope);
-				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
-				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
-				return dynamicModule;
-			},
-		};
-
-		// If contextObject is undefined, use current context with runInThisContext
-		const wrappedFn = contextObject
-			? runInContext(cjsWrapper, contextObject, runOptions)
-			: runInThisContext(cjsWrapper, runOptions);
-
-		const filename = url.startsWith('file://') ? fileURLToPath(url) : url;
-		wrappedFn(cjsModule, cjsModule.exports, cjsRequire, filename, dirname(filename));
-
-		return cjsModule;
+		return cjsRequire;
 	}
-	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
-		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: nativeRequire(url) };
+
+	function createCJSSyntheticModule(url: string, cjsModule: { exports: any }): SyntheticModule {
 		let exports = cjsModule.exports;
 		if (exports.default === undefined) {
 			// provide the default export for compatibility
 			exports = { default: exports, ...exports };
 		}
 		const exportNames = Object.keys(exports);
-
-		const options: any = { identifier: url };
-		if (usePrivateGlobal && context) {
-			options.context = context;
-		}
 
 		const synModule = new SyntheticModule(
 			exportNames,
@@ -583,7 +589,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					this.setExport(key, exports[key]);
 				}
 			},
-			options
+			{ identifier: url, context }
 		);
 		// Don't cache here - let getOrCreateModule handle caching
 		return synModule;
@@ -744,11 +750,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	/**
 	 * Create a SourceTextModule or SyntheticModule from source code
 	 */
-	function createModuleFromSource(
-		url: string,
-		source: string,
-		usePrivateGlobal: boolean
-	): SourceTextModule | SyntheticModule {
+	function createModuleFromSource(url: string, source: string): SourceTextModule | SyntheticModule {
 		// Handle JSON modules
 		if (url.endsWith('.json')) {
 			const jsonData = parseJsonModule(source, url);
@@ -761,9 +763,12 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			);
 		}
 
+		const cachedModule = cjsCache.get(url);
+		if (cachedModule) return createCJSSyntheticModule(url, cachedModule);
 		// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
+		let wrappedFn: Function;
 		try {
-			return loadCJSModule(url, source, usePrivateGlobal);
+			wrappedFn = compileCJS(url, source);
 		} catch (cjsErr) {
 			// Only fallback to ESM if the error was due to ESM syntax (import/export statements)
 			// Check if the error message indicates ESM syntax
@@ -799,6 +804,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				},
 			});
 		}
+		return createCJSSyntheticModule(url, evaluateCJS(url, wrappedFn));
 	}
 
 	/**
@@ -820,7 +826,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				scope.markNativeRuntime?.();
 				return createSyntheticModule(url, normalizeImportedModule(nativeModule));
 			}
-			return createModuleFromSource(url, readApplicationModule(url), usePrivateGlobal);
+			return createModuleFromSource(url, readApplicationModule(url));
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
