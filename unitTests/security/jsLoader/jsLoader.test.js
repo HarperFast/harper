@@ -5,6 +5,7 @@ const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
+const assert = require('node:assert');
 const { expect } = require('chai');
 
 const SYMLINK_FIXTURE = join(__dirname, 'fixtures', 'symlink-test', 'node_modules', 'proxyTransform');
@@ -234,7 +235,6 @@ describe('SES loading', () => {
 	});
 });
 
-// Every target an exports-conformance case can name; each module exports its own marker value and URL.
 const PROBE_PACKAGE_FILES = {
 	'a.js': 'a',
 	'valid.js': 'valid',
@@ -342,6 +342,11 @@ const EXPORTS_CONFORMANCE_CASES = [
 	{
 		title: 'rejects numeric condition keys',
 		exports: { '.': { import: { 0: './a.js' } } },
+		expected: 'ERR_INVALID_PACKAGE_CONFIG',
+	},
+	{
+		title: 'rejects a decimal numeric condition key',
+		exports: { '.': { import: { 1.5: './a.js', default: './valid.js' } } },
 		expected: 'ERR_INVALID_PACKAGE_CONFIG',
 	},
 	{
@@ -521,11 +526,11 @@ for (const mode of ['vm-current-context', 'compartment']) {
 						writeFileSync(entry, `export * from 'exports-probe${subpath}';\n`);
 						const native = await loadOutcome(() => import(pathToFileURL(entry).href));
 						const loaded = await loadOutcome(() => scopedImport(entry, loaderScope(runtimeRoot)));
-						expect(native.value, 'native Node import').to.equal(expected);
-						expect(loaded.value).to.equal(expected);
+						assert.strictEqual(native.value, expected, 'native Node import');
+						assert.strictEqual(loaded.value, expected);
 						if (url) {
-							expect(native.url).to.match(url);
-							expect(loaded.url).to.equal(native.url);
+							assert.match(native.url, url);
+							assert.strictEqual(loaded.url, native.url);
 						}
 					} finally {
 						rmSync(runtimeRoot, { recursive: true, force: true });
@@ -564,12 +569,12 @@ describe('application require() of package exports (vm-current-context)', () => 
 			);
 			const native = require(entry);
 			const loaded = await scopedImport(entry, { ...vmScope(), runtimeRoot });
-			expect(native.requireOutcome).to.equal('ERR_PACKAGE_PATH_NOT_EXPORTED');
-			expect(native.resolveOutcome).to.equal('ERR_PACKAGE_PATH_NOT_EXPORTED');
-			expect(native.dualValue).to.equal('require');
-			expect(loaded.requireOutcome).to.equal(native.requireOutcome);
-			expect(loaded.resolveOutcome).to.equal(native.resolveOutcome);
-			expect(loaded.dualValue).to.equal(native.dualValue);
+			assert.strictEqual(native.requireOutcome, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(native.resolveOutcome, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(native.dualValue, 'require');
+			assert.strictEqual(loaded.requireOutcome, native.requireOutcome);
+			assert.strictEqual(loaded.resolveOutcome, native.resolveOutcome);
+			assert.strictEqual(loaded.dualValue, native.dualValue);
 		} finally {
 			rmSync(runtimeRoot, { recursive: true, force: true });
 		}
@@ -584,9 +589,12 @@ describe('application require() of package exports (vm-current-context)', () => 
 				entry,
 				`globalThis[Symbol.for('harper.jsLoader.test.requireRejection')] = (globalThis[Symbol.for('harper.jsLoader.test.requireRejection')] ?? 0) + 1;\nmodule.exports = require('exports-probe');\n`
 			);
-			const outcome = await loadOutcome(() => scopedImport(entry, { ...vmScope(), runtimeRoot }));
-			expect(outcome.value).to.equal('ERR_PACKAGE_PATH_NOT_EXPORTED');
-			expect(globalThis[counter]).to.equal(1);
+			const scope = { ...vmScope(), runtimeRoot };
+			assert.strictEqual((await loadOutcome(() => scopedImport(entry, scope))).value, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(globalThis[counter], 1);
+			// a second load in the same scope evaluates the module again instead of reusing its failed exports
+			assert.strictEqual((await loadOutcome(() => scopedImport(entry, scope))).value, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(globalThis[counter], 2);
 		} finally {
 			delete globalThis[counter];
 			rmSync(runtimeRoot, { recursive: true, force: true });
@@ -601,10 +609,10 @@ describe('application require() of package exports (vm-current-context)', () => 
 			const cjsEntry = join(runtimeRoot, 'dynamic.cjs');
 			writeFileSync(cjsEntry, "exports.load = () => import('exports-probe/features/alpha');\n");
 			const nativeResolved = (await import(pathToFileURL(esmEntry).href)).resolved;
-			expect(nativeResolved).to.match(/\/features\/alpha\.js$/);
-			expect((await scopedImport(esmEntry, { ...vmScope(), runtimeRoot })).resolved).to.equal(nativeResolved);
+			assert.match(nativeResolved, /\/features\/alpha\.js$/);
+			assert.strictEqual((await scopedImport(esmEntry, { ...vmScope(), runtimeRoot })).resolved, nativeResolved);
 			const dynamic = await scopedImport(cjsEntry, { ...vmScope(), runtimeRoot });
-			expect((await dynamic.load()).value).to.equal('alpha');
+			assert.strictEqual((await dynamic.load()).value, 'alpha');
 		} finally {
 			rmSync(runtimeRoot, { recursive: true, force: true });
 		}

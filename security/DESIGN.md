@@ -176,9 +176,10 @@ dependency that resolves in one `applications.moduleLoader` mode resolves in the
 CommonJS-first (a dual package keeps its `require` target) and falls back to the package's `exports`
 map only for an import of a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`,
 or `MODULE_NOT_FOUND` on Bun. A `require()` never falls back — the CommonJS resolver's verdict is the
-runtime's own `require` resolution. The fallback is a port of Node's `PACKAGE_EXPORTS_RESOLVE` with the
-`node` and `import` conditions (plus `bun` on Bun), so it picks what native `import` picks; the
-`resolves package exports as native Node import does` cases check each rule against native Node. A
+runtime's own `require` resolution. The fallback is a port of Node's `PACKAGE_EXPORTS_RESOLVE` with only
+the `node` and `import` conditions (plus `bun` on Bun) — Node's `module-sync`, `node-addons` and
+`--conditions` are not modeled — and the `resolves package exports as native Node import does` cases check
+each rule against native Node. A
 fallback resolution records the `package.json` and entry-file digests, not a resolution edge, because
 `RuntimeModuleTracker` re-resolves edges with `createRequire` and would read the import-only package as
 changed on every deploy.

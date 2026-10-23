@@ -162,6 +162,7 @@ class PackageResolutionError extends Error {
 	}
 }
 
+// Node's own import conditions also include module-sync, node-addons and any --conditions; these are not modeled
 const NODE_IMPORT_CONDITIONS: ReadonlySet<string> = new Set(['node', 'import']);
 const BUN_IMPORT_CONDITIONS: ReadonlySet<string> = new Set(['bun', 'node', 'import']);
 // A `.`, `..` or `node_modules` path segment, percent-encoded or not. Node only deprecates empty segments, so they pass.
@@ -269,8 +270,7 @@ function resolvePackageTarget(
 }
 
 /**
- * Node's PACKAGE_EXPORTS_RESOLVE: an exact subpath key, else the most specific single-`*` pattern key.
- * `null` or `undefined` means the subpath is not exported.
+ * Node's PACKAGE_EXPORTS_RESOLVE; `null` or `undefined` means the subpath is not exported.
  */
 function resolvePackageExports(
 	packageJsonUrl: URL,
@@ -302,8 +302,7 @@ function resolvePackageExports(
 }
 
 /**
- * Turn a resolved `exports` URL into the module URL, as Node's ESM resolver finalizes it: the real path,
- * keeping the target's query and fragment.
+ * Node's ESM finalization of a resolved target: its real path, keeping the target's query and fragment.
  */
 function finalizePackageResolution(resolved: URL, referrer: string): string {
 	if (/%2f|%5c/i.test(resolved.pathname)) {
@@ -330,9 +329,8 @@ function finalizePackageResolution(resolved: URL, referrer: string): string {
 }
 
 /**
- * Resolve a bare package specifier through the package's `exports` map with the given import conditions.
- * Used as a fallback when the runtime's CommonJS resolver cannot match an import-only package.
- * Returns null when no package with an `exports` map is found, or the subpath is not exported.
+ * Resolve a bare package specifier through its package's `exports` map. Returns null when no package with
+ * an `exports` map is found, or the subpath is not exported.
  */
 function resolveESMPackageExports(
 	specifier: string,
@@ -412,9 +410,8 @@ function resolveModule(
 			isBarePackage &&
 			(errorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (process.versions.bun && errorCode === 'MODULE_NOT_FOUND'))
 		) {
-			// The CommonJS resolver applied require conditions, which an import-only package does not
-			// match; an import resolves the package's exports with import conditions instead. A require
-			// keeps the CommonJS resolver's verdict, which is the runtime's own require resolution.
+			// The CommonJS resolver applied require conditions. A require keeps its verdict, which is the
+			// runtime's own require resolution; an import re-resolves the exports with import conditions.
 			const esmResolved = resolveESMPackageExports(
 				specifier,
 				resolveReferrer,
@@ -492,7 +489,15 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		// This allows circular dependencies to get a reference to the incomplete module
 		const cjsModule = { exports: {} };
 		cjsCache.set(url, cjsModule);
-
+		try {
+			return evaluateCJS(cjsModule, url, source);
+		} catch (error) {
+			// As in Node's CommonJS loader, a module that failed to load is not served from the cache later
+			cjsCache.delete(url);
+			throw error;
+		}
+	}
+	function evaluateCJS(cjsModule: { exports: any }, url: string, source: string): { exports: any } {
 		if (url.endsWith('.json')) {
 			cjsModule.exports = parseJsonModule(source, url);
 			return cjsModule;
