@@ -241,7 +241,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## integrationTests/ — end-to-end suite and fixtures
 
-- [A deployed fixture must not install from the npm registry (`integrationTests/fixtures/`)](integrationTests/DESIGN.md#a-deployed-fixture-must-not-install-from-the-npm-registry-integrationtestsfixtures) — A fixture with production dependencies and no bundled `node_modules` puts the npm registry on the test's critical path; vendor them or neutralize the install.
+- [A deployed fixture must not install from the npm registry (`integrationTests/`)](integrationTests/DESIGN.md#a-deployed-fixture-must-not-install-from-the-npm-registry-integrationtests) — A fixture with production dependencies and no bundled `node_modules` puts the npm registry on the test's critical path; vendor them or neutralize the install.
 
 ## build-tools/ — packaging, published artifacts and local lint rules
 

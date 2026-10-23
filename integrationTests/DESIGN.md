@@ -3,13 +3,13 @@
 The end-to-end suite: fixtures, deployed components, and the harness that starts real Harper
 instances.
 
-**Read this when:** adding or regenerating a fixture under `integrationTests/fixtures/`.
+**Read this when:** adding or regenerating a fixture under `integrationTests/`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
-## A deployed fixture must not install from the npm registry (`integrationTests/fixtures/`)
+## A deployed fixture must not install from the npm registry (`integrationTests/`)
 
 `deploy_component` runs a real `npm install` for a package that declares production dependencies and
 ships no `node_modules`, putting the public npm registry on a test's critical path. A stalled
