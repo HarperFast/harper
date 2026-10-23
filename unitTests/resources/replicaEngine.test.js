@@ -137,6 +137,47 @@ describe('Replica storage engine support', function () {
 		await Reloaded.closeMaintenance();
 	});
 
+	it('settles replica sweep ownership acquired after loading the table', async () => {
+		const databaseName = 'replicaEngineOwnership';
+		const Created = table({
+			database: databaseName,
+			table: 'Takeover',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+			replicaExpiration: 0.2,
+			replicaRefreshFraction: 1,
+		});
+		Created.dbisDB.putSync([Symbol.for('residency_by_id'), 123], ['resident-a']);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Created.getResource('loaded', context, { ensureLoaded: false });
+			resource._writeInvalidate('loaded', { name: 'stub' }, { residencyId: 123 });
+		});
+		const entry = Created.primaryStore.getEntry('loaded');
+		assert.equal(await Created._storeReplica(entry, answer(entry, 'resident')), !isLMDB);
+		await closeDatabase(databaseName);
+		let Reloaded;
+		setMainIsWorker(false);
+		try {
+			Reloaded = resetDatabases()[databaseName].Takeover;
+			const state = new Int32Array(
+				Reloaded.primaryStore.getUserSharedBuffer(`replica-sweep:${Reloaded.tableId}`, new ArrayBuffer(8))
+			);
+			assert.equal(Atomics.load(state, 1), 0);
+			setMainIsWorker(true);
+			Reloaded.setTTLExpiration({ replicaExpiration: 0.2, replicaRefreshFraction: 1, fromSchema: true });
+			assert.equal(Atomics.load(state, 1), isLMDB ? 0 : 1, 'the new owner schedules the already-armed sweep');
+			await waitFor(() => Reloaded.primaryStore.getEntry('loaded').metadataFlags & INVALIDATED, {
+				timeout: 3000,
+				message: 'the new owner demotes the stored replica',
+			});
+			assert.ok(!(Reloaded.primaryStore.getEntry('loaded').metadataFlags & REPLICA));
+		} finally {
+			setMainIsWorker(true);
+			await Reloaded?.closeMaintenance();
+		}
+	});
+
 	it('drops a table with replica catalog metadata on either engine', async () => {
 		const Dropped = table({
 			database: 'test',

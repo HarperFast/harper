@@ -118,6 +118,7 @@ describe('Replica options across worker schema rescans', function () {
 			async (reader, writer) => {
 				const before = await reader.call('read', { key: 'before' });
 				assertReads(before, 60);
+				assert.equal(before.armed, isLMDB ? 0 : 1);
 				const after = await updateAndRescan(writer, reader, { replicaExpiration: 0 }, 'before');
 				assert.equal(after.flags, before.flags);
 				assert.equal(after.deadline, before.deadline);

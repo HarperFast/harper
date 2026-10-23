@@ -2987,7 +2987,7 @@ export function makeTable(options): TableResourceClass {
 			) {
 				standDownReplicaSweep();
 				if (replicaExpirationMs) armReplicaEviction();
-			}
+			} else if (replicaEvictionArmed) armReplicaEviction();
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
 			// create the default daily cleanup timer for a table that has only an @expiresAt field.
 			if (!preserveLoadedConfiguration || expirationScanScheduled || evictionMs) scheduleCleanup();
