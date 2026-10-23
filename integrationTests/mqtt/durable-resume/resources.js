@@ -1,6 +1,5 @@
 let closed = false;
 
-/** Lets a test make `Gated` subscribe to nothing, as a resource that is briefly unable to subscribe does. */
 export class Gate extends Resource {
 	static loadAsInstance = false;
 	post(_target, data) {

@@ -1499,7 +1499,6 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 				qos,
 			]);
 		}
-		/** Reconnects a saved session while its resource subscribes to nothing, leaving the topic restored but not live. */
 		async function reconnectWithoutSubscription(open, T, name, clientId, topic) {
 			let attempts = 0;
 			// the table's own audit store, so the saved receipts still name this database generation
@@ -1523,7 +1522,6 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 				Resources.resources.set(name, T, { mqtt: true }, true);
 			}
 		}
-		/** A QoS 2 session holding a delivery awaiting its PUBREC (`a`) behind one whose PUBREC arrived (`b`). */
 		async function savedQoS2(open, T, clientId, topic) {
 			const socket = await subscribed(open, clientId, topic);
 			await T.put('a', { value: 'a' });

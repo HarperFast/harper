@@ -616,7 +616,6 @@ suite(
 			const savedEntry = async (clientId: string) =>
 				(await storedSession(clientId)).subscriptions.find((entry: any) => entry.topic === topic);
 
-			/** Reconnects with the gate closed, so the resumed topic is restored without a live subscription. */
 			async function reconnectGated(clientId: string) {
 				await setGate(true);
 				try {
@@ -629,7 +628,6 @@ suite(
 				}
 			}
 
-			/** Delivers `a` and `b` at QoS 2, and takes `b` alone, leaving `a` awaiting its PUBREC. */
 			async function savedQoS2(clientId: string) {
 				await cleanStart(clientId);
 				const first = await rawConnect(clientId);
