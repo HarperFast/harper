@@ -40,7 +40,9 @@ import logger from '../utility/logging/harper_logger.ts';
  *   Before it, a claimed restore is held off every open by the lock alone, so a crash while claimed
  *   (verifying, closing) leaves nothing that blocks the intact database once the lock is released. Its first line records the database
  *   directory name as a fallback so the startup scan can map a marker whose database directory is
- *   missing without decoding the hashed key.
+ *   missing without decoding the hashed key. A third line, `source <id>`, records which backup
+ *   repository the restore reads (`restoreSourceId`) so a rerun can prove the debris is its own;
+ *   markers written before that line existed have none.
  *
  *   The rename is what makes the marker trustworthy: the marker path only ever holds the previous
  *   content or the complete new content, so a torn write can never replace a valid marker with one
@@ -123,6 +125,8 @@ export type RestoreLock = {
 	token: number;
 	/** The database directory this lock guards. */
 	dbPath: string;
+	/** `restoreSourceId` of the repository this restore reads; recorded on the marker it publishes. */
+	source?: string;
 	/**
 	 * True when a `.restoring` marker already existed at `beginRestore` time — i.e. this restore is a
 	 * recovery attempt over a possibly half-purged directory. A pre-existing marker must never be
@@ -283,12 +287,36 @@ function publishMarker(dbPath: string, markerPath: string, content: string): voi
 	writeFileDurably(markerPath, content, restoreMetaKey(dbPath) + MARKER_TEMP_SUFFIX);
 }
 
-function publishRestoringMarker(dbPath: string): void {
+const MARKER_SOURCE_PREFIX = 'source ';
+
+/** A path-free identity for a backup repository: markers are readable by anyone with the data dir. */
+export function restoreSourceId(backupDir: string): string {
+	return createHash('sha256').update(resolve(backupDir)).digest('hex');
+}
+
+function publishRestoringMarker(dbPath: string, source: string | undefined): void {
 	publishMarker(
 		dbPath,
 		restoringMarkerPath(dbPath),
-		`${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n`
+		`${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n` +
+			(source ? `${MARKER_SOURCE_PREFIX}${source}\n` : '')
 	);
+}
+
+/**
+ * The source recorded on an intact restoring marker, or undefined when there is no marker, it is not
+ * intact, or it predates source recording. A third line that is not a source line is returned as-is,
+ * so it matches no repository instead of reading as a legacy marker.
+ */
+export function readRestoringMarkerSource(dbPath: string): string | undefined {
+	let lines: string[];
+	try {
+		lines = readFileSync(restoringMarkerPath(dbPath), 'utf8').split('\n', 3);
+	} catch {
+		return undefined;
+	}
+	if (lines[0] !== basename(dbPath) || !lines[2]) return undefined;
+	return lines[2].startsWith(MARKER_SOURCE_PREFIX) ? lines[2].slice(MARKER_SOURCE_PREFIX.length) : lines[2];
 }
 
 /**
@@ -299,16 +327,22 @@ function publishRestoringMarker(dbPath: string): void {
  * `beforePublishMarker` runs synchronously under the lock, after admission, so a caller can durably
  * claim its source before a crash can leave a restoring marker behind. It receives `preexisting` —
  * the marker reading taken under this lock — so a caller can tell an interrupted restore of this
- * same target from a directory that was never ours.
+ * same target from a directory that was never ours. `sourceDir` is the backup repository being
+ * restored from; the marker this claim publishes records its `restoreSourceId`.
  *
  * An intact marker is left exactly as it is. A recovery attempt runs over a directory an earlier
  * restore may have half-purged, so the marker it finds is the only thing keeping that directory
  * from loading as healthy; rewriting it buys nothing (the content it would write is the content
  * already there) and risks everything.
  */
-export function claimRestore(dbPath: string, beforePublishMarker?: (preexisting: boolean) => void): RestoreLock {
+export function claimRestore(
+	dbPath: string,
+	beforePublishMarker?: (preexisting: boolean) => void,
+	sourceDir?: string
+): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
+	if (sourceDir !== undefined) lock.source = restoreSourceId(sourceDir);
 	// Sampled while holding the lock, not before it: a restore that waited out an earlier one would
 	// otherwise carry the earlier run's "no marker" reading, and on its own pre-destruction failure
 	// clear the marker protecting a directory that run had already half-purged.
@@ -321,7 +355,7 @@ export function claimRestore(dbPath: string, beforePublishMarker?: (preexisting:
 		}
 		beforePublishMarker?.(lock.preexisting);
 		if (lock.preexisting) {
-			if (!markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
+			if (!markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath, lock.source);
 			// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
 			// have been interrupted between the rename and this flush, which would leave the directory
 			// entry — the thing the startup scan reads — still only in the page cache.
@@ -336,12 +370,16 @@ export function claimRestore(dbPath: string, beforePublishMarker?: (preexisting:
 
 /** Publish the marker before the first destructive step of a claimed restore; a no-op over an intact one. */
 export function markRestoreDestructive(lock: RestoreLock): void {
-	if (!markerIsIntact(restoringMarkerPath(lock.dbPath), lock.dbPath)) publishRestoringMarker(lock.dbPath);
+	if (!markerIsIntact(restoringMarkerPath(lock.dbPath), lock.dbPath)) publishRestoringMarker(lock.dbPath, lock.source);
 }
 
 /** `claimRestore` and `markRestoreDestructive` together, for a caller with nothing to do between them. */
-export function beginRestore(dbPath: string, beforePublishMarker?: (preexisting: boolean) => void): RestoreLock {
-	const lock = claimRestore(dbPath, beforePublishMarker);
+export function beginRestore(
+	dbPath: string,
+	beforePublishMarker?: (preexisting: boolean) => void,
+	sourceDir?: string
+): RestoreLock {
+	const lock = claimRestore(dbPath, beforePublishMarker, sourceDir);
 	try {
 		markRestoreDestructive(lock);
 	} catch (error) {

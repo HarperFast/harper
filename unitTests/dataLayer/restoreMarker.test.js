@@ -31,6 +31,8 @@ const {
 	clearRestoreMarker,
 	checkRestoreState,
 	restoreMarkerPresent,
+	readRestoringMarkerSource,
+	restoreSourceId,
 	restoreLockPath,
 	restoringMarkerPath,
 	droppingMarkerPath,
@@ -368,6 +370,50 @@ describe('restoreMarker', function () {
 				abandonRestore(lock);
 			}
 			assert.strictEqual(checkRestoreState(dbPath), 'incomplete');
+		});
+	});
+
+	describe('marker source', function () {
+		const repositoryA = '/backups/a';
+		const repositoryB = '/backups/b';
+
+		it('records a hash of the source repository, never its path', function () {
+			const lock = beginRestore(dbPath, undefined, repositoryA);
+			try {
+				const marker = readFileSync(restoringMarkerPath(dbPath), 'utf8');
+				assert.ok(!marker.includes(repositoryA));
+				assert.match(restoreSourceId(repositoryA), /^[0-9a-f]{64}$/);
+				assert.strictEqual(marker.split('\n')[2], `source ${restoreSourceId(repositoryA)}`);
+				assert.strictEqual(readRestoringMarkerSource(dbPath), restoreSourceId(repositoryA));
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		it('reads no source from a marker written before sources were recorded, or from no marker', function () {
+			assert.strictEqual(readRestoringMarkerSource(dbPath), undefined);
+			abandonRestore(beginRestore(dbPath));
+			assert.strictEqual(readRestoringMarkerSource(dbPath), undefined);
+			completeRestore(beginRestore(dbPath));
+		});
+
+		it('reads an unrecognized third line as a source that matches no repository', function () {
+			abandonRestore(beginRestore(dbPath));
+			appendFileSync(restoringMarkerPath(dbPath), 'origin elsewhere\n');
+			assert.strictEqual(readRestoringMarkerSource(dbPath), 'origin elsewhere');
+			completeRestore(beginRestore(dbPath));
+		});
+
+		it("keeps an interrupted restore's source when a restore from another repository claims it", function () {
+			abandonRestore(beginRestore(dbPath, undefined, repositoryB));
+			const lock = beginRestore(dbPath, undefined, repositoryA);
+			try {
+				assert.strictEqual(lock.preexisting, true);
+				assert.strictEqual(readRestoringMarkerSource(dbPath), restoreSourceId(repositoryB));
+			} finally {
+				abandonRestore(lock);
+			}
+			completeRestore(beginRestore(dbPath));
 		});
 	});
 

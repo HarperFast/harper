@@ -34,7 +34,9 @@ import {
 	clearRestoringMarker,
 	abandonRestore,
 	checkRestoreState,
+	readRestoringMarkerSource,
 	releaseRestoreLock,
+	restoreSourceId,
 	type RestoreLock,
 } from './restoreMarker.ts';
 import {
@@ -677,7 +679,7 @@ export async function restoreBackup(request: any) {
 		// restoring it would mis-address blobs (records persist their root index)
 		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
 		assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: selected.manifest.blobs, allowEngineOnly });
-		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, () =>
+		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, backupDir, () =>
 			pinBackup(backupDir, pinId, selected.backupId, `restore of database '${databaseName}'`, databaseDir)
 		);
 		return { lock: claimed, ...selected };
@@ -852,10 +854,11 @@ export function restorePinId(databaseDir: string): string {
 function beginRestoreForDatabase(
 	databaseDir: string,
 	databaseName: string,
+	backupDir: string,
 	beforePublishMarker: (preexisting: boolean) => void
 ): RestoreLock {
 	try {
-		return claimRestore(databaseDir, beforePublishMarker);
+		return claimRestore(databaseDir, beforePublishMarker, backupDir);
 	} catch (error) {
 		if (error.statusCode === 409) {
 			throw new BackupInProgressError(
@@ -1314,24 +1317,15 @@ export async function restoreBackupOffline(
 			targetDatabase ?? databaseName,
 			() => checkRestoreState(databaseDir) === 'incomplete'
 		);
-		const claimed = await beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
+		const target = {
+			databaseDir,
+			databaseName: targetDatabase ?? databaseName,
+			inPlace: targetDatabase === undefined || targetDatabase === databaseName,
+		};
+		const claimed = await beginRestoreForDatabase(databaseDir, target.databaseName, backupDir, (preexisting) => {
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
-			// check and then lose the database it just made. Debris this source left is exempt, or the
-			// rerun wedges for good — a drop refuses a marked directory too, and the marker keeps the pin
-			// live. A marker records only the directory name, so this source's own pin is what proves
-			// the debris is ours. Known gap: a pin that outlived its marker vouches for a later,
-			// unrelated one (harper#3106).
-			const ourInterruptedRestore = preexisting && readBackupPins(backupDir).some((pin) => pin.pin_id === pinId);
-			if (
-				targetDatabase !== undefined &&
-				targetDatabase !== databaseName &&
-				!ourInterruptedRestore &&
-				!isMissingOrEmptyDir(databaseDir)
-			) {
-				throw new ClientError(
-					`target_database '${targetDatabase}' already exists at ${databaseDir}; restoring into it would destroy it — choose a new name, or restore in place by omitting target_database`
-				);
-			}
+			// check and then lose the database it just made.
+			assertTargetClaimable(target, backupDir, preexisting);
 			pinBackup(
 				backupDir,
 				pinId,
@@ -1449,6 +1443,34 @@ export async function verifyBackupFiles(
 		);
 	}
 	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables });
+}
+
+/**
+ * Refuse to claim an existing, non-empty restore target unless it is debris of this repository's own
+ * interrupted restore: that exemption is what keeps a rerun from wedging for good, since a drop
+ * refuses a marked directory too and the marker keeps the pin live. A marker that records its source
+ * proves ownership only by matching this repository; one written before sources were recorded falls
+ * back to this repository's pin on the target, which a pin stranded past its own marker can still
+ * vouch for. Restoring a database in place is not a claim on someone else's directory.
+ */
+export function assertTargetClaimable(
+	target: { databaseDir: string; databaseName: string; inPlace: boolean },
+	backupDir: string,
+	preexisting: boolean
+): void {
+	if (target.inPlace) return;
+	if (preexisting) {
+		const markerSource = readRestoringMarkerSource(target.databaseDir);
+		const ours =
+			markerSource === undefined
+				? readBackupPins(backupDir).some((pin) => pin.pin_id === restorePinId(target.databaseDir))
+				: markerSource === restoreSourceId(backupDir);
+		if (ours) return;
+	}
+	if (isMissingOrEmptyDir(target.databaseDir)) return;
+	throw new ClientError(
+		`target_database '${target.databaseName}' already exists at ${target.databaseDir}; restoring into it would destroy it — choose a new name, or restore in place by omitting target_database`
+	);
 }
 
 function isMissingOrEmptyDir(path: string): boolean {

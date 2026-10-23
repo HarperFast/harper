@@ -59,8 +59,10 @@ const {
 	beginRestore,
 	completeRestore,
 	checkRestoreState,
+	readRestoringMarkerSource,
 	restoreLockHeldExclusively,
 	restoreMarkerPresent,
+	restoreSourceId,
 } = require('#src/dataLayer/restoreMarker');
 const {
 	managementLockPath,
@@ -321,6 +323,7 @@ describe('rocksdbBackup', function () {
 			// abandon, not hold: the lock must be free, or the rerun is refused for contention instead
 			abandonRestore(beginRestore(targetDir));
 			assert.strictEqual(readBackupPins(backupDir).length, 1, 'precondition: the interrupted restore holds its source');
+			assert.strictEqual(readRestoringMarkerSource(targetDir), undefined, 'precondition: a pre-upgrade marker');
 
 			try {
 				const second = await createBackupOffline(DB_NAME);
@@ -357,6 +360,68 @@ describe('rocksdbBackup', function () {
 				rmSync(targetDir, { recursive: true, force: true });
 				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
 			}
+		});
+
+		describe('a marked target_database records which repository it is restoring from', function () {
+			const TARGET = `${DB_NAME}-foreign`;
+			let targetDir;
+			let backupDir;
+			let backupId;
+
+			beforeEach(async function () {
+				this.timeout(30000);
+				writeRecords([['alpha', { n: 1 }]]);
+				backupId = (await createBackupOffline(DB_NAME)).backup_id;
+				await restoreBackupOffline(DB_NAME, backupId, TARGET);
+				targetDir = join(storageDir, TARGET);
+				backupDir = backupDirForDatabase(DB_NAME);
+			});
+
+			afterEach(async function () {
+				if (checkRestoreState(targetDir) !== 'clear') completeRestore(beginRestore(targetDir));
+				rmSync(targetDir, { recursive: true, force: true });
+				unpinBackup(backupDir, restorePinId(targetDir));
+				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
+			});
+
+			it("refuses another repository's interrupted restore even though this source's pin outlived its marker", async function () {
+				this.timeout(30000);
+				await withBackupRepositoryLock(backupDir, DB_NAME, async () => {
+					pinBackup(backupDir, restorePinId(targetDir), backupId, 'stranded past its marker', targetDir);
+				});
+				abandonRestore(beginRestore(targetDir, undefined, backupDirForDatabase(`${DB_NAME}-other`)));
+
+				await assert.rejects(restoreBackupOffline(DB_NAME, backupId, TARGET), (error) =>
+					/already exists/.test(error.message)
+				);
+				assert.strictEqual(checkRestoreState(targetDir), 'incomplete', "the other restore's debris stays blocked");
+			});
+
+			it("reruns this repository's own interrupted restore on the marker's word alone, with no pin", async function () {
+				this.timeout(30000);
+				abandonRestore(beginRestore(targetDir, undefined, backupDir));
+				assert.deepStrictEqual(readBackupPins(backupDir), [], 'precondition: no claim vouches for the target');
+
+				await assert.doesNotReject(restoreBackupOffline(DB_NAME, backupId, TARGET));
+				assert.strictEqual(checkRestoreState(targetDir), 'clear');
+			});
+
+			it('records this repository on the marker it publishes', async function () {
+				this.timeout(30000);
+				rmSync(targetDir, { recursive: true, force: true });
+				const realRestore = backups.restore;
+				let source;
+				backups.restore = (...args) => {
+					source = readRestoringMarkerSource(targetDir);
+					return realRestore(...args);
+				};
+				try {
+					await restoreBackupOffline(DB_NAME, backupId, TARGET);
+				} finally {
+					backups.restore = realRestore;
+				}
+				assert.strictEqual(source, restoreSourceId(backupDir));
+			});
 		});
 
 		it('refuses to back up a database with an incomplete restore pending', async function () {
