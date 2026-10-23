@@ -1,4 +1,3 @@
-require('../testUtils');
 const assert = require('node:assert');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
