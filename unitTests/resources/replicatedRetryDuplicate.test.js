@@ -351,43 +351,48 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		assert.equal((await T.get('counter')).count, 13);
 	});
 
-	it('skips a committed duplicate reached through a known-origin audit ref on retry', async function () {
-		if (isLMDB) return this.skip();
-		const version = Date.now() + 86400000;
-		const state = await fixture('KnownOriginRetryRef', version);
-		const originId = getIdOfRemoteNode('duplicate-origin', state.T.auditStore);
-		await state.apply(add(10), { version: version + 10 });
-		const retried = startPendingWrite(state, add(1), version);
-		try {
-			await waitFor(() => retried.write?.appendedAuditEntry, {
-				timeout: 3000,
-				message: 'the retry candidate must stage before the competing duplicate',
-			});
-			const native = retried.context.transaction.transaction;
-			await state.apply(add(1), { version });
-			const headWithRef = state.T.primaryStore.getEntry('counter');
-			assert.ok(headWithRef.additionalAuditRefs?.some((ref) => ref.version === version && ref.nodeId === originId));
-			await state.apply(add(0), { version: version + 20 });
-			const newerHead = state.T.primaryStore.getEntry('counter');
-			assert.equal(newerHead.version, version + 20);
-			assert.ok(
-				!newerHead.additionalAuditRefs?.some((ref) => ref.version === version && ref.nodeId === originId),
-				'the duplicate is no longer on the primary record head'
-			);
-			const newerAudit = state.T.auditStore.get(version + 20, state.T.tableId, 'counter', originId);
-			assert.ok(
-				newerAudit.previousAdditionalAuditRefs?.some((ref) => ref.version === version && ref.nodeId === originId),
-				'the newer audit entry must carry the committed origin-known ref'
-			);
-			retried.release();
-			await retried.completion;
-			assert.ok(native.retries > 0, 'the retry must follow a real conflict');
-			assert.equal(retried.write.skipped, true);
-			assert.equal((await state.T.get('counter')).count, 11);
-		} finally {
-			retried.release();
-		}
-	});
+	// abandonedHandle: the retry's own log entry was flushed by a handle a retained-read-snapshot replay left
+	// behind, so it may be readable; a link from committed state still proves the duplicate committed.
+	for (const abandonedHandle of [false, true]) {
+		it(`skips a committed duplicate reached through a known-origin audit ref on retry${abandonedHandle ? ' when its own entry is on an abandoned handle' : ''}`, async function () {
+			if (isLMDB) return this.skip();
+			const version = Date.now() + 86400000;
+			const state = await fixture(`KnownOriginRetryRef${abandonedHandle}`, version);
+			const originId = getIdOfRemoteNode('duplicate-origin', state.T.auditStore);
+			await state.apply(add(10), { version: version + 10 });
+			const retried = startPendingWrite(state, add(1), version);
+			try {
+				await waitFor(() => retried.write?.appendedAuditEntry, {
+					timeout: 3000,
+					message: 'the retry candidate must stage before the competing duplicate',
+				});
+				const native = retried.context.transaction.transaction;
+				await state.apply(add(1), { version });
+				const headWithRef = state.T.primaryStore.getEntry('counter');
+				assert.ok(headWithRef.additionalAuditRefs?.some((ref) => ref.version === version && ref.nodeId === originId));
+				await state.apply(add(0), { version: version + 20 });
+				const newerHead = state.T.primaryStore.getEntry('counter');
+				assert.equal(newerHead.version, version + 20);
+				assert.ok(
+					!newerHead.additionalAuditRefs?.some((ref) => ref.version === version && ref.nodeId === originId),
+					'the duplicate is no longer on the primary record head'
+				);
+				const newerAudit = state.T.auditStore.get(version + 20, state.T.tableId, 'counter', originId);
+				assert.ok(
+					newerAudit.previousAdditionalAuditRefs?.some((ref) => ref.version === version && ref.nodeId === originId),
+					'the newer audit entry must carry the committed origin-known ref'
+				);
+				if (abandonedHandle) retried.write.appendedTo = {};
+				retried.release();
+				await retried.completion;
+				assert.ok(native.retries > 0, 'the retry must follow a real conflict');
+				assert.equal(retried.write.skipped, true);
+				assert.equal((await state.T.get('counter')).count, 11);
+			} finally {
+				retried.release();
+			}
+		});
+	}
 
 	for (const belowFloor of [false, true]) {
 		it(`applies an ambiguous duplicate retry behind a newer committed write ${belowFloor ? 'below' : 'above'} the floor`, async function () {

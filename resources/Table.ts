@@ -4976,9 +4976,9 @@ export function makeTable(options): TableResourceClass {
 					// match alone, so keyed probes stay shielded and walk skips require committed provenance.
 					// Per-write: a transaction-wide retry flag would also suppress dedup for unrelated
 					// deliveries co-batched with the conflict or fresh writes in a reused transaction.
+					// Sticky: a proxy read from the last attempt's skipped state launders when a recommit
+					// round self-skips (walk identity tie against its own staged record) before a replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
-					// The retry's own entry may be readable if it was appended on a different native handle.
-					const ownEntryMayBeReadable = stagedOwnAuditEntry && write.appendedTo !== transaction;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
@@ -5321,7 +5321,8 @@ export function makeTable(options): TableResourceClass {
 									if (
 										isRocksDB &&
 										!replaying &&
-										!ownEntryMayBeReadable &&
+										// on a retry only a link from committed state proves the write committed: an
+										// orphaned log entry can match the identity but is never linked from a committed record
 										(!stagedOwnAuditEntry || walkOriginKnown) &&
 										localTime === appendedLogKey &&
 										(auditRecord.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))
@@ -5344,11 +5345,9 @@ export function makeTable(options): TableResourceClass {
 													// Not for a write the floor rekeyed: its received identity is no longer addressable,
 													// so an equal version from the same origin is its re-delivery, as it was before.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
-												} else if (replaying || ownEntryMayBeReadable) {
-													// The log entry being replayed (or possibly staged by this write's failed attempt)
-													// is the write itself, not proof that its primary-store mutation committed.
-													precedesExisting = 1;
-												} else if (stagedOwnAuditEntry && !walkOriginKnown) {
+												} else if (replaying || (stagedOwnAuditEntry && !walkOriginKnown)) {
+													// The log entry being replayed, or one reached on a retry without committed
+													// provenance, is not proof that the write's primary-store mutation committed.
 													precedesExisting = 1;
 												} else {
 													logger.debug?.(
