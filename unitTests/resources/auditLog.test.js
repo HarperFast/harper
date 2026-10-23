@@ -2682,12 +2682,12 @@ describe('history after record eviction (issue #3164)', () => {
 			await delay(150);
 			assert.ok(Date.now() - since > 100);
 		}
-		function countLogScans(Table) {
+		function countLogScans(Table, isScan = (options) => options.start === 1) {
 			const auditStore = Table.primaryStore.rootStore.auditStore;
 			const getRange = auditStore.getRange;
 			const scans = { count: 0 };
 			auditStore.getRange = function (options) {
-				if (options.start === 1) scans.count++;
+				if (isScan(options)) scans.count++;
 				return getRange.call(this, options);
 			};
 			scans.restore = () => (auditStore.getRange = getRange);
@@ -2813,7 +2813,8 @@ describe('history after record eviction (issue #3164)', () => {
 			const putTime = headOf(HistoryTable, 'rec-1');
 			await HistoryTable.patch('rec-1', { name: 'patched' });
 			await evict(HistoryTable, 'rec-1');
-			const scans = countLogScans(HistoryTable);
+			// RocksDB serves the exact lookup itself through an exact-start range
+			const scans = countLogScans(HistoryTable, (options) => !options.exactStart);
 			try {
 				assert.deepStrictEqual(recordAt('rec-1', putTime), initial);
 				assert.strictEqual(scans.count, 0);

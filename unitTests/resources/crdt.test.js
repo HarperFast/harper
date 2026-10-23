@@ -533,7 +533,6 @@ describe('crdt getRecordAtTime', () => {
 				...events,
 				{ version: 33, type: 'put', value: { id: 'F', name: 'other record' }, recordId: 'F' },
 				{ version: 34, type: 'put', value: { id: 'E', name: 'other table' }, tableId: 2 },
-				// a derived-index eviction marker: not a state change, and linked to nothing
 				{ version: 35, type: 'evict', value: undefined, previousVersion: undefined },
 				{ version: 50, type: 'delete', value: null, previousVersion: 30 },
 				{ version: 60, type: 'put', value: { id: 'E', name: 'reinserted' }, previousVersion: 0 },
@@ -617,6 +616,8 @@ describe('crdt getRecordAtTime', () => {
 			];
 			const multiLogStore = makeStore(multiLogEvents);
 			assert.deepStrictEqual(getRecordAtTime(undefined, 200, multiLogStore, 1, 'M', 2), { id: 'M', count: 9 });
+			assert.deepStrictEqual(getRecordAtTime(undefined, 250, multiLogStore, 1, 'M', 2), { id: 'M', count: 9 });
+			assert.deepStrictEqual(getRecordAtTime(undefined, 250, multiLogStore, 1, 'M', 3), { id: 'M', count: 100 });
 		});
 	});
 });
