@@ -442,10 +442,8 @@ describe('storageReclamation module', function () {
 		describe('getStorageSpaceStats', function () {
 			it('derives available/free/size from a fresh quota-status file', async function () {
 				const usedBytes = 30 * 1024 * 1024 * 1024;
-				fs.writeFileSync(
-					quotaStatusPath,
-					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
-				);
+				const updatedAt = Date.now();
+				fs.writeFileSync(quotaStatusPath, JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt }));
 
 				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
 
@@ -453,6 +451,21 @@ describe('storageReclamation module', function () {
 				assert.equal(stats.size, QUOTA_100GB);
 				assert.equal(stats.available, QUOTA_100GB - usedBytes);
 				assert.equal(stats.free, stats.available);
+				assert.equal(stats.updatedAt, updatedAt);
+			});
+
+			it("reports the quota sample's own time, not the time it was read", async function () {
+				// A disk ledger re-bases only on a sample newer than its last debit; a re-read of the same
+				// minutes-old file must not look like a new measurement.
+				const updatedAt = Date.now() - 2 * 60 * 1000;
+				fs.writeFileSync(quotaStatusPath, JSON.stringify({ usedBytes: 1, quotaBytes: QUOTA_100GB, updatedAt }));
+
+				const first = await storageReclamation.getStorageSpaceStats(tmpDir);
+				const second = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(first.basis, 'quota');
+				assert.equal(first.updatedAt, updatedAt);
+				assert.equal(second.updatedAt, updatedAt);
 			});
 
 			it('falls back to statfs when usedBytes is missing, instead of treating it as 0 free usage', async function () {
@@ -587,9 +600,12 @@ describe('storageReclamation module', function () {
 			});
 
 			it('falls back to statfs when quota-status file is absent', async function () {
+				const before = Date.now();
 				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+				const after = Date.now();
 
 				assert.equal(stats.basis, 'filesystem');
+				assert.ok(stats.updatedAt >= before && stats.updatedAt <= after, 'a statfs sample is timed at the call');
 				assert.ok(stats.size > 0);
 				assert.ok(stats.available >= 0);
 				assert.ok(stats.free >= 0);
@@ -605,6 +621,7 @@ describe('storageReclamation module', function () {
 				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
 
 				assert.equal(stats.basis, 'filesystem');
+				assert.ok(stats.updatedAt > staleTimestamp, 'a statfs fallback must not carry the stale quota time');
 			});
 		});
 
