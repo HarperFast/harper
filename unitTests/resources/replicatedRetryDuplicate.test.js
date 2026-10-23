@@ -163,6 +163,37 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		};
 	}
 
+	function startPendingPublishAndPut(state, record, version) {
+		const context = { source: {}, sourceApply: true, timestamp: version };
+		const originId = getIdOfRemoteNode('duplicate-origin', state.T.auditStore);
+		let release;
+		let write;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		const completion = transaction(context, async () => {
+			const resource = await state.T.getResource('counter', context);
+			const options = { isNotification: true, nodeId: originId, version };
+			resource._writePublish('counter', { published: true }, options);
+			await resource._writeUpdate('counter', record, true, options);
+			const writes = context.transaction.writes.filter((candidate) => candidate.key === 'counter');
+			assert.equal(writes.length, 2);
+			await context.transaction.save(writes[0]);
+			await context.transaction.save(writes[1]);
+			write = writes[1];
+			await gate;
+		});
+		completion.catch(() => {});
+		return {
+			completion,
+			release: () => release(),
+			get write() {
+				return write;
+			},
+			context,
+		};
+	}
+
 	it('applies a retry when a competing terminal abort left its matching log entry readable', async function () {
 		if (isLMDB) return this.skip();
 		this.timeout(10000);
@@ -216,6 +247,65 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 			assert.ok(retryAttempts > 1, 'the retrying delivery must really conflict and re-stage');
 			assert.equal(retried.write.skipped, false);
 			assert.equal((await state.T.get('counter')).count, 11);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+			retried.release();
+			abandoned.release();
+		}
+	});
+
+	it('does not trust a publish-restamped retry base over a matching terminal-abort orphan', async function () {
+		if (isLMDB) return this.skip();
+		this.timeout(10000);
+		const version = Date.now() + 86400000;
+		const state = await fixture('PublishRestampOrphan', version);
+		const originId = getIdOfRemoteNode('duplicate-origin', state.T.auditStore);
+		const retried = startPendingPublishAndPut(state, { id: 'counter', count: 50 }, version);
+		const abandoned = startPendingWrite(state, add(1), version);
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const targetDb = state.T.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		let retryNativeId;
+		let abandonedNativeId;
+		let retryAttempts = 0;
+		let abandonedAttempts = 0;
+		try {
+			await waitFor(() => retried.write?.appendedAuditEntry && abandoned.write?.appendedAuditEntry, {
+				timeout: 3000,
+				message: 'the retrying batch and competing write must both stage before the conflict',
+			});
+			retryNativeId = retried.context.transaction.transaction.id;
+			abandonedNativeId = abandoned.context.transaction.transaction.id;
+			await state.apply(add(10), { version: version - 1 });
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				if (this.id === abandonedNativeId && ++abandonedAttempts === 2) {
+					throw Object.assign(new Error('terminal storage error after logged conflict'), {
+						code: 'ERR_IO',
+						hasLog: true,
+					});
+				}
+				if (this.id === retryNativeId && ++retryAttempts === 1) {
+					try {
+						return await originalCommit.apply(this, args);
+					} catch (error) {
+						await abandoned.completion.catch(() => {});
+						const orphan = state.T.auditStore.get(version, state.T.tableId, 'counter', originId);
+						assert.ok(orphan, 'the terminally aborted sibling must leave a readable log entry');
+						assert.equal(orphan.txnLogKey, version);
+						assert.equal(orphan.version, version);
+						throw error;
+					}
+				}
+				return originalCommit.apply(this, args);
+			};
+			retried.release();
+			abandoned.release();
+			await retried.completion;
+			await assert.rejects(abandoned.completion, (error) => error.code === 'ERR_IO');
+			assert.ok(retryAttempts > 1, 'the publish-and-put transaction must really retry');
+			assert.equal(retried.write.skipped, false);
+			assert.equal((await state.T.get('counter')).count, 50, 'the retried put must replace the committed base');
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 			retried.release();

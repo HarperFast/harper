@@ -4971,17 +4971,13 @@ export function makeTable(options): TableResourceClass {
 					transaction: any,
 					committedBy?: DatabaseTransaction
 				) => {
-					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
-					// save(); log entries are not part of the aborted rocks transaction, so they survive).
-					// Only such a write can find its own orphaned entry in the dedup lookups below and must
-					// not treat it as "already applied". Per-write on purpose: the transaction-wide retry
-					// flag would also suppress dedup for a genuine re-delivered duplicate co-batched with
-					// the conflicting write (double-applying it) and for fresh writes staged through a
-					// reused transaction whose retries counter is stale. Sticky on purpose: a proxy read
-					// from the last attempt's skipped state launders when a recommit round self-skips
-					// (walk identity tie against its own staged record) before a fresh-transaction replay.
+					// Whether a prior attempt of THIS write appended its audit entry (sticky, set in
+					// save()). A retry cannot infer that its record mutation committed from an exact log
+					// match alone, so keyed probes stay shielded and walk skips require committed provenance.
+					// Per-write: a transaction-wide retry flag would also suppress dedup for unrelated
+					// deliveries co-batched with the conflict or fresh writes in a reused transaction.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
-					// The keyed probes are not commit evidence on a retry. A walk can skip only on links from committed state.
+					// The retry's own entry may be readable if it was appended on a different native handle.
 					const ownEntryMayBeReadable = stagedOwnAuditEntry && write.appendedTo !== transaction;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
@@ -5229,14 +5225,19 @@ export function makeTable(options): TableResourceClass {
 							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
-							let walkOriginKnown = !priorStaged;
+							// A retry can load a base restamped by an earlier saved publish/relocate from this
+							// transaction. Those writes do not set stagedEntry, so priorStaged alone cannot
+							// establish that the base is committed.
+							const retryBaseIsCommitted =
+								!priorStaged && !(stagedOwnAuditEntry && hasSavedSameKeySibling(write, committedBy));
+							let walkOriginKnown = retryBaseIsCommitted;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number; originKnown: boolean }> =
 								existingEntry.additionalAuditRefs
 									? existingEntry.additionalAuditRefs.map((ref) => ({
 											localTime: ref.version,
 											nodeId: ref.nodeId,
-											originKnown: !priorStaged,
+											originKnown: retryBaseIsCommitted,
 										}))
 									: [];
 
@@ -9660,10 +9661,15 @@ export function makeTable(options): TableResourceClass {
 	// The commit base is the committed record unless another write to the key already saved without being
 	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
-		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
-			if (other !== write && other.saved && !other.skipped) return committedEntry(write.key);
-		}
+		if (hasSavedSameKeySibling(write, transaction)) return committedEntry(write.key);
 		return existingEntry;
+	}
+
+	function hasSavedSameKeySibling(write: any, transaction: DatabaseTransaction | undefined): boolean {
+		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
+			if (other !== write && other.saved && !other.skipped) return true;
+		}
+		return false;
 	}
 
 	function committedEntry(id: Id): Entry | undefined {
