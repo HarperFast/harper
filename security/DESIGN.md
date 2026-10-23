@@ -192,6 +192,22 @@ then throws `SES_NO_SLOPPY`. Lockdown and the compartment share that one SES ins
 `pure-ESM package resolution` blocks in `unitTests/security/jsLoader/jsLoader.test.js` (both modes) and
 `integrationTests/components/compartment-pure-esm-dependency.test.ts` (Node and Bun shards).
 
+## `require()` and `import` pass the same gates in the VM loader (`security/jsLoader.ts`)
+
+In `vm` and `vm-current-context` modes a module reaches application code through four entry points: the
+ESM `linker`, the two `importModuleDynamically` hooks, and the CommonJS `cjsRequire`. Each applies, in
+order: the `'harper'` alias, `checkAllowedModulePath` (allowedDirectory for files, allowedBuiltInModules
+for builtins, and the substitute it returns, such as the constrained `child_process`), the
+`shouldUseApplicationLoader` app-vs-native decision, and for app-loaded files `readApplicationModule`
+(record the bytes as read, strip TypeScript). `require()` differs only in loading synchronously: native
+is `require(path)` rather than `import()`. A new entry point, or a new branch in one, owes all four.
+`cjsCache` and `nativeRequires` hold only modules that passed the check, which is why a repeated
+`require()` returns from them before checking again. Only a compile error of a module's own CommonJS
+wrapper selects the ESM retry in `createModuleFromSource`; an error thrown while it runs propagates.
+Not covered: compartment mode's `importHook`, and what natively loaded packages require themselves.
+Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoader.test.js` and
+`integrationTests/components/cjs-require-loader.test.ts`.
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`
