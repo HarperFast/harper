@@ -359,6 +359,18 @@ describe('Declarative residency', function () {
 		for (const row of audit) assert.equal(row.residencySlot, 65535);
 	});
 
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'refuses branching a database with declarative ownership',
+		async () => {
+			const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
+			try {
+				await assert.rejects(getOrCreateBranch('slots_test', 'slotBranch'), /declarative residency.*branches/);
+			} finally {
+				await removeBranches();
+			}
+		}
+	);
+
 	for (const mode of ['write', 'write-unflushed-map'])
 		(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
 			`replays attribute slots before peer discovery after an unclean exit (${mode})`,

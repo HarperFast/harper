@@ -195,7 +195,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			entry.absolutePath,
 			scope.resources,
 			scopedTableFactory(scope.applicationScope?.branches, thisThreadOwnsApplication(scope.applicationScope?.name)),
-			scope.logger
+			scope.logger,
+			scope.applicationScope?.branches
 		);
 	});
 	// Settles with the load's real outcome, so a diagnosed failure is not left for the loader's watchdog
@@ -217,7 +218,8 @@ async function processGraphQLSchema(
 	filePath,
 	resources,
 	declareTable: typeof table = table,
-	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger
+	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger,
+	branches?: Map<string, unknown>
 ) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind, specifiedDirectives } = await import('graphql');
@@ -540,6 +542,8 @@ async function processGraphQLSchema(
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
+		if (typeDef.residency && branches?.has(typeDef.database || 'data'))
+			throw new ClientError('Cannot use declarative residency in application database branches', 400);
 		if (typeDef.residency)
 			await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, typeDef.residency);
 		// with graphql database definitions, this is a declaration that the table should exist and that it

@@ -2413,6 +2413,8 @@ export function openBranchDatabase(
 		// before the open: table load schedules TTL, eviction and audit cleanup, which ask who owns this store
 		manageThreads.markBranchStorePath(path);
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
+		if (Object.values(tables).some((Table) => Table.residency))
+			throw new ClientError('Cannot use declarative residency in application database branches', 400);
 		// Pin the handle to the roots the caller proved this branch was published with, before it is
 		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
 		// configuration instead would let an appended volume take writes at an index the branch's own
@@ -3930,6 +3932,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		fullTextFields,
 		createdTime,
 	} = tableDefinition;
+	if (target.branch && residency)
+		throw new ClientError('Cannot use declarative residency in application database branches', 400);
 	const auditExplicitlyEnabled = audit === true;
 	const auditExplicitlyDisabled = audit === false;
 	const fullTextIndexesExplicit = tableDefinition.fullTextIndexes !== undefined;
