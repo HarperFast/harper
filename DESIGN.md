@@ -18,6 +18,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## resources/ — records, transactions, tables, blobs, audit
 
+- [Declarative residency resolves fixed slots through an authoritative database map](resources/DESIGN.md#declarative-residency-resolves-fixed-slots-through-an-authoritative-database-map) — Policy persistence, authoritative snapshots, placement guards, and attribute-transition confirmation.
 - [File overview](resources/DESIGN.md#file-overview) — What each file in `resources/` owns.
 - [`Resource.ts` — base class](resources/DESIGN.md#resourcets--base-class) — Static entry points versus instance methods, and the `transactional()` wrapper.
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the `makeTable()` factory.
@@ -245,3 +246,4 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [`build.sh` packages only a clean, error-free build (`build.sh`)](build-tools/DESIGN.md#buildsh-packages-only-a-clean-error-free-build-buildsh) — Packaging clears `dist/` and fails on `tsc` errors, so a failed or partial build is never shipped.
 - [Emitted `dist/` JS is comment-free and Latin-1 (`build-tools/build-dist.mjs`)](build-tools/DESIGN.md#emitted-dist-js-is-comment-free-and-latin-1-build-toolsbuild-distmjs) — V8 keeps every loaded module's source on each thread's heap and stores a file as UTF-16 when one char is above `0xFF`, so the build strips comments and escapes non-Latin-1 literals in the emitter.
 - [Integration tests never assert the literal `true` (`build-tools/oxlint-plugin-harper.mjs`)](build-tools/DESIGN.md#integration-tests-never-assert-the-literal-true-build-toolsoxlint-plugin-harpermjs) — A lint rule rejects literal-true assertions under `integrationTests/`; a fixture test catches an oxlint bump that silently stops it reporting.
+

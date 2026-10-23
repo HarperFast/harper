@@ -722,6 +722,7 @@ export const CONFIG_PARAMS = {
 	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_FAILUREMODE:
 		'replication_mtls_certificateVerification_ocsp_failureMode',
 	REPLICATION_SHARD: 'replication_shard',
+	REPLICATION_SHARDS: 'replication_shards',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
 	REPLICATION_BLOBGAPRECONNECTMS: 'replication_blobGapReconnectMs',
 	REPLICATION_BLOBGAPESCALATIONCYCLES: 'replication_blobGapEscalationCycles',

@@ -186,6 +186,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				version,
 				txnLogKey,
 				residencyId,
+				residencySlot,
 				expiresAt,
 				originatingOperation,
 				username,
@@ -299,6 +300,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				const options = {
 					context,
 					residencyId,
+					residencySlot,
 					nodeId,
 					originatingOperation,
 					version,
