@@ -194,7 +194,7 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		}
 		assert.ok(
 			spy.reads.some((read) => read.committedRead),
-			'a key written twice is decided from committed state'
+			'an eager same-key publish forces the committed read'
 		);
 		assert.equal(await puts(), putsBefore, 'the re-delivered put must not be logged again');
 		assert.equal((await T.get('r')).name, 'first');
@@ -220,11 +220,7 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		} finally {
 			spy.restore();
 		}
-		assert.deepEqual(
-			spy.reads.filter((read) => !read.committedRead),
-			[],
-			'both writes are decided from the committed record, without reading the log'
-		);
+		assert.deepEqual(spy.reads, [], 'skipped and unsaved same-key writes leave the commit base usable, with no read');
 		assert.equal((await T.getHistoryOfRecord('r')).length, history);
 		assert.equal((await T.get('r')).name, 'second');
 	});

@@ -9634,12 +9634,15 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
-	// The commit base is the committed record only for a key's sole write in the transaction: another
-	// write to the key can restamp it without staging (a publish or relocate saves when it is added).
+	// The commit base is the committed record unless another write to the key already saved without being
+	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
-		const soleWrite =
-			!write.priorWrite && transaction?.writesByKey?.get(write.store)?.get(writeKeyId(write.key)) === write;
-		return soleWrite ? existingEntry : primaryStore.getEntry(write.key, COMMITTED_READ);
+		let other = transaction?.writesByKey?.get(write.store)?.get(writeKeyId(write.key));
+		if (!other) return primaryStore.getEntry(write.key, COMMITTED_READ);
+		for (; other; other = other.priorWrite) {
+			if (other !== write && other.saved && !other.skipped) return primaryStore.getEntry(write.key, COMMITTED_READ);
+		}
+		return existingEntry;
 	}
 
 	function isHeadIdentity(entry: Partial<Entry> | undefined, version: number, nodeId?: number): boolean {
