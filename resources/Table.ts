@@ -7290,6 +7290,13 @@ export function makeTable(options): TableResourceClass {
 								pendingRealTimeQueue = pendingRealTimeQueue.filter(
 									(event) => (event.localTime ?? event.version) > replayedThrough
 								);
+								if (!includeSuperseded) {
+									let kept = 0;
+									for (const event of pendingRealTimeQueue) {
+										if (keepCurrentRecordEvent(event)) pendingRealTimeQueue[kept++] = event;
+									}
+									pendingRealTimeQueue.length = kept;
+								}
 							}
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;

@@ -338,6 +338,29 @@ describe('a replay that crosses a reload marker', () => {
 		subscription.end();
 	});
 
+	it('refreshes a row buffered behind the re-snapshot to its current value', async () => {
+		const T = reloadTable();
+		const startTime = await putAndPosition(T, 'team/before', 'before');
+		for (let i = 0; i < 150; i++) await backfill(T, `team/back${i}`, `back${i}`);
+		await T.writeReloadMarker();
+		const subscription = await T.subscribe({ startTime });
+		await waitFor(() => subscription.queue?.length > 100, { message: 'the re-snapshot fills the queue and waits' });
+		const witness = [];
+		const live = await T.subscribe({ omitCurrent: true, listener: (event) => witness.push(event.value?.value) });
+		await T.put('zz', { value: 'buffered' });
+		await waitFor(() => witness.includes('buffered'));
+		// committed before one notify pass, the publish has taken the row's version by the time the put's event is built
+		await Promise.all([T.put('zz', { value: 'current' }), T.publish('zz', { value: 'message' })]);
+		await waitFor(() => witness.includes('message'));
+		live.end();
+		const events = [];
+		subscription.on('data', (event) => events.push(event));
+		await waitFor(() => delivered(events).includes('message'), { message: saw(events) });
+		const forRow = events.filter((event) => event.id === 'zz' && event.type !== 'message');
+		assert.strictEqual(forRow.at(-1)?.value?.value, (await T.get('zz')).value, saw(events)());
+		subscription.end();
+	});
+
 	it('ends the last delivery of each row on its current value', async () => {
 		const T = reloadTable();
 		const startTime = await putAndPosition(T, 'seed', 'seed');
