@@ -92,6 +92,21 @@ describe('Declarative residency', function () {
 		assert.equal(entry.value.body, 'complete');
 	});
 
+	for (const byAttribute of [false, true])
+		it(`returns absent records with a replication source (byAttribute=${byAttribute})`, async () => {
+			const Records = await declare(
+				`SlotMissing${byAttribute}`,
+				`@residency(slots: 10, slotFrom: "0", byAttribute: ${byAttribute})`
+			);
+			Records.sourcedFrom(
+				{ load: () => assert.fail('An absent local row is not an invalidation') },
+				{ intermediateSource: true }
+			);
+			assert.equal(await Records.get('absent'), undefined);
+			await Records.put('present', { id: 'present', tag: 'indexed', body: 'complete' });
+			assert.equal((await Records.get('present')).body, 'complete');
+		});
+
 	it('refuses an attribute-slot transition before commit without a connected new owner', async () => {
 		const Records = await declare(
 			'SlotOffline',
@@ -167,6 +182,72 @@ describe('Declarative residency', function () {
 		await write;
 	});
 
+	it('requires mandatory confirmation only for transitioning records in a mixed transaction', async () => {
+		const Records = await declare(
+			'SlotMixedConfirmation',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed\nbody: String'
+		);
+		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
+		await Records.put('local', { id: 'local', region: 0, body: 'original' });
+		setResidencyPlacementGuard(() => {});
+		let groups;
+		replicationConfirmation((_database, _version, count, owners) => {
+			assert.equal(count, 1);
+			groups = owners;
+			return Promise.resolve();
+		});
+		await transaction({}, async () => {
+			await Records.patch('moved', { region: 1 });
+			await Records.patch('local', { body: 'changed' });
+		});
+		assert.deepEqual(groups, [['slot-owner']]);
+		assert.equal(Records.primaryStore.getEntry('local').value.body, 'changed');
+		assert.equal(Records.primaryStore.getEntry('moved').residencySlot, 1);
+	});
+
+	it('keeps explicit confirmation requirements for every record in a mixed transaction', async () => {
+		const Records = await declare(
+			'SlotExplicitConfirmation',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed\nbody: String'
+		);
+		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
+		await Records.put('local', { id: 'local', region: 0, body: 'original' });
+		setResidencyPlacementGuard(() => {});
+		await assert.rejects(
+			transaction({ replicatedConfirmation: 1 }, async () => {
+				await Records.patch('moved', { region: 1 });
+				await Records.patch('local', { body: 'changed' });
+			}),
+			/0 other owners/
+		);
+		assert.equal(Records.primaryStore.getEntry('local').value.body, 'original');
+		assert.equal(Records.primaryStore.getEntry('moved').residencySlot, 0);
+	});
+
+	it('does not carry mandatory owner confirmation into a later commit in the same scope', async () => {
+		const Records = await declare(
+			'SlotConfirmationReuse',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed\nbody: String'
+		);
+		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
+		setResidencyPlacementGuard(() => {});
+		let calls = 0;
+		replicationConfirmation(() => {
+			calls++;
+			return Promise.resolve();
+		});
+		await transaction({}, async (txn) => {
+			await Records.patch('moved', { region: 1 });
+			await txn.commit();
+			await Records.put('local', { id: 'local', region: 0, body: 'complete' });
+		});
+		assert.equal(calls, 1);
+		assert.equal(Records.primaryStore.getEntry('local').value.body, 'complete');
+	});
+
 	it('preserves slot zero on an invalidation and a later delete', async () => {
 		const Records = await declare(
 			'SlotInvalidation',
@@ -199,7 +280,7 @@ describe('Declarative residency', function () {
 		for (let i = 0; i < 10; i++) await Records.put(`key${i}`, { id: `key${i}`, tag: 'kept', body: `body${i}` });
 		const before = Array.from(Records.primaryStore.getRange({ start: true }), (entry) => ({
 			id: entry.key,
-			version: entry.version,
+			version: Records.primaryStore.getEntry(entry.key).version,
 			bytes: Buffer.from(Records.primaryStore.getBinary(entry.key)),
 		}));
 		const policy = { slots: 10, slotFrom: 'Number(id.slice(-1))' };

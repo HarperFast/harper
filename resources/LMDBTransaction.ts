@@ -41,6 +41,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 	declare stale: boolean;
 	declare overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
+	get requestedConfirmationCount(): number {
+		if (this.replicatedConfirmation) return this.replicatedConfirmation;
+		const root = this.root;
+		// The wrapper's unclaimed root belongs to its first store; later databases keep existing confirmation semantics.
+		return root && root.next === this && !root.db ? root.replicatedConfirmation || 0 : 0;
+	}
 
 	renewIdleTimeout(): void {
 		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0);
@@ -341,14 +347,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 						if (store) completions.push(store.flushed);
 					}
 					let confirmation: Promise<void>;
-					if (this.replicatedConfirmation) {
+					if (this.confirmationCount) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
 						const target = confirmReplication && databaseName ? this.confirmationTarget(txnTime) : undefined;
 						if (target)
 							confirmation = confirmReplicationAfterCommit(() =>
-								confirmReplication(databaseName, target.version, this.replicatedConfirmation, target.residentPeerLists)
+								confirmReplication(databaseName, target.version, this.confirmationCount, target.residentPeerLists)
 							);
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
@@ -365,7 +371,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.timestamp = 0;
 					this.next = null;
 					const completed =
-						confirmation || (this.root ?? this).replicatedConfirmation
+						confirmation || (this.root ?? this).confirmationCount
 							? settleCommitCompletions(completions, confirmation)
 							: Promise.all(completions);
 					return completed.then(() => {
