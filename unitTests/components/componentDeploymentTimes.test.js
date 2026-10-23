@@ -148,6 +148,8 @@ describe("finding the live release's record in the deployment table (harper#564)
 		{ deployment_id: 'times-3', project: 'times-p', status: 'failed', completed_at: 400 },
 		{ deployment_id: 'times-4', project: 'times-q', status: 'success', completed_at: 500 },
 		{ deployment_id: 'times-5', project: 'times-p', status: 'success', completed_at: 200, activated_from: 'times-x' },
+		// swapped here, then failed on a peer
+		{ deployment_id: 'times-6', project: 'times-p', status: 'failed', completed_at: 600 },
 	];
 	before(async () => {
 		await testUtils.ensureSystemTables();
@@ -171,6 +173,9 @@ describe("finding the live release's record in the deployment table (harper#564)
 			deployment_id: 'times-1',
 			completed_at: 100,
 		});
-		assert.strictEqual(await deploymentOfLiveRelease('times-p', 'times-3'), undefined);
+		assert.deepStrictEqual(await deploymentOfLiveRelease('times-p', 'times-6'), {
+			deployment_id: 'times-6',
+			completed_at: 600,
+		});
 	});
 });

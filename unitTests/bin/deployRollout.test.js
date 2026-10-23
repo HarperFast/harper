@@ -102,6 +102,21 @@ describe("following a rolling deploy's record (harper#3058)", () => {
 		assert.match(outcome.failure, /Grant the role get_deployment, or pass wait=false/);
 	});
 
+	it('bounds each read by what is left of the wait', async () => {
+		const budgets = [];
+		await awaitRollout(
+			ID,
+			async (_id, remainingMs) => {
+				budgets.push(remainingMs);
+				return { status: 'rolling_out', peer_results: [] };
+			},
+			{ ...fast, report, timeoutMs: 80 }
+		);
+		assert.ok(budgets.length > 1);
+		assert.ok(budgets.every((budget) => budget >= 1 && budget <= 80));
+		assert.ok(budgets.at(-1) < budgets[0]);
+	});
+
 	it('allows each node the per-node bound by default', () => {
 		assert.ok(ROLLOUT_WAIT_PER_NODE_MS >= 10 * 60 * 1000);
 	});

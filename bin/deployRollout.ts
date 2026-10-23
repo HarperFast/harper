@@ -35,12 +35,12 @@ export interface RolloutOutcome {
 }
 
 /**
- * Follow a rolling deploy's record until it leaves `rolling_out`, reporting each node's outcome as it lands. A read
+ * Follow a rolling deploy's record until it ends, reporting each node's outcome as it lands. A read
  * that fails is retried until the deadline, except a refusal (401/403), which no retry fixes.
  */
 export async function awaitRollout(
 	deploymentId: string,
-	getDeployment: (deploymentId: string) => Promise<RolloutRecord>,
+	getDeployment: (deploymentId: string, timeoutMs: number) => Promise<RolloutRecord>,
 	options: RolloutWaitOptions = {}
 ): Promise<RolloutOutcome> {
 	const report = options.report ?? ((line: string) => console.error(line));
@@ -56,7 +56,7 @@ export async function awaitRollout(
 	report(`Waiting for the other nodes to take deployment ${deploymentId}...`);
 	while (true) {
 		try {
-			record = await getDeployment(deploymentId);
+			record = await getDeployment(deploymentId, Math.max(1, deadline - Date.now()));
 			lastError = undefined;
 		} catch (error) {
 			const { statusCode } = error as { statusCode?: number };

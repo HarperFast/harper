@@ -117,9 +117,17 @@ export async function deploymentOfLiveRelease(
 		if (newest === undefined || (row.completed_at ?? 0) > (newest.completed_at ?? 0)) newest = row;
 	};
 	if (liveDeploymentId) {
-		consider(await table.get(liveDeploymentId));
+		const named = [await table.get(liveDeploymentId)];
 		const conditions = [{ attribute: 'activated_from', value: liveDeploymentId }];
-		for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) consider(row);
+		for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) named.push(row);
+		for (const row of named) consider(row);
+		// A deploy that swapped here and then failed on a peer is recorded failed, yet the marker says it is live.
+		if (!newest) {
+			for (const row of named) {
+				if (row?.project !== project || row.status !== 'failed') continue;
+				if (newest === undefined || (row.completed_at ?? 0) > (newest.completed_at ?? 0)) newest = row;
+			}
+		}
 	} else {
 		// Newest first, so the walk ends at the first released row rather than at the end of the project's history.
 		const conditions = [{ attribute: 'project', value: project }];

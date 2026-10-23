@@ -918,8 +918,11 @@ async function followRollout(options: any, response: any, waitTimeout: unknown):
 	delete pollOptions.headers['Transfer-Encoding'];
 	return awaitRollout(
 		response.deployment_id,
-		async (deploymentId) => {
-			const reply = await httpRequest(pollOptions, { operation: 'get_deployment', deployment_id: deploymentId });
+		async (deploymentId, remainingMs) => {
+			const reply = await httpRequest(
+				{ ...pollOptions, timeout: Math.min(CLI_OPERATION_TIMEOUT_MS, remainingMs) },
+				{ operation: 'get_deployment', deployment_id: deploymentId }
+			);
 			if (reply.statusCode !== 200) {
 				const error: any = new Error(`get_deployment answered ${reply.statusCode}: ${reply.body}`);
 				error.statusCode = reply.statusCode;

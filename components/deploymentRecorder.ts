@@ -526,6 +526,7 @@ export class DeploymentRecorder {
 		}
 		this.record.status = status;
 		this.record.completed_at = Date.now();
+		if (status === 'rolling_out') await this.keepRolloutProgress();
 		if (error) {
 			const e = error as { message?: string; code?: string | number; stack?: string };
 			this.record.error = {
@@ -535,6 +536,34 @@ export class DeploymentRecorder {
 			};
 		}
 		await this.put();
+	}
+
+	/**
+	 * A rolling deploy's activation job writes this row too, and normally waits for this write first; should it have
+	 * written already, what it recorded is kept rather than replaced by this in-memory copy.
+	 */
+	private async keepRolloutProgress(): Promise<void> {
+		const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+		const stored = await table?.get(this.deploymentId).catch(() => undefined);
+		if (!stored) return;
+		if (stored.status === 'success' || stored.status === 'partial') {
+			this.record.status = stored.status;
+			this.record.completed_at = stored.completed_at;
+			this.record.error = stored.error ?? null;
+		}
+		const activations = new Map<string, unknown>();
+		for (const peer of stored.peer_results ?? []) if (peer?.activation) activations.set(peer.node, peer.activation);
+		if (activations.size === 0) return;
+		const peers = Array.isArray(this.record.peer_results) ? this.record.peer_results : [];
+		for (const peer of peers) if (activations.has(peer?.node)) peer.activation = activations.get(peer.node);
+		for (const [node, activation] of activations) {
+			if (!peers.some((peer) => peer?.node === node)) peers.push({ node, status: null, error: null, activation });
+		}
+		this.record.peer_results = peers;
+		const recorded = new Set(this.record.event_log.map((entry) => JSON.stringify(entry)));
+		for (const entry of stored.event_log ?? []) {
+			if (entry?.event === 'peer_activation' && !recorded.has(JSON.stringify(entry))) this.record.event_log.push(entry);
+		}
 	}
 
 	get row(): Record<string, any> {

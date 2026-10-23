@@ -830,3 +830,32 @@ describe('DeploymentRecorder.finish (harper#3062)', () => {
 		);
 	});
 });
+
+describe("a rolling deploy's own terminal write (harper#3060)", () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed?.restore());
+
+	it('keeps what the activation job already recorded rather than replacing it with its in-memory row', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer({ node: 'peer-a', status: 'success' });
+		recorder.seal();
+		const activation = { activated: false, certification: null, message: null, error: 'rejected', completed_at: 5 };
+		installed.mock.rows.set(recorder.deploymentId, {
+			...recorder.row,
+			status: 'partial',
+			completed_at: 10,
+			error: { message: 'Not activated on 1 of 1 peer node(s): peer-a (rejected)', nodes: ['peer-a'] },
+			peer_results: [{ node: 'peer-a', status: 'success', error: null, activation }],
+			event_log: [{ t: 5, event: 'peer_activation', data: { node: 'peer-a', error: 'rejected' } }],
+		});
+		await recorder.finish('rolling_out');
+		const stored = installed.mock.rows.get(recorder.deploymentId);
+		assert.strictEqual(stored.status, 'partial');
+		assert.deepStrictEqual(stored.error.nodes, ['peer-a']);
+		assert.deepStrictEqual(stored.peer_results[0].activation, activation);
+		assert.ok(stored.event_log.some((entry) => entry.event === 'peer_activation'));
+	});
+});
