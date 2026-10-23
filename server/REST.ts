@@ -265,6 +265,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const replicateTo = headersObject['x-replicate-to'];
 		if (replicateTo) {
+			if (!request.user?.role?.permission?.super_user)
+				throw new ClientError('Can not specify replication parameters without super user permissions', 403);
 			const parsed = parseHeaderValue(replicateTo as any).map((node: any) => {
 				// we can use a component argument to indicate that number that should be confirmed
 				// for example, to replicate to three nodes and wait for confirmation from two: X-Replicate-To: 3;confirm=2
@@ -473,6 +475,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// we prefer to use error classes for error codes (constructor.name), but if there is a code, it is probably a node.js
 		// error that denotes error codes with a separate property
 		const code = error.code ?? error.constructor.name;
+		let outcomeExtensions;
+		try {
+			outcomeExtensions =
+				error.replicationUnconfirmed === true
+					? { replicationUnconfirmed: true, retryable: false }
+					: error.retryable === false
+						? { retryable: false }
+						: undefined;
+		} catch {}
 		const problemDetail = {
 			type: `error:${code}`, // eventually we want this to be a resolvable URI to our docs
 			code,
@@ -480,6 +491,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			status,
 			detail: error.detail,
 			instance: request.url,
+			...outcomeExtensions,
 		};
 
 		const responseObject = {

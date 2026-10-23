@@ -395,30 +395,5 @@ suite(
 				`Oracle B (single-snapshot) saw ${persistentB.length} persistent phantoms after txn-delete — REAL defect, not an oracle artifact`
 			);
 		});
-
-		// ---- Q3: verdictSummary — explicit per-oracle per-engine classification ----
-		test('Q3 verdict summary', async () => {
-			// This test is intentionally a no-op assertion — it just prints the classification
-			// instructions for the human reading the logs. The actual verdicts are in Q1/Q2 output.
-			console.log(
-				`\n[QA-184 Q3 ${ENGINE} w=${WORKER_COUNT}] INTERPRETATION GUIDE:\n` +
-					`  If Q1/Q2 show: Oracle A > 0 phantoms, Oracle B = 0 phantoms:\n` +
-					`    → VERDICT (A): QA-183 was an ORACLE ARTIFACT (cross-snapshot split)\n` +
-					`       F-041 stands as LMDB-transient (QA-182). No new defect.\n` +
-					`\n` +
-					`  If Q1/Q2 show: Oracle B > 0 persistent phantoms:\n` +
-					`    → VERDICT (B): REAL READ-PATH STALENESS DEFECT\n` +
-					`       The secondary index and base row are inconsistent within one read snapshot.\n` +
-					`       This is a distinct defect from F-029 (write-side atomicity) — it is a\n` +
-					`       read-side consistency failure. Affects: engine=${ENGINE} workers=${WORKER_COUNT}.\n` +
-					`\n` +
-					`  If neither oracle shows phantoms:\n` +
-					`    → VERDICT (C): INCONCLUSIVE — workload too fast or timing window missed.\n` +
-					`       Re-run with higher ROW_COUNT or slower machine.\n` +
-					`\n` +
-					`  Engine: ${ENGINE}, Workers: ${WORKER_COUNT}, SHA: 7aaa5a152`
-			);
-			ok(true, 'verdict summary logged');
-		});
 	}
 );

@@ -40,6 +40,8 @@ import {
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { ClientError, DatabaseClosingError, TableGenerationDroppedError } from '../utility/errors/hdbError.ts';
+import { isReadOnlyMode, __setReadOnlyModeForTest } from './readOnlyMode.ts';
+export { isReadOnlyMode, __setReadOnlyModeForTest };
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -136,40 +138,6 @@ import {
 	releaseDatabaseDropPreparations,
 	trackDatabaseDropPreparationTask,
 } from './databaseDropPreparation.ts';
-
-/**
- * Check if Harper is running in read-only mode.
- * Read-only mode can be enabled via:
- * - HARPER_READONLY environment variable (truthy value)
- * - --readonly CLI flag
- * - storage.readOnly config setting
- */
-let _isReadOnlyMode: boolean | undefined;
-export function __setReadOnlyModeForTest(value: boolean | undefined): void {
-	_isReadOnlyMode = value;
-}
-
-export function isReadOnlyMode(): boolean {
-	if (_isReadOnlyMode !== undefined) return _isReadOnlyMode;
-	// Check environment variable
-	const envReadOnly = process.env.HARPER_READONLY;
-	if (envReadOnly && envReadOnly !== '0' && envReadOnly !== 'false') {
-		_isReadOnlyMode = true;
-		return true;
-	}
-	// Check CLI flag (simple argv check)
-	if (process.argv.includes('--readonly') || process.argv.includes('--read-only')) {
-		_isReadOnlyMode = true;
-		return true;
-	}
-	// Check config setting
-	if (envGet(CONFIG_PARAMS.STORAGE_READONLY)) {
-		_isReadOnlyMode = true;
-		return true;
-	}
-	_isReadOnlyMode = false;
-	return false;
-}
 
 function createOpenDBIObject(dupSort = false, isPrimary = false) {
 	return new OpenDBIObject(dupSort, isPrimary);

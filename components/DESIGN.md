@@ -796,6 +796,18 @@ this fix doesn't attempt to solve. `deploy_component`/`package_component` still 
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
 
+## The packer never ships the loader's links to the install (`components/packageComponent.ts`)
+
+The loader links the running install into `node_modules/harper` of every component it loads that is not the root,
+including each `package:` sub-component under an application's `node_modules`, replacing anything else there.
+Followed, each link packs the whole install. The application's own link is skipped by name (harper#2487); a nested one is
+skipped only when it resolves to `PACKAGE_ROOT` (harper#3207), because a nested real `harper` under a package nothing loads
+as a component is that package's dependency, and the target does not reinstall a shipped `node_modules`.
+`scanPackageDirectory()` finds them in its async walk, so `tar-fs`'s synchronous `ignore` does no I/O and the size
+estimate leaves out exactly what the packer does. A scan is not a snapshot: a link created or replaced between the scan
+and the pack is classified by the tree the scan saw. `harperdb` is different: the loader only repairs a link that
+already exists, so omitting one loses it on the target (harper#2577).
+
 ## Deploy watcher generations preserve logical entry events
 
 Component deploys pause each scope's `EntryHandler` while the component directory is replaced. A

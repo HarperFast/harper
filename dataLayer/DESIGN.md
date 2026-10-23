@@ -169,7 +169,10 @@ Several non-obvious mechanics keep that safe:
   component. `system`, which Harper itself never stops while running, never reaches this check:
   `validateRestoreBackup` refuses it up front with a 400 naming the offline command. The CLI exposes each backup operation under its operation name only (`create_backup`,
   `restore_backup`, …) — no hyphenated alias — and `bin/backup.ts` routes it to a reachable server
-  or, when the local server is stopped, to the equivalent offline function.
+  or, when the local server is stopped, to the equivalent offline function. A saved loopback
+  `last_target` does not prove the endpoint is this install, so with one saved, `restore_backup`,
+  `delete_backup` and `purge_backups` refuse rather than fall back (harper#2032); only
+  `create_backup`, `list_backups` and `verify_backup` do.
 - **Job workers must release their RocksDB handles on exit, or the closure check can never pass.**
   rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
   closing leaks its handles (the refCount never drops); the only alternative, `shutdown()`, tears

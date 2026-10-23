@@ -269,6 +269,190 @@ suite(
 			}
 		});
 
+		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. */
+		async function rawConnect(clientId: string, clean = false) {
+			const credentials = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
+			const socket = new WebSocket(mqttURL, 'mqtt', { headers: { Authorization: `Basic ${credentials}` } });
+			const packets: any[] = [];
+			const parse = packetParser({ protocolVersion: 5 });
+			parse.on('packet', (packet) => packets.push(packet));
+			socket.on('message', (data) => parse.parse(data as Buffer));
+			const closed = new Promise((resolvePromise) => socket.once('close', resolvePromise));
+			await new Promise((resolvePromise, reject) => {
+				socket.once('open', resolvePromise);
+				socket.once('error', reject);
+			});
+			const send = (packet: any) => socket.send(generate(packet, { protocolVersion: 5 }));
+			send({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean });
+			if (!(await waitFor(() => packets.some((packet) => packet.cmd === 'connack')))) {
+				socket.terminate();
+				throw new Error(`no CONNACK for ${clientId}`);
+			}
+			let nextId = 1;
+			async function subscribeRaw(topic: string, qos: 1 | 2) {
+				const messageId = nextId++;
+				send({ cmd: 'subscribe', messageId, subscriptions: [{ topic, qos, rh: 2 }] });
+				ok(
+					await waitFor(() => packets.some((packet) => packet.cmd === 'suback' && packet.messageId === messageId)),
+					`SUBACK arrives for ${topic}`
+				);
+			}
+			const publishes = (topic: string) =>
+				packets.filter((packet) => packet.cmd === 'publish' && packet.topic === topic);
+			return {
+				packets,
+				send,
+				subscribe: subscribeRaw,
+				publishes,
+				connack: packets.find((packet) => packet.cmd === 'connack'),
+				async drop() {
+					socket.close();
+					await closed;
+				},
+			};
+		}
+
+		async function cleanStart(clientId: string) {
+			const { mqttClient } = await connect({ clientId, clean: true });
+			await end(mqttClient);
+		}
+
+		const valueOf = (packet: any) => JSON.parse(packet.payload.toString()).value;
+
+		/**
+		 * Resume runs in turn with SUBSCRIBE, so this SUBACK means the resumed subscriptions are set up; the quiet
+		 * period then leaves the record untouched, so a resend of its current value cannot hide behind a newer write.
+		 */
+		async function resumed(subscribe: (topic: string) => Promise<void>) {
+			await subscribe(`Noise/barrier-${randomUUID().slice(0, 6)}`);
+			await sleep(500);
+		}
+
+		test('a record topic whose PUBREC was received gets its PUBREL on resume, and no second PUBLISH (QoS 2)', async () => {
+			const id = `qos2-pubrec-${randomUUID().slice(0, 6)}`;
+			const topic = `Readings/${id}`;
+			const clientId = `qos2-pubrec-${randomUUID().slice(0, 6)}`;
+			await put('Readings', id, 0);
+			await cleanStart(clientId);
+			const first = await rawConnect(clientId);
+			let published;
+			try {
+				await first.subscribe(topic, 2);
+				await put('Readings', id, 1);
+				ok(await waitFor(() => first.publishes(topic).length > 0), 'the update is published');
+				[published] = first.publishes(topic);
+				strictEqual(valueOf(published), 1);
+				first.send({ cmd: 'pubrec', messageId: published.messageId });
+				ok(await waitFor(() => first.packets.some((packet) => packet.cmd === 'pubrel')), 'PUBREL answers the PUBREC');
+			} finally {
+				await first.drop();
+			}
+			const saved = await settledEntry(clientId);
+			deepStrictEqual((await storedSession(clientId)).awaitingCompletion, [published.messageId]);
+			ok(saved.databaseGeneration !== undefined, 'the PUBREC moved the position to a certified key');
+
+			const second = await rawConnect(clientId);
+			try {
+				strictEqual(second.connack.sessionPresent, true);
+				await resumed((barrier) => second.subscribe(barrier, 1));
+				deepStrictEqual(
+					second.packets.filter((packet) => packet.cmd === 'pubrel').map((packet) => packet.messageId),
+					[published.messageId],
+					'the owed PUBREL is sent again'
+				);
+				deepStrictEqual(second.publishes(topic), [], 'the message already PUBREC-ed is not published again');
+				second.send({ cmd: 'pubcomp', messageId: published.messageId });
+				await put('Readings', id, 2);
+				ok(await waitFor(() => second.publishes(topic).length > 0), 'a later update is published');
+				deepStrictEqual(second.publishes(topic).map(valueOf), [2]);
+			} finally {
+				await second.drop();
+			}
+		});
+
+		test('a record topic delivery left without a PUBREC is sent again once, under its packet id (QoS 2)', async () => {
+			const id = `qos2-unacked-${randomUUID().slice(0, 6)}`;
+			const topic = `Readings/${id}`;
+			const clientId = `qos2-unacked-${randomUUID().slice(0, 6)}`;
+			await put('Readings', id, 0);
+			await cleanStart(clientId);
+			const first = await rawConnect(clientId);
+			let published;
+			try {
+				await first.subscribe(topic, 2);
+				await put('Readings', id, 1);
+				ok(await waitFor(() => first.publishes(topic).length > 0), 'the update is published');
+				[published] = first.publishes(topic);
+			} finally {
+				await first.drop();
+			}
+			ok(
+				await waitFor(async () => (await storedSession(clientId)).subscriptions[0].inFlight?.length === 1),
+				'the closing save keeps the delivery in flight'
+			);
+
+			const second = await rawConnect(clientId);
+			try {
+				strictEqual(second.connack.sessionPresent, true);
+				await resumed((barrier) => second.subscribe(barrier, 1));
+				const resent = second.publishes(topic);
+				deepStrictEqual(
+					resent.map((packet) => [valueOf(packet), packet.messageId, packet.dup]),
+					[[1, published.messageId, true]],
+					'exactly one resend, under the original packet id with DUP'
+				);
+				second.send({ cmd: 'pubrec', messageId: published.messageId });
+				await put('Readings', id, 2);
+				ok(await waitFor(() => second.publishes(topic).length > 1), 'a later update is published');
+				deepStrictEqual(second.publishes(topic).map(valueOf), [1, 2]);
+			} finally {
+				await second.drop();
+			}
+		});
+
+		test('an acknowledged record topic resumes with nothing to send when the record did not change (QoS 1)', async () => {
+			const id = `qos1-quiet-${randomUUID().slice(0, 6)}`;
+			const clientId = `qos1-quiet-${randomUUID().slice(0, 6)}`;
+			await establish(clientId, `Readings/${id}`, 1, 5);
+			await settledEntry(clientId);
+			const received: number[] = [];
+			const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
+				received.push(JSON.parse(payload.toString()).value)
+			);
+			try {
+				strictEqual(sessionPresent, true);
+				await resumed((barrier) => subscribe(mqttClient, barrier, 1));
+				deepStrictEqual(received, [], 'the acknowledged version is not sent again');
+				await put('Readings', id, 2);
+				ok(await waitFor(() => received.includes(2)), `a later update arrives: ${received}`);
+				deepStrictEqual(received, [2]);
+			} finally {
+				await end(mqttClient);
+			}
+		});
+
+		test('a record topic that changed while away delivers the new version once (QoS 1)', async () => {
+			const id = `qos1-changed-${randomUUID().slice(0, 6)}`;
+			const clientId = `qos1-changed-${randomUUID().slice(0, 6)}`;
+			await establish(clientId, `Readings/${id}`, 1, 5);
+			await settledEntry(clientId);
+			await put('Readings', id, 2);
+			const received: number[] = [];
+			const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
+				received.push(JSON.parse(payload.toString()).value)
+			);
+			try {
+				strictEqual(sessionPresent, true);
+				await resumed((barrier) => subscribe(mqttClient, barrier, 1));
+				deepStrictEqual(received, [2], 'only the version written while away is delivered');
+				await put('Readings', id, 3);
+				ok(await waitFor(() => received.includes(3)), `a later update arrives: ${received}`);
+				deepStrictEqual(received, [2, 3]);
+			} finally {
+				await end(mqttClient);
+			}
+		});
+
 		test('a quiet topic keeps its session while other tables advance the log', async () => {
 			const clientId = `quiet-${randomUUID().slice(0, 6)}`;
 			const entry = await establish(clientId, 'Readings/#', 1, 5);

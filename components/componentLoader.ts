@@ -744,6 +744,9 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				scope,
 				timeout
 			);
+		} catch (error) {
+			scope.disposeBearerValidators();
+			throw error;
 		} finally {
 			Status.primaryStore.unlock(lockId);
 		}

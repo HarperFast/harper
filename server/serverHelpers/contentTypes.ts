@@ -44,10 +44,20 @@ function streamErrorRecord(error: any) {
 		if (typeof error?.message === 'string') message = error.message;
 	} catch {}
 	message ??= harperErrorToString(error);
-	const record: { error: string; message: string; status?: number } = { error: name, message };
+	const record: { error: string; message: string; status?: number; replicationUnconfirmed?: true; retryable?: false } =
+		{
+			error: name,
+			message,
+		};
 	try {
 		const status = error?.statusCode ?? error?.status;
 		if (typeof status === 'number') record.status = status;
+	} catch {}
+	try {
+		if (error?.replicationUnconfirmed === true) {
+			record.replicationUnconfirmed = true;
+			record.retryable = false;
+		} else if (error?.retryable === false) record.retryable = false;
 	} catch {}
 	return record;
 }
@@ -552,7 +562,14 @@ export function serializeMessage(
 	request?: Request,
 	inAsyncContinuation?: boolean
 ): Buffer | string | Promise<Buffer | string> {
-	if (message?.contentType != null && message.data != null) return message.data;
+	if (message?.contentType != null && message.data != null) {
+		const data = message.data;
+		// a record read on another thread decodes binary as a plain Uint8Array view, which protocol
+		// encoders (mqtt-packet) reject; wrap the same bytes rather than copy them
+		return ArrayBuffer.isView(data) && !Buffer.isBuffer(data)
+			? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+			: data;
+	}
 	asyncSerializations = inAsyncContinuation ? undefined : [];
 	try {
 		const serialized: Buffer | string = getMessageSerializer(request)(message);

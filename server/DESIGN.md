@@ -76,6 +76,11 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 > This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
 > pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
 
+> **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
+> is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
+> than the publisher's, the record is decoded from the transaction log and `data` is a plain `Uint8Array`,
+> which mqtt-packet cannot encode. Pinned by `integrationTests/mqtt/opaque-payload-across-workers.test.ts`.
+
 ### Threads
 
 | File                       | Purpose                                                                                                                                                                                                                                          |
@@ -226,7 +231,13 @@ SSE and NDJSON serializers eagerly take and hold their first iterator step for G
 
 SSE terminal event data uses `{ error: <code-or-class>, message: <message>, status?: <status> }`; NDJSON wraps the same object as `{ "$harperStreamError": { ... } }` so it cannot be mistaken for an ordinary row with an `error` field.
 Sources with `mapError` remain unmapped for these two formats so their failures reach this single contract instead of becoming legacy data records.
-generic JSON-array streaming retains its older `{ error: "<name>: <message>" }` element shape.
+Generic JSON-array streaming retains its `{ error: "<name>: <message>" }` element shape.
+REST problem details publish only an explicitly negative `retryable: false` hint; a missing hint is unknown.
+All three terminal records add `replicationUnconfirmed: true` for a reported commit whose local writes landed
+but whose confirmation failed, and `retryable: false` for that outcome or another explicitly non-retryable error.
+An enclosing scope that rolls back, or has already discarded, writes removes the confirmation flag while preserving the negative retry hint. Metadata getters
+on a thrown value may fail; omit unreadable extensions and still finish a valid error record. The commit-level
+scope and producer coverage are described in [resources/DESIGN.md](../resources/DESIGN.md#replication-confirmation-failure-means-the-linked-writes-committed-locally).
 The `error` value is the stable programmatic discriminator; `message` is diagnostic and follows the same thrown-message exposure policy as pre-commit Problem Details.
 
 Clean stream completion does not prove completeness; clients must inspect SSE for the `harper-error` event and NDJSON for the `$harperStreamError` control record.
@@ -262,13 +273,14 @@ user resolution touches system-table searches (`listUsers()`) that raise a defau
 storage outage as an unknown credential and hand it to application authorization. The tag is set at
 exactly these points:
 
-| Tagged rejection                                                   | Where                                                                                        |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| unknown user, inactive user, bad password                          | `security/user.ts → findAndValidateUser()`                                                   |
-| JWT syntax, signature, expiry, not-before, subject/claim rejection | `security/tokenAuthentication.ts → validateToken()`                                          |
-| refresh-token hash mismatch, malformed scoped-token claims         | `security/tokenAuthentication.ts`                                                            |
-| an `Authorization` scheme Harper does not implement                | `security/auth.ts`                                                                           |
-| a component's `server.getUser` override that tags its own error    | `markCredentialRejection` / `credentialRejectionError`, exported from `harper` (harper#2703) |
+| Tagged rejection                                                            | Where                                                                                        |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| unknown user, inactive user, bad password                                   | `security/user.ts → findAndValidateUser()`                                                   |
+| JWT syntax, signature, expiry, not-before, subject/claim rejection          | `security/tokenAuthentication.ts → validateToken()`                                          |
+| refresh-token hash mismatch, malformed scoped-token claims                  | `security/tokenAuthentication.ts`                                                            |
+| an `Authorization` scheme Harper does not implement                         | `security/auth.ts`                                                                           |
+| a component's `server.getUser` override that tags its own error             | `markCredentialRejection` / `credentialRejectionError`, exported from `harper` (harper#2703) |
+| a component's `server.registerBearerValidator` hook that tags its own error | `markCredentialRejection` / `credentialRejectionError`, exported from `harper`               |
 
 `validateToken()` separates the two in the same catch: `jsonwebtoken` reports unusable key material
 through the very same `JsonWebTokenError` type it uses for a forged token, so the public key is
@@ -277,10 +289,11 @@ as a fault. An untagged error propagates unmasked.
 
 The Bearer path's refresh-token probe follows the same rule. When operation-token validation says
 `invalid token`, authentication retries the credential as a refresh token; a fault raised by that
-retry propagates, and only an ordinary _tagged_ refresh rejection restores the original
-operation-token rejection for deferral. An in-line fail-closed response logs the original fault
-server-side and returns the same generic authentication failure a rejected credential gets, so
-internal detail never reaches an unauthenticated client.
+retry propagates, and only an ordinary _tagged_ refresh rejection lets the credential go on to the
+component validators (below) and, if they all decline, restores the original operation-token
+rejection for deferral. An in-line fail-closed response logs the original fault server-side and
+returns the same generic authentication failure a rejected credential gets, so internal detail never
+reaches an unauthenticated client.
 
 Any layer that establishes Harper owns the route then settles the deferred state before doing work:
 
@@ -349,6 +362,54 @@ response shared-cacheable. `bridgeChainHeadersToNodeResponse()` therefore runs t
 `writeHead` interception, the last point the header set is still mutable and the one Node also routes
 implicit headers through.
 
+### Component Bearer validators (`server.registerBearerValidator`, `security/bearerValidators.ts`)
+
+A component can accept Bearer tokens Harper did not issue (first consumer: the OAuth plugin's MCP
+authorization server). The validators run inside `authentication()`, not as `before: 'authentication'`
+middleware, so one place still decides `request.user` for every Harper-owned route. A middleware that
+set `request.user` itself would have to re-implement, per plugin, what this path enforces:
+
+- **Harper tokens win.** Validators see only a credential `validateOperationToken` and the refresh
+  probe rejected as `invalid token`; an expired Harper token never reaches them.
+- **A validator names a user; Harper supplies the role.** The contract is
+  `{ username, authExpiresAt?, authCacheable? }`, resolved through `server.getUser` (the Basic path's
+  `userRecordVersions` → `getUser` → `trackUserRecords`), so `isCurrentUser` and the authorization
+  cache treat it like a Basic login. A component's `server.getUser` override stays authoritative at
+  login, but live-subscription rechecks and MCP session refreshes re-read `hdb_user` by name, so a
+  user only the override knows loses those at its first recheck, as a Basic login through the same
+  override already does. Any other field is refused, `role` included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
+  were built and dropped: the first consumer's tokens name a Harper user and carry no permissions,
+  and a principal no `hdb_user` backs needs its own revocation at every by-name rehydration site
+  (`security/DESIGN.md`). Refusing `role` now keeps adding it later from changing an existing
+  result's meaning.
+- **Expiry is exact.** `authExpiresAt` is the validator's value (300 s when omitted) capped by the
+  token's own JWT `exp`; it is checked again after the `server.getUser` lookup. `authorizationCache` evicts at
+  it, live subscriptions end at it (#1414), and MQTT wills persist it and are dropped past it, on
+  restart replay checked again after the replay's own `server.getUser` lookup. The
+  decoded `exp` is unverified, so it only shortens, down to refusing a token whose `exp` has passed
+  (`token expired`) even when the validator accepted it. A validator that verified the token's
+  expiry should still return it as `authExpiresAt`, since Harper decodes only JWTs.
+- **The cache key is the Authorization header.** A cached principal is served to any route and host
+  on the worker without calling the validator, so a validator whose answer depends on the request
+  (an RFC 8707 audience bound to one mount, say) must return `authCacheable: false`.
+- **Disposal is exact.** The cache records which registration resolved each principal; a hit whose
+  registration was disposed is evicted, so registering never flushes cached Basic or session users.
+  Declines are not cached: a validator caches its own.
+- **Faults fail closed.** A tagged throw is a credential rejection (deferred, or 401 on Harper-owned
+  routes); an untagged throw, a malformed return, or exceeding `timeoutMs` answers 401 in place. The
+  claim's `server.getUser` lookup shares the chain budget, so total authentication latency stays
+  bounded; a deadline only bounds waiting, it cannot interrupt a synchronous validator.
+- **No minting, no operations port.** A `_bearerValidator` principal cannot turn its token into Harper
+  tokens: `createTokens` refuses it a passwordless operation/refresh mint and (unless operation
+  authorization is bypassed) a scoped token, also after impersonation; a username and password still
+  mint as usual. A dedicated operations API port never runs validators or serves their cache entries. On a shared port they reach `verifyPerms` like any principal.
+
+Registrations are worker-global and outlive `scope.close()`, so in-flight requests drain. The
+`Scope` proxy records what a plugin registers through `scope.server`, and
+`sequentiallyHandleApplication` disposes those if that load fails. A module's `import { server } from
+'harper'` is the application's shared server, not tied to one plugin load, so its registrations stay,
+like its `server.http` middleware.
+
 ### Response Cache-Control / Vary policy (#1518, #1565)
 
 Three tiers, applied in two places:
@@ -365,7 +426,7 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 
 A persisted QoS 1/2 entry is `{ qos, topic, startTime, databaseGeneration? }`, and the record carries the `incarnation` of the connection that owns it (harper#2448). A QoS 0 entry is `{ qos, topic }`: it is session state with no position, resumed live with retain handling 2 and no acknowledgement tracking.
 
-- **Positions are certified, never clocks.** A new subscription starts at its registration watermark (`registeredThrough`), bound to the database generation when one exists, and otherwise at `getNextMonotonicTime()` unbound until the first certified position replaces it. A SUBSCRIBE that replaces a QoS 1/2 topic's subscription continues that topic's position through the checked replay, since replacing must lose nothing; a pruned-history refusal there resets the session as it would at reconnect. A topic's position is `min(subscription.progress(), previousKey of its oldest unacknowledged delivery)`; a transaction's messages share a key, so one unacked message holds the position before its whole transaction, and while a message is still queued the position stays before the last delivered transaction, which that message may share. Live events arrive in commit order, and a RocksDB transaction takes its key before it commits, so a transaction can arrive after a higher key. Its previousKey is then the position just below its own key, and while such a late delivery is unacknowledged the position takes the lowest previousKey of all of them rather than the oldest's (harper#3101). Scan deliveries (`fromScan`) stay out of this ordering: they are retained state, which a resumed session does not resend.
+- **Positions are certified, never clocks.** A new subscription starts at its registration watermark (`registeredThrough`), bound to the database generation when one exists, and otherwise at `getNextMonotonicTime()` unbound until the first certified position replaces it. A SUBSCRIBE that replaces a QoS 1/2 topic's subscription continues that topic's position through the checked replay, since replacing must lose nothing; a pruned-history refusal there resets the session as it would at reconnect. A topic's position is `min(subscription.progress(), previousKey of its oldest unacknowledged delivery)`; a transaction's messages share a key, so one unacked message holds the position before its whole transaction, and while a message is still queued the position stays before the last delivered transaction, which that message may share. Live events arrive in commit order, and a RocksDB transaction takes its key before it commits, so a transaction can arrive after a higher key. Its previousKey is then the position just below its own key, and while such a late delivery is unacknowledged the position takes the lowest previousKey of all of them rather than the oldest's (harper#3101). Scan deliveries (`fromScan`) stay out of this ordering: they are retained state, which a resumed session does not resend: `resumeTopics` subscribes with retain handling 2 (`addSubscription` omits current values for that or an explicit `omitCurrent`), since a record topic whose saved position covers its current version would otherwise send that version again.
 - **Checkpoints:** coalesced after acknowledgements, on an unref'd timer (`min(auditRetention / 10, 1h)`), and at disconnect, where positions are taken before subscriptions end because `close()` clears a queue and would read as idle. Nothing past a resumed position is saved until that subscription's `resumeVerified` resolves true. Out-of-order QoS 1 acks are not persisted: a partly acked transaction is redelivered (QoS 2 keeps what was PUBREC'd, below). Legacy `acks` lists are ignored.
 - **Before CONNACK,** a collection entry bound to its database's current generation is checked against the floor (a record entry's own walk decides after CONNACK); a failure deletes the record and reports the session as not present. The connection then writes its incarnation (`takeOver`), and every later write first checks the stored incarnation: a connection that finds another's stops writing and closes (0x8E), and one resumed from a record never creates one. Any newer authenticated connection for the client id on the same thread, a clean start included, closes the older durable connection the same way before it reads or deletes the record, once that connection has saved its positions, and waits for that save to settle; a connection that has already closed counts until its last save settles. A save that failed leaves the record at the last one that landed, so the newer connection resumes from there and may redeliver, never skip. Simultaneous CONNECTs for one client id take their turn through a per-thread claim, so each sees the one before it; one that gives up waiting keeps its place until the one before it finishes. The CONNECT's pending session is assigned before it waits, so packets sent right behind the CONNECT wait with it rather than being refused; the wait is bounded (10 s, then CONNACK 0x88, or 0x03 on v3.1.1), and a CONNECT whose client closes while it waits takes nothing over. A session that has ended, by a disconnect or by yielding to a takeover, saves nothing after its final save, so a SUBSCRIBE still in flight cannot write over the record a newer connection claimed.
 - **Subscription changes are serial.** Packets are handled concurrently, so a durable session applies SUBSCRIBE, UNSUBSCRIBE and `resume()` one at a time: a topic's state belongs to one subscription. A SUBSCRIBE of any QoS is saved before SUBACK. A failed SUBSCRIBE leaves its topic unsubscribed and saves that. It ends the subscription it started, and drops the state of the one it replaced, which replacing ended. An UNSUBSCRIBE whose save fails is reported failed again on a retry until the removal is saved, and any failed save starts the checkpoint timer, so a session with only QoS 0 topics retries it too.
@@ -373,6 +434,7 @@ A persisted QoS 1/2 entry is `{ qos, topic, startTime, databaseGeneration? }`, a
   - _Inbound:_ the v5 CONNACK advertises a Receive Maximum of 1,000, and a QoS 2 PUBLISH that would open more exchanges than that ends the connection (DISCONNECT 0x93 on v5), which bounds `awaitingRelease`. A QoS 2 PUBLISH is published once per packet id. Until its PUBREL, a PUBLISH with that id, DUP or not, gets the first one's PUBREC and is not published (MQTT 5 §4.3.3 Method B). The id is saved before the PUBREC and its removal before the PUBCOMP, since the client may reuse the id once it has the PUBCOMP. A failed PUBLISH (PUBREC ≥ 0x80) ends its exchange, so a retry publishes. A PUBREL for an unknown id gets PUBCOMP 0x92.
   - _Outbound:_ a PUBREC for a QoS 2 delivery acknowledges it; one for any other id gets PUBREL 0x92 and changes nothing. The PUBREL waits for the save that records it as owed, and a resumed session sends owed PUBRELs before anything else (MQTT 5 §4.4). A topic's position is a low-water mark, so a delivery PUBREC'd above it (behind an older unacknowledged one, or in a partly acked transaction) is kept in the entry's `received` list and a replay skips it. Deliveries sent and not yet PUBREC'd are kept in `inFlight` with their packet ids, saved at checkpoints and at disconnect, not before each send; a replay sends each again under its id with DUP set. A SUBSCRIBE that replaces a QoS 2 subscription carries both lists over and moves the replaced one's deliveries awaiting PUBREC into the resend list, since the replacement replays from the position; a PUBREC that arrives for one before it is sent again marks it received. Retained values (scan deliveries) are outside this: as before, a resumed session does not resend them. Every key below the deliveries still awaiting PUBREC, below the last delivered key (whose transaction may have more queued) and at or below the subscription's certified progress (a transaction that took a lower key can still commit until progress passes it), was taken whole, so its entries collapse into one `receivedThrough` key. A replay skips keys at or below it, but a live transaction that commits below what was already delivered is not skipped. Within the key still being delivered, deliveries taken in order from its start are kept as one `receivedRuns` entry `[key, count]`, and only those taken out of order singly in `received`, so entries accumulate only behind a delivery the client withholds. All three drop once the position passes them, and are restored only into the database generation whose log keys they name. Past 1,000 entries across a session no more are kept, which bounds the record: a delivery taken behind a withheld one is then resent after a reconnect, under a new packet id. `receivedThrough` acts as a position for a replay, so a late transaction below it still queued at disconnect is skipped, as with a late commit below a saved position (harper#2928).
   - _Delivery identity_ is `[log key, ordinal, record id]`: a transaction's events share one key and a record can recur in it, so the ordinal (the delivery's place among those sharing its key, counted after filtering, in the same order live and on a replay) tells them apart, and the record id is checked for `received` and resend entries, so a mismatch there delivers rather than skips. A run trusts ordinals alone: if an application row or event filter changes what a subscriber sees between the live delivery and the replay, ordinals within that key can shift.
+- **A delivery that cannot be sent ends the connection, not just the session.** The listener's `catch` in `mqtt.ts` aborts the transport (`destroy`/`terminate`, as for a parse error) and `onClose` ends the session, so the client sees the drop and reconnects. Ending only the session, as before, left the client connected and receiving nothing. An abort rather than a graceful end, because teardown on a graceful TCP end waits for the peer to close its side. A delivery that fails every time therefore repeats on each reconnect (a durable QoS≥1 session replays the unacknowledged message).
 - **Wills are kept per connection,** keyed `[clientId, incarnation]`: a connection closing after a takeover publishes and deletes only its own will (MQTT 5 §3.1.4 publishes a taken-over client's will), never the will of the connection that replaced it.
 - **Only a will's publish is authorized** (`settleWill`, harper#1874). The `hdb_session_will` row is the session's bookkeeping: it is read and deleted on contexts of its own, not the session's `authorize: true` context, which spends its one-shot check on the first call (roles are not granted system tables, so a non-super user's will never published and its row leaked). The publish then runs on a fresh session context, as the connection's user or a scoped will's embedded role, and the row is deleted after any outcome, a refused or failed publish included, so a will that fails for a transient reason is lost: the boot sweep, the only retry path, would replay a kept row only at the next restart, with no liveness check (harper#3034). The publish commits before the delete, so a crash between them leaves the row for that sweep and the will may be published twice (by design; untested). `unitTests/server/sessionWill.test.js` and `integrationTests/mqtt/will-authorization.test.ts` enforce that only the publish is authorized and that the row is deleted after a publish, a refusal and a clean DISCONNECT.
 - **One terminal path** (`subscriptionFailed`): a refused resume subscribe, a final `Error` value (observed through the subscription's `close` as well as the consumer loop, which may be parked on socket back-pressure), or an iterator failure. Only a 410 (pruned history) discards the session — writers fenced, siblings ended, a v5 DISCONNECT (0x83, the client-error message when problem information is allowed) and a socket close that never waits on storage, then a deletion only if the record still carries this incarnation. Anything else, a 409 from a restored or copied database included, saves positions and closes the connection so the client resumes.
@@ -756,6 +818,12 @@ Node gets this from `stream.pipeline` in `pipeBodyToResponse`, except for a body
 
 This is the transport's fallback, not the error contract. SSE and NDJSON GETs hold their first step so an immediate failure is still an HTTP status, and they report later failures in-band ([Streaming startup errors](#streaming-startup-errors)). Every other format commits when the handler returns the stream, so a failure before its first chunk aborts the connection too. Pinned by `unitTests/server/serverHelpers/uwsServer.test.js` ("a response stream that does not end cleanly"), `unitTests/server/static.test.js` for the Node pre-header answer and, end to end on every runtime leg, by `integrationTests/server/response-compression.test.ts`.
 
+## A static entry whose file is gone is a miss, not an error (`server/static.ts`)
+
+`staticFiles`/`indexEntries` are watcher snapshots: a file can vanish before its unlink event, and a symlink target removed outside the watched tree (`followSymlinks: false`) never emits one. `resolveExisting` turns `ENOENT`/`ENOTDIR` from the handler's `realpathSync` into a miss, which takes the ordinary `fallthrough` / `notFound` / built-in-404 path. A throw there would reach `onError` as a 500 whose body names the absolute path. Other errnos still propagate (a request with deferred failed credentials still gets its 401 first). Entries are deliberately not evicted: a restored symlink target serves again with no event. The deferred credential rejection is settled only after resolution succeeds, so a miss that falls through leaves it for the downstream owner. A missing `notFound` file answers the built-in 404 (not its configured status) and warns once per path until the file reappears.
+
+Not covered: only the finally selected candidate is resolved, so a vanished direct match does not retry `extensions`, and a stale index redirect still answers 301. A file removed after resolution fails inside `send`, where `pipeBeforeHeaders` handles it on the Node stack.
+
 ## A coarse uWS 413 drains a closing upload before ending the response
 
 uWS force-closes a completed `Connection: close` response while an upload is still arriving, which can lose its status to EPIPE. `uwsServer.ts` flushes a non-empty coarse-limit 413 chunk before discarding bytes until body end or a one-second deadline; that absolute resource bound guarantees early status, not complete framing for a sender that ignores it. Destroying a paused Readable does not clear its queue, so teardown removes data listeners and reads out queued bytes in bounded chunks before retaining the response. Native abort disarms the finisher independently of handler cancellation. "uWS oversized TCP uploads" in `unitTests/server/serverHelpers/uwsServer.test.js` pins these paths and unchanged immediate keep-alive rejection. Other rejection sites, including downstream responses from `contentTypes.ts`'s default 10 MB limit, still end immediately and remain outside this coarse-cap correction.
@@ -794,6 +862,10 @@ and last-worker duties never land on one. The invariants:
 `releaseUnreadUpload`, an `onResponse` hook that `registerContentHandlers` installs beside the parser, discards the rest of such a request: it unpipes and destroys busboy and resumes the parser's input, so Node reads the remaining bytes without parsing them and the connection stays reusable. Response completion is the point because a route may return a lazy stream that reads the payload while the response is sent; operation settlement is too early. A route keeps the part by reading it before its response finishes (piping, iterating, a `data` or `readable` listener); one it took but never started is discarded, and so is one it destroys before its end, even after the response (the part's `'close'` re-enters the discard). A consumer that stops reading without destroying the part, such as a `.pipe()` whose destination failed, still holds it, and the request timeout bounds it. A busboy error after the hand-off, such as a malformed trailer, discards the rest too, since Node unpipes an errored destination, and so does a file part the parser refuses for its name, which never reaches the route: its 400 goes out and the rest is not parsed. A request still arriving a second after its response is destroyed, unless its body has fully arrived by then (the connection may already carry the next request): a bounded grace period for the client to read the answer, chosen over closing at once (a reset can lose the response, RFC 9112 §9.6) and over draining until the request timeout, which `0` disables. The discarded rest still passes through any `preParsing` transform, such as `@fastify/compress`'s decompressor, for at most that second: its `pump` would destroy the request if the transform were torn down instead. The state is keyed by the Fastify request rather than `request.body.payload`, and the grace targets `request.raw`, which a `preParsing` transform can stand in front of. Every part busboy emits gets an `'error'` listener before anything touches it, so an abort after the hand-off is never an uncaught exception.
 
 Node's `http` client is a misleading probe here: after a complete response arrives while its request waits for `'drain'`, it never resumes writing, although the server has read every byte it sent. The tests use raw sockets: `unitTests/server/serverHelpers/multipartParser.test.js`, the socket cases in `unitTests/server/serverHelpers/contentTypes.test.js`, and `integrationTests/deploy/deploy-multipart-stream.test.ts`.
+
+## `request-time` starts at dispatch entry (`server/http.ts`)
+
+`duration` starts at `requestHandler` entry, so the non-GET throttle queue is invisible to it. Every request that goes through the throttle, whether or not it waited, gets `receivedAt`, a `performance.now()` taken in `dispatchRequest` on the Node servers and in the uWS handler before it is queued, and `request-time` is recorded for it next to `duration` with the same key and `endTime`, by the HTTP response path or, for a request handed to Fastify, by `requestTimePlugin.js`; a uWS request injected into Fastify keeps no stamp and records `duration` only. GET, HEAD and OPTIONS are handled in the same synchronous call, and Bun.serve has no queue, so neither records `request-time`: it would equal `duration`. The difference between the two metrics is the server-side wait before the handler: the throttle queue and, for a request cascaded to Fastify, the Harper chain that ran before the cascade, such as authentication for operations requests. The event-loop wait before a request is read is `event-loop-delay`'s, per thread, within a report window: the histogram resets when a window opens after an idle gap, so a stall during that gap, before any request of the window arrived, is not reported; a stamp taken from the HTTP parser cannot see it, because a consumed parser runs inside the socket read callback, and only adds the client's header-transmission time.
 
 ## On a pointer-compression Node, no standard-V8-ABI addon is dlopen'ed (`server/threads/nativeAddonGuard.ts`, `utility/nativeAddonAbi.ts`)
 
