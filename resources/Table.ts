@@ -48,7 +48,6 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 } from './DatabaseTransaction.ts';
-<<<<<<< HEAD
 import { readOnlyModeError } from './readOnlyMode.ts';
 import { freshLocalKey, releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
