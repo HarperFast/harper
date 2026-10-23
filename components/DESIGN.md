@@ -10,6 +10,8 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## A deploy builds off to the side, is certified, and only then goes live
 
+The main thread reserves `operationsApi` and `agent` in `TRUSTED_RESOURCE_PLUGINS` at module evaluation using core-owned runtime URLs. Cold `deployComponent` calls therefore enforce the protected-name guard before startup imports the real modules. The startup hook replaces only its unchanged default URLs, preserving explicit plugin overrides. `unitTests/server/threads/typestrip-runtime.test.mjs` checks the cold deployment refusal in both runtimes.
+
 `deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, certifies
 _that_ tree, and only then activates it; a deploy that restarts workers is then decided by its canary
 (below). Two things share the word: a build's certification (`.complete`) vouches for its bytes on disk, and

@@ -62,6 +62,9 @@ describe('TypeStrip runtime boundaries', () => {
 						assert.strictEqual(getDecisionStore(), store);
 						if (${readOnly}) {
 							assert.throws(() => store.assertWritable('Decisions'), error => error instanceof DecisionPersistenceError && error.statusCode === 503);
+							const { models, Models } = await import(${JSON.stringify(runtimeUrl('resources/models/Models'))});
+							await assert.rejects(models.decide('x', { enum: ['a', 'b'] }, { persist: true }), error => error instanceof DecisionPersistenceError && error.statusCode === 503);
+							await assert.rejects(new Models().recordOutcome('00000000-0000-4000-8000-000000000000', { truth: { kind: 'noMatch' } }), error => error instanceof DecisionPersistenceError && error.statusCode === 503);
 						} else store.assertWritable('Decisions');
 						console.log('cold model persistence initialized');
 					`
@@ -69,6 +72,94 @@ describe('TypeStrip runtime boundaries', () => {
 					assert.strictEqual(output, 'cold model persistence initialized', mode + ':' + entry + ':' + readOnly);
 				}
 			}
+		}
+	});
+
+	it('protects main-thread core component names before startup', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert')).default;
+				const { deployComponent } = await import(${JSON.stringify(runtimeUrl('components/operations'))});
+				for (const project of ['operationsApi', 'agent']) {
+					await assert.rejects(
+						deployComponent({ project, package: 'file:' + process.env.ROOTPATH + '/missing-local-package' }),
+						error => error.statusCode === 409 && /protected core component name/.test(error.message)
+					);
+				}
+				const {TRUSTED_RESOURCE_PLUGINS} = await import(${JSON.stringify(runtimeUrl('components/componentLoader'))});
+				const operationsOverride = TRUSTED_RESOURCE_PLUGINS.fastifyRoutes;
+				TRUSTED_RESOURCE_PLUGINS.operationsApi = operationsOverride;
+				const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				await runStartup();
+				const {waitFor} = await import(${JSON.stringify(pathToFileURL(resolve(root, 'unitTests/waitFor.js')).href)});
+				await waitFor(() => typeof TRUSTED_RESOURCE_PLUGINS.agent?.startOnMainThread === 'function',15000);
+				assert.strictEqual(TRUSTED_RESOURCE_PLUGINS.operationsApi,operationsOverride);
+				console.log('cold core names protected');
+				`
+			);
+			assert.strictEqual(output, 'cold core names protected', mode);
+		}
+	});
+
+	it('honors persisted retention and hash configuration in cold main and worker imports', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+			const workerCode = `
+				const {parentPort} = await import('node:worker_threads');
+				await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
+				const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
+				env.initSync();
+				const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				await runStartup();
+				const audit = await import(${JSON.stringify(runtimeUrl('resources/auditStore'))});
+				const password = await import(${JSON.stringify(runtimeUrl('utility/password'))});
+				const hash = await password.hash('synthetic-password');
+				parentPort.postMessage({type:'cold-config',auditRetention:audit.auditRetention,argon2id:hash.includes('$argon2id$')});
+			`;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				delete process.env.DEV_MODE; delete process.env.HARPER_SET_CONFIG;
+				const assert = (await import('node:assert')).default;
+				const fs = await import('node:fs'); const YAML = require('yaml');
+				const path = process.env.ROOTPATH + '/harper-config.yaml';
+				const config = YAML.parseDocument(fs.readFileSync(path,'utf8'));
+				config.setIn(['logging','auditRetention'],'7d');
+				config.setIn(['authentication','hashFunction'],'argon2id');
+				fs.writeFileSync(path,config.toString());
+				await import(${JSON.stringify(runtimeUrl('bin/harper'))});
+				const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
+				env.initSync();
+				const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				await runStartup();
+				const audit = await import(${JSON.stringify(runtimeUrl('resources/auditStore'))});
+				const password = await import(${JSON.stringify(runtimeUrl('utility/password'))});
+				assert.strictEqual(audit.auditRetention,604800000,'configured audit retention must be used');
+				assert.ok((await password.hash('synthetic-password')).includes('$argon2id$'),'configured Argon2id must be used');
+				const {Worker} = await import('node:worker_threads');
+				const {on} = await import('node:events');
+				const worker = new Worker(new URL('data:text/javascript,' + encodeURIComponent(${JSON.stringify(workerCode)})), {
+					execArgv:${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])},
+					workerData:{noServerStart:true,workerIndex:0,workerCount:1,addPorts:[],addThreadIds:[]}
+				});
+				let result;
+				try {
+					for await (const [message] of on(worker,'message',{signal:AbortSignal.timeout(20000),close:['exit']})) {
+						if (message.type === 'cold-config') { result = message; break; }
+					}
+				} finally { await worker.terminate(); }
+				assert.deepStrictEqual(result,{type:'cold-config',auditRetention:604800000,argon2id:true});
+				console.log('cold persisted config honored');
+				`
+			);
+			assert.strictEqual(output, 'cold persisted config honored', mode);
 		}
 	});
 

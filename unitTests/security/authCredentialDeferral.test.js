@@ -571,9 +571,11 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 	});
 
 	after(async () => {
-		await sessionTable.delete(SESSION_ID);
-		serverModule.server.getUser = originalGetUser;
-		tokenAuthentication.validateOperationToken = originalValidateOperationToken;
+		if (sessionTable) {
+			await sessionTable.delete(SESSION_ID);
+			serverModule.server.getUser = originalGetUser;
+			tokenAuthentication.validateOperationToken = originalValidateOperationToken;
+		}
 	});
 
 	beforeEach(() => {

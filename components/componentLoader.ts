@@ -512,13 +512,19 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	login: ...
 	 */
 };
+const operationsApiModuleURL = getRuntimeModuleURL('server/operationsServer');
+const agentModuleURL = getRuntimeModuleURL('agent/agent');
+if (isMainThread) {
+	TRUSTED_RESOURCE_PLUGINS.operationsApi = operationsApiModuleURL;
+	TRUSTED_RESOURCE_PLUGINS.agent = agentModuleURL;
+}
 onStartup(async () => {
 	if (isMainThread) {
 		const operationsApi = await import('../server/operationsServer.ts');
-		if (!Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, 'operationsApi'))
+		if (TRUSTED_RESOURCE_PLUGINS.operationsApi === operationsApiModuleURL)
 			TRUSTED_RESOURCE_PLUGINS.operationsApi = operationsApi;
 		const agent = await import('../agent/agent.ts');
-		if (!Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, 'agent')) TRUSTED_RESOURCE_PLUGINS.agent = agent;
+		if (TRUSTED_RESOURCE_PLUGINS.agent === agentModuleURL) TRUSTED_RESOURCE_PLUGINS.agent = agent;
 	} else {
 		// The HTTP operations API itself only binds in the main thread, but worker threads still
 		// dispatch operations — most notably, the replication WebSocket handler in workers receives
