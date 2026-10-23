@@ -4108,6 +4108,7 @@ export function makeTable(options): TableResourceClass {
 		static evict(id, existingRecord, existingVersion) {
 			if (maintenanceClosed) return Promise.resolve();
 			let entry;
+			let removedRecordWithBlobs;
 			// Raw on RocksDB: this method commits or aborts the handle itself, and its catch expects a conflict
 			// to reject with ERR_BUSY (resources/DESIGN.md, over-time transactions).
 			const lmdbTransaction = primaryStore.ifVersion
@@ -4117,12 +4118,9 @@ export function makeTable(options): TableResourceClass {
 			let options = { transaction };
 			let committed = false;
 			try {
-				if (hasSourceGet || audit) {
-					if (!existingRecord) return;
-					entry = primaryStore.getEntry(id, options);
-					if (!entry || !existingRecord) return;
-					if (entry.version !== existingVersion) return;
-				}
+				if ((hasSourceGet || audit) && !existingRecord) return;
+				entry = primaryStore.getEntry(id, options);
+				if (!entry || entry.version !== existingVersion) return;
 				if (hasSourceGet) {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
@@ -4135,16 +4133,19 @@ export function makeTable(options): TableResourceClass {
 					// Capture both promises so a real write failure on either resolves through evict()'s catch
 					// below rather than escaping as an unhandled rejection from the fire-and-forget callers.
 					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
-						updateIndices(id, existingRecord, null);
+						updateIndices(id, entry.value, null);
 					});
-					const removal = removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+					const removal = removeEntry(primaryStore, entry, existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
 						reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
-					updateIndices(id, existingRecord, null, options);
+					// the entry read in this transaction, not the caller's copy: a resequenced write can reuse its version
+					updateIndices(id, entry.value, null, options);
 					stageDerivedIndexEviction(transaction as RocksTransaction, id, existingVersion);
-					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
+					// not removeEntry: it queues blob reclamation at staging, and this commit can still conflict
+					primaryStore.removeSync(id, options);
+					if (entry.value && entry.metadataFlags & HAS_BLOBS) removedRecordWithBlobs = entry.value;
 				}
 				committed = true;
 				// Eviction is best-effort cleanup, run fire-and-forget from the record-expiration sweep and the
@@ -4168,16 +4169,26 @@ export function makeTable(options): TableResourceClass {
 				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly.
 				// The raw commit has no retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
+				const onCommitFailure = (error) => {
+					// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
+					// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
+					try {
+						(transaction as any).abort();
+					} catch {}
+					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+					else logger.warn?.('Error evicting record', id, error);
+				};
+				const commit = commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore);
+				if (!removedRecordWithBlobs) return trackMaintenanceCommit(commit.catch(onCommitFailure));
 				return trackMaintenanceCommit(
-					commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).catch((error) => {
-						// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
-						// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
+					commit.then(() => {
 						try {
-							(transaction as any).abort();
-						} catch {}
-						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
-						else logger.warn?.('Error evicting record', id, error);
-					})
+							// a write committed since the eviction may reference the same files again
+							deleteBlobsInObject(removedRecordWithBlobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
+						} catch (error) {
+							logger.warn?.('Error deleting blobs of evicted record', id, error);
+						}
+					}, onCommitFailure)
 				);
 			} finally {
 				if (!committed) {
@@ -10186,8 +10197,8 @@ export function makeTable(options): TableResourceClass {
 											count++;
 										}
 										if (action) {
-											// Blob-bearing records delete their blob files as a non-transactional side effect, so
-											// they stay on the per-record evict() path that preserves the existing blob/commit ordering.
+											// Blob-bearing records stay on the per-record evict() path, which reclaims their blob
+											// files only after its own commit; the batcher's removeEntry would queue them at staging.
 											if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {
 												await batcher.add(action, key, version);
 											} else {
