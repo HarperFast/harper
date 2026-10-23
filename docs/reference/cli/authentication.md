@@ -265,7 +265,7 @@ Configure the instance to trust the workflow once with [`add_oidc_trust`](../ope
 
 ###### Using it in a workflow
 
-**Nothing in the workflow names the policy, and no `harper` command takes an option for it.** Once the policy exists, every `harper` command in a job authenticates through it by itself — `harper deploy`, `harper get_job`, or any other operation — when all four of these hold. What each command may then do is up to the role of the user the policy names: one that lists only `deploy_component`, `get_job` and `registration_info`, like the role setup creates, refuses anything else with a `403`.
+**Nothing in the workflow names the policy, and no `harper` command takes an option for it.** Once the policy exists, every `harper` command in a job authenticates through it by itself — `harper deploy`, `harper get_job`, or any other operation — when all four of these hold. What each command may then do is up to the role of the user the policy names: one that lists only `deploy_component`, `get_deployment`, `get_job` and `registration_info`, like the role setup creates, refuses anything else with a `403`.
 
 1. **The job may request an identity token.** On GitHub Actions that is `permissions: id-token: write` on the job.
 2. **`HARPER_CLI_TARGET` is the policy's `audience`.** The CLI requests its token for the target it connects to, so the target must be the URL the policy names, with its port and trailing slash (`https://my-instance.harperdb.io:9925/`). It is not sensitive, so a repository variable (`vars`) rather than a secret.

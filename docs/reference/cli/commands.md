@@ -143,7 +143,7 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 - `project=<name>` - Component project name. Defaults to the current directory's name for a directory deploy, or is derived from the package for a package deploy.
 - `package=<reference>` - An npm, GitHub, or tarball reference to deploy instead of the current directory (e.g. `HarperDB/app#semver:v1.0.0`).
 - `target=<url>` - Remote Harper instance to deploy to. Omit to deploy to the local instance. A bare host defaults to `https://<host>:9925`.
-- `restart=true` or `restart=rolling` - Restart Harper after deploying. Use `rolling` for a staggered, zero-downtime restart across a cluster. With `rolling`, the command waits until every node has taken the release, on a cluster running v5.4.0 or later; see [Waiting for a rolling deploy](#waiting-for-a-rolling-deploy). Cannot be combined with `activate=false`.
+- `restart=true` or `restart=rolling` - Restart Harper after deploying. Use `rolling` for a staggered, zero-downtime restart across a cluster. With `rolling`, on a cluster running v5.4.0 or later, the command waits until every node has taken a certified release; see [Waiting for a rolling deploy](#waiting-for-a-rolling-deploy). Cannot be combined with `activate=false`.
 - `wait=false` - With `restart=rolling`, exit once the node you called has taken the release instead of waiting for the others. (Added in: v5.4.0)
 - `wait_timeout=<ms>` - With `restart=rolling`, the longest to wait for the other nodes, in milliseconds. Defaults to ten minutes for each node the deployment record lists. (Added in: v5.4.0)
 - `replicated=false` - Deploy to the node you called only. On Harper Pro and Fabric, a deploy goes to every node in the cluster unless you pass this; Harper core on its own does not replicate.
@@ -194,7 +194,7 @@ Waiting for the other nodes to take deployment a3f8c2d1-...
 error: Not activated on 1 of 2 peer node(s): node-c (my-app was not deployed: ...)
 ```
 
-With `json=true`, the printed result also carries `rollout`: the record's final `status`, each node's activation under `nodes`, and its `error`. The record replicates, so the wait works through a load-balanced cluster URL. A user whose role has an `operations` allowlist needs `get_deployment` in it; a refusal stops the wait at once and says so. A token exchanged through OIDC lasts an hour, longer than the default wait for up to five nodes. `wait=false` exits as soon as the node you called has taken the release.
+With `json=true`, the printed result also carries `rollout`: the record's final `status`, each node's activation under `nodes`, and its `error`. The result's own `status` stays `rolling_out`, as the deploy answered; `rollout.status` is the outcome. The record replicates, so the wait works through a load-balanced cluster URL. A user whose role has an `operations` allowlist needs `get_deployment` in it; a refusal stops the wait at once and says so. A token exchanged through OIDC lasts an hour, longer than the default wait for up to five nodes. `wait=false` exits as soon as the node you called has taken the release.
 
 The command does not wait when the job only restarts the nodes: a deploy whose `certification` is `unavailable`, or one to a cluster running a version before v5.4.0, whose records do not follow the job. Every node has installed the release before the command exits, and the job only restarts them. To wait for that job, poll the result's `restartJobId` with `harper get_job` until it ends `COMPLETE` or `ERROR`:
 

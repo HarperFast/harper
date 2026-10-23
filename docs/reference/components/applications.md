@@ -542,10 +542,10 @@ Returns all local component files, folders, and configuration from `harper-confi
 }
 ```
 
-<VersionBadge version="v5.4.0" /> Each component entry also says which release this node serves and when it last loaded:
+<VersionBadge version="v5.4.0" /> Each component entry also says which release is live on this node and when it last loaded:
 
 - `deployment_id` — the deployment whose release is live here, the id [`deploy_component`](../operations-api/operations.md#deploy_component) with `deployment_id` accepts. Absent for a tree installed before v5.3.0, by `add_component`, or from a `file:` link.
-- `deployed_at` — when the deployment that made that release live finished, from its [deployment record](../operations-api/operations.md#get_deployment). A node that rejected a newer rolling deploy reports the release it still serves. A tree without `deployment_id` reports its project's newest successful deployment.
+- `deployed_at` — when the deployment that made that release live finished, from its [deployment record](../operations-api/operations.md#get_deployment). A node that rejected a newer rolling deploy reports the release it still serves. A tree without `deployment_id` reports its project's newest deployment that went live.
 - `restarted_at` — the latest time a worker thread on this node finished loading the component, whether or not the load succeeded; `status` says how it went. A worker restart refreshes it.
 
 Both times are in milliseconds since the epoch, and all three describe the node that answers. [`list_releases`](../operations-api/operations.md#list_releases) lists the releases each node keeps, for the whole cluster with `replicated: true`.
