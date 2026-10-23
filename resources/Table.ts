@@ -5056,17 +5056,14 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
-							// An earlier unskipped write to this key may have restamped the head without staging it.
 							if (
 								committedBy?.sourceApply &&
 								isRocksDB &&
 								!replaying &&
 								precedesExisting === 0 &&
-								priorWritesSkipped(write) &&
 								receivedLogKey === txnTime &&
 								appendedLogKey === receivedLogKey &&
-								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
-								!existingEntry.additionalAuditRefs?.length
+								isCommittedHead(id, txnTime, options?.nodeId)
 							) {
 								write.skipped = true;
 								return;
@@ -9636,11 +9633,14 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
-	function priorWritesSkipped(write: any): boolean {
-		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
-			if (!prior.skipped) return false;
-		}
-		return true;
+	// Outside the transaction: its commit base can already carry a same-key publish or relocate it saved.
+	function isCommittedHead(id: Id, version: number, nodeId?: number): boolean {
+		const committed = primaryStore.getEntry(id, { uncachedRead: true });
+		return (
+			committed?.version === version &&
+			(committed.nodeId ?? 0) === (nodeId ?? getThisNodeId(auditStore)) &&
+			!committed.additionalAuditRefs?.length
+		);
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {

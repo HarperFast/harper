@@ -135,31 +135,52 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		assert.equal((await T.getHistoryOfRecord('r')).length, 1, 'a distinct write is applied and logged');
 	});
 
-	for (const prior of ['message', 'relocate']) {
-		it(`applies a put that follows a same-key ${prior} in its source transaction`, async function () {
-			if (isLMDB) return this.skip();
-			const { T, apply, origin } = replicatedTable(`${prior}ThenPut`);
-			const before = Date.now() - 60000;
-			await apply({
-				type: 'put',
-				id: 'r',
-				value: { id: 'r', name: 'old' },
-				timestamp: before,
-				version: before,
-				nodeId: origin,
+	for (const other of ['message', 'relocate']) {
+		for (const putFirst of [false, true]) {
+			it(`applies a put ${putFirst ? 'before' : 'after'} a same-key ${other} in its source transaction`, async function () {
+				if (isLMDB) return this.skip();
+				const { T, apply, origin } = replicatedTable(`${other}${putFirst ? 'AfterPut' : 'ThenPut'}`);
+				const before = Date.now() - 60000;
+				await apply({
+					type: 'put',
+					id: 'r',
+					value: { id: 'r', name: 'old' },
+					timestamp: before,
+					version: before,
+					nodeId: origin,
+				});
+				const version = before + 1000;
+				const put = { type: 'put', id: 'r', value: { id: 'r', name: 'new' }, nodeId: origin, version };
+				const otherWrite = { type: other, id: 'r', value: { id: 'r', name: 'published' }, nodeId: origin, version };
+				await apply({
+					type: 'transaction',
+					timestamp: version,
+					writes: putFirst ? [put, otherWrite] : [otherWrite, put],
+				});
+				assert.equal((await T.get('r')).name, 'new');
 			});
-			const version = before + 1000;
-			await apply({
-				type: 'transaction',
-				timestamp: version,
-				writes: [
-					{ type: prior, id: 'r', value: { id: 'r', name: 'published' }, nodeId: origin, version },
-					{ type: 'put', id: 'r', value: { id: 'r', name: 'new' }, nodeId: origin, version },
-				],
-			});
-			assert.equal((await T.get('r')).name, 'new');
-		});
+		}
 	}
+
+	it('skips the put of a re-delivered transaction that also publishes to its key', async function () {
+		if (isLMDB) return this.skip();
+		const { T, apply, origin } = replicatedTable('PutPublishRedelivery');
+		const version = Date.now() - 60000;
+		const transaction = () => ({
+			type: 'transaction',
+			timestamp: version,
+			writes: [
+				{ type: 'put', id: 'r', value: { id: 'r', name: 'first' }, nodeId: origin, version },
+				{ type: 'message', id: 'r', value: { id: 'r', name: 'published' }, nodeId: origin, version },
+			],
+		});
+		await apply(transaction());
+		const puts = async () => (await T.getHistoryOfRecord('r')).filter((entry) => entry.type === 'put').length;
+		const putsBefore = await puts();
+		await apply(transaction());
+		assert.equal(await puts(), putsBefore, 'the re-delivered put must not be logged again');
+		assert.equal((await T.get('r')).name, 'first');
+	});
 
 	it('skips every write of a re-delivered transaction that writes one key twice', async function () {
 		if (isLMDB) return this.skip();
