@@ -36,13 +36,19 @@ export function normalizeGitHost(host: string): string {
 		.toLowerCase();
 }
 
+const SCOPE_PREFIX = /^@[^/]+\//;
+const ARCHIVE_EXTENSION = /\.(?:tgz|tar\.gz|tar)$/i;
+
 /**
  * The canonical form of an explicitly named project: `@scope/app` and `app.tgz` both deploy as
  * `app`. Every project-scoped operation reduces its `project` this way, so the CLI has to resolve the
  * same name the server will when it grants a credential to one.
+ *
+ * Only a scope prefix and an archive extension are removed. Anything else stays, so `shop.pr-12`
+ * fails the project grammar instead of deploying over `shop`.
  */
 export function canonicalProjectName(project: string): string {
-	return path.parse(project).name;
+	return project.replace(SCOPE_PREFIX, '').replace(ARCHIVE_EXTENSION, '');
 }
 
 /** The project name a deploy derives from its `package` spec when no `project` was given. */
