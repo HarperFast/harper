@@ -183,9 +183,6 @@ function isArrayIndex(key: string): boolean {
 	return `${index}` === key && index >= 0 && index < 0xffff_ffff;
 }
 
-/**
- * Whether an `exports` value is the main entry's target itself rather than a map of subpaths.
- */
 function isConditionalExportsMainSugar(packageJsonUrl: URL, exports: unknown): boolean {
 	if (typeof exports === 'string' || Array.isArray(exports)) return true;
 	if (typeof exports !== 'object' || exports === null) return false;
@@ -301,9 +298,6 @@ function resolvePackageExports(
 	return resolvePackageTarget(packageJsonUrl, exportsMap[bestMatch], patternMatch, conditions);
 }
 
-/**
- * Node's ESM finalization of a resolved target: its real path, keeping the target's query and fragment.
- */
 function finalizePackageResolution(resolved: URL, referrer: string): string {
 	if (/%2f|%5c/i.test(resolved.pathname)) {
 		throw new PackageResolutionError(
@@ -328,10 +322,6 @@ function finalizePackageResolution(resolved: URL, referrer: string): string {
 	return moduleUrl.href;
 }
 
-/**
- * Resolve a bare package specifier through its package's `exports` map. Returns null when no package with
- * an `exports` map is found, or the subpath is not exported.
- */
 function resolveESMPackageExports(
 	specifier: string,
 	referrer: string,

@@ -477,7 +477,7 @@ for (const mode of ['vm-current-context', 'compartment']) {
 
 				const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope(runtimeRoot));
 				expect(result.value).to.equal('bun-esm-only');
-				expect(result.bunValue).to.equal('bun');
+				assert.strictEqual(result.bunValue, 'bun');
 			} finally {
 				if (originalBun) Object.defineProperty(process.versions, 'bun', originalBun);
 				else delete process.versions.bun;
@@ -592,7 +592,6 @@ describe('application require() of package exports (vm-current-context)', () => 
 			const scope = { ...vmScope(), runtimeRoot };
 			assert.strictEqual((await loadOutcome(() => scopedImport(entry, scope))).value, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
 			assert.strictEqual(globalThis[counter], 1);
-			// a second load in the same scope evaluates the module again instead of reusing its failed exports
 			assert.strictEqual((await loadOutcome(() => scopedImport(entry, scope))).value, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
 			assert.strictEqual(globalThis[counter], 2);
 		} finally {
