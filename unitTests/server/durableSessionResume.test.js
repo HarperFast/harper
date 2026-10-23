@@ -2045,3 +2045,75 @@ describe('MQTT durable record topics on resume', function () {
 		second.session.disconnect(true);
 	});
 });
+
+describe('MQTT durable collection topics on retained delivery', function () {
+	this.timeout(60_000);
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+	});
+
+	// the primary-key scan visits 'a' before 'z', though 'z' was written first and has the lower log key
+	async function retainedTopic(qos) {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('z', { value: 'z1' });
+		await T.put('a', { value: 'a1' });
+		const clientId = `retained-scan-${qos}-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos, rh: 0 }, true);
+		await waitFor(() => first.received.length === 2);
+		return { T, topic, clientId, first };
+	}
+
+	for (const qos of [1, 2]) {
+		it(`keeps the saved position at its start when retained records are acknowledged (QoS ${qos})`, async () => {
+			const { topic, clientId, first } = await retainedTopic(qos);
+			const subscribedAt = first.session.topics.get(topic).entry.startTime;
+			await ackAll(first.session, first.received);
+			first.session.checkpoint();
+			await first.session.writes;
+			assert.ok(first.session.topics.get(topic).entry.startTime >= subscribedAt, 'the position did not move back');
+			assert.ok((await stored(clientId)).subscriptions[0].startTime >= subscribedAt, 'nor did the saved one');
+			first.session.disconnect(true);
+		});
+
+		it(`resumes after retained records with only the newer version (QoS ${qos})`, async () => {
+			const { T, topic, clientId, first } = await retainedTopic(qos);
+			await ackAll(first.session, first.received);
+			first.session.disconnect(true);
+			await first.session.writes;
+			await T.put('a', { value: 'a2' });
+
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => values(second.received).includes('a2'));
+			await T.put('marker', { value: 'marker' });
+			await waitFor(() => values(second.received).includes('marker'));
+			assert.deepStrictEqual(values(second.received), ['a2', 'marker'], `${topic} replays no older version`);
+			second.session.disconnect(true);
+		});
+	}
+
+	it('keeps the position when a reload re-snapshot is acknowledged', async function () {
+		if (isRocksDB) this.skip(); // durable subscribers are closed at the marker instead
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const { session, received } = await connect(`reload-resnapshot-${name}`);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('z', { value: 'z1' });
+		await T.put('a', { value: 'a1' });
+		await waitFor(() => received.length === 2);
+		const state = session.topics.get(topic);
+		const lastDelivered = state.deliveredKey;
+		await T.writeReloadMarker();
+		await waitFor(() => received.length === 4);
+		await ackAll(session, received);
+		assert.ok(
+			session.nextPosition(state) >= lastDelivered,
+			'acknowledging the re-snapshot did not move the position back'
+		);
+		session.disconnect(true);
+	});
+});

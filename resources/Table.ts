@@ -7343,9 +7343,7 @@ export function makeTable(options): TableResourceClass {
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
 							if (isHiddenExpiry(expiresAt, now)) continue;
-							const scanned: any = { id, localTime, value, version, type: 'put', size };
-							if (reportingProgress) scanned.fromScan = true;
-							if (!send(scanned)) return;
+							if (!send({ id, localTime, value, version, type: 'put', size, fromScan: true })) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
@@ -7450,9 +7448,7 @@ export function makeTable(options): TableResourceClass {
 					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value && !isHiddenExpiry(entry.expiresAt)) {
 						// if retain and it exists, send the current value first
-						const current: any = { id: thisId, ...entry, type: 'put' };
-						if (reportingProgress) current.fromScan = true;
-						if (!send(current)) return;
+						if (!send({ id: thisId, ...entry, type: 'put', fromScan: true })) return;
 					}
 				}
 				// now send any queued messages
@@ -7570,7 +7566,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						if (!value) continue; // skip tombstones
 						if (isHiddenExpiry(expiresAt, now)) continue;
-						yield { id, localTime, value, version, type: 'put', size };
+						yield { id, localTime, value, version, type: 'put', size, fromScan: true };
 						if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 							if ((await subscription.waitForDrain()) === false) return;
 							now = Date.now();
@@ -7578,7 +7574,8 @@ export function makeTable(options): TableResourceClass {
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && !isHiddenExpiry(entry.expiresAt))
+						yield { id: thisId, ...entry, type: 'put', fromScan: true };
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
