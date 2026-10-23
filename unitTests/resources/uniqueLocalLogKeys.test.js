@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { publishOriginFloor } = require('#src/resources/originClosedFloor');
+const { Transaction } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -143,6 +144,41 @@ describe('Every local-origin transaction has a unique log key', () => {
 		assert.equal(record.count, 2, 'both increments applied once');
 		assert(Tbl.primaryStore.getEntry(id).additionalAuditRefs, 'additional audit refs exist for complex resequencing');
 		assertDistinctKeys([...entriesFor(other), ...entriesFor(between), ...entriesFor(id)]);
+	});
+
+	it('a lock holder whose save is retried after a native conflict still lands its next save', async () => {
+		// the retry reads back the record its own first attempt staged, whose head and identity refs
+		// are this write's: they prove nothing, and taking them as a receipt skipped the write, left
+		// the holder's version unstepped, and made the next save look like a re-delivery
+		const id = newId();
+		await Tbl.put(id, { name: 'seed' });
+		const targetDb = Tbl.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		let conflicted;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db === targetDb && conflicted === undefined) {
+				conflicted = this.id;
+				throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: true });
+			}
+			return originalCommit.apply(this, args);
+		};
+		const holder = await Tbl.lock(id, { hold: true, lease: 15_000 });
+		try {
+			holder.set('name', 'first');
+			await holder.save();
+			assert.ok(conflicted, 'the first save must have been retried');
+			const first = Tbl.primaryStore.getEntry(id);
+			assert.equal(first.value.name, 'first');
+			holder.set('name', 'second');
+			await holder.save();
+			const second = Tbl.primaryStore.getEntry(id);
+			assert.equal(second.value.name, 'second');
+			assert(second.version > first.version, 'each save of a holder steps the record version');
+			assertDistinctKeys(entriesFor(id));
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+			await holder.unlock();
+		}
 	});
 
 	it('a minted key never lands on an explicit timestamp issued earlier', async () => {

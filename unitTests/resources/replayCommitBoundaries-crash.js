@@ -75,14 +75,31 @@ if (require.main === module) {
 			process.kill(process.pid, 'SIGKILL');
 			return;
 		}
-		// Several native commits at one log key, as a replication receiver writes re-deliveries.
+		// Several native commits at one log key in an origin's log, as a replication receiver writes
+		// re-deliveries (the node's own `local` log never repeats a key).
+		const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+		const { RequestTarget } = require('#src/resources/RequestTarget');
+		Tbl.auditStore.ensureLogExists('peer-crash');
+		const peerId = getIdOfRemoteNode('peer-crash', Tbl.auditStore);
 		const logKey = Date.now();
-		await transaction({ timestamp: logKey }, () => Tbl.put({ id: 'a', n: 1 }));
-		await transaction({ timestamp: logKey }, async () => {
-			await Tbl.put({ id: 'b', n: 2 });
-			await Tbl.put({ id: 'c', n: 3 });
-		});
-		await transaction({ timestamp: logKey }, () => Tbl.put({ id: 'd', n: 4 }));
+		const commit = (records) => {
+			const context = { timestamp: logKey };
+			return transaction(context, () => {
+				for (const record of records) {
+					const target = new RequestTarget();
+					target.id = null;
+					const resource = Tbl.getResource(target, context, {});
+					resource._writeUpdate(record.id, record, true, { context, nodeId: peerId, version: logKey });
+					resource.save();
+				}
+			});
+		};
+		await commit([{ id: 'a', n: 1 }]);
+		await commit([
+			{ id: 'b', n: 2 },
+			{ id: 'c', n: 3 },
+		]);
+		await commit([{ id: 'd', n: 4 }]);
 		writeFileSync(markerPath, String(logKey));
 		// no flush: the writes must be recovered by replaying the transaction log
 		process.kill(process.pid, 'SIGKILL');

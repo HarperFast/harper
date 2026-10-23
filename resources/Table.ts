@@ -5098,14 +5098,23 @@ export function makeTable(options): TableResourceClass {
 							// options?.nodeId resolves to the same 0 the ref stored). Not after an earlier write of this
 							// transaction to this key: every write in it shares one log key, so the ref that write left is
 							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
-							// and stages nothing.
+							// and stages nothing. On a retry whose prior attempt staged, the record read back may be that
+							// attempt's own: then its head ref is this write's key (unique in its log) and its identity ref
+							// is this write's too, so neither is a receipt. A committed competitor's record carries its
+							// own head, so its refs still count.
 							let refBase: Partial<Entry> | undefined;
+							let readsOwnStaging = false;
+							if (!priorStaged) {
+								refBase = identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
+								readsOwnStaging =
+									stagedOwnAuditEntry &&
+									refBase?.additionalAuditRefs !== undefined &&
+									auditRefIndex(refBase.additionalAuditRefs, appendedLogKey, options?.nodeId) >= 0;
+							}
 							if (
 								!priorStaged &&
-								(refBase =
-									identityRecord === UNRESOLVED
-										? identityBase(write, existingEntry, committedBy)
-										: identityRecord)?.additionalAuditRefs?.some(
+								!readsOwnStaging &&
+								refBase?.additionalAuditRefs?.some(
 									(ref, index) =>
 										(ref.version === appendedLogKey ||
 											(ref.version === receivedLogKey &&

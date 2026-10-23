@@ -52,12 +52,16 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		});
 	}
 
-	/** A record with a two-entry audit chain, and the log key of its head. */
+	/** A record with a two-entry audit chain; the log key of its head and its (explicit) version. */
 	async function withHead(T, id, record = { name: 'newer' }) {
 		await T.put(id, { name: 'original' });
-		const headKey = Date.now() + 1000;
-		await T.patch(id, record, { timestamp: headKey });
-		return headKey;
+		const headVersion = Date.now() + 1000;
+		await T.patch(id, record, { timestamp: headVersion });
+		// the explicit timestamp is the version; the key is minted, and the record's first ref addresses it
+		const headKey = T.primaryStore.getEntry(id).additionalAuditRefs[0].version;
+		assert.notEqual(headKey, headVersion);
+		assert.equal(T.auditStore.getSync(headKey, T.tableId, id, 0)?.version, headVersion);
+		return { headKey, headVersion };
 	}
 
 	async function applyAndSpy(T, apply) {
@@ -88,7 +92,7 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 	it('does not enter the walk for a write below the audit floor', async function () {
 		if (isLMDB) return this.skip();
 		const T = tableInOwnDatabase('NotEntered');
-		const headKey = await withHead(T, 'below');
+		const { headKey } = await withHead(T, 'below');
 		raiseAuditFloor(T.auditStore, Date.now());
 
 		const spy = await applyAndSpy(T, () => T.put('below', { name: 'stale' }, { timestamp: Date.now() - 30 * DAY }));
@@ -104,10 +108,10 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 	it('still enters the walk for a write within the audit floor', async function () {
 		if (isLMDB) return this.skip();
 		const T = tableInOwnDatabase('StillEntered');
-		const headKey = await withHead(T, 'within');
+		const { headKey, headVersion } = await withHead(T, 'within');
 
 		// Older than the head, newer than the floor (which a fresh database bootstraps to its open time).
-		const spy = await applyAndSpy(T, () => T.patch('within', { count: 7 }, { timestamp: headKey - 10 }));
+		const spy = await applyAndSpy(T, () => T.patch('within', { count: 7 }, { timestamp: headVersion - 10 }));
 
 		assert.ok(
 			spy.getSyncKeys.includes(headKey),
@@ -119,7 +123,7 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 	it('still enters the walk when the floor is unknown', async function () {
 		if (isLMDB) return this.skip();
 		const T = tableInOwnDatabase('UnknownFloor');
-		const headKey = await withHead(T, 'unknown');
+		const { headKey } = await withHead(T, 'unknown');
 		// An unreadable floor reads as Infinity, which every other consumer treats as "nothing is safe".
 		// Here the same value has to mean "cannot decide", or it would discard every out-of-order write.
 		T.auditStore.rootStore.removeSync(AUDIT_FLOOR_KEY);
@@ -137,7 +141,7 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 	it('reads the floor a real retention purge records, not only an injected one', async function () {
 		if (isLMDB) return this.skip();
 		const T = tableInOwnDatabase('PurgedFloor');
-		const headKey = await withHead(T, 'purged');
+		const { headKey } = await withHead(T, 'purged');
 		// The production path: purgeAgedLogs raises the floor to Date.now() - auditRetention before asking
 		// the native purge to drop anything. Everything above is well inside a 1ms retention.
 		setAuditRetention(1);
@@ -289,9 +293,9 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 	it('pins the walk head lookup to one log and leaves an unrecorded predecessor aggregating', async function () {
 		if (isLMDB) return this.skip();
 		const T = tableInOwnDatabase('HeadLog');
-		const headKey = await withHead(T, 'logs');
+		const { headKey, headVersion } = await withHead(T, 'logs');
 
-		const spy = await applyAndSpy(T, () => T.patch('logs', { count: 1 }, { timestamp: headKey - 10 }));
+		const spy = await applyAndSpy(T, () => T.patch('logs', { count: 1 }, { timestamp: headVersion - 10 }));
 
 		const headLookup = spy.exactStartRanges.find((range) => range.start === headKey);
 		assert.ok(headLookup, `the walk should look up the head; got ${JSON.stringify(spy.exactStartRanges)}`);
