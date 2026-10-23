@@ -633,6 +633,8 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
+	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE: 'deployment_payloadRetention_failedMaxAge',
+	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT: 'deployment_payloadRetention_failedMaxCount',
 	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
 	DEPLOYMENT_STARTUPINSTALLTIMEOUT: 'deployment_startupInstallTimeout',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',

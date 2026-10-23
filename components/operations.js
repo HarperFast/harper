@@ -50,6 +50,7 @@ const {
 const { server } = require('../server/Server.ts');
 const { deploymentSource } = require('./deploymentSource.ts');
 const { assertDeclaredEntryPoints } = require('./declaredEntryPoints.ts');
+const { sweepFailedPayloads } = require('./payloadRetention.ts');
 const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
@@ -1133,6 +1134,8 @@ async function deployComponent(req) {
 			} catch (finishErr) {
 				log.warn('Failed to record deployment failure row', finishErr);
 			}
+			// After the finish, so the failure just recorded counts as the project's newest and is kept.
+			if (!stagedOnOrigin) void sweepFailedPayloads({ project: req.project });
 		}
 		throw outErr;
 	} finally {

@@ -95,6 +95,10 @@ async function loadRootComponents(isWorkerThread = false) {
 		require('./jobs/jobOwnership.ts')
 			.reconcileInterruptedJobsOnce()
 			.catch((error) => console.error(errorForLog(error)));
+		// Same shape: once per process, not awaited; expiring old payloads is no reason to hold up boot.
+		require('../components/payloadRetention.ts')
+			.sweepFailedPayloadsOnce()
+			.catch((error) => console.error(errorForLog(error)));
 	}
 
 	await loadCertificates();

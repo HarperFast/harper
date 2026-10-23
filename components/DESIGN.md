@@ -841,6 +841,21 @@ at 512 characters plus a boolean `dirty`, forces a declared source to say `decla
 attested one win. The request's `source` is removed after the row is created, so peers never see it.
 `list_deployments { sha }` filters by `source.sha`.
 
+### Failed deploys keep their payloads only so long
+
+A successful deploy drops a payload over `deployment_payloadRetention_maxSize` once every peer has installed it; a
+failed one keeps its tarball, since that is what an operator retries or debugs with. Kept forever, a retried
+rollout filled a tenant's quota with copies of one bundle (#2681). `sweepFailedPayloads`
+(`components/payloadRetention.ts`) now drops, per project, every failed payload beyond the newest
+`deployment_payloadRetention_failedMaxCount` (default 2) and every one older than
+`deployment_payloadRetention_failedMaxAge` (default `7d`; a duration, or seconds), but never the project's newest,
+and `0` turns a bound off. A drop is what `delete_deployment_payload` does: the row is written with
+`payload_blob: null`, which unlinks the file and replicates so peers drop their copies, and a `payload_dropped` event
+with `reason: 'retention'` says which bound. Only `failed` rows, so in-flight and `staged` rows are never touched, and
+only rows this node wrote (`origin_node`), so each row is swept once across the cluster. It runs after a deploy's
+failure is recorded, for that project, and once per process at boot (`loadRootComponents`, main thread, not
+awaited, like the interrupted-job sweep), which reaches payloads no later deploy of their project would.
+
 ### `get_components` says when the live release was deployed and when it last loaded
 
 Each entry carries three fields, all of this node's view (#564):
