@@ -5231,9 +5231,25 @@ export function makeTable(options): TableResourceClass {
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
-							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = existingEntry.additionalAuditRefs
-								? existingEntry.additionalAuditRefs.map((ref) => ({ localTime: ref.version, nodeId: ref.nodeId }))
-								: [];
+							// A record's ref list also carries its own audit head (walked from already) and, for a write
+							// whose version is not its key, the identity a re-delivery carries, which addresses no entry.
+							// Neither is a branch: visiting them costs a keyed miss each and keeps the early-out below from
+							// ever seeing an empty branch list.
+							const isBranchRef = (
+								ref: { version: number; nodeId?: number },
+								head: { txnLogKey: number; nodeId?: number },
+								version: number | undefined,
+								headNodeId: number | undefined
+							) =>
+								(ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0)) &&
+								(ref.version !== version || (ref.nodeId ?? 0) !== (headNodeId ?? 0));
+							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
+							if (existingEntry.additionalAuditRefs) {
+								for (const ref of existingEntry.additionalAuditRefs) {
+									if (isBranchRef(ref, initialAuditHead, existingEntry.version, existingEntry.nodeId))
+										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
+								}
+							}
 
 							// Out-of-order merges retain every existing branch head; per-origin log keys are not globally ordered.
 							if (existingEntry.additionalAuditRefs) {
@@ -5244,10 +5260,26 @@ export function makeTable(options): TableResourceClass {
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
+							// Resolved once per visited entry: the queue filter and the advance both need it.
+							let previousHeadOf: any;
+							let previousHead: { txnLogKey: number; nodeId: number };
+							const resolvePreviousHead = (auditRecord) => {
+								if (previousHeadOf !== auditRecord) {
+									const previousRefs = auditRecord.previousAdditionalAuditRefs;
+									previousHeadOf = auditRecord;
+									previousHead =
+										isRocksDB && previousRefs?.length
+											? resolveAuditHead(id, auditRecord.previousVersion, auditRecord.previousNodeId, previousRefs)
+											: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
+								}
+								return previousHead;
+							};
 							const queuePreviousAuditRefs = (auditRecord) => {
 								const previousRefs = auditRecord.previousAdditionalAuditRefs;
 								if (previousRefs) {
+									const head = resolvePreviousHead(auditRecord);
 									for (const ref of previousRefs) {
+										if (!isBranchRef(ref, head, auditRecord.previousVersion, auditRecord.previousNodeId)) continue;
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
 											version: ref.version,
@@ -5257,13 +5289,9 @@ export function makeTable(options): TableResourceClass {
 								}
 							};
 							const advanceToPreviousAudit = (auditRecord) => {
-								const previousRefs = auditRecord.previousAdditionalAuditRefs;
-								const previousHead =
-									isRocksDB && previousRefs?.length
-										? resolveAuditHead(id, auditRecord.previousVersion, auditRecord.previousNodeId, previousRefs)
-										: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
-								localTime = previousHead.txnLogKey;
-								nodeId = previousHead.nodeId;
+								const head = resolvePreviousHead(auditRecord);
+								localTime = head.txnLogKey;
+								nodeId = head.nodeId;
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
@@ -5339,8 +5367,9 @@ export function makeTable(options): TableResourceClass {
 												if (isRocksDB && localTime !== appendedLogKey && receivedLogKey === appendedLogKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
-													// Only for an applied write: a local write's received identity is its version, which
-													// is never its key, so an equal version from the same origin is its re-delivery.
+													// Only for a write filed in a named origin's log under that origin's key. In `local`
+													// every key is minted, so the received identity never matches the key: an equal
+													// version there — a local write's own, or an unmapped origin's — is a re-delivery.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is

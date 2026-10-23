@@ -217,8 +217,7 @@ class ThreadRegistry {
 			// and a later mint land on it, since it may not move the ratchet (one far in the future would pin
 			// every later key). Every site that installs a caller's value on a handle hands the same value to
 			// `save` as `txnTime`, so a handle without `explicit` carries its own mint.
-			const admissible =
-				explicit === undefined && bits >= Atomics.load(words, WORD_PROPOSED) && this.admitNative(bits);
+			const admissible = explicit === undefined && bits >= Atomics.load(words, WORD_PROPOSED) && this.admitNative(bits);
 			const key = admissible ? current : this.freshKey();
 			if (key !== current) handle.setTimestamp(key);
 			const reservation: Reservation = { registry: this, key, released: false };

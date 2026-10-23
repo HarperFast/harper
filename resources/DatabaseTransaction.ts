@@ -770,10 +770,6 @@ export function validateWrite(operation: TransactionWrite, txnTime: number, tran
 	}
 }
 
-export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
-	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
-}
-
 /**
  * The state a preceding write in this transaction left for `operation`'s key, or undefined if this
  * is the first write to it. Within a transaction the writes are ordered by program order, and
@@ -2262,11 +2258,11 @@ export class DatabaseTransaction implements Transaction {
 			operation.pendingPriorWrite = null;
 		}
 		// `txnTime` is this transaction's timestamp: the record version, and the log key for a write that
-		// minted it. A write applied from elsewhere carries the origin's record version too, and that is
-		// what the record is stored at. Gated on the apply flags so an ordinary write never reads the
-		// property (harper#2412).
-		const writeVersion =
-			this.sourceApply || this.isReplay ? getAppliedWriteVersion(operation.recordVersion, txnTime) : txnTime;
+		// minted it. A write applied from elsewhere carries the origin's record version, which may sit
+		// above the origin's log key (an explicit timestamp ahead of its clock), and that is what the
+		// record is stored at. Gated on the apply flags so an ordinary write never reads the property
+		// (harper#2412).
+		const writeVersion = this.sourceApply || this.isReplay ? (operation.recordVersion ?? txnTime) : txnTime;
 		// A base that feeds stored state must come from this transaction's snapshot, never the
 		// cross-worker cache vouch (stale when a resequenced write reused a version). That closes the
 		// lost-update window only when this transaction holds a snapshot to validate the later Put

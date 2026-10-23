@@ -566,9 +566,12 @@ describe('Transactions', () => {
 			assert.equal(record.prop2, 'value2');
 
 			let entry2 = TxnTest.primaryStore.getEntry(65);
+			// The explicit timestamp is the record version; the entry sits at its minted key, which the
+			// record's first ref addresses.
+			assert.equal(entry2.version, now + 150);
+			let auditRecord = TxnTest.auditStore.getSync(entry2.additionalAuditRefs[0].version, TxnTest.tableId, 65);
+			assert.equal(auditRecord?.version, now + 150, 'the head ref addresses the latest entry');
 			// Verify older audit refs are still preserved
-			let auditRecord = TxnTest.auditStore.getSync(entry2.version, TxnTest.tableId, 65);
-			assert(auditRecord, 'Entry should exist for the older version');
 			assert(auditRecord.previousAdditionalAuditRefs, 'Additional audit refs should be preserved');
 		});
 
@@ -646,7 +649,9 @@ describe('Transactions', () => {
 		// #1114: once a later in-order write drops the out-of-order ref from the record, a re-delivery can no
 		// longer be caught by the additionalAuditRefs front-check. The up-front keyed audit lookup must catch
 		// it BEFORE the resequencing walk, so the deep-walk/depth-cap path is never taken (this is the case
-		// that pegged the event loop on transitive re-deliveries in production).
+		// that pegged the event loop on transitive re-deliveries in production). A re-delivery carries the
+		// write's log key (replication frames by it); the explicit timestamp is only its version, never a
+		// key, so a re-delivery that carries the version alone falls back to the walk (resources/DESIGN.md).
 		it('deduplicates a re-delivered out-of-order write up front, without the deep walk (#1114)', async function () {
 			if (isLMDB) return; // RocksDB-only up-front keyed dedup (LMDB keeps the exact unbounded walk)
 			const { logger } = require('#src/utility/logging/logger');
@@ -656,8 +661,15 @@ describe('Transactions', () => {
 			const depth = 1010; // deeper than MAX_OUT_OF_ORDER_AUDIT_DEPTH so an unguarded walk would cap
 			for (let i = 1; i <= depth; i++) await TxnTest.patch(id, { seq: i }, { timestamp: base + 10 * i });
 			// Out-of-order commutative write (older than every patch); records an additionalAuditRef.
-			await TxnTest.patch(id, { count: { __op__: 'add', value: 7 } }, { timestamp: base + 5 });
+			const increment = { count: { __op__: 'add', value: 7 } };
+			await TxnTest.patch(id, increment, { timestamp: base + 5 });
 			assert.equal((await TxnTest.get(id)).count, 7, 'out-of-order op applied once');
+			let logKey;
+			for (const entry of TxnTest.auditStore.getRange({ start: 1, log: 0 })) {
+				if (entry.tableId === TxnTest.tableId && entry.recordId === id && entry.version === base + 5)
+					logKey = entry.txnLogKey;
+			}
+			assert(logKey && logKey !== base + 5, 'the out-of-order write sits at a minted key');
 			// A newer in-order write rewrites the record and drops the ref, so the front-check can no longer see it.
 			await TxnTest.patch(id, { seq: depth + 1 }, { timestamp: base + 10 * (depth + 2) });
 			// Re-deliver the same out-of-order write: must be deduped up front, never reaching the depth-cap walk.
@@ -667,7 +679,11 @@ describe('Transactions', () => {
 				if (typeof msg === 'string' && msg.includes('exceeded depth cap')) capWarned = true;
 			};
 			try {
-				await TxnTest.patch(id, { count: { __op__: 'add', value: 7 } }, { timestamp: base + 5 });
+				const context = { source: {}, sourceApply: true, timestamp: logKey };
+				await transaction(context, async () => {
+					const resource = await TxnTest.getResource(id, context);
+					await resource._writeUpdate(id, increment, false, { isNotification: true, version: base + 5 });
+				});
 			} finally {
 				logger.warn = originalWarn;
 			}

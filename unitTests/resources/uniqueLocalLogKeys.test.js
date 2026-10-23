@@ -138,7 +138,8 @@ describe('Every local-origin transaction has a unique log key', () => {
 
 		const record = await Tbl.get(id);
 		assert.equal(record.name, 'update4');
-		for (const prop of ['prop1', 'prop2', 'prop3', 'prop4']) assert.equal(record[prop], true, `${prop} should be present`);
+		for (const prop of ['prop1', 'prop2', 'prop3', 'prop4'])
+			assert.equal(record[prop], true, `${prop} should be present`);
 		assert.equal(record.count, 2, 'both increments applied once');
 		assert(Tbl.primaryStore.getEntry(id).additionalAuditRefs, 'additional audit refs exist for complex resequencing');
 		assertDistinctKeys([...entriesFor(other), ...entriesFor(between), ...entriesFor(id)]);
