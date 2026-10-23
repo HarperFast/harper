@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { mkdtemp, mkdir, writeFile, rm } = require('node:fs/promises');
-const { tmpdir } = require('node:os');
+const { tmpdir, cpus } = require('node:os');
 const { readFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { join } = require('node:path');
@@ -47,6 +47,11 @@ describe('cgroup CPU accounting', function () {
 		const allowed = readFileSync('/proc/self/status', 'utf8').match(/^Cpus_allowed_list:\s*(.+)$/m)[1];
 		const [first, last = first] = allowed.split(',')[0].split('-').map(Number);
 		const mask = first < last ? `${first},${first + 1}` : String(first);
+		const allowedCount = allowed.split(',').reduce((count, range) => {
+			const [start, end = start] = range.split('-').map(Number);
+			return count + end - start + 1;
+		}, 0);
+		const parentCapacity = Math.min(8, cpus().length, allowedCount);
 		const child = await group('tenant/worker', 'max 100000', 0);
 		const parent = await group('tenant', '800000 100000', 0);
 		await writeFile(join(child, 'cpuset.cpus.effective'), mask);
@@ -57,7 +62,7 @@ describe('cgroup CPU accounting', function () {
 			const { readCgroupCPU, getCPUUtilization } = require('#src/components/status/cgroup');
 			(async () => {
 				const previous = await readCgroupCPU(process.argv[1], process.argv[2]);
-				await writeFile(process.argv[3], 'usage_usec 3000000\\n');
+				await writeFile(process.argv[3], 'usage_usec ${parentCapacity * 375000}\\n');
 				const current = await readCgroupCPU(process.argv[1], process.argv[2]);
 				assert.equal(getCPUUtilization({ ...previous, time: 0 }, { ...current, time: 1000 }), 37.5);
 			})().catch(error => { console.error(error); process.exitCode = 1; });
