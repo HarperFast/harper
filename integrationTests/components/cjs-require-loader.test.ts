@@ -14,9 +14,6 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { authHeader } from '../deploy/redeploy-restart-flag-helpers.ts';
 
-// Where vm.SourceTextModule is missing the VM loaders fall back to native import, which applies none of these rules.
-const VM_ONLY = process.env.HARPER_RUNTIME === 'bun' && 'asserts VM-loader behavior';
-
 type ProbeResult = {
 	vmLoaded: boolean;
 	sameInstanceAsImport: boolean;
@@ -151,7 +148,7 @@ for (const [moduleLoader, dependencyLoader] of [
 				}
 			});
 
-			test('loads the component through the VM loader', { skip: VM_ONLY }, () => {
+			test('loads the component through the VM loader', () => {
 				strictEqual(probe.vmLoaded, true);
 			});
 
@@ -159,7 +156,7 @@ for (const [moduleLoader, dependencyLoader] of [
 				strictEqual(probe.sameInstanceAsImport, true);
 			});
 
-			test('a natively required dependency builds its objects in the main realm', { skip: VM_ONLY }, () => {
+			test('a natively required dependency builds its objects in the main realm', () => {
 				strictEqual(probe.markerFromAppRealm, moduleLoader === 'vm-current-context');
 			});
 
@@ -173,15 +170,11 @@ for (const [moduleLoader, dependencyLoader] of [
 				strictEqual(probe.filenameReadable, true);
 			});
 
-			test(
-				'applies allowedDirectory, allowedBuiltInModules and the child_process substitute',
-				{ skip: VM_ONLY },
-				() => {
-					ok(probe.outside.includes('outside of allowed path'), probe.outside);
-					strictEqual(probe.disallowedBuiltin, 'Module node:os is not allowed to be imported');
-					strictEqual(probe.execSync, 'execSync is not allowed');
-				}
-			);
+			test('applies allowedDirectory, allowedBuiltInModules and the child_process substitute', () => {
+				ok(probe.outside.includes('outside of allowed path'), probe.outside);
+				strictEqual(probe.disallowedBuiltin, 'Module node:os is not allowed to be imported');
+				strictEqual(probe.execSync, 'execSync is not allowed');
+			});
 
 			test('keeps serving after the rejected requires', async () => {
 				deepStrictEqual(await getProbe(ctx), probe);
