@@ -2,7 +2,7 @@
 
 Authentication tokens, OIDC exchange and TLS material.
 
-**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts` or `certificateVerification/`.
+**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts`, `certificateVerification/` or role attribute permissions (`permissionsTranslator.js`, `Table.ts` permission lookup).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -229,3 +229,9 @@ Synchronous spawning uses a filesystem bakery lock: contenders atomically publis
 Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
 
 Named-process probe and lock failures use `NamedProcessError`, a `ServerError` subtype with the original cause; native child-process argument errors retain their original class and code.
+
+## Attribute permissions on the resource path: key grant and restricted full puts (`Table.ts` `getTablePermissions`, `put`, harper#3284)
+
+The resource path reads the stored role permission, not the operations API's translation (`permissionsTranslator.getRolePermissions` stringifies the whole schema per call, and rebuilds the list from declared attributes, dropping listed properties that REST/MQTT writes store without declaring). `getTablePermissions` applies only the part that changes resource behavior: an unlisted primary key gets `implicitPrimaryKeyPermission`, built from the translator's own primitives. Nothing is granted on a keyless table. Memoized per table on the table permission object's identity, which the derived-role memo (keyed by role-record version) and the cached principal keep stable across requests.
+
+A full put by an attribute-restricted role must change only what the role may update, on every durable form of the write. `allowUpdate` records the role's update map on the instance (it never writes into the payload), and every later full put on that instance (`put`, or the `update(record, true)` that default static dispatch reaches) is staged as a patch: the payload, the primary key, and `undefined` for each omitted updatable stored attribute. It stays until the next `allowUpdate` on that instance, so neither an override's own write before `super.put` nor a retried `super.put` can turn the put into an unrestricted replace; any later full put through the same instance (a request's, or a kept `{ hold: true }` lock instance's) is restricted too. A patch is the only shape that holds the invariant: its log entry is base-independent (the transaction log is not rewritten on a commit retry), and it merges onto the base each attempt and each replica re-reads. With no base it validates as a full record, so a create still needs required attributes; a delete racing a retry can still leave a partial row, as for any PATCH. A source with `patch` gets the patch; a put-only source gets the record as known locally, as for any PATCH, so a cold cache can still drop protected attributes there. An attribute-restricted role cannot PUT or POST an array body: its elements are written without their own check. `allowUpdate`/`allowCreate` resolve a promised body (how a REST body reaches them) before checking its keys; the dispatcher still passes the promise, as the public `allow*` signature declares, and the upload still overlaps the record load. On a sealed table, only declared attributes count toward the key grant. Pinned by `unitTests/resources/permissions.test.js` and `integrationTests/security/resource-attribute-permissions.test.ts`.
