@@ -5108,8 +5108,8 @@ export function makeTable(options): TableResourceClass {
 								const ownMintedKey = isRocksDB ? reservedLocalKey(transaction) : undefined;
 								readsOwnStaging =
 									stagedOwnAuditEntry &&
-									ownMintedKey !== undefined &&
-									refBase?.additionalAuditRefs !== undefined &&
+									ownMintedKey != null &&
+									refBase?.additionalAuditRefs != null &&
 									auditRefIndex(refBase.additionalAuditRefs, ownMintedKey, options?.nodeId) >= 0;
 							}
 							if (

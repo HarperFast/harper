@@ -155,15 +155,16 @@ describe('Every local-origin transaction has a unique log key', () => {
 		const targetDb = Tbl.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
 		let conflicted;
-		Transaction.prototype.commit = async function (...args) {
-			if (this.store?.db === targetDb && conflicted === undefined) {
-				conflicted = this.id;
-				throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: true });
-			}
-			return originalCommit.apply(this, args);
-		};
-		const holder = await Tbl.lock(id, { hold: true, lease: 15_000 });
+		let holder;
 		try {
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db === targetDb && conflicted === undefined) {
+					conflicted = this.id;
+					throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: true });
+				}
+				return originalCommit.apply(this, args);
+			};
+			holder = await Tbl.lock(id, { hold: true, lease: 15_000 });
 			holder.set('name', 'first');
 			await holder.save();
 			assert.ok(conflicted, 'the first save must have been retried');
@@ -177,7 +178,7 @@ describe('Every local-origin transaction has a unique log key', () => {
 			assertDistinctKeys(entriesFor(id));
 		} finally {
 			Transaction.prototype.commit = originalCommit;
-			await holder.unlock();
+			await holder?.unlock();
 		}
 	});
 
