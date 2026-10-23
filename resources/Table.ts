@@ -1624,7 +1624,7 @@ export function makeTable(options): TableResourceClass {
 				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
 				if (!entry) continue;
 				if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
-					return { txnLogKey: ref.version, nodeId: ref.nodeId };
+					return { txnLogKey: ref.version, nodeId: ref.nodeId, entry };
 				const previousRefs = entry.previousAdditionalAuditRefs;
 				if (previousRefs) {
 					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
@@ -1636,7 +1636,7 @@ export function makeTable(options): TableResourceClass {
 		if (version != null) {
 			const directHead = auditStore.getSync(version, tableId, id, nodeId);
 			if (directHead?.version === version && (nodeId == null || (directHead.nodeId ?? 0) === nodeId))
-				return { txnLogKey: version, nodeId };
+				return { txnLogKey: version, nodeId, entry: directHead };
 		}
 		return { txnLogKey: version, nodeId };
 	}
@@ -5218,10 +5218,12 @@ export function makeTable(options): TableResourceClass {
 						}
 						if (audit && !belowAuditFloor) {
 							// incremental CRDT updates are only available with audit logging on
-							const initialAuditHead = isRocksDB
+							const initialAuditHead: { txnLogKey: number; nodeId: number; entry?: any } = isRocksDB
 								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
 								: { txnLogKey: existingEntry.localTime, nodeId: existingEntry.nodeId };
 							let localTime = initialAuditHead.txnLogKey;
+							// the entry a head resolution already read, so the walk's first step does not read it again
+							let resolvedEntry = initialAuditHead.entry;
 							let auditedVersion = existingEntry.version;
 							logger.debug?.(
 								'Applying CRDT update to record with id: ',
@@ -5259,7 +5261,7 @@ export function makeTable(options): TableResourceClass {
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
 							let previousHeadOf: any;
-							let previousHead: { txnLogKey: number; nodeId: number };
+							let previousHead: { txnLogKey: number; nodeId: number; entry?: any };
 							const resolvePreviousHead = (auditRecord) => {
 								if (previousHeadOf !== auditRecord) {
 									const previousRefs = auditRecord.previousAdditionalAuditRefs;
@@ -5289,6 +5291,7 @@ export function makeTable(options): TableResourceClass {
 								const head = resolvePreviousHead(auditRecord);
 								localTime = head.txnLogKey;
 								nodeId = head.nodeId;
+								resolvedEntry = head.entry;
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
@@ -5335,7 +5338,11 @@ export function makeTable(options): TableResourceClass {
 										auditWalkCapped = true;
 										break;
 									}
-									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
+									const auditRecord =
+										resolvedEntry?.txnLogKey === localTime
+											? resolvedEntry
+											: auditStore.get(localTime, tableId, id, nodeId);
+									resolvedEntry = undefined;
 									if (!auditRecord) break;
 									queuePreviousAuditRefs(auditRecord);
 									if (
@@ -5461,6 +5468,7 @@ export function makeTable(options): TableResourceClass {
 									localTime = nextRef.localTime;
 									auditedVersion = Infinity;
 									nodeId = nextRef.nodeId;
+									resolvedEntry = undefined;
 									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
 								}
 							} while (nextRef);
