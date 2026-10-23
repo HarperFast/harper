@@ -470,16 +470,29 @@ describe('mqtt.ts reason codes for a refused request', () => {
 					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
 				});
 
-				it('reports an error with no code as a generic refusal', async () => {
+				it('reports a bare authorizeClient error as Not authorized', async () => {
 					refuseWith(new Error('nope'));
 					const { connack } = await connect(open, { protocolVersion });
-					assert.strictEqual(codeOf(connack, protocolVersion), other);
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
 				});
 
 				it('sends no code outside the refusal range for an unrelated numeric error.code', async () => {
 					refuseWith(Object.assign(new Error('nope'), { code: 500 }));
 					const { connack } = await connect(open, { protocolVersion });
-					assert.strictEqual(codeOf(connack, protocolVersion), other);
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
+				});
+
+				it('reports a failure after authorizeClient as a generic refusal', async () => {
+					// the registry is a shared Set, so the throwing stub shadows `add` on it only for this connect
+					open.mqtt.sessions.add = () => {
+						throw new Error('session store unavailable');
+					};
+					try {
+						const { connack } = await connect(open, { protocolVersion });
+						assert.strictEqual(codeOf(connack, protocolVersion), other);
+					} finally {
+						delete open.mqtt.sessions.add;
+					}
 				});
 			});
 		}
@@ -487,18 +500,18 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		it('passes on a v5 refusal code the error names, and not to a 3.1.1 client', async () => {
 			refuseWith(Object.assign(new Error('banned'), { code: 0x8a }));
 			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, 0x8a);
-			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, SERVER_UNAVAILABLE_311);
+			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, NOT_AUTHORIZED_311);
 		});
 
 		it('does not send a v5 reason code that is not allowed in a CONNACK', async () => {
 			refuseWith(Object.assign(new Error('bad'), { code: 0x8e }));
-			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, UNSPECIFIED_ERROR);
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, NOT_AUTHORIZED);
 		});
 
 		it('passes on a 3.1.1 refusal code the error names, and not to a v5 client', async () => {
 			refuseWith(Object.assign(new Error('unavailable'), { code: 3 }));
 			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, 3);
-			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, UNSPECIFIED_ERROR);
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, NOT_AUTHORIZED);
 		});
 	});
 });
