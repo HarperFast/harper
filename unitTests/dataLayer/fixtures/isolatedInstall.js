@@ -16,6 +16,8 @@ const paths = {
 	restoreMarker: require.resolve('#src/dataLayer/restoreMarker'),
 	restoreReceipt: require.resolve('#src/dataLayer/restoreReceipt'),
 	restoreChildRunner: require.resolve('#src/dataLayer/restoreChildRunner'),
+	restoreIntent: require.resolve('#src/dataLayer/restoreIntent'),
+	backupRepository: require.resolve('#src/dataLayer/backupRepository'),
 	durableFile: require.resolve('#src/utility/durableFile'),
 	fixture: require.resolve('./harperDatabase.js'),
 };

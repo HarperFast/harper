@@ -1,9 +1,12 @@
 'use strict';
 
 const assert = require('node:assert');
-const { mkdirSync, rmSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
+const { fileLockRelease, tryFileLock } = require('@harperfast/rocksdb-js');
+const { restoreChildLockPath } = require('#src/dataLayer/restoreChildRunner');
 const { isolatedInstall } = require('./fixtures/isolatedInstall.js');
+const { waitFor } = require('../waitFor.js');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 const NAME = 'restore_offline_cli';
@@ -106,6 +109,129 @@ describeUnlessLmdb('offline restore_backup in a fresh CLI process', function () 
 			debris: [],
 			alpha: { n: 1 },
 			afterBackup: { kept: true },
+		});
+	});
+
+	/**
+	 * Runs `restoreCall` in a process that SIGKILLs itself when its child has verified the backup and asks
+	 * to purge, before the marker that permits it: what a crash leaves at that point. Returns once the
+	 * orphaned child, never permitted to purge, has exited.
+	 */
+	async function killBeforeMarking(databaseDir, restoreCall) {
+		const killed = await install.run(`
+			const runner = require(paths.restoreChildRunner);
+			const run = runner.runRestoreChild;
+			runner.runRestoreChild = (command, args, options) =>
+				run(command, args, { ...options, beforeDestruction: () => process.kill(process.pid, 'SIGKILL') });
+			const backup = require(paths.rocksdbBackup);
+			await ${restoreCall};
+			report({ restored: true });
+		`);
+		assert.strictEqual(killed.signal, 'SIGKILL', `exited ${killed.code}: ${killed.stderr}`);
+		await waitFor(() => noRestoreChild(databaseDir), {
+			timeout: 15000,
+			message: 'the orphaned restore child did not exit',
+		});
+	}
+
+	function noRestoreChild(databaseDir) {
+		const lockPath = restoreChildLockPath(databaseDir);
+		if (!existsSync(lockPath)) return true;
+		const token = tryFileLock(lockPath);
+		if (token === 0) return false;
+		fileLockRelease(token);
+		return true;
+	}
+
+	/** The claim as the next startup's first step finds it, and what that step leaves. */
+	function startupPass(databaseName) {
+		return install.runToReport(`
+			const { databasesLoaded, resolveDatabasePath } = require(paths.databases);
+			const { backupDirForDatabase } = require(paths.rocksdbBackup);
+			const { checkRestoreState } = require(paths.restoreMarker);
+			const { readRestoreReceipt } = require(paths.restoreReceipt);
+			const { readBackupPins } = require(paths.backupRepository);
+			const dir = resolveDatabasePath(${JSON.stringify(databaseName)});
+			const backupDir = backupDirForDatabase(${JSON.stringify(databaseName)});
+			const claim = () => ({
+				state: checkRestoreState(dir),
+				receipt: readRestoreReceipt(dir).receipt?.state ?? null,
+				route: readRestoreReceipt(dir).receipt?.route ?? null,
+				pins: readBackupPins(backupDir).length,
+			});
+			const before = claim();
+			await require(paths.restoreIntent).finishCommittedRestoresBeforeStartup();
+			report({ before, after: claim(), opened: databasesLoaded() === true });
+		`);
+	}
+
+	for (const route of ['online', 'offline']) {
+		it(`drops the claim of an ${route} restore killed before it marked its target, and the database loads as it was`, async function () {
+			const { backupId } = await seed();
+			const databaseDir = join(install.root, 'database', NAME);
+			await killBeforeMarking(
+				databaseDir,
+				route === 'offline'
+					? `backup.restoreBackupOffline(${JSON.stringify(NAME)}, ${backupId})`
+					: `backup.restoreBackup({ database: ${JSON.stringify(NAME)}, backup_id: ${backupId} })`
+			);
+
+			assert.deepStrictEqual(await startupPass(NAME), {
+				before: { state: 'pending', receipt: 'applying', route, pins: 1 },
+				after: { state: 'clear', receipt: null, route: null, pins: 0 },
+				opened: false,
+			});
+			assert.deepStrictEqual(await inspect(), {
+				state: 'clear',
+				debris: [],
+				alpha: { n: 1 },
+				afterBackup: { kept: true },
+			});
+		});
+	}
+
+	it('drops the claim of an offline restore of system killed before it marked system, before anything opens it', async function () {
+		const { systemDir, backupId } = await install.runToReport(`
+			const databases = require(paths.databases);
+			await require(paths.mountHdb).default(require(paths.env).getHdbBasePath());
+			await databases.closeDatabase('system');
+			const { backup_id } = await require(paths.rocksdbBackup).createBackupOffline('system');
+			report({ systemDir: databases.resolveDatabasePath('system'), backupId: backup_id });
+		`);
+		await install.runToReport(`
+			const databases = require(paths.databases);
+			await databases.getDatabases().system.hdb_nodes.put({ name: 'after-backup' });
+			await databases.closeDatabase('system');
+			report({});
+		`);
+		await killBeforeMarking(systemDir, `backup.restoreBackupOffline('system', ${backupId})`);
+
+		const loadSystem = `
+			const system = require(paths.databases).getDatabases().system;
+			report({ before, node: system ? ((await system.hdb_nodes.get('after-backup'))?.name ?? null) : 'not loaded' });
+		`;
+		// without the pass, startup's scan skips the system database the restore never touched
+		assert.deepStrictEqual(await install.runToReport(`const before = null;${loadSystem}`), {
+			before: null,
+			node: 'not loaded',
+		});
+
+		const recovered = await install.runToReport(`
+			const { readRestoreReceipt } = require(paths.restoreReceipt);
+			const { readBackupPins } = require(paths.backupRepository);
+			const claim = () => ({
+				receipt: readRestoreReceipt(${JSON.stringify(systemDir)}).receipt?.state ?? null,
+				pins: readBackupPins(require(paths.rocksdbBackup).backupDirForDatabase('system')).length,
+			});
+			const found = claim();
+			const opened = require(paths.databases).databasesLoaded() === true;
+			await require(paths.restoreIntent).finishCommittedRestoresBeforeStartup();
+			const before = { found, opened, left: claim() };
+			${loadSystem}
+		`);
+		assert.deepStrictEqual(recovered, {
+			before: { found: { receipt: 'applying', pins: 1 }, opened: false, left: { receipt: null, pins: 0 } },
+			node: 'after-backup',
 		});
 	});
 });

@@ -744,6 +744,45 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 		});
 
+		it('fails the attempt, pinning nothing, when its rollback copy is removed before it is pinned', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
+			let removed;
+			// nothing pins the copy between its child finishing and the pin; the removal is placed in that window
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, ...args) => {
+				const result = await runRestoreChild(command, ...args);
+				if (command === 'pre-restore-backup') {
+					removed = result.backupId;
+					await deleteBackupOffline(fixture.name, removed);
+				}
+				return result;
+			});
+			let owned;
+			try {
+				owned = await boot(fixture.name);
+			} finally {
+				restoreRunner();
+			}
+
+			assert.ok(Number.isInteger(removed), 'precondition: the attempt took a rollback copy');
+			assert.strictEqual(await readBackupManifest(fixture.backupDir, removed), null);
+			assert.deepStrictEqual([...owned], [jobId]);
+			const failed = receiptOf(fixture.dir);
+			assert.strictEqual(failed.attempts, 1);
+			assert.match(
+				failed.last_error,
+				new RegExp(`pre-restore backup ${removed} .* was removed before it could be pinned`)
+			);
+			assert.strictEqual(failed.pre_restore_backup_id, undefined);
+			assert.strictEqual(failed.pre_restore_pin_id, undefined);
+			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: failed.source_pin_id, backup_id: fixture.backupIds[0] }]);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'refused before the purge');
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
+
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
+		});
+
 		for (const [scenario, prepare] of [
 			[
 				'an earlier restore left the database half-replaced',
@@ -1081,6 +1120,120 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await boot(withJob.name);
 			assert.strictEqual(readRestoreReceipt(withJob.dir).kind, 'absent');
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+		});
+
+		/**
+		 * What a restore's process leaves when it dies after recording its claim and before its child marks
+		 * the target: the receipt and source pin as they stood when the child was started, and no lock.
+		 */
+		async function abandonClaim(fixture, route) {
+			const [backupId] = fixture.backupIds;
+			const receiptFile = restoreReceiptPath(fixture.dir);
+			const pinFile = join(backupPinsDir(fixture.backupDir), `${restorePinId(fixture.dir)}.json`);
+			let left;
+			// a living process releases its claim on the way out; only these files are what a dead one leaves
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async () => {
+				left = { receipt: readFileSync(receiptFile), pin: readFileSync(pinFile) };
+				throw new Error('the restoring process died');
+			});
+			try {
+				if (route === 'offline') await closeDatabase(fixture.name);
+				await assert.rejects(
+					route === 'offline'
+						? restoreBackupOffline(fixture.name, backupId)
+						: restoreBackup({ ...SU, database: fixture.name, backup_id: backupId }),
+					/the restoring process died/
+				);
+			} finally {
+				restoreRunner();
+			}
+			await closeDatabase(fixture.name);
+			writeFileSync(receiptFile, left.receipt);
+			writeFileSync(pinFile, left.pin);
+			const receipt = receiptOf(fixture.dir);
+			assert.deepStrictEqual([receipt.route, receipt.state], [route, 'applying']);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.strictEqual(checkRestoreState(fixture.dir), 'pending', 'precondition: the claim reserves the database');
+			return receipt;
+		}
+
+		for (const route of ['online', 'offline']) {
+			it(`drops an ${route} restore abandoned before it marked its target, with its pin, beside a committed one it finishes`, async function () {
+				const abandoned = await seededDatabase();
+				const committed = await seededDatabase();
+				const receipt = await abandonClaim(abandoned, route);
+				assert.deepStrictEqual(pinsOf(abandoned), [
+					{ pin_id: restorePinId(abandoned.dir), backup_id: receipt.backup_id },
+				]);
+				assert.strictEqual(loadedItems(abandoned.name), undefined, 'precondition: the claim blocks discovery');
+				await restoreBackup({ ...SU, database: committed.name, on_restart: true, retain_previous: false });
+				await closeDatabase(committed.name);
+				rewriteReceipt(committed.dir, { state: 'committed', attempts: 1 }, { marker: true });
+				await closeDatabase(abandoned.name);
+
+				await finishCommittedRestoresBeforeStartup();
+
+				assert.strictEqual(readRestoreReceipt(abandoned.dir).kind, 'absent');
+				assert.deepStrictEqual(pinsOf(abandoned), []);
+				assert.strictEqual(checkRestoreState(abandoned.dir), 'clear');
+				assert.strictEqual(readRestoreReceipt(committed.dir).kind, 'absent', 'a committed receipt is still finished');
+				assert.strictEqual(restoreMarkerPresent(committed.dir), false);
+				assert.deepStrictEqual(await snapshot(loadedItems(abandoned.name)), abandoned.live, 'loads as it was');
+			});
+		}
+
+		it('keeps an abandoned claim whose target is marked, since its destruction may have begun', async function () {
+			const fixture = await seededDatabase();
+			const receipt = await abandonClaim(fixture, 'offline');
+			const lock = acquireRestoreLock(fixture.dir);
+			try {
+				lock.source = restoreSourceId(fixture.backupDir);
+				markRestoreDestructive(lock);
+			} finally {
+				releaseRestoreLock(lock);
+			}
+
+			await finishCommittedRestoresBeforeStartup();
+
+			assert.deepStrictEqual(receiptOf(fixture.dir), receipt);
+			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: restorePinId(fixture.dir), backup_id: receipt.backup_id }]);
+			assert.strictEqual(checkRestoreState(fixture.dir), 'incomplete');
+
+			// a rerun recovers it, as it would any interrupted restore
+			await restoreBackupOffline(fixture.name, receipt.backup_id);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
+		it('keeps an applying restart restore, whose receipt is its intent', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			const receipt = rewriteReceipt(fixture.dir, { state: 'applying', attempts: 1 });
+			const pins = pinsOf(fixture);
+
+			await finishCommittedRestoresBeforeStartup();
+
+			assert.deepStrictEqual(receiptOf(fixture.dir), receipt);
+			assert.deepStrictEqual(pinsOf(fixture), pins);
+			assert.strictEqual(checkRestoreState(fixture.dir), 'pending');
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
+		it('keeps a marker-less applying claim whose lock is held, since a restore is running', async function () {
+			const fixture = await seededDatabase();
+			const receipt = await abandonClaim(fixture, 'offline');
+			const running = acquireRestoreLock(fixture.dir);
+			try {
+				await finishCommittedRestoresBeforeStartup();
+				assert.deepStrictEqual(receiptOf(fixture.dir), receipt);
+				assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: restorePinId(fixture.dir), backup_id: receipt.backup_id }]);
+			} finally {
+				releaseRestoreLock(running);
+			}
+
+			await finishCommittedRestoresBeforeStartup();
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent', 'dropped once nothing holds it');
+			assert.deepStrictEqual(pinsOf(fixture), []);
 		});
 	});
 });
