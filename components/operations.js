@@ -36,6 +36,7 @@ const {
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	dropComponentDirectory,
+	readDeploymentPreview,
 	retireComponentDirectory,
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
@@ -601,6 +602,9 @@ async function deployComponent(req) {
 	// refuse an activation whose artifact turns isolation OFF for a component whose present isolated state is
 	// itself the refusal — a 409 for the request that would fix it.
 	if (!isActivation) await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
+	if (req.preview && !isActivation && !isReplicatedExecution) {
+		await require('./previews.ts').assertPreviewCapacity(req.project, req.preview.app);
+	}
 	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
 	// An activation resolves, fetches and installs nothing, so there is no credential for it to carry.
 	// The validator rejects one; this keeps the ingest itself off the path rather than relying on that.
@@ -648,6 +652,7 @@ async function deployComponent(req) {
 				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
 				// Reference form only — the rollback source for re-resolving the credential.
 				credentials: credentialReferences.length ? credentialReferences : null,
+				preview: req.preview ?? null,
 				emitter,
 				// Reuse the same `deployment_timeout` knob operators already have for the
 				// peer-side row/blob waits to size the origin's payload-ingest write
@@ -745,6 +750,7 @@ async function deployComponent(req) {
 			// registry entries via a transient .npmrc, git-host entries via the in-memory credential
 			// socket the clone spawn talks to.
 			credentials: resolvedCredentials,
+			preview: req.preview,
 		});
 		// Reduce req.credentials to references only (never a token) before it can reach an error/log
 		// path or replication: references are what peers resolve from their own replicated hdb_secret
@@ -1099,8 +1105,9 @@ async function deployComponent(req) {
 			// so dropping the tarball here is how a staged release becomes unrecoverable — no tree, no bytes,
 			// and a row still reporting `staged`. An operator can still reclaim it deliberately with
 			// delete_deployment_payload once they accept that.
+			// A preview is redeployed on every push, so its payload goes whatever its size.
 			const payloadSize = recorder.row.payload_size;
-			const retentionMaxSize = getPayloadRetentionMaxSize();
+			const retentionMaxSize = req.preview ? 0 : getPayloadRetentionMaxSize();
 			if (
 				mode !== 'stage' &&
 				typeof payloadSize === 'number' &&
@@ -1445,6 +1452,12 @@ async function getComponents(req) {
 	if (componentGrant)
 		results.entries = results.entries.filter((entry) => grantCoversComponent(componentGrant, entry.name));
 	const { getUnsatisfiedEnv } = require('./componentSecrets.ts');
+	await Promise.all(
+		results.entries.map(async (entry) => {
+			const preview = await readDeploymentPreview(path.join(componentsRoot, entry.name), entry.name);
+			if (preview) entry.preview = preview;
+		})
+	);
 	for (let entry of results.entries) {
 		// Declared-but-unsatisfied `env:` expectations (#1550) — metadata only (name, description,
 		// required, reason, tier), never values — so Studio/deploy output can render configure-me.

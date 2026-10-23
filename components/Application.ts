@@ -50,7 +50,9 @@ import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
 	DEPLOYMENT_PROVENANCE_FILE,
 	formatDeploymentProvenance,
+	parseDeploymentPreview,
 	parseDeploymentProvenance,
+	type PreviewMetadata,
 } from './deploymentProvenance.ts';
 import {
 	fingerprintInstall,
@@ -1171,6 +1173,36 @@ export function getStagingRetentionMaxCount(): number {
 	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_STAGING_RETENTION_MAX_COUNT;
 }
 
+const DEFAULT_PREVIEW_STAGING_RETENTION_MAX_COUNT = 1;
+
+function retentionCount(configured: unknown): number | undefined {
+	if (typeof configured !== 'number' && typeof configured !== 'string') return undefined;
+	if (typeof configured === 'string' && configured.trim() === '') return undefined;
+	const parsed = Number(configured);
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : undefined;
+}
+
+/**
+ * How many dormant builds one component keeps: `deployment.previews.stagingRetention.maxCount` (default 1, so a
+ * rejected release can still be restored) for a preview's release, else `deployment_stagingRetention_maxCount`. Each
+ * kept build is a whole installed tree, and a preview is redeployed on every push of every open PR. Whether it is a
+ * preview is read from `treePath`, the live tree unless given: the two reads deciding whether a displaced release is
+ * kept must both read that release. Nothing it reads changes with the activation's own root-config effect.
+ */
+export async function stagingRetentionMaxCountOf(
+	componentsRootDirPath: string,
+	componentName: string,
+	treePath: string = join(componentsRootDirPath, componentName)
+): Promise<number> {
+	if (await readDeploymentPreview(treePath, componentName)) {
+		return (
+			retentionCount(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_STAGINGRETENTION_MAXCOUNT)) ??
+			DEFAULT_PREVIEW_STAGING_RETENTION_MAX_COUNT
+		);
+	}
+	return getStagingRetentionMaxCount();
+}
+
 type DormantBuild = {
 	deploymentDirPath: string;
 	deploymentId: string;
@@ -1626,11 +1658,21 @@ async function writeArtifactDescriptor(
 async function writeDeploymentProvenance(
 	candidateDirPath: string,
 	componentName: string,
-	deploymentId: string
+	deploymentId: string,
+	preview?: PreviewMetadata
 ): Promise<void> {
 	const markerPath = join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE);
 	await rm(markerPath, { recursive: true, force: true });
-	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId));
+	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId, preview));
+}
+
+/** The preview metadata of the release live at `treePath`; undefined when it is not a preview or cannot be read. */
+export async function readDeploymentPreview(
+	treePath: string,
+	componentName: string
+): Promise<PreviewMetadata | undefined> {
+	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(() => undefined);
+	return raw === undefined ? undefined : parseDeploymentPreview(raw, componentName);
 }
 
 /**
@@ -1736,7 +1778,7 @@ async function retainDisplacedRelease(
 	componentName: string,
 	displacedTreePath: string
 ): Promise<DisplacedReleaseRetention> {
-	const keepNone = getStagingRetentionMaxCount() === 0;
+	const keepNone = (await stagingRetentionMaxCountOf(componentsRootDirPath, componentName, displacedTreePath)) === 0;
 	let record: { deploymentId: string; recordDirPath: string } | undefined;
 	try {
 		const deploymentId = await readDeploymentProvenance(displacedTreePath, componentName);
@@ -2323,7 +2365,7 @@ async function settleStagingForComponent(
 		kept.push(...(await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal)));
 	}
 	await catalogueKeptReleases(stagingRoot, componentName, kept, dormant);
-	const maxCount = getStagingRetentionMaxCount();
+	const maxCount = await stagingRetentionMaxCountOf(componentsRootDirPath, componentName);
 	if (dormant.length > maxCount) {
 		await pruneOutsideCertification(componentsRootDirPath, componentName, dormant, maxCount, [
 			...kept,
@@ -2738,14 +2780,13 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		}
 	}
 
-	const maxCount = getStagingRetentionMaxCount();
 	for (const [owner, builds] of dormant) {
 		const pinned = keptBy.get(owner) ?? [];
 		for (const [component, error] of await reconcileDormantBuilds(
 			componentsRootDirPath,
 			owner,
 			builds,
-			maxCount,
+			await stagingRetentionMaxCountOf(componentsRootDirPath, owner),
 			pinned
 		)) {
 			if (!failures.has(component)) failures.set(component, error);
@@ -3482,7 +3523,7 @@ export async function activateCandidateApplication(
 	// Only here, where the request's own artifact is already live: a prune inside settlement could evict the
 	// artifact a request's preamble pinned. Best-effort, like every prune.
 	if (keptDeploymentId !== undefined) {
-		const maxCount = getStagingRetentionMaxCount();
+		const maxCount = await stagingRetentionMaxCountOf(dirname(liveDirPath), application.name);
 		try {
 			const builds = await dormantBuildsOf(dirname(liveDirPath), application.name);
 			if (builds.length > maxCount) {
@@ -3700,7 +3741,7 @@ export async function buildCandidateApplication(
 		await installApplication(application, candidateDirPath);
 		// After the install, which can rewrite the tree; never through a link, whose target is not the deploy's to write.
 		if (resolved.kind !== 'link') {
-			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId);
+			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId, application.preview);
 		}
 		if (options.fingerprint) {
 			application.installFingerprint = await fingerprintInstall(candidateDirPath, application.sourceIdentity);
@@ -4632,6 +4673,7 @@ interface ApplicationOptions {
 	// Deploy credentials already resolved to literal tokens, of any kind; partitioned by the
 	// constructor into the npm and git halves, which are injected by entirely different mechanisms.
 	credentials?: ResolvedCredential[];
+	preview?: PreviewMetadata;
 }
 
 export class Application {
@@ -4667,10 +4709,12 @@ export class Application {
 	installedTree: string | null | undefined;
 	sourceIdentity?: string;
 	installFingerprint?: InstallFingerprint;
+	preview?: PreviewMetadata;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials, preview }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
+		this.preview = preview;
 		this.packLocalDirectory = shouldPackLocalDirectory(packageIdentifier);
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
@@ -4876,7 +4920,9 @@ export type ActivationCertification = {
 /** The id the tree this activation displaces will be kept under, decided from what `retainDisplacedRelease` reads. */
 async function keptPredecessorOf(application: Application): Promise<{ previous: string | null; wasAbsent: boolean }> {
 	if (!(await presentOrAbsent(application.dirPath))) return { previous: null, wasAbsent: true };
-	if (getStagingRetentionMaxCount() === 0) return { previous: null, wasAbsent: false };
+	if ((await stagingRetentionMaxCountOf(dirname(application.dirPath), application.name)) === 0) {
+		return { previous: null, wasAbsent: false };
+	}
 	const deploymentId = await readDeploymentProvenance(application.dirPath, application.name).catch(() => undefined);
 	if (deploymentId === undefined) return { previous: null, wasAbsent: false };
 	const recordDirPath = join(dirname(application.dirPath), DEPLOY_STAGING_DIR, deploymentId);

@@ -50,6 +50,7 @@ import { getConfigFilePath, getConfigObj, getConfigPath } from '../config/config
 import { bootstrapModels, startModelsConfigHotReload } from '../resources/models/bootstrap.ts';
 import { declareDecisionTablesAtBoot } from '../resources/models/decisionStore.ts';
 import { declareCalibrationsTableAtBoot } from '../resources/models/calibrationStore.ts';
+import { watchForPreviews } from './previews.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -920,6 +921,7 @@ export async function loadComponent(
 			startModelsConfigHotReload();
 			declareDecisionTablesAtBoot();
 			declareCalibrationsTableAtBoot();
+			watchForPreviews();
 		}
 
 		// The `env:` block declares the component's environment expectations (string literal →

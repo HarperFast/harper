@@ -610,6 +610,25 @@ function deployComponentValidator(req) {
 				})
 			)
 			.optional(),
+		preview: Joi.object({
+			app: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).required(),
+			pr: Joi.number().integer().min(1).strict().required(),
+			repository: Joi.string().max(256).optional(),
+			branch: Joi.string().max(256).optional(),
+			sha: Joi.string()
+				.pattern(/^[0-9a-f]{7,64}$/i)
+				.optional(),
+			expiresAt: Joi.alternatives().try(Joi.number().integer().min(0).strict(), Joi.string().isoDate()).optional(),
+		})
+			.unknown(false)
+			// The cap counts previews by `app`, so a preview's name has to say which application it is a preview of.
+			.custom((value, helpers) =>
+				req.project === `${value.app}-pr-${value.pr}`
+					? value
+					: helpers.error('object.previewName', { name: `${value.app}-pr-${value.pr}` })
+			)
+			.optional()
+			.messages({ 'object.previewName': `{#label} describes a preview that must be deployed as '{#name}'` }),
 		// `registryAuth` was this field's name on the 5.2 dev line before it grew to carry other
 		// credential kinds. Rejected rather than ignored: validation allows unknown keys, so a caller
 		// still sending it would otherwise get a deploy that silently installs with no credentials.
@@ -631,6 +650,7 @@ function deployComponentValidator(req) {
 			'host',
 			'branchedDatabases',
 			'isolated',
+			'preview',
 		]);
 
 	return validator.validateBySchema(req, deployProjSchema);

@@ -75,6 +75,7 @@ interface CreateOptions {
 	// hdb_secret without the operator re-supplying it. Null when the deploy used no credentials or a
 	// no-custody transient token.
 	credentials?: CredentialReference[] | null;
+	preview?: Record<string, unknown> | null;
 	emitter?: ProgressEmitter;
 	// Open-transaction budget (ms) for the payload-ingest write, below. Mirrors the
 	// `deployment_timeout` operation parameter already used for the peer-side row/blob waits
@@ -152,6 +153,7 @@ export class DeploymentRecorder {
 			rollback_of: options.rollback_of ?? null,
 			activated_from: options.activated_from ?? null,
 			credentials: options.credentials ?? null,
+			preview: options.preview ?? null,
 			error: null,
 		};
 		const recorder = new DeploymentRecorder(deploymentId, record, options.ingestTimeoutMs);
