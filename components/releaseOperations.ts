@@ -34,7 +34,8 @@ export async function handleListReleases(
 		throw new ClientError(`'project' must be a component name`);
 	}
 	// Asked of the other nodes first, so they read while this one does.
-	const whenReplicated = req.replicated === true ? server.replication.replicateOperation(req) : undefined;
+	const whenReplicated =
+		req.replicated === true ? server.replication.replicateOperation({ ...req, replicated: true }) : undefined;
 	const local: NodeReleases = { node: getThisNodeName(), components: await releasesOnThisNode(project) };
 	if (!whenReplicated) return local;
 	const response: any = await whenReplicated;

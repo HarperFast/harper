@@ -744,7 +744,7 @@ describe('cliOperations', () => {
 				},
 			]);
 			await assert.rejects(deploy(), (error) => error instanceof ProcessExitSignal && error.code === 1);
-			assert.ok(errorLines.some((line) => /^error: Not activated on 1 of 2 peer node\(s\): peer-b/.test(line)));
+			assert.ok(errorLines.some((line) => line.startsWith('error: Not activated on 1 of 2 peer node(s): peer-b')));
 		});
 
 		it('keeps the old behavior with wait=false', async () => {
