@@ -4553,8 +4553,8 @@ export function makeTable(options): TableResourceClass {
 							link.releaseReadTxn();
 							link.snapshotFree = true;
 						} else if (link.timestamp && reservedLocalKey(link.transaction) === undefined) {
-							// A handle already reserved against the origin-closed floor keeps its admitted key; the
-							// stamp still becomes the record version through `link.timestamp`.
+							// A handle already reserved against the origin-closed floor keeps its minted key; the
+							// stamp is the record version either way, through `link.timestamp`.
 							link.transaction.setTimestamp(link.timestamp);
 						}
 					}
@@ -5339,8 +5339,8 @@ export function makeTable(options): TableResourceClass {
 												if (isRocksDB && localTime !== appendedLogKey && receivedLogKey === appendedLogKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
-													// Not for a write the floor rekeyed: its received identity is no longer addressable,
-													// so an equal version from the same origin is its re-delivery, as it was before.
+													// Only for an applied write: a local write's received identity is its version, which
+													// is never its key, so an equal version from the same origin is its re-delivery.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
@@ -5430,7 +5430,10 @@ export function makeTable(options): TableResourceClass {
 								if (auditWalkCapped) break;
 								nextRef = auditRefsToVisit.shift();
 								if (nextRef) {
-									localTime = auditedVersion = nextRef.localTime;
+									// A ref is a log key, not a version: the branch's version is unknown until its head is read,
+									// and a minted key sits below an explicit version it stores.
+									localTime = nextRef.localTime;
+									auditedVersion = Infinity;
 									nodeId = nextRef.nodeId;
 									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
 								}

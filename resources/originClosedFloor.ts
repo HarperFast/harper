@@ -211,14 +211,15 @@ class ThreadRegistry {
 		this.publish(0);
 		try {
 			const current = handle.getTimestamp();
-			const requested = explicit ?? current;
-			const bits = toBits(requested);
-			// An explicit value never moves the ratchet (one far in the future would pin every later key)
-			// and may repeat a key already issued, as a re-delivery does; a minted key may do neither.
+			const bits = toBits(current);
+			// Only a minted value is ever the key. A caller's value (a context timestamp, a lock stamp) is the
+			// record version and is minted around: admitting it would let two local transactions share a key,
+			// and a later mint land on it, since it may not move the ratchet (one far in the future would pin
+			// every later key). Every site that installs a caller's value on a handle hands the same value to
+			// `save` as `txnTime`, so a handle without `explicit` carries its own mint.
 			const admissible =
-				bits >= Atomics.load(words, WORD_PROPOSED) &&
-				(explicit !== undefined ? bits > Atomics.load(words, WORD_RATCHET) : this.admitNative(bits));
-			const key = admissible ? requested : this.freshKey();
+				explicit === undefined && bits >= Atomics.load(words, WORD_PROPOSED) && this.admitNative(bits);
+			const key = admissible ? current : this.freshKey();
 			if (key !== current) handle.setTimestamp(key);
 			const reservation: Reservation = { registry: this, key, released: false };
 			(handle as any)[RESERVATION] = reservation;
@@ -289,9 +290,10 @@ function assertValidTimestamp(value: number): void {
 }
 
 /**
- * Reserve the key `handle` appends to the `local` log with, before its first staged write: `explicit`
- * (a context or lock timestamp) or the handle's own minted key when admissible, else a fresh one
- * installed on the handle. Returns the key the handle now carries.
+ * Reserve the key `handle` appends to the `local` log with, before its first staged write: the handle's
+ * own minted key when admissible, else a fresh one installed on the handle. `explicit` (a context or
+ * lock timestamp) is validated and stays the record version; it is never the key, which is what keeps a
+ * key unique within the `local` log. Returns the key the handle now carries.
  */
 export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransaction, explicit?: number): number {
 	const existing: Reservation | undefined = (handle as any)[RESERVATION];
@@ -302,8 +304,8 @@ export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransacti
 
 /**
  * The handle that re-stages a reserved handle's writes (a replay past an open iterator) takes over
- * the reservation and its admitted key, which can sit above the explicit timestamp the caller
- * installed on it; the retained handle's own batch is never appended, so it holds nothing further.
+ * the reservation and its key, replacing the explicit timestamp the caller installed on it; the
+ * retained handle's own batch is never appended, so it holds nothing further.
  */
 export function transferLocalKey(from: RocksTransaction, to: RocksTransaction): void {
 	const reservation: Reservation | undefined = (from as any)[RESERVATION];
