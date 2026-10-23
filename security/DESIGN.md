@@ -194,8 +194,11 @@ for builtins, and the substitute it returns, such as the constrained `child_proc
 `shouldUseApplicationLoader` app-vs-native decision, and for app-loaded files `readApplicationModule`
 (record the bytes as read, strip TypeScript). `require()` differs only in loading synchronously: native
 is `require(path)` rather than `import()`. A new entry point, or a new branch in one, owes all four.
-`cjsCache` and `nativeRequires` hold only modules that passed the check, which is why a repeated
-`require()` returns from them before checking again. Only a compile error of a module's own CommonJS
+A file keeps the route whichever form loaded it first chose: `cjsCache` (app-loaded CommonJS) and
+`nativeModules` (natively loaded) are keyed by URL and consulted by both `require()` and `import`, so a
+file reached by two specifiers that would route differently still has one instance per scope, as in
+Node. Both hold only modules that passed the check, which is why a repeat returns from them before
+checking again. Only a compile error of a module's own CommonJS
 wrapper selects the ESM retry in `createModuleFromSource`; an error thrown while it runs propagates.
 Not covered: compartment mode's `importHook`, and what natively loaded packages require themselves.
 Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoader.test.js` and

@@ -493,6 +493,43 @@ for (const mode of ['vm-current-context', 'vm']) {
 			expect(typedReads).to.equal(1);
 		});
 
+		it('import() keeps the route require() chose for a file reached by another specifier', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'package.json'),
+				JSON.stringify({ name: 'route-local', imports: { '#helper': './helper.cjs' } })
+			);
+			writeFileSync(join(runtimeRoot, 'helper.cjs'), 'module.exports = { marker: {} };\n');
+			const probePath = writePackage('route-probe');
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.nativeHelper = require('#helper');\n" +
+					"exports.importHelper = () => import('./helper.cjs');\n" +
+					"exports.appProbe = require('./node_modules/route-probe/index.js');\n" +
+					"exports.importProbe = () => import('route-probe');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.nativeHelper).to.equal(require(join(runtimeRoot, 'helper.cjs')));
+			expect((await result.importHelper()).default).to.equal(result.nativeHelper);
+			expect(loadedModules.has(loadedUrl(probePath))).to.equal(true);
+			expect((await result.importProbe()).default).to.equal(result.appProbe);
+		});
+
+		it('require() keeps the route import() chose for a file reached by another specifier', async () => {
+			const probePath = writePackage('imported-probe');
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				'exports.load = async () => ({\n' +
+					"\timported: (await import('imported-probe')).default,\n" +
+					"\trequired: require('./node_modules/imported-probe/index.js'),\n" +
+					'});\n'
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			const { imported, required } = await result.load();
+			expect(imported).to.equal(require(probePath));
+			expect(required).to.equal(imported);
+			expect(loadedModules.has(loadedUrl(probePath))).to.equal(false);
+		});
+
 		it('still strips TypeScript types from an imported ESM .ts file', async () => {
 			writeFileSync(join(runtimeRoot, 'typed.ts'), "export const value: string = 'stripped';\n");
 			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from './typed.ts';\n");
