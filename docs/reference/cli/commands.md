@@ -134,6 +134,8 @@ The result goes to stdout, so `json=true` gives a script a parseable result to r
 
 Every deploy is recorded in the `system.hdb_deployment` table and the response includes a `deployment_id` you can use to query the deployment record. See [Deployment Operations](../operations-api/operations.md#deployment-operations).
 
+<VersionBadge version="v5.4.0" /> The CLI also tells Harper where the deploy came from, which the record keeps as its `source`, marked `declared`: on GitHub Actions, the repository, commit, ref, workflow, run and actor from the `GITHUB_*` variables; and for a directory deploy, the checkout's commit and whether the directory had uncommitted changes (`dirty`). A deploy that authenticates through [OIDC](./authentication.md#workload-identity-oidc) records the run's attested claims instead.
+
 #### Parameters
 
 All parameters are passed as `key=value` arguments. Every parameter is optional.
@@ -141,7 +143,9 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 - `project=<name>` - Component project name. Defaults to the current directory's name for a directory deploy, or is derived from the package for a package deploy.
 - `package=<reference>` - An npm, GitHub, or tarball reference to deploy instead of the current directory (e.g. `HarperDB/app#semver:v1.0.0`).
 - `target=<url>` - Remote Harper instance to deploy to. Omit to deploy to the local instance. A bare host defaults to `https://<host>:9925`.
-- `restart=true` or `restart=rolling` - Restart Harper after deploying. Use `rolling` for a staggered, zero-downtime restart across a cluster. With `rolling`, the command exits `0` once the node you called has taken the release and started the rolling restart's job; see [Waiting for a rolling deploy](#waiting-for-a-rolling-deploy). Cannot be combined with `activate=false`.
+- `restart=true` or `restart=rolling` - Restart Harper after deploying. Use `rolling` for a staggered, zero-downtime restart across a cluster. With `rolling`, the command waits until every node has taken the release, on a cluster running v5.4.0 or later; see [Waiting for a rolling deploy](#waiting-for-a-rolling-deploy). Cannot be combined with `activate=false`.
+- `wait=false` - With `restart=rolling`, exit once the node you called has taken the release instead of waiting for the others. (Added in: v5.4.0)
+- `wait_timeout=<ms>` - With `restart=rolling`, the longest to wait for the other nodes, in milliseconds. Defaults to ten minutes for each node the deployment record lists. (Added in: v5.4.0)
 - `replicated=false` - Deploy to the node you called only. On Harper Pro and Fabric, a deploy goes to every node in the cluster unless you pass this; Harper core on its own does not replicate.
 - `install_command=<command>` - Override the install command run for the component.
 - `install_timeout=<ms>` - Maximum time, in milliseconds, to allow the install to run.
@@ -170,12 +174,29 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 
 #### Waiting for a rolling deploy
 
-`harper deploy restart=rolling` exits `0` once the node you called has taken the release and started a job that restarts the nodes one at a time. What the job does depends on the release:
+<VersionBadge type="changed" version="v5.4.0" />
 
-- On v5.4.0 and later, unless the result's `certification` is `unavailable`, the other nodes only stage the release, and the job activates it on each in turn, certifying it in a [canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker). They take the release after the command has exited, and a node that rejects it fails the job, not the command. The failed job's `message` lists each node's outcome under `activated`.
-- Otherwise, every node has installed the release before the command exits, and the job only restarts them. On v5.4.0 and later, a node that did not restart fails the job, and the job's `result.replicated` says which; see [how a rolling restart reports each node](../operations-api/operations.md#restart_service-replicated).
+`harper deploy restart=rolling` starts a job that takes the release to the other nodes one at a time, after the node you called has taken it. On v5.4.0 and later, unless the result's `certification` is `unavailable`, the other nodes only stage the release and the job activates it on each in turn, each certifying it in a [canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker). The deployment record says `rolling_out` until the job has visited every node, then `success`, or `partial` naming the nodes that did not take it.
 
-Either way, the exit status does not say whether every node is serving the release. Poll the job named by the result's `restartJobId` with `harper get_job` until it ends `COMPLETE` or `ERROR`:
+The command follows that record before it exits. It reads it with `get_deployment` on the same connection and credential the deploy used, prints each node's outcome as it lands, and exits:
+
+- `0` once every node has taken the release;
+- non-zero when a node did not take it, naming the node and why, when the deploy otherwise ended `failed`, or when the wait ran out (`wait_timeout=`, ten minutes per node by default), naming the nodes not yet confirmed.
+
+```bash
+harper deploy restart=rolling
+```
+
+```text
+Waiting for the other nodes to take deployment a3f8c2d1-...
+  node-b: took the release (certified)
+  node-c: did not take the release: my-app was not deployed: release a3f8c2d1-... failed to load in its canary worker: ...
+error: Not activated on 1 of 2 peer node(s): node-c (my-app was not deployed: ...)
+```
+
+With `json=true`, the printed result also carries `rollout`: the record's final `status`, each node's activation under `nodes`, and its `error`. The record replicates, so the wait works through a load-balanced cluster URL. A user whose role has an `operations` allowlist needs `get_deployment` in it; a refusal stops the wait at once and says so. A token exchanged through OIDC lasts an hour, longer than the default wait for up to five nodes. `wait=false` exits as soon as the node you called has taken the release.
+
+The command does not wait when the job only restarts the nodes: a deploy whose `certification` is `unavailable`, or one to a cluster running a version before v5.4.0, whose records do not follow the job. Every node has installed the release before the command exits, and the job only restarts them. To wait for that job, poll the result's `restartJobId` with `harper get_job` until it ends `COMPLETE` or `ERROR`:
 
 ```bash
 set -euo pipefail
@@ -197,7 +218,7 @@ echo "After 60 polls, job $JOB_ID $LAST"
 exit 1
 ```
 
-The loop retries a poll that fails, such as one that reaches a node while it restarts. Harper does not replicate jobs, so a node other than the one that received the deploy answers `get_job` with an empty list; the loop keeps polling, so through a load-balanced cluster URL at least one poll has to reach that node. If your load balancer sends the polls to a different node than the deploy, use one node's own URL for both, or the loop reports the job's outcome as unknown. A user whose role has an `operations` allowlist needs `get_job` in it to poll. On Harper core alone, a job that only restarts, as in the second case above, ends `ERROR` with `Replication not implemented`, because it restarts across the cluster. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
+The loop retries a poll that fails, such as one that reaches a node while it restarts. Harper does not replicate jobs, so a node other than the one that received the deploy answers `get_job` with an empty list; the loop keeps polling, so through a load-balanced cluster URL at least one poll has to reach that node. If your load balancer sends the polls to a different node than the deploy, use one node's own URL for both, or the loop reports the job's outcome as unknown. A user whose role has an `operations` allowlist needs `get_job` in it to poll. On Harper core alone, a job that only restarts ends `ERROR` with `Replication not implemented`, because it restarts across the cluster. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
 
 [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci) uses this in a complete GitHub Actions workflow.
 
@@ -264,7 +285,7 @@ It needs no secret custody, and it does this:
 
 1. Takes the GitHub repository from the checkout's `origin` remote, or `repo=<owner>/<name>`, and looks it up with the `gh` CLI or GitHub's public API, for its numeric id and for the spelling of its name GitHub uses in the token. When neither answers, such as for a private repository without `gh`, pass the id as `repository_id=<id>` and spell `repo=` as GitHub does; setup says the spelling was not verified.
 2. Checks the workflow file, `.github/workflows/deploy.yaml` by default (`workflow=`, a `.yml` or `.yaml` file in `.github/workflows/`): it must be able to run on `main` (`branch=`) and run a job in the `production` environment (`environment=`) with `permissions: id-token: write`. A workflow that could never match or never request a token, such as one whose push filter names only other branches and has no other trigger, one in which no job sets an environment, or one whose job in that environment doesn't grant `id-token: write`, stops setup before it writes anything. What it can't decide, such as a branch pattern, a scheduled or manual trigger, or a reusable workflow, is reported as not verified. So is the whole check when the workflow file isn't in the checkout, or the checkout is of another repository (by its `origin` remote, or `GITHUB_REPOSITORY` when that is set): run setup from the repository's own checkout with the workflow committed, or the policy it writes uses the defaults whether or not they match.
-3. Creates a role and a user named `<project>-ci-deploy`, allowed only `deploy_component`, `get_job` (to wait for a rolling deploy) and `registration_info` (the version check `harper deploy` makes before it uploads), and the trust policy `github-actions-<project>`. The policy's `audience` is the target exactly as the CLI requests its token, and its claims are the repository id, the workflow and branch (`workflow_ref`), and the environment.
+3. Creates a role and a user named `<project>-ci-deploy`, allowed only `deploy_component`, `get_deployment` (what `harper deploy restart=rolling` waits on), `get_job` (for a workflow that polls a rolling deploy's job itself) and `registration_info` (the version check `harper deploy` makes before it uploads), and the trust policy `github-actions-<project>`. The policy's `audience` is the target exactly as the CLI requests its token, and its claims are the repository id, the workflow and branch (`workflow_ref`), and the environment.
 4. Reads the policy back and compares it, claim by claim, with what it meant to write.
 5. Sets the repository's `HARPER_CLI_TARGET` variable with `gh`, if the repository doesn't have one. One that already names this cluster is left as it is. One that names another cluster is left too, since every workflow in the repository that reads it deploys there: setup prints the command to change it and exits non-zero. Without `gh`, or if the variable can't be read or written, it prints the command to run and exits non-zero.
 
