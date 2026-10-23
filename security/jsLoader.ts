@@ -577,7 +577,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 
 	function createCJSSyntheticModule(url: string, cjsModule: { exports: any }): SyntheticModule {
 		let exports = cjsModule.exports;
-		if (exports.default === undefined) {
+		if (exports?.default === undefined) {
 			// provide the default export for compatibility
 			exports = { default: exports, ...exports };
 		}

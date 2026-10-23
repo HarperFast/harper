@@ -830,6 +830,13 @@ for (const mode of ['vm-current-context', 'vm']) {
 			expect(loadedModules.has(loadedUrl(pendingProbePath))).to.equal(false);
 		});
 
+		it('imports a CommonJS module that exports null', async () => {
+			writeFileSync(join(runtimeRoot, 'nothing.cjs'), 'module.exports = null;\n');
+			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { default as nothing } from './nothing.cjs';\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope());
+			expect(result.nothing).to.equal(null);
+		});
+
 		it('still strips TypeScript types from an imported ESM .ts file', async () => {
 			writeFileSync(join(runtimeRoot, 'typed.ts'), "export const value: string = 'stripped';\n");
 			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from './typed.ts';\n");
