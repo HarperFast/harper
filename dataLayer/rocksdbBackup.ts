@@ -775,13 +775,6 @@ export function warnImmutableSource(databaseName: string, backupDir: string): vo
 }
 
 /**
- * Retire a finished restore: marker, then claim, then the destination lock. While the database is
- * still marked a rerun is required and the rerun needs this backup, so the claim has to outlive the
- * marker — a crash the other way round leaves an unloadable database whose source a purge may
- * delete. Both happen under the restore lock, so no later attempt can have written a claim at this
- * same id yet; one stranded after the marker is gone simply lapses and is swept.
- */
-/**
  * `restoreToken` identifies the restore that owns the blob fence. Two restores of the same database
  * can overlap, so a worker releases the fence only for the token that established it -- see
  * `resumeBlobSavesForRestore`.
