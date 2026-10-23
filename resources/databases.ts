@@ -1983,6 +1983,8 @@ function initStores(
 				table.schemaVersion++;
 				table.updatedAttributes();
 			}
+			if (replicaExpiration !== undefined || replicaRefreshFraction !== undefined)
+				table.setTTLExpiration({ replicaExpiration, replicaRefreshFraction, fromSchema: true });
 		} else {
 			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
@@ -2558,9 +2560,9 @@ interface TableDefinition {
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
-	/** RocksDB-only replica lifetime in seconds; 0 disables admission. LMDB always proxies. Reload workers after changes. */
+	/** RocksDB-only replica lifetime in seconds; 0 disables admission. LMDB always proxies. */
 	replicaExpiration?: number;
-	/** RocksDB-only renewal fraction in (0, 1]; 1 never renews. Reload workers after changes. */
+	/** RocksDB-only renewal fraction in (0, 1]; 1 never renews. */
 	replicaRefreshFraction?: number;
 	audit?: boolean;
 	sealed?: boolean;

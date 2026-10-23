@@ -2944,6 +2944,8 @@ export function makeTable(options): TableResourceClass {
 		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			const previousReplicaExpirationMs = replicaExpirationMs;
+			const ownedCleanup = ownsCleanup();
 			if (typeof opts === 'object' && opts.replicaExpiration != null) {
 				const validated = replicaExpirationMsOf(opts.replicaExpiration);
 				replicaExpirationMs = isRocksDB ? validated : 0;
@@ -2979,7 +2981,10 @@ export function makeTable(options): TableResourceClass {
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
-			if (replicaTableKnown) {
+			if (
+				replicaTableKnown &&
+				(replicaExpirationMs !== previousReplicaExpirationMs || ownsCleanup() !== ownedCleanup)
+			) {
 				standDownReplicaSweep();
 				if (replicaExpirationMs) armReplicaEviction();
 			}
