@@ -86,6 +86,20 @@ describe('activating a staged release on each peer in turn', () => {
 		);
 	});
 
+	it('loads the node list itself, which a job thread starts without', async () => {
+		const nodes = global.server.nodes;
+		global.server.nodes = [];
+		global.server.replication.monitorNodeCAs = () => {
+			// Replication fills server.nodes from hdb_nodes when something first subscribes to node updates.
+			global.server.nodes = nodes;
+		};
+		await activateDeploymentOnPeers(activation({ nodes: ['peer-a', 'peer-b'] }));
+		assert.deepStrictEqual(
+			sent.map(({ node }) => node),
+			['peer-a', 'peer-b']
+		);
+	});
+
 	it('has nothing to do on a node without peers, which has no replication to ask', async () => {
 		global.server = {
 			replication: {

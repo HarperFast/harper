@@ -82,6 +82,23 @@ describe("following a rolling deploy's record (harper#3058)", () => {
 		assert.strictEqual(summarizeRollout(outcome).status, 'timed_out');
 	});
 
+	it('does not report the last read as failed when only the end of the wait cut it short', async () => {
+		const outcome = await awaitRollout(
+			ID,
+			async (_id, remainingMs) => {
+				if (remainingMs < 20) {
+					// As a request timeout does, it fails once its budget, the rest of the wait, has run out.
+					await new Promise((resolve) => setTimeout(resolve, remainingMs + 1));
+					throw new Error(`Request timed out after ${remainingMs}ms with no response from the server`);
+				}
+				return { status: 'rolling_out', peer_results: [peer('a')] };
+			},
+			{ ...fast, report, timeoutMs: 60 }
+		);
+		assert.strictEqual(outcome.timedOut, true);
+		assert.match(outcome.failure, /not yet taken on a$/);
+	});
+
 	it("keeps waiting through a lagging node's earlier status, which is no ending", async () => {
 		const outcome = await awaitRollout(
 			ID,

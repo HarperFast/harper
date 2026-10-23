@@ -73,7 +73,8 @@ export async function awaitRollout(
 						`or pass wait=false to stop once this node has taken the release`,
 				};
 			}
-			lastError = error;
+			// A read the end of the wait cut short says nothing about the cluster.
+			if (Date.now() < deadline) lastError = error;
 		}
 		for (const peer of record?.peer_results ?? []) {
 			if (!peer?.node || !peer.activation || reported.has(peer.node)) continue;

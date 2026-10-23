@@ -212,6 +212,12 @@ async function activateDeploymentOnPeers(activation: any) {
 			true
 		);
 	}
+	try {
+		// A job thread starts with an empty `server.nodes`; subscribing to node updates fills it from hdb_nodes.
+		(global as any).server.replication.monitorNodeCAs();
+	} catch {
+		// Harper core alone has no replication, so no peers.
+	}
 	const thisNode = getThisNodeName();
 	const otherNodes = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
 	const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
@@ -249,7 +255,6 @@ async function activateEachPeer(
 	unrecorded: any[]
 ) {
 	const replication = (global as any).server.replication;
-	replication.monitorNodeCAs();
 	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.js');
 	const { recordPeerActivation } = await import('../components/deploymentRecorder.ts');
 	const timeoutMs = peerDeployAnswerTimeoutMs({ restart: true });
