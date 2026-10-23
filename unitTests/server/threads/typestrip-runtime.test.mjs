@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, rmSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
@@ -358,7 +358,7 @@ describe('TypeStrip runtime boundaries', () => {
 				const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
 				config.set('startupShutdownProbe', {});
 				writeFileSync(configPath, config.toString());
-				process.env.HARPER_BUILTIN_COMPONENTS = 'startupShutdownProbe=' + ${JSON.stringify(resolve(import.meta.dirname, 'fixtures/component-shutdown.cjs'))};
+				process.env.HARPER_BUILTIN_COMPONENTS = 'startupShutdownProbe=' + ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, 'fixtures/component-shutdown.cjs')).href)};
 				const { Worker } = await import('node:worker_threads');
 				const { once } = await import('node:events');
 				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])}, workerData: { addPorts: [], addThreadIds: [] } });
@@ -703,7 +703,7 @@ describe('TypeStrip runtime boundaries', () => {
 	it('resolves compiled service entries inside the distribution', () => {
 		const services = require('#src/utility/processManagement/servicesConfig');
 		for (const config of [services.generateMainServerConfig(), services.generateRestart()]) {
-			assert.ok(config.script.startsWith(resolve(root, 'dist') + '/'));
+			assert.ok(config.script.startsWith(resolve(root, 'dist') + sep));
 			assert.ok(config.script.endsWith('.js'));
 			assert.ok(existsSync(config.script));
 		}
@@ -910,7 +910,10 @@ describe('TypeStrip runtime boundaries', () => {
 				assert.ok(globalThis.hookControls.every(control=>control.beforeConfig));
 				assert.strictEqual(globalThis.authCacheTimer,undefined);
 				const owners = [...new Set(globalThis.coldReads.map(({key,caller}) => {
-					let path = caller.slice(caller.indexOf(${JSON.stringify(root + '/')}) + ${root.length + 1}).split(':')[0];
+					let path = caller.split(${JSON.stringify(sep)}).join('/');
+					const prefix = ${JSON.stringify(root.split(sep).join('/') + '/')};
+					assert.ok(path.includes(prefix), caller);
+					path = path.slice(path.indexOf(prefix) + prefix.length).split(':')[0];
 					if (path.startsWith('dist/')) path = path.slice(5);
 					if (path.endsWith('.js')) path = path.slice(0,-3) + '.ts';
 					return path + ':' + key.toLowerCase();
@@ -1234,7 +1237,7 @@ describe('TypeStrip canary admission', () => {
 					const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
 					config.set('admissionScopeProbe', {});
 					writeFileSync(configPath, config.toString());
-					process.env.HARPER_BUILTIN_COMPONENTS = 'admissionScopeProbe=' + ${JSON.stringify(resolve(import.meta.dirname, 'fixtures/admission-scope.cjs'))};
+					process.env.HARPER_BUILTIN_COMPONENTS = 'admissionScopeProbe=' + ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, 'fixtures/admission-scope.cjs')).href)};
 					const worker = new Worker(${JSON.stringify(workerPath)}, {
 						execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])},
 						workerData: { addPorts: [], addThreadIds: [], reportsLoad: true, holdProbeLoad: true, probePort: port, probePool: pool, name: pool ? 'replication' : 'http', poolIndex: 0, workerPools: pool ? ['replication'] : [] },
