@@ -26,6 +26,7 @@ import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { redactUrl } from '../utility/safeFetch.ts';
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
+import { DiskLedger } from './diskLedger.ts';
 import {
 	backupDirForDatabase,
 	getBackupsRoot,
@@ -147,11 +148,13 @@ async function spoolUpload(databaseName: string, payload: Readable, declaredSize
 	writeOwner(dir, { owner: 'thread', thread_id: threadId, process_instance: processInstance() });
 	const hash = createHash('sha256');
 	let bytes = 0;
+	// the declared size is only advisory; the ledger stops a spool that outgrows the staging device
+	const ledger = new DiskLedger();
 	const meter = new Transform({
 		transform(chunk, _encoding, callback) {
 			hash.update(chunk);
 			bytes += chunk.length;
-			callback(null, chunk);
+			ledger.debit(dir, chunk.length).then(() => callback(null, chunk), callback);
 		},
 	});
 	try {

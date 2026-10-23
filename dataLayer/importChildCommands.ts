@@ -162,7 +162,7 @@ export async function importArchive(args: ImportArchiveArgs) {
 	const tally = await tallyArchive(archivePath, { bsize: statfsSync(stagingDir).bsize });
 	// Before the first byte is written: extraction debits its own device as it goes, but the engine copy
 	// and the blob snapshot land in the repository, which may be another device.
-	const conversionHold = await ledger.reserve(backupDir, tally.payloadBytes, tally.inodes);
+	const conversionHold = await ledger.reserve(backupDir, tally.bytes, tally.inodes);
 	let backupId: number;
 	let extracted: Awaited<ReturnType<typeof extractArchive>>;
 	try {
