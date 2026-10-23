@@ -480,8 +480,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	 * Load a CommonJS module in our context (private or current)
 	 */
 	function loadCJS(url: string, source: string): { exports: any } {
-		const cachedModule = cjsCache.get(url);
-		if (cachedModule) return cachedModule;
 		if (url.endsWith('.json')) {
 			const jsonModule = { exports: parseJsonModule(source, url) };
 			cjsCache.set(url, jsonModule);
@@ -534,9 +532,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		return cjsModule;
 	}
 
-	/**
-	 * Create the require function for a CommonJS module the application loader evaluates
-	 */
 	function createCJSRequire(url: string) {
 		let requireUrl = url;
 		if (url.startsWith('file://')) {
@@ -743,8 +738,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	}
 
 	/**
-	 * Read the source of a module the application loader evaluates: the bytes as read are recorded for
-	 * runtime-equivalence checks, and TypeScript types are stripped from the returned source
+	 * Runtime-equivalence checks compare the bytes as read, so they are recorded before TypeScript types are stripped
 	 */
 	function readApplicationModule(url: string): string {
 		const contents = readFileSync(new URL(url));
@@ -769,8 +763,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			);
 		}
 
-		const cachedModule = cjsCache.get(url);
-		if (cachedModule) return createCJSSyntheticModule(url, cachedModule);
 		// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
 		let wrappedFn: Function;
 		try {
@@ -832,6 +824,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				scope.markNativeRuntime?.();
 				return createSyntheticModule(url, normalizeImportedModule(nativeModule));
 			}
+			// a JSON import gets its own copy, as in Node
+			const cachedModule = url.endsWith('.json') ? undefined : cjsCache.get(url);
+			if (cachedModule) return createCJSSyntheticModule(url, cachedModule);
 			return createModuleFromSource(url, readApplicationModule(url));
 		}
 
