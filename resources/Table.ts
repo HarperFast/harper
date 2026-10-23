@@ -198,6 +198,7 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
 	Blob,
+	createBlob,
 	collectRetainedFileIds,
 	deleteBlobsInObject,
 	findBlobsInObject,
@@ -662,11 +663,13 @@ interface TableResourceInstance<Record extends object = any> {
 	 * @deprecated Override the resource operation for application-specific authorization.
 	 */
 	allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+	allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
 	/**
 	 * Determine if the user is allowed to create new data in the current resource
 	 * @deprecated Override the resource operation for application-specific authorization.
 	 */
 	allowCreate(user: User, newData: Record, context: Context): boolean;
+	allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
 	/**
 	 * Determine if the user is allowed to delete from the current resource
 	 * @deprecated Override the resource operation for application-specific authorization.
@@ -3656,56 +3659,20 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to update data from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowUpdate checks.
-		// eslint-disable-next-line no-unused-vars
-		allowUpdate(user: User, updatedData: Record, context: Context): boolean {
-			const tablePermission = getTablePermissions(user);
-			if (tablePermission?.update) {
-				const attribute_permissions = tablePermission.attribute_permissions;
-				if (attribute_permissions?.length > 0) {
-					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-					const attrsForType = attributesAsObject(attribute_permissions, 'update');
-					for (const key in updatedData) {
-						if (!attrsForType[key]) return false;
-					}
-					// if this is a full put operation that removes missing properties, we don't want to remove properties
-					// that the user doesn't have permission to remove
-					for (const permission of attribute_permissions) {
-						const key = permission.attribute_name;
-						if (!permission.update && !fullTextFieldNames?.has(key) && !(key in updatedData)) {
-							updatedData[key] = this.getProperty(key);
-						}
-					}
-				}
-				return true;
-			}
+		allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, _context: Context): boolean | Promise<boolean> {
+			return allowTableUpdate(this, user, updatedData);
 		}
 
 		/**
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowCreate checks.
-		allowCreate(user: User, newData: Record, context: Context): boolean {
-			if (this.isCollection) {
-				const tablePermission = getTablePermissions(user);
-				if (tablePermission?.insert) {
-					const attribute_permissions = tablePermission.attribute_permissions;
-					if (attribute_permissions?.length > 0) {
-						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
-						for (const key in newData) {
-							if (!attrsForType[key]) return false;
-						}
-					}
-					return true;
-				}
-			} else {
-				// creating *within* a record resource just means we are adding some data to a current record, which is
-				// an update to the record, it is not an insert of a new record into the table, so not a table create operation
-				// so does not use table insert permissions
-				return this.allowUpdate(user, newData, context);
-			}
+		allowCreate(user: User, newData: Record, context: Context): boolean;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
+			return allowTableCreate(this, user, newData, context);
 		}
 
 		/**
@@ -9256,6 +9223,66 @@ export function makeTable(options): TableResourceClass {
 			}
 		});
 	}
+	function allowTableUpdate<Record extends object>(
+		resource: TableResource<Record>,
+		user: User,
+		updatedData: Record | Promise<Record>
+	): boolean | Promise<boolean> {
+		const tablePermission = getTablePermissions(user);
+		if (tablePermission?.update) {
+			const attribute_permissions = tablePermission.attribute_permissions;
+			if (attribute_permissions?.length > 0) {
+				if (typeof (updatedData as Promise<Record>)?.then === 'function') {
+					return (updatedData as Promise<Record>).then((data) => allowTableUpdate(resource, user, data));
+				}
+				const attrsForType = attributesAsObject(attribute_permissions, 'update');
+				for (const key in updatedData) {
+					if (!attrsForType[key]) return false;
+				}
+				// if this is a full put operation that removes missing properties, we don't want to remove properties
+				// that the user doesn't have permission to remove
+				for (const permission of attribute_permissions) {
+					const key = permission.attribute_name;
+					if (!permission.update && !fullTextFieldNames?.has(key) && !(key in updatedData)) {
+						updatedData[key] = resource.getProperty(key);
+					}
+				}
+			}
+			return true;
+		}
+	}
+
+	function allowTableCreate<Record extends object>(
+		resource: TableResource<Record>,
+		user: User,
+		newData: Record | Promise<Record>,
+		context: Context
+	): boolean | Promise<boolean> {
+		if (resource.isCollection) {
+			const tablePermission = getTablePermissions(user);
+			if (tablePermission?.insert) {
+				const attribute_permissions = tablePermission.attribute_permissions;
+				if (attribute_permissions?.length > 0) {
+					if (typeof (newData as Promise<Record>)?.then === 'function') {
+						return (newData as Promise<Record>).then((data) => allowTableCreate(resource, user, data, context));
+					}
+					const attrsForType = attributesAsObject(attribute_permissions, 'insert');
+					for (const key in newData) {
+						if (!attrsForType[key]) return false;
+					}
+					return true;
+				} else {
+					return true;
+				}
+			}
+		} else {
+			// creating *within* a record resource just means we are adding some data to a current record, which is
+			// an update to the record, it is not an insert of a new record into the table, so not a table create operation
+			// so does not use table insert permissions
+			return resource.allowUpdate(user, newData, context);
+		}
+	}
+
 	function getTablePermissions(user: User, target?: RequestTarget) {
 		let permission = target?.checkPermission; // first check to see the request target specifically provides the permissions to authorize
 		if (typeof permission !== 'object') {

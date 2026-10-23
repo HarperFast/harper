@@ -7,6 +7,19 @@ import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
 import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
 
+/**
+ * A part has exactly name/value fields; consume each streamed Blob before requesting the next part.
+ * Stream-backed Blob read APIs require persistence; delegate to the inherited method to materialize files.
+ */
+export type ResourceBodyPart<Value = unknown> = { name: string; value: Value };
+/**
+ * Inherited writes collect named parts before authorization and instance dispatch.
+ * Static consumers own destination authorization and must commit staged Blob saves before advancing.
+ * Delegate to the inherited static method before reading or returning the iterator, with no concurrent consumer.
+ * Direct consumers must finish consuming or return the iterator before responding.
+ */
+export type ResourceBody<T> = T | AsyncIterable<ResourceBodyPart> | Promise<T | AsyncIterable<ResourceBodyPart>>;
+
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
 	allowRead(user: User, target: RequestTarget, context: Context): boolean | Promise<boolean>;
@@ -19,7 +32,7 @@ export interface ResourceInterface<Record extends object = any>
 		| Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 	search?(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
 
-	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowCreate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	create?(
 		target: RequestTargetOrId,
 		newRecord: Partial<Record & RecordObject>
@@ -29,7 +42,7 @@ export interface ResourceInterface<Record extends object = any>
 		newRecord: Partial<Record & RecordObject>
 	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
 
-	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowUpdate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	put?(
 		record: Record & RecordObject,
 		target?: RequestTargetOrId
