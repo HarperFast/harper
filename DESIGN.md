@@ -17,6 +17,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## resources/ — records, transactions, tables, blobs, audit
 
+- [Full PUT resequencing](resources/DESIGN.md#full-put-resequencing) — Replay newer patches on a replacement body only when the audit walk is complete.
 - [File overview](resources/DESIGN.md#file-overview) — What each file in `resources/` owns. · [Sharding resolves fixed slots through an authoritative database map](resources/DESIGN.md#sharding-resolves-fixed-slots-through-an-authoritative-database-map) — Policy persistence, authoritative snapshots, placement guards, and attribute-transition confirmation.
 - [`Resource.ts` — base class](resources/DESIGN.md#resourcets--base-class) — Static entry points versus instance methods, and the `transactional()` wrapper.
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the `makeTable()` factory.
