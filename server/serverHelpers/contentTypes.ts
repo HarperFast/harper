@@ -468,13 +468,21 @@ export function isPassThroughEnvelope(value: any): value is { contentType: strin
 }
 
 /**
- * {@link isPassThroughEnvelope} for an HTTP response, whose body writer also accepts a Blob or a stream.
- * Plain iterables are excluded: an array-valued `data` attribute is one.
+ * {@link isPassThroughEnvelope} for an HTTP response, whose body writer also sends a Blob, a stream or other
+ * async iterable, and a generator. A table record can hold none of the last three, and an array- or
+ * object-valued `data` attribute must stay a record.
  */
 export function isHttpPassThroughEnvelope(value: any): boolean {
 	if (typeof value?.contentType !== 'string') return false;
 	const data = value.data;
-	return isTextOrBytes(data) || data instanceof Blob || data instanceof Readable || data instanceof ReadableStream;
+	if (typeof data === 'string') return true;
+	if (data === null || typeof data !== 'object') return false;
+	return (
+		ArrayBuffer.isView(data) ||
+		data instanceof Blob ||
+		typeof data[Symbol.asyncIterator] === 'function' ||
+		typeof data.next === 'function'
+	);
 }
 
 /**

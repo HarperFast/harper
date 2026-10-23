@@ -972,14 +972,20 @@ describe('contentTypes – pass-through envelopes', function () {
 	});
 
 	describe('isHttpPassThroughEnvelope', function () {
-		it('accepts everything the message predicate does, plus a Blob and Node or Web streams', function () {
-			const extra = [new Blob(['b']), Readable.from(['s']), new ReadableStream()];
+		it('accepts everything the message predicate does, plus a Blob, streams, async iterables and generators', function () {
+			const extra = [
+				new Blob(['b']),
+				Readable.from(['s']),
+				new ReadableStream(),
+				(async function* () {})(),
+				(function* () {})(),
+			];
 			for (const data of [...textAndBytes, ...extra])
 				assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 'x/y', data }), true);
 		});
 
-		it('rejects the shapes a table record can hold, including iterable ones', function () {
-			for (const data of [...collidingData, new ArrayBuffer(2), (function* () {})(), (async function* () {})()])
+		it('rejects the shapes a table record can hold', function () {
+			for (const data of [...collidingData, new ArrayBuffer(2), new Set([1]), { next: 1 }])
 				assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 'x/y', data }), false, String(data));
 			assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 5, data: 'text' }), false);
 			assert.strictEqual(isHttpPassThroughEnvelope(null), false);
@@ -1035,8 +1041,8 @@ describe('contentTypes – pass-through envelopes', function () {
 			}
 		});
 
-		it('hands a Blob or a stream envelope to the HTTP writer unchanged', function () {
-			for (const data of [new Blob(['b']), Readable.from(['s']), new ReadableStream()]) {
+		it('hands a Blob, stream or generator envelope to the HTTP writer unchanged', function () {
+			for (const data of [new Blob(['b']), Readable.from(['s']), new ReadableStream(), (async function* () {})()]) {
 				const response = { headers: new Headers() };
 				assert.strictEqual(serialize({ contentType: 'x/y', data }, httpRequest(), response), data);
 				assert.strictEqual(response.headers.get('Content-Type'), 'x/y');

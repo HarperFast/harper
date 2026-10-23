@@ -85,9 +85,9 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 > so the shape alone proves nothing: `isPassThroughEnvelope` (`serverHelpers/contentTypes.ts`) requires a
 > string `contentType` and string or ArrayBuffer-view `data`, and every other record goes through the
 > negotiated serializer. Delivered raw, object or number `data` made mqtt-packet throw, and a durable
-> session replayed the delivery on every reconnect. `isHttpPassThroughEnvelope` also accepts a `Blob` and
-> Node/Web streams, which the HTTP body writer sends; plain iterables stay out because an array-valued `data`
-> is one. Pinned by `integrationTests/mqtt/passthrough-envelope-shape.test.ts`.
+> session replayed the delivery on every reconnect. `isHttpPassThroughEnvelope` also accepts a `Blob`, streams
+> and other async iterables, and generators, which the HTTP body writer sends and a record cannot hold; arrays
+> and objects stay records. Pinned by `integrationTests/mqtt/passthrough-envelope-shape.test.ts`.
 
 ### Threads
 
