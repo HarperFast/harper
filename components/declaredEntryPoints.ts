@@ -1,8 +1,6 @@
-// A deploy says so, before its release goes live, when an entry point its own config declares matched nothing in
-// the built tree (#1719). A truncated tarball once reported success with half the application missing (#1718); this
-// catches that failure whatever its cause. Only the component's own config counts: DEFAULT_CONFIG names optional
-// files, and a component without a config file declares nothing. It warns rather than fails: a config that names a
-// file the release no longer ships is a legal, if resource-less, component (redeploy-restart-flag-deletion.test.ts).
+// Warns, before a deploy's release goes live, when an entry point its own config declares matched nothing in the built
+// tree: a truncated or partial payload otherwise reports success with part of the application missing. Warns rather
+// than fails, since a config naming a file the release no longer ships is a legal, resource-less component.
 
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -11,13 +9,12 @@ import fg from 'fast-glob';
 import { parseDocument } from 'yaml';
 import { deriveGlobOptions, type FilesOption } from './deriveGlobOptions.ts';
 
-// The plugins whose files are the application's code and schema, so a declaration that matches nothing is a missing
-// application rather than an optional extra.
+// Their files are the application's code and schema, so a declaration that matches nothing is a missing application
+// rather than an optional extra.
 const ENTRY_POINT_PLUGINS = ['jsResource', 'graphqlSchema'];
-// The order componentLoader reads them in.
+// In componentLoader's order.
 const CONFIG_FILES = ['harper-config.yaml', 'harperdb-config.yaml', 'config.yaml'];
 
-/** The warning to give when a declared entry point matched nothing in the tree, or undefined when none is missing. */
 export async function missingEntryPointsWarning(componentName: string, treePath: string): Promise<string | undefined> {
 	const configFile = CONFIG_FILES.find((name) => existsSync(join(treePath, name)));
 	if (!configFile) return undefined;
@@ -25,24 +22,27 @@ export async function missingEntryPointsWarning(componentName: string, treePath:
 	try {
 		config = parseDocument(await readFile(join(treePath, configFile), 'utf8')).toJSON();
 	} catch {
-		// The load reports an unreadable config; this check has nothing to compare against.
+		// The load reports an unreadable config.
 		return undefined;
 	}
 	const missing: string[] = [];
 	for (const plugin of ENTRY_POINT_PLUGINS) {
 		const files = config?.[plugin]?.files as FilesOption | undefined;
 		if (typeof files !== 'string' && (typeof files !== 'object' || files === null)) continue;
-		const { source, ignore: declaredIgnore } = deriveGlobOptions(files);
+		const globs = deriveGlobOptions(files);
+		// The loader validates these and refuses `..`; anything it would refuse is left to it.
+		const usable = (pattern: unknown): pattern is string =>
+			typeof pattern === 'string' && pattern.length > 0 && !pattern.includes('..');
+		const relative = (pattern: string) => (pattern === '/' ? '.' : pattern.replace(/^\//, ''));
+		const source = globs.source.filter(usable);
 		// fast-glob reads a negated pattern in `source` as an exclusion of the others, not as one that must match.
 		const ignore = [
-			...declaredIgnore,
-			...source.filter((pattern) => pattern?.startsWith('!')).map((pattern) => pattern.slice(1)),
-		];
+			...globs.ignore.filter(usable),
+			...source.filter((pattern) => pattern.startsWith('!')).map((pattern) => pattern.slice(1)),
+		].map(relative);
 		for (const pattern of source) {
-			if (pattern?.startsWith('!')) continue;
-			if (typeof pattern !== 'string' || pattern.length === 0 || pattern.includes('..')) continue;
-			const relative = pattern === '/' ? '.' : pattern.replace(/^\//, '');
-			if (!(await matchesAnything(treePath, relative, ignore))) missing.push(`${plugin}.files '${pattern}'`);
+			if (pattern.startsWith('!')) continue;
+			if (!(await matchesAnything(treePath, relative(pattern), ignore))) missing.push(`${plugin}.files '${pattern}'`);
 		}
 	}
 	if (missing.length === 0) return undefined;

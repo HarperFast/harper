@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 
 /**
- * What a deploy that does not authenticate through OIDC says about where it came from (#3061). The server records it
+ * What a deploy that does not authenticate through OIDC says about where it came from. The server records it
  * as `source: { via: 'declared', … }`, and an exchanged token's attested source replaces it. Under GitHub Actions
  * that is the run; for a directory deploy it is also the checkout's commit, and whether the tree had changes the
  * commit does not hold. A package deploy names its own source, so the directory it was run from says nothing.

@@ -187,7 +187,7 @@ export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyRepl
  * A pipe that loses its destination after the response, by `unpipe()` or a destination error, leaves the part
  * paused but not destroyed, so its `close` never comes. Node's pipe cleanup removes the part's `data` listener in
  * both cases, so a removed listener is when to look again; `pause` is no signal, since a part already paused by
- * backpressure emits none (#3096).
+ * backpressure emits none.
  */
 function watchForAbandonment(upload: Upload): void {
 	const { file } = upload;

@@ -49,7 +49,7 @@ export function isWorkloadIdentityPrincipal(user: unknown): boolean {
 /**
  * Where a credential minted by an OIDC exchange came from: its policy and the run's verified claims
  * (components/deploymentSource.ts). A signed claim like the provenance marker above, lifted onto the principal as
- * `deploySource` and carried through impersonation the same way, so a deploy can record it as attested (#3061).
+ * `deploySource` and carried through impersonation the same way, so a deploy can record it as attested.
  */
 export const DEPLOY_SOURCE_CLAIM = 'deploy_source';
 

@@ -27,8 +27,9 @@ function installDeploymentRows(rows) {
 		async get(id) {
 			return rows.find((row) => row.deployment_id === id);
 		},
-		async *search({ conditions }) {
-			for (const row of rows) {
+		async *search({ conditions, sort }) {
+			const ordered = sort ? [...rows].sort((a, b) => b[sort.attribute] - a[sort.attribute]) : rows;
+			for (const row of ordered) {
 				if (conditions.every(({ attribute, value }) => row[attribute] === value)) yield row;
 			}
 		},
@@ -136,5 +137,40 @@ describe('get_components deployment times (harper#564)', () => {
 
 		const neverDeployed = entries.find((entry) => entry.name === 'never-deployed');
 		assert.strictEqual(neverDeployed.deployed_at, undefined);
+	});
+});
+
+describe("finding the live release's record in the deployment table (harper#564)", () => {
+	const { deploymentOfLiveRelease } = require('#src/components/deploymentOperations');
+	const rows = [
+		{ deployment_id: 'times-1', project: 'times-p', status: 'success', completed_at: 100 },
+		{ deployment_id: 'times-2', project: 'times-p', status: 'success', completed_at: 300 },
+		{ deployment_id: 'times-3', project: 'times-p', status: 'failed', completed_at: 400 },
+		{ deployment_id: 'times-4', project: 'times-q', status: 'success', completed_at: 500 },
+		{ deployment_id: 'times-5', project: 'times-p', status: 'success', completed_at: 200, activated_from: 'times-x' },
+	];
+	before(async () => {
+		await testUtils.ensureSystemTables();
+		for (const row of rows) await databases.system[DEPLOYMENT_TABLE].put(row);
+	});
+	after(async () => {
+		const table = databases.system?.[DEPLOYMENT_TABLE];
+		if (table) for (const row of rows) await table.delete(row.deployment_id);
+	});
+
+	it('finds it by key and by activated_from, and for a tree without a marker, the newest released row', async () => {
+		assert.deepStrictEqual(await deploymentOfLiveRelease('times-p', undefined), {
+			deployment_id: 'times-2',
+			completed_at: 300,
+		});
+		assert.deepStrictEqual(await deploymentOfLiveRelease('times-p', 'times-x'), {
+			deployment_id: 'times-5',
+			completed_at: 200,
+		});
+		assert.deepStrictEqual(await deploymentOfLiveRelease('times-p', 'times-1'), {
+			deployment_id: 'times-1',
+			completed_at: 100,
+		});
+		assert.strictEqual(await deploymentOfLiveRelease('times-p', 'times-3'), undefined);
 	});
 });

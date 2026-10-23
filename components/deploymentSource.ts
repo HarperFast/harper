@@ -1,4 +1,4 @@
-// Where a deploy came from (#3061): the commit, the CI run and the trust policy, recorded on its deployment row as
+// Where a deploy came from: the commit, the CI run and the trust policy, recorded on its deployment row as
 // `source`. `via: 'oidc'` is attested: the OIDC exchange verified the identity token's claims and signed them into the
 // operation token it minted (security/credentialProvenance.ts). `via: 'declared'` is what the client said about
 // itself, so a reader can tell the two apart.

@@ -1,5 +1,5 @@
 // `list_releases`: which release is live on each node, and which each node keeps for `deploy_component
-// { deployment_id }` (#3059). `list_deployments` lists the records the origin wrote; this lists what is on disk.
+// { deployment_id }`. `list_deployments` lists the records the origin wrote; this lists what is on disk.
 
 import { componentsWithReleases, keptReleasesOf, liveDeploymentIdOf, type KeptRelease } from './Application.ts';
 import { getConfigPath } from '../config/configUtils.ts';

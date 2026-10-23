@@ -1,4 +1,4 @@
-// Expiry for the payload tarballs failed deploys keep (#2681). A successful deploy drops a large payload once every
+// Expiry for the payload tarballs failed deploys keep. A successful deploy drops a large payload once every
 // peer has installed it (deployComponent); a failed one keeps it, since that tarball is what an operator retries or
 // debugs with. Kept forever, a retried rollout filled a tenant's quota with copies of one bundle, so each project now
 // keeps only its newest failed payloads, and none past an age, beyond the newest one it always keeps.

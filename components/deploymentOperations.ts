@@ -116,11 +116,19 @@ export async function deploymentOfLiveRelease(
 		if (!row || row.project !== project || !RELEASED_STATUSES.has(row.status)) return;
 		if (newest === undefined || (row.completed_at ?? 0) > (newest.completed_at ?? 0)) newest = row;
 	};
-	const conditions = liveDeploymentId
-		? [{ attribute: 'activated_from', value: liveDeploymentId }]
-		: [{ attribute: 'project', value: project }];
-	if (liveDeploymentId) consider(await table.get(liveDeploymentId));
-	for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) consider(row);
+	if (liveDeploymentId) {
+		consider(await table.get(liveDeploymentId));
+		const conditions = [{ attribute: 'activated_from', value: liveDeploymentId }];
+		for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) consider(row);
+	} else {
+		// Newest first, so the walk ends at the first released row rather than at the end of the project's history.
+		const conditions = [{ attribute: 'project', value: project }];
+		const sort = { attribute: 'completed_at', descending: true };
+		for await (const row of table.search({ conditions, sort, select: RELEASE_FIELDS })) {
+			consider(row);
+			if (newest) break;
+		}
+	}
 	return newest && { deployment_id: newest.deployment_id, completed_at: newest.completed_at };
 }
 

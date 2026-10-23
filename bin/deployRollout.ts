@@ -1,6 +1,6 @@
 /**
  * `harper deploy restart=rolling` answers once the node it reached has taken the release; the deployment's record
- * says when every other node has (#3058, #3060). The record replicates, so the wait reads it through whichever node
+ * says when every other node has. The record replicates, so the wait reads it through whichever node
  * the target resolves to: `get_job` is node-local and a load balancer can route a poll to a node that never had it.
  */
 

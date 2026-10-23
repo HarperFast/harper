@@ -71,6 +71,13 @@ describe('declared entry points (harper#1719)', () => {
 		assert.match(await missingEntryPointsWarning('web', onlyExcluded), /'src\/\*\*\/\*\.js'/);
 	});
 
+	it('skips a pattern that is not a string, and reads a leading / on a negation as the component root', async () => {
+		const dir = await at({ 'config.yaml': 'jsResource:\n  files: [123, resources.js]\n', 'resources.js': '' });
+		assert.strictEqual(await missingEntryPointsWarning('web', dir), undefined);
+		const onlySkipped = await at({ 'config.yaml': "jsResource:\n  files: ['/*.js', '!/skip.js']\n", 'skip.js': '' });
+		assert.match(await missingEntryPointsWarning('web', onlySkipped), /'\/\*\.js'/);
+	});
+
 	it("honors a declaration's ignore", async () => {
 		const dir = await at({
 			'config.yaml': "jsResource:\n  files:\n    source: 'src/*.js'\n    ignore: 'src/skip.js'\n",
