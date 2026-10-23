@@ -277,6 +277,7 @@ const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
 const EVICTION_BATCH_SIZE = 100;
 const COMMITTED_READ = { uncachedRead: true };
+const UNRESOLVED = Symbol('unresolved');
 // Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
@@ -4989,8 +4990,8 @@ export function makeTable(options): TableResourceClass {
 					// the ones it added — orphaning them — and an incremental update merges onto the
 					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
 					// record comes from the earlier write. The rest of the entry is the pre-transaction one on
-					// LMDB; RocksDB reloads it through this transaction, so it also carries the earlier write's
-					// audit refs (see the re-delivery check below).
+					// LMDB; RocksDB reloads it through this transaction, so it also carries an earlier same-key
+					// write's audit refs, which the re-delivery check below reads past (identityBase).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
@@ -5066,6 +5067,7 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
 							if (
 								committedBy?.sourceApply &&
 								isRocksDB &&
@@ -5073,7 +5075,11 @@ export function makeTable(options): TableResourceClass {
 								precedesExisting === 0 &&
 								receivedLogKey === txnTime &&
 								appendedLogKey === receivedLogKey &&
-								isHeadIdentity(identityBase(write, existingEntry, committedBy), txnTime, options?.nodeId)
+								isHeadIdentity(
+									(identityRecord = identityBase(write, existingEntry, committedBy)),
+									txnTime,
+									options?.nodeId
+								)
 							) {
 								write.skipped = true;
 								return;
@@ -5096,7 +5102,10 @@ export function makeTable(options): TableResourceClass {
 							let refBase: Partial<Entry> | undefined;
 							if (
 								!priorStaged &&
-								(refBase = identityBase(write, existingEntry, committedBy))?.additionalAuditRefs?.some(
+								(refBase =
+									identityRecord === UNRESOLVED
+										? identityBase(write, existingEntry, committedBy)
+										: identityRecord)?.additionalAuditRefs?.some(
 									(ref, index) =>
 										(ref.version === appendedLogKey ||
 											(ref.version === receivedLogKey &&
@@ -9647,9 +9656,7 @@ export function makeTable(options): TableResourceClass {
 	// The commit base is the committed record unless another write to the key already saved without being
 	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
-		let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId);
-		if (!other) return committedEntry(write.key);
-		for (; other; other = other.priorWrite) {
+		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
 			if (other !== write && other.saved && !other.skipped) return committedEntry(write.key);
 		}
 		return existingEntry;
