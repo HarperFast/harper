@@ -73,21 +73,16 @@ Several non-obvious mechanics keep that safe:
   selected manifest run under the repository lock and before the claim (marker, pin), so they apply
   to the backup that gets pinned: a delete plus `create_backup` cannot swap a different backup (or
   manifest) in under the same id, and once pinned it cannot be deleted. The lock coordinates
-  Harper's own operations only; a process writing the repository directly is outside it. _Where_
-  verification runs differs by path. **Online**, it runs after the close and `verifyDatabaseClosed`:
-  verifying while the database still served would acknowledge writes for minutes that the purge
-  then discards, where the close makes them fail with `DatabaseClosingError` instead. The cost is
-  that downtime includes the verification read. A crash during it costs nothing durable: a fresh
-  claim (`claimRestore`) holds the restore lock and the pin but publishes no marker until the purge
-  is next, and the held lock alone keeps every open off the database meanwhile, so once the process
-  dies the intact database loads again. `verifyDatabaseClosed` runs again after verification, since
-  a component opening the path directly is not held off by the lock. **Offline**, with no live writers, it runs under the
-  repository lock _before_ the claim, so a crash mid-verify
-  leaves the database loadable. A backup whose manifest declares blobs must also still have its blob
-  snapshot. Not covered: blob file contents
-  (rocksdb-js has no reader for them; one unreadable at copy time fails after the purge, and the rerun
-  needs a backup whose blobs read), and anything that fails only once the copy runs (`ENOSPC`, a
-  crash) — those still leave the marker and need a rerun, which the intact backup allows.
+  Harper's own operations only; a process writing the repository directly is outside it.
+  Verification is phase 0 of the restore child's `apply-and-prove` on every route and every retry
+  ([publication protocol](#restore-publication-receipts-the-restore-child-and-the-publication-boundary-datalayerrestorepublicationts-datalayerrestoreintentts)),
+  so a native abort in the verifier costs the child, not Harper. **Online**, it runs after the close
+  and `verifyDatabaseClosed`: verifying while the database still served would acknowledge writes
+  for minutes that the purge then discards. A crash during it costs nothing durable: a fresh claim
+  holds the restore lock and the pin but publishes no marker until the purge is next. A backup
+  whose manifest declares blobs must also still have its blob snapshot. Anything that fails only
+  once the copy runs (`ENOSPC`, a crash) leaves the marker and needs a rerun, which the intact backup
+  allows.
 
 - **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
   each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock
@@ -156,17 +151,16 @@ Several non-obvious mechanics keep that safe:
   anything says so, and its queue is kept and rewoken instead.
 
 - **Online restore is impossible for a database a component holds open — and that failure is
-  correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
+  correct; `on_restart` is the route for it.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a
   loaded component holds its own handle on the target database, `getRegistryStatus()` stays non-zero,
   Harper can neither identify nor force-close that handle, and an in-place purge would corrupt a live
   instance.
   `verifyDatabaseClosed` therefore waits only a short grace period (`DATABASE_CLOSE_WAIT_MS`, for a
   just-finished job worker's own close to drain) and then fails fast with a 409 that points at
-  running the operation offline (`harper restore_backup` with the server stopped, where no
-  components are loaded and nothing holds the database open). Offline restore is the supported path
-  for component-held and `system` databases; online restore serves databases not actively held by a
-  component. `system`, which Harper itself never stops while running, never reaches this check:
+  `restore_backup on_restart=true` (or, with the server stopped, `harper restore_backup`). The
+  restart route and offline restore serve component-held databases, offline alone serves `system`;
+  online restore serves databases nothing holds. `system`, which Harper itself never stops while running, never reaches this check:
   `validateRestoreBackup` refuses it up front with a 400 naming the offline command. The CLI exposes each backup operation under its operation name only (`create_backup`,
   `restore_backup`, …) — no hyphenated alias — and `bin/backup.ts` routes it to a reachable server
   or, when the local server is stopped, to the equivalent offline function. A saved loopback
@@ -184,11 +178,10 @@ Several non-obvious mechanics keep that safe:
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
   exited job worker leaves no residual handle to be mistaken for a live holder.
-- **A restore stamps a new database generation before `completeRestore`.** The restored files carry
-  the backup's generation, so both paths open the restored directory privately, stamp it and flush
+- **A restore stamps a new database generation before it is proven.** The restored files carry
+  the backup's generation, so the child stamps the restored directory and flushes
   (`stampDatabaseDirectory`, [database generation](../resources/DESIGN.md#database-generation-and-resumable-positions))
-  inside the destructive section: a failed stamp leaves the marker, and the rerun re-purges and
-  re-stamps. The stamp is as durable as the marker protocol it runs inside.
+  in its apply phase: a failed stamp leaves the marker, and the rerun re-purges and re-stamps.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
   a "successful" restore (or vice versa). `dropDatabase` takes the restore lock for every RocksDB or
@@ -212,19 +205,22 @@ Several non-obvious mechanics keep that safe:
   A restore never targets LMDB, but a drop locks and marks LMDB roots exactly as it does RocksDB
   ones, so LMDB needs the same exclusion against drop. `throwIfBlockedByRestore` survives as the
   cheap pre-check that answers a plainly blocked caller without taking a lock.
-- **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
-  only when the CLI sees no server (a PID heuristic; the PID file is briefly absent
-  mid-`harper restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so
-  before purging, `restoreBackupOffline` opens the database to probe. It takes the restore lock
-  _before_ probing (so a server that starts afterward is held off by it, and by the marker published
-  after the probe), and recognizes the rocksdb-js lock error by message (`isRocksDbLockError`; at 2.5.0, when
+- **The restore child probes RocksDB's own `LOCK` file, and fails closed.** `backups.restore`'s
+  `purgeAllFiles` never takes RocksDB's lock, and the offline path runs only when the CLI sees no
+  server (a PID heuristic). Being a separate process, the child's probe also sees a handle the
+  server itself still holds — a component that reopened the path during verification — so online
+  and offline both probe; only the startup hook skips it, since a corrupt old directory must stay
+  replaceable there. The parent holds the restore lock across it, and the probe recognizes the
+  rocksdb-js lock error by message (`isRocksDbLockError`; at 2.5.0, when
   this was written, a plain `Error` with no `code`) —
   `IO error: While lock file: <db>/LOCK: Resource temporarily unavailable` — aborting with a 409
   rather than purging a database another process holds open. Any _other_ open failure
   (corrupt/half-restored) is exactly what restore recovers, so only a lock conflict aborts.
 
 Known limitation: the flock is process-owned; if the restore job's worker _thread_ dies without
-the process exiting, the lock stays held (restores 409) until Harper restarts. rocksdb-js had no typed
+the process exiting, the lock stays held (restores 409) until Harper restarts. The restore child it
+started dies with its IPC channel, and its own lifetime lock keeps a rerun from claiming the target
+until it has. rocksdb-js had no typed
 native lock signal at 2.5.0 (the pin is now 2.10.0), so the offline probe relies on message matching; a native
 lock primitive is a rocksdb-js follow-on.
 
@@ -234,11 +230,86 @@ Four coupled mechanisms guard the backup/restore surface. They are easy to break
 
 - **rocksdb-js's `.backup.lock` covers only the engine files.** Harper's blob snapshots (`blobs/<id>/`) and completion manifests (`manifests/<id>.json`) live beside them and are written and removed by Harper code the binding knows nothing about, so a `purge_backups` could remove a blob snapshot out from under a `create_backup` that was still finalizing (harper#2031). Every Harper-managed mutation of a repository therefore takes a **Harper-level management lock** (`withBackupRepositoryLock`) before any engine call that takes `.backup.lock`, and a create holds it across `db.backup()` _and_ finalization: the whole create is one critical section, so no purge can land inside it. It waits rather than failing (30s, then 409), and a holder that dies releases it with its process. The cost is that maintenance stalls behind a multi-gigabyte create — the earlier arrangement left `db.backup()` outside the lock to avoid exactly that, and paid for it by making `finalizeBackup`'s existence check load-bearing rather than defence in depth. That check (`assertBackupStillPresent`) stays, now guarding only writers outside this protocol — an older binary, or a direct binding call — because a manifest and blob snapshot published for engine files that are gone is a backup that lists and verifies with nothing to restore.
 - **`purge_backups` names the ids it will remove before the binding removes them.** The management lock excludes every Harper writer, so the listing it takes is exactly what the binding will see, and `backups.purge` keeps the newest `keepCount` by id — so the departing ids can be named, checked against the pins, and then removed by one bulk call. That set is sorted by `backupId` rather than sliced off the listing as returned: it gates pin protection, so it must not rest on the documented list order holding.
-- **A pin's lifetime is its restore's claim plus the restoring marker's lifetime.** A pin names the database directory it protects and counts only while a restore holds that directory's lock or it still carries a marker (`pinIsLive`). Together those cover exactly when a restore is running (claimed, verifying, then marked) or waiting to be rerun, which is exactly when its source must survive, so the two live and die together: a process killed mid-restore leaves both and the rerun clears both, while one killed between clearing the marker and releasing the pin leaves a pin that is ignored and swept the next time anything looks. This is why pins carry no owner id, no expiry and no boot sweep: each is a second answer to when a pin ends, and a pin that outlives the marker it belongs to 409s every later delete forever. A pin is not what proves a marked `target_database` is this source's own debris: the marker's third line records its source (`source <sha256 of the resolved repository path>` — a hash, because markers are readable by anyone with the data directory), and `assertTargetClaimable` admits a non-empty marked target only when that line names this repository. An intact marker is never rewritten, so an interrupted restore keeps its own source. Only a marker written before that line existed falls back to this repository's pin on the target — the one case where a pin stranded past its marker still vouches for a later, unrelated one. A restore takes the restore lock _before_ pinning, so only the attempt that will actually run touches the pin, and the pin id is derived from the target directory so two attempts cannot collide. The existence check and the pin installation are one step under the management lock: checking after pinning let a failed rerun replace a good claim with one naming nothing.
+- **A pin's lifetime is its restore's claim plus the restoring marker's lifetime.** A pin names the database directory it protects and counts only while a restore holds that directory's lock, it still carries a marker, or a restore receipt names it (`pinIsLive`) — the receipt is what keeps a restart restore's source pinned across the restart, when there is neither. Together those cover exactly when a restore is running (claimed, verifying, then marked) or waiting to be rerun, which is exactly when its source must survive, so the two live and die together: a process killed mid-restore leaves both and the rerun clears both, while one killed between clearing the marker and releasing the pin leaves a pin that is ignored and swept the next time anything looks. This is why pins carry no owner id, no expiry and no boot sweep: each is a second answer to when a pin ends, and a pin that outlives the marker it belongs to 409s every later delete forever. A pin is not what proves a marked `target_database` is this source's own debris: the marker's third line records its source (`source <sha256 of the resolved repository path>` — a hash, because markers are readable by anyone with the data directory), and `assertTargetClaimable` admits a non-empty marked target only when that line names this repository. A claim the ownership check admitted re-publishes a marker naming another repository with its own, so an interruption leaves a marker its own rerun can prove; an in-place restore is always admitted. Only a marker written before that line existed falls back to this repository's pin on the target — the one case where a pin stranded past its marker still vouches for a later, unrelated one. A restore takes the restore lock _before_ pinning, so only the attempt that will actually run touches the pin, and the pin id is derived from the target directory so two attempts cannot collide. The existence check and the pin installation are one step under the management lock: checking after pinning let a failed rerun replace a good claim with one naming nothing.
 - **The restoring marker is an exclusion, not a check.** `withRestoreExclusion` holds the per-database restore lock in **shared** mode across the marker check _and_ the open, so a restore's exclusive acquire cannot succeed while any opener holds it and no opener can begin under a restore, while readers never exclude each other. `checkRestoreState` probes shared for the same reason: an exclusive probe answers "is a restore holding this?" by conflicting with every other reader, so a marked database being rescanned on several threads could read as `in-progress` on all of them. The guard runs for every directory the startup scan considers, so on a root Harper cannot write to (`EACCES`/`EPERM`/`EROFS`, or the binding's untyped equivalent) it degrades to the marker check alone and warns once per root — one unwritable root must not take down the rest of the scan. Every other failure propagates: a transient `EMFILE` is not a reason to open a database with no exclusion at all, and failing loudly is recoverable where a silent unguarded open is not. The exclusion is taken only around an engine open; a root already in the engine map is skipped, because a restore must close the live handle first regardless and holding the lock through every rescan would make routine scans collide with drop and restore.
 - **The marker itself is published temp → fsync → rename → parent fsync, and an intact one is never rewritten.** `beginRestore` used to open it with `'w'`, truncating before the name was written, and `scanBlockedRestores` skips a marker whose first line is empty — so a crash during a _recovery_ attempt could unblock a half-purged database. "Intact" means the first line equals the database directory name: a torn name leaves a prefix that resolves to a different metadata key and blocks nothing. `preexisting` is sampled while holding the lock, or a restore that waited out an earlier one inherits the earlier run's reading and can clear a marker that run needed.
 
 The work items are tracked under harper#2632.
+
+## Restore publication: receipts, the restore child, and the publication boundary (`dataLayer/restorePublication.ts`, `dataLayer/restoreIntent.ts`)
+
+Every restore route — online, offline, and the restart route's startup hook — publishes through one
+protocol, because "the files were copied" was never proof that the restored generation is usable.
+
+- **Process boundary.** The parent (job worker, CLI process, or the main thread at startup) owns the
+  reservation (restore lock, marker), pins, the membership lock, every durable decision and
+  publication. The restore child (`restoreChild.ts`, run by `runRestoreChild`) does verify → probe →
+  purge → blobs → stamp → prove → close and returns bounded evidence; a native abort or heap
+  exhaustion while decoding untrusted data costs the child. The child never takes or releases the
+  parent's locks. It takes the instance slot (one restore, import or verification child at a time,
+  CLI included) and the target's `<key>.child.lock`, then waits for `authorize` and re-reads the
+  receipt: a child that outlived its parent, or whose receipt names another attempt, exits
+  untouched. `acquireRestoreLock` refuses while that child lock is held, so no claim — drop
+  included — can purge under a live child's handles. The OS releases both locks on any death.
+- **Receipts (`restoreReceipt.ts`).** Before anything destructive, every route writes a receipt
+  (`<key>.intent`) under the target's lock; `committed` is written, with the evidence, before the
+  marker is cleared, and the receipt is deleted last. Clearing the marker is the publication
+  boundary: before it a failure leaves the target blocked and rerunnable (marker, pin and an
+  `applying` receipt with `last_error`); after it the generation is live and is only finished —
+  marker, pins, job row, receipt — by the next claim (`finishOutstandingRestore`) or by startup,
+  never re-applied. A receipt is removed only by a holder whose `operation_id` matches. A receipt
+  that is not committed, or cannot be read, reserves its database exactly as a marker does
+  (`checkRestoreState` → `pending`).
+- **The proof.** Required column families come from a root-only open's `getRegistryStatus()` —
+  before any named open could create one — checked against `requiredStoreNames`, the same predicate
+  `initStores` opens by (`resources/databases.ts` `openRestoredGeneration`). Replay runs with
+  `policy: 'restore'`: no aged-log purge, and any skipped entry, torn transaction, unreadable log or
+  corrupt frame fails. `assessBlobReferences` decodes every record strictly; a reference with
+  neither a file nor a capture marker fails publication unless `accept_unverified_blobs`.
+- **Peers.** Every route refuses on a node with replication peers (`hdb_nodes` rows other than this
+  node, or `replication.routes`). Peer-adding operations hold `.replication-membership.lock` shared
+  for their whole run (`fenceMembershipChange`, applied in `chooseOperation`); a restore holds it
+  exclusive from its peer check to the boundary, so admitted changes drain first. An unknown inbound
+  peer cannot authenticate as a node, and the operation that gives it a row (`add_node_back`) runs
+  through `chooseOperation` too — a harper-pro fact this relies on.
+- **Restart route.** `on_restart` writes a `pending` receipt and pins its source (live through the
+  receipt), returns a `DeferredJobCompletion` so the job stays `IN_PROGRESS`, and restarts after
+  draining HTTP workers without replacements. `recoverRestoresAtStartup` runs once per process,
+  after `getTables()` and before any component — never from a worker-replacing reload, when the old
+  workers still hold the database. A pending attempt takes the pre-restore backup through
+  `createPreRestoreBackup`, the one backup allowed past the reservation and only for its own
+  operation; `pre_restore_for` in that backup's manifest lets a retry adopt it after a crash instead
+  of taking another. A failed attempt never exits; at `max_attempts` the receipt is `terminal`,
+  which `loadRootComponents` turns into `HARPER_SAFE_MODE` before any safe-mode check. A committed
+  receipt with no job row is finished from files alone before `system` loads (`bin/run.ts`), which
+  is what lets a crashed offline `system` restore finish. Directory fsync is a no-op where
+  unsupported (Windows); the evidence reports `durability: 'no-directory-fsync'` there.
+
+## `import_backup`: roots, staging and the import pipeline (`dataLayer/backupImport.ts`, `dataLayer/importChildCommands.ts`)
+
+- **Two roots.** Archives are read from `<backupsRoot>/<db>/.import/` (an operator mount, possibly
+  read-only); everything Harper writes goes to `<backupsRoot>/<db>/.staging/<importId>/`. Harper
+  creates either directory but only ever removes `<importId>` entries, since either may be a mount
+  point. A `source_file` is resolved by `realpath` and must stay inside `.import/`.
+- **Staging ownership.** An upload is spooled raw — no gzip or tar work on the serving thread —
+  into staging owned by the receiving thread, and handed to the import (owner rewritten) before the
+  job row exists; the main thread sweeps a dead thread's staging on its exit, and startup sweeps all
+  staging, since every earlier import job is dead by then.
+- **Everything else runs in the restore child**, whose slot is the one-import-at-a-time rule:
+  fetch (`safeFetch`, https only, address-pinned, redirects re-validated, URLs redacted to origin
+  and path), digest, tally, reserve the conversion peak in the ledger, extract through the entry
+  filter (`archiveExtraction.ts`: files and directories only, canonicalized-name collisions, entry
+  and size caps, a meter against gzip bombs), validate every transaction-log store strictly, prove
+  the catalogue's families, `db.backup()` into the repository, snapshot blobs by their recorded root
+  index, verify with the manifest still in memory, and write the completion manifest last — the
+  visibility gate `list_backups` reads — deleting the engine backup on any failure before it.
+- **The disk ledger (`diskLedger.ts`)** charges each device by its `statfs` id, never by path
+  prefix. A sample re-bases only when it is newer than both the previous sample and the last
+  charge, because a stale quota sample (re-read for up to ~90 s) cannot see bytes written after it.
+  `ENOSPC`/`EDQUOT` from the writer stays authoritative.
+- **Credentials.** S3 accepts only a reference to a `processEnv` secret, resolved by a thread that
+  holds custody (the main thread answers a job worker that does not) and handed to the child over
+  IPC; the plaintext is never in the job row or a log.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 
