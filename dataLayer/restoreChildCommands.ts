@@ -79,22 +79,43 @@ async function probeEngineLock(databaseName: string, databasePath: string): Prom
 	handle?.close();
 }
 
-export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
-	await assertBackupReadable(
-		args.backupDir,
-		args.backupId,
-		args.manifest,
-		args.sourceDatabase,
-		args.databaseName,
-		() => args.interrupted
-	);
-	if (args.probe) await probeEngineLock(args.databaseName, args.databasePath);
-	await backups.restore(args.backupDir, args.databasePath, { backupId: args.backupId, mode: 'purgeAllFiles' });
-	if (args.manifest.blobs) {
-		await restoreBlobSnapshot(args.backupDir, args.backupId, args.sourceDatabase, args.blobRoots, { durable: true });
-	}
-	await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
+/** Where an apply-and-prove failed: only `verify` and `probe` leave the target untouched. */
+export type RestorePhase = 'verify' | 'probe' | 'apply' | 'prove';
 
+async function inPhase<T>(phase: RestorePhase, run: () => Promise<T>): Promise<T> {
+	try {
+		return await run();
+	} catch (error: any) {
+		if (error && typeof error === 'object' && error.phase === undefined) error.phase = phase;
+		throw error;
+	}
+}
+
+export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
+	await inPhase('verify', () =>
+		assertBackupReadable(
+			args.backupDir,
+			args.backupId,
+			args.manifest,
+			args.sourceDatabase,
+			args.databaseName,
+			() => args.interrupted
+		)
+	);
+	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));
+	await inPhase('apply', async () => {
+		await backups.restore(args.backupDir, args.databasePath, { backupId: args.backupId, mode: 'purgeAllFiles' });
+		if (args.manifest.blobs) {
+			await restoreBlobSnapshot(args.backupDir, args.backupId, args.sourceDatabase, args.blobRoots, {
+				durable: true,
+			});
+		}
+		await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
+	});
+	return inPhase('prove', () => prove(args));
+}
+
+async function prove(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 	const generation = openRestoredGeneration(args.databasePath, args.databaseName);
 	let evidence: RestoreEvidence;
 	try {

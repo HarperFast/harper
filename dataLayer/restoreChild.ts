@@ -79,6 +79,7 @@ async function main(): Promise<void> {
 				name: error?.name,
 				message: error?.message ?? String(error),
 				statusCode: error?.statusCode,
+				phase: error?.phase,
 				cause: error?.cause?.message,
 			},
 			1

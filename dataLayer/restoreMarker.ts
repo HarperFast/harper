@@ -245,6 +245,7 @@ export function acquireRestoreLock(dbPath: string): RestoreLock {
 	mkdirSync(metaDir, { recursive: true });
 	if (createMetaDir) fsyncDirectory(dirname(metaDir));
 	const token = tryFileLock(restoreLockPath(dbPath));
+	if (token !== 0) assertNoRestoreChild(dbPath, token);
 	if (token === 0) {
 		// flock reports contention, not who holds it, and every open holds this shared for its duration
 		// — so naming a restore here would send the operator hunting one that need not exist.
@@ -255,6 +256,31 @@ export function acquireRestoreLock(dbPath: string): RestoreLock {
 		throw error;
 	}
 	return { token, dbPath, preexisting: false };
+}
+
+export const RESTORE_CHILD_LOCK_SUFFIX = '.child.lock';
+
+/**
+ * A restore child takes this lock for its whole life, and the OS drops it only when the child is gone.
+ * Its parent's exclusive restore lock does not outlive the parent, so a claim checks this too: a
+ * child that outlived a dead parent must never find its target purged or claimed under its handles.
+ */
+export function restoreChildLockPath(dbPath: string): string {
+	return restoreMetaFilePath(dbPath, RESTORE_CHILD_LOCK_SUFFIX);
+}
+
+function assertNoRestoreChild(dbPath: string, heldToken: number): void {
+	const childToken = tryFileLock(restoreChildLockPath(dbPath));
+	if (childToken !== 0) {
+		fileLockRelease(childToken);
+		return;
+	}
+	fileLockRelease(heldToken);
+	const error: any = new Error(
+		`Cannot claim the database at ${dbPath}: a restore process for it is still running; retry once it exits`
+	);
+	error.statusCode = 409;
+	throw error;
 }
 
 /**
@@ -337,7 +363,7 @@ export function readRestoringMarkerSource(dbPath: string): string | undefined {
  */
 export function claimRestore(
 	dbPath: string,
-	beforePublishMarker?: (preexisting: boolean) => void,
+	beforePublishMarker?: (preexisting: boolean, lock: RestoreLock) => void,
 	sourceDir?: string
 ): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
@@ -353,9 +379,16 @@ export function claimRestore(
 			error.statusCode = 409;
 			throw error;
 		}
-		beforePublishMarker?.(lock.preexisting);
+		beforePublishMarker?.(lock.preexisting, lock);
 		if (lock.preexisting) {
-			if (!markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath, lock.source);
+			// A claim the callback admitted owns the target from here on, so a marker naming another
+			// repository is re-published with this one: an interruption must leave a marker this restore's
+			// rerun can prove is its own.
+			if (
+				!markerIsIntact(markerPath, dbPath) ||
+				(lock.source !== undefined && pathPresent(markerPath) && readRestoringMarkerSource(dbPath) !== lock.source)
+			)
+				publishRestoringMarker(dbPath, lock.source);
 			// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
 			// have been interrupted between the rename and this flush, which would leave the directory
 			// entry — the thing the startup scan reads — still only in the page cache.

@@ -3,10 +3,9 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { getHdbBasePath, getConfigOverrides } from '../utility/environment/environmentManager.ts';
-import { restoreMetaFilePath } from './restoreMarker.ts';
+import { restoreChildLockPath } from './restoreMarker.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
-export const RESTORE_CHILD_LOCK_SUFFIX = '.child.lock';
 const RESTORE_CHILD_SLOT_FILE = '.restore-child.lock';
 const OUTPUT_CAP_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
@@ -45,7 +44,7 @@ export type ChildToParent =
 	| { type: 'ready'; pid: number }
 	| { type: 'refused'; reason: 'busy' | 'target-busy' }
 	| { type: 'result'; result: any }
-	| { type: 'error'; name?: string; message: string; statusCode?: number; cause?: string };
+	| { type: 'error'; name?: string; message: string; statusCode?: number; phase?: string; cause?: string };
 
 export interface RestoreChildOptions {
 	/** The database directory the child will work on; its child-lifetime lock is taken by the child. */
@@ -63,10 +62,6 @@ export class RestoreChildError extends Error {
 		this.name = 'RestoreChildError';
 		if (statusCode) this.statusCode = statusCode;
 	}
-}
-
-export function restoreChildLockPath(databasePath: string): string {
-	return restoreMetaFilePath(databasePath, RESTORE_CHILD_LOCK_SUFFIX);
 }
 
 function childScriptPath(): string {
@@ -181,10 +176,11 @@ export function runRestoreChild<T = any>(
 		child.on('exit', (code, signal) => {
 			if (outcome?.type === 'result' && code === 0) return settle(undefined, outcome.result);
 			if (outcome?.type === 'error') {
-				const error =
+				const error: any =
 					outcome.statusCode && outcome.statusCode < 500
 						? new ClientError(outcome.message, outcome.statusCode)
 						: new RestoreChildError(outcome.message, outcome.statusCode);
+				if (outcome.phase) error.phase = outcome.phase;
 				return settle(error);
 			}
 			const tail = stderr().trim().split('\n').slice(-5).join('\n');
