@@ -152,13 +152,11 @@ describe('Array-valued property scoping', () => {
 
 	describe('unsupported chain forms fail loudly (never silently drop a leg)', () => {
 		it('or-chained conditions (|=) are rejected', async function () {
-			// harper#2435: a plain Error whose message miscounts one chained condition as
-			// "multiple"; should be a ClientError naming or-chaining as unsupported
 			await assert.rejects(
 				(async () => {
 					for await (const _ of searchRest('sizes=ge=175|=le=180'));
 				})(),
-				/chained conditions/i
+				(error) => error.statusCode === 400 && /\|= is not supported/.test(error.message)
 			);
 		});
 		it('non-range chained comparators are rejected', async function () {
@@ -169,15 +167,12 @@ describe('Array-valued property scoping', () => {
 				/chained/i
 			);
 		});
-		it('a second chained leg is rejected at parse time', async function () {
-			// harper#2435: after a chained leg the parser state falls back to the tokenizer
-			// that splits `&=`, so REST clients get this misleading SyntaxViolation and the
-			// planner's multiple-chained-conditions error is unreachable
+		it('a second chained leg parses and is rejected by the planner', async function () {
 			await assert.rejects(
 				(async () => {
 					for await (const _ of searchRest('sizes=ge=170&=le=180&=ge=171'));
 				})(),
-				/attribute must be specified before equality comparator/
+				(error) => error.statusCode === 400 && /more than one condition/.test(error.message)
 			);
 		});
 	});
