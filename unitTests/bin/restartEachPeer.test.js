@@ -193,6 +193,21 @@ describe('a rolling restart of each peer', function () {
 		);
 	});
 
+	it('halts at a peer whose session closed with its request pending', async () => {
+		dispatchAnswers['peer-a'] = [new Error('Connection closed  1006')];
+		await assert.rejects(restartEachPeer(peers, request, TIMING), (error) => {
+			assert.deepStrictEqual(
+				error.result.replicated.map(({ node }) => node),
+				['peer-a', 'peer-b', 'peer-c']
+			);
+			return true;
+		});
+		assert.deepStrictEqual(
+			sent.map((s) => s.node),
+			['peer-a']
+		);
+	});
+
 	it('halts at a peer whose restart may have started, since its outcome is unknown', async () => {
 		dispatchAnswers['peer-a'] = [new Error(CLOSED_FIRST('restart_service'))];
 		await assert.rejects(restartEachPeer(peers, request, TIMING), (error) => {

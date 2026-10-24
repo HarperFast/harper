@@ -218,9 +218,10 @@ const PEER_RESTART_TIMING = {
 // text, and 5.3 peers word it "too long of queue".
 const WRITE_QUEUE_BACK_PRESSURE = /Outstanding write transactions have too long (?:a|of) queue/;
 // Rejections known to precede the request reaching the peer. Anything else with a socket error code, or the
-// replicator's "outcome there is unknown" (a timeout, or the connection closing first), may have started it.
+// replicator's "outcome there is unknown" (a timeout, or the connection closing first) or the session's code-less
+// "Connection closed" rejection of requests pending at close, may have started it.
 const NEVER_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
-const OUTCOME_UNKNOWN = /outcome there is unknown/;
+const OUTCOME_UNKNOWN = /outcome there is unknown|^Connection closed\b/;
 const PEER_JOB_PENDING: string[] = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
 
 /**
