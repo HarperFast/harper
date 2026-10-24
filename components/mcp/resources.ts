@@ -3,6 +3,8 @@ import * as openApiRuntimeModule from '../../resources/openApi.ts';
 import * as transactionRuntimeModule from '../../resources/transaction.ts';
 import * as RequestTargetRuntimeModule from '../../resources/RequestTarget.ts';
 import * as ServerRuntimeModule from '../../server/Server.ts';
+import * as liveSubscriptionAuthRuntimeModule from '../../server/liveSubscriptionAuth.ts';
+import * as userRuntimeModule from '../../security/user.ts';
 /**
  * MCP resources capability — implements `resources/list`, `resources/read`,
  * and `resources/templates/list` per MCP §server/resources (rev 2025-06-18).
@@ -457,8 +459,8 @@ async function subscribeToCustomResource(
 	user: AuthedUser,
 	profile: McpProfile
 ): Promise<ResourceSubscription | null> {
-	const { contextStorage } = (transactionModule ??= require('../../resources/transaction'));
-	const stream = await acquireChangeStream(uri, { ...contextStorage.getStore(), user }, () =>
+	const { contextStorage } = transactionRuntimeModule;
+	const stream = await acquireChangeStream(uri, { ...contextStorage.getStore(), user: user as any }, () =>
 		subscribe(params, { user, profile })
 	);
 	if (!stream) return null;
@@ -482,7 +484,7 @@ async function acquireChangeStream(
 	context: object,
 	call: () => unknown
 ): Promise<ResourceChangeStream | null> {
-	const { transaction } = (transactionModule ??= require('../../resources/transaction'));
+	const { transaction } = transactionRuntimeModule;
 	let acquired: unknown;
 	let result: unknown;
 	try {
@@ -596,13 +598,9 @@ function release(uri: string, teardown: () => unknown): void {
 	}
 }
 
-let transactionModule: typeof import('../../resources/transaction.ts') | undefined;
-let liveSubscriptionAuthModule: typeof import('../../server/liveSubscriptionAuth.ts') | undefined;
-let securityUser: typeof import('../../security/user.ts') | undefined;
-
 // One function for every custom subscription, so a recheck pass memoizes one lookup per username.
 const resolveUser = (_scope: unknown, username: string) =>
-	securityUser!.findAndValidateUser(username, undefined, false) as Promise<AuthedUser>;
+	userRuntimeModule.findAndValidateUser(username, undefined, false) as Promise<AuthedUser>;
 
 /**
  * Tie a custom subscription to its principal's lifetime: revoked at bearer-token
@@ -614,9 +612,8 @@ const resolveUser = (_scope: unknown, username: string) =>
 async function trackPrincipalLifetime(subscription: ResourceSubscription, user: AuthedUser): Promise<void> {
 	const username = user?.username;
 	if (!username) return;
-	const { registerLiveSubscription } = (liveSubscriptionAuthModule ??= require('../../server/liveSubscriptionAuth'));
-	securityUser ??= require('../../security/user') as typeof import('../../security/user.ts');
-	const { hasRecordProvenance, isCurrentUser } = securityUser;
+	const { registerLiveSubscription } = liveSubscriptionAuthRuntimeModule;
+	const { hasRecordProvenance, isCurrentUser } = userRuntimeModule;
 	const principal = user as User;
 	const handle = registerLiveSubscription({
 		username,

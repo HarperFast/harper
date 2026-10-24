@@ -14,7 +14,7 @@ const { contextStorage } = require('#src/resources/transaction');
 const { _liveSubscriptionCount, _notifyUserChange } = require('#src/server/liveSubscriptionAuth');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 const { findAndValidateUser } = require('#src/security/user');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../../waitFor');
 
 const USER = { username: 'mcp_sub_user', role: { permission: { super_user: false } } };
