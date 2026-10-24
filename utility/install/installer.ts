@@ -33,7 +33,7 @@ const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
 import { closeDatabase, databases } from '../../resources/databases.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
-import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 
 const HDB_PROMPT_MSG = (msg) => chalk.magenta.bold(msg);
 const LINE_BREAK = os.EOL;
