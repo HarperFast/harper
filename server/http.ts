@@ -21,6 +21,7 @@ import {
 } from './threads/isolatedApplications.ts';
 import { claimListener, listenerOwner, shouldBindListenerHere } from './threads/workerPools.ts';
 import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
+import { allowedSourcesFor, watchNetworkAccess } from '../security/networkAccess.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage, STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
@@ -201,7 +202,11 @@ export function cleanupUdsFiles() {
 	}
 }
 
-/** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
+/**
+ * Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server.
+ * Returns whether the file now holds it. A server in a network access scope writes nothing until that
+ * scope's allowlist has been read, so a restricted port is never advertised as unrestricted.
+ */
 export function writeUdsMetadata(
 	yamlPath: string,
 	port: number | string,
@@ -209,7 +214,9 @@ export function writeUdsMetadata(
 	protocol?: string,
 	mtlsForwarding = true,
 	route: { application: string; hosts: string[] } | undefined = isolatedApplicationRoute()
-) {
+): boolean {
+	const allowedSources = secureServer.networkAccessScope && allowedSourcesFor(secureServer.networkAccessScope);
+	if (secureServer.networkAccessScope && !allowedSources) return false;
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
 	// Routing identity, separate from certificate coverage: a proxy sends this application's hosts to
@@ -233,6 +240,11 @@ export function writeUdsMetadata(
 	if (mtlsForwarding && secureServer.verifiesClientCerts) {
 		yaml += `mtls: true\n`;
 		if (secureServer.mtlsRequired) yaml += `mtlsRequired: true\n`;
+	}
+	// absent = unrestricted
+	if (allowedSources?.length > 0) {
+		yaml += `allowedSources:\n`;
+		for (const cidr of allowedSources) yaml += `  - ${JSON.stringify(cidr)}\n`;
 	}
 	yaml += `certificates:\n`;
 	if (contexts?.size > 0) {
@@ -267,9 +279,21 @@ export function writeUdsMetadata(
 	}
 	try {
 		atomicWriteFile(yamlPath, yaml, { maxRetries: 0 });
+		return true;
 	} catch (error) {
 		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
+		return false;
 	}
+}
+
+export function publishUdsMetadata(ready: Promise<unknown>, secureServer: any, writeMetadata: () => boolean) {
+	// A certificate change arms the watch too, so a scoped mirror is still published after a boot TLS
+	// pass that rejected `ready`; re-watching republishes.
+	const publish = secureServer.networkAccessScope
+		? () => watchNetworkAccess(secureServer.networkAccessScope, writeMetadata)
+		: writeMetadata;
+	ready.then(publish, (error) => harperLogger.error('TLS initialization failed for a UDS mirror', error));
+	secureServer.secureContextsListeners?.push(publish);
 }
 
 export function ensureSocketsDirectory(): string | undefined {
@@ -1031,6 +1055,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.appliedCiphers = options.ciphers ?? null;
 			server.verifiesClientCerts = Boolean(mtls || isMtls);
 			server.mtlsRequired = Boolean(mtlsRequired);
+			if (isOperationsServer) server.networkAccessScope = 'operations';
 			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
@@ -1105,12 +1130,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
 			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
 			// socket's bind outcome, so without this check a failed mirror could still get advertised.
-			const writeMetadata = () => {
-				if (!failedUdsPaths.has(udsPath))
-					writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
-			};
-			options.SNICallback.ready.then(writeMetadata);
-			server.secureContextsListeners.push(writeMetadata);
+			const writeMetadata = () =>
+				failedUdsPaths.has(udsPath) || writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			publishUdsMetadata(options.SNICallback.ready, server, writeMetadata);
 
 			// Optional cleartext HTTP/2 mirror (spike: HARPER_H2C_UDS=1). A separate socket
 			// (`<worker>-<port>-h2.sock`) so a fronting proxy can route by negotiated ALPN:
@@ -1142,11 +1164,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				SERVERS[udsPathH2] = h2Front;
 				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
 
-				const writeMetadataH2 = () => {
-					if (!failedUdsPaths.has(udsPathH2)) writeUdsMetadata(yamlPathH2, port, server, 'h2');
-				};
-				options.SNICallback.ready.then(writeMetadataH2);
-				server.secureContextsListeners.push(writeMetadataH2);
+				const writeMetadataH2 = () => failedUdsPaths.has(udsPathH2) || writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				publishUdsMetadata(options.SNICallback.ready, server, writeMetadataH2);
 			}
 		}
 	}
@@ -1189,6 +1208,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 					headers: request.headers.asObject,
 					body: request.body, // stream; inject() consumes it as the payload
 					user: request.user,
+					ip: isOperationsServer ? request.ip : undefined,
 				});
 				const respHeaders = new Headers();
 				for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -1560,6 +1580,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 			const tlsSelector = createTLSSelector(usageType ?? 'server', mtls);
 			// Create a pseudo-server object so the TLS selector can store secureContexts on it
 			const pseudoServer: any = { ports: [port], secureContexts: null, secureContextsListeners: [] };
+			if (isOperationsServer) pseudoServer.networkAccessScope = 'operations';
 			tlsSelector.initialize(pseudoServer);
 			config.tlsSelector = tlsSelector;
 			config.pseudoServer = pseudoServer;
@@ -1601,12 +1622,22 @@ const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
  */
 function injectToFastify(
 	fastify: any,
-	req: { method: string; url: string; headers: Record<string, any>; body?: Buffer | Readable; user?: any }
+	req: {
+		method: string;
+		url: string;
+		headers: Record<string, any>;
+		body?: Buffer | Readable;
+		user?: any;
+		ip?: string;
+	}
 ) {
 	const headers: Record<string, any> = {};
 	for (const key in req.headers) {
-		if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = req.headers[key];
+		const lowerKey = key.toLowerCase();
+		if (lowerKey !== INTERNAL_USER_HEADER && lowerKey !== terms.INTERNAL_CLIENT_ADDRESS_HEADER)
+			headers[key] = req.headers[key];
 	}
+	if (req.ip) headers[terms.INTERNAL_CLIENT_ADDRESS_HEADER] = req.ip;
 	// Both callers pass already-lowercased header keys (uWS lowercases at the protocol level →
 	// RequestHeaders.asObject; Bun's webRequest.headers.forEach yields lowercase), so the literal
 	// 'authorization' lookup is reliable — the pre-auth user is only forwarded when the client sent
@@ -1639,6 +1670,7 @@ export async function bunDelegateToNodeServer(
 				headers,
 				body,
 				user: bunRequest?.user,
+				ip: bunRequest?.isOperationsServer ? bunRequest.ip : undefined,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
