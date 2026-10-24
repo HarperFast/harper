@@ -5164,8 +5164,9 @@ export function makeTable(options): TableResourceClass {
 							// would find it and skip the write as "already applied" when the record was never committed.
 							// A recommit of the same transaction survived that skip only because the old write batch
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
-							// For a write whose identity is not its key this finds only an entry `local` keyed by its
-							// explicit value before every local key was minted; a hit still needs both stored clocks to match.
+							// For a write whose identity is not its key this finds an entry keyed at its explicit value: one
+							// written before every local key was minted, or one whose minted key equals it. A hit still needs
+							// both stored clocks to match.
 							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
 								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
