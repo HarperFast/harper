@@ -31,14 +31,17 @@ if (require.main === module) {
 		// installed before the database opens, since opening it is what runs the boot replay
 		const { directCommitSync } = DatabaseTransaction.prototype;
 		DatabaseTransaction.prototype.directCommitSync = function () {
+			let commit;
 			if (this.isReplay) {
-				replayCommits.push({ timestamp: this.timestamp, writes: this.writes.length });
+				replayCommits.push((commit = { timestamp: this.timestamp, writes: this.writes.length }));
 				if (mode === 'replay-stale' && [1000, 9000].includes(replayCommits.length)) {
 					global.gc();
 					heapSamples.push(process.memoryUsage().heapUsed);
 				}
 			}
-			return directCommitSync.call(this);
+			const result = directCommitSync.call(this);
+			if (commit) commit.succeeded = true;
+			return result;
 		};
 	}
 	const { table } = require('#src/resources/databases');
@@ -145,7 +148,7 @@ if (require.main === module) {
 			writeFileSync(
 				markerPath,
 				JSON.stringify({
-					replayed: replayCommits.some(({ timestamp }) => timestamp === headKey),
+					replayed: replayCommits.some(({ timestamp, succeeded }) => timestamp === headKey && succeeded),
 					version: entry.version === version,
 					headRef: entry.additionalAuditRefs?.some((ref) => ref.version === headKey) ?? false,
 					n: (await Tbl.get('x')).n,
