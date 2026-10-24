@@ -98,15 +98,7 @@ export function executeConditions(
 			const nextResults = executeCondition(condition);
 			results = results.concat(nextResults);
 		}
-		const returnedIds = new Set();
-		const deduped = results.filter((entry) => {
-			const id = entry.key ?? entry;
-			if (returnedIds.has(id))
-				// skip duplicate ids
-				return false;
-			returnedIds.add(id);
-			return true;
-		});
+		const deduped = distinctKeys(results);
 		// Record guards must hold on the OR union too — loading each surviving record and dropping the
 		// ones the guards reject (transformToEntries loads the record to evaluate a filter). Without this
 		// a row filter would be bypassed by any OR query.
@@ -477,9 +469,39 @@ export class CandidateKeySet {
 		}
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
+	addIfAbsent(primaryKey: Id): boolean {
+		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
+			if (this.has(primaryKey)) return false;
+			this.add(primaryKey);
+			return true;
+		}
+		if (typeof primaryKey === 'bigint') {
+			const number = Number(primaryKey);
+			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
+			this.#holdsBigInt = true;
+		}
+		const identity = writeKeyId(primaryKey);
+		if (this.#encoded.has(identity)) return false;
+		this.#encoded.add(identity);
+		return true;
+	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
+}
+
+export function distinctKeys(entries: any): any {
+	if (Array.isArray(entries)) {
+		const returned = new CandidateKeySet();
+		return entries.filter((entry) => returned.addIfAbsent(entry.key ?? entry));
+	}
+	const distinct = new ExtendedIterable();
+	(distinct as any).iterate = (options) => {
+		const returned = new CandidateKeySet();
+		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
+		return entries.map((entry) => (returned.addIfAbsent(entry.key ?? entry) ? entry : SKIP)).iterate(options);
+	};
+	return distinct;
 }
 
 interface CandidateKeyScan {
@@ -966,6 +988,7 @@ export function searchByIndex(
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
+	const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
 	if (value instanceof Date) value = value.getTime();
 	if (searchCondition.negated) {
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
@@ -976,7 +999,7 @@ export function searchByIndex(
 	} else if (fullTextMode) {
 		start = true;
 	} else
-		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
+		switch (resolvedComparator) {
 			case 'lt':
 				start = true;
 				end = value;
@@ -1019,8 +1042,8 @@ export function searchByIndex(
 				end = value[1];
 				if (end instanceof Date) end = end.getTime();
 				inclusiveEnd =
-					(comparator as any) === 'gele' || (comparator as any) === 'gtle' || (comparator as any) === 'between';
-				exclusiveStart = (comparator as any) === 'gtlt' || (comparator as any) === 'gtle';
+					resolvedComparator === 'gele' || resolvedComparator === 'gtle' || resolvedComparator === 'between';
+				exclusiveStart = resolvedComparator === 'gtlt' || resolvedComparator === 'gtle';
 				break;
 			case 'equals':
 			case undefined:
@@ -1669,12 +1692,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// if there is a single id we are looking for, we can create a new search condition that the
 								// attribute comparator could eventually use to create a recursive id set
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
-								for (const id of nextFilter.idFilter.idSet) {
-									searchCondition = {
-										attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-										value: id,
-									};
-								}
+								searchCondition = {
+									attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+									value: nextFilter.idFilter.onlyId,
+								};
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
 								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
 							} else
@@ -1852,13 +1873,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 							(id) => Table.primaryStore.getSync(id)[(recordFilter as any).to]
 						);
 					} else {
-						matchingIds = (searchResults as any).map(flattenKey);
+						matchingIds = searchResults as any;
 					}
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
-					const idSet = new Set(matchingIds);
-					recordFilter.idFilter = (id) => idSet.has(flattenKey(id));
+					const idSet = new CandidateKeySet();
+					let firstId: Id | undefined;
+					for (const id of matchingIds) {
+						if (idSet.size === 0) firstId = id;
+						idSet.add(id);
+					}
+					recordFilter.idFilter = (id) => idSet.has(id);
 					(recordFilter.idFilter as any).idSet = idSet;
+					// the set holds encoded identities; the singleton relationship lookup needs the key itself
+					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
 				}
 			}
 			return matches;
