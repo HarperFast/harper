@@ -5541,6 +5541,9 @@ export function makeTable(options): TableResourceClass {
 							// is the backstop).
 							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
 								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+						} else if (precedesExisting === 0 && !priorWritesSkipped(write)) {
+							// An earlier write of this transaction restamped the head without staging it (a publish or relocate):
+							// the tie is program order, so this write applies as an in-order one does.
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -5548,7 +5551,19 @@ export function makeTable(options): TableResourceClass {
 							write.skipped = true;
 							return writeCommit(false);
 						} else {
-							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
+							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
+							// Without a log, a tie with the head or a listed ref is the only sign this write was already applied,
+							// and an older write must not give a deleted or publish-only head a record.
+							if (
+								precedesExisting === 0 ||
+								existingRecord == null ||
+								(existingEntry.receivedIdentityRefs &&
+									priorWritesSkipped(write) &&
+									auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+							) {
+								write.skipped = true;
+								return writeCommit(false);
+							}
 							incrementalUpdateToApply = remainingAgainstRecord(recordUpdate, existingRecord);
 							logger.debug?.('Rebuilding update without audit:', incrementalUpdateToApply);
 							if (!incrementalUpdateToApply) {
@@ -5558,6 +5573,14 @@ export function makeTable(options): TableResourceClass {
 							// fields dropped from the update leave their pre-saved blobs unreferenced; the commit's
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
+							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
+							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
+							// only a commutative op applies again on re-delivery; the plain keys merged here are dropped then
+							if (
+								commutativeOpsOf(incrementalUpdateToApply) &&
+								!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+							)
+								(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
@@ -9672,6 +9695,13 @@ export function makeTable(options): TableResourceClass {
 			if (!prior.skipped) return;
 		}
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
+	}
+
+	function priorWritesSkipped(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return false;
+		}
+		return true;
 	}
 
 	// The commit base is the committed record unless another write to the key already saved without being
