@@ -29,6 +29,7 @@ Index of the design notes for the harper core: one line per note (closely relate
 - [Historical record reconstruction (`getRecordAtTime`)](resources/DESIGN.md#historical-record-reconstruction-getrecordattime) — A put or delete newer than the requested time stops patch reversal; the state is rebuilt forward from older history.
 - [Path routing & parameterised routes](resources/DESIGN.md#path-routing--parameterised-routes) — How resource paths and route parameters resolve.
 - [Persisted relationship catalog](resources/DESIGN.md#persisted-relationship-catalog) — Where relationship definitions are stored and rebuilt.
+- [A relationship read is authorized against the related table](resources/DESIGN.md#a-relationship-read-is-authorized-against-the-related-table) — Selects, conditions and sorts through `@relationship` need the role's read on the related table and its attributes, checked at each API's entry point.
 - [Typed, discoverable resources (code-first schema + request contract)](resources/DESIGN.md#typed-discoverable-resources-code-first-schema--request-contract) — Declaring schema and request contracts from code.
 - [Conventions](resources/DESIGN.md#conventions) — Resolved body and static override contracts; relationship accessor and join contracts.
 - [RecordObject prototype and entryMap](resources/DESIGN.md#recordobject-prototype-and-entrymap) — Records get a per-encoder `RecordObject` prototype; storage metadata lives in `entryMap`. Never copy a record other code still mutates.

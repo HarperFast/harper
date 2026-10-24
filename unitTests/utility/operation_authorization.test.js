@@ -701,6 +701,50 @@ describe('Test operation_authorization', function () {
 			assert.equal(result.unauthorized_access.length, 0);
 		});
 
+		it('checks a path or sub-selection by its root attribute', function () {
+			const verifyRoot = (breedReadable) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, {
+					operation: 'search_by_conditions',
+					get_attributes: ['name', { name: 'breed', select: ['name'] }],
+					conditions: [{ search_attribute: ['breed', 'name'], search_type: 'equals', search_value: 'x' }],
+				});
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: breedReadable, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			};
+			assert.equal(verifyRoot(true), null);
+			assert.deepStrictEqual(verifyRoot(false).invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+		});
+
+		it('checks the select alias the search handlers read in place of get_attributes', function () {
+			const verifySelect = (select) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, { operation: 'search_by_hash', hash_values: [1], get_attributes: ['name'], select });
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: false, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return { req_json, result: op_auth.verifyPerms(req_json, search.searchByHash.name) };
+			};
+			const { req_json, result } = verifySelect(['name', 'breed']);
+			assert.equal(result instanceof PermissionResponseObject, true);
+			assert.deepStrictEqual(result.invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+			assert.deepStrictEqual(req_json.get_attributes, ['name', 'breed']);
+			assert.equal('select' in req_json, false);
+			assert.equal(verifySelect(['name']).result, null);
+		});
+
 		it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
 			let req_json = getRequestJson(TEST_JSON);
 			let perms = clone(PERMISSION_BASE);

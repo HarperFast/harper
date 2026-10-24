@@ -980,10 +980,20 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			testUtils.setupTestDBPath();
 			setMainIsWorker(true);
 			await testUtils.ensureSystemTables();
+			const Parents = table({
+				table: 'ReauthParents',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
 			const Table = table({
 				table: 'ReauthDocs',
 				database: 'test',
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'value' },
+					{ name: 'parentId' },
+					{ name: 'parent', relationship: { from: 'parentId' }, definition: { tableClass: Parents } },
+				],
 			});
 			Docs = class extends Table {
 				subscribe() {
@@ -1110,6 +1120,53 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 				assert.strictEqual(narrowed.user, narrowedUser, 'a select written by authorization stays identity-only');
 				assert.notStrictEqual(selected.user, selectedUser, 'a caller’s select is rechecked on every tick');
+			} finally {
+				userModule.userChangeNotificationEpoch = originalEpoch;
+			}
+		});
+
+		it('rechecks a subscription filtered through a relationship on every tick, but not a scalar filter', async () => {
+			const role = readRole('filter_role');
+			role.permission.test.tables.ReauthParents = role.permission.test.tables.ReauthDocs;
+			await testUtils.seedUsers([{ username: 'filter_user', active: true, role }]);
+			const user = await resolve('filter_user');
+			let originalEnd;
+			class Tracked extends Docs {
+				subscribe() {
+					const subscription = super.subscribe();
+					originalEnd = subscription.end;
+					return subscription;
+				}
+			}
+			async function subscribeWhere(attribute) {
+				const context = { user, authorize: true };
+				const target = new RequestTarget('/topic');
+				target.id = 'topic';
+				target.conditions = [{ attribute, value: 'x' }];
+				const subscription = await Tracked.subscribe(target, undefined, context);
+				handles.push({ unregister: () => subscription.end() });
+				context.end = originalEnd;
+				return context;
+			}
+			const scalar = await subscribeWhere('value');
+			const related = await subscribeWhere(['parent', 'value']);
+			const originalEpoch = userModule.userChangeNotificationEpoch;
+			userModule.userChangeNotificationEpoch = () => 13;
+			try {
+				await _sweepNow();
+				const scalarUser = scalar.user;
+				const relatedUser = related.user;
+
+				await _tickNow();
+
+				assert.strictEqual(scalar.user, scalarUser, 'a scalar filter stays identity-only');
+				assert.notStrictEqual(related.user, relatedUser, 'a filter through a relationship is rechecked');
+
+				delete role.permission.test.tables.ReauthParents;
+				await testUtils.seedUsers([{ username: 'filter_user', active: true, role }]);
+				await _sweepNow();
+				assert.strictEqual(related.end.calls.length, 1, 'losing the related table ends it');
+				assert.strictEqual(scalar.end.calls.length, 0, 'a scalar filter keeps its subscription');
 			} finally {
 				userModule.userChangeNotificationEpoch = originalEpoch;
 			}
