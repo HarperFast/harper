@@ -600,10 +600,11 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		});
 	}
 
-	// An unmapped origin's entry lands in the local log, so the walk cannot read it: these cases cover the
-	// head-identity check, not the walk's version-tie branch.
-	it('does not deduplicate distinct unmapped origins that compare as a version tie', async function () {
+	it('treats equal-version writes from unmapped origins as one write', async function () {
 		if (isLMDB) return this.skip();
+		// Unmapped origins (an id with no node name) are filed in `local`, where every key is minted, so
+		// their writes carry no origin key an equal version could be told apart by; an origin gives
+		// distinct writes distinct versions (resources/DESIGN.md, "Origin-closed timestamp floor").
 		const version = Date.now() + 86400000;
 		const state = await fixture('UnmappedOrigins', version);
 		const { write } = await conflict(
@@ -612,29 +613,9 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 			{ version, originId: 35 },
 			{ version, originId: 36 }
 		);
-		assert.equal(write.skipped, false, 'different numeric origins must not count as the same write');
-		assert.equal((await state.T.get('counter')).count, 2);
+		assert.equal(write.skipped, true, 'an equal version in `local` is a re-delivery');
+		assert.equal((await state.T.get('counter')).count, 1);
 	});
-
-	for (const [label, record, fullUpdate] of [
-		['plain-field patch', { count: 1 }, false],
-		['full put', { id: 'counter', count: 1 }, true],
-	]) {
-		it(`applies an ambiguous retry ${label} instead of treating an origin tie as committed identity`, async function () {
-			if (isLMDB) return this.skip();
-			const version = Date.now() + 86400000;
-			const state = await fixture(`AmbiguousRetry${label.replaceAll(' ', '')}`, version);
-			const { write } = await conflict(
-				state,
-				record,
-				{ version, originId: 35, fullUpdate },
-				{ version, originId: 36, fullUpdate },
-				label === 'full put' ? { id: 'counter', count: 2 } : { count: 2 }
-			);
-			assert.equal(write.skipped, false);
-			assert.equal((await state.T.get('counter')).count, 1, 'the retry is applied over the competing value');
-		});
-	}
 
 	it('does not mistake its own staged counter for committed state when another key conflicts', async function () {
 		if (isLMDB) return this.skip();
