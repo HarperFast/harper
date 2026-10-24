@@ -11,8 +11,7 @@ const { transaction } = require('#src/resources/transaction');
 const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
 const { waitFor } = require('../waitFor.js');
 
-// Source fills that race a local write, on both storage engines: caching.test.js still skips LMDB
-// (harper#414).
+// caching.test.js skips LMDB (harper#414); these run on both engines.
 describe('Source fill racing a local write', function () {
 	this.timeout(20000);
 	const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -250,7 +249,6 @@ describe('Source fill racing a local write', function () {
 		assert(!(await auditOf(id)).includes('put:source ' + id));
 	});
 
-	// a publish restamps the record without staging one
 	it('keeps the version a publish the source makes to the key it is resolving', async function () {
 		const id = 'source-publishes';
 		const invalidated = await seedInvalidated(id);
@@ -289,8 +287,7 @@ describe('Source fill racing a local write', function () {
 			if (!isLMDB) this.skip();
 		});
 
-		// The fill's primary and audit puts must be staged inside the ifVersion block that conditions them on
-		// the version they replace: the block is one native write transaction, so nothing commits in between.
+		// the block is one native write transaction, so nothing commits between its condition and these puts
 		it('stages the primary and audit puts inside the version-conditioned block', async function () {
 			const id = 'batch-boundary';
 			const invalidated = await seedInvalidated(id);
@@ -347,8 +344,7 @@ describe('Source fill racing a local write', function () {
 			assert.equal(FillTable.primaryStore.getEntry(id).value.name, 'source ' + id);
 		});
 
-		// With the invalidation's audit entry pruned, the fill appends one under a newly assigned local time; the
-		// last assigned time it would otherwise be keyed by belongs to the other record's write.
+		// an appended entry is keyed by the last assigned time, which the other record's write took
 		it('appends the resolved audit entry under its own key when the invalidation entry is gone', async function () {
 			const id = 'append-audit';
 			const otherId = 'append-audit-other';
