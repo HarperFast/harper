@@ -224,10 +224,7 @@ const NEVER_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOS
 const OUTCOME_UNKNOWN = /outcome there is unknown|^Connection closed\b/;
 const PEER_JOB_PENDING: string[] = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
 
-/**
- * Restarts each peer in turn, one at a time (components/DESIGN.md, "A rolling restart job completes only if
- * every peer restarted"). A peer that may be restarting, or whose restart failed, halts the roll.
- */
+// See components/DESIGN.md, "A rolling restart job completes only if every peer restarted".
 async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART_TIMING) {
 	const replication = (global as any).server.replication;
 	const replicated = [];
@@ -275,7 +272,7 @@ async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART
 	return { replicated };
 }
 
-/** A peer's own error answer carries no code; a socket error does. */
+// A peer's own error answer carries no code; a socket error usually does, a session close does not.
 function mayHaveStarted(error: any, message: string) {
 	if (OUTCOME_UNKNOWN.test(message)) return true;
 	const code = error?.code;
