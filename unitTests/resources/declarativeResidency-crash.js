@@ -8,7 +8,7 @@ if (require.main === module) {
 	const terms = require('#src/utility/hdbTerms');
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, root);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(root, 'database'));
-	env.setProperty('replication_shards', [0, 1]);
+	env.setProperty('replication_shards', mode === 'replay-bad-config' ? [1] : [0, 1]);
 	env.setProperty('replication_shard', 0);
 	env.setProperty(terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 	mkdirSync(path.join(root, 'database'), { recursive: true });
@@ -72,6 +72,18 @@ if (require.main === module) {
 				} finally {
 					fs.readdirSync = readdir;
 				}
+			}
+			if (mode === 'replay-bad-config') {
+				let refused = false;
+				try {
+					getDatabases();
+				} catch (error) {
+					if (!/replication.shard/.test(error.message)) throw error;
+					refused = true;
+				}
+				if (!refused) await getDatabases()[database].CrashSlots.primaryStore.rootStore.flush();
+				writeFileSync(marker, JSON.stringify({ refused }));
+				process.exit(0);
 			}
 			const Table = getDatabases()[database].CrashSlots;
 			const rows = Object.fromEntries(

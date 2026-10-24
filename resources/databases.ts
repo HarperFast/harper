@@ -10,7 +10,7 @@ import {
 	sameResidencyPolicy,
 	type ResidencyPolicy,
 } from './residencyPolicy.ts';
-import { acquireResidencyMapFence, readResidencyMap } from './residencyMaps.ts';
+import { acquireResidencyMapFence, getResidencyMap, readResidencyMap } from './residencyMaps.ts';
 import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
@@ -1265,9 +1265,11 @@ function loadDatabaseCatalogs(): Databases {
 		}
 	}
 	// Declarative rows depend on the system snapshot, including its unflushed audit tail.
-	const replays = deferredResidencyReplays;
+	while (deferredResidencyReplays.length) {
+		deferredResidencyReplays[0]();
+		deferredResidencyReplays.shift();
+	}
 	deferredResidencyReplays = undefined;
-	for (const replay of replays) replay();
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
 		if (databaseUsesPreparedRoot(dbName)) continue;
@@ -1600,6 +1602,9 @@ function readRocksMetaDb(
 			if (!isReadOnlyMode() && !destination) {
 				const tables = databases[databaseName];
 				const replay = () => {
+					// A configuration refusal must happen before replay can skip entries or advance txn.state.
+					for (const Table of Object.values(tables))
+						if (Table.residency) getResidencyMap(databaseName, Table.residency.slots);
 					void replayLogs(rootStore, tables);
 				};
 				if (deferredResidencyReplays && Object.values(tables).some((Table) => Table.residency))
@@ -4154,11 +4159,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			(residency === null &&
 				persistedPrimaryDescriptor(Table?.dbisDB ?? internalDbisFor(rootStore, target)).descriptor?.residency)
 		) {
-			releaseResidencyFence = acquireResidencyMapFence(databaseName, {});
 			exclusiveLock();
 			const catalog = Table?.dbisDB ?? internalDbisFor(rootStore, target);
 			const persisted = persistedPrimaryDescriptor(catalog);
 			const previous = persisted.descriptor?.residency;
+			if (!previous) releaseResidencyFence = acquireResidencyMapFence(databaseName, {});
 			residency = residency === undefined ? previous : residency;
 			if (residency) {
 				if (schemaDefined === false) throw new ClientError('@residency requires a schema-defined table', 400);

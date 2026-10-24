@@ -19,6 +19,7 @@ import {
 	requireConnectedResidencyOwner,
 	validateResidencyMapWrite,
 	acquireResidencyMapFence,
+	assertResidencyWriteRoute,
 	RESIDENCY_MAP_TABLE,
 } from './residencyMaps.ts';
 import { randomUUID } from 'node:crypto';
@@ -4286,7 +4287,7 @@ export function makeTable(options): TableResourceClass {
 		 */
 		static _storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean> {
 			if (
-				(residencyPolicy ? !Object.keys(indices).length : TableResource.getResidencyById) ||
+				(residencyPolicy ? !hasSecondaryIndices() : TableResource.getResidencyById) ||
 				!replicaExpirationMs ||
 				!(residencyPolicy ? existingEntry : existingEntry?.residencyId) ||
 				entry?.value == null ||
@@ -4965,7 +4966,10 @@ export function makeTable(options): TableResourceClass {
 			) {
 				const tail = transaction.writesByKey?.get(primaryStore)?.get(writeKeyId(id));
 				const prior = tail && (tail.stagedEntry ? tail : priorStagedWrite(tail));
-				if (!prior?.completeResidencyRecord) {
+				let replacement = transaction.stagesWriteOnSave ? undefined : tail;
+				while (replacement && 'fullUpdate' in replacement && !replacement.fullUpdate)
+					replacement = replacement.priorWrite;
+				if (!prior?.completeResidencyRecord && !replacement?.fullUpdate) {
 					if (
 						!sourceLoad ||
 						(context && 'replicateFrom' in context && context.replicateFrom === false) ||
@@ -4974,7 +4978,11 @@ export function makeTable(options): TableResourceClass {
 						throw new ClientError('An attribute residency patch requires the complete resident record', 503);
 					const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
 					transaction.disregardReadTxn();
-					return when(this.ensureLoaded(), () => this._writeUpdate(id, updates, fullUpdate, options));
+					return when(this.ensureLoaded(), () => {
+						if (!this.#entry?.value || this.#entry.metadataFlags & INVALIDATED)
+							throw new ClientError('An attribute residency patch requires the complete resident record', 503);
+						return this._writeUpdate(id, updates, fullUpdate, options);
+					});
 				}
 			}
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
@@ -5175,6 +5183,10 @@ export function makeTable(options): TableResourceClass {
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
 						if (!fullUpdate) throw new ClientError('A residency map must be written as a complete snapshot', 400);
+						if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
+							write.skipped = true;
+							return;
+						}
 						if (!replaying)
 							write.releaseResidencyMapFence ??= acquireResidencyMapFence(String(id), committedBy ?? transaction);
 						if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
@@ -5781,7 +5793,7 @@ export function makeTable(options): TableResourceClass {
 							residencyPolicy.byAttribute && patchesStub
 								? (options?.residencySlot ?? baseEntry.residencySlot)
 								: calculateResidencySlot(id, recordToStore);
-						const owners = captureResidencyOwners(write, slot, options?.isReplay);
+						const owners = captureResidencyOwners(write, slot, options?.isReplay, writtenHere);
 						residencyId = undefined;
 						if (residencyPolicy.byAttribute) residencySlot = slot;
 						omitLocalRecord = patchesStub || !owners.includes(server.hostname);
@@ -5841,7 +5853,7 @@ export function makeTable(options): TableResourceClass {
 					if (omitLocalRecord) {
 						auditRecordToStore ??= recordToStore;
 						recordToStore = residencyPolicy
-							? Object.keys(indices).length
+							? hasSecondaryIndices()
 								? residencyStub(recordToStore)
 								: undefined
 							: TableResource.getResidencyById
@@ -6078,6 +6090,7 @@ export function makeTable(options): TableResourceClass {
 			const locking = lockConditionalWrite(this, id, condition);
 			if (locking) return locking.then(() => this._writeDelete(id, options));
 			const transaction = txnForContext(context);
+			const writtenHere = !options?.isNotification && !transaction.sourceApply && !transaction.isReplay;
 			this.#evaluateWriteCondition(id, condition, transaction);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
@@ -6140,7 +6153,7 @@ export function makeTable(options): TableResourceClass {
 								503
 							);
 						const slot = residencySlot ?? calculateResidencySlot(id);
-						captureResidencyOwners(write, slot, options?.isReplay);
+						captureResidencyOwners(write, slot, options?.isReplay, writtenHere);
 					}
 					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId, residencySlot };
 					if (
@@ -9404,9 +9417,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function loadLocalRecord(id, context, options, sync, withEntry) {
 		if (
-			(residencyPolicy
-				? !residencyPolicy.byAttribute && !Object.keys(indices).length
-				: TableResource.getResidencyById) &&
+			(residencyPolicy ? !residencyPolicy.byAttribute && !hasSecondaryIndices() : TableResource.getResidencyById) &&
 			options.ensureLoaded &&
 			context?.replicateFrom !== false
 		) {
@@ -10339,7 +10350,7 @@ export function makeTable(options): TableResourceClass {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
 									auditRecord = updatedRecord;
 									omitLocalRecord = true;
-									updatedRecord = (residencyPolicy ? !Object.keys(indices).length : TableResource.getResidencyById)
+									updatedRecord = (residencyPolicy ? !hasSecondaryIndices() : TableResource.getResidencyById)
 										? undefined
 										: residencyStub(auditRecord);
 								}
@@ -10817,17 +10828,23 @@ export function makeTable(options): TableResourceClass {
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
 		);
 	}
-	function captureResidencyOwners(write: any, slot: number, replay = false): readonly string[] {
+	function captureResidencyOwners(write: any, slot: number, replay = false, localWrite = false): readonly string[] {
 		// Crash replay restores local rows before Pro has discovered peer membership.
 		if (replay) return residencyIsLocal(databaseName, slot, residencyPolicy.slots) ? [server.hostname] : [];
 		const owners = residencyOwners(databaseName, slot, residencyPolicy.slots);
+		if (localWrite) assertResidencyWriteRoute(databaseName, owners);
 		write.residencyOwners = owners;
 		write.checkResidency = () => {
 			const current = residencyOwners(databaseName, slot, residencyPolicy.slots);
+			if (localWrite) assertResidencyWriteRoute(databaseName, current);
 			if (current.length !== owners.length || current.some((name) => !owners.includes(name)))
 				throw new ClientError('Residency owners changed before commit; retry the write', 409);
 		};
 		return owners;
+	}
+	function hasSecondaryIndices(): boolean {
+		for (const name in indices) if (Object.hasOwn(indices, name)) return true;
+		return false;
 	}
 	function residencyStub(record: any) {
 		let stub = null;
