@@ -1136,6 +1136,43 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual(failed.status, 412, await bodyOf(failed));
 	});
 
+	it('serves a record with contentType and data attributes as an envelope only when data is text or bytes', async () => {
+		const Asset = table({
+			table: 'HttpEnvelopeAssets',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'contentType' }, { name: 'data' }],
+		});
+		resources.set('Asset', Asset, { rest: true });
+		await Asset.put('text', { contentType: 'text/x-custom', data: 'plain' });
+		await Asset.put('object', { contentType: 'text/x-custom', data: { a: 1 } });
+		await Asset.put('number', { contentType: 'text/x-custom', data: 5 });
+
+		const text = await request('GET', '/Asset/text');
+		assert.strictEqual(text.headers.get('content-type'), 'text/x-custom');
+		assert.strictEqual(await bodyOf(text), 'plain');
+		for (const id of ['object', 'number']) {
+			const response = await request('GET', `/Asset/${id}`, undefined, { accept: 'application/json' });
+			assert.strictEqual(response.headers.get('content-type'), 'application/json');
+			assert.strictEqual(JSON.parse(await bodyOf(response)).contentType, 'text/x-custom');
+		}
+
+		// a 304 for a record negotiated by Accept varies on it; an envelope's bytes do not depend on Accept
+		const vary = async (id) => {
+			const etag = (await request('GET', `/Asset/${id}`, undefined, { accept: 'application/json' })).headers.get(
+				'etag'
+			);
+			const response = await request('GET', `/Asset/${id}`, undefined, {
+				'accept': 'application/json',
+				'if-none-match': etag,
+			});
+			assert.strictEqual(response.status, 304);
+			return response.headers.get('vary') ?? '';
+		};
+		assert.match(await vary('object'), /Accept(,|$)/);
+		assert.match(await vary('number'), /Accept(,|$)/);
+		assert.doesNotMatch(await vary('text'), /Accept(,|$)/);
+	});
+
 	it('uses explicit response validators and preserves error precedence', async () => {
 		class Envelope extends Resource {
 			static get(_target, context) {

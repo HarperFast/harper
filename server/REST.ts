@@ -5,6 +5,7 @@ import {
 	serializeMessage,
 	getDeserializer,
 	findBestSerializer,
+	isHttpPassThroughEnvelope,
 	waitForStreamStartup,
 	discardSerializedStream,
 } from '../server/serverHelpers/contentTypes.ts';
@@ -225,9 +226,7 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 		try {
 			if (sourceData !== undefined) {
 				const binary =
-					sourceData instanceof Uint8Array ||
-					sourceData instanceof Blob ||
-					(sourceData?.contentType != null && sourceData.data != null);
+					sourceData instanceof Uint8Array || sourceData instanceof Blob || isHttpPassThroughEnvelope(sourceData);
 				if (!binary) {
 					findBestSerializer(request);
 					addVaryHeader(response.headers, 'Accept');
