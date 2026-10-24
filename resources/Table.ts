@@ -273,6 +273,7 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -1499,6 +1500,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
+	let sourceFills: Map<unknown, SourceFill> | undefined;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
@@ -9831,6 +9833,8 @@ export function makeTable(options): TableResourceClass {
 			inheritedTimestamp ||
 			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
 		let whenResolved, timer;
+		const fillKey = writeKeyId(id);
+		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
 		// tryLock() will return true if we got the lock, and the callback won't be called.
@@ -9846,10 +9850,15 @@ export function makeTable(options): TableResourceClass {
 				!entry.value ||
 				entry.metadataFlags & (INVALIDATED | EVICTED) ||
 				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
-			)
+			) {
+				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
+				if (outcome && (!heldFill.unstoredRecord || context?.noCacheStore)) {
+					setLoadedFromSource(target, false);
+					whenResolved(outcome);
+				}
 				// try again — entry still not valid, need to actually fetch from source
-				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
-			else {
+				else whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
+			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
 				whenResolved(entry);
@@ -9867,6 +9876,12 @@ export function makeTable(options): TableResourceClass {
 		}
 		// lock acquired — this request will actually load from source
 		setLoadedFromSource(target, true);
+		const fill: SourceFill = { source };
+		(sourceFills ??= new Map()).set(fillKey, fill);
+		const releaseFill = () => {
+			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
+			primaryStore.unlock(id);
+		};
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
@@ -9891,7 +9906,8 @@ export function makeTable(options): TableResourceClass {
 		return new Promise((resolve, reject) => {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
-			let resolved;
+			let resolved, sharedEntry: Entry;
+			let stagedWrite: any;
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
@@ -10037,6 +10053,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
+					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -10244,11 +10261,16 @@ export function makeTable(options): TableResourceClass {
 				}
 				sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 				dbTxn.addWrite(sourceWrite);
+				stagedWrite = sourceWrite;
 			});
 			when(
 				commitPromise,
 				() => {
-					primaryStore.unlock(id);
+					if (sharedEntry && (!stagedWrite || stagedWrite.skipped === false)) {
+						fill.outcome = sharedEntry;
+						fill.unstoredRecord = !stagedWrite && sharedEntry.value != null;
+					}
+					releaseFill();
 					if (removedRecordWithBlobs) {
 						try {
 							// a write committed since the removal may reference the same files again
@@ -10259,7 +10281,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
-					primaryStore.unlock(id);
+					releaseFill();
 					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
 						logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned

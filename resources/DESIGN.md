@@ -313,6 +313,10 @@ In `getFromSource()` (`Table.ts`), the promise that callers await resolves with 
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
+## getFromSource() waiters share a fill that stored nothing
+
+A same-key waiter is released at the leader's unlock, after its commit, and reads the store first. When the store holds nothing valid, a waiter on the same thread serves the leader's resolved entry instead of calling the source again — an absent record, a record a later write invalidated (the waiter's request overlapped the fill), or a record `noCacheStore` kept out of the store. Only a fill that resolved, committed and kept its write publishes an entry; a failed fill, a stale-on-error answer, or a fill from another `source` is never shared. A fill whose `sourceContext.noCacheStore` is set is never shared: the source sets it to mark its own response per-request, and on a read-only node or a dropping table, where it is preset, that opt-out cannot be told apart. A record a request-level `noCacheStore` kept out of the store goes only to waiters that also asked for `noCacheStore`, so a caching waiter behind a no-store leader still fills the cache. Fills are keyed by `writeKeyId` (`0` and `-0` are distinct); waiters on other threads keep re-fetching. Pinned by `unitTests/resources/sourceFillCoalescing.test.js`.
+
 ## getFromSource() keeps source versions separate from fill ordering
 
 `getFromSource()` reserves a fallback timestamp before calling the source so competing first fills
