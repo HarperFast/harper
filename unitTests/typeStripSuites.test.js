@@ -247,11 +247,11 @@ describe('unit runtime selection', function () {
 				'-e',
 				`const assert = require('node:assert');
 const fs = require('node:fs');
-const Mocha = require('mocha');
-require('./unitTests/mocha.init.js');
-const { PID_DIR_PATH } = require('./unitTests/perPidRoot.js');
-const run = () => new Promise(resolve => new Mocha({ reporter: 'dot' }).run(resolve));
 (async () => {
+	const { default: Mocha } = await import('mocha');
+	require('./unitTests/mocha.init.js');
+	const { PID_DIR_PATH } = require('./unitTests/perPidRoot.js');
+	const run = () => new Promise(resolve => new Mocha({ reporter: 'dot' }).run(resolve));
 	assert.strictEqual(await run(), 0);
 	await require('./unitTests/testUtils.js').ensureSystemTables();
 	process.on('exit', () => assert(fs.existsSync(PID_DIR_PATH), 'unit root must remain through later shutdown listeners'));
