@@ -5050,7 +5050,6 @@ export function makeTable(options): TableResourceClass {
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
 						let belowAuditFloor = false;
-						let auditFloor: number | undefined;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -5191,7 +5190,7 @@ export function makeTable(options): TableResourceClass {
 							// Infinity, which fails closed for a cursor check but has to fail OPEN here — walk rather than
 							// discard. RocksDB only: LMDB keeps its exact, unbounded reconciliation.
 							if (isRocksDB && precedesExisting < 0) {
-								auditFloor = getAuditFloor(auditStore);
+								const auditFloor = getAuditFloor(auditStore);
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
@@ -5222,13 +5221,9 @@ export function makeTable(options): TableResourceClass {
 							let nodeId = initialAuditHead.nodeId ?? 0;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
-							// A branch keyed below the audit floor addresses pruned history (harper#2642's floor-bounded
-							// contract); reading it would be an exact-start miss that scans its log to the end.
-							auditFloor ??= isRocksDB ? getAuditFloor(auditStore) : undefined;
-							const branchFloor = Number.isFinite(auditFloor) ? auditFloor : -Infinity;
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
-									if (isBranchRef(ref, initialAuditHead) && ref.version >= branchFloor)
+									if (isBranchRef(ref, initialAuditHead))
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 								}
 							}
@@ -5261,7 +5256,7 @@ export function makeTable(options): TableResourceClass {
 								if (previousRefs) {
 									const head = resolvePreviousHead(auditRecord);
 									for (const ref of previousRefs) {
-										if (!isBranchRef(ref, head) || ref.version < branchFloor) continue;
+										if (!isBranchRef(ref, head)) continue;
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
 											version: ref.version,
@@ -5667,10 +5662,13 @@ export function makeTable(options): TableResourceClass {
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
-					// whose identity is not its key, so a retry finds its own minted key here (`readsOwnStaging`).
+					// whose identity is not its key, so a retry finds its own minted key here (`readsOwnStaging`). A
+					// write that loses to the existing version is not the head: its key stays a branch.
 					if (isRocksDB && audit && !isCopyApply && (appendedLogKey !== txnTime || identityIsNotKey)) {
 						const headIndex = auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId);
-						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
+						if (precedesExisting < 0) {
+							if (headIndex < 0) additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+						} else if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
 					// A write whose received identity is not its key keeps that identity on the record too, so a

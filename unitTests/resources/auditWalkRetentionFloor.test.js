@@ -285,35 +285,18 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		});
 	});
 
-	it('does not read a branch keyed below the floor', async function () {
+	it('folds a retained branch keyed below the floor whose version is newer than the write', async function () {
 		if (isLMDB) return this.skip();
 		const T = tableInOwnDatabase('BranchBelowFloor');
 		const base = Date.now();
-		await T.put('b', { name: 'seed', count: 0 });
+		await T.put('b', { name: 'seed' });
 		await T.patch('b', { name: 'head' }, { timestamp: base + 600_000 });
-		for (let n = 1; n <= 3; n++) await T.patch('b', { [`f${n}`]: n }, { timestamp: base + 300_000 - n });
-		const [, ...branchKeys] = T.primaryStore.getEntry('b').additionalAuditRefs.map((ref) => ref.version);
-		assert.equal(branchKeys.length, 3);
+		await T.patch('b', { extra: 'newer' }, { timestamp: base + 400_000 });
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		raiseAuditFloor(T.auditStore, Date.now());
 
-		// the walk's own steps; head resolution probes refs separately, bounded by the encoder's ref cap
-		const walked = [];
-		const { get } = T.auditStore;
-		T.auditStore.get = function (key, ...rest) {
-			walked.push(key);
-			return get.call(this, key, ...rest);
-		};
-		try {
-			await T.patch('b', { count: { __op__: 'add', value: 1 } }, { timestamp: base + 400_000 });
-		} finally {
-			delete T.auditStore.get;
-		}
-		assert.deepEqual(
-			walked.filter((key) => branchKeys.includes(key)),
-			[]
-		);
-		assert.deepEqual(await T.get('b'), { id: 'b', name: 'head', count: 1, f1: 1, f2: 2, f3: 3 });
+		await T.patch('b', { extra: 'older' }, { timestamp: base + 300_000 });
+		assert.deepEqual(await T.get('b'), { id: 'b', name: 'head', extra: 'newer' });
 	});
 
 	it('pins the walk head lookup to one log and leaves an unrecorded predecessor aggregating', async function () {

@@ -64,7 +64,6 @@ function storeMax(words: BigInt64Array, index: number, value: number): number {
 	}
 }
 
-// `aroundCallerValue`: the key was minted in place of a caller's value, which stays the record version.
 type Reservation = { registry: ThreadRegistry; key: number; released: boolean; aroundCallerValue: boolean };
 
 /**
