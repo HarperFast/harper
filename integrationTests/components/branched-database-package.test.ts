@@ -183,14 +183,8 @@ for (const isolated of [false, true]) {
 						branchedDatabases: declaration,
 						restart: true,
 					};
-					let deployed = await operation(deployment);
+					const deployed = await operation(deployment);
 					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
-					if (isolated) {
-						// The first deploy creates the dedicated worker; its next load can be certified.
-						await read('/PackageProbe/seed');
-						deployed = await operation(deployment);
-						assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
-					}
 					assert.strictEqual(deployed.body.certification, 'certified');
 					const rootConfig = parse(await readFile(join(ctx.harper.dataRootDir, 'harper-config.yaml'), 'utf8'));
 					assert.strictEqual(rootConfig[project].package, pkg);
@@ -275,16 +269,90 @@ for (const isolated of [false, true]) {
 				}
 			);
 
-			test('drop_component with restart removes the package fork', { timeout: 180000 }, async () => {
+			const httpThreadIds = async () =>
+				(await sendOperation(ctx.harper, { operation: 'system_information', attributes: ['threads'] })).threads
+					.filter((thread: { name: string }) => thread.name === 'http')
+					.map((thread: { threadId: number }) => thread.threadId)
+					.sort();
+
+			test('drop_component with keepBranches keeps the package fork and says so', { timeout: 180000 }, async () => {
 				assert.ok(existsSync(branchRoot()));
-				await sendOperation(ctx.harper, { operation: 'drop_component', project, restart: true });
-				await waitFor(() => !existsSync(branchRoot()), {
-					timeout: 30000,
-					interval: 100,
-					message: 'drop left the application fork behind',
-				});
-				assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
+				const refused = await operation({ operation: 'drop_component', project, restart: true, keepBranches: true });
+				assert.strictEqual(refused.status, 400, JSON.stringify(refused.body));
+				assert.match(JSON.stringify(refused.body), /cannot be combined with 'restart: true'/);
+				const dropped = await operation({ operation: 'drop_component', project, keepBranches: true });
+				assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+				assert.strictEqual(dropped.body.componentRemoved, true);
+				assert.strictEqual(dropped.body.workerStopped, isolated);
+				assert.strictEqual(dropped.body.branchesRemoved, false);
+				assert.match(dropped.body.message, /left in place \(keepBranches\)/);
+				assert.ok(existsSync(branchRoot()), 'the fork is still there');
 			});
+
+			test(
+				'dropping the application again discards the fork it kept once nothing holds it, and restarts nothing',
+				{ timeout: 180000 },
+				async () => {
+					if (!isolated) {
+						// the shared workers still have it loaded, so its fork stays until they restart
+						const kept = await operation({ operation: 'drop_component', project, restart: true });
+						assert.strictEqual(kept.status, 200, JSON.stringify(kept.body));
+						assert.strictEqual(kept.body.branchesRemoved, false, JSON.stringify(kept.body));
+						assert.match(kept.body.message, /workers still have it loaded/);
+						const loaded = await httpThreadIds();
+						await sendOperation(ctx.harper, { operation: 'restart_service', service: 'http' });
+						await waitFor(async () => (await httpThreadIds()).every((id: number) => !loaded.includes(id)), {
+							timeout: 60000,
+							interval: 250,
+							message: 'the shared workers were not restarted',
+						});
+					}
+					// A replacement that has not reported what it loaded yet may still hold it (on Bun, one starts only after its
+					// predecessor exits), so the fork goes once every one has; a drop of the absent app restarts nothing meanwhile.
+					let before: number[] = [];
+					let dropped: { status: number; body: any } = { status: 0, body: undefined };
+					await waitFor(
+						async () => {
+							before = await httpThreadIds();
+							dropped = await operation({ operation: 'drop_component', project, restart: true });
+							return dropped.status !== 200 || dropped.body.branchesRemoved !== false;
+						},
+						{ timeout: 60000, interval: 500, message: 'the fork was never discarded' }
+					);
+					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+					assert.strictEqual(dropped.body.componentRemoved, false, 'it was not on this node any more');
+					assert.strictEqual(dropped.body.branchesRemoved, true, JSON.stringify(dropped.body));
+					assert.ok(!existsSync(branchRoot()), 'the fork is gone');
+					assert.deepStrictEqual(await httpThreadIds(), before, 'no worker was restarted');
+					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
+				}
+			);
+
+			test(
+				`drop_component removes the package fork by default${isolated ? ', without a restart' : ''}`,
+				{ timeout: 180000 },
+				async () => {
+					const deployed = await operation({
+						operation: 'deploy_component',
+						project,
+						package: pkg,
+						isolated,
+						host,
+						branchedDatabases: isolated ? true : ['data'],
+						restart: true,
+					});
+					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+					await read('/PackageProbe/seed');
+					assert.ok(existsSync(branchRoot()));
+					const dropped = await operation({ operation: 'drop_component', project, restart: !isolated });
+					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+					assert.strictEqual(dropped.body.componentRemoved, true);
+					assert.strictEqual(dropped.body.workerStopped, isolated);
+					assert.strictEqual(dropped.body.branchesRemoved, true, JSON.stringify(dropped.body));
+					assert.ok(!existsSync(branchRoot()), 'drop left the application fork behind');
+					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
+				}
+			);
 		}
 	);
 }
