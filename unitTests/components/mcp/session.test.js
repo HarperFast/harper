@@ -5,6 +5,7 @@ const {
 	saveSession,
 	deleteSession,
 	touchSession,
+	updateSessionSubscriptions,
 	_setSessionTableForTest,
 } = require('#src/components/mcp/session');
 
@@ -33,6 +34,36 @@ describe('mcp/session', () => {
 	});
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
+	});
+
+	describe('updateSessionSubscriptions', () => {
+		it('applies concurrent updates in turn, so none is lost', async () => {
+			const record = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			await Promise.all([
+				updateSessionSubscriptions(record.id, (uris) => [...uris, 'a:///1']),
+				updateSessionSubscriptions(record.id, (uris) => [...uris, 'a:///2']),
+				updateSessionSubscriptions(record.id, (uris) => [...uris, 'a:///3']),
+			]);
+			assert.deepEqual((await loadSession(record.id)).subscriptions, ['a:///1', 'a:///2', 'a:///3']);
+		});
+
+		it('does not let an update that read the record before a delete recreate it', async () => {
+			const record = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			await Promise.all([
+				updateSessionSubscriptions(record.id, (uris) => [...uris, 'a:///1']),
+				deleteSession(record.id),
+			]);
+			assert.equal(await loadSession(record.id), null);
+		});
+
+		it('keeps the record untouched when nothing changes', async () => {
+			const record = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			let puts = 0;
+			const put = fake.put;
+			fake.put = async (r) => (puts++, put(r));
+			await updateSessionSubscriptions(record.id, (uris) => uris);
+			assert.equal(puts, 0);
+		});
 	});
 
 	describe('createSession', () => {

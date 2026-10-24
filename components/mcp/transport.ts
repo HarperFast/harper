@@ -16,6 +16,7 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import {
 	ERROR_CODES,
 	buildError,
@@ -32,8 +33,21 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
-import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
-import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
+import {
+	deleteSession,
+	loadSession,
+	saveSession,
+	touchSession,
+	updateSessionSubscriptions,
+	type McpSessionRecord,
+} from './session.ts';
+import {
+	listResources,
+	listResourceTemplates,
+	readResource,
+	completeResourceArgument,
+	describeError,
+} from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
 import {
@@ -41,6 +55,8 @@ import {
 	removeResourceSubscription,
 	dropSessionSubscriptions,
 	restoreResourceSubscriptions,
+	hasSubscriptionIntent,
+	SubscriptionCancelledError,
 } from './subscriptions.ts';
 import {
 	sendServerRequest,
@@ -53,6 +69,7 @@ import {
 	touchRegisteredSession,
 	getRegisteredSession,
 	replaySince,
+	type RegisteredSession,
 	type SseEvent,
 } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
@@ -414,15 +431,6 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// per-call POST stream, so a GET reconnect/supersede must not reject an
 	// in-flight `serverRequest`. Those are cleared on session DELETE + by timeout.
 	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
-	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
-	// a URI that's no longer subscribable is dropped from the persisted list.
-	if (session.subscriptions?.length) {
-		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
-		if (restored.length !== session.subscriptions.length) {
-			session.subscriptions = restored;
-			await saveSession(session);
-		}
-	}
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
 	// raw so their original event ids are preserved. Best-effort + per-worker: the
@@ -430,6 +438,15 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	const lastEventId = request.headers[LAST_EVENT_ID_HEADER];
 	if (lastEventId) {
 		for (const frame of replaySince(record, lastEventId)) record.queue.send(frame);
+	}
+	// Restore durable resource subscriptions (#3.6) after the replay and without
+	// awaiting it: an author's subscribe may do I/O, and the stream opens now.
+	// Restored notifications queue on `record` until the adapter attaches.
+	if (session.subscriptions?.length) {
+		const uris = session.subscriptions;
+		restoreDurableSubscriptions(sessionId, record, uris, effectiveUser(request), request.profile).catch((err) =>
+			harperLogger.warn(`MCP subscription restore for ${maskSessionId(sessionId)} failed: ${describeError(err)}`)
+		);
 	}
 	return {
 		status: 200,
@@ -445,6 +462,30 @@ function profileMaxTools(profile: McpProfile): number {
 	const key = profile === 'operations' ? CONFIG_PARAMS.MCP_OPERATIONS_MAXTOOLS : CONFIG_PARAMS.MCP_APPLICATION_MAXTOOLS;
 	const value = env.get(key);
 	return typeof value === 'number' && value > 0 ? value : DEFAULT_MAX_TOOLS;
+}
+
+/**
+ * Restore a reconnecting GET's subscriptions, then drop from the durable list
+ * the URIs a registered resource reported not subscribable. That prune is
+ * decided inside the queued write: by then a newer GET may own the list, or a
+ * newer subscribe may have taken the URI over.
+ */
+async function restoreDurableSubscriptions(
+	sessionId: string,
+	record: RegisteredSession,
+	uris: string[],
+	user: AuthedUser,
+	profile: McpProfile
+): Promise<void> {
+	const kept = await restoreResourceSubscriptions(sessionId, uris, user, profile, record);
+	if (kept.length === uris.length) return;
+	const keptSet = new Set(kept);
+	const pruned = new Set(uris.filter((uri) => !keptSet.has(uri)));
+	await updateSessionSubscriptions(sessionId, (current) =>
+		getRegisteredSession(sessionId) === record
+			? current.filter((uri) => !pruned.has(uri) || hasSubscriptionIntent(sessionId, uri))
+			: current
+	);
 }
 
 function effectiveUser(request: NormRequest): AuthedUser {
@@ -927,17 +968,27 @@ async function dispatchResourcesSubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
 		);
 	}
-	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+	let ok: boolean;
+	try {
+		ok = await addResourceSubscription(session.id, uri, effectiveUser(request), request.profile);
+	} catch (err) {
+		if (err instanceof AccessViolation) {
+			return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `permission denied: ${uri}`));
+		}
+		if (err instanceof SubscriptionCancelledError) {
+			return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, err.message));
+		}
+		// The raw error (possibly an author's) stays in the server log, as for custom reads.
+		harperLogger.error(`MCP resources/subscribe failed for ${uri}:`, err);
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `failed to subscribe: ${uri}`));
+	}
 	if (!ok) {
-		// Only row-backed application resources are subscribable; synthetic harper://*
-		// URIs (and unknown URIs) have no change source.
+		// Row-backed application resources and custom resources declaring `subscribe`
+		// are subscribable; synthetic harper://* URIs (and unknown URIs) have no change source.
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
 	}
 	// Persist the URI on the durable record so it survives an SSE reconnect.
-	if (!session.subscriptions?.includes(uri)) {
-		session.subscriptions = [...(session.subscriptions ?? []), uri];
-		await saveSession(session);
-	}
+	await updateSessionSubscriptions(session.id, (uris) => (uris.includes(uri) ? uris : [...uris, uri]));
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
 
@@ -956,10 +1007,7 @@ async function dispatchResourcesUnsubscribe(
 		);
 	}
 	removeResourceSubscription(session.id, uri);
-	if (session.subscriptions?.includes(uri)) {
-		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
-		await saveSession(session);
-	}
+	await updateSessionSubscriptions(session.id, (uris) => uris.filter((u) => u !== uri));
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
 

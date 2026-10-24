@@ -891,6 +891,27 @@ describe('custom content resources (#1609)', () => {
 	});
 });
 
+describe('isRecognizedResourceUri (#3250)', () => {
+	const { isRecognizedResourceUri } = require('#src/components/mcp/resources');
+	afterEach(() => {
+		clearProfileCustomResources('application');
+		_setResourcesForTest(undefined);
+	});
+
+	it('recognizes only URIs something registered on this worker matches', () => {
+		_setResourcesForTest(
+			makeFakeResources([['Product', makeTableResource({ databaseName: 'data', tableName: 'product' })]])
+		);
+		addCustomResource({ uriTemplate: 'docs:///{+path}', name: 'page', profile: 'application', read: async () => 'x' });
+		assert.equal(isRecognizedResourceUri('docs:///a/b', 'application'), true);
+		assert.equal(isRecognizedResourceUri('harper://about', 'application'), true);
+		assert.equal(isRecognizedResourceUri('https://app.test:9926/Product/1', 'application'), true);
+		assert.equal(isRecognizedResourceUri('https://app.test:9926/NotLoadedYet/1', 'application'), false);
+		assert.equal(isRecognizedResourceUri('memory:///1', 'application'), false);
+		assert.equal(isRecognizedResourceUri('not a uri', 'application'), false);
+	});
+});
+
 describe('harper+rest:// descriptor scheme (#1609)', () => {
 	afterEach(() => {
 		_setHttpUrlPrefixForTest(undefined);
