@@ -247,7 +247,6 @@ function generateLoad(task: LoadTask): void {
 	const caller = async (): Promise<void> => {
 		while (!stopped) {
 			const ids = pickIds(task.keyCount, task.recordsPerTxn);
-			const startedBeforeClose = !stopped;
 			const start = performance.now();
 			let res: Response | undefined;
 			try {
@@ -256,9 +255,10 @@ function generateLoad(task: LoadTask): void {
 				firstError ??= String(error);
 			}
 			const elapsed = performance.now() - start;
-			const overran = stopped && startedBeforeClose;
-			if (overran && elapsed > overrunMs) overrunMs = elapsed;
+			// still in flight when the window closed
+			const overran = stopped;
 			if (res && res.status >= 200 && res.status < 300) {
+				if (overran && elapsed > overrunMs) overrunMs = elapsed;
 				for (const id of ids) acked[id]++;
 				// a commit counts when it completes inside the window, so stalls that began before it are kept
 				if (measuring) {
