@@ -318,7 +318,7 @@ describe('out-of-order patch on an audit:false table', () => {
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		await NoAudit.patch(id, { extra: 'added' }, { timestamp: now + 55 });
 		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 4 } }, now + 60, now + 70);
-		const refs = NoAudit.primaryStore.getEntry(id).additionalAuditRefs.map(({ version, nodeId }) => [version, nodeId]);
+		const refs = NoAudit.primaryStore.getEntry(id).receivedIdentityRefs.map(({ version, nodeId }) => [version, nodeId]);
 		assert.deepStrictEqual(refs, [
 			[now + 50, 0],
 			[now + 70, getIdOfRemoteNode('origin-a', NoAudit.auditStore)],

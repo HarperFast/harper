@@ -5926,9 +5926,9 @@ export function makeTable(options): TableResourceClass {
 							if (
 								precedesExisting === 0 ||
 								existingRecord == null ||
-								(existingEntry.additionalAuditRefs &&
+								(existingEntry.receivedIdentityRefs &&
 									priorWritesSkipped(write) &&
-									auditRefIndex(existingEntry.additionalAuditRefs, receivedLogKey, options?.nodeId) >= 0)
+									auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
 							) {
 								write.skipped = true;
 								return writeCommit(false);
@@ -5943,12 +5943,13 @@ export function makeTable(options): TableResourceClass {
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
 							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
+							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
 							// only a commutative op applies again on re-delivery; the plain keys merged here are dropped then
 							if (
 								commutativeOpsOf(incrementalUpdateToApply) &&
-								auditRefIndex(additionalAuditRefs, receivedLogKey, options?.nodeId) < 0
+								!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
 							)
-								additionalAuditRefs.push({ version: receivedLogKey, nodeId: options?.nodeId });
+								(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
