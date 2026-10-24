@@ -6,10 +6,13 @@ const { table } = require('#src/resources/databases');
 const { INVALIDATED, REPLICA } = require('#src/resources/Table');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+// not one of the databases testUtils aliases onto one path: each alias would load its own class and sweep
+const DATABASE = 'replicaOptions';
 
 function fixtureWorker(tableName, role, sourcePort) {
 	const worker = new Worker(__dirname + '/fixtures/replicaOptionsWorker.cjs', {
 		workerData: {
+			database: DATABASE,
 			tableName,
 			role,
 			sourcePort,
@@ -51,7 +54,7 @@ function fixtureWorker(tableName, role, sourcePort) {
 
 async function withWorkers(name, options, run) {
 	table({
-		database: 'test',
+		database: DATABASE,
 		table: name,
 		audit: true,
 		expiration: 600,

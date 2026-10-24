@@ -12,7 +12,7 @@ const { schemaHandler } = require('#js/server/itc/serverHandlers');
 const { SchemaEventMsg } = require('#js/server/threads/itc');
 const { waitFor } = require('../../waitFor');
 
-const { tableName, role, sourcePort } = workerData;
+const { database, tableName, role, sourcePort } = workerData;
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const CONTROL = 'replica-options-control';
 const REPLY = 'replica-options-reply';
@@ -81,7 +81,7 @@ function snapshot(key) {
 async function handle({ command, key, options, deadline, expectRenewal }) {
 	switch (command) {
 		case 'init':
-			Records = resetDatabases().test[tableName];
+			Records = resetDatabases()[database][tableName];
 			assert.ok(Records);
 			if (role === 'reader') {
 				Records.sourcedFrom(
@@ -99,7 +99,7 @@ async function handle({ command, key, options, deadline, expectRenewal }) {
 			return snapshot();
 		case 'configure': {
 			assert.equal(role, 'writer');
-			const Updated = table({ database: 'test', table: tableName, attributes: Records.attributes, ...options });
+			const Updated = table({ database, table: tableName, attributes: Records.attributes, ...options });
 			await Updated.dbisDB.committed;
 			const primary = Updated.dbisDB.getSync(`${tableName}/`);
 			return { replicaExpiration: primary.replicaExpiration, replicaRefreshFraction: primary.replicaRefreshFraction };
@@ -107,9 +107,9 @@ async function handle({ command, key, options, deadline, expectRenewal }) {
 		case 'rescan': {
 			await schemaHandler({
 				type: 'schema',
-				message: new SchemaEventMsg(process.pid, 'schema-change', 'test', tableName),
+				message: new SchemaEventMsg(process.pid, 'schema-change', database, tableName),
 			});
-			assert.strictEqual(databases.test[tableName], Records, 'the rescan must reuse the loaded class');
+			assert.strictEqual(databases[database][tableName], Records, 'the rescan must reuse the loaded class');
 			const primary = Records.dbisDB.getSync(`${tableName}/`);
 			return {
 				...snapshot(key),
