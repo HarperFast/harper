@@ -9674,6 +9674,15 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
+	// Whether an earlier write to this key in the transaction changed it: one that staged a record, or a publish
+	// or relocate that restamps it without staging. A skipped write changed nothing.
+	function followsAppliedWrite(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return true;
+		}
+		return false;
+	}
+
 	// The commit base is the committed record unless another write to the key already saved without being
 	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
@@ -10012,9 +10021,9 @@ export function makeTable(options): TableResourceClass {
 						// resolving the same tie could keep different values at the same version.
 						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
 						if (
-							// The source wrote this key through its context: that write is staged ahead of the fill in this
+							// The source wrote this key through its context: that write is ahead of the fill in this
 							// transaction, and on LMDB existingEntry is the committed record, which cannot show it.
-							priorStagedWrite(sourceWrite) ||
+							followsAppliedWrite(sourceWrite) ||
 							(racedVersion !== existingVersion &&
 								// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
 								(existingVersion != null || !updatedRecord || !replacesRacedRecord))

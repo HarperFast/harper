@@ -97,7 +97,6 @@ describe('Source fill racing a local write', function () {
 		await transaction(context, () => FillTable.put(id, { id, name: 'local ' + id }, context));
 		return FillTable.primaryStore.getEntry(id);
 	}
-	// a source response whose blob file is held open until the returned release() is called
 	async function respondWithHeldBlob(id) {
 		const body = new PassThrough();
 		const payload = createBlob(body);
@@ -134,7 +133,6 @@ describe('Source fill racing a local write', function () {
 		await seedInvalidated(id);
 		const { fill } = await startFill(id);
 		const held = await respondWithHeldBlob(id);
-		// the read resolves with the source's record without waiting for its cache write
 		assert.equal((await fill).name, 'source ' + id);
 		assert(FillTable.primaryStore.hasLock(id), 'the fill should still be waiting on its blob save');
 		const local = await localWrite(id);
@@ -224,6 +222,54 @@ describe('Source fill racing a local write', function () {
 		});
 	}
 
+	// update() defers staging to commit on RocksDB, so it has not run when the fill decides
+	it('keeps an update the source makes to the key it is resolving', async function () {
+		const id = 'source-updates';
+		await seedInvalidated(id);
+		const { fill } = await startFill(id);
+		await FillTable.update(id, { name: 'local ' + id }, sourceRequest.context);
+		respond({ id, name: 'source ' + id, payload: 'from source' });
+		assert.equal((await fill).name, 'source ' + id);
+		await committed(id);
+		const entry = FillTable.primaryStore.getEntry(id);
+		assert.equal(entry.value?.name, 'local ' + id);
+		assert.equal(entry.value?.payload, undefined, 'the update merged onto the source record');
+		assert.equal(indexCount('local ' + id), 1);
+		assert.equal(indexCount('source ' + id), 0);
+		const audit = await auditOf(id);
+		assert(!audit.includes('put:source ' + id), `the discarded fill was audited: ${audit}`);
+	});
+
+	it('leaves the record invalidated when the source invalidates the key it is resolving', async function () {
+		const id = 'source-invalidates';
+		await seedInvalidated(id);
+		const { fill } = await startFill(id);
+		await FillTable.invalidate(id, sourceRequest.context);
+		respond({ id, name: 'source ' + id });
+		assert.equal((await fill).name, 'source ' + id);
+		await committed(id);
+		assert(FillTable.primaryStore.getEntry(id).metadataFlags & INVALIDATED);
+		assert.equal(indexCount('source ' + id), 0);
+		assert(!(await auditOf(id)).includes('put:source ' + id));
+	});
+
+	// a publish restamps the record without staging one
+	it('keeps the version a publish the source makes to the key it is resolving', async function () {
+		const id = 'source-publishes';
+		const invalidated = await seedInvalidated(id);
+		const { fill } = await startFill(id);
+		const { context } = sourceRequest;
+		await FillTable.publish(id, { note: 'published' }, context);
+		context.lastModified = context.replacingVersion;
+		respond({ id, name: 'source ' + id });
+		assert.equal((await fill).name, 'source ' + id);
+		await committed(id);
+		const entry = FillTable.primaryStore.getEntry(id);
+		assert(entry.version > invalidated.version, 'the fill regressed the version the publish stored');
+		assert.notEqual(entry.value?.name, 'source ' + id);
+		assert.equal(indexCount('source ' + id), 0);
+	});
+
 	it('fills over a write the source makes that is itself discarded as stale', async function () {
 		const id = 'source-write-skipped';
 		const future = Date.now() + 60_000;
@@ -304,21 +350,30 @@ describe('Source fill racing a local write', function () {
 			assert.equal(FillTable.primaryStore.getEntry(id).value.name, 'source ' + id);
 		});
 
-		// With the invalidation's audit entry gone (pruned), the fill appends a new entry instead of replacing it.
-		it('appends the resolved audit entry when the invalidation entry is gone', async function () {
+		// With the invalidation's audit entry pruned, the fill appends one under a newly assigned local time; the
+		// last assigned time it would otherwise be keyed by belongs to the other record's write.
+		it('appends the resolved audit entry under its own key when the invalidation entry is gone', async function () {
 			const id = 'append-audit';
+			const otherId = 'append-audit-other';
 			const invalidated = await seedInvalidated(id);
 			const { auditStore } = FillTable.primaryStore.rootStore;
 			await auditStore.remove(invalidated.localTime);
+			await FillTable.put(otherId, { id: otherId, name: 'other ' + otherId });
 			const { fill } = await startFill(id);
 			respond({ id, name: 'source ' + id });
 			await fill;
 			await committed(id);
-			assert.equal((await auditOf(id)).at(-1), 'put:source ' + id);
+			assert.deepEqual(await auditOf(otherId), ['put:other ' + otherId]);
+			assert.equal((await FillTable.getHistoryOfRecord(otherId)).at(-1).value.name, 'other ' + otherId);
+			const entry = FillTable.primaryStore.getEntry(id);
+			assert.notEqual(entry.localTime, invalidated.localTime);
+			const head = (await FillTable.getHistoryOfRecord(id)).at(-1);
+			assert.equal(head.type, 'put');
+			assert.equal(head.version, entry.version);
+			assert.equal(head.value.name, 'source ' + id);
 		});
 
-		// A write that commits after the fill's condition read but before its batch runs is caught by the
-		// block's own version check; the fill retries, sees the write, and discards itself.
+		// a write committed between the condition read and the native batch: only the block's own check sees it
 		it('discards a fill whose condition read is overtaken by a committed write', async function () {
 			const id = 'stale-condition';
 			const invalidated = await seedInvalidated(id);
@@ -355,8 +410,6 @@ describe('Source fill racing a local write', function () {
 			if (isLMDB) this.skip();
 		});
 
-		// A write that commits between the fill's transactional read and its commit conflicts the fill's
-		// transaction; the retry re-reads the record and discards the fill.
 		it('discards a fill whose transaction is overtaken by a committed write', async function () {
 			const id = 'rocks-conflict';
 			await seedInvalidated(id);

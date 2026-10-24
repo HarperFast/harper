@@ -975,6 +975,7 @@ export function recordUpdater(store, tableId, auditStore) {
 		// them all; nested values keep their own toJSON serialization.
 		record = storedFieldsOnly(store.encoder, record);
 		const isRocksDB = store instanceof RocksDatabase;
+		let replacingAuditEntry;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
 			// with rocksdb, we simplify to just storing the singular version/timestamp
@@ -982,11 +983,14 @@ export function recordUpdater(store, tableId, auditStore) {
 		} else if (audit == null)
 			// if not auditing, there is no local timestamp to reference
 			timestampNextEncoding = NO_TIMESTAMP;
-		else if (resolveRecord)
-			// preserve existing timestamp, if possible
-			timestampNextEncoding = existingEntry?.localTime
-				? TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS
-				: NO_TIMESTAMP;
+		else if (
+			resolveRecord &&
+			existingEntry?.localTime &&
+			(replacingAuditEntry = auditStore.get(existingEntry.localTime, tableId, id, existingEntry.nodeId))
+		)
+			// keep the local time only while its audit entry is there to replace: an appended entry is keyed by the
+			// last assigned time, which is this write's own only when it assigns one
+			timestampNextEncoding = TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS;
 		else
 			timestampNextEncoding = audit // for audit, we need it
 				? existingEntry?.localTime // we already have a timestamp, we need to record the previous one in the audit log
@@ -1107,7 +1111,9 @@ export function recordUpdater(store, tableId, auditStore) {
 							}
 						}
 					}
-					replacingEntry ??= auditStore.get(replacingId, tableId, id, existingEntry.nodeId);
+					replacingEntry ??= isRocksDB
+						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId)
+						: replacingAuditEntry;
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](
