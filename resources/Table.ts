@@ -4019,6 +4019,7 @@ export function makeTable(options): TableResourceClass {
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
+							write,
 							tableToTrack: tableName,
 							recordVersion: txnTime,
 							additionalAuditRefs:
@@ -4108,6 +4109,7 @@ export function makeTable(options): TableResourceClass {
 							viaNodeId: options?.viaNodeId,
 							expiresAt: options.expiresAt,
 							transaction,
+							write,
 							recordVersion: txnTime,
 							additionalAuditRefs:
 								isRocksDB && audit && txnLogKey !== txnTime
@@ -5578,7 +5580,14 @@ export function makeTable(options): TableResourceClass {
 						residencyId = getResidencyId(residency);
 					}
 					// a caller that catches the refusal must not be able to commit it, even on a retry
-					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
+					if (
+						residencyId &&
+						committedBy?.replicatedConfirmation &&
+						!transaction?.isRetry &&
+						audit &&
+						!isCopyApply &&
+						!options?.localOnly
+					) {
 						try {
 							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
 						} catch (error) {
@@ -5705,6 +5714,7 @@ export function makeTable(options): TableResourceClass {
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
 								transaction,
+								write,
 								// no per-row db-write analytics for a bulk copy; system tables never track
 								tableToTrack: isCopyApply || databaseName === 'system' ? null : options?.replay ? null : tableName,
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
@@ -5863,7 +5873,6 @@ export function makeTable(options): TableResourceClass {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
 					write.skipped = false;
-					if (!transaction?.isRetry) write.skipReplicationConfirmation = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -5909,6 +5918,7 @@ export function makeTable(options): TableResourceClass {
 								nodeId: options?.nodeId,
 								viaNodeId: options?.viaNodeId,
 								transaction,
+								write,
 								tableToTrack: tableName,
 								recordVersion: txnTime,
 								additionalAuditRefs:
@@ -5923,7 +5933,6 @@ export function makeTable(options): TableResourceClass {
 					} else {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
-						write.skipReplicationConfirmation = true;
 					}
 					write.stagedEntry = stagedRemoval; // the key holds no record for the rest of this transaction
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
@@ -7738,6 +7747,7 @@ export function makeTable(options): TableResourceClass {
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
+							write,
 							tableToTrack: tableName,
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
@@ -10061,6 +10071,7 @@ export function makeTable(options): TableResourceClass {
 									expiresAt: sourceContext.expiresAt,
 									residencyId,
 									transaction,
+									write: sourceWrite,
 									tableToTrack: tableName,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
@@ -10086,6 +10097,7 @@ export function makeTable(options): TableResourceClass {
 									{
 										user: (sourceContext as any)?.user,
 										transaction,
+										write: sourceWrite,
 										tableToTrack: tableName,
 										recordVersion,
 										additionalAuditRefs:
