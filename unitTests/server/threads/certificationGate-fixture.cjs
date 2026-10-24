@@ -63,6 +63,19 @@ parentPort.on('message', (message) => {
 		parentPort.postMessage({ type: 'fixture-left' });
 		return;
 	}
+	if (message?.type === 'fixture-main-request') {
+		const { requestFromMainThread } = require('#js/server/threads/manageThreads');
+		requestFromMainThread(message.requestType, message.payload, message.timeoutMs).then(
+			(result) => parentPort.postMessage({ type: 'fixture-main-answer', tag: message.tag, result }),
+			(error) =>
+				parentPort.postMessage({
+					type: 'fixture-main-answer',
+					tag: message.tag,
+					error: { message: error.message, statusCode: error.statusCode },
+				})
+		);
+		return;
+	}
 	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) {
 		// Read now: a test can set an unheld worker's exit delay after the pool booted.
 		const unheld = step ? {} : JSON.parse(readFileSync(planPath, 'utf8'));
@@ -85,7 +98,7 @@ if (!workerData.certify) {
 	// Held for nothing, it still reports its load and binds only once admitted, after the plan's load time for such a start.
 	const { unheldLoadMs = 0 } = JSON.parse(readFileSync(planPath, 'utf8'));
 	setTimeout(
-		() => parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, components: [] }),
+		() => parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, components: [], applications: [] }),
 		unheldLoadMs
 	);
 } else {
@@ -108,6 +121,7 @@ function report() {
 	if (step.behavior === 'silent') return;
 	parentPort.postMessage({
 		type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
+		applications: [],
 		components: workerData.certify.map(({ component, deploymentId }) => {
 			const outcome = step.outcomes?.[component] ?? step.outcome;
 			return {
