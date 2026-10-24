@@ -3714,7 +3714,13 @@ export function makeTable(options): TableResourceClass {
 										// `.call(null, ...)` so `this` is a valid resource of the related type.
 										const relatedResource = new relatedTable(undefined, context);
 										if (!relatedResource.allowRead(user, property, context)) return false;
-										if (!property.select) return property.name; // no select was applied, just return the name
+										if (
+											!property.select &&
+											!property.sort &&
+											property.limit === undefined &&
+											property.offset === undefined
+										)
+											return property.name; // no select or sub-query was applied, just return the name
 									}
 									return property;
 								}

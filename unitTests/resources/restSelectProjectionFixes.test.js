@@ -35,7 +35,7 @@ describe('REST and operations API select projection fixes', function () {
 		return path;
 	}
 
-	async function restGet(url, extraHeaders = {}) {
+	async function restGet(url, extraHeaders = {}, user = superUser) {
 		const headerObject = { accept: 'application/json', ...extraHeaders };
 		const response = await restHttp(
 			{
@@ -43,7 +43,7 @@ describe('REST and operations API select projection fixes', function () {
 				url,
 				pathname: url.split('?')[0],
 				ip: '127.0.0.1',
-				user: superUser,
+				user,
 				headers: {
 					asObject: headerObject,
 					get: (name) => headerObject[name.toLowerCase()],
@@ -501,6 +501,37 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(collectionLimitRes.body[0].id, 'p1');
 			assert.deepStrictEqual(
 				collectionLimitRes.body[0].children.map((c) => c.id),
+				['c2']
+			);
+
+			const nonSuperUser = {
+				role: {
+					permission: {
+						super_user: false,
+						[dbName]: {
+							tables: {
+								Parent: { read: true, attribute_permissions: [] },
+								Child: { read: true, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			};
+			const nonSuperSingleRes = await restGet('/Parent/p1?select(id,children[sort(-id)&limit(1)])', {}, nonSuperUser);
+			assert.strictEqual(nonSuperSingleRes.status, 200);
+			assert.deepStrictEqual(
+				nonSuperSingleRes.body.children.map((c) => c.id),
+				['c2']
+			);
+
+			const nonSuperCollectionRes = await restGet(
+				'/Parent/?id=p1&select(id,children[sort(-id)&limit(1)])',
+				{},
+				nonSuperUser
+			);
+			assert.strictEqual(nonSuperCollectionRes.status, 200);
+			assert.deepStrictEqual(
+				nonSuperCollectionRes.body[0].children.map((c) => c.id),
 				['c2']
 			);
 		});

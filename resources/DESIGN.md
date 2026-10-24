@@ -258,7 +258,7 @@ A contract is `{ path, record?, get/post/put/patch/delete: { query?, body?, resp
   Missing targets preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object
   projection. Only callable values count as a Promise or `getRecord`, so method-like JSON keys are data;
   generic fallbacks treat function values as absent but keep inherited data and getters, and registered
-  resolver results pass through unchanged. Resolver dictionaries are read by own entries, the sub-transform
+  resolver results pass through unchanged. Resolver dictionaries are read by own entries, `Resource.transformForSelect`'s sub-transform
   cache is a `WeakMap` keyed by the selector object so no request-supplied name becomes a key, and a selected own `__proto__` is a data property on a normal response object. Pinned by
   `../unitTests/resources/nestedSelectMissingValues.test.js` and
   `../integrationTests/resources/relationship-and-status-contract.test.ts`. The `select` branch in `parseBlock` (`search.ts`) unwraps a single-argument `select(x)` only when that argument is not a named sub-select, keeping a single nested selector (`select(rel{a,b})` or `select(rel[select(a,b)])`) wrapped in its outer array and rejecting bracketed filter conditions inside `select(...)` with a 400 `SyntaxViolation`; [harper#1415](https://github.com/HarperFast/harper/issues/1415) remains open for single-attribute `select(attr)` returning 404 when the selected scalar value is null or missing. Still open, outside these helpers: [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168) and [a `__proto__` key poisoning a table, and proto-named attributes rejected at insert](https://github.com/HarperFast/harper/issues/1295).
