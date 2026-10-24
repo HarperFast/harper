@@ -76,9 +76,9 @@ const validateAlgorithms = {
 /**
  * Create a hash for the given password (MD5, SHA-256 or argon2id)
  * @param password Plain text password
- * @param algorithm Hashing algorithm to use (default: SHA-256)
+ * @param algorithm Hashing algorithm to use (default: the configured `authentication.hashFunction`)
  */
-export function hash(password: string, algorithm: HashFunction = HASH_FUNCTION.SHA256): string | Promise<string> {
+export function hash(password: string, algorithm: HashFunction = configuredHashFunction()): string | Promise<string> {
 	return hashAlgorithms[algorithm](password);
 }
 

@@ -45,11 +45,16 @@ describe('Test password module', function () {
 			assert.strictEqual(configuredHashFunction(), HASH_FUNCTION.SHA256);
 		});
 
-		it('does not change the hash/validate default, which stays synchronous SHA-256', function () {
+		it('hash defaults to the configured function, so a new password follows the policy', async function () {
 			env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, 'argon2id');
-			const hashedPass = hash(TEST_PASSWORD);
-			assert.strictEqual(typeof hashedPass, 'string');
-			assert.strictEqual(validate(hashedPass, TEST_PASSWORD, HASH_FUNCTION.SHA256), true);
+			assert((await hash(TEST_PASSWORD)).includes('$argon2id$'));
+			env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, 'sha256');
+			assert.strictEqual(typeof hash(TEST_PASSWORD), 'string');
+		});
+
+		it('validate defaults to synchronous SHA-256 whatever is configured', function () {
+			const hashedPass = hash(TEST_PASSWORD, HASH_FUNCTION.SHA256);
+			env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, 'argon2id');
 			assert.strictEqual(validate(hashedPass, TEST_PASSWORD), true);
 			assert.strictEqual(validate(hashedPass, 'wrong-password'), false);
 		});
