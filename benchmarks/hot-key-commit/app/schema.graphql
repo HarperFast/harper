@@ -1,0 +1,6 @@
+# Counter records for the hot-key commit benchmark. Audited, so every increment writes a
+# transaction-log entry before its RocksDB write.
+type Counter @table(audit: true) {
+	id: Int @primaryKey
+	count: Int
+}
