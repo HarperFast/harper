@@ -55,7 +55,7 @@ Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompu
 | `=`, `===`           | Strict equality (no type conversion)   |
 | `!==`                | Strict inequality (no type conversion) |
 
-Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. These use the full-text index rather than ordinary string comparisons. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
+Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. Each has a negated form: `=not_matches=`, `=not_matches_all=`, `=not_matches_phrase=`, `=not_matches_prefix=`, `=not_matches_fuzzy=`, and `=not_matches_fuzzy_prefix=`. Combine a negated condition with a positive full-text condition on the same index; a structured filter alone does not qualify. These use the full-text index rather than ordinary string comparisons. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
 **Examples**:
 

@@ -47,7 +47,7 @@ Detailed documentation: [Database Overview](../database/overview.md)
 
 ### `describe_all`
 
-Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#describe_table) described for `describe_table`.
+Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
 
 ```json
 { "operation": "describe_all" }
@@ -55,7 +55,7 @@ Returns the definitions of all databases and tables within the database. Record 
 
 ### `describe_database`
 
-Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#describe_table) described for `describe_table`.
+Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
 
 ```json
 { "operation": "describe_database", "database": "dev" }
@@ -63,11 +63,42 @@ Returns all table definitions within the specified database. Each table definiti
 
 ### `describe_table`
 
-Returns the definition of a specific table.
+Returns the definition of a specific table, including its schema and storage metadata.
 
 ```json
 { "operation": "describe_table", "table": "dog", "database": "dev" }
 ```
+
+#### Full-text indexes
+
+<VersionBadge version="v5.3.0" />
+
+A table with native full-text indexes includes `full_text_indexes`; each entry reports its query-only field name, source fields, analyzer options, enabled query modes, and `readiness` (`unknown`, `ready`, `needs-rebuild`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`. Query-only `FullText` fields do not appear in the ordinary `attributes` list.
+
+Requesting a table with full-text indexes:
+
+```json
+{ "operation": "describe_table", "table": "Product", "database": "catalog" }
+```
+
+The response also includes the table's ordinary schema and storage metadata. The relevant full-text fragment is:
+
+```json
+{
+	"name": "Product",
+	"full_text_indexes": [
+		{
+			"name": "catalogSearch",
+			"fields": [{ "name": "name", "weight": 3 }],
+			"analyzer": "english@2",
+			"query_modes": ["any", "all", "fuzzy", "phrase", "prefix", "fuzzy-prefix"],
+			"readiness": { "state": "ready", "owner_epoch": "4", "rebuild_attempts": 0 }
+		}
+	]
+}
+```
+
+#### Record-structure dictionaries
 
 <VersionBadge type="changed" version="v5.2.5" />
 
@@ -1688,7 +1719,7 @@ Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
 Updates configuration parameters in `harper-config.yaml`. Most changes require a restart (`restart` or `restart_service`) to take effect. See [Set Configuration](../configuration/operations.md#set-configuration) for full-text restart requirements.
 
-Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time); `restart_service` restarts only worker threads, though, so a change to [`threads.v8Flags`](../configuration/options.md#applying-v8-flags) takes effect only after a `restart` sent to each node in turn (`restart` does not replicate). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
+Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time); `restart_service` restarts only worker threads, though, so changes to [`threads.v8Flags`](../configuration/options.md#applying-v8-flags) or `storage.fullText.runtime.*` take effect only after a `restart` sent to each node in turn (`restart` does not replicate). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
 
 ```json
 {

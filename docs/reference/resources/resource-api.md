@@ -1035,7 +1035,7 @@ Array of condition objects to filter records. Each condition:
 | `conditions` | Nested conditions array                                                                                                                                  |
 | `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                      |
 
-Full-text conditions use `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, or `matches_fuzzy_prefix` against a declared full-text index. See [Full-text query execution](./query-optimization.md#full-text-search-work-and-paging) for paging costs and work limits.
+Full-text conditions use `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, or `matches_fuzzy_prefix` against a declared full-text index. Each comparator also has a `not_` form: `not_matches`, `not_matches_all`, `not_matches_phrase`, `not_matches_prefix`, `not_matches_fuzzy`, and `not_matches_fuzzy_prefix`. A negated condition requires a positive full-text condition on the same index. See [Full-text query execution](./query-optimization.md#full-text-search-work-and-paging) for paging costs and work limits.
 
 Example with nested conditions:
 
