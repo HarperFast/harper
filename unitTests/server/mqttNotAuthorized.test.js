@@ -44,9 +44,13 @@ function mqttListener() {
 	const server = { ws: (fn) => ((listener = fn), []), socket: () => ({}), mqtt };
 	handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
 	return (user) => {
-		const socket = { sends: [], handlers: {}, closes: 0, _socket: { remoteAddress: '127.0.0.1' } };
+		const socket = { sends: [], handlers: {}, closes: 0, terminations: 0, _socket: { remoteAddress: '127.0.0.1' } };
 		socket.close = () => socket.closes++;
-		socket.terminate = () => {};
+		// a terminated ws emits 'close' straight away, without waiting on the peer
+		socket.terminate = () => {
+			socket.terminations++;
+			setImmediate(() => socket.handlers.close?.());
+		};
 		socket.send = (message) => socket.sends.push(message);
 		socket.on = (event, handler) => (socket.handlers[event] = handler);
 		const headers = { 'sec-websocket-protocol': 'mqtt' };
@@ -308,41 +312,75 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		});
 	});
 
-	describe('a delivery that reaches a disconnected session', () => {
-		/** A subscription the test feeds by hand, so an update can arrive after the client has left. */
-		function handFedTopic() {
-			const name = `HandFed${++sequence}`;
-			const feed = { nexts: 0, returned: 0, deliver: undefined };
-			class HandFed extends Resource {
-				static subscribe() {
-					const iterator = {
-						next: () => {
-							feed.nexts++;
-							return new Promise((resolve) => (feed.deliver = (update) => resolve({ value: update, done: false })));
-						},
-						return: () => {
-							feed.returned++;
-							return Promise.resolve({ done: true });
+	/** A subscription the test feeds by hand, so it controls when, and after what, each update arrives. */
+	function handFedTopic() {
+		const name = `HandFed${++sequence}`;
+		const feed = { nexts: 0, returned: 0, deliver: undefined };
+		class HandFed extends Resource {
+			static subscribe() {
+				const iterator = {
+					next: () => {
+						feed.nexts++;
+						return new Promise((resolve) => (feed.deliver = (update) => resolve({ value: update, done: false })));
+					},
+					return: () => {
+						feed.returned++;
+						return Promise.resolve({ done: true });
+					},
+				};
+				return { [Symbol.asyncIterator]: () => iterator, end() {} };
+			}
+		}
+		Resources.resources.set(name, HandFed, { mqtt: true });
+		return { name, feed };
+	}
+
+	async function subscribed(user = superUser, protocolVersion = 5) {
+		const { name, feed } = handFedTopic();
+		const client = await connect(open, { user, protocolVersion });
+		assert.ok(client.sessions.has(client.session), 'the CONNECT did not register a session');
+		await client.subscribe(`${name}/#`);
+		await waitFor(() => feed.deliver, { message: 'the session never read its subscription' });
+		return { name, feed, client };
+	}
+
+	const publishesSent = (client) => client.parse().filter((packet) => packet.cmd === 'publish');
+
+	describe('a delivery to a connected session', () => {
+		for (const protocolVersion of [4, 5]) {
+			it(`sends a plain Uint8Array view as a valid PUBLISH (protocol ${protocolVersion})`, async () => {
+				const { name, feed, client } = await subscribed(superUser, protocolVersion);
+				// as decoded from the transaction log on a worker other than the publisher's
+				const view = new Uint8Array([0xee, 104, 105, 0xee]).subarray(1, 3);
+				feed.deliver({ type: 'message', id: 'k', value: { contentType: 'application/octet-stream', data: view } });
+				await waitFor(() => publishesSent(client).length === 1, { message: 'no PUBLISH was sent' });
+				const [publish] = publishesSent(client);
+				assert.strictEqual(publish.topic, `${name}/k`);
+				assert.strictEqual(publish.payload.toString(), 'hi');
+				assert.strictEqual(client.socket.terminations, 0);
+			});
+
+			it(`closes the connection when a message cannot be serialized (protocol ${protocolVersion})`, async () => {
+				const { feed, client } = await subscribed(superUser, protocolVersion);
+				const error = captureLog('error');
+				try {
+					const value = {
+						toJSON() {
+							throw new Error('unserializable');
 						},
 					};
-					return { [Symbol.asyncIterator]: () => iterator, end() {} };
+					feed.deliver({ type: 'message', id: 'k', value });
+					await waitFor(() => !client.sessions.has(client.session), { message: 'the session was left registered' });
+					assert.strictEqual(client.socket.terminations, 1, 'the connection was left open');
+					assert.ok(error.lines.some((line) => line[0]?.message === 'unserializable'));
+				} finally {
+					error.restore();
 				}
-			}
-			Resources.resources.set(name, HandFed, { mqtt: true });
-			return { name, feed };
+			});
 		}
+	});
 
-		async function subscribed(user = superUser) {
-			const { name, feed } = handFedTopic();
-			const client = await connect(open, { user });
-			assert.ok(client.sessions.has(client.session), 'the CONNECT did not register a session');
-			await client.subscribe(`${name}/#`);
-			await waitFor(() => feed.deliver, { message: 'the session never read its subscription' });
-			return { name, feed, client };
-		}
-
-		const publishesSent = (client) => client.parse().filter((packet) => packet.cmd === 'publish');
-
+	describe('a delivery that reaches a disconnected session', () => {
 		it('stops delivering and names the topic at debug level, not as an error', async () => {
 			const { name, feed, client } = await subscribed();
 			const debug = captureLog('debug');
@@ -381,7 +419,8 @@ describe('mqtt.ts reason codes for a refused request', () => {
 					message: 'the send failure was not logged',
 				});
 				await waitFor(() => feed.returned === 1, { message: 'the delivery loop did not stop' });
-				assert.strictEqual(client.sessions.has(client.session), false, 'the session was left registered');
+				await waitFor(() => !client.sessions.has(client.session), { message: 'the session was left registered' });
+				assert.strictEqual(client.socket.terminations, 1, 'the connection was left open');
 			} finally {
 				error.restore();
 			}
