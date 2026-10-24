@@ -254,13 +254,13 @@ class SubscriptionsSession {
 		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		let omitCurrent;
+		let omitCurrent = subscriptionRequest.omitCurrent === true;
 		if (existingSubscription) {
-			omitCurrent = retainHandling > 0;
+			omitCurrent ||= retainHandling > 0;
 			existingSubscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existingSubscription), 1);
 		} else {
-			omitCurrent = retainHandling === 2;
+			omitCurrent ||= retainHandling === 2;
 		}
 		if (startTime) trace('Resuming subscription from', topic, 'from', startTime);
 		const entry = resources.getMatch(path, 'mqtt');
@@ -672,11 +672,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const { qos, topic, startTime, databaseGeneration } = state.entry;
 			const durable = qos > 0;
 			try {
-				// retain handling, not omitCurrent, decides whether a subscription starts with current values
 				await this.resumeSubscription(
-					durable
-						? { omitCurrent: true, topic, qos, startTime, databaseGeneration, reportProgress: true }
-						: { topic, qos, rh: 2 },
+					durable ? { topic, qos, rh: 2, startTime, databaseGeneration, reportProgress: true } : { topic, qos, rh: 2 },
 					durable
 				);
 			} catch (error) {

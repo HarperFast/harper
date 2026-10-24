@@ -1297,3 +1297,79 @@ describe('MQTT durable sessions on LMDB', function () {
 		second.session.disconnect(true);
 	});
 });
+
+describe('MQTT durable record topics on resume', function () {
+	this.timeout(60_000);
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+	});
+
+	for (const qos of [1, 2]) {
+		it(`does not resend the record it already delivered (QoS ${qos})`, async () => {
+			const { T, name } = topicTable();
+			const topic = `${name}/r`;
+			const clientId = `record-resume-${qos}-${name}`;
+			await T.put('r', { value: 0 });
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic, qos, rh: 2 }, true);
+			await T.put('r', { value: 1 });
+			await waitFor(() => values(first.received).includes(1));
+			const deliveredKey = first.session.topics.get(topic).deliveredKey;
+			await ackAll(first.session, first.received);
+			await storedEntry(clientId, (entry) => entry.startTime >= deliveredKey);
+			first.session.disconnect(true);
+			await first.session.writes;
+
+			const second = await connect(clientId);
+			const requests = [];
+			const resumeSubscription = second.session.resumeSubscription;
+			second.session.resumeSubscription = function (request, ...rest) {
+				requests.push(request);
+				return resumeSubscription.call(this, request, ...rest);
+			};
+			await second.session.resume();
+			await T.put('r', { value: 2 });
+			await waitFor(() => values(second.received).includes(2));
+			assert.deepStrictEqual(values(second.received), [2], 'the acknowledged version is not sent again');
+			assert.strictEqual(requests[0].rh, 2, 'a resumed subscription asks for no retained values');
+			second.session.disconnect(true);
+		});
+	}
+
+	it('sends no current value to a request that asks to omit it, whatever its retain handling', async () => {
+		const { T, name } = topicTable();
+		await T.put('r', { value: 0 });
+		const { session, received } = await connect(`omit-current-${name}`);
+		await session.addSubscription({ topic: `${name}/r`, qos: 1, omitCurrent: true }, true);
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		assert.deepStrictEqual(values(received), [1]);
+		session.disconnect(true);
+	});
+
+	it('delivers only the newest version once when the record changed while away', async () => {
+		const { T, name } = topicTable();
+		const topic = `${name}/r`;
+		const clientId = `record-changed-${name}`;
+		await T.put('r', { value: 0 });
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(first.received).includes(1));
+		const deliveredKey = first.session.topics.get(topic).deliveredKey;
+		await ackAll(first.session, first.received);
+		await storedEntry(clientId, (entry) => entry.startTime >= deliveredKey);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('r', { value: 2 });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('r', { value: 3 });
+		await waitFor(() => values(second.received).includes(3));
+		assert.deepStrictEqual(values(second.received), [2, 3]);
+		second.session.disconnect(true);
+	});
+});

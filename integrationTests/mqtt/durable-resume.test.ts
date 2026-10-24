@@ -269,6 +269,58 @@ suite(
 			}
 		});
 
+		/**
+		 * Resume runs in turn with SUBSCRIBE, so this SUBACK means the resumed subscriptions are set up; the quiet
+		 * period then leaves the record untouched, so a resend of its current value cannot hide behind a newer write.
+		 */
+		async function resumed(subscribe: (topic: string) => Promise<void>) {
+			await subscribe(`Noise/barrier-${randomUUID().slice(0, 6)}`);
+			await sleep(500);
+		}
+
+		test('an acknowledged record topic resumes with nothing to send when the record did not change (QoS 1)', async () => {
+			const id = `qos1-quiet-${randomUUID().slice(0, 6)}`;
+			const clientId = `qos1-quiet-${randomUUID().slice(0, 6)}`;
+			await establish(clientId, `Readings/${id}`, 1, 5);
+			await settledEntry(clientId);
+			const received: number[] = [];
+			const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
+				received.push(JSON.parse(payload.toString()).value)
+			);
+			try {
+				strictEqual(sessionPresent, true);
+				await resumed((barrier) => subscribe(mqttClient, barrier, 1));
+				deepStrictEqual(received, [], 'the acknowledged version is not sent again');
+				await put('Readings', id, 2);
+				ok(await waitFor(() => received.includes(2)), `a later update arrives: ${received}`);
+				deepStrictEqual(received, [2]);
+			} finally {
+				await end(mqttClient);
+			}
+		});
+
+		test('a record topic that changed while away delivers the new version once (QoS 1)', async () => {
+			const id = `qos1-changed-${randomUUID().slice(0, 6)}`;
+			const clientId = `qos1-changed-${randomUUID().slice(0, 6)}`;
+			await establish(clientId, `Readings/${id}`, 1, 5);
+			await settledEntry(clientId);
+			await put('Readings', id, 2);
+			const received: number[] = [];
+			const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
+				received.push(JSON.parse(payload.toString()).value)
+			);
+			try {
+				strictEqual(sessionPresent, true);
+				await resumed((barrier) => subscribe(mqttClient, barrier, 1));
+				deepStrictEqual(received, [2], 'only the version written while away is delivered');
+				await put('Readings', id, 3);
+				ok(await waitFor(() => received.includes(3)), `a later update arrives: ${received}`);
+				deepStrictEqual(received, [2, 3]);
+			} finally {
+				await end(mqttClient);
+			}
+		});
+
 		test('a quiet topic keeps its session while other tables advance the log', async () => {
 			const clientId = `quiet-${randomUUID().slice(0, 6)}`;
 			const entry = await establish(clientId, 'Readings/#', 1, 5);
