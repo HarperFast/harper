@@ -130,7 +130,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		if (isProcessShuttingDown()) return [];
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
-		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()], await failedClosedApplications());
+		const failedClosed = await failedClosedApplications();
+		if (isProcessShuttingDown()) return [];
+		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()], failedClosed);
 		if (dedicatedPools.length > 0) dedicatedWorkerCount = 0;
 		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
 		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
