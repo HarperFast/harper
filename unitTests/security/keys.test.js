@@ -279,6 +279,63 @@ describe('Test keys module', () => {
 		expect(call).to.exist;
 	});
 
+	it('Test updateConfigCert skips tls_* writes when configured tls is an array', () => {
+		config_utils.getConfigFromFile.restore();
+		sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+			if (key === 'tls') {
+				return [
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+				];
+			}
+			if (key === 'rootPath') return root_path;
+			return undefined;
+		});
+		update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+		keys.updateConfigCert();
+		expect(update_config_value_stub.calledOnce).to.be.true;
+		const newCertsArg = update_config_value_stub.firstCall.args[2];
+		expect(Object.keys(newCertsArg).filter((k) => k.startsWith('tls_'))).to.deep.equal([]);
+	});
+
+	it('Test updateConfigCert skips flat tls_* and operationsApi_tls_* writes and logs a warning when sections are arrays', () => {
+		config_utils.getConfigFromFile.restore();
+		sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+			if (key === 'tls' || key === 'operationsApi_tls') {
+				return [
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+				];
+			}
+			if (key === 'rootPath') return root_path;
+			return undefined;
+		});
+		const warnStub = sandbox.stub();
+		const restoreLogger = keys.__set__('logger', { warn: warnStub });
+		const savedTlsCert = process.env.TLS_CERTIFICATE;
+		const savedOpsTlsCert = process.env.OPERATIONSAPI_TLS_CERTIFICATE;
+		process.env.TLS_CERTIFICATE = test_cert_path;
+		process.env.OPERATIONSAPI_TLS_CERTIFICATE = test_cert_path;
+		try {
+			update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+			keys.updateConfigCert();
+			expect(update_config_value_stub.calledOnce).to.be.true;
+			const newCertsArg = update_config_value_stub.firstCall.args[2];
+			expect(
+				Object.keys(newCertsArg).filter((k) => k.startsWith('tls_') || k.startsWith('operationsApi_tls_'))
+			).to.deep.equal([]);
+			expect(warnStub.calledTwice).to.be.true;
+			expect(warnStub.firstCall.args[0]).to.include('tls_certificate');
+			expect(warnStub.secondCall.args[0]).to.include('operationsApi_tls_certificate');
+		} finally {
+			restoreLogger();
+			if (savedTlsCert === undefined) delete process.env.TLS_CERTIFICATE;
+			else process.env.TLS_CERTIFICATE = savedTlsCert;
+			if (savedOpsTlsCert === undefined) delete process.env.OPERATIONSAPI_TLS_CERTIFICATE;
+			else process.env.OPERATIONSAPI_TLS_CERTIFICATE = savedOpsTlsCert;
+		}
+	});
+
 	it('hostnamesFromCert returns the correct hostnames', async () => {
 		const test_cert = {
 			subject: '',
