@@ -805,3 +805,110 @@ describe('readPayloadBlobWithRetry', () => {
 		);
 	});
 });
+
+describe('DeploymentRecorder.finish (harper#3062)', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	it('ends the deploy without sending an internal event through its emitter or into event_log', async () => {
+		const emitter = new ProgressEmitter();
+		const seen = [];
+		emitter.subscribe((event) => seen.push(event.event));
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter });
+		emitter.emit('phase', { phase: 'prepare', status: 'start' });
+		emitter.emit('phase', { phase: 'success', status: 'done' });
+		await recorder.finish('success');
+
+		assert.deepStrictEqual(seen, ['phase', 'phase']);
+		const persisted = await installed.mock.get(recorder.deploymentId);
+		assert.deepStrictEqual(
+			persisted.event_log.map((entry) => entry.event),
+			['phase', 'phase']
+		);
+	});
+});
+
+describe("a rolling deploy's own terminal write (harper#3060)", () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed?.restore());
+
+	it('keeps what the activation job already recorded rather than replacing it with its in-memory row', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer({ node: 'peer-a', status: 'success' });
+		recorder.seal();
+		const activation = { activated: false, certification: null, message: null, error: 'rejected', completed_at: 5 };
+		installed.mock.rows.set(recorder.deploymentId, {
+			...recorder.row,
+			status: 'partial',
+			completed_at: 10,
+			error: { message: 'Not activated on 1 of 1 peer node(s): peer-a (rejected)', nodes: ['peer-a'] },
+			peer_results: [{ node: 'peer-a', status: 'success', error: null, activation }],
+			event_log: [{ t: 5, event: 'peer_activation', data: { node: 'peer-a', error: 'rejected' } }],
+		});
+		await recorder.finish('rolling_out');
+		const stored = installed.mock.rows.get(recorder.deploymentId);
+		assert.strictEqual(stored.status, 'partial');
+		assert.deepStrictEqual(stored.error.nodes, ['peer-a']);
+		assert.deepStrictEqual(stored.peer_results[0].activation, activation);
+		assert.ok(stored.event_log.some((entry) => entry.event === 'peer_activation'));
+	});
+});
+
+describe('ending a rolling deploy record whose activation job was interrupted (harper#3060)', () => {
+	const { settleInterruptedRollouts } = require('#src/components/deploymentRecorder');
+	const { hostname } = require('node:os');
+	const JOB_TABLE = terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME;
+	let installed;
+	let priorJobs;
+	let jobs;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+		installed.mock.search = async function* (conditions) {
+			for (const row of installed.mock.rows.values()) {
+				if (conditions.every(({ attribute, value }) => row[attribute] === value)) yield row;
+			}
+		};
+		jobs = new Map();
+		priorJobs = databases.system[JOB_TABLE];
+		databases.system[JOB_TABLE] = { get: async (id) => jobs.get(id) };
+	});
+	afterEach(() => {
+		installed?.restore();
+		if (databases.system) databases.system[JOB_TABLE] = priorJobs;
+	});
+
+	const rollout = (id, jobStatus, peers, extra = {}) => {
+		jobs.set(`job-${id}`, { id: `job-${id}`, status: jobStatus });
+		installed.mock.rows.set(id, {
+			deployment_id: id,
+			status: 'rolling_out',
+			origin_node: hostname(),
+			restart_job_id: `job-${id}`,
+			peer_results: peers,
+			...extra,
+		});
+	};
+	const took = (node) => ({ node, activation: { activated: true } });
+
+	it('ends each record its interrupted job left, and leaves a running job and another node alone', async () => {
+		rollout('interrupted', 'ERROR', [took('a'), { node: 'b' }]);
+		rollout('finished', 'COMPLETE', [took('a'), took('b')]);
+		rollout('running', 'IN_PROGRESS', [took('a'), { node: 'b' }]);
+		rollout('elsewhere', 'ERROR', [{ node: 'b' }], { origin_node: 'another-node' });
+
+		assert.strictEqual(await settleInterruptedRollouts(), 2);
+		const rows = installed.mock.rows;
+		assert.strictEqual(rows.get('interrupted').status, 'partial');
+		assert.deepStrictEqual(rows.get('interrupted').error.nodes, ['b']);
+		assert.match(rows.get('interrupted').error.message, /job-interrupted ended without finishing this record/);
+		assert.strictEqual(rows.get('finished').status, 'success');
+		assert.strictEqual(rows.get('running').status, 'rolling_out');
+		assert.strictEqual(rows.get('elsewhere').status, 'rolling_out');
+	});
+});

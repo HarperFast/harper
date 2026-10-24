@@ -1112,6 +1112,8 @@ export async function extractApplication(
 // non-recursive `rm` of a directory. `assertApplicationConfig` rejects any name `isJoinableComponentName`
 // rejects, so the collision is unreachable from a root-config key as well as from a deploy.
 const CANDIDATE_COMPLETE_MARKER = '.complete';
+// The content of a kept release's `.complete`; a build that was never live has an empty one.
+const KEPT_RELEASE_MARKER = 'kept';
 // Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
 // tree and configuration together — instead of inferring intent from filesystem shape alone.
 const ACTIVATION_JOURNAL = '.activation.json';
@@ -1609,6 +1611,65 @@ async function readDeploymentProvenance(treePath: string, componentName: string)
 	return raw === undefined ? undefined : parseDeploymentProvenance(raw, componentName);
 }
 
+export function liveDeploymentIdOf(componentsRootDirPath: string, componentName: string): Promise<string | undefined> {
+	return readDeploymentProvenance(join(componentsRootDirPath, componentName), componentName);
+}
+
+export interface KeptRelease {
+	deployment_id: string;
+	/** `staged`: built and never live on this node; `kept`: the release an activation replaced here. */
+	state: 'staged' | 'kept';
+	/** When it was built, or for a kept release, replaced. */
+	at: number;
+	size: number;
+}
+
+/**
+ * The releases a component's `deployment_id` can activate on this node: its dormant builds, as retention counts
+ * them, so residue and other components' builds are left out. Read without the preparation lock, so it describes
+ * the moment it was read; a build mid-activation can appear or vanish.
+ */
+export async function keptReleasesOf(componentsRootDirPath: string, componentName: string): Promise<KeptRelease[]> {
+	const releases: KeptRelease[] = [];
+	for (const build of await dormantBuildsOf(componentsRootDirPath, componentName)) {
+		const complete = await readFile(join(build.deploymentDirPath, CANDIDATE_COMPLETE_MARKER), 'utf8').catch(() => '');
+		releases.push({
+			deployment_id: build.deploymentId,
+			state: complete === KEPT_RELEASE_MARKER ? 'kept' : 'staged',
+			at: Math.round(build.completedAt),
+			size: await treeSize(join(build.deploymentDirPath, componentName)),
+		});
+	}
+	return releases.sort((left, right) => right.at - left.at);
+}
+
+/** Every component with a live tree or a deployment directory on this node, so a stage nobody activated counts. */
+export async function componentsWithReleases(componentsRootDirPath: string): Promise<string[]> {
+	const names = new Set<string>();
+	for (const entry of await readdir(componentsRootDirPath, { withFileTypes: true }).catch(() => [])) {
+		if ((entry.isDirectory() || entry.isSymbolicLink()) && isJoinableComponentName(entry.name)) names.add(entry.name);
+	}
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	for (const entry of await readdir(stagingRoot, { withFileTypes: true }).catch(() => [])) {
+		if (!isDeploymentDirectoryEntry(entry)) continue;
+		const owner = await candidateComponentName(join(stagingRoot, entry.name)).catch(() => undefined);
+		if (isJoinableComponentName(owner)) names.add(owner);
+	}
+	return [...names].sort();
+}
+
+/** Bytes of every regular file under a tree, without following links. */
+async function treeSize(dirPath: string): Promise<number> {
+	let total = 0;
+	const entries = await readdir(dirPath, { withFileTypes: true }).catch(() => []);
+	for (const entry of entries) {
+		const entryPath = join(dirPath, entry.name);
+		if (entry.isDirectory()) total += await treeSize(entryPath);
+		else if (entry.isFile()) total += (await lstat(entryPath).catch(() => undefined))?.size ?? 0;
+	}
+	return total;
+}
+
 async function isDeploymentRecord(deploymentDirPath: string, componentName: string): Promise<boolean> {
 	if ((await candidateComponentName(deploymentDirPath)) !== componentName) return false;
 	if (!(await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER)))) return false;
@@ -1665,8 +1726,14 @@ async function keepsDeploymentRecord(deploymentDirPath: string): Promise<boolean
 	return presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE)).then(Boolean, () => true);
 }
 
-/** Retention orders by `.complete`'s mtime, and a kept release has to outrank stages nobody activated. */
+/**
+ * Retention orders by `.complete`'s mtime, and a kept release has to outrank stages nobody activated. Its content,
+ * which nothing that settles or retains a build reads, says the build was live here once (`list_releases`).
+ */
 async function refreshCompletedAt(deploymentDirPath: string, componentName: string, deploymentId: string) {
+	await writeFile(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER), KEPT_RELEASE_MARKER).catch((error) =>
+		logger.debug?.(`Could not mark deployment ${deploymentId} of ${componentName} as kept: ${errorMessage(error)}`)
+	);
 	for (let attempt = 1; ; attempt++) {
 		const now = new Date();
 		try {

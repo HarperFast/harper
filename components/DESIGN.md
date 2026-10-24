@@ -596,6 +596,11 @@ deploymentId }` — at the top of every candidate it extracts, after the install
   replicated deploy of an id this node already holds — only a hand-crafted `_deploymentId` produces one — is refused
   by the claim. A record whose release is neither live nor kept answers 404, where a missing tree used to answer 409.
 
+**`list_releases` reports what a node holds** (`components/releaseOperations.ts`, #3059): the live marker's id and
+every dormant build retention counts (`keptReleasesOf`), with `state`, `at` (`.complete`'s mtime) and tree size.
+`state` is `kept` when `.complete` holds `kept`, which `refreshCompletedAt` writes when an activation displaces a
+release, else `staged`; recovery checks the record's file set, not that content. Sizing makes it its own operation.
+
 **A record is stale only when nothing refers to it.** "Not live" is not enough: a crash after the commit and
 before the re-home leaves the displaced release's record and its tree in `.deploy-aside`, and a boot scan can
 reach the record before the journal that will re-home into it — the record would be deleted and its only tree
@@ -809,28 +814,51 @@ dependencies and leave the same lockfile, or none. Lockfiles written against dif
 differ while the code matches. This prevents nothing, and a restart can still re-resolve a package component
 (`installConfiguredApplication`) with no report.
 
+## The deployment record (`system.hdb_deployment`)
+
+`DeploymentRecorder` (`components/deploymentRecorder.ts`) owns one row per deploy on its receiving node and logs each
+`ProgressEmitter` event in `event_log`. Nothing internal travels through that emitter, which every subscriber sees
+(#3062): a `get_deployment` tail ends on the promise `finish()` settles after its terminal write.
+
+### A rolling deploy's record follows its activation job
+
+The origin finishes a certified rolling deploy `rolling_out` with `restart_job_id` (#3060). The job, on that node,
+loads the node list itself (a job thread starts with an empty `server.nodes`), adds each peer's outcome to its
+`peer_results` entry as `activation`, and ends the row `success`, or `partial` with `error.nodes`. It waits once, up
+to ten minutes, for the origin's `rolling_out` write, since a later put of the origin's in-memory row would erase its
+own; an origin that writes last keeps the stored outcomes (`keepRolloutProgress`). Writes land
+`rolloutTiming.writeSpacingMs` apart, since a burst to one row can commit out of order on a loaded peer (#1170). A job
+that throws ends the row `partial` itself (`abandonRollout`); one a restart cut short is ended at boot
+(`settleInterruptedRollouts`). `harper deploy restart=rolling` follows the record rather than `hdb_job`, which does
+not replicate (`bin/deployRollout.ts`, #3058), polling with the deploy's own token; a 401/403 ends the wait at once.
+
+**A deployment records where it came from.** `source` (#3061) is `via: 'oidc'` when the exchange signed the policy and
+the run's verified claims into the operation token (security/DESIGN.md), else `via: 'declared'`, the client's own word
+(`bin/deploySource.ts`). `deploymentSource` keeps known fields as capped strings, forces a declared one to say
+`declared`, and lets an attested one win.
+
+**Failed deploys keep their payloads only so long.** `sweepFailedPayloads` (`components/payloadRetention.ts`, #2681)
+drops a project's `failed` payloads beyond `failedMaxCount` or older than `failedMaxAge`, never its newest; rows rank
+across the cluster, but each node drops only those it wrote (`origin_node`).
+
+**`get_components` says when the live release was deployed and when it last loaded.** `deployed_at` (#564) is the
+`completed_at` of the released row whose `deployment_id` or `activated_from` is the live marker's id, else of a
+`failed` row naming it (swapped here, failed on a peer); `restarted_at` is `ComponentStatus.loadedAt`.
+
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
-Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
-tar-fs's own walker calls `fs.stat` (not `lstat`) on every discovered entry when dereferencing; a
-dangling symlink's target throws `ENOENT`, and tar-fs's `statAll` loop treats _any_ `ENOENT` from
-a walk-discovered (not explicitly-requested) entry as end-of-stream — it calls `pack.finalize()`
-immediately, silently dropping every entry still queued (BFS order) after the link. No error is
-ever emitted, so `packStream.on('error', ...)` never fires and `deploy_component` reports success
-on a truncated archive. `scanPackageDirectory()` now pre-walks the tree once (async) to build a
-skip-set of dangling symlinks, which `streamPackagedDirectory`'s `tar.pack({ ignore })` consults via
-a synchronous `Set.has()` — **`ignore` is called synchronously by tar-fs with no Promise support**,
-so any fix here has to resolve the dangling set _before_ constructing `tar.pack`, not from inside
-the callback (an earlier draft used `lstatSync`/`statSync` per entry there, which would have added
-blocking I/O to a path that also runs inline on the Harper server's event loop via the
-`package_component` operation). The scan recurses into _valid_ symlinked directories the same way
-tar-fs's dereferenced walk does (readdir through the link), since a dangling symlink nested inside
-one is just as capable of tripping the same early-finalize — skipping recursion into symlinked
-dirs there would silently reintroduce the bug for that case. Circular directory symlinks are not
-guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existing tar-fs limitation
-this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
-declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
-other future cause would still report success silently; that's a deferred, separate fix.
+With `dereference: true`, tar-fs `stat`s every walked entry, and its `statAll` loop treats an `ENOENT` from a
+walk-discovered entry as end-of-stream: `pack.finalize()` drops everything still queued, emitting no error, so the
+deploy reported success on a truncated archive. `scanPackageDirectory()` pre-walks the tree for dangling symlinks,
+recursing through valid symlinked directories as tar-fs does, and `tar.pack({ ignore })` checks that set with
+`Set.has()`, since tar-fs calls `ignore` synchronously on a path that also runs on the server's event loop. Circular
+directory symlinks stay unguarded, as in tar-fs itself.
+
+### A deploy warns when an entry point its config declares did not arrive (`components/declaredEntryPoints.ts`)
+
+Before the swap (`validateCandidate`), a deploy warns of each `jsResource`/`graphqlSchema` `files` pattern in the
+component's own config that matches nothing in the built candidate (#1719), not of `DEFAULT_CONFIG`'s optional files.
+It warns rather than fails because deleting an application's only resource file by redeploying is a tested workflow.
 
 ## The packer never ships the loader's links to the install (`components/packageComponent.ts`)
 

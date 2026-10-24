@@ -39,6 +39,7 @@ import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
+import * as releaseOperations from '../../components/releaseOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import * as trustPolicyOperations from '../../security/authn/oidc/trustPolicyOperations.ts';
 import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
@@ -782,6 +783,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_RELEASES, new OperationFunctionObject(releaseOperations.handleListReleases));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD,
 		new OperationFunctionObject(deploymentOperations.handleGetDeploymentPayload)

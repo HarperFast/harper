@@ -94,6 +94,12 @@ async function loadRootComponents(isWorkerThread = false) {
 	if (isMainThread) {
 		require('./jobs/jobOwnership.ts')
 			.reconcileInterruptedJobsOnce()
+			// A rolling deploy's record is ended by its job, so settle the records once their jobs are.
+			.then(() => require('../components/deploymentRecorder.ts').settleInterruptedRolloutsOnce())
+			.catch((error) => console.error(errorForLog(error)));
+		// Same shape: once per process, not awaited; expiring old payloads is no reason to hold up boot.
+		require('../components/payloadRetention.ts')
+			.sweepFailedPayloadsOnce()
 			.catch((error) => console.error(errorForLog(error)));
 	}
 

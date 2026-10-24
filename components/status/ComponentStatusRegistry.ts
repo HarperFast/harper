@@ -73,8 +73,14 @@ export class ComponentStatusRegistry {
 			if (source !== undefined) existing.source = source;
 			existing.occurrenceCount++;
 		} else {
-			this.statusMap.set(componentName, new ComponentStatus(status, sanitizedMessage, sanitizedError, source));
+			const next = new ComponentStatus(status, sanitizedMessage, sanitizedError, source);
+			if (existing?.loadedAt) next.loadedAt = existing.loadedAt;
+			this.statusMap.set(componentName, next);
 		}
+	}
+
+	private markLoadEnded(componentName: string): void {
+		this.statusMap.get(componentName)!.loadedAt = new Date();
 	}
 
 	/**
@@ -128,6 +134,7 @@ export class ComponentStatusRegistry {
 	 */
 	public markLoaded(componentName: string, message?: string): void {
 		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.HEALTHY, message || 'Component loaded successfully');
+		this.markLoadEnded(componentName);
 	}
 
 	/**
@@ -135,6 +142,7 @@ export class ComponentStatusRegistry {
 	 */
 	public markFailed(componentName: string, error: Error | string, message?: string): void {
 		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error);
+		this.markLoadEnded(componentName);
 	}
 
 	/**
@@ -261,11 +269,17 @@ export class ComponentStatusRegistry {
 			}
 		}
 
+		let loadedAt: number | undefined;
+		for (const status of allStatuses) {
+			if (status.loadedAt !== undefined) loadedAt = Math.max(loadedAt ?? 0, status.loadedAt);
+		}
+
 		return {
 			status: overallStatus,
 			message: overallMessage,
 			...(Object.keys(details).length > 0 && { details }),
 			lastChecked: allStatuses[0]?.lastChecked || { workers: {} },
+			...(loadedAt !== undefined && { loadedAt }),
 		};
 	}
 }

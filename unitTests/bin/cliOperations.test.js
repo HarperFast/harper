@@ -647,6 +647,122 @@ describe('cliOperations', () => {
 		});
 	});
 
+	describe('following a rolling deploy until every node has taken it (harper#3058)', () => {
+		const target = 'https://example.com:9925/';
+		const ID = '22222222-2222-2222-2222-222222222222';
+		let originalExit;
+		let originalConsoleError;
+		let originalConsoleLog;
+		let errorLines;
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+			originalExit = process.exit;
+			process.exit = (code) => {
+				throw new ProcessExitSignal(code);
+			};
+			errorLines = [];
+			originalConsoleError = console.error;
+			console.error = (...args) => errorLines.push(args.join(' '));
+			originalConsoleLog = console.log;
+			console.log = () => {};
+		});
+
+		afterEach(() => {
+			if (originalExit) process.exit = originalExit;
+			if (originalConsoleError) console.error = originalConsoleError;
+			if (originalConsoleLog) console.log = originalConsoleLog;
+		});
+
+		const sseDoneResponse = (result) =>
+			Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
+				statusCode: 200,
+				headers: { 'content-type': 'text/event-stream' },
+			});
+
+		function cluster(records) {
+			const calls = [];
+			let read = 0;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				if (req.operation === 'registration_info')
+					return { statusCode: 200, body: JSON.stringify({ version: '5.4.0' }) };
+				if (req.operation === 'get_deployment') {
+					return { statusCode: 200, body: JSON.stringify(records[Math.min(read++, records.length - 1)]) };
+				}
+				return sseDoneResponse({ message: 'activating', status: 'rolling_out', deployment_id: ID, restartJobId: 'j' });
+			};
+			return calls;
+		}
+
+		const deploy = (extra = {}) =>
+			cliOperationsModule.cliOperations(
+				{
+					operation: 'deploy_component',
+					package: '@scope/widget',
+					project: 'widget',
+					restart: 'rolling',
+					target: 'example.com',
+					...extra,
+				},
+				true
+			);
+
+		const activated = (node) => ({ node, activation: { activated: true, certification: 'certified' } });
+
+		it('waits on get_deployment, with the credential the deploy used, and exits 0 once the last node took it', async () => {
+			const calls = cluster([
+				{ deployment_id: ID, status: 'rolling_out', peer_results: [activated('peer-a'), { node: 'peer-b' }] },
+				{ deployment_id: ID, status: 'success', peer_results: [activated('peer-a'), activated('peer-b')] },
+			]);
+			const result = await deploy({ wait_timeout: 60000 });
+
+			const polls = calls.filter(({ req }) => req.operation === 'get_deployment');
+			assert.strictEqual(polls.length, 2);
+			assert.deepStrictEqual(polls[0].req, { operation: 'get_deployment', deployment_id: ID });
+			assert.strictEqual(polls[0].options.headers.Authorization, 'Bearer valid-token');
+			assert.strictEqual(polls[0].options.streamResponse, undefined);
+			const sent = calls.find(({ req }) => req.operation === 'deploy_component').req;
+			assert.strictEqual(sent.wait_timeout, undefined, 'wait options never reach the server');
+			assert.strictEqual(result.rollout.status, 'success');
+			assert.ok(errorLines.includes('  peer-b: took the release (certified)'));
+		});
+
+		it('exits non-zero naming a node whose canary rejected the release', async () => {
+			cluster([
+				{
+					deployment_id: ID,
+					status: 'partial',
+					peer_results: [
+						activated('peer-a'),
+						{ node: 'peer-b', activation: { activated: false, error: 'release failed to load in its canary worker' } },
+					],
+					error: {
+						message: 'Not activated on 1 of 2 peer node(s): peer-b (release failed to load in its canary worker)',
+					},
+				},
+			]);
+			await assert.rejects(deploy(), (error) => error instanceof ProcessExitSignal && error.code === 1);
+			assert.ok(errorLines.some((line) => line.startsWith('error: Not activated on 1 of 2 peer node(s): peer-b')));
+		});
+
+		it('refuses a wait_timeout it cannot use before sending anything', async () => {
+			const calls = cluster([{ deployment_id: ID, status: 'success' }]);
+			await assert.rejects(deploy({ wait_timeout: '10m' }), (error) => error instanceof ProcessExitSignal);
+			assert.ok(errorLines.some((line) => line.includes('wait_timeout must be a number of milliseconds')));
+			assert.strictEqual(calls.filter(({ req }) => req.operation === 'deploy_component').length, 0);
+		});
+
+		it('keeps the old behavior with wait=false', async () => {
+			const calls = cluster([{ deployment_id: ID, status: 'partial' }]);
+			const result = await deploy({ wait: false });
+			assert.strictEqual(calls.filter(({ req }) => req.operation === 'get_deployment').length, 0);
+			assert.strictEqual(result.rollout, undefined);
+			assert.strictEqual(calls.find(({ req }) => req.operation === 'deploy_component').req.wait, undefined);
+		});
+	});
+
 	describe('"Harper is not running" messaging (harper#658)', () => {
 		const NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
 

@@ -18,6 +18,7 @@ import * as env from '../../../utility/environment/environmentManager.ts';
 import { AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES, CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import { getUserWithRole } from '../../user.ts';
 import { createOperationToken } from '../../tokenAuthentication.ts';
+import { attestedSource } from '../../../components/deploymentSource.ts';
 import { rejectToken, verifyIdentityToken } from './identityToken.ts';
 import { matchTrustPolicyClaims } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
@@ -251,7 +252,9 @@ export async function exchangeOidcToken(req: any) {
 				super_user: user.role?.permission?.super_user === true,
 				operations: policy.operations,
 			},
-			EXCHANGED_TOKEN_LIFETIME_SECONDS
+			EXCHANGED_TOKEN_LIFETIME_SECONDS,
+			// What a deploy made with this token records as its attested source.
+			attestedSource(policy.id, claims)
 		);
 		if (policy.operations?.length) audit.scoped_operations = policy.operations;
 
