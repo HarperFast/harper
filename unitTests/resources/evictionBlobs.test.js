@@ -154,14 +154,19 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 
 	it('removes the index keys of the record it removes when a resequenced write reused the version', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip(); // only RocksDB resequences under a reused version
-		await UnauditedBlobs.put({ id: 'resequenced', tag: 'read' });
+		// seeded without tag: remainingAgainstRecord drops an older plain assignment to a key the record holds
+		await UnauditedBlobs.put({ id: 'resequenced' });
 		const { version: baseVersion } = UnauditedBlobs.primaryStore.getEntry('resequenced');
 		await UnauditedBlobs.patch('resequenced', { blob: null }, { timestamp: baseVersion + 100 });
 		const read = UnauditedBlobs.primaryStore.getEntry('resequenced');
 		await UnauditedBlobs.patch('resequenced', { tag: 'merged' }, { timestamp: baseVersion + 50 });
 		const merged = UnauditedBlobs.primaryStore.getEntry('resequenced');
+		const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+		assert.ok(merged.metadataFlags & VERSION_REUSED, 'precondition: a real resequence marked the version reused');
 		assert.equal(merged.version, read.version, 'precondition: the resequenced write kept the version the caller read');
 		assert.equal(merged.value.tag, 'merged');
+		assert.equal(read.value.tag, undefined, "precondition: the caller's copy lacks the merged index key");
+		assert.equal(UnauditedBlobs.indices.tag.getValuesCount('merged'), 1, 'precondition: the merge indexed its tag');
 
 		await UnauditedBlobs.evict('resequenced', read.value, read.version);
 		const present = UnauditedBlobs.primaryStore.getEntry('resequenced') ? 1 : 0;

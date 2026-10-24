@@ -108,6 +108,7 @@ const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
 // record of why a request was failed. Mutates only when it grants, so a caller with its own
 // suppression as well (checkOverloaded's per-node `logged`) must test that first.
 const lastStuckCommitLogAt = { shed: -Infinity, abandon: -Infinity, overdue: -Infinity };
+let lastOverloadStatusAt = -Infinity;
 function allowStuckCommitLog(site: 'shed' | 'abandon' | 'overdue', now: number): boolean {
 	if (now - lastStuckCommitLogAt[site] <= OVERLOAD_LOG_MIN_INTERVAL_MS) return false;
 	lastStuckCommitLogAt[site] = now;
@@ -703,6 +704,7 @@ export type TransactionWrite = {
 	stagedIn?: DatabaseTransaction;
 	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
 	priorWrite?: TransactionWrite;
+	keyId?: unknown;
 	// set only by a write that BOTH reads priorStagedWrite() and publishes stagedEntry; addWrite orders
 	// those against earlier same-key writes. A write that does one or neither would be ordered against a
 	// basis it cannot consume.
@@ -767,10 +769,6 @@ export function validateWrite(operation: TransactionWrite, txnTime: number, tran
 	} finally {
 		if (generation) generation.internalWrites--;
 	}
-}
-
-export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
-	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
 }
 
 /**
@@ -1302,7 +1300,7 @@ export class DatabaseTransaction implements Transaction {
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
-		const keyId = writeKeyId(operation.key);
+		const keyId = (operation.keyId = writeKeyId(operation.key));
 		const priorWrite = writesForStore.get(keyId);
 		if (priorWrite) operation.priorWrite = priorWrite;
 		writesForStore.set(keyId, operation);
@@ -1861,6 +1859,10 @@ export class DatabaseTransaction implements Transaction {
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
 			}
+			if (now - lastOverloadStatusAt > 15_000) {
+				lastOverloadStatusAt = now;
+				harperLogger.status({ problem: 'database.write-queue-overloaded', expires: 60 });
+			}
 			throw new ServerError('Outstanding write transactions have too long a queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
@@ -2235,9 +2237,9 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 			(transaction as RocksTransactionWithRetry).retries = this.retries;
 		} else if (!remoteOrigin) {
-			// Before the first staged write, which freezes the native timestamp. A key below the floor's
-			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
-			// record version, and the entry then carries both clocks as an applied write does.
+			// Before the first staged write, which freezes the native timestamp. The key is always a minted
+			// one, replaced on the handle only: `txnTime` keeps an explicit value as the record version, and
+			// the entry then carries both clocks as an applied write does.
 			const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
 			if (!txnTime) {
 				txnTime = key;
@@ -2260,12 +2262,12 @@ export class DatabaseTransaction implements Transaction {
 				this.save(pendingWrites[index], transaction, false, options);
 			operation.pendingPriorWrite = null;
 		}
-		// `txnTime` is this transaction's timestamp — the key its entries take in the per-origin log.
-		// A write applied from elsewhere carries the origin's record version too, and that is what the
-		// record is stored at; the two coincide for every locally-originated write. Gated on the apply
-		// flags so an ordinary write never reads the property (harper#2412).
-		const writeVersion =
-			this.sourceApply || this.isReplay ? getAppliedWriteVersion(operation.recordVersion, txnTime) : txnTime;
+		// `txnTime` is this transaction's timestamp: the record version, and the log key for a write that
+		// minted it. A write applied from elsewhere carries the origin's record version, which may sit
+		// above the origin's log key (an explicit timestamp ahead of its clock), and that is what the
+		// record is stored at. Gated on the apply flags so an ordinary write never reads the property
+		// (harper#2412).
+		const writeVersion = this.sourceApply || this.isReplay ? (operation.recordVersion ?? txnTime) : txnTime;
 		// A base that feeds stored state must come from this transaction's snapshot, never the
 		// cross-worker cache vouch (stale when a resequenced write reused a version). That closes the
 		// lost-update window only when this transaction holds a snapshot to validate the later Put
@@ -4344,6 +4346,7 @@ function startMonitoringTxns() {
 					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
 					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
 					// those, keep the prior force-commit behavior below.
+					harperLogger.status({ problem: 'database.txn-open-too-long', expires: 120 });
 					harperLogger.error(
 						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
 							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +

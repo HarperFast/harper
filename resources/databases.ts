@@ -15,7 +15,7 @@ import {
 	realpathSync,
 	unlinkSync,
 } from 'node:fs';
-import { rm, unlink } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
@@ -73,7 +73,12 @@ import { commonValidators, schemaRegex } from '../validation/common_validators.t
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
-import { registryStatus, RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import {
+	getRegistryStatus,
+	RocksDatabase,
+	supportedCompression,
+	type RocksDatabaseOptions,
+} from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import {
 	databaseCommitsSuspended,
@@ -144,7 +149,21 @@ function createOpenDBIObject(dupSort = false, isPrimary = false) {
 }
 // lmdb allocates a 16 MB native buffer per thread on load, so it is loaded only when an LMDB store is opened
 function openLmdb(options: Parameters<typeof import('lmdb').open>[0]): RootDatabase {
-	return (require('lmdb') as typeof import('lmdb')).open(options);
+	const environment = (require('lmdb') as typeof import('lmdb')).open(options);
+	// lmdb resolves a root's close() before the native close while reads are in flight on an environment that has
+	// not written; its close callback runs only once the environment is closed
+	const close = environment.close as (callback: () => void) => Promise<void> | undefined;
+	let closed: Promise<void> | undefined;
+	environment.close = function () {
+		return (closed ??= new Promise<void>((resolve, reject) => {
+			try {
+				close.call(this, resolve)?.catch(reject);
+			} catch (error) {
+				reject(error);
+			}
+		}));
+	};
+	return environment;
 }
 // The __dbis__ metadata DBI is non-versioned (OpenDBIObject useVersions=false); only versioned
 // primary stores carry the per-record metadata prefix. lmdb/rocksdb don't forward `useVersions` to
@@ -1903,7 +1922,9 @@ function initStores(
 					}
 				}
 			} catch (error) {
-				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
+				logger
+					.status({ problem: 'database.attribute-update' })
+					.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
 			}
 		}
 		// Collect removals first; splicing while iterating `existingAttributes` skips adjacent
@@ -1914,18 +1935,20 @@ function initStores(
 			const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 			if (!attribute) {
 				if (existingAttribute.isPrimaryKey) {
-					logger.error(
-						new Error('Unable to remove existing primary key attribute'),
-						existingAttribute,
-						'from attributes',
-						existingAttributes,
-						'in',
-						tableName,
-						'requesting new attribute list',
-						attributes,
-						'full metadata list',
-						Array.from(attributesDbi.getRange({ start: false }))
-					);
+					logger
+						.status({ problem: 'database.primary-key' })
+						.error(
+							new Error('Unable to remove existing primary key attribute'),
+							existingAttribute,
+							'from attributes',
+							existingAttributes,
+							'in',
+							tableName,
+							'requesting new attribute list',
+							attributes,
+							'full metadata list',
+							Array.from(attributesDbi.getRange({ start: false }))
+						);
 					continue;
 				}
 				if (existingAttribute.indexed) {
@@ -2943,7 +2966,7 @@ async function destroyIncompleteDatabaseRoot(rootPath: string): Promise<void> {
 		await rootStore.destroy();
 		ownedRocksStores.delete(rootPath);
 	} else {
-		if (rootStore.status === 'open') await rootStore.close();
+		await rootStore.close();
 		await rm(rootPath, { force: true });
 	}
 	incompleteDatabaseDropStores.delete(rootPath);
@@ -2956,7 +2979,7 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 		const paths = new Set(rootPaths);
 		for (const rootPath of paths) await retryIncompleteDatabaseClose(rootPath);
 		if (
-			registryStatus().some(
+			getRegistryStatus().some(
 				(entry) => paths.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			)
 		)
@@ -3016,7 +3039,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 		const detachedRootPaths = dropLocks.map((lock) => lock.dbPath).filter((rootPath) => !openedRootPaths.has(rootPath));
 		const detachedRootPathSet = new Set(detachedRootPaths);
 		const detachedRootHasForeignHandle = () =>
-			registryStatus().some(
+			getRegistryStatus().some(
 				(entry) =>
 					detachedRootPathSet.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			);
@@ -3057,17 +3080,15 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 		for (const rootStore of rootStores) {
 			await rootStore.auditStore?.stopAuditCleanup?.();
 			removeStorageReclamation(rootStore.path);
-			if (rootStore.status === 'open') {
-				if (rootStore instanceof RocksDatabase) {
-					await (rootStore as any).dbisDb?.close?.();
-					await rootStore.close();
-					// destroy() closes every wrapper still open on the root, so the owned list needs no drain
-					await rootStore.destroy();
-					ownedRocksStores.delete(rootStore.path);
-				} else {
-					await rootStore.close();
-					await unlink(rootStore.path);
-				}
+			if (!(rootStore instanceof RocksDatabase)) {
+				await rootStore.close();
+				await rm(rootStore.path, { force: true });
+			} else if (rootStore.status === 'open') {
+				await (rootStore as any).dbisDb?.close?.();
+				await rootStore.close();
+				// destroy() closes every wrapper still open on the root, so the owned list needs no drain
+				await rootStore.destroy();
+				ownedRocksStores.delete(rootStore.path);
 			}
 		}
 		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
@@ -3294,7 +3315,7 @@ async function closeDatabaseStores(
 	for (const rootStore of rootStores) {
 		removeStorageReclamation(rootStore.path);
 		databasePaths.delete(rootStore as RootDatabase);
-		let rootClosed = rootStore.status !== 'open';
+		let rootClosed = rootStore.status === 'closed';
 		if (!lmdbRootStores.has(rootStore)) {
 			const closeOwned = () => closeOwnedStores(rootStore.path, (store) => closeStore(store, 'replaced store'));
 			await closeOwned();

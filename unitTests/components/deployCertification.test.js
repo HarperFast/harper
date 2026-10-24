@@ -603,6 +603,21 @@ describe('deciding a release', () => {
 			assert.equal(certification.unavailableReason, 'ineligible');
 		});
 
+		it('asks its eligibility whether the component had a tree before this release', async () => {
+			const asked = [];
+			const certification = deployCertification(
+				spec({
+					eligible: (wasAbsent) => {
+						asked.push(wasAbsent);
+						return false;
+					},
+				})
+			);
+			assert.equal(await certification.arm(null, true), false);
+			assert.equal(await certification.arm('d1', false), false);
+			assert.deepStrictEqual(asked, [true, false]);
+		});
+
 		it('is not armed when no worker places the release', async () => {
 			const certification = deployCertification(spec());
 			assert.equal(await certification.arm(), false);
