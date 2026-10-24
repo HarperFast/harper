@@ -679,6 +679,24 @@ matching Node's upgrade-then-authorize order). No core component registers custo
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
 
+### A shared worker answers 503 for an isolated application's host (`server/isolatedHostGuard.ts`)
+
+The fronting proxy sends an isolated application's host to the shared pool while that application's dedicated worker
+publishes no socket mirror — while it restarts, after it crashes, and through every redeploy — and the pool does not
+load it, so the request would run the pool's own routes: another application's root, answering 200 (harper#3052). So
+every request path in `http.ts` (Node, uWS, Bun) asks `isolatedApplicationUnavailable` first, and a shared worker
+answers 503 with `Retry-After` and `Cache-Control: no-store` for a host the root config gives an isolated application;
+a WebSocket closes with 1013. The dedicated worker itself and the operations server return before any lookup.
+
+The hosts come from the config alone, not from which components are on disk, because a package installed after a
+worker's first request changes no config to signal it. They are a `Set` seeded from, and rebuilt on each change seen by,
+the shared `RootConfigWatcher` the logger starts in every worker, because once a new isolated application starts only
+its own worker (harper#3045), no pool restart tells the pool of it; this worker's memoized config would be stale. The
+guard never starts that watcher itself: a process that has none reads the config on each request instead. A configured
+host is compared as written, lowercased: it carries no port and may be a bare IPv6 literal, so it is never parsed as a
+Host header. With no isolated application the cost per request is one
+`size` check.
+
 ## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.js`)
 
 libuv unlinks a pipe server's bound path when the handle closes (`uv__pipe_close` → `unlink`), with
@@ -938,24 +956,6 @@ The first successful call latches, including on an unset value: V8 flags cannot 
 An entry that is not a flag fails startup, by design, unlike `threads.maxHeapMemory`, which recovers an unstartable value at the point of use (harper-pro#558). What #558 guards against is a value that one replicated `set_configuration` writes to every peer, so the next rolling restart stops the whole cluster. Here the Joi pattern (`validation/configValidator.ts`) refuses an entry that is not a flag before the write lands, because `updateConfigValue` validates before writing. So a non-flag entry can only come from an operator at boot (file edit, env var, `HARPER_SET_CONFIG`), and it stops the node with an error naming `threads.v8Flags`. The pattern checks only the prefix. A prefix-valid set that aborts V8 (for example `--abort-on-contradictory-flags` with a contradicting pair) can still be replicated, and each node then aborts natively at its next process start; that is the accepted cost of an unrestricted expert setting. Joi also runs at boot, so it usually rejects the value before `applyConfiguredV8Flags` does. The point-of-use check covers values that bypass Joi.
 
 `v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying at `startHTTPThreads` entry places that abort before Harper serves.
-
-## A shared worker answers 503 for an isolated application's host (`server/isolatedHostGuard.ts`)
-
-The fronting proxy sends an isolated application's host to the shared pool while that application's dedicated worker
-publishes no socket mirror — while it restarts, after it crashes, and through every redeploy — and the pool does not
-load it, so the request would run the pool's own routes: another application's root, answering 200 (harper#3052). So
-every request path in `http.ts` (Node, uWS, Bun) asks `isolatedApplicationUnavailable` first, and a shared worker
-answers 503 with `Retry-After` and `Cache-Control: no-store` for a host the root config gives an isolated application;
-a WebSocket closes with 1013. The dedicated worker itself and the operations server return before any lookup.
-
-The hosts come from the config alone, not from which components are on disk, because a package installed after a
-worker's first request changes no config to signal it. They are a `Set` seeded from, and rebuilt on each change seen by,
-the shared `RootConfigWatcher` the logger starts in every worker, because once a new isolated application starts only
-its own worker (harper#3045), no pool restart tells the pool of it; this worker's memoized config would be stale. The
-guard never starts that watcher itself: a process that has none reads the config on each request instead. A configured
-host is compared as written, lowercased: it carries no port and may be a bare IPv6 literal, so it is never parsed as a
-Host header. With no isolated application the cost per request is one
-`size` check.
 
 ## HTTP request preconditions (`REST.ts`, `Table.ts`)
 
