@@ -5153,9 +5153,9 @@ export function makeTable(options): TableResourceClass {
 							// depth-cap block. This is the same keyed lookup that block performs, hoisted ahead of the walk.
 							// It is what catches transitive/proxied re-deliveries: they arrive buried below the record head
 							// (so replication's head-tie fast-skip can't see them) yet are exact duplicates. Keyed by nodeId,
-							// so it is correct across multiple source nodes. The lookup key is this write's LOG key, not its
-							// record version — a replication apply commits under the origin's log key while storing the
-							// origin's version, and only the log key addresses the entry (harper#2412).
+							// so it is correct across multiple source nodes. The lookup key is what a re-delivery carries: for a
+							// replication apply, the origin's log key, not its version, since only the key addresses the entry
+							// (harper#2412).
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs

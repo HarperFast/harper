@@ -212,11 +212,10 @@ class ThreadRegistry {
 		try {
 			const current = handle.getTimestamp();
 			const bits = toBits(current);
-			// Only a minted value is ever the key. A caller's value (a context timestamp, a lock stamp) is the
-			// record version and is minted around: admitting it would let two local transactions share a key,
-			// and a later mint land on it, since it may not move the ratchet (one far in the future would pin
-			// every later key). Every site that installs a caller's value on a handle hands the same value to
-			// `save` as `txnTime`, so a handle without `explicit` carries its own mint.
+			// Admitting a caller's value would let two local transactions share a key, and a later mint land on
+			// it, since it may not move the ratchet (one far in the future would pin every later key). Every site
+			// that installs a caller's value on a handle hands it to `save` as `txnTime`, so a handle without
+			// `explicit` carries its own mint.
 			const admissible = explicit == null && bits >= Atomics.load(words, WORD_PROPOSED) && this.admitNative(bits);
 			const key = admissible ? current : this.freshKey();
 			if (key !== current) handle.setTimestamp(key);
