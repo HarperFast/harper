@@ -420,23 +420,61 @@ describe('Commit notification racing a database close', () => {
 		setMainIsWorker(true);
 	});
 
-	// A commit notification can arrive after the store closed (LMDB delivers it asynchronously from native code), and
-	// the notify pass it schedules must not read the closed store.
-	it('skips a notify pass for a commit notification that arrives after the store closed', async () => {
-		const name = 'CloseRace';
+	// LMDB delivers a commit notification from native code, so it can arrive while or after its store closes: close
+	// flushes pending writes (notifying) once the store is already 'closing'. The notify pass it schedules runs while
+	// the subscription is still registered (it ends at reopen) and must not read the store.
+	async function notifyAfter(name, close) {
 		const T = tableInOwnDatabase(name);
+		await T.put('A', { value: 0 });
 		const auditStore = T.auditStore;
 		let notifyCommitted;
-		const on = auditStore.on;
+		const { on, getRange } = auditStore;
 		auditStore.on = function (event, callback) {
 			if (event === 'committed') notifyCommitted = callback;
 			return on.call(this, event, callback);
 		};
 		const subscription = await T.subscribe({ id: 'A', listener: () => {} });
-		assert.ok(notifyCommitted, 'precondition: the subscription listens for commits');
-		assert.ok(await closeDatabase(`generation_${name}`));
-		notifyCommitted();
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		subscription.end();
+		const reads = [];
+		auditStore.getRange = function (...args) {
+			reads.push(auditStore.rootStore.status);
+			return getRange.apply(this, args);
+		};
+		try {
+			assert.ok(notifyCommitted, 'precondition: the subscription listens for commits');
+			const statusAtNotify = await close(T);
+			assert.strictEqual(subscription.closed, false, 'precondition: the subscription is still registered');
+			notifyCommitted();
+			// after the scheduled notify pass, and after the read-txn reset timer a read would have armed
+			await new Promise((resolve) => setImmediate(resolve));
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			assert.deepStrictEqual(reads, [], `no notify read on a ${statusAtNotify} store`);
+		} finally {
+			auditStore.on = on;
+			auditStore.getRange = getRange;
+			subscription.end();
+		}
+	}
+
+	it('skips the notify pass for a commit notification that arrives after the store closed', async function () {
+		this.timeout(30000);
+		await notifyAfter('CloseRaceClosed', async () => {
+			assert.ok(await closeDatabase('generation_CloseRaceClosed'));
+			return 'closed';
+		});
+	});
+
+	it('skips the notify pass for a commit notification that arrives while the store is closing', async function () {
+		if (isRocksDB) return this.skip(); // a RocksDB store has no closing state
+		this.timeout(30000);
+		let closing;
+		await notifyAfter('CloseRaceClosing', async (T) => {
+			const rootStore = T.primaryStore.rootStore;
+			T.primaryStore.prefetch(['A']); // an in-flight read holds the close open
+			closing = rootStore.close();
+			assert.strictEqual(rootStore.status, 'closing', 'precondition: the close is waiting on the read');
+			return 'closing';
+		});
+		await closing;
+		assert.ok(await closeDatabase('generation_CloseRaceClosing'));
 	});
 });
