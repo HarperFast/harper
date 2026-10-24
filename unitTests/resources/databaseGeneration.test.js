@@ -413,3 +413,30 @@ describe('Database generation on LMDB', () => {
 		resubscribed.end();
 	});
 });
+
+describe('Commit notification racing a database close', () => {
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	// A commit notification can arrive after the store closed (LMDB delivers it asynchronously from native code), and
+	// the notify pass it schedules must not read the closed store.
+	it('skips a notify pass for a commit notification that arrives after the store closed', async () => {
+		const name = 'CloseRace';
+		const T = tableInOwnDatabase(name);
+		const auditStore = T.auditStore;
+		let notifyCommitted;
+		const on = auditStore.on;
+		auditStore.on = function (event, callback) {
+			if (event === 'committed') notifyCommitted = callback;
+			return on.call(this, event, callback);
+		};
+		const subscription = await T.subscribe({ id: 'A', listener: () => {} });
+		assert.ok(notifyCommitted, 'precondition: the subscription listens for commits');
+		assert.ok(await closeDatabase(`generation_${name}`));
+		notifyCommitted();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		subscription.end();
+	});
+});
