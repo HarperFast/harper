@@ -269,10 +269,10 @@ describe('Resuming a subscription in a database generation', function () {
 			assert.match(events.at(-1).message, /bulk reload/);
 			const unchecked = [];
 			const plain = await T.subscribe({ startTime: positions[0], listener: (event) => unchecked.push(event) });
-			await waitFor(() => unchecked.some((event) => event.type === 'reload'));
+			await waitFor(() => unchecked.some((event) => event.id === 'r0'));
 			assert.ok(
-				!unchecked.some((event) => event instanceof Error),
-				'a subscription without the field replays as before'
+				!unchecked.some((event) => event instanceof Error || event.type === 'reload'),
+				'a subscription without the field is not refused'
 			);
 			plain.end();
 		});

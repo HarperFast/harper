@@ -144,6 +144,58 @@ async function storedEntry(clientId, condition) {
 	return entry;
 }
 
+/** Resumes unchecked: on LMDB always, on RocksDB from a position in another generation. */
+function resetsAcrossReloadWhileAway(otherGeneration) {
+	for (const [label, levels] of [
+		['root', '#'],
+		['prefix', 'team/#'],
+	]) {
+		it(`resets a ${label} topic's session that resumes unchecked across a reload, and the client can subscribe again`, async () => {
+			const { T, name } = topicTable();
+			await T.put('team/seed', { value: 0 });
+			const topic = `${name}/${levels}`;
+			const clientId = `reloaded-${label}-${name}`;
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			await T.put('team/a', { value: 1 });
+			await waitFor(() => first.received.length >= 1);
+			await ackAll(first.session, first.received);
+			first.session.checkpoint();
+			await first.session.writes;
+			const entry = await storedEntry(clientId, (saved) => !otherGeneration || saved.databaseGeneration !== undefined);
+			first.session.disconnect(true);
+			await first.session.writes;
+			await T.primaryStore.put('team/back', { id: 'team/back', value: 'back' });
+			await T.writeReloadMarker();
+			await T.put('team/after', { value: 'after' });
+			if (otherGeneration) {
+				await databases.system.hdb_durable_session.put({
+					id: clientId,
+					subscriptions: [{ ...entry, databaseGeneration: 'f'.repeat(entry.databaseGeneration.length) }],
+				});
+			}
+			const second = await connect(clientId);
+			assert.strictEqual(second.session.sessionWasPresent, true, 'precondition: the session resumes');
+			await second.session.resume();
+			await waitFor(() => second.closed.length === 1, {
+				message: () => `received ${JSON.stringify(values(second.received))}`,
+			});
+			assert.strictEqual(second.closed[0].code, 'RESUME_HISTORY_UNAVAILABLE', `closed with ${second.closed[0]}`);
+			await waitFor(async () => (await stored(clientId)) == null);
+			assert.ok(!values(second.received).includes('after'), 'nothing past the reload is delivered');
+			const third = await connect(clientId);
+			assert.ok(!third.session.sessionWasPresent, 'the reset session is gone');
+			await third.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+			// the retained snapshot of a string-path prefix delivers none of its rows (harper#3481)
+			if (label === 'root') await waitFor(() => values(third.received).includes('back'));
+			await T.put('team/live', { value: 'live' });
+			await waitFor(() => values(third.received).includes('live'));
+			await ackAll(third.session, third.received);
+			third.session.disconnect(true);
+		});
+	}
+}
+
 describe('MQTT durable sessions resuming through the checked subscription', function () {
 	if (!isRocksDB) return;
 	this.timeout(60_000);
@@ -522,6 +574,8 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.strictEqual(closed[0].code, 'RESUME_HISTORY_UNAVAILABLE');
 		await waitFor(async () => (await stored(clientId)) == null);
 	});
+
+	describe('from another generation', () => resetsAcrossReloadWhileAway(true));
 
 	it('ignores a legacy acks list rather than filtering by key', async () => {
 		const { T, name } = topicTable();
@@ -1968,6 +2022,8 @@ describe('MQTT durable sessions on LMDB', function () {
 		assert.ok(!values(second.received).includes(1), 'an acknowledged transaction is not redelivered');
 		second.session.disconnect(true);
 	});
+
+	resetsAcrossReloadWhileAway(false);
 });
 
 describe('MQTT durable record topics on resume', function () {
