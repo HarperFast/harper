@@ -324,6 +324,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		moduleCache: Map<string, SourceTextModule | SyntheticModule | Promise<SourceTextModule | SyntheticModule>>;
 		linkingPromises: Map<string, Promise<void>>;
 		cjsCache: Map<string, { exports: any }>;
+		nativeModules: Set<string>;
 		contextObject: any;
 		context: any;
 	};
@@ -344,62 +345,29 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			moduleCache: new Map(),
 			linkingPromises: new Map(),
 			cjsCache: new Map(),
+			nativeModules: new Set<string>(),
 			contextObject,
 			context,
 		};
 	}
-	const { moduleCache, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
+	const { moduleCache, linkingPromises, cjsCache, nativeModules, contextObject, context } = moduleCaches;
 
 	/**
 	 * Load a CommonJS module in our context (private or current)
 	 */
 	function loadCJS(url: string, source: string): { exports: any } {
-		// Check cache first to handle circular dependencies
-		if (cjsCache.has(url)) {
-			return cjsCache.get(url)!;
-		}
-
-		// Create module object and cache it immediately (before execution)
-		// This allows circular dependencies to get a reference to the incomplete module
-		const cjsModule = { exports: {} };
-		cjsCache.set(url, cjsModule);
-
 		if (url.endsWith('.json')) {
-			cjsModule.exports = parseJsonModule(source, url);
-			return cjsModule;
+			const jsonModule = { exports: parseJsonModule(source, url) };
+			cjsCache.set(url, jsonModule);
+			return jsonModule;
 		}
-		let requireUrl = url;
-		if (url.startsWith('file://')) {
-			try {
-				requireUrl = pathToFileURL(realpathSync(fileURLToPath(url))).toString();
-			} catch {}
-		}
-		const require = createRequire(requireUrl);
+		return evaluateCJS(url, compileCJS(url, source));
+	}
 
-		const cjsRequire = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url, scope);
-			if (resolvedUrl === 'harper') {
-				return getHarperExports(scope);
-			}
-			if (resolvedUrl.startsWith('file://')) {
-				if (resolvedUrl.endsWith('.node')) {
-					checkAllowedModulePath(resolvedUrl, scope.allowedPath);
-					const nativeModule = require(fileURLToPath(resolvedUrl));
-					scope.markNativeRuntime?.();
-					return nativeModule;
-				}
-				const contents = readFileSync(new URL(resolvedUrl));
-				scope.recordLoadedModule?.(resolvedUrl, contents);
-				return loadCJS(resolvedUrl, contents.toString('utf-8')).exports;
-			}
-			return require(resolvedUrl);
-		};
-		cjsRequire.resolve = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url, scope);
-			if (resolvedUrl.startsWith('file://')) return fileURLToPath(resolvedUrl);
-			return resolvedUrl;
-		};
-
+	/**
+	 * A SyntaxError from here is about this module's own source, unlike an error thrown while evaluating it
+	 */
+	function compileCJS(url: string, source: string): Function {
 		const cjsWrapper = `
 			(function(module, exports, require, __filename, __dirname) {
 				${source}
@@ -417,33 +385,78 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		};
 
 		// If contextObject is undefined, use current context with runInThisContext
-		const wrappedFn = contextObject
+		return contextObject
 			? runInContext(cjsWrapper, contextObject, runOptions)
 			: runInThisContext(cjsWrapper, runOptions);
+	}
 
-		wrappedFn(
-			cjsModule,
-			cjsModule.exports,
-			cjsRequire,
-			url,
-			dirname(url.startsWith('file://') ? fileURLToPath(url) : url)
-		);
-
+	/**
+	 * Evaluate a compiled CommonJS module. It is cached before execution so circular dependencies get a reference
+	 * to the incomplete module, and uncached if execution throws so the next require evaluates it again, as Node does.
+	 */
+	function evaluateCJS(url: string, wrappedFn: Function): { exports: any } {
+		const cjsModule = { exports: {} };
+		cjsCache.set(url, cjsModule);
+		const filename = url.startsWith('file://') ? fileURLToPath(url) : url;
+		try {
+			wrappedFn(cjsModule, cjsModule.exports, createCJSRequire(url), filename, dirname(filename));
+		} catch (error) {
+			cjsCache.delete(url);
+			throw error;
+		}
 		return cjsModule;
 	}
-	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
-		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
+
+	function createCJSRequire(url: string) {
+		let requireUrl = url;
+		if (url.startsWith('file://')) {
+			try {
+				requireUrl = pathToFileURL(realpathSync(fileURLToPath(url))).toString();
+			} catch {}
+		}
+		const require = createRequire(requireUrl);
+
+		const cjsRequire = (spec: string) => {
+			const resolvedUrl = resolveModule(spec, url, scope);
+			if (resolvedUrl === 'harper') {
+				return getHarperExports(scope);
+			}
+			// every module this scope already loaded passed checkAllowedModulePath when it was loaded
+			const cachedModule = cjsCache.get(resolvedUrl);
+			if (cachedModule) return cachedModule.exports;
+			if (nativeModules.has(resolvedUrl)) return require(fileURLToPath(resolvedUrl));
+			const replacedModule = checkAllowedModulePath(resolvedUrl, scope.allowedPath);
+			if (replacedModule) return replacedModule;
+			if (!resolvedUrl.startsWith('file://')) return require(resolvedUrl);
+			const modulePath = fileURLToPath(resolvedUrl);
+			if (resolvedUrl.endsWith('.node')) {
+				const nativeModule = require(modulePath);
+				scope.markNativeRuntime?.();
+				return nativeModule;
+			}
+			if (!shouldUseApplicationLoader(spec, resolvedUrl)) {
+				if (isApplicationLocalModule(resolvedUrl)) scope.markNativeRuntime?.();
+				const nativeModule = require(modulePath);
+				nativeModules.add(resolvedUrl);
+				return nativeModule;
+			}
+			return loadCJS(resolvedUrl, readApplicationModule(resolvedUrl)).exports;
+		};
+		cjsRequire.resolve = (spec: string) => {
+			const resolvedUrl = resolveModule(spec, url, scope);
+			if (resolvedUrl.startsWith('file://')) return fileURLToPath(resolvedUrl);
+			return resolvedUrl;
+		};
+		return cjsRequire;
+	}
+
+	function createCJSSyntheticModule(url: string, cjsModule: { exports: any }): SyntheticModule {
 		let exports = cjsModule.exports;
 		if (exports.default === undefined) {
 			// provide the default export for compatibility
 			exports = { default: exports, ...exports };
 		}
 		const exportNames = Object.keys(exports);
-
-		const options: any = { identifier: url };
-		if (usePrivateGlobal && context) {
-			options.context = context;
-		}
 
 		const synModule = new SyntheticModule(
 			exportNames,
@@ -452,7 +465,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					this.setExport(key, exports[key]);
 				}
 			},
-			options
+			{ identifier: url, context }
 		);
 		// Don't cache here - let getOrCreateModule handle caching
 		return synModule;
@@ -464,29 +477,21 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	 */
 	function packageDependsOnHarper(fileUrl: string): boolean {
 		try {
-			// Convert file:// URL to path
-			const filePath = fileURLToPath(fileUrl);
-
-			// Find the node_modules directory and package name
-			// Example: /path/to/node_modules/package-name/dist/index.js
-			// or: /path/to/node_modules/@scope/package-name/dist/index.js
+			// Find the node_modules directory and package name in the URL, whose separators are `/` on every platform
+			// Example: file:///path/to/node_modules/package-name/dist/index.js
+			// or: file:///path/to/node_modules/@scope/package-name/dist/index.js
 			const nodeModulesMarker = '/node_modules/';
-			const nodeModulesIndex = filePath.lastIndexOf(nodeModulesMarker);
+			const nodeModulesIndex = fileUrl.lastIndexOf(nodeModulesMarker);
 			if (nodeModulesIndex === -1) return false;
 
-			// Get the part after /node_modules/
-			const afterNodeModules = filePath.substring(nodeModulesIndex + nodeModulesMarker.length);
-			const parts = afterNodeModules.split('/');
-
 			// Handle scoped packages (@scope/package-name) vs regular packages (package-name)
-			const beforeNodeModules = filePath.substring(0, nodeModulesIndex);
-			const packageRoot = parts[0].startsWith('@')
-				? join(beforeNodeModules, 'node_modules', parts[0], parts[1])
-				: join(beforeNodeModules, 'node_modules', parts[0]);
+			const packageStart = nodeModulesIndex + nodeModulesMarker.length;
+			const parts = fileUrl.substring(packageStart).split('/');
+			const packageName = parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0];
 
 			// Read package.json from the package root
-			const packageJsonPath = join(packageRoot, 'package.json');
-			const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+			const packageJsonUrl = new URL(`${fileUrl.substring(0, packageStart)}${packageName}/package.json`);
+			const packageJson = JSON.parse(readFileSync(packageJsonUrl, 'utf-8'));
 
 			const deps = {
 				...packageJson.dependencies,
@@ -608,13 +613,19 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	}
 
 	/**
+	 * Runtime-equivalence checks compare the bytes as read, so they are recorded before TypeScript types are stripped
+	 */
+	function readApplicationModule(url: string): string {
+		const contents = readFileSync(new URL(url));
+		scope.recordLoadedModule?.(url, contents);
+		const source = contents.toString('utf-8');
+		return url.endsWith('.ts') || url.endsWith('.tsx') ? stripTypeScriptTypes(source) : source;
+	}
+
+	/**
 	 * Create a SourceTextModule or SyntheticModule from source code
 	 */
-	function createModuleFromSource(
-		url: string,
-		source: string,
-		usePrivateGlobal: boolean
-	): SourceTextModule | SyntheticModule {
+	function createModuleFromSource(url: string, source: string): SourceTextModule | SyntheticModule {
 		// Handle JSON modules
 		if (url.endsWith('.json')) {
 			const jsonData = parseJsonModule(source, url);
@@ -627,14 +638,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			);
 		}
 
-		// Strip TypeScript types if this is a .ts file
-		if (url.endsWith('.ts') || url.endsWith('.tsx')) {
-			source = stripTypeScriptTypes(source);
-		}
-
 		// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
+		let wrappedFn: Function;
 		try {
-			return loadCJSModule(url, source, usePrivateGlobal);
+			wrappedFn = compileCJS(url, source);
 		} catch (cjsErr) {
 			// Only fallback to ESM if the error was due to ESM syntax (import/export statements)
 			// Check if the error message indicates ESM syntax
@@ -669,6 +676,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				},
 			});
 		}
+		return createCJSSyntheticModule(url, evaluateCJS(url, wrappedFn));
 	}
 
 	/**
@@ -683,6 +691,14 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return createSyntheticModule(url, getHarperExports(scope));
 		}
 
+		// A file keeps the route that require() or import, whichever loaded it first, chose for it. A JSON import
+		// stays its own default-only module: the CommonJS wrapper would add the JSON's keys as named exports.
+		if (!url.endsWith('.json')) {
+			const cachedModule = cjsCache.get(url);
+			if (cachedModule) return createCJSSyntheticModule(url, cachedModule);
+			if (nativeModules.has(url)) usePrivateGlobal = false;
+		}
+
 		if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.allowedPath);
 			if (url.endsWith('.node')) {
@@ -690,9 +706,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				scope.markNativeRuntime?.();
 				return createSyntheticModule(url, normalizeImportedModule(nativeModule));
 			}
-			const contents = readFileSync(new URL(url));
-			scope.recordLoadedModule?.(url, contents);
-			return createModuleFromSource(url, contents.toString('utf-8'), usePrivateGlobal);
+			return createModuleFromSource(url, readApplicationModule(url));
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
@@ -701,7 +715,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
 		}
 		if (isApplicationLocalModule(url)) scope.markNativeRuntime?.();
-		return import(url).then((importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)));
+		// registered before the import settles, so a require() of the file meanwhile takes the same route
+		const reservesRoute = url.startsWith('file://') && !url.endsWith('.json') && !nativeModules.has(url);
+		if (reservesRoute) nativeModules.add(url);
+		return import(url).then(
+			(importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)),
+			(error) => {
+				if (reservesRoute) nativeModules.delete(url);
+				throw error;
+			}
+		);
 	}
 	// Load the entry module
 	const entryModule = await loadModuleWithCache(moduleUrl, true);
