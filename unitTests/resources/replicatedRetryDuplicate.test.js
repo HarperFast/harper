@@ -196,7 +196,7 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 
 	it('applies a retry when a competing terminal abort left its matching log entry readable', async function () {
 		if (isLMDB) return this.skip();
-		this.timeout(10000);
+		this.timeout(20000); // the retry waits out the 5s native park timeout on the aborted delivery's intent
 		const version = Date.now() + 86400000;
 		const state = await fixture('TerminalAbortOrphan', version);
 		const originId = getIdOfRemoteNode('duplicate-origin', state.T.auditStore);
@@ -225,25 +225,20 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 						hasLog: true,
 					});
 				}
-				if (this.id === retryNativeId && ++retryAttempts === 1) {
-					try {
-						return await originalCommit.apply(this, args);
-					} catch (error) {
-						await abandoned.completion.catch(() => {});
-						const orphan = state.T.auditStore.get(version, state.T.tableId, 'counter', originId);
-						assert.ok(orphan, 'the terminally aborted delivery must leave a readable log entry');
-						assert.equal(orphan.txnLogKey, version);
-						assert.equal(orphan.version, version);
-						assert.equal(orphan.nodeId, originId);
-						throw error;
-					}
-				}
+				if (this.id === retryNativeId) retryAttempts++;
 				return originalCommit.apply(this, args);
 			};
-			retried.release();
+			// the orphan must be flushed before the retry's own entry: a retrying handle's uncommitted position
+			// holds back the log's read watermark and would hide a later one
 			abandoned.release();
-			await retried.completion;
 			await assert.rejects(abandoned.completion, (error) => error.code === 'ERR_IO');
+			const orphan = state.T.auditStore.get(version, state.T.tableId, 'counter', originId);
+			assert.ok(orphan, 'the terminally aborted delivery must leave a readable log entry');
+			assert.equal(orphan.txnLogKey, version);
+			assert.equal(orphan.version, version);
+			assert.equal(orphan.nodeId, originId);
+			retried.release();
+			await retried.completion;
 			assert.ok(retryAttempts > 1, 'the retrying delivery must really conflict and re-stage');
 			assert.equal(retried.write.skipped, false);
 			assert.equal((await state.T.get('counter')).count, 11);
@@ -256,7 +251,7 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 
 	it('does not trust a publish-restamped retry base over a matching terminal-abort orphan', async function () {
 		if (isLMDB) return this.skip();
-		this.timeout(10000);
+		this.timeout(20000); // the retry waits out the 5s native park timeout on the aborted delivery's intent
 		const version = Date.now() + 86400000;
 		const state = await fixture('PublishRestampOrphan', version);
 		const originId = getIdOfRemoteNode('duplicate-origin', state.T.auditStore);
@@ -285,24 +280,19 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 						hasLog: true,
 					});
 				}
-				if (this.id === retryNativeId && ++retryAttempts === 1) {
-					try {
-						return await originalCommit.apply(this, args);
-					} catch (error) {
-						await abandoned.completion.catch(() => {});
-						const orphan = state.T.auditStore.get(version, state.T.tableId, 'counter', originId);
-						assert.ok(orphan, 'the terminally aborted sibling must leave a readable log entry');
-						assert.equal(orphan.txnLogKey, version);
-						assert.equal(orphan.version, version);
-						throw error;
-					}
-				}
+				if (this.id === retryNativeId) retryAttempts++;
 				return originalCommit.apply(this, args);
 			};
-			retried.release();
+			// the orphan must be flushed before the retry's own entry: a retrying handle's uncommitted position
+			// holds back the log's read watermark and would hide a later one
 			abandoned.release();
-			await retried.completion;
 			await assert.rejects(abandoned.completion, (error) => error.code === 'ERR_IO');
+			const orphan = state.T.auditStore.get(version, state.T.tableId, 'counter', originId);
+			assert.ok(orphan, 'the terminally aborted sibling must leave a readable log entry');
+			assert.equal(orphan.txnLogKey, version);
+			assert.equal(orphan.version, version);
+			retried.release();
+			await retried.completion;
 			assert.ok(retryAttempts > 1, 'the publish-and-put transaction must really retry');
 			assert.equal(retried.write.skipped, false);
 			assert.equal((await state.T.get('counter')).count, 50, 'the retried put must replace the committed base');
@@ -610,6 +600,8 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		});
 	}
 
+	// An unmapped origin's entry lands in the local log, so the walk cannot read it: these cases cover the
+	// head-identity check, not the walk's version-tie branch.
 	it('does not deduplicate distinct unmapped origins that compare as a version tie', async function () {
 		if (isLMDB) return this.skip();
 		const version = Date.now() + 86400000;
