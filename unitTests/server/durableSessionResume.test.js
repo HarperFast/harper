@@ -1585,6 +1585,94 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		socket.handlers.close();
 	});
 
+	async function restoredWithInFlight(open, clientId, T, name, values) {
+		const first = await subscribed(open, clientId, `${name}/#`);
+		for (const value of values) await T.put(value, { value });
+		await waitFor(() => published(first, values.at(-1)));
+		const sent = values.map((value) => published(first, value));
+		first.handlers.close();
+		return sent;
+	}
+	const connectWith = (clientId, ...packets) => Buffer.concat([connectPacket(clientId), ...packets]);
+
+	it('answers a PUBREC for a restored delivery not yet sent again, and never sends it again', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-restored-pubrec-${name}`;
+		const [a, b, c] = await restoredWithInFlight(open, clientId, T, name, ['a', 'b', 'c']);
+		const second = open();
+		second.handlers.message(
+			connectWith(
+				clientId,
+				generate({ cmd: 'pubrec', messageId: b.messageId }, v5),
+				generate({ cmd: 'pubrec', messageId: 4242 }, v5)
+			)
+		);
+		await waitFor(() => ofCommand(second, 'pubrel').length === 2);
+		assert.deepStrictEqual(
+			new Map(ofCommand(second, 'pubrel').map((packet) => [packet.messageId, packet.reasonCode])),
+			new Map([
+				[b.messageId, 0],
+				[4242, 0x92],
+			]),
+			'a restored id is known, an unknown one is not'
+		);
+		const [entry] = (await stored(clientId)).subscriptions;
+		assert.deepStrictEqual(
+			entry.inFlight.map((delivery) => delivery[3]).sort(),
+			[a.messageId, c.messageId].sort(),
+			'saved as received before its PUBREL went out'
+		);
+		assert.deepStrictEqual((await stored(clientId)).awaitingCompletion, [b.messageId]);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => published(second, 'after'));
+		assert.deepStrictEqual(ofCommand(second, 'publish').map(payloadValue), ['a', 'c', 'after']);
+		for (const [value, original] of [
+			['a', a],
+			['c', c],
+		]) {
+			const resent = published(second, value);
+			assert.deepStrictEqual([resent.messageId, resent.dup], [original.messageId, true], `${value} keeps its id`);
+		}
+		second.handlers.close();
+		const third = open();
+		third.handlers.message(connectPacket(clientId));
+		await T.put('last', { value: 'last' });
+		await waitFor(() => published(third, 'last'));
+		assert.deepStrictEqual(
+			sentPackets(third)
+				.slice(0, 2)
+				.map((packet) => [packet.cmd, packet.messageId]),
+			[
+				['connack', undefined],
+				['pubrel', b.messageId],
+			]
+		);
+		assert.deepStrictEqual(ofCommand(third, 'publish').map(payloadValue), ['a', 'c', 'after', 'last']);
+		third.handlers.close();
+	});
+
+	it('ends a restored delivery whose PUBREC failed, without a PUBREL or sending it again', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-restored-refused-${name}`;
+		const [, b] = await restoredWithInFlight(open, clientId, T, name, ['a', 'b']);
+		const second = open();
+		second.handlers.message(
+			connectWith(clientId, generate({ cmd: 'pubrec', messageId: b.messageId, reasonCode: 0x80 }, v5))
+		);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => published(second, 'after'));
+		assert.deepStrictEqual(ofCommand(second, 'publish').map(payloadValue), ['a', 'after']);
+		assert.strictEqual(ofCommand(second, 'pubrel').length, 0);
+		await waitFor(
+			async () => !(await stored(clientId)).subscriptions[0].inFlight?.some((delivery) => delivery[3] === b.messageId)
+		);
+		second.handlers.close();
+	});
+
 	it('publishes a retransmitted QoS 2 PUBLISH once on MQTT 3.1.1', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
