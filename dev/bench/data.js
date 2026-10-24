@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792833217716,
+  "lastUpdate": 1792833221888,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -30336,6 +30336,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 3213.4,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d4f9fb948d8103283714ea8738db80618030cd43",
+          "message": "Bring the DESIGN.md index back under its line budget (#3523)\n\n* Merge related DESIGN.md index lines to bring the index back under its line budget\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Allow closely related DESIGN.md notes to share an index line\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-24T04:20:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/d4f9fb948d8103283714ea8738db80618030cd43"
+        },
+        "date": 1792833220748,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4202.97,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4202.97,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 222.1,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 674,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 801.7,
             "unit": "ms"
           }
         ]
