@@ -5050,6 +5050,7 @@ export function makeTable(options): TableResourceClass {
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
 						let belowAuditFloor = false;
+						let auditFloor: number | undefined;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -5190,7 +5191,7 @@ export function makeTable(options): TableResourceClass {
 							// Infinity, which fails closed for a cursor check but has to fail OPEN here — walk rather than
 							// discard. RocksDB only: LMDB keeps its exact, unbounded reconciliation.
 							if (isRocksDB && precedesExisting < 0) {
-								const auditFloor = getAuditFloor(auditStore);
+								auditFloor = getAuditFloor(auditStore);
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
@@ -5221,9 +5222,13 @@ export function makeTable(options): TableResourceClass {
 							let nodeId = initialAuditHead.nodeId ?? 0;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
+							// A branch keyed below the audit floor addresses pruned history (harper#2642's floor-bounded
+							// contract); reading it would be an exact-start miss that scans its log to the end.
+							auditFloor ??= isRocksDB ? getAuditFloor(auditStore) : undefined;
+							const branchFloor = Number.isFinite(auditFloor) ? auditFloor : -Infinity;
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
-									if (isBranchRef(ref, initialAuditHead))
+									if (isBranchRef(ref, initialAuditHead) && ref.version >= branchFloor)
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 								}
 							}
@@ -5256,7 +5261,7 @@ export function makeTable(options): TableResourceClass {
 								if (previousRefs) {
 									const head = resolvePreviousHead(auditRecord);
 									for (const ref of previousRefs) {
-										if (!isBranchRef(ref, head)) continue;
+										if (!isBranchRef(ref, head) || ref.version < branchFloor) continue;
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
 											version: ref.version,
