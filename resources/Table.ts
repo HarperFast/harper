@@ -10012,9 +10012,12 @@ export function makeTable(options): TableResourceClass {
 						// resolving the same tie could keep different values at the same version.
 						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
 						if (
-							racedVersion !== existingVersion &&
-							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
-							(existingVersion != null || !updatedRecord || !replacesRacedRecord)
+							// The source wrote this key through its context: that write is staged ahead of the fill in this
+							// transaction, and on LMDB existingEntry is the committed record, which cannot show it.
+							priorStagedWrite(sourceWrite) ||
+							(racedVersion !== existingVersion &&
+								// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
+								(existingVersion != null || !updatedRecord || !replacesRacedRecord))
 						) {
 							logger.trace?.(
 								`Discarding resolved record from source with id: ${id}, source version: ${sourceVersion}, current version: ${racedVersion}`
@@ -10068,7 +10071,6 @@ export function makeTable(options): TableResourceClass {
 							logger.trace?.(
 								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
-							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 							const writeAudit = (audit && (hasChanges || omitLocalRecord)) || null;
 							updateRecord(
 								id,

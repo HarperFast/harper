@@ -1004,14 +1004,12 @@ export function recordUpdater(store, tableId, auditStore) {
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
-			ifVersion?: number;
 			transaction?: any;
 		} = {
 			version: newVersion,
 			instructedWrite: timestampNextEncoding > 0,
 			transaction: options?.transaction,
 		};
-		let ifVersion;
 		let extendedType = 0;
 		try {
 			let previousResidencyId = existingEntry?.residencyId;
@@ -1048,8 +1046,6 @@ export function recordUpdater(store, tableId, auditStore) {
 			}
 			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
-			// we use resolveRecord outside of transaction, so must explicitly make it conditional
-			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
 				// Delete the prior row's blob files — except any the new record still references.
 				// Without the retention check, updating an unrelated attribute on a row that
@@ -1132,7 +1128,7 @@ export function recordUpdater(store, tableId, auditStore) {
 								structureVersion,
 								previousAdditionalAuditRefs,
 							},
-							{ ifVersion: ifVersion, transaction: options.transaction, nodeId, viaNodeId }
+							{ transaction: options.transaction, nodeId, viaNodeId }
 						);
 						return result;
 					}
@@ -1160,7 +1156,6 @@ export function recordUpdater(store, tableId, auditStore) {
 						// turn off append flag, as we are concerned this may be related to db corruption issues
 						// append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
 						instructedWrite: true,
-						ifVersion,
 						transaction: options.transaction,
 						nodeId,
 						viaNodeId,

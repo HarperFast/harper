@@ -358,6 +358,17 @@ bit is persisted, so it cannot follow a renumbered rocksdb-js constant without a
 `unitTests/resources/caching-rocks-database.test.js` ('marks a record whose version was reused…') pins
 the layout against raw stored values.
 
+A fill's store writes carry no condition of their own; the commit handler decides for all of them.
+Against other transactions the engine enforces that decision: on LMDB, `LMDBTransaction`'s
+`ifVersion` block holds the condition, primary put, index writes and audit puts in one native write
+transaction; on RocksDB, a conflict retries the handler against the current record (the failed
+attempt's log entry stays, as `DatabaseTransaction.save` notes). A write the source makes to the same
+key through its context is in the fill's own transaction, where neither check sees it: LMDB's entry
+is the committed record. So the handler yields to any earlier same-key write that staged state
+(`priorStagedWrite`). A per-put `ifVersion` is no substitute. It cannot stop the index writes, and on
+the unversioned audit store LMDB compares the entry's first 8 bytes and drops the write.
+`unitTests/resources/sourceFillConditionalWrite.test.js` pins both engines.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
