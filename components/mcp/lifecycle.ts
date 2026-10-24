@@ -7,7 +7,7 @@
  * server SHOULD respond with its preferred supported version so the client
  * can decide whether to connect on the older version or disconnect.
  */
-import { createSession, saveSession, type McpSessionRecord } from './session.ts';
+import { createSession, patchSession, type McpSessionRecord } from './session.ts';
 import { packageJson } from '../../utility/packageUtils.js';
 
 export const PROTOCOL_VERSION_PREFERRED = '2025-06-18';
@@ -106,6 +106,6 @@ export async function handleInitialize(
 export async function handleInitialized(session: McpSessionRecord): Promise<McpSessionRecord> {
 	if (session.initialized) return session;
 	const updated: McpSessionRecord = { ...session, initialized: true };
-	await saveSession(updated);
+	await patchSession(session.id, { initialized: true });
 	return updated;
 }
