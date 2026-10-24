@@ -154,7 +154,7 @@ Consequences worth knowing:
   replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
   commit. Other consumers still treat a second commit at one key as a duplicate
   (`resumePastExactStart`, the derived-index runtime, subscription delivery).
-- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and stay unchanged.
+- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and stay unchanged; no on-disk or on-wire identifiers change in this stage.
 
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 
