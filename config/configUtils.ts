@@ -6,6 +6,7 @@ import {
 	configValidator,
 	getDomainSocketPathLengthWarning,
 	isLegacySqlApplicationEntry,
+	REQUIRED_ROOT_CONFIG_KEYS,
 } from '../validation/configValidator.ts';
 import { isReservedComponentName } from '../utility/componentNames.ts';
 import _fs from 'fs-extra';
@@ -333,14 +334,134 @@ function matchesFileContent(filePath, content): boolean {
 	}
 }
 
-/**
- * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
- * @param args - any args that the user provided.
- */
-export function createConfigFile(args, skipFsValidation = false) {
-	const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+function backfillMissingDefaults(targetDoc: _YAML.Document, defaultsDoc: _YAML.Document, prefix: string[] = []): void {
+	const defaultsNode = prefix.length === 0 ? defaultsDoc.contents : defaultsDoc.getIn(prefix, true);
+	if (!YAML.isMap(defaultsNode)) return;
+	for (const pair of defaultsNode.items) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		const keyPath = [...prefix, key];
+		if (!targetDoc.hasIn(keyPath)) {
+			if (prefix.length === 0 && !REQUIRED_ROOT_CONFIG_KEYS.has(key)) continue;
+			const defaultNode = defaultsDoc.getIn(keyPath, true);
+			const defaultVal =
+				defaultNode && typeof (defaultNode as any).toJSON === 'function'
+					? (defaultNode as any).toJSON()
+					: defaultsDoc.getIn(keyPath);
+			targetDoc.setIn(keyPath, targetDoc.createNode(defaultVal));
+		} else if (YAML.isMap(pair.value) && YAML.isMap(targetDoc.getIn(keyPath, true))) {
+			backfillMissingDefaults(targetDoc, defaultsDoc, keyPath);
+		}
+	}
+}
 
-	flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
+function collectLeafDotPaths(
+	obj: any,
+	prefix: string[] = [],
+	out = new Set<string>(),
+	defaultsDoc?: _YAML.Document
+): Set<string> {
+	if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+		if (prefix.length > 0) out.add(prefix.join('.'));
+		return out;
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		const nextPath = [...prefix, key];
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length > 0) {
+				collectLeafDotPaths(val, nextPath, out, defaultsDoc);
+			} else {
+				const defaultNode = defaultsDoc?.getIn(nextPath, true);
+				if (!YAML.isMap(defaultNode) || defaultNode.items.length === 0) {
+					out.add(nextPath.join('.'));
+				}
+			}
+		} else {
+			out.add(nextPath.join('.'));
+		}
+	}
+	return out;
+}
+
+function syncObjectToYamlDoc(doc: _YAML.Document, obj: Record<string, any>, prefix: string[] = []): void {
+	const mapNode = prefix.length === 0 ? doc.contents : doc.getIn(prefix, true);
+	if (!YAML.isMap(mapNode)) {
+		if (prefix.length === 0) {
+			doc.contents = doc.createNode(obj) as any;
+		} else {
+			doc.setIn(prefix, doc.createNode(obj));
+		}
+		return;
+	}
+	for (const pair of [...mapNode.items]) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		if (!Object.prototype.hasOwnProperty.call(obj, key) || obj[key] === undefined) {
+			doc.deleteIn([...prefix, key]);
+		}
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		if (val === undefined) continue;
+		const keyPath = [...prefix, key];
+		const currentNode = doc.getIn(keyPath, true);
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length === 0) {
+				if (!YAML.isMap(currentNode) || currentNode.items.length !== 0) {
+					doc.setIn(keyPath, doc.createNode({}));
+				}
+			} else if (YAML.isMap(currentNode)) {
+				syncObjectToYamlDoc(doc, val, keyPath);
+			} else {
+				doc.setIn(keyPath, doc.createNode(val));
+			}
+		} else {
+			const currentVal =
+				currentNode && typeof (currentNode as any).toJSON === 'function'
+					? (currentNode as any).toJSON()
+					: doc.getIn(keyPath);
+			if (!doc.hasIn(keyPath) || !isEqual(currentVal, val)) {
+				doc.setIn(keyPath, val !== null && typeof val === 'object' ? doc.createNode(val) : val);
+			}
+		}
+	}
+}
+
+export interface StagedInstallConfig {
+	configDoc: _YAML.Document;
+	commitEnvConfigState?: () => boolean;
+	validated?: boolean;
+}
+
+function clearScalarAncestors(configDoc: _YAML.Document, splitParam: string[], userPaths?: Set<string>) {
+	for (let i = 1; i < splitParam.length; i++) {
+		const ancestorPath = splitParam.slice(0, i);
+		const ancestorVal = configDoc.getIn(ancestorPath);
+		if (ancestorVal !== undefined && (ancestorVal === null || typeof ancestorVal !== 'object')) {
+			configDoc.deleteIn(ancestorPath);
+			userPaths?.delete(ancestorPath.join('.'));
+		}
+	}
+}
+
+function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
+	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
+
+	let configDoc = defaultDoc;
+	const userPaths = new Set<string>();
+	if (baseConfigPath) {
+		configDoc = parseYamlDoc(baseConfigPath);
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${baseConfigPath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+		const threadCount = configDoc.getIn(['threads']);
+		if (typeof threadCount === 'number' && threadCount >= 0) {
+			configDoc.deleteIn(['threads']);
+			configDoc.setIn(['threads', 'count'], threadCount);
+		}
+		collectLeafDotPaths(configDoc.toJSON(), [], userPaths, defaultDoc);
+		backfillMissingDefaults(configDoc, defaultDoc);
+	}
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	let schemasArgs;
@@ -369,12 +490,15 @@ export function createConfigFile(args, skipFsValidation = false) {
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
-				// Remove parent structure if it's a boolean to avoid type conflicts when setting the new value
-				if (splitParam.length > 1 && typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
-					configDoc.deleteIn(splitParam.slice(0, -1));
-				}
+				clearScalarAncestors(configDoc, splitParam, userPaths);
 
-				configDoc.setIn([...splitParam], value);
+				configDoc.setIn(
+					[...splitParam],
+					value !== null && typeof value === 'object' ? configDoc.createNode(value) : value
+				);
+				if (value !== undefined && value !== null && value !== '' && !defaultedArgKeys?.has(arg)) {
+					userPaths.add(splitParam.join('.'));
+				}
 			} catch (err) {
 				logger.error(err);
 			}
@@ -387,29 +511,62 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// This allows runtime env vars to resolve port conflicts before validation
 	// Must be called AFTER rootPath is set in configDoc
 	// Mutates configDoc in place
-	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true });
+	const commitEnvConfigState = applyRuntimeEnvVarConfig(configDoc, null, {
+		isInstall: true,
+		userPaths,
+		deferStateCommit: true,
+	});
+	// A root section the template omitted but an arg or env layer introduced still needs its sibling defaults
+	if (baseConfigPath) backfillMissingDefaults(configDoc, defaultDoc);
+
+	return { configDoc, commitEnvConfigState };
+}
+
+// Leaves configObj unset until writeStagedInstallConfig() finishes so pre-file readers still see "uninstalled".
+export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
+	const staged = composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+	return staged;
+}
+
+export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsValidation = false): void {
+	validateConfig(staged.configDoc, skipFsValidation);
+	staged.validated = true;
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+}
+
+export function writeStagedInstallConfig(
+	staged: StagedInstallConfig,
+	targetConfigPath?: string,
+	skipFsValidation = false
+): void {
+	const { configDoc, commitEnvConfigState, validated } = staged;
 
 	// Validates config doc and if required sets default values for some parameters.
-	validateConfig(configDoc, skipFsValidation);
-
-	flatConfigObj = setActiveConfig(configDoc.toJSON());
+	if (!validated) {
+		validateConfig(configDoc, skipFsValidation);
+	}
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
-	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	const configFilePath = targetConfigPath
+		? path.resolve(targetConfigPath)
+		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	fs.createFileSync(configFilePath);
-	if (configDoc.errors?.length > 0) {
-		throw handleHDBError(
-			new Error(),
-			`Error parsing ${configFilePath} ${configDoc.errors}`,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
 	atomicWriteFile(configFilePath, String(configDoc));
+	flatConfigObj = setActiveConfig(configDoc.toJSON());
+	commitEnvConfigState?.();
 	logger.trace(`Config file written to ${configFilePath}`);
+}
+
+/**
+ * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
+ * @param args - any args that the user provided
+ * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
+ */
+export function createConfigFile(args, skipFsValidation = false) {
+	const staged = composeInstallConfig(args);
+	writeStagedInstallConfig(staged, undefined, skipFsValidation);
 }
 
 /**
@@ -923,7 +1080,8 @@ export function updateConfigObject(param: string, value: any) {
 		return;
 	}
 
-	flatConfigObj[configObjKey.toLowerCase()] = value;
+	if (value === undefined) delete flatConfigObj[configObjKey.toLowerCase()];
+	else flatConfigObj[configObjKey.toLowerCase()] = value;
 
 	// Keep the nested config tree in sync too: componentLoader (root components) and other
 	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
@@ -1102,6 +1260,7 @@ export function updateConfigValue(
 
 		const splitParam = configParam.split('_');
 		const newValue = castConfigValue(configParam, value);
+		clearScalarAncestors(configDoc, splitParam);
 		configDoc.setIn([...splitParam], newValue);
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
@@ -1149,11 +1308,7 @@ export function updateConfigValue(
 				let newValue = castConfigValue(configParam, parsedArgs[arg]);
 				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
 				try {
-					if (splitParam.length > 1) {
-						if (typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
-							configDoc.deleteIn(splitParam.slice(0, -1));
-						}
-					}
+					clearScalarAncestors(configDoc, splitParam);
 					configDoc.setIn([...splitParam], newValue);
 				} catch (err) {
 					logger.error(err);
@@ -1487,7 +1642,15 @@ export function parseYamlDoc(filePath) {
  * @param {string} [configFilePath] - Path to config file (optional, skips file write if not provided)
  * @param {Object} [options] - Options to pass to applyRuntimeEnvConfig (e.g., {isInstall: true})
  */
-function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
+function applyRuntimeEnvVarConfig(
+	configDoc,
+	configFilePath,
+	options: {
+		isInstall?: boolean;
+		userPaths?: Iterable<string>;
+		deferStateCommit?: boolean;
+	} = {}
+): (() => boolean) | undefined {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
@@ -1512,7 +1675,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 
 	let saveEnvConfigState;
 	let confirmEnvConfigState;
-	let commitEnvConfigState;
+	let commitEnvConfigState: () => boolean;
 	try {
 		// Apply env vars with source tracking and drift detection
 		({
@@ -1532,20 +1695,8 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 			configObj.operationsApi.network.port = null;
 		}
 
-		// Update the YAML document's contents
-		// We update only the 'contents' property to preserve the Document instance and its methods
-		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true } as any);
-
-		// Check for YAML parsing errors
-		if (mergedDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml: ${mergedDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
-
-		configDoc.contents = mergedDoc.contents;
+		// Update the YAML document's contents in place so comments are preserved
+		syncObjectToYamlDoc(configDoc, configObj);
 	} catch (error) {
 		logger.error(`Failed to apply runtime env config: ${error.message}`);
 		throw error;
@@ -1554,6 +1705,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	// Install has no config file yet and no process to keep alive, so its snapshot write stays
 	// mandatory - an install that never recorded originals should fail, not proceed.
 	if (!configFilePath) {
+		if (options.deferStateCommit) return commitEnvConfigState;
 		commitEnvConfigState();
 		return;
 	}

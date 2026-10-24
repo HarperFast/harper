@@ -22,7 +22,6 @@ import _installValidator from '../../validation/installValidator.ts';
 const installValidator = _installValidator;
 import _mountHdb from '../mount_hdb.ts';
 const mountHdb = _mountHdb;
-import { composeConfigFromEnv } from '../../config/harperConfigEnvVars.ts';
 import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
@@ -32,7 +31,9 @@ import * as globalSchema from '../globalSchema.ts';
 import { promisify } from 'node:util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
+import { closeDatabase, databases } from '../../resources/databases.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
+import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 
 const HDB_PROMPT_MSG = (msg) => chalk.magenta.bold(msg);
 const LINE_BREAK = os.EOL;
@@ -79,10 +80,16 @@ const INSTALL_PROMPTS = {
 };
 
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
-const cfgEnv = assignCMDENVVariables([hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]);
+const cfgEnv: Record<string, string | undefined> = {};
 let hdbRoot = undefined;
 let conditionalRollback = false;
+let rootExistedBeforeInstall = false;
+let preExistingRootEntries: Set<string> | null = null;
+let preExistingStorageDirEntries: Map<string, Set<string>> | null = null;
+let candidateSystemDbPaths: string[] | null = null;
+let preExistingSystemDbPaths: Set<string> | null = null;
 let ignoreExisting = false;
+let bootPropsCreated = true;
 
 /**
  * This module orchestrates the installation of Harper.
@@ -102,6 +109,71 @@ function resolveInstallDestination(value: string): string {
 	return resolveConfiguredPath(value, undefined) ?? value;
 }
 
+function getHdbConfigPath(): string | undefined {
+	return (
+		assignCMDENVVariables([hdbTerms.INSTALL_PROMPTS.HDB_CONFIG])[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ||
+		cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]
+	);
+}
+
+function isRootNamedHdbConfig(hdbConfigPath: string | undefined, rootDir: string | undefined): boolean {
+	if (!hdbConfigPath || !rootDir) return false;
+	const resolvedConfig = path.resolve(hdbConfigPath);
+	const baseName = path.basename(resolvedConfig);
+	return (
+		path.dirname(resolvedConfig) === path.resolve(rootDir) &&
+		(baseName === hdbTerms.HARPER_CONFIG_FILE || baseName === hdbTerms.HDB_CONFIG_FILE)
+	);
+}
+
+function getCandidateSystemDbPaths(
+	rootDir: string,
+	...configSources: Array<Record<string, any> | undefined>
+): string[] {
+	const systemDbPaths = new Set<string>([
+		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
+		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`),
+		path.join(rootDir, hdbTerms.LEGACY_DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
+		path.join(rootDir, hdbTerms.SYSTEM_SCHEMA_NAME, 'hdb_user.mdb'),
+	]);
+	for (const cfg of configSources) {
+		if (!cfg) continue;
+		const rawStoragePath = cfg[hdbTerms.CONFIG_PARAMS.STORAGE_PATH.toLowerCase()] ?? cfg.storage?.path;
+		const customStorageDir = resolveConfiguredPath(rawStoragePath, rootDir);
+		if (customStorageDir) {
+			systemDbPaths.add(path.join(customStorageDir, hdbTerms.SYSTEM_SCHEMA_NAME));
+			systemDbPaths.add(path.join(customStorageDir, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`));
+		}
+		const rawSystemDbPath =
+			cfg[hdbTerms.CONFIG_PARAMS.DATABASES]?.[hdbTerms.SYSTEM_SCHEMA_NAME]?.path ??
+			cfg.databases?.[hdbTerms.SYSTEM_SCHEMA_NAME]?.path;
+		const customSystemDbPath = resolveConfiguredPath(rawSystemDbPath, rootDir);
+		if (customSystemDbPath) {
+			systemDbPaths.add(customSystemDbPath);
+			systemDbPaths.add(`${customSystemDbPath}.mdb`);
+			systemDbPaths.add(path.join(customSystemDbPath, hdbTerms.SYSTEM_SCHEMA_NAME));
+			systemDbPaths.add(path.join(customSystemDbPath, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`));
+			systemDbPaths.add(path.join(customSystemDbPath, 'hdb_user.mdb'));
+		}
+	}
+	return Array.from(systemDbPaths);
+}
+
+function isPreseededRootConfig(rootDir: string | undefined, configFromFile: Record<string, any> = {}): boolean {
+	const hdbConfigPath = getHdbConfigPath();
+	if (!isRootNamedHdbConfig(hdbConfigPath, rootDir) || !rootDir) return false;
+	const resolvedConfig = path.resolve(hdbConfigPath!);
+	const otherConfigName =
+		path.basename(resolvedConfig) === hdbTerms.HARPER_CONFIG_FILE
+			? hdbTerms.HDB_CONFIG_FILE
+			: hdbTerms.HARPER_CONFIG_FILE;
+	if (fs.existsSync(path.join(rootDir, otherConfigName))) return false;
+	if (getCandidateSystemDbPaths(rootDir, configFromFile).some((p) => fs.existsSync(p))) {
+		return false;
+	}
+	return true;
+}
+
 /**
  * Calls all the functions that are needed to install Harper.
  * @returns {Promise<void>}
@@ -110,14 +182,14 @@ async function install() {
 	console.error(HDB_PROMPT_MSG(LINE_BREAK + INSTALL_START_MSG + LINE_BREAK));
 	hdbLogger.notify(INSTALL_START_MSG);
 
+	const hdbConfigPath = getHdbConfigPath();
 	let configFromFile;
-	if (cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) {
-		configFromFile = getConfigFromFile();
+	if (hdbConfigPath) {
+		configFromFile = getConfigFromFile(hdbConfigPath);
 	}
 
 	// Check to see if any cmd/env vars are passed that override install prompts.
-	const promptOverride = checkForPromptOverride();
-	Object.assign(promptOverride, configFromFile);
+	const promptOverride = Object.assign({}, configFromFile, checkForPromptOverride());
 
 	// A cmd/env/config-file-sourced ROOTPATH skips the install prompt (and its `~/...`-expanding
 	// filter) entirely, so resolve it here - before it's validated (installValidator, below) or
@@ -159,7 +231,7 @@ async function install() {
 	}
 
 	// Check for an existing installation of Harper.
-	await checkForExistingInstall();
+	await checkForExistingInstall(configFromFile);
 
 	// Prompt the user with params needed for install.
 	const installParams = await installPrompts(promptOverride);
@@ -167,17 +239,14 @@ async function install() {
 	// HDB root is the one of the first params we need for install.
 	hdbRoot = installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH];
 
-	if (
-		cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] &&
-		path.dirname(cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) === hdbRoot
-	) {
-		conditionalRollback = true;
-	}
+	conditionalRollback = Boolean(
+		hdbConfigPath && hdbRoot && path.resolve(path.dirname(hdbConfigPath)) === path.resolve(hdbRoot)
+	);
 
 	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
 	if (
 		!ignoreExisting &&
-		!cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] &&
+		!isPreseededRootConfig(hdbRoot, configFromFile) &&
 		((await fs.pathExists(path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE))) ||
 			(await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))))
 	) {
@@ -199,17 +268,55 @@ async function install() {
 		throw new Error('Installer should have the HDB root param at the stage it is in but it does not.');
 	}
 	envManager.setHdbBasePath(hdbRoot);
-	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, installParams.STORAGE_ENGINE);
-	stageRocksCompression();
+	const stagedInstall = stageInstallConfig(installParams);
+	bootPropsCreated = false;
+	rootExistedBeforeInstall = fs.existsSync(hdbRoot);
+	preExistingRootEntries = rootExistedBeforeInstall ? new Set(fs.readdirSync(hdbRoot)) : null;
+	const stagedJson = stagedInstall.configDoc.toJSON();
+	const baseCandidatePaths = getCandidateSystemDbPaths(hdbRoot, configFromFile, stagedJson);
+	candidateSystemDbPaths = baseCandidatePaths.flatMap((p) => (p.endsWith('.mdb') ? [p, `${p}-lock`] : [p]));
+	preExistingSystemDbPaths = new Set(candidateSystemDbPaths.filter((p) => fs.existsSync(p)));
+	preExistingStorageDirEntries = new Map();
+	const storageDirs = new Set<string>([path.join(hdbRoot, hdbTerms.DATABASES_DIR_NAME)]);
+	for (const cfg of [configFromFile, stagedJson]) {
+		const resolved = resolveConfiguredPath(
+			cfg?.[hdbTerms.CONFIG_PARAMS.STORAGE_PATH.toLowerCase()] ?? cfg?.storage?.path,
+			hdbRoot
+		);
+		if (resolved) storageDirs.add(resolved);
+	}
+	for (const dirPath of storageDirs) {
+		try {
+			if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+				preExistingStorageDirEntries.set(dirPath, new Set(fs.readdirSync(dirPath)));
+			}
+		} catch {}
+	}
 
-	// Creates the Harper project folder structure and the LMDB environments/dbis.
-	await mountHdb(hdbRoot);
+	try {
+		// Creates the Harper project folder structure and the LMDB environments/dbis.
+		await mountHdb(hdbRoot, () => {
+			try {
+				configUtils.validateStagedInstallConfig(stagedInstall);
+			} catch (configErr) {
+				rollbackInstall(configErr);
+				throw configErr;
+			}
+		});
 
-	// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
-	await createBootPropertiesFile();
+		// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
+		await createBootPropertiesFile();
 
-	// Create the harperdb-config.yaml file
-	await createConfigFile(installParams);
+		// Create the harperdb-config.yaml file
+		await createConfigFile(stagedInstall);
+	} finally {
+		bootPropsCreated = true;
+		rootExistedBeforeInstall = false;
+		preExistingRootEntries = null;
+		preExistingStorageDirEntries = null;
+		candidateSystemDbPaths = null;
+		preExistingSystemDbPaths = null;
+	}
 
 	// At this point there should be config and Harper folders so re-init log settings to update
 	hdbLogger.initLogSettings(true);
@@ -233,8 +340,8 @@ async function install() {
 	hdbLogger.notify(INSTALL_COMPLETE_MSG);
 }
 
-function getConfigFromFile() {
-	let doc = YAML.parseDocument(fs.readFileSync(cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG], 'utf8'), {
+function getConfigFromFile(hdbConfigPath = getHdbConfigPath()) {
+	let doc = YAML.parseDocument(fs.readFileSync(hdbConfigPath, 'utf8'), {
 		simpleKeys: true,
 	} as any);
 	const flatCfg: any = configUtils.flattenConfig(doc.toJSON()) ?? {};
@@ -242,6 +349,8 @@ function getConfigFromFile() {
 	// This ensures that if config file has rootpath, rootpath install prompt uses this value
 	if (flatCfg[hdbTerms.CONFIG_PARAMS.ROOTPATH.toLowerCase()])
 		flatCfg.ROOTPATH = flatCfg[hdbTerms.CONFIG_PARAMS.ROOTPATH.toLowerCase()];
+	if (flatCfg[hdbTerms.CONFIG_PARAMS.NODE_HOSTNAME.toLowerCase()] !== undefined)
+		flatCfg.NODE_HOSTNAME = flatCfg[hdbTerms.CONFIG_PARAMS.NODE_HOSTNAME.toLowerCase()];
 
 	return flatCfg;
 }
@@ -402,7 +511,7 @@ function checkForPromptOverride() {
  * Checks for an existing install of Harper and prompts user accordingly.
  * @returns {Promise<void>}
  */
-async function checkForExistingInstall() {
+async function checkForExistingInstall(configFromFile?: Record<string, any>) {
 	hdbLogger.trace('Checking for existing install.');
 	const bootPropPath = hdbUtils.getPropsFilePath();
 	const bootFileExists = await fs.pathExists(bootPropPath);
@@ -419,7 +528,13 @@ async function checkForExistingInstall() {
 
 	// If the boot file doesn't exist check to see if cli/env root path has been passed and
 	// is pointing to an installed HDB
-	if (!bootFileExists && hdbUtils.noBootFile()) hdbExists = true;
+	if (
+		!bootFileExists &&
+		hdbUtils.noBootFile() &&
+		!isPreseededRootConfig(hdbUtils.getEnvCliRootPath(), configFromFile)
+	) {
+		hdbExists = true;
+	}
 
 	if (hdbExists && !ignoreExisting) {
 		hdbLogger.trace(`Install found existing HDB config at:${bootPropPath}`);
@@ -439,7 +554,10 @@ async function checkForExistingInstall() {
 }
 
 async function createBootPropertiesFile() {
-	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	const hdbConfigPath = getHdbConfigPath();
+	const configFilePath = isRootNamedHdbConfig(hdbConfigPath, hdbRoot)
+		? path.resolve(hdbConfigPath!)
+		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 
 	let install_user;
 	try {
@@ -491,6 +609,7 @@ async function createBootPropertiesFile() {
 
 			try {
 				await fs.writeFile(propsFilePath, bootPropsValue);
+				bootPropsCreated = true;
 			} catch (err) {
 				hdbLogger.error(`There was an error creating the boot file at path: ${propsFilePath}`);
 				throw err;
@@ -516,16 +635,38 @@ async function createBootPropertiesFile() {
  *
  * @param args - config args (cmd/env values already merged with install params)
  * @param defaultsMode - the resolved DEFAULTS_MODE install param ('dev' or 'prod')
+ * @param baseDoc - optional parsed HDB_CONFIG YAML document checked before applying mode defaults
+ * @param defaultedKeys - optional set populated with keys that were filled from install-mode defaults
  * @returns the same args object, mutated in place, for convenience
  */
-export function applyInstallModeDefaults(args, defaultsMode) {
+export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Document, defaultedKeys?: Set<string>) {
+	const getConfigured = (cfg: string) => {
+		const argVal = args[cfg.toLowerCase()] ?? args[cfg];
+		if (argVal !== undefined) return argVal;
+		if (!baseDoc) return undefined;
+		const pathParts = cfg.split('_');
+		const docVal = baseDoc.getIn(pathParts);
+		if (docVal !== undefined) return docVal;
+		if (pathParts.length > 1) {
+			const parentVal = baseDoc.getIn(pathParts.slice(0, -1));
+			if (typeof parentVal === 'boolean' || typeof parentVal === 'number') {
+				return parentVal;
+			}
+		}
+		return undefined;
+	};
 	if (defaultsMode === 'dev') {
 		for (const cfg in DEV_MODE_CONFIG) {
 			// Before setting http.port check that secure port is not being passed
-			if (cfg === CONFIG_PARAMS.HTTP_PORT && args[CONFIG_PARAMS.HTTP_SECUREPORT.toLowerCase()] === undefined) {
-				args[cfg] = args[cfg.toLowerCase()] ?? DEV_MODE_CONFIG[cfg];
+			if (cfg === CONFIG_PARAMS.HTTP_PORT && getConfigured(CONFIG_PARAMS.HTTP_SECUREPORT) === undefined) {
+				const hadArg = args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined;
+				if (hadArg || getConfigured(cfg) === undefined) {
+					args[cfg] = args[cfg.toLowerCase()] ?? args[cfg] ?? DEV_MODE_CONFIG[cfg];
+					if (!hadArg) defaultedKeys?.add(cfg);
+				}
 				// set secure port to null to override default
 				args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
+				defaultedKeys?.add(CONFIG_PARAMS.HTTP_SECUREPORT);
 				continue;
 			} else if (cfg === CONFIG_PARAMS.HTTP_PORT) {
 				continue;
@@ -534,89 +675,180 @@ export function applyInstallModeDefaults(args, defaultsMode) {
 			// Before setting ops API port check that secure port is not being passed
 			if (
 				cfg === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT &&
-				args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT.toLowerCase()] === undefined
+				getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) === undefined
 			) {
-				args[cfg] = args[cfg.toLowerCase()] ?? DEV_MODE_CONFIG[cfg];
+				const hadArg = args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined;
+				if (hadArg || getConfigured(cfg) === undefined) {
+					args[cfg] = args[cfg.toLowerCase()] ?? args[cfg] ?? DEV_MODE_CONFIG[cfg];
+					if (!hadArg) defaultedKeys?.add(cfg);
+				}
 				// set secure port to null to override default
 				args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
+				defaultedKeys?.add(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
 				continue;
 			} else if (cfg === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) {
 				continue;
 			}
 
-			if (args[cfg.toLowerCase()] === undefined) args[cfg] = DEV_MODE_CONFIG[cfg];
+			if (getConfigured(cfg) === undefined) {
+				args[cfg] = DEV_MODE_CONFIG[cfg];
+				defaultedKeys?.add(cfg);
+			}
 		}
 	} else {
-		if (args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()])
+		if (
+			getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) &&
+			getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) === undefined
+		) {
 			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
-		if (args[CONFIG_PARAMS.HTTP_PORT.toLowerCase()]) args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
+			defaultedKeys?.add(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+		}
+		if (getConfigured(CONFIG_PARAMS.HTTP_PORT) && getConfigured(CONFIG_PARAMS.HTTP_SECUREPORT) === undefined) {
+			args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
+			defaultedKeys?.add(CONFIG_PARAMS.HTTP_SECUREPORT);
+		}
 	}
 	return args;
 }
 
-/**
- * Calls the util function that creates the Harper config file.
- * If an error occurs during the create install is rolled backed.
- * @param installParams
- * @returns {Promise<void>}
- */
-/**
- * Make the deployment codec readable before `mountHdb()` creates the system column families.
- *
- * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
- * RocksDB fixes a column family's codec when the family is created and refuses a later reopen that
- * asks for a different one — and worker threads share one process-wide family registry. Left
- * unstaged, the main thread creates `__dbis__` at the build default while every worker resolves the
- * configured codec, and Harper dies with "The system database failed to load". Staging it in the
- * in-memory config here is the same trick the STORAGE_ENGINE line above uses.
- *
- * Checked in the same precedence `createConfigFile()` itself later resolves the value with, so
- * `storage.compression` also participates when no explicit RocksDB codec is set: its default is
- * true, which resolves to lz4. Stage both values from every source `createConfigFile()` honors so
- * the first open cannot create `__dbis__` with `none` and later workers reopen it with lz4.
- */
-function stageRocksCompression() {
-	const rocksCompression = hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION;
-	const compression = hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION;
-	const envConfig = composeConfigFromEnv();
-	const commandLineConfig = assignCMDENVVariables([rocksCompression, compression], true);
-	const fileConfig = cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ? getConfigFromFile() : {};
-	const configuredRocksCompression =
-		envConfig?.storage?.rocks?.compression ?? commandLineConfig[rocksCompression] ?? fileConfig[rocksCompression];
-	const configuredCompression =
-		envConfig?.storage?.compression ?? commandLineConfig[compression] ?? fileConfig[compression] ?? true;
-	if (
-		configuredRocksCompression !== undefined &&
-		configuredRocksCompression !== null &&
-		configuredRocksCompression !== ''
-	) {
-		envManager.setProperty(rocksCompression, configuredRocksCompression);
+function buildInstallConfigArgs(installParams: Record<string, any> = {}): {
+	args: Record<string, any>;
+	hdbConfigPath: string | undefined;
+	defaultedArgKeys: Set<string>;
+} {
+	const hdbConfigPath = getHdbConfigPath();
+	let baseDoc: YAML.Document | undefined;
+	if (hdbConfigPath) {
+		try {
+			const parsed = configUtils.parseYamlDoc(hdbConfigPath);
+			if (!parsed.errors?.length) {
+				baseDoc = parsed;
+			}
+		} catch {}
 	}
-	envManager.setProperty(compression, configuredCompression);
-}
-
-async function createConfigFile(installParams) {
-	hdbLogger.trace(`Creating ${PRODUCT_NAME} config file`);
-	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
-	Object.assign(args, installParams);
-
+	const cliEnvArgs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
+	delete cliEnvArgs.rootpath;
+	delete cliEnvArgs.hdb_root;
+	const args: Record<string, any> = baseDoc
+		? Object.assign({}, cliEnvArgs)
+		: Object.assign({}, cliEnvArgs, installParams, cliEnvArgs);
+	if (baseDoc) {
+		if (installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH] !== undefined) {
+			args[hdbTerms.INSTALL_PROMPTS.ROOTPATH] = installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH];
+		}
+		const baseNodeHostname = baseDoc.getIn(CONFIG_PARAMS.NODE_HOSTNAME.split('_'));
+		if (
+			installParams[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] !== undefined &&
+			(cliEnvArgs[CONFIG_PARAMS.NODE_HOSTNAME.toLowerCase()] !== undefined ||
+				cliEnvArgs[CONFIG_PARAMS.REPLICATION_HOSTNAME.toLowerCase()] !== undefined ||
+				baseNodeHostname === undefined)
+		) {
+			args[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] = installParams[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME];
+		}
+	}
+	if (installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH] !== undefined) {
+		delete args.rootpath;
+		delete args.hdb_root;
+	}
 	const defaultsMode = installParams[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE];
 	if (defaultsMode !== undefined && defaultsMode !== 'dev' && defaultsMode !== 'prod') {
 		const warn = `DEFAULTS_MODE value "${defaultsMode}" is not recognized (expected "dev" or "prod"). Using prod defaults.`;
 		console.error(chalk.yellow.bold(`Warning: ${warn}`));
 		hdbLogger.warn(warn);
 	}
-	applyInstallModeDefaults(args, defaultsMode);
+	const defaultedArgKeys = new Set<string>();
+	applyInstallModeDefaults(args, defaultsMode, baseDoc, defaultedArgKeys);
+	return { args, hdbConfigPath, defaultedArgKeys };
+}
 
-	try {
-		if (!cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) {
-			// Create the Harper config file.
-			configUtils.createConfigFile(args);
+function stageInstallConfig(installParams: Record<string, any> = {}): configUtils.StagedInstallConfig {
+	initPaths.resetPaths();
+	const { args, hdbConfigPath, defaultedArgKeys } = buildInstallConfigArgs(installParams);
+	return configUtils.stageInstallConfig(args, hdbConfigPath, defaultedArgKeys);
+}
+
+/**
+ * Calls the util function that creates the Harper config file.
+ * If an error occurs during the create install is rolled backed.
+ * @returns {Promise<void>}
+ */
+async function createConfigFile(staged: configUtils.StagedInstallConfig) {
+	hdbLogger.trace(`Creating ${PRODUCT_NAME} config file`);
+	const hdbConfigPath = getHdbConfigPath();
+
+	const overwriteRootNamedHdbConfig = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
+	const resolvedConfigPath = overwriteRootNamedHdbConfig && hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
+	const originalHdbConfigContent = resolvedConfigPath ? fs.readFileSync(resolvedConfigPath, 'utf8') : undefined;
+	const backupConfigPath = resolvedConfigPath ? `${resolvedConfigPath}.install-backup-${process.pid}` : undefined;
+	if (resolvedConfigPath && backupConfigPath) {
+		try {
+			fs.copyFileSync(resolvedConfigPath, backupConfigPath);
+		} catch (copyErr) {
+			hdbLogger.warn(`Could not create backup copy of ${hdbConfigPath} at ${backupConfigPath}: ${copyErr}`);
 		}
-
+	}
+	try {
+		configUtils.writeStagedInstallConfig(
+			staged,
+			overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined
+		);
 		envManager.initSync();
 	} catch (configErr) {
+		if (resolvedConfigPath) {
+			let restored = false;
+			if (backupConfigPath && fs.existsSync(backupConfigPath)) {
+				try {
+					fs.renameSync(backupConfigPath, resolvedConfigPath);
+					restored = true;
+				} catch {}
+			}
+			if (!restored && originalHdbConfigContent !== undefined) {
+				try {
+					configUtils.atomicWriteFile(resolvedConfigPath, originalHdbConfigContent);
+					restored = true;
+				} catch {
+					try {
+						fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
+						restored = true;
+					} catch (restoreErr) {
+						const backupNote =
+							backupConfigPath && fs.existsSync(backupConfigPath) ? ` (backup preserved at ${backupConfigPath})` : '';
+						hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback${backupNote}: ${restoreErr}`);
+					}
+				}
+			}
+			if (restored && backupConfigPath) {
+				try {
+					fs.rmSync(backupConfigPath, { force: true });
+				} catch {}
+			}
+		}
+		await closeCreatedSystemDatabaseForRollback();
 		rollbackInstall(configErr);
+		return;
+	}
+	if (backupConfigPath) {
+		try {
+			fs.rmSync(backupConfigPath, { force: true });
+		} catch (rmErr) {
+			hdbLogger.warn(`Could not remove backup copy at ${backupConfigPath}: ${rmErr}`);
+		}
+	}
+}
+
+async function closeCreatedSystemDatabaseForRollback() {
+	if (preExistingSystemDbPaths && preExistingSystemDbPaths.size > 0) return;
+	try {
+		const systemTables = databases[hdbTerms.SYSTEM_SCHEMA_NAME];
+		if (!systemTables) return;
+		for (const table of Object.values(systemTables) as any[]) {
+			if (table?.dbisDB && table.dbisDB.status !== 'closed') {
+				await table.dbisDB.close?.();
+			}
+		}
+		await closeDatabase(hdbTerms.SYSTEM_SCHEMA_NAME);
+	} catch (closeErr) {
+		hdbLogger.warn(`Could not close system database during install rollback: ${closeErr}`);
 	}
 }
 
@@ -630,24 +862,58 @@ function rollbackInstall(errMsg) {
 	console.error(ABORT_MSG);
 
 	// Remove boot file folder.
-	const harperdbBootFolder = path.resolve(envManager.get(envManager.BOOT_PROPS_FILE_PATH), '../');
-	if (harperdbBootFolder) {
-		fs.removeSync(harperdbBootFolder);
+	if (bootPropsCreated) {
+		const harperdbBootFolder = path.resolve(envManager.get(envManager.BOOT_PROPS_FILE_PATH), '../');
+		if (harperdbBootFolder) {
+			fs.removeSync(harperdbBootFolder);
+		}
 	}
 
 	// Remove HDB.
 	if (hdbRoot) {
-		// We do a conditional rollback if installing from config file that exists in the hdb rootpath
-		if (conditionalRollback) {
-			const dir = fs.readdirSync(hdbRoot, { withFileTypes: true });
-			dir.forEach((d) => {
-				const fullPath = path.join((d as any).parentPath ?? (d as any).path, d.name);
-				if (fullPath !== cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) {
-					fs.removeSync(fullPath);
-				}
-			});
+		const resolvedHdbRoot = path.resolve(hdbRoot);
+		const hdbConfigPath = getHdbConfigPath();
+		const resolvedConfigPath = hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
+		const resolvedBackupPath = resolvedConfigPath ? `${resolvedConfigPath}.install-backup-${process.pid}` : undefined;
+		// When hdbRoot already existed before install (or contains a root-placed HDB_CONFIG),
+		// remove only entries created by this install and preserve pre-existing operator files.
+		if (conditionalRollback || rootExistedBeforeInstall) {
+			if (fs.existsSync(hdbRoot)) {
+				const dir = fs.readdirSync(hdbRoot, { withFileTypes: true });
+				dir.forEach((d) => {
+					const fullPath = path.join((d as any).parentPath ?? (d as any).path, d.name);
+					const resolvedFullPath = path.resolve(fullPath);
+					if (
+						!preExistingRootEntries?.has(d.name) &&
+						resolvedFullPath !== resolvedConfigPath &&
+						resolvedFullPath !== resolvedBackupPath
+					) {
+						fs.removeSync(fullPath);
+					}
+				});
+			}
 		} else {
 			fs.removeSync(hdbRoot);
+		}
+		for (const [dirPath, existingEntries] of preExistingStorageDirEntries ?? []) {
+			if (path.resolve(dirPath) !== resolvedHdbRoot && fs.existsSync(dirPath)) {
+				for (const entryName of fs.readdirSync(dirPath)) {
+					const fullPath = path.join(dirPath, entryName);
+					const resolvedFullPath = path.resolve(fullPath);
+					if (
+						!existingEntries.has(entryName) &&
+						resolvedFullPath !== resolvedConfigPath &&
+						resolvedFullPath !== resolvedBackupPath
+					) {
+						fs.removeSync(fullPath);
+					}
+				}
+			}
+		}
+		for (const sysDbPath of candidateSystemDbPaths ?? []) {
+			if (!preExistingSystemDbPaths?.has(sysDbPath) && fs.existsSync(sysDbPath)) {
+				fs.removeSync(sysDbPath);
+			}
 		}
 	}
 

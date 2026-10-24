@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { filterArgsAgainstRuntimeConfig } = require('#src/config/harperConfigEnvVars');
 
 describe('filterArgsAgainstRuntimeConfig', function () {
-	const ENV_VARS = ['HARPER_SET_CONFIG', 'HARPER_DEFAULT_CONFIG'];
+	const ENV_VARS = ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG'];
 	let originalEnv;
 
 	beforeEach(function () {
@@ -213,9 +213,88 @@ describe('filterArgsAgainstRuntimeConfig', function () {
 		});
 	});
 
+	describe('Filters HARPER_CONFIG', function () {
+		it('should filter out args that are in HARPER_CONFIG', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({
+				storage: {
+					engine: 'lmdb',
+				},
+				http: {
+					port: 8080,
+				},
+			});
+
+			const args = {
+				storage_engine: 'rocksdb', // Should be filtered
+				http_port: '9926', // Should be filtered
+				rootpath: '/var/hdb', // Should NOT be filtered
+			};
+
+			const result = filterArgsAgainstRuntimeConfig(args);
+
+			assert.strictEqual(result.storage_engine, undefined, 'storage_engine should be filtered by HARPER_CONFIG');
+			assert.strictEqual(result.http_port, undefined, 'http_port should be filtered by HARPER_CONFIG');
+			assert.strictEqual(result.rootpath, '/var/hdb', 'rootpath should NOT be filtered');
+		});
+
+		it('should filter out args that are in either HARPER_CONFIG or HARPER_SET_CONFIG', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({
+				storage: {
+					engine: 'lmdb',
+				},
+			});
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				http: {
+					port: 8080,
+				},
+			});
+
+			const args = {
+				storage_engine: 'rocksdb', // Filtered by HARPER_CONFIG
+				http_port: '9926', // Filtered by HARPER_SET_CONFIG
+				logging_level: 'info', // NOT filtered
+			};
+
+			const result = filterArgsAgainstRuntimeConfig(args);
+
+			assert.strictEqual(result.storage_engine, undefined);
+			assert.strictEqual(result.http_port, undefined);
+			assert.strictEqual(result.logging_level, 'info');
+		});
+
+		it('should filter out legacy CONFIG_PARAM_MAP aliases when canonical key is in HARPER_CONFIG or HARPER_SET_CONFIG', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({
+				threads: {
+					count: 2,
+				},
+			});
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				operationsApi: {
+					network: {
+						port: 9925,
+					},
+				},
+			});
+
+			const args = {
+				max_http_threads: '8', // Legacy alias for threads_count -> filtered by HARPER_CONFIG
+				http_threads: '4', // Legacy alias for threads_count -> filtered by HARPER_CONFIG
+				server_port: '9999', // Legacy alias for operationsapi_network_port -> filtered by HARPER_SET_CONFIG
+				rootpath: '/var/hdb', // NOT filtered
+			};
+
+			const result = filterArgsAgainstRuntimeConfig(args);
+
+			assert.strictEqual(result.max_http_threads, undefined, 'max_http_threads alias should be filtered');
+			assert.strictEqual(result.http_threads, undefined, 'http_threads alias should be filtered');
+			assert.strictEqual(result.server_port, undefined, 'server_port alias should be filtered');
+			assert.strictEqual(result.rootpath, '/var/hdb', 'rootpath should NOT be filtered');
+		});
+	});
+
 	describe('Does NOT filter HARPER_DEFAULT_CONFIG', function () {
 		it('should NOT filter args that are only in HARPER_DEFAULT_CONFIG', function () {
-			// This test verifies that we only filter against HARPER_SET_CONFIG,
+			// This test verifies that we only filter against HARPER_CONFIG and HARPER_SET_CONFIG,
 			// not HARPER_DEFAULT_CONFIG, because defaults should be overridable by individual env vars
 
 			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
@@ -223,10 +302,10 @@ describe('filterArgsAgainstRuntimeConfig', function () {
 					port: 9999,
 				},
 			});
-			// No HARPER_SET_CONFIG
+			// No HARPER_CONFIG or HARPER_SET_CONFIG
 
 			const args = {
-				http_port: '9926', // Should NOT be filtered (only in DEFAULT_CONFIG, not SET_CONFIG)
+				http_port: '9926', // Should NOT be filtered (only in DEFAULT_CONFIG)
 				rootpath: '/var/hdb',
 			};
 
