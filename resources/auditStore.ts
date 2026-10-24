@@ -1298,6 +1298,11 @@ function isDecodableAction(action: number) {
 export function isLockControlType(type: unknown): boolean {
 	return type === 'lockRelease' || type === 'lockBarrier';
 }
+
+/** `startTime` replay does not use this: it refuses on a `reload` when resuming checked, else delivers it. */
+export function isNonHistoryType(type: unknown): boolean {
+	return type === 'evict' || type === 'reload' || isLockControlType(type);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
