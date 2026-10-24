@@ -481,7 +481,7 @@ describe('Commit notification racing a database close', () => {
 		let closing;
 		await notifyAfter('CloseRaceClosing', async (T) => {
 			const rootStore = T.primaryStore.rootStore;
-			T.primaryStore.prefetch(['A']); // an in-flight read holds the close open
+			T.primaryStore.prefetch(['A']);
 			closing = rootStore.close();
 			assert.strictEqual(rootStore.status, 'closing', 'precondition: the close is waiting on the read');
 			return 'closing';
