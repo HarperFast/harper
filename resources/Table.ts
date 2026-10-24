@@ -18,6 +18,7 @@ import {
 	residencyIsLocal,
 	requireConnectedResidencyOwner,
 	validateResidencyMapWrite,
+	acquireResidencyMapFence,
 	RESIDENCY_MAP_TABLE,
 } from './residencyMaps.ts';
 import { randomUUID } from 'node:crypto';
@@ -4954,12 +4955,27 @@ export function makeTable(options): TableResourceClass {
 			assertDerivedIndexAdmission(options, transaction);
 			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
 			checkValidId(id);
-			if (residencyPolicy?.byAttribute && writtenHere && !fullUpdate && needsResidentLoad(this.#entry, context)) {
-				if (context && 'onlyIfCached' in context && context.onlyIfCached)
-					throw new ClientError('An attribute residency patch requires the complete resident record', 503);
-				const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
-				transaction.disregardReadTxn();
-				return when(this.ensureLoaded(), () => this._writeUpdate(id, updates, fullUpdate, options));
+			if (
+				residencyPolicy?.byAttribute &&
+				writtenHere &&
+				!fullUpdate &&
+				(recordUpdate !== undefined || this.#changes !== undefined) &&
+				this.#entry?.metadataFlags & INVALIDATED &&
+				!hasExpired(this.#entry)
+			) {
+				const tail = transaction.writesByKey?.get(primaryStore)?.get(writeKeyId(id));
+				const prior = tail && (tail.stagedEntry ? tail : priorStagedWrite(tail));
+				if (!prior?.completeResidencyRecord) {
+					if (
+						!sourceLoad ||
+						(context && 'replicateFrom' in context && context.replicateFrom === false) ||
+						(context && 'onlyIfCached' in context && context.onlyIfCached)
+					)
+						throw new ClientError('An attribute residency patch requires the complete resident record', 503);
+					const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
+					transaction.disregardReadTxn();
+					return when(this.ensureLoaded(), () => this._writeUpdate(id, updates, fullUpdate, options));
+				}
 			}
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -5143,6 +5159,7 @@ export function makeTable(options): TableResourceClass {
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
+					write.completeResidencyRecord = undefined;
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
 					// The record a preceding write in this transaction left for this key is what this write
 					// applies to (see priorStagedWrite): a staged write is not visible to a read, so without
@@ -5154,9 +5171,12 @@ export function makeTable(options): TableResourceClass {
 					// audit refs (see the re-delivery check below).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
-					let existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
+					let existingRecord =
+						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
 						if (!fullUpdate) throw new ClientError('A residency map must be written as a complete snapshot', 400);
+						if (!replaying)
+							write.releaseResidencyMapFence ??= acquireResidencyMapFence(String(id), committedBy ?? transaction);
 						if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
 							write.skipped = true;
 							return;
@@ -5166,6 +5186,7 @@ export function makeTable(options): TableResourceClass {
 						residencyPolicy?.byAttribute &&
 						writtenHere &&
 						!fullUpdate &&
+						!priorStagedOp?.completeResidencyRecord &&
 						(priorStaged ?? existingEntry)?.metadataFlags & INVALIDATED
 					) {
 						if (
@@ -5748,7 +5769,12 @@ export function makeTable(options): TableResourceClass {
 						!fullUpdate &&
 						(residencyPolicy || !TableResource.getResidencyById) &&
 						Boolean(baseEntry?.metadataFlags & (residencyPolicy ? INVALIDATED : INVALIDATED | REPLICA)) &&
-						!(residencyPolicy && writtenHere && existingRecord === loadedEntry?.value);
+						!(
+							residencyPolicy &&
+							writtenHere &&
+							(priorStagedOp?.completeResidencyRecord || existingRecord === loadedEntry?.value)
+						);
+					if (residencyPolicy?.byAttribute && !patchesStub) write.completeResidencyRecord = recordToStore;
 					if (residencyPolicy) {
 						write.requiresOwnerConfirmation = false;
 						const slot =

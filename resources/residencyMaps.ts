@@ -30,6 +30,7 @@ const caches = new WeakMap<
 	>
 >();
 const DECLARATION_KEY = Symbol.for('residency_declaration');
+const mapFences = new WeakMap<object, Map<string, { owner: object; references: number }>>();
 let placementGuard: ((database: string, owners?: readonly string[], requireConnected?: boolean) => void) | undefined;
 
 export function setResidencyPlacementGuard(guard: typeof placementGuard): void {
@@ -120,9 +121,33 @@ export function readResidencyMap(database: string): ResidencyMapSnapshot | undef
 	return getResidencyMapTable().primaryStore.getSync(database);
 }
 
+export function acquireResidencyMapFence(database: string, owner: object): () => void {
+	const store = getResidencyMapTable().primaryStore;
+	let fences = mapFences.get(store);
+	if (!fences) mapFences.set(store, (fences = new Map()));
+	let fence = fences.get(database);
+	const key = [Symbol.for('residency-map-activation'), database];
+	if (!fence || fence.owner !== owner) {
+		if (!store.tryLock(key))
+			throw new ClientError(`Residency map update or activation is in progress for ${database}; retry`, 503);
+		fences.set(database, (fence = { owner, references: 0 }));
+	}
+	fence.references++;
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		if (--fence.references === 0) {
+			fences.delete(database);
+			store.unlock(key);
+		}
+	};
+}
+
 export function validateResidencyMapWrite(database: string, value: any, previous: any, replay = false): boolean {
 	const next = validateResidencyMap(value, database);
-	const activeSlots = activeResidencySlots(database);
+	// Opening user catalogs during system replay would bypass their pending audit recovery.
+	const activeSlots = replay ? 0 : activeResidencySlots(database);
 	if (previous) {
 		previous = validateResidencyMap(previous, database);
 		if (previous.digest === next.digest || residencyMapExtends(next, previous)) return false;

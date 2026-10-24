@@ -10,7 +10,7 @@ import {
 	sameResidencyPolicy,
 	type ResidencyPolicy,
 } from './residencyPolicy.ts';
-import { readResidencyMap } from './residencyMaps.ts';
+import { acquireResidencyMapFence, readResidencyMap } from './residencyMaps.ts';
 import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
@@ -4146,6 +4146,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let armFullTextLiveStateRestore: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
+	let releaseResidencyFence: (() => void) | undefined;
 	try {
 		if (
 			residency ||
@@ -4153,6 +4154,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			(residency === null &&
 				persistedPrimaryDescriptor(Table?.dbisDB ?? internalDbisFor(rootStore, target)).descriptor?.residency)
 		) {
+			releaseResidencyFence = acquireResidencyMapFence(databaseName, {});
 			exclusiveLock();
 			const catalog = Table?.dbisDB ?? internalDbisFor(rootStore, target);
 			const persisted = persistedPrimaryDescriptor(catalog);
@@ -4716,6 +4718,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// table was created while we were setting up; the lock is not reentrant, so release
 				// before the recursive reload
 				releaseLock();
+				releaseResidencyFence?.();
 				target.reload(databaseName);
 				return declareTable(target, tableDefinition);
 			}
@@ -5367,7 +5370,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		throw error;
 	} finally {
-		releaseLock();
+		try {
+			releaseLock();
+		} finally {
+			releaseResidencyFence?.();
+		}
 	}
 	if (fullTextFieldsForPersistence !== undefined) Table.fullTextFields = fullTextFieldsForPersistence;
 	if (activeFullTextIndexes !== undefined) {
