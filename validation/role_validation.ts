@@ -2,6 +2,7 @@ const validate = require('validate.js');
 const validator = require('./validationWrapper');
 import * as terms from '../utility/hdbTerms.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
+import { COMPONENT_GRANT_KEY, componentGrantError } from '../security/componentGrant.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 
@@ -158,6 +159,12 @@ function customValidate(object, constraints) {
 				if (invalidOp !== null) {
 					addPermError(HDB_ERROR_MSGS.INVALID_OPERATIONS_OP(invalidOp), validationErrors, undefined, undefined);
 				}
+				continue;
+			}
+
+			if (item === COMPONENT_GRANT_KEY) {
+				const grantError = componentGrantError(object.permission[item]);
+				if (grantError) addPermError(grantError, validationErrors, undefined, undefined);
 				continue;
 			}
 

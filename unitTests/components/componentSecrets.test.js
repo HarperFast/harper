@@ -639,6 +639,14 @@ export const afterTopLevelAwait = secrets.CS_SCOPED;
 			await iter.return();
 		});
 
+		it('reads a pattern grant as no grant at all: only a deploy credential resolves one (harper#3090)', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app-pr-*']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app-pr-1').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, undefined);
+			await iter.return();
+		});
+
 		it('does not re-emit an unchanged value', async () => {
 			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
 			await materializeGlobalSecrets();

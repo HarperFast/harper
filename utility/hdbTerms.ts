@@ -117,6 +117,7 @@ export const RESERVED_DATABASE_NAMES = [
 	'structure_user',
 	'operations',
 	'_expandedOperations',
+	'component_deploy',
 ] as const;
 
 /** Keys that address a plain object's prototype rather than an own entry; refused as new database and table names. */
@@ -429,6 +430,7 @@ export const SERVICE_ACTIONS_ENUM = {
 	MCP: 'mcp',
 	AGENT: 'agent',
 	CHAT: 'chat',
+	PREVIEW: 'preview',
 } as const;
 
 /** describes the Geo Conversion types */
@@ -641,6 +643,9 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
 	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
+	DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION: 'deployment_previews_maxPerApplication',
+	DEPLOYMENT_PREVIEWS_SWEEPINTERVAL: 'deployment_previews_sweepInterval',
+	DEPLOYMENT_PREVIEWS_STAGINGRETENTION_MAXCOUNT: 'deployment_previews_stagingRetention_maxCount',
 	DEPLOYMENT_STARTUPINSTALLTIMEOUT: 'deployment_startupInstallTimeout',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',

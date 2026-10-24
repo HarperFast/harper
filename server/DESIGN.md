@@ -679,6 +679,24 @@ matching Node's upgrade-then-authorize order). No core component registers custo
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
 
+### A shared worker answers 503 for an isolated application's host (`server/isolatedHostGuard.ts`)
+
+The fronting proxy sends an isolated application's host to the shared pool while that application's dedicated worker
+publishes no socket mirror — while it restarts, after it crashes, and through every redeploy — and the pool does not
+load it, so the request would run the pool's own routes: another application's root, answering 200 (harper#3052). So
+every request path in `http.ts` (Node, uWS, Bun) asks `isolatedApplicationUnavailable` first, and a shared worker
+answers 503 with `Retry-After` and `Cache-Control: no-store` for a host the root config gives an isolated application;
+a WebSocket closes with 1013. The dedicated worker itself and the operations server return before any lookup.
+
+The hosts come from the config alone, not from which components are on disk, because a package installed after a
+worker's first request changes no config to signal it. They are a `Set` seeded from, and rebuilt on each change seen by,
+the shared `RootConfigWatcher` the logger starts in every worker, because once a new isolated application starts only
+its own worker (harper#3045), no pool restart tells the pool of it; this worker's memoized config would be stale. The
+guard never starts that watcher itself: a process that has none reads the config on each request instead. A configured
+host is compared as written, lowercased: it carries no port and may be a bare IPv6 literal, so it is never parsed as a
+Host header. With no isolated application the cost per request is one
+`size` check.
+
 ## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.js`)
 
 libuv unlinks a pipe server's bound path when the handle closes (`uv__pipe_close` → `unlink`), with

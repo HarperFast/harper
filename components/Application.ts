@@ -11,8 +11,11 @@ import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS, SSH_KEY_DIR_NAME } from '../utility/
 import {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
+	isPayloadRoutingShape,
 	isRootConfigEffect,
+	PAYLOAD_ROUTING_KEYS,
 	rootConfigEffectFromDeclaration,
+	type PayloadRouting,
 	type RootConfigEffect,
 } from './rootConfigPublication.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -47,7 +50,9 @@ import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
 	DEPLOYMENT_PROVENANCE_FILE,
 	formatDeploymentProvenance,
+	parseDeploymentPreview,
 	parseDeploymentProvenance,
+	type PreviewMetadata,
 } from './deploymentProvenance.ts';
 import {
 	fingerprintInstall,
@@ -123,10 +128,11 @@ interface ApplicationConfig {
 	 * The fork is durable: it lives at a path derived from the application and database names, is
 	 * adopted again on restart, and is invisible to other applications.
 	 *
-	 * The application must reach its data through `import { databases } from 'harper'`. The bare
-	 * `databases`/`tables` globals are shared process-wide by the default `vm-current-context` loader
-	 * and cannot be scoped, so an application that uses them reads and writes the BASE — silently.
-	 * Per-application globals are a property of thread-level isolation, not of branching.
+	 * `import { databases } from 'harper'` reaches the fork under every loader. The bare
+	 * `databases`/`tables` globals do under `vm` and `compartment`, which give each application a global
+	 * object of its own, and in an isolated application's dedicated worker. In a shared
+	 * worker under the default `vm-current-context` loader they are the thread's, so an application that
+	 * uses them there reads and writes the BASE — silently.
 	 */
 	branchedDatabases?: string[] | true;
 	/** Run in a worker thread of its own that loads no other application. */
@@ -274,6 +280,23 @@ export function assertIsolationConfig(applicationName: string, isolated: unknown
 			`Invalid 'isolated' for application ${applicationName}: expected a boolean, got ${typeof isolated}`
 		);
 	}
+}
+
+/** The routing keys a payload build owns, as its descriptor or journal records them: `null` where the entry has none. */
+export function assertPayloadRouting(applicationName: string, routing: unknown): asserts routing is PayloadRouting {
+	if (!isPayloadRoutingShape(routing)) {
+		throw new TypeError(
+			`Invalid routing for application ${applicationName}: expected an object of ${PAYLOAD_ROUTING_KEYS.join(', ')}`
+		);
+	}
+	const valueOf = (key: (typeof PAYLOAD_ROUTING_KEYS)[number]) => (routing[key] === null ? undefined : routing[key]);
+	for (const key of ['host', 'urlPath'] as const) {
+		if (valueOf(key) !== undefined && typeof routing[key] !== 'string') {
+			throw new TypeError(`Invalid '${key}' for application ${applicationName}: expected a string`);
+		}
+	}
+	assertIsolationConfig(applicationName, valueOf('isolated'));
+	assertBranchedDatabases(applicationName, valueOf('branchedDatabases'));
 }
 
 /**
@@ -1150,6 +1173,36 @@ export function getStagingRetentionMaxCount(): number {
 	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_STAGING_RETENTION_MAX_COUNT;
 }
 
+const DEFAULT_PREVIEW_STAGING_RETENTION_MAX_COUNT = 1;
+
+function retentionCount(configured: unknown): number | undefined {
+	if (typeof configured !== 'number' && typeof configured !== 'string') return undefined;
+	if (typeof configured === 'string' && configured.trim() === '') return undefined;
+	const parsed = Number(configured);
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : undefined;
+}
+
+/**
+ * How many dormant builds one component keeps: `deployment.previews.stagingRetention.maxCount` (default 1, so a
+ * rejected release can still be restored) for a preview's release, else `deployment_stagingRetention_maxCount`. Each
+ * kept build is a whole installed tree, and a preview is redeployed on every push of every open PR. Whether it is a
+ * preview is read from `treePath`, the live tree unless given: the two reads deciding whether a displaced release is
+ * kept must both read that release. Nothing it reads changes with the activation's own root-config effect.
+ */
+export async function stagingRetentionMaxCountOf(
+	componentsRootDirPath: string,
+	componentName: string,
+	treePath: string = join(componentsRootDirPath, componentName)
+): Promise<number> {
+	if (await readDeploymentPreview(treePath, componentName)) {
+		return (
+			retentionCount(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_STAGINGRETENTION_MAXCOUNT)) ??
+			DEFAULT_PREVIEW_STAGING_RETENTION_MAX_COUNT
+		);
+	}
+	return getStagingRetentionMaxCount();
+}
+
 type DormantBuild = {
 	deploymentDirPath: string;
 	deploymentId: string;
@@ -1417,6 +1470,8 @@ export type ArtifactDescriptor = {
 	component: string;
 	/** The root-config entry to publish with the activation; `null` for a payload build, which owns none. */
 	rootConfig: Record<string, unknown> | null;
+	/** A payload build that set any routing key owns all of them; absent for one that set none. */
+	routing?: PayloadRouting;
 	installationIsOpaque: boolean;
 	isolated: boolean;
 };
@@ -1463,10 +1518,27 @@ async function readArtifactDescriptor(
 	}
 	// Admission reads one field and publication writes the other, so two authorities that disagree would
 	// admit one isolation and then publish the opposite.
-	if (parsed.rootConfig && Boolean(parsed.rootConfig.isolated) !== parsed.isolated) {
+	if (parsed.routing !== undefined) {
+		if (parsed.rootConfig !== null) {
+			throw unusable(`Artifact descriptor ${descriptorPath} records both a root-config entry and payload routing`);
+		}
+		try {
+			assertPayloadRouting(componentName, parsed.routing);
+		} catch (error) {
+			throw unusable(
+				`Artifact descriptor ${descriptorPath} records routing that cannot be published: ${errorMessage(error)}`
+			);
+		}
+	}
+	const publishedIsolation = parsed.rootConfig
+		? Boolean(parsed.rootConfig.isolated)
+		: parsed.routing
+			? parsed.routing.isolated === true
+			: undefined;
+	if (publishedIsolation !== undefined && publishedIsolation !== parsed.isolated) {
 		throw unusable(
 			`Artifact descriptor ${descriptorPath} admits isolated=${parsed.isolated} but publishes ` +
-				`isolated=${Boolean(parsed.rootConfig.isolated)}`
+				`isolated=${publishedIsolation}`
 		);
 	}
 	return parsed as ArtifactDescriptor;
@@ -1586,18 +1658,28 @@ async function writeArtifactDescriptor(
 async function writeDeploymentProvenance(
 	candidateDirPath: string,
 	componentName: string,
-	deploymentId: string
+	deploymentId: string,
+	preview?: PreviewMetadata
 ): Promise<void> {
 	const markerPath = join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE);
 	await rm(markerPath, { recursive: true, force: true });
-	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId));
+	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId, preview));
+}
+
+/** The preview metadata of the release live at `treePath`; undefined when it is not a preview or cannot be read. */
+export async function readDeploymentPreview(
+	treePath: string,
+	componentName: string
+): Promise<PreviewMetadata | undefined> {
+	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(() => undefined);
+	return raw === undefined ? undefined : parseDeploymentPreview(raw, componentName);
 }
 
 /**
  * A link carries no provenance, whatever its target holds. A read that fails propagates rather than reading as
  * absent.
  */
-async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
+export async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
 	const tree = await presentOrAbsent(treePath);
 	if (!tree?.isDirectory()) return undefined;
 	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(
@@ -1696,7 +1778,7 @@ async function retainDisplacedRelease(
 	componentName: string,
 	displacedTreePath: string
 ): Promise<DisplacedReleaseRetention> {
-	const keepNone = getStagingRetentionMaxCount() === 0;
+	const keepNone = (await stagingRetentionMaxCountOf(componentsRootDirPath, componentName, displacedTreePath)) === 0;
 	let record: { deploymentId: string; recordDirPath: string } | undefined;
 	try {
 		const deploymentId = await readDeploymentProvenance(displacedTreePath, componentName);
@@ -1797,16 +1879,19 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 		// effect the descriptor still records; an immediate deploy published before it built, so there is
 		// nothing left to do for it.
 		const descriptor = await readArtifactDescriptor(dirname(journalPath), parsed.component);
-		rootConfig = descriptor ? rootConfigEffectFromDeclaration(descriptor.rootConfig) : { kind: 'keep' };
+		rootConfig = descriptor
+			? rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing)
+			: { kind: 'keep' };
 	} else {
 		if (!isRootConfigEffect(parsed.rootConfig) || parsed.rootConfig.kind === 'remove') {
 			throw new Error(`Activation journal ${journalPath} does not record its root-config effect`);
 		}
 		rootConfig = parsed.rootConfig;
 	}
-	if (rootConfig.kind === 'set') {
+	if (rootConfig.kind === 'set' || (rootConfig.kind === 'unset-package' && rootConfig.routing)) {
 		try {
-			assertApplicationConfig(parsed.component, rootConfig.entry as any);
+			if (rootConfig.kind === 'set') assertApplicationConfig(parsed.component, rootConfig.entry as any);
+			else assertPayloadRouting(parsed.component, rootConfig.routing);
 		} catch (error) {
 			throw new Error(
 				`Activation journal ${journalPath} records a root-config entry that cannot be published: ${errorMessage(error)}`,
@@ -2280,7 +2365,7 @@ async function settleStagingForComponent(
 		kept.push(...(await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal)));
 	}
 	await catalogueKeptReleases(stagingRoot, componentName, kept, dormant);
-	const maxCount = getStagingRetentionMaxCount();
+	const maxCount = await stagingRetentionMaxCountOf(componentsRootDirPath, componentName);
 	if (dormant.length > maxCount) {
 		await pruneOutsideCertification(componentsRootDirPath, componentName, dormant, maxCount, [
 			...kept,
@@ -2695,14 +2780,13 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		}
 	}
 
-	const maxCount = getStagingRetentionMaxCount();
 	for (const [owner, builds] of dormant) {
 		const pinned = keptBy.get(owner) ?? [];
 		for (const [component, error] of await reconcileDormantBuilds(
 			componentsRootDirPath,
 			owner,
 			builds,
-			maxCount,
+			await stagingRetentionMaxCountOf(componentsRootDirPath, owner),
 			pinned
 		)) {
 			if (!failures.has(component)) failures.set(component, error);
@@ -3208,7 +3292,9 @@ export async function activateCandidateApplication(
 	const rootConfig = options.rootConfig ?? { kind: 'keep' };
 	// Before anything is on disk: a journal recovery would refuse to read is one it could never settle.
 	if (rootConfig.kind === 'set') assertApplicationConfig(application.name, rootConfig.entry as any);
-	else if (rootConfig.kind === 'remove') {
+	else if (rootConfig.kind === 'unset-package' && rootConfig.routing) {
+		assertPayloadRouting(application.name, rootConfig.routing);
+	} else if (rootConfig.kind === 'remove') {
 		throw new Error(`Cannot activate ${application.name}: an activation never removes its root-config entry`);
 	}
 	await assertRootConfigEffectPublishable(application.name, rootConfig);
@@ -3437,7 +3523,7 @@ export async function activateCandidateApplication(
 	// Only here, where the request's own artifact is already live: a prune inside settlement could evict the
 	// artifact a request's preamble pinned. Best-effort, like every prune.
 	if (keptDeploymentId !== undefined) {
-		const maxCount = getStagingRetentionMaxCount();
+		const maxCount = await stagingRetentionMaxCountOf(dirname(liveDirPath), application.name);
 		try {
 			const builds = await dormantBuildsOf(dirname(liveDirPath), application.name);
 			if (builds.length > maxCount) {
@@ -3655,7 +3741,7 @@ export async function buildCandidateApplication(
 		await installApplication(application, candidateDirPath);
 		// After the install, which can rewrite the tree; never through a link, whose target is not the deploy's to write.
 		if (resolved.kind !== 'link') {
-			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId);
+			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId, application.preview);
 		}
 		if (options.fingerprint) {
 			application.installFingerprint = await fingerprintInstall(candidateDirPath, application.sourceIdentity);
@@ -4587,6 +4673,7 @@ interface ApplicationOptions {
 	// Deploy credentials already resolved to literal tokens, of any kind; partitioned by the
 	// constructor into the npm and git halves, which are injected by entirely different mechanisms.
 	credentials?: ResolvedCredential[];
+	preview?: PreviewMetadata;
 }
 
 export class Application {
@@ -4622,10 +4709,12 @@ export class Application {
 	installedTree: string | null | undefined;
 	sourceIdentity?: string;
 	installFingerprint?: InstallFingerprint;
+	preview?: PreviewMetadata;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials, preview }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
+		this.preview = preview;
 		this.packLocalDirectory = shouldPackLocalDirectory(packageIdentifier);
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
@@ -4806,9 +4895,11 @@ export type PrepareApplicationOptions = {
 	 * caller installing FROM root config needs. A callback rather than a value because `beforePrepare` is
 	 * what determines it, and that runs after these options have been constructed.
 	 */
-	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
+	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; routing?: PayloadRouting; isolated: boolean };
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
+	/** Wraps the swap, so a caller can hold its own admission across a check and the release going live. */
+	aroundActivation?: (candidateDirPath: string, activate: () => Promise<void>) => Promise<void>;
 	fingerprintInstall?: boolean;
 	/** Certify the release this activation makes live (components/canaryRollout.ts). */
 	certification?: ActivationCertification;
@@ -4831,7 +4922,9 @@ export type ActivationCertification = {
 /** The id the tree this activation displaces will be kept under, decided from what `retainDisplacedRelease` reads. */
 async function keptPredecessorOf(application: Application): Promise<{ previous: string | null; wasAbsent: boolean }> {
 	if (!(await presentOrAbsent(application.dirPath))) return { previous: null, wasAbsent: true };
-	if (getStagingRetentionMaxCount() === 0) return { previous: null, wasAbsent: false };
+	if ((await stagingRetentionMaxCountOf(dirname(application.dirPath), application.name)) === 0) {
+		return { previous: null, wasAbsent: false };
+	}
 	const deploymentId = await readDeploymentProvenance(application.dirPath, application.name).catch(() => undefined);
 	if (deploymentId === undefined) return { previous: null, wasAbsent: false };
 	const recordDirPath = join(dirname(application.dirPath), DEPLOY_STAGING_DIR, deploymentId);
@@ -5025,6 +5118,7 @@ export async function prepareApplication(application: Application, options: Prep
 								v: ARTIFACT_DESCRIPTOR_VERSION,
 								component: application.name,
 								rootConfig: declared.rootConfig,
+								routing: declared.routing,
 								installationIsOpaque: application.installationIsOpaque,
 								isolated: declared.isolated,
 							});
@@ -5043,6 +5137,7 @@ export async function prepareApplication(application: Application, options: Prep
 								v: ARTIFACT_DESCRIPTOR_VERSION,
 								component: application.name,
 								rootConfig: described.rootConfig,
+								routing: described.routing,
 								installationIsOpaque: application.installationIsOpaque,
 								isolated: described.isolated,
 							});
@@ -5050,11 +5145,13 @@ export async function prepareApplication(application: Application, options: Prep
 						await markCandidateComplete(application.dirPath, artifactId, application.name);
 						// The record is meant to outlive the swap, so its own entry has to be on storage, as a stage's is.
 						if (described) await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
-						await activateCertifying(
-							application,
-							artifactId,
-							declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
-							described ? options.certification : undefined
+						await activateAround(options, candidateDirPath, () =>
+							activateCertifying(
+								application,
+								artifactId,
+								declared ? rootConfigEffectFromDeclaration(declared.rootConfig, declared.routing) : { kind: 'keep' },
+								described ? options.certification : undefined
+							)
 						);
 						application.installedTree = linked ? `link:${linkedTo}` : artifactId;
 					} catch (error) {
@@ -5166,12 +5263,22 @@ async function activateStagedArtifact(
 			descriptor.installationIsOpaque
 		);
 	}
-	await activateCertifying(
-		application,
-		artifactId,
-		rootConfigEffectFromDeclaration(descriptor.rootConfig),
-		options.certification
+	await activateAround(options, candidateDirPath, () =>
+		activateCertifying(
+			application,
+			artifactId,
+			rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing),
+			options.certification
+		)
 	);
+}
+
+function activateAround(
+	options: PrepareApplicationOptions,
+	candidateDirPath: string,
+	activate: () => Promise<void>
+): Promise<void> {
+	return options.aroundActivation ? options.aroundActivation(candidateDirPath, activate) : activate();
 }
 
 /**

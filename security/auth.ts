@@ -27,6 +27,7 @@ import {
 } from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
+import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
@@ -118,7 +119,7 @@ export async function authentication(request, nextHandler) {
 				: appsCors
 					? appsCorsAccesslist
 					: [];
-			if (accessList.includes(origin) || accessList.includes('*')) {
+			if (corsAccessListAllows(accessList, origin)) {
 				if (request.method === 'OPTIONS') {
 					const accessControlAllowHeaders =
 						env.get(CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';

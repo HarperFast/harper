@@ -50,6 +50,7 @@ import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistr
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
+import { isolatedApplicationUnavailable } from './isolatedHostGuard.ts';
 import { WebSocketServer } from 'ws';
 
 const { errorToString, errorForLog } = harperLogger;
@@ -837,7 +838,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
 				// assign a more WHATWG compliant headers object, this is our real standard interface
-				let response = await httpChain[port](request);
+				let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 				if (!response) {
 					// this means that the request was completely handled, presumably through the
 					// nodeResponse and we are actually just done
@@ -1173,7 +1174,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		let requestId = 0;
 		if (isOperationsServer) request.isOperationsServer = true;
 		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
-		let response = await httpChain[port](request);
+		let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 		if (!response) response = unhandled(request);
 		let headers = response.headers;
 		if (!headers?.set) headers = new Headers(headers);
@@ -1387,7 +1388,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				const request = new BunRequest(webRequest, bunServer, secure) as any;
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
-				let response = await httpChain[port](request);
+				let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 				if (!response) {
 					response = unhandled(request);
 				}
@@ -1927,6 +1928,9 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 						signal: ac.signal,
 					});
 					request.isWebSocket = true;
+					if (isolatedApplicationUnavailable(request, options.usageType === 'operations-api')) {
+						return ws.close(1013, 'Try again later');
+					}
 					const chainCompletion = httpChain[port](request);
 					websocketChains[port](ws, request, chainCompletion);
 				} catch (error) {
@@ -1956,6 +1960,9 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 				try {
 					const request = new Request(incomingMessage);
 					request.isWebSocket = true;
+					if (isolatedApplicationUnavailable(request, options.usageType === 'operations-api')) {
+						return ws.close(1013, 'Try again later');
+					}
 					const chainCompletion = httpChain[port](request);
 					harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
 					websocketChains[port](ws, request, chainCompletion);

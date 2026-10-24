@@ -63,6 +63,8 @@ async function harper() {
 	}
 
 	switch (service) {
+		case SERVICE_ACTIONS_ENUM.PREVIEW:
+			return require('./preview').runPreviewCommand();
 		case SERVICE_ACTIONS_ENUM.HELP:
 			return help();
 		case SERVICE_ACTIONS_ENUM.START:
