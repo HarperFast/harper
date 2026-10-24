@@ -749,6 +749,10 @@ export type TransactionWrite = {
 	residencyId?: number;
 	appendedTo?: RocksTransaction;
 	stagedOn?: RocksTransaction;
+	// the handle and retry round this write last ran its commit handler in: a retry re-saves writes in order,
+	// so a sibling's saved/skipped flags describe the current snapshot only once it has staged in this round
+	committedOn?: RocksTransaction;
+	committedRound?: number;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -2329,6 +2333,8 @@ export class DatabaseTransaction implements Transaction {
 			if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
+			operation.committedOn = transaction;
+			operation.committedRound = txnRetries;
 			try {
 				completion = operation.commit(
 					writeVersion,

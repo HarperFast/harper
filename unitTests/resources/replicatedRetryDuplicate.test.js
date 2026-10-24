@@ -351,8 +351,9 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		assert.equal((await T.get('counter')).count, 13);
 	});
 
-	// abandonedHandle: the retry's own log entry was flushed by a handle a retained-read-snapshot replay left
-	// behind, so it may be readable; a link from committed state still proves the duplicate committed.
+	// abandonedHandle gives the write the state a retained-read-snapshot replay of a durable handle leaves (its
+	// entry on another handle, possibly readable) without driving that replay; a link from committed state
+	// still proves the duplicate committed.
 	for (const abandonedHandle of [false, true]) {
 		it(`skips a committed duplicate reached through a known-origin audit ref on retry${abandonedHandle ? ' when its own entry is on an abandoned handle' : ''}`, async function () {
 			if (isLMDB) return this.skip();
@@ -393,6 +394,47 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 			}
 		});
 	}
+
+	it('skips both writes of a retried same-key batch whose committed duplicate survives only in audit history', async function () {
+		if (isLMDB) return this.skip();
+		const version = Date.now() + 86400000;
+		const state = await fixture('BuriedSameKeyBatch', version);
+		const { T } = state;
+		const originId = getIdOfRemoteNode('duplicate-origin', T.auditStore);
+		await state.apply(add(10), { version: version + 10 });
+		const deliver = (afterStage) => {
+			const context = { source: {}, sourceApply: true, timestamp: version };
+			return transaction(context, async () => {
+				for (const value of [1, 2]) {
+					const resource = await T.getResource('counter', context);
+					await resource._writeUpdate('counter', add(value), false, {
+						isNotification: true,
+						nodeId: originId,
+						version,
+					});
+				}
+				const writes = context.transaction.writes.filter((write) => write.key === 'counter');
+				for (const write of writes) await context.transaction.save(write);
+				await afterStage?.(context.transaction, writes);
+			});
+		};
+		let native, writes;
+		await deliver(async (txn, staged) => {
+			native = txn.transaction;
+			writes = staged;
+			await deliver();
+			await state.apply(add(0), { version: version + 20 });
+			assert.ok(
+				!T.primaryStore.getEntry('counter').additionalAuditRefs?.some((ref) => ref.version === version),
+				'the committed duplicate is no longer on the primary record head'
+			);
+		});
+		assert.ok(native.retries > 0, 'the duplicate batches must really conflict');
+		assert.deepEqual(
+			{ skipped: writes.map((write) => write.skipped), count: (await T.get('counter')).count },
+			{ skipped: [true, true], count: 13 }
+		);
+	});
 
 	for (const belowFloor of [false, true]) {
 		it(`applies an ambiguous duplicate retry behind a newer committed write ${belowFloor ? 'below' : 'above'} the floor`, async function () {
@@ -598,7 +640,7 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 				label === 'full put' ? { id: 'counter', count: 2 } : { count: 2 }
 			);
 			assert.equal(write.skipped, false);
-			assert.ok((await state.T.get('counter')).count > 0);
+			assert.equal((await state.T.get('counter')).count, 1, 'the retry is applied over the competing value');
 		});
 	}
 

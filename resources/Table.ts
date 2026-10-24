@@ -5171,8 +5171,7 @@ export function makeTable(options): TableResourceClass {
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard. Same-write retries skip this keyed probe because
-							// a matching log entry is not proof that their record mutation committed.
+							// check above remains the read-your-writes guard. Not on a same-write retry (see stagedOwnAuditEntry).
 							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
 								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
@@ -5286,7 +5285,7 @@ export function makeTable(options): TableResourceClass {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
-							// Not for a same-write retry: a log hit does not prove its record mutation committed.
+							// Not for a same-write retry (see stagedOwnAuditEntry).
 							const isReDeliveredDuplicate = () => {
 								if (replaying || stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
@@ -5346,8 +5345,7 @@ export function makeTable(options): TableResourceClass {
 													// so an equal version from the same origin is its re-delivery, as it was before.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || (stagedOwnAuditEntry && !walkOriginKnown)) {
-													// The log entry being replayed, or one reached on a retry without committed
-													// provenance, is not proof that the write's primary-store mutation committed.
+													// replayed, or reached on a retry without committed provenance: not proof it committed
 													precedesExisting = 1;
 												} else {
 													logger.debug?.(
@@ -9658,7 +9656,7 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	// The commit base is the committed record unless another write to the key already saved without being
-	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
+	// skipped this round: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
 		if (hasSavedSameKeySibling(write, transaction)) return committedEntry(write.key);
 		return existingEntry;
@@ -9666,7 +9664,14 @@ export function makeTable(options): TableResourceClass {
 
 	function hasSavedSameKeySibling(write: any, transaction: DatabaseTransaction | undefined): boolean {
 		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
-			if (other !== write && other.saved && !other.skipped) return true;
+			if (
+				other !== write &&
+				other.saved &&
+				!other.skipped &&
+				other.committedOn === write.committedOn &&
+				other.committedRound === write.committedRound
+			)
+				return true;
 		}
 		return false;
 	}
