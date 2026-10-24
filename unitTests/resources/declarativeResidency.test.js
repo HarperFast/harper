@@ -347,10 +347,15 @@ describe('Declarative residency', function () {
 			let ownerLoads = 0;
 			converted.sourcedFrom(
 				{
-					load() {
+					async load() {
 						assert.ok(!cachesReplicas, 'The former by-id hook must not bypass an indexed replica');
 						ownerLoads++;
-						return { id: 'new6', tag: 'new', body: 'remote body' };
+						return {
+							key: stub.key,
+							version: stub.version,
+							originNode: server.hostname,
+							value: { id: 'new6', tag: 'new', body: 'remote body' },
+						};
 					},
 				},
 				{ intermediateSource: true }
