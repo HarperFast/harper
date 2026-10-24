@@ -22,6 +22,8 @@ import {
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import {
 	makeTable,
+	replicaExpirationMsOf,
+	replicaRefreshFractionOf,
 	ignoreAlreadyDropped,
 	acquireUpdateAttributesLock,
 	releaseUpdateAttributesLock,
@@ -942,6 +944,25 @@ export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
 		key.indexOf('/') === key.length - 1
 	);
 }
+export const REPLICA_DEADLINES_STORE = '@replicas';
+export function replicaDeadlinesCatalogKey(tableName: string): string {
+	return `${tableName}/${REPLICA_DEADLINES_STORE}`;
+}
+function isAuxiliaryCatalogRow(value: any): boolean {
+	return value?.auxiliary === REPLICA_DEADLINES_STORE;
+}
+/**
+ * Open (creating when absent) a table's replica-deadline store: an unversioned msgpack store keyed
+ * by record id, so a RecordEncoder write here never consumes metadata staged for a primary row
+ * (harper#1307). The caller writes the catalog row; RocksDB handles are registered with the owner.
+ */
+export function openReplicaDeadlineStore(rootStore: any, tableName: string, generation: string | undefined): any {
+	const dbiInit = createOpenDBIObject(false);
+	const key = replicaDeadlinesCatalogKey(tableName);
+	const store = openRocksDatabase(rootStore.path, { ...dbiInit, name: storeNameFor(key, generation) } as any);
+	ownedStoresFor(rootStore)?.push(store);
+	return markInternalDbiNonVersioned(store);
+}
 /** The primary catalog row of a live table, under either key layout. */
 function primaryCatalogRowFor(table: {
 	dbisDB: any;
@@ -1678,6 +1699,10 @@ function initStores(
 		if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
 		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
 		if (value.dropping) tableDef.tombstone = value;
+		if (isAuxiliaryCatalogRow(value)) {
+			tableDef.replicaDeadlines = true;
+			continue;
+		}
 		if (attribute_name != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
 	}
@@ -1803,6 +1828,8 @@ function initStores(
 		const trackDeletes = primaryAttribute.trackDeletes;
 		const expiration = primaryAttribute.expiration;
 		const eviction = primaryAttribute.eviction;
+		const replicaExpiration = primaryAttribute.replicaExpiration;
+		const replicaRefreshFraction = primaryAttribute.replicaRefreshFraction;
 		const sealed = primaryAttribute.sealed;
 		const cacheControl = primaryAttribute.cacheControl;
 		const splitSegments = primaryAttribute.splitSegments;
@@ -1974,6 +2001,8 @@ function initStores(
 				table.schemaVersion++;
 				table.updatedAttributes();
 			}
+			if (replicaExpiration !== undefined || replicaRefreshFraction !== undefined)
+				table.setTTLExpiration({ replicaExpiration, replicaRefreshFraction, fromSchema: true });
 		} else {
 			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
@@ -1990,6 +2019,9 @@ function initStores(
 					replicate,
 					expirationMS: expiration && expiration * 1000,
 					evictionMS: eviction && eviction * 1000,
+					replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
+					replicaRefreshFraction: replicaRefreshFractionOf(replicaRefreshFraction),
+					replicaDeadlines: Boolean(tableDef.replicaDeadlines),
 					cacheControl,
 					trackDeletes,
 					tableName,
@@ -2546,6 +2578,10 @@ interface TableDefinition {
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
+	/** RocksDB-only replica lifetime in seconds; 0 disables admission. LMDB always proxies. */
+	replicaExpiration?: number;
+	/** RocksDB-only renewal fraction in (0, 1]; 1 never renews. */
+	replicaRefreshFraction?: number;
 	audit?: boolean;
 	sealed?: boolean;
 	splitSegments?: boolean;
@@ -3841,6 +3877,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		expiration,
 		eviction,
 		scanInterval,
+		replicaExpiration,
+		replicaRefreshFraction,
 		attributes,
 		audit,
 		sealed,
@@ -3929,7 +3967,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		const liveByName = liveAttributes && new Map(liveAttributes.map((attribute) => [attribute.name, attribute]));
 		const durableAttributes: any[] = [];
 		for (const { key, value } of catalog.getRange({ start: tableName + '/', end: tableName + '0' })) {
-			if (!value || value.dropping) continue;
+			if (!value || value.dropping || isAuxiliaryCatalogRow(value)) continue;
 			const name = value.name || key.toString().slice(tableName.length + 1);
 			if (!name) continue;
 			const live = liveByName?.get(name);
@@ -4558,6 +4596,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			if (expiration) primaryKeyAttribute.expiration = expiration;
 			if (eviction) primaryKeyAttribute.eviction = eviction;
+			if (replicaExpiration != null) {
+				replicaExpirationMsOf(replicaExpiration);
+				primaryKeyAttribute.replicaExpiration = replicaExpiration;
+			}
+			if (replicaRefreshFraction != null) {
+				replicaRefreshFractionOf(replicaRefreshFraction);
+				primaryKeyAttribute.replicaRefreshFraction = replicaRefreshFraction;
+			}
 			// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
 			// a descriptor value carried by cluster schema events; null (schema has no directive)
 			// clears a stale value the carried descriptor may hold
@@ -4701,6 +4747,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				trackDeletes,
 				expirationMS: expiration && expiration * 1000,
 				evictionMS: eviction && eviction * 1000,
+				replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
+				replicaRefreshFraction: replicaRefreshFractionOf(replicaRefreshFraction),
 				primaryKey,
 				tableName,
 				tableId: primaryStore.tableId,
@@ -4748,7 +4796,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		for (const { key, value } of reconcileRemovals
 			? attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })
 			: []) {
-			if (value == null) continue;
+			if (value == null || isAuxiliaryCatalogRow(value)) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
 			if (attribute_name) {
@@ -4871,6 +4919,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+						(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
+						(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
 						attribute.type !== attributeDescriptor.type)
 				) {
 					exclusiveLock();
@@ -4883,6 +4933,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
 					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
+					if (replicaExpiration != null) {
+						replicaExpirationMsOf(replicaExpiration);
+						updatedPrimaryAttribute.replicaExpiration = replicaExpiration;
+					}
+					if (replicaRefreshFraction != null) {
+						replicaRefreshFractionOf(replicaRefreshFraction);
+						updatedPrimaryAttribute.replicaRefreshFraction = replicaRefreshFraction;
+					}
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
@@ -5262,11 +5320,20 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
-	if (expiration || eviction || scanInterval || attributes.some((attribute) => attribute.expiresAt))
+	if (
+		expiration ||
+		eviction ||
+		scanInterval ||
+		replicaExpiration !== undefined ||
+		replicaRefreshFraction !== undefined ||
+		attributes.some((attribute) => attribute.expiresAt)
+	)
 		Table.setTTLExpiration({
 			expiration,
 			eviction,
 			scanInterval,
+			replicaExpiration,
+			replicaRefreshFraction,
 			fromSchema: true,
 			isolatedApplicationOwner,
 		});
@@ -6246,7 +6313,12 @@ function completeInterruptedDrop(
 		for (const { key, value } of catalogRows) {
 			const objectStorage =
 				isPrimaryCatalogRow(key, value) || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
-			const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
+			const store = (rootStore as any).openDB(
+				key,
+				(isAuxiliaryCatalogRow(value)
+					? createOpenDBIObject(false)
+					: createOpenDBIObject(!objectStorage, objectStorage)) as any
+			);
 			try {
 				// dropSync (not drop): this function is synchronous, and its callers rely on
 				// a thrown error to count against the retry budget below - the async drop()
