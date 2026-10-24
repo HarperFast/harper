@@ -72,7 +72,8 @@ describe('Out-of-order transaction with chained writes to one key', function () 
 	}
 
 	function ownRefs(id, t1, Table = T) {
-		const refs = Table.primaryStore.getEntry(id).additionalAuditRefs ?? [];
+		const entry = Table.primaryStore.getEntry(id);
+		const refs = [...(entry.additionalAuditRefs ?? []), ...(entry.receivedIdentityRefs ?? [])];
 		return refs.filter((ref) => ref.version === t1 && ref.nodeId === older);
 	}
 

@@ -31,14 +31,17 @@ if (require.main === module) {
 		// installed before the database opens, since opening it is what runs the boot replay
 		const { directCommitSync } = DatabaseTransaction.prototype;
 		DatabaseTransaction.prototype.directCommitSync = function () {
+			let commit;
 			if (this.isReplay) {
-				replayCommits.push({ timestamp: this.timestamp, writes: this.writes.length });
+				replayCommits.push((commit = { timestamp: this.timestamp, writes: this.writes.length }));
 				if (mode === 'replay-stale' && [1000, 9000].includes(replayCommits.length)) {
 					global.gc();
 					heapSamples.push(process.memoryUsage().heapUsed);
 				}
 			}
-			return directCommitSync.call(this);
+			const result = directCommitSync.call(this);
+			if (commit) commit.succeeded = true;
+			return result;
 		};
 	}
 	const { table } = require('#src/resources/databases');
@@ -75,14 +78,40 @@ if (require.main === module) {
 			process.kill(process.pid, 'SIGKILL');
 			return;
 		}
-		// Several native commits at one log key, as a replication receiver writes re-deliveries.
+		if (mode === 'write-explicit') {
+			await Tbl.put({ id: 'x', n: 0 });
+			const version = Date.now() + 60_000;
+			await Tbl.patch('x', { n: 1 }, { timestamp: version });
+			writeFileSync(markerPath, String(version));
+			// no flush: the explicit-timestamp patch, minted a key below its version, is recovered by replay
+			process.kill(process.pid, 'SIGKILL');
+			return;
+		}
+		// Several native commits at one log key in an origin's log, as a replication receiver writes
+		// re-deliveries (the node's own `local` log never repeats a key).
+		const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+		const { RequestTarget } = require('#src/resources/RequestTarget');
+		Tbl.auditStore.ensureLogExists('peer-crash');
+		const peerId = getIdOfRemoteNode('peer-crash', Tbl.auditStore);
 		const logKey = Date.now();
-		await transaction({ timestamp: logKey }, () => Tbl.put({ id: 'a', n: 1 }));
-		await transaction({ timestamp: logKey }, async () => {
-			await Tbl.put({ id: 'b', n: 2 });
-			await Tbl.put({ id: 'c', n: 3 });
-		});
-		await transaction({ timestamp: logKey }, () => Tbl.put({ id: 'd', n: 4 }));
+		const commit = (records) => {
+			const context = { timestamp: logKey };
+			return transaction(context, () => {
+				for (const record of records) {
+					const target = new RequestTarget();
+					target.id = null;
+					const resource = Tbl.getResource(target, context, {});
+					resource._writeUpdate(record.id, record, true, { context, nodeId: peerId, version: logKey });
+					resource.save();
+				}
+			});
+		};
+		await commit([{ id: 'a', n: 1 }]);
+		await commit([
+			{ id: 'b', n: 2 },
+			{ id: 'c', n: 3 },
+		]);
+		await commit([{ id: 'd', n: 4 }]);
 		writeFileSync(markerPath, String(logKey));
 		// no flush: the writes must be recovered by replaying the transaction log
 		process.kill(process.pid, 'SIGKILL');
@@ -107,6 +136,24 @@ if (require.main === module) {
 				rowCount++;
 			}
 			writeFileSync(markerPath, JSON.stringify({ commits: replayCommits.length, heapSamples, rowCount }));
+			process.exit(0);
+		}
+		if (mode === 'replay-explicit') {
+			const version = Number(logKeyArg);
+			const entry = Tbl.primaryStore.getEntry('x');
+			let headKey;
+			for (const auditEntry of Tbl.auditStore.getRange({ start: 1, log: 0 }))
+				if (auditEntry.recordId === 'x' && auditEntry.version === version) headKey = auditEntry.txnLogKey;
+			await Tbl.patch('x', { n: 2 }, { timestamp: version - 1000 });
+			writeFileSync(
+				markerPath,
+				JSON.stringify({
+					replayed: replayCommits.some(({ timestamp, succeeded }) => timestamp === headKey && succeeded),
+					version: entry.version === version,
+					headRef: entry.additionalAuditRefs?.some((ref) => ref.version === headKey) ?? false,
+					n: (await Tbl.get('x')).n,
+				})
+			);
 			process.exit(0);
 		}
 		const logKey = Number(logKeyArg);
