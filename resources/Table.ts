@@ -1609,7 +1609,8 @@ export function makeTable(options): TableResourceClass {
 		id: Id,
 		version: number | undefined,
 		nodeId: number | undefined,
-		refs?: Array<{ version: number; nodeId: number }>
+		refs?: Array<{ version: number; nodeId: number }>,
+		isRetained?: (key: number, nodeId: number | undefined) => boolean
 	) {
 		if (!refs?.length) return { txnLogKey: version, nodeId };
 		const visited = new Set<string>();
@@ -1621,6 +1622,7 @@ export function makeTable(options): TableResourceClass {
 				const identity = `${ref.nodeId ?? 0}:${ref.version}`;
 				if (visited.has(identity)) continue;
 				visited.add(identity);
+				if (isRetained && !isRetained(ref.version, ref.nodeId)) continue;
 				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
 				if (!entry) continue;
 				if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
@@ -1633,7 +1635,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		const referencedHead = findHead(refs);
 		if (referencedHead) return referencedHead;
-		if (version != null) {
+		if (version != null && (!isRetained || nodeId == null || isRetained(version, nodeId))) {
 			const directHead = auditStore.getSync(version, tableId, id, nodeId);
 			if (directHead?.version === version && (nodeId == null || (directHead.nodeId ?? 0) === nodeId))
 				return { txnLogKey: version, nodeId, entry: directHead };
@@ -5195,9 +5197,34 @@ export function makeTable(options): TableResourceClass {
 							}
 						}
 						if (audit && !belowAuditFloor) {
+							// A ref keyed below its log's oldest retained entry was pruned, and reading it is an exact-start
+							// miss that scans the log to the end: the same test, and the same best-effort contract, as
+							// `dedupVersionCouldBeRetained`. The audit floor would not do: it is a retention horizon, and a
+							// key does not bound its version, so a branch keyed below it can be retained and still needed.
+							let oldestRetainedByLog: Map<number, number> | undefined;
+							const isRetained = (key: number, logNodeId: number | undefined): boolean => {
+								if (!isRocksDB) return true;
+								const log = logNodeId ?? 0;
+								let oldest = (oldestRetainedByLog ??= new Map()).get(log);
+								if (oldest === undefined) {
+									oldest = Infinity;
+									for (const entry of auditStore.getRange({ start: 1, log })) {
+										oldest = entry.txnLogKey;
+										break;
+									}
+									oldestRetainedByLog.set(log, oldest);
+								}
+								return key >= oldest;
+							};
 							// incremental CRDT updates are only available with audit logging on
 							const initialAuditHead: { txnLogKey: number; nodeId: number; entry?: any } = isRocksDB
-								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
+								? resolveAuditHead(
+										id,
+										existingEntry.version,
+										existingEntry.nodeId,
+										existingEntry.additionalAuditRefs,
+										isRetained
+									)
 								: { txnLogKey: existingEntry.localTime, nodeId: existingEntry.nodeId };
 							let localTime = initialAuditHead.txnLogKey;
 							let resolvedEntry = initialAuditHead.entry;
@@ -5223,7 +5250,7 @@ export function makeTable(options): TableResourceClass {
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
-									if (isBranchRef(ref, initialAuditHead))
+									if (isBranchRef(ref, initialAuditHead) && isRetained(ref.version, ref.nodeId))
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 								}
 							}
@@ -5246,7 +5273,13 @@ export function makeTable(options): TableResourceClass {
 									previousHeadOf = auditRecord;
 									previousHead =
 										isRocksDB && previousRefs?.length
-											? resolveAuditHead(id, auditRecord.previousVersion, auditRecord.previousNodeId, previousRefs)
+											? resolveAuditHead(
+													id,
+													auditRecord.previousVersion,
+													auditRecord.previousNodeId,
+													previousRefs,
+													isRetained
+												)
 											: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
 								}
 								return previousHead;
@@ -5256,7 +5289,7 @@ export function makeTable(options): TableResourceClass {
 								if (previousRefs) {
 									const head = resolvePreviousHead(auditRecord);
 									for (const ref of previousRefs) {
-										if (!isBranchRef(ref, head)) continue;
+										if (!isBranchRef(ref, head) || !isRetained(ref.version, ref.nodeId)) continue;
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
 											version: ref.version,
@@ -5663,10 +5696,11 @@ export function makeTable(options): TableResourceClass {
 
 					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
 					// whose identity is not its key, so a retry finds its own minted key here (`readsOwnStaging`). A
-					// write older than the version the record keeps is not its head: its key stays a branch.
+					// write that leaves the record at the existing head's version and node is not its head: its key
+					// stays a branch.
 					if (isRocksDB && audit && !isCopyApply && (appendedLogKey !== txnTime || identityIsNotKey)) {
 						const headIndex = auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId);
-						if (existingEntry?.version > txnTime) {
+						if (existingEntry?.version > txnTime || precedesExisting < 0) {
 							if (headIndex < 0) additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 						} else if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
