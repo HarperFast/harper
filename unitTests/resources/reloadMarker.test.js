@@ -5,14 +5,12 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const {
 	DatabaseTransaction,
-	replicationConfirmation: rocksReplicationConfirmation,
+	replicationConfirmation: setReplicationConfirmation,
 } = require('#src/resources/DatabaseTransaction');
-const { replicationConfirmation: lmdbReplicationConfirmation } = require('#src/resources/LMDBTransaction');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-const setReplicationConfirmation = isLMDB ? lmdbReplicationConfirmation : rocksReplicationConfirmation;
 
 // A table-reload marker is a whole-table signal (harper-pro#489): one LOCAL_ONLY audit entry of type
 // 'reload' with no record, delivered to every subscriber on the table so they re-read it. It exists so
@@ -179,10 +177,12 @@ describe('table-reload marker (harper-pro#489)', () => {
 			deleteTransaction.replicatedConfirmation = 1;
 			confirmedVersion = undefined;
 			await deleteTransaction.commit({ doneWriting: true });
-			assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
-			// LMDB confirms on the audit store's local time, which an `audit: false` table's records do not
-			// carry at all (pre-existing: every confirmed write on such a table passes undefined).
-			if (!isLMDB) assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the put, not the delete');
+			if (isLMDB) {
+				assert.equal(confirmationCalls, 2, 'an unaudited LMDB write has no log position for peers to acknowledge');
+			} else {
+				assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
+				assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the put, not the delete');
+			}
 		} finally {
 			setReplicationConfirmation(undefined);
 		}
