@@ -155,7 +155,7 @@ function validate(validation: any): void {
 const callerAddressStorage = new AsyncLocalStorage<{ address: string | null | undefined }>();
 
 /**
- * Runs an operations API request with its source address, as `clientAddressOf` in serverHandlers.js
+ * Runs an operations API request with its source address, as `clientAddressOf` in serverHandlers.ts
  * derives it: a string; undefined for the local operations domain socket, which no proxy fronts; or null
  * when it is unknown.
  */
