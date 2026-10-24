@@ -1,10 +1,10 @@
 # DESIGN.md
 
-Index of the design notes for the harper core: one line per note, grouped by the `DESIGN.md` that holds it. A note records an invariant the code cannot state itself and why it holds. Complements [AGENTS.md](AGENTS.md) (architecture map) and [CONTRIBUTING.md](CONTRIBUTING.md).
+Index of the design notes for the harper core: one line per note (closely related notes may share a line, separated by `·`), grouped by the `DESIGN.md` that holds it. A note records an invariant the code cannot state itself and why it holds. Complements [AGENTS.md](AGENTS.md) (architecture map) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Where a note goes
 
-- A note lives in the `DESIGN.md` of the directory that owns the code it describes. This file is an index only: one line per note, no bodies.
+- A note lives in the `DESIGN.md` of the directory that owns the code it describes. This file is an index only: one line per note or per pair of closely related notes, no bodies.
 - A note states the invariant, why it holds (the failure that motivated it, linked to its issue or PR) and where the code enforces it. Review rounds, verdicts, CI run ids, measurement logs and the process that produced a decision belong in the PR or issue, not here.
 - Once the code enforces the invariant itself (a type, an assertion, a named test), shrink the note to one line that names the enforcement.
 - Budget, checked by `npm run check:design-docs`: this index stays under 250 lines and each per-directory `DESIGN.md` under 1000. Adding to a file near its ceiling means pruning that file first.
