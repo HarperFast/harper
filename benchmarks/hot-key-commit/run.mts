@@ -1,18 +1,10 @@
 /**
- * Hot-key commit contention on an audited table; flags and output format are in benchmarks/README.md.
+ * Hot-key commit contention on an audited table; workloads, flags and output are in benchmarks/README.md.
  *
- * Each request is one transaction that reads N Counter records and increments each by 1. The hot workloads
- * draw keys from a small set, so concurrent transactions conflict on commit and Harper retries them; the
- * cold workloads draw from the whole table as a near-parity control.
- *
- * `--mode=add` (default) uses addTo(1), which Harper re-applies against the latest stored value on retry,
- * so each key's final count must equal the increments the client saw acknowledged: `counts_ok=false` (exit
- * code 1) when one is missing or extra, `inconclusive` when a failed request may or may not have applied.
- * `--mode=set` writes the read value + 1, which a retry re-bases stale, so it only reports lost updates.
- *
- * Retries come from the native transaction handle's own count (RocksDB only; LMDB reports 0). The load is
- * closed-loop, so a stall also lowers the request rate; `max_ms` and `errors` include requests still in
- * flight when the window closes, and `client_elu` near 1 means the client limits throughput.
+ * `--mode=add` uses addTo(1), which Harper re-applies against the latest stored value on retry, so the
+ * per-key count check is exact; `--mode=set` writes the read value + 1, which a retry re-bases stale, so
+ * there it only reports lost updates. The load is closed-loop: a stall also lowers the request rate, so
+ * `max_ms` and `errors` include requests still in flight when the window closes.
  */
 import http from 'node:http';
 import { parseArgs } from 'node:util';
@@ -72,16 +64,23 @@ function parseOptions(): Options {
 		if (!Number.isFinite(n) || n <= 0) throw new Error(`--${name} must be a positive number (got "${value}")`);
 		return n;
 	};
-	const threads = positive('threads', values.threads);
-	const workloads = (values.workloads as string).split(',');
+	const count = (name: string, value: string | undefined): number => {
+		const n = positive(name, value);
+		if (!Number.isInteger(n)) throw new Error(`--${name} must be an integer (got "${value}")`);
+		return n;
+	};
+	const threads = count('threads', values.threads);
+	const workloads = (values.workloads as string).split(',').map((name) => name.trim());
 	for (const name of workloads) {
 		if (!WORKLOADS[name])
 			throw new Error(`unknown workload "${name}" (expected: ${Object.keys(WORKLOADS).join(', ')})`);
 	}
 	const mode = values.mode as string;
 	if (mode !== 'add' && mode !== 'set') throw new Error(`unknown mode "${mode}" (expected: add, set)`);
-	const hotKeys = positive('hot-keys', values['hot-keys']);
-	const coldKeys = positive('cold-keys', values['cold-keys']);
+	const hotKeys = count('hot-keys', values['hot-keys']);
+	const coldKeys = count('cold-keys', values['cold-keys']);
+	const warmupSeconds = Number(values.warmup);
+	if (!(warmupSeconds >= 0)) throw new Error(`--warmup must be a number >= 0 (got "${values.warmup}")`);
 	const maxRecordsPerTxn = Math.max(...workloads.map((name) => WORKLOADS[name].recordsPerTxn));
 	if (hotKeys < maxRecordsPerTxn || coldKeys < hotKeys) {
 		throw new Error(`need ${maxRecordsPerTxn} <= --hot-keys (${hotKeys}) <= --cold-keys (${coldKeys})`);
@@ -89,10 +88,10 @@ function parseOptions(): Options {
 	return {
 		threads,
 		// enough in-flight transactions per worker that no worker idles waiting on the client
-		concurrency: values.concurrency ? positive('concurrency', values.concurrency) : 16 * threads,
-		clientThreads: positive('client-threads', values['client-threads']),
+		concurrency: values.concurrency ? count('concurrency', values.concurrency) : 16 * threads,
+		clientThreads: count('client-threads', values['client-threads']),
 		durationSeconds: positive('duration', values.duration),
-		warmupSeconds: Number(values.warmup),
+		warmupSeconds,
 		hotKeys,
 		coldKeys,
 		workloads,
@@ -176,7 +175,6 @@ async function readCounts(agent: http.Agent, url: URL, keyCount: number): Promis
 	return counts;
 }
 
-/** Picks `n` distinct ids from 0..keyCount-1. */
 function pickIds(keyCount: number, n: number): number[] {
 	const ids: number[] = [];
 	while (ids.length < n) {
@@ -193,7 +191,7 @@ interface WorkloadResult {
 	maxMs: number;
 	errors: number;
 	firstError?: string;
-	retries: number;
+	retries: number | null;
 	maxRetries: number;
 	harperThreads: number;
 	clientElu: number;
@@ -217,15 +215,13 @@ interface LoadResult {
 	errors: number;
 	firstError?: string;
 	retries: number;
+	retriesUnavailable: boolean;
 	maxRetries: number;
 	harperThreads: number[];
 	elu: number;
 }
 
-/**
- * Load-generator thread body: runs `concurrency` sequential callers until told to stop. Messages from the
- * main thread: 'measure' starts the timed window, 'stop' ends it and returns a LoadResult.
- */
+/** Load-generator thread: 'measure' opens the timed window; 'stop' closes it, drains, and posts a LoadResult. */
 function generateLoad(task: LoadTask): void {
 	const url = new URL(task.url);
 	const agent = new http.Agent({ keepAlive: true, maxSockets: task.concurrency });
@@ -234,6 +230,7 @@ function generateLoad(task: LoadTask): void {
 	const uncertain = new Int32Array(task.keyCount);
 	const harperThreads = new Set<number>();
 	let retries = 0;
+	let retriesUnavailable = false;
 	let maxRetries = 0;
 	let measuring = false;
 	let stopped = false;
@@ -263,7 +260,8 @@ function generateLoad(task: LoadTask): void {
 				for (const id of ids) acked[id]++;
 				// a commit counts when it completes inside the window, so stalls that began before it are kept
 				if (measuring) {
-					retries += res.body.retries;
+					if (res.body.retries == null) retriesUnavailable = true;
+					else retries += res.body.retries;
 					if (res.body.retries > maxRetries) maxRetries = res.body.retries;
 					harperThreads.add(res.body.thread);
 					if (commits === latencies.length) {
@@ -301,6 +299,7 @@ function generateLoad(task: LoadTask): void {
 			errors,
 			firstError,
 			retries,
+			retriesUnavailable,
 			maxRetries,
 			harperThreads: [...harperThreads],
 			elu,
@@ -321,7 +320,6 @@ async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: str
 			keyCount,
 			recordsPerTxn,
 			mode: opts.mode,
-			// spread the callers as evenly as the division allows
 			concurrency: Math.floor((opts.concurrency + i) / opts.clientThreads),
 		};
 		return new Worker(new URL(import.meta.url), { workerData: task });
@@ -391,7 +389,7 @@ async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: str
 		maxMs: Math.max(latencies.at(-1) ?? 0, ...loads.map((load) => load.overrunMs)),
 		errors: loads.reduce((sum, load) => sum + load.errors, 0),
 		firstError: loads.find((load) => load.firstError)?.firstError,
-		retries: loads.reduce((sum, load) => sum + load.retries, 0),
+		retries: loads.some((load) => load.retriesUnavailable) ? null : loads.reduce((sum, load) => sum + load.retries, 0),
 		maxRetries: Math.max(...loads.map((load) => load.maxRetries)),
 		harperThreads: harperThreads.size,
 		clientElu: Math.max(...loads.map((load) => load.elu)),
@@ -439,7 +437,8 @@ async function main(): Promise<void> {
 				`concurrency=${opts.concurrency} commits=${r.commits} commits_per_sec=${(r.commits / r.seconds).toFixed(0)} ` +
 				`p50_ms=${percentile(r.latencies, 0.5).toFixed(2)} p99_ms=${percentile(r.latencies, 0.99).toFixed(2)} ` +
 				`p999_ms=${percentile(r.latencies, 0.999).toFixed(2)} max_ms=${r.maxMs.toFixed(2)} ` +
-				`retries=${r.retries} retries_per_commit=${r.commits ? (r.retries / r.commits).toFixed(3) : 'n/a'} max_retries=${r.maxRetries} errors=${r.errors} ` +
+				`retries=${r.retries ?? 'n/a'} retries_per_commit=${r.retries != null && r.commits ? (r.retries / r.commits).toFixed(3) : 'n/a'} ` +
+				`max_retries=${r.retries == null ? 'n/a' : r.maxRetries} errors=${r.errors} ` +
 				`counts_ok=${r.countsOk} harper_threads_seen=${r.harperThreads} client_elu=${r.clientElu.toFixed(2)}`;
 			console.log(line);
 			if (r.countsOk === 'false') {
@@ -447,7 +446,7 @@ async function main(): Promise<void> {
 				if (opts.mode === 'add') process.exitCode = 1;
 			}
 			if (r.commits === 0) process.exitCode = 1;
-			if (r.firstError) console.log(`  first error: ${r.firstError}`);
+			if (r.firstError) console.log(`  first error (any phase): ${r.firstError}`);
 		}
 	} finally {
 		agent.destroy();

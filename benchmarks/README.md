@@ -187,7 +187,7 @@ Each request is one transaction that reads and increments a `Counter` record on 
 `hot1`/`hot4` touch 1 or 4 records out of 32, so concurrent commits conflict and Harper retries them;
 `cold1`/`cold4` draw from 100 000 records as a control. Reports commits/s, request latency (p50, p99,
 p99.9, max) and retries per commit (the native transaction handle's own retry count, returned by the
-resource; RocksDB only, LMDB reports 0), and checks that every key's final count equals the increments
+resource; RocksDB only, `n/a` on LMDB), and checks that every key's final count equals the increments
 the client saw acknowledged. Exits 1 when that check fails in `add` mode or a window has no commits.
 
 ```sh
