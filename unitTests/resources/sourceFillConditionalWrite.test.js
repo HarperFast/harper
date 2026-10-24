@@ -91,7 +91,6 @@ describe('Source fill racing a local write', function () {
 		sourceRequest = null;
 		request.respond(value);
 	}
-	// a local write in its own transaction, as a separate request would make it
 	async function localWrite(id) {
 		const context = {};
 		await transaction(context, () => FillTable.put(id, { id, name: 'local ' + id }, context));
@@ -119,7 +118,6 @@ describe('Source fill racing a local write', function () {
 		assert.equal(entry.value.name, 'source ' + id);
 		assert(!(entry.metadataFlags & INVALIDATED));
 		assert.equal((await auditOf(id)).at(-1), 'put:source ' + id);
-		// the record's own local time leads to the resolved entry, at the record's version
 		const head = (await FillTable.getHistoryOfRecord(id)).at(-1);
 		assert.equal(head.type, 'put');
 		assert.equal(head.version, entry.version);
@@ -209,7 +207,6 @@ describe('Source fill racing a local write', function () {
 			} finally {
 				primaryStore.ifVersion = originalIfVersion;
 			}
-			// both writes went through the optimistic conditional batch, not the exclusive fallback
 			if (isLMDB) assert(conditions >= 2, `expected the optimistic path, saw ${conditions} conditions`);
 			const entry = FillTable.primaryStore.getEntry(id);
 			assert.equal(entry.value.name, 'local ' + id);
@@ -373,7 +370,6 @@ describe('Source fill racing a local write', function () {
 			assert.equal(head.value.name, 'source ' + id);
 		});
 
-		// a write committed between the condition read and the native batch: only the block's own check sees it
 		it('discards a fill whose condition read is overtaken by a committed write', async function () {
 			const id = 'stale-condition';
 			const invalidated = await seedInvalidated(id);
