@@ -5663,10 +5663,10 @@ export function makeTable(options): TableResourceClass {
 
 					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
 					// whose identity is not its key, so a retry finds its own minted key here (`readsOwnStaging`). A
-					// write that loses to the existing version is not the head: its key stays a branch.
+					// write older than the version the record keeps is not its head: its key stays a branch.
 					if (isRocksDB && audit && !isCopyApply && (appendedLogKey !== txnTime || identityIsNotKey)) {
 						const headIndex = auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId);
-						if (precedesExisting < 0) {
+						if (existingEntry?.version > txnTime) {
 							if (headIndex < 0) additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 						} else if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
