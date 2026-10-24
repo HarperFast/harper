@@ -306,6 +306,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		return;
 	}
 	const auditStore = subscriptions.auditStore;
+	nextTransaction(auditStore);
 	// A commit notification can arrive while or after its store closes (LMDB flushes pending writes during close and
 	// delivers the notification from native code). This store's subscriptions end when the database reopens; reading
 	// it now throws out of setImmediate, and on LMDB arms a read-txn reset timer that throws again.
@@ -317,7 +318,6 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		return;
 	}
 	auditStore.resetReadTxn?.();
-	nextTransaction(auditStore);
 	// subscribersWithTxns is carried across batches so the end_txn signal fires only once the
 	// iterator truly drains, not at each yield point.
 	let subscribersWithTxns = subscriptions.pendingTxnSubscribers;

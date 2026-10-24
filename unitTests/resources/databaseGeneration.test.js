@@ -420,9 +420,8 @@ describe('Commit notification racing a database close', () => {
 		setMainIsWorker(true);
 	});
 
-	// LMDB delivers a commit notification from native code, so it can arrive while or after its store closes: close
-	// flushes pending writes (notifying) once the store is already 'closing'. The notify pass it schedules runs while
-	// the subscription is still registered (it ends at reopen) and must not read the store.
+	// `close` leaves the store closing or closed with the subscription still registered (it ends at reopen) and
+	// returns that status; the notify pass a late commit notification schedules must then read nothing.
 	async function notifyAfter(name, close) {
 		const T = tableInOwnDatabase(name);
 		await T.put('A', { value: 0 });
@@ -434,23 +433,36 @@ describe('Commit notification racing a database close', () => {
 			return on.call(this, event, callback);
 		};
 		const subscription = await T.subscribe({ id: 'A', listener: () => {} });
+		const { subscriptionLogRange } = auditStore;
 		const reads = [];
+		// LMDB's pass reads through getRange; RocksDB's through the subscription's log range
 		auditStore.getRange = function (...args) {
 			reads.push(auditStore.rootStore.status);
 			return getRange.apply(this, args);
 		};
+		if (subscriptionLogRange) {
+			auditStore.subscriptionLogRange = {
+				[Symbol.iterator]() {
+					reads.push(auditStore.rootStore.status);
+					return subscriptionLogRange[Symbol.iterator]();
+				},
+			};
+		}
 		try {
 			assert.ok(notifyCommitted, 'precondition: the subscription listens for commits');
-			const statusAtNotify = await close(T);
+			const expectedStatus = await close(T);
 			assert.strictEqual(subscription.closed, false, 'precondition: the subscription is still registered');
 			notifyCommitted();
-			// after the scheduled notify pass, and after the read-txn reset timer a read would have armed
-			await new Promise((resolve) => setImmediate(resolve));
+			// queued behind the notify pass, so (a store never reopens) its status was this one at the pass
+			const statusAtPass = await new Promise((resolve) => setImmediate(() => resolve(auditStore.rootStore.status)));
+			assert.strictEqual(statusAtPass, expectedStatus, 'precondition: the store status the pass saw');
+			// a read would have armed LMDB's read-txn reset timer; let it fire
 			await new Promise((resolve) => setTimeout(resolve, 0));
-			assert.deepStrictEqual(reads, [], `no notify read on a ${statusAtNotify} store`);
+			assert.deepStrictEqual(reads, [], `no notify read on a ${expectedStatus} store`);
 		} finally {
 			auditStore.on = on;
 			auditStore.getRange = getRange;
+			auditStore.subscriptionLogRange = subscriptionLogRange;
 			subscription.end();
 		}
 	}
