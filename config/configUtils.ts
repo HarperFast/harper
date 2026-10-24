@@ -334,7 +334,7 @@ function matchesFileContent(filePath, content): boolean {
 	}
 }
 
-function backfillMissingDefaults(targetDoc: YAML.Document, defaultsDoc: YAML.Document, prefix: string[] = []): void {
+function backfillMissingDefaults(targetDoc: _YAML.Document, defaultsDoc: _YAML.Document, prefix: string[] = []): void {
 	const defaultsNode = prefix.length === 0 ? defaultsDoc.contents : defaultsDoc.getIn(prefix, true);
 	if (!YAML.isMap(defaultsNode)) return;
 	for (const pair of defaultsNode.items) {
@@ -358,7 +358,7 @@ function collectLeafDotPaths(
 	obj: any,
 	prefix: string[] = [],
 	out = new Set<string>(),
-	defaultsDoc?: YAML.Document
+	defaultsDoc?: _YAML.Document
 ): Set<string> {
 	if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
 		if (prefix.length > 0) out.add(prefix.join('.'));
@@ -382,7 +382,7 @@ function collectLeafDotPaths(
 	return out;
 }
 
-function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefix: string[] = []): void {
+function syncObjectToYamlDoc(doc: _YAML.Document, obj: Record<string, any>, prefix: string[] = []): void {
 	const mapNode = prefix.length === 0 ? doc.contents : doc.getIn(prefix, true);
 	if (!YAML.isMap(mapNode)) {
 		if (prefix.length === 0) {
@@ -425,12 +425,12 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 }
 
 export interface StagedInstallConfig {
-	configDoc: YAML.Document;
+	configDoc: _YAML.Document;
 	commitEnvConfigState?: () => boolean;
 	validated?: boolean;
 }
 
-function clearScalarAncestors(configDoc: YAML.Document, splitParam: string[], userPaths?: Set<string>) {
+function clearScalarAncestors(configDoc: _YAML.Document, splitParam: string[], userPaths?: Set<string>) {
 	for (let i = 1; i < splitParam.length; i++) {
 		const ancestorPath = splitParam.slice(0, i);
 		const ancestorVal = configDoc.getIn(ancestorPath);
