@@ -88,13 +88,14 @@ export interface Context {
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
 	session?: Session;
 	/**
-	 * The database transaction object. `undefined` means none was ever attached. On the RocksDB path, a
-	 * completed transaction releases its back-reference (DatabaseTransaction.ts's releaseContext()) and
-	 * the slot holds RELEASED_TRANSACTION, a shared completed transaction: always safe to call
-	 * `commit()`/`abort()` on (both no-ops) and to read through (latest committed state, no snapshot),
-	 * so code that commits mid-handler can keep using its context. LMDBTransaction does not release,
-	 * so there the completed transaction itself stays in the slot — also safe to call, but retained.
-	 * `null` was the previous released marker and is still accepted defensively.
+	 * The database transaction object. `undefined` means none was ever attached. Once the scope that
+	 * attached it completes (`transaction()`, or the static API servicing a call), it releases its
+	 * back-reference (DatabaseTransaction.ts's releaseContext()) and the slot holds RELEASED_TRANSACTION, a
+	 * shared completed transaction: truthy, never OPEN, always safe to call `commit()`/`abort()` on (both
+	 * no-ops) and to read through (latest committed state, no snapshot), so code that commits mid-handler
+	 * can keep using its context. This holds on LMDB storage too, because the slot holds the scope's root
+	 * DatabaseTransaction rather than an LMDBTransaction; on RocksDB the release waits for any iterator the
+	 * scope returned to drain. `null` was the previous released marker and is still accepted defensively.
 	 *
 	 * A read that resolves a transaction without going through the static-API wrappers (an instance load,
 	 * for one) replaces a released or never-set slot with an ImmediateTransaction, which commits every
