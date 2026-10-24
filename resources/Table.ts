@@ -5040,15 +5040,13 @@ export function makeTable(options): TableResourceClass {
 					transaction: any,
 					committedBy?: DatabaseTransaction
 				) => {
-					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
-					// save(); log entries are not part of the aborted rocks transaction, so they survive).
-					// Only such a write can find its own orphaned entry in the dedup lookups below and must
-					// not treat it as "already applied". Per-write on purpose: the transaction-wide retry
-					// flag would also suppress dedup for a genuine re-delivered duplicate co-batched with
-					// the conflicting write (double-applying it) and for fresh writes staged through a
-					// reused transaction whose retries counter is stale. Sticky on purpose: a proxy read
-					// from the last attempt's skipped state launders when a recommit round self-skips
-					// (walk identity tie against its own staged record) before a fresh-transaction replay.
+					// Whether a prior attempt of THIS write appended its audit entry (sticky, set in
+					// save()). A retry cannot infer that its record mutation committed from an exact log
+					// match alone, so keyed probes stay shielded and walk skips require committed provenance.
+					// Per-write: a transaction-wide retry flag would also suppress dedup for unrelated
+					// deliveries co-batched with the conflict or fresh writes in a reused transaction.
+					// Sticky: a proxy read from the last attempt's skipped state launders when a recommit
+					// round self-skips (walk identity tie against its own staged record) before a replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
@@ -5247,11 +5245,7 @@ export function makeTable(options): TableResourceClass {
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard. Never when this write staged in a prior
-							// failed attempt: that attempt already appended this write's own audit entry, so the lookup
-							// would find it and skip the write as "already applied" when the record was never committed.
-							// A recommit of the same transaction survived that skip only because the old write batch
-							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							// check above remains the read-your-writes guard. Not on a same-write retry (see stagedOwnAuditEntry).
 							// For a write whose identity is not its key this finds an entry keyed at its explicit value: one
 							// written before every local key was minted, or one whose minted key equals it. A hit still needs
 							// both stored clocks to match.
@@ -5308,12 +5302,22 @@ export function makeTable(options): TableResourceClass {
 							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
+							// A retry can load a base restamped by an earlier saved publish/relocate from this
+							// transaction. Those writes do not set stagedEntry, so priorStaged alone cannot
+							// establish that the base is committed.
+							const retryBaseIsCommitted =
+								!priorStaged && !(stagedOwnAuditEntry && hasSavedSameKeySibling(write, committedBy));
+							let walkOriginKnown = retryBaseIsCommitted;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
-							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
+							const auditRefsToVisit: Array<{ localTime: number; nodeId: number; originKnown: boolean }> = [];
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
 									if (isBranchRef(ref, initialAuditHead))
-										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
+										auditRefsToVisit.push({
+											localTime: ref.version,
+											nodeId: ref.nodeId,
+											originKnown: retryBaseIsCommitted,
+										});
 								}
 							}
 
@@ -5325,7 +5329,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
 							let addedAuditRef = false;
-							let nextRef: { localTime: number; nodeId: number };
+							let nextRef: { localTime: number; nodeId: number; originKnown: boolean };
 							const visitedAuditRefs = new Set<string>();
 							let previousHeadOf: any;
 							let previousHead: { txnLogKey: number; nodeId: number; entry?: any };
@@ -5340,13 +5344,13 @@ export function makeTable(options): TableResourceClass {
 								}
 								return previousHead;
 							};
-							const queuePreviousAuditRefs = (auditRecord) => {
+							const queuePreviousAuditRefs = (auditRecord, originKnown: boolean) => {
 								const previousRefs = auditRecord.previousAdditionalAuditRefs;
 								if (previousRefs) {
 									const head = resolvePreviousHead(auditRecord);
 									for (const ref of previousRefs) {
 										if (!isBranchRef(ref, head)) continue;
-										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
+										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId, originKnown });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
 											version: ref.version,
 											nodeId: ref.nodeId,
@@ -5359,6 +5363,7 @@ export function makeTable(options): TableResourceClass {
 								localTime = head.txnLogKey;
 								nodeId = head.nodeId;
 								resolvedEntry = head.entry;
+								walkOriginKnown = walkOriginKnown && head.nodeId != null;
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
@@ -5374,9 +5379,7 @@ export function makeTable(options): TableResourceClass {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
-							// Never a duplicate for a write that staged in a prior failed attempt: that attempt already
-							// appended this write's own audit entry, so the lookup would match it while the record was
-							// never committed (see the up-front keyed dedup above).
+							// Not for a same-write retry (see stagedOwnAuditEntry).
 							const isReDeliveredDuplicate = () => {
 								if (replaying || stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
@@ -5411,11 +5414,13 @@ export function makeTable(options): TableResourceClass {
 											: auditStore.get(localTime, tableId, id, nodeId);
 									resolvedEntry = undefined;
 									if (!auditRecord) break;
-									queuePreviousAuditRefs(auditRecord);
+									queuePreviousAuditRefs(auditRecord, walkOriginKnown);
 									if (
 										isRocksDB &&
 										!replaying &&
-										!stagedOwnAuditEntry &&
+										// on a retry only a link from committed state proves the write committed: an
+										// orphaned log entry can match the identity but is never linked from a committed record
+										(!stagedOwnAuditEntry || walkOriginKnown) &&
 										localTime === appendedLogKey &&
 										precedesExistingVersion(
 											txnTime,
@@ -5442,9 +5447,8 @@ export function makeTable(options): TableResourceClass {
 													// an unmapped origin's key is filed in `local` under a minted key, so it never takes
 													// this branch: its equal version is a re-delivery.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
-												} else if (replaying || stagedOwnAuditEntry) {
-													// The log entry being replayed (or staged by this write's failed attempt) is
-													// the write itself, not proof that its primary-store mutation committed.
+												} else if (replaying || (stagedOwnAuditEntry && !walkOriginKnown)) {
+													// replayed, or reached on a retry without committed provenance: not proof it committed
 													precedesExisting = 1;
 												} else {
 													logger.debug?.(
@@ -5535,6 +5539,7 @@ export function makeTable(options): TableResourceClass {
 									localTime = nextRef.localTime;
 									auditedVersion = Infinity;
 									nodeId = nextRef.nodeId;
+									walkOriginKnown = nextRef.originKnown;
 									resolvedEntry = undefined;
 									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
 								}
@@ -9762,12 +9767,24 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	// The commit base is the committed record unless another write to the key already saved without being
-	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
+	// skipped this round: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
-		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
-			if (other !== write && other.saved && !other.skipped) return committedEntry(write.key);
-		}
+		if (hasSavedSameKeySibling(write, transaction)) return committedEntry(write.key);
 		return existingEntry;
+	}
+
+	function hasSavedSameKeySibling(write: any, transaction: DatabaseTransaction | undefined): boolean {
+		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
+			if (
+				other !== write &&
+				other.saved &&
+				!other.skipped &&
+				other.committedOn === write.committedOn &&
+				other.committedRound === write.committedRound
+			)
+				return true;
+		}
+		return false;
 	}
 
 	function committedEntry(id: Id): Entry | undefined {

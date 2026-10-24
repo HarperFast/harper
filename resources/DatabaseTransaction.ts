@@ -750,6 +750,10 @@ export type TransactionWrite = {
 	residencyId?: number;
 	appendedTo?: RocksTransaction;
 	stagedOn?: RocksTransaction;
+	// the handle and retry round this write last ran its commit handler in: a retry re-saves writes in order,
+	// so a sibling's saved/skipped flags describe the current snapshot only once it has staged in this round
+	committedOn?: RocksTransaction;
+	committedRound?: number;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -2326,6 +2330,8 @@ export class DatabaseTransaction implements Transaction {
 			if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
+			operation.committedOn = transaction;
+			operation.committedRound = txnRetries;
 			try {
 				completion = operation.commit(
 					writeVersion,
@@ -2798,10 +2804,18 @@ export class DatabaseTransaction implements Transaction {
 							if (transaction) this.releaseActiveCommitHandle(transaction);
 							this.trackActiveCommitHandle(replayTransaction);
 							if (prevStagedTxnTime) this.setHandleStagedTxnTime(replayTransaction, prevStagedTxnTime);
+							const abandoned = transaction;
+							const abandonedLogged = hasDurableLog(abandoned);
 							transaction = replayTransaction;
 							try {
 								for (const operation of this.writes) {
 									if (!operation?.saved) continue;
+									// A non-durable abandoned handle left no readable audit entry; a durable one may
+									// have published its log and must retain the retry shield.
+									if (operation.appendedTo === abandoned && !abandonedLogged) {
+										operation.appendedAuditEntry = false;
+										operation.appendedTo = undefined;
+									}
 									this.save(operation, replayTransaction, true, options);
 								}
 							} catch (error) {
