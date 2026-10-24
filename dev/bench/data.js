@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792826729697,
+  "lastUpdate": 1792833217716,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -25065,6 +25065,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 557451,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d4f9fb948d8103283714ea8738db80618030cd43",
+          "message": "Bring the DESIGN.md index back under its line budget (#3523)\n\n* Merge related DESIGN.md index lines to bring the index back under its line budget\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Allow closely related DESIGN.md notes to share an index line\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-24T04:20:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/d4f9fb948d8103283714ea8738db80618030cd43"
+        },
+        "date": 1792833214316,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 15432,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 11875,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 11133,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 21904576,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 7040,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1863,
             "unit": "ops"
           }
         ]
