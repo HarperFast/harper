@@ -72,7 +72,7 @@ function parseOptions(): Options {
 	const threads = count('threads', values.threads);
 	const workloads = (values.workloads as string).split(',').map((name) => name.trim());
 	for (const name of workloads) {
-		if (!WORKLOADS[name])
+		if (!Object.hasOwn(WORKLOADS, name))
 			throw new Error(`unknown workload "${name}" (expected: ${Object.keys(WORKLOADS).join(', ')})`);
 	}
 	const mode = values.mode as string;
@@ -80,7 +80,9 @@ function parseOptions(): Options {
 	const hotKeys = count('hot-keys', values['hot-keys']);
 	const coldKeys = count('cold-keys', values['cold-keys']);
 	const warmupSeconds = Number(values.warmup);
-	if (!(warmupSeconds >= 0)) throw new Error(`--warmup must be a number >= 0 (got "${values.warmup}")`);
+	if (!Number.isFinite(warmupSeconds) || warmupSeconds < 0) {
+		throw new Error(`--warmup must be a finite number >= 0 (got "${values.warmup}")`);
+	}
 	const maxRecordsPerTxn = Math.max(...workloads.map((name) => WORKLOADS[name].recordsPerTxn));
 	if (hotKeys < maxRecordsPerTxn || coldKeys < hotKeys) {
 		throw new Error(`need ${maxRecordsPerTxn} <= --hot-keys (${hotKeys}) <= --cold-keys (${coldKeys})`);
