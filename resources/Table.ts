@@ -10934,6 +10934,7 @@ export function makeTable(options): TableResourceClass {
 	 */
 	async function repairReplicaDeadlines(store: any): Promise<boolean> {
 		let repaired = 0;
+		let walked = 0;
 		for (const entry of primaryStore.getRange({
 			start: true,
 			versions: true,
@@ -10944,7 +10945,7 @@ export function makeTable(options): TableResourceClass {
 				await store.put(entry.key, replicaDeadlineFor(entry.expiresAt));
 				repaired++;
 			}
-			await rest();
+			if (++walked % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
 		}
 		if (repaired) logger.info?.(`Restored the lifetime of ${repaired} replica(s) in ${tableName} that had none`);
 		return true;
