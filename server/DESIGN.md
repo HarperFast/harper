@@ -57,7 +57,7 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `throttle.ts`                              | Event-loop backpressure: runs a caller's calls one per `setImmediate` cycle and hands a call to the caller's limit handler (HTTP request queues, cache-source resolution) once queue depth × average cycle time passes the limit.                                                                                                                                                                                                                      |
 | `storageReclamation.ts`                    | Disk-pressure signals to downstream consumers; `getStorageSpaceStats()` is the shared quota-aware (falls back to `statfs`) source of available/free/size storage numbers — used by `Table.getStorageStats()` (#1976). NOT used for blob storage path weighting (`resources/blob.ts`): quota-status.json is a single instance-wide figure, so it can't distinguish between multiple `STORAGE_BLOBPATHS` disks — that still needs raw per-path `statfs`. |
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `status/`                                  | `get_status`/`set_status`/`clear_status` over `system.hdb_status`, aggregated with component status and (opt-in) the resolved middleware chains (#1573).                                                                                                                                                                                                                                                                                               |
+| `status/`                                  | `get_status`/`set_status`/`clear_status` over `system.hdb_status`, aggregated with flat component status, an opt-in component tree (`components: true`), and opt-in resolved middleware chains (`middleware: true`, #1573). Both status views render errors with the shared `serializeStatusError()` formatter; raw Error objects remain internal.                                                                                                     |
 
 > **Subscription message identity contract.** `sharedMessageEncoding.ts` encodes a message once and
 > reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
@@ -116,6 +116,11 @@ as an ordinary `SHUTDOWN`. Since it binds nothing, it boots beside its predecess
 a port, and the predecessor is retired at admission. Restarts that start replacements are serialized on main
 (`replacementRestarts`), none starts one while a release is armed (`untilNoCertificationArmed`), and the worker
 that asked for a certifying restart is replaced last.
+
+Every HTTP worker's load report also lists the applications its loader placed on it (`applicationsPlacedOnThisThread`),
+which main keeps as what that worker may hold until it exits, since nothing unloads an application; one that has not
+reported may hold anything (`poolMayHold`). A restart named for one application replaces that application's
+dedicated worker and, when a pool worker may hold it, the pool too, and reconciles only that application.
 
 > `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.js` skips `startServers()` there; Harper's own HTTP workers start their servers.
 >

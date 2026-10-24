@@ -106,6 +106,19 @@ directive @table(
 	"""
 	scanInterval: Int
 	"""
+	RocksDB-only lifetime in seconds for a fetched local replica, defaulting to 3600. Set to 0
+	to stop new admissions and the replica sweep. Existing replicas remain until
+	overwritten or evicted. LMDB always proxies remote reads without storing replicas.
+	Schema rescans apply changes to loaded tables; existing deadlines are not rewritten.
+	"""
+	replicaExpiration: Float
+	"""
+	RocksDB-only fraction of the replica lifetime after which a read can renew it, defaulting to
+	0.5. Must be greater than 0 and at most 1; 1 keeps a fixed lifetime.
+	Schema rescans apply changes to loaded tables.
+	"""
+	replicaRefreshFraction: Float
+	"""
 	By default, all tables within a replicated database will be replicated. Transactions
 	are replicated atomically, which may involve data across multiple tables. However,
 	you can also configure replication for individual tables, and disable and exclude

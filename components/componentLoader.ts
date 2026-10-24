@@ -232,6 +232,12 @@ function rootConfigBranchedDatabases(appName: string): string[] | true | undefin
 	return (getConfigObj()?.[appName] as any)?.branchedDatabases;
 }
 
+const applicationsPlaced = new Set<string>();
+/** Every application this thread has loaded or set out to load, which main reads as what it may hold until it exits. */
+export function applicationsPlacedOnThisThread(): string[] {
+	return [...applicationsPlaced];
+}
+
 /**
  * Whether this thread is the one that loads `appName` (harper#642, tier 2). An isolated application
  * is loaded by its dedicated worker and by nothing else; every other thread loads only the
@@ -241,6 +247,12 @@ function rootConfigBranchedDatabases(appName: string): string[] | true | undefin
  */
 function placedOnThisThread(appName: string): boolean {
 	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return true;
+	const placed = placementOf(appName);
+	if (placed) applicationsPlaced.add(appName);
+	return placed;
+}
+
+function placementOf(appName: string): boolean {
 	try {
 		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
 	} catch (error) {
@@ -353,6 +365,9 @@ export async function loadComponentDirectories(
 		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
 	);
 	const deferComponentLoad = (appName: string) => {
+		// It may load once its preparation settles, after this thread has reported what it loaded, and under whatever
+		// config is live then: so it is recorded now, unchecked, since an extra entry only widens a restart.
+		if (shouldLoadApplicationHere(appName)) applicationsPlaced.add(appName);
 		const appFolder = join(CF_ROUTES_DIR, appName);
 		const appWasVisible = existsSync(appFolder);
 		if (appWasVisible) {

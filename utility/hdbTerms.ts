@@ -547,6 +547,14 @@ export const CONFIG_PARAMS = {
 	APPLICATIONS_ALLOWEDBUILTINMODULES: 'applications_allowedBuiltInModules',
 	APPLICATIONS_ALLOWEDSPAWNCOMMANDS: 'applications_allowedSpawnCommands',
 	APPLICATIONS_ALLOWEDDIRECTORY: 'applications_allowedDirectory',
+	STATUS_HEALTHCHECKS_ENABLED: 'status_healthChecks_enabled',
+	STATUS_HEALTHCHECKS_INTERVALSECONDS: 'status_healthChecks_intervalSeconds',
+	STATUS_HEALTHCHECKS_THRESHOLDS_DISK_WARNING: 'status_healthChecks_thresholds_disk_warning',
+	STATUS_HEALTHCHECKS_THRESHOLDS_DISK_ERROR: 'status_healthChecks_thresholds_disk_error',
+	STATUS_HEALTHCHECKS_THRESHOLDS_MEMORY_WARNING: 'status_healthChecks_thresholds_memory_warning',
+	STATUS_HEALTHCHECKS_THRESHOLDS_MEMORY_ERROR: 'status_healthChecks_thresholds_memory_error',
+	STATUS_HEALTHCHECKS_THRESHOLDS_CPU_WARNING: 'status_healthChecks_thresholds_cpu_warning',
+	STATUS_HEALTHCHECKS_THRESHOLDS_CPU_ERROR: 'status_healthChecks_thresholds_cpu_error',
 	THREADS: 'threads',
 	THREADS_COUNT: 'threads_count',
 	THREADS_DEBUG: 'threads_debug',
@@ -1049,6 +1057,8 @@ export const ITC_EVENT_TYPES = {
 	OPERATION_REGISTERED: 'operation_registered',
 	OPERATION_EXECUTE_REQUEST: 'operation_execute_request',
 	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
+	DROP_COMPONENT_REQUEST: 'drop_component_request',
+	MAIN_THREAD_RESPONSE: 'main_thread_response',
 } as const;
 
 /** Supported thread types */
