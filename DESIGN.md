@@ -1,5 +1,3 @@
-# DESIGN.md
-
 A note lives in the `DESIGN.md` of the directory that owns the code it describes. This file is an index only: one line per note grouped by its owning directory, no bodies. A note states an invariant the code cannot express, why it holds (the failure that motivated it, linked to its issue or PR) and where the code enforces it. Review rounds, verdicts, CI run ids, measurement logs and the process that produced a decision belong in the PR or issue, not here. Once the code enforces the invariant itself (a type, an assertion, a named test), shrink the note to one line that names the enforcement. Budget, checked by `npm run check:design-docs`: this index stays under 250 lines and each per-directory `DESIGN.md` under 1000. Adding to a file near its ceiling means pruning that file first. User-facing behavior is documented in [HarperFast/documentation](https://github.com/HarperFast/documentation), never here. Complements [AGENTS.md](AGENTS.md) (architecture map) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## unitTests/ — test runtimes
@@ -12,6 +10,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## .github/ — CI workflows
 
+- [Core CI partitions directories without dropping runtime coverage (`workflows/unit-test.yml`)](.github/DESIGN.md#core-ci-partitions-directories-without-dropping-runtime-coverage-workflowsunit-testyml) — core delegates canonical main with components/server excluded; those directories run separately under the same step bound.
 - [The lock file must pass `npm ci` under npm 10 and npm 11 (`workflows/lockfile-npm-compat.yml`)](.github/DESIGN.md#the-lock-file-must-pass-npm-ci-under-npm-10-and-npm-11-workflowslockfile-npm-compatyml) — npm 11 writes the lock but accepts some that npm 10's `npm ci` rejects; fix the conflict at its source, never by regenerating with npm 10.
 - [A release copies to Docker Hub only the image it booted (`workflows/docker-smoke.yml`, `workflows/publish-docker.yaml`)](.github/DESIGN.md#a-release-copies-to-docker-hub-only-the-image-it-booted-workflowsdocker-smokeyml-workflowspublish-dockeryaml) — The release builds once into a runner-local registry, smoke-tests that digest and copies the same index to Docker Hub; never a rebuild.
 - [Unit-test fixtures don't spend `Unit tests: lmdb` on one durable commit per row (`workflows/unit-test.yml`)](.github/DESIGN.md#unit-test-fixtures-dont-spend-unit-tests-lmdb-on-one-durable-commit-per-row-workflowsunit-testyml) — Every resources suite re-runs on LMDB, where each awaited commit syncs; fixtures batch their writes, and the step cap is the only detector.
