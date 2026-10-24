@@ -466,4 +466,28 @@ describe('Test searchValidator module', () => {
 		assert.strictEqual(depthErr.statusCode, 400);
 		assert.strictEqual(depthErr.message, "unknown attribute 'parent (select depth exceeded)'");
 	});
+
+	it('rejects malformed object selectors without throwing TypeError or bypassing catalog checks', () => {
+		for (const badObject of [
+			{ attribute: '*' },
+			{ name: 'unknownRel', attribute: '*', select: ['id'] },
+			{ attribute: 'child', limit: -1 },
+			{ startsWith: 'x' },
+			{ toString: 'x' },
+			{},
+		]) {
+			const err = searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					hash_values: ['1'],
+					get_attributes: ['id', badObject],
+				},
+				'hashes'
+			);
+			assert.ok(err instanceof Error, `expected error for ${JSON.stringify(badObject)}`);
+			assert.strictEqual(err.statusCode, 400);
+			assert.match(err.message, /^unknown attribute '/);
+		}
+	});
 });
