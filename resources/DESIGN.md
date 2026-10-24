@@ -358,7 +358,7 @@ bit is persisted, so it cannot follow a renumbered rocksdb-js constant without a
 `unitTests/resources/caching-rocks-database.test.js` ('marks a record whose version was reused…') pins
 the layout against raw stored values.
 
-A fill's store writes carry no condition of their own; the commit handler decides for all of them.
+A fill's puts carry no condition of their own; the commit handler decides for all of its writes.
 Against other transactions the engine enforces that decision: on LMDB, `LMDBTransaction`'s
 `ifVersion` block holds the condition, primary put, index writes and audit puts in one native write
 transaction; on RocksDB, a conflict retries the handler against the current record (the failed

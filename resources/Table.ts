@@ -9674,8 +9674,8 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
-	// Whether an earlier write to this key in the transaction changed it: one that staged a record, or a publish
-	// or relocate that restamps it without staging. A skipped write changed nothing.
+	// Whether an earlier write to this key in the transaction may have changed it: one that staged a record, one
+	// that restamps it without staging (a publish), or one that has not run yet. A skipped write changed nothing.
 	function followsAppliedWrite(write: any): boolean {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
 			if (!prior.skipped) return true;
