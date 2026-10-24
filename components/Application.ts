@@ -1679,7 +1679,7 @@ export async function readDeploymentPreview(
  * A link carries no provenance, whatever its target holds. A read that fails propagates rather than reading as
  * absent.
  */
-async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
+export async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
 	const tree = await presentOrAbsent(treePath);
 	if (!tree?.isDirectory()) return undefined;
 	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(
@@ -4898,6 +4898,8 @@ export type PrepareApplicationOptions = {
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; routing?: PayloadRouting; isolated: boolean };
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
+	/** Wraps the swap, so a caller can hold its own admission across a check and the release going live. */
+	aroundActivation?: (candidateDirPath: string, activate: () => Promise<void>) => Promise<void>;
 	fingerprintInstall?: boolean;
 	/** Certify the release this activation makes live (components/canaryRollout.ts). */
 	certification?: ActivationCertification;
@@ -5143,11 +5145,13 @@ export async function prepareApplication(application: Application, options: Prep
 						await markCandidateComplete(application.dirPath, artifactId, application.name);
 						// The record is meant to outlive the swap, so its own entry has to be on storage, as a stage's is.
 						if (described) await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
-						await activateCertifying(
-							application,
-							artifactId,
-							declared ? rootConfigEffectFromDeclaration(declared.rootConfig, declared.routing) : { kind: 'keep' },
-							described ? options.certification : undefined
+						await activateAround(options, candidateDirPath, () =>
+							activateCertifying(
+								application,
+								artifactId,
+								declared ? rootConfigEffectFromDeclaration(declared.rootConfig, declared.routing) : { kind: 'keep' },
+								described ? options.certification : undefined
+							)
 						);
 						application.installedTree = linked ? `link:${linkedTo}` : artifactId;
 					} catch (error) {
@@ -5259,12 +5263,22 @@ async function activateStagedArtifact(
 			descriptor.installationIsOpaque
 		);
 	}
-	await activateCertifying(
-		application,
-		artifactId,
-		rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing),
-		options.certification
+	await activateAround(options, candidateDirPath, () =>
+		activateCertifying(
+			application,
+			artifactId,
+			rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing),
+			options.certification
+		)
 	);
+}
+
+function activateAround(
+	options: PrepareApplicationOptions,
+	candidateDirPath: string,
+	activate: () => Promise<void>
+): Promise<void> {
+	return options.aroundActivation ? options.aroundActivation(candidateDirPath, activate) : activate();
 }
 
 /**

@@ -220,7 +220,10 @@ function dropComponentFileValidator(req) {
 						"'keepBranches' cannot be combined with 'restart: true'; drop without restart, then restart the workers",
 				}),
 			}),
-	});
+		ifDeploymentId: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
+			'string.pattern.base': `'ifDeploymentId' must be a UUID`,
+		}),
+	}).without('ifDeploymentId', 'file');
 
 	return validator.validateBySchema(req, dropCompSchema);
 }

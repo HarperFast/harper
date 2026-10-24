@@ -13,6 +13,7 @@ import {
 	type PreviewMetadata,
 } from './deploymentProvenance.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
+import { withComponentPreparationLock } from './componentPreparationLock.ts';
 
 const logger = harperLogger.forComponent('previews');
 const SWEEP_JOB = 'preview-expiry';
@@ -88,23 +89,47 @@ export async function assertPreviewCapacity(
 }
 
 /**
- * Drop every preview here whose `expiresAt` has passed; returns the components it dropped. Each is read again just
- * before its drop, and skipped if another release went live since the listing. That narrows, and does not close, the
- * window in which a redeploy lands between the read and the drop: the drop is by name.
+ * Swap a preview in only while its application is under its cap, holding one lock per application across the count
+ * and the swap, so two previews never both take the last slot. The metadata is the candidate's own, which a staged
+ * build's later activation carries too.
+ */
+export async function admitPreviewActivation(
+	component: string,
+	candidateDirPath: string,
+	activate: () => Promise<void>,
+	max: number | undefined = positiveInteger(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION)),
+	componentsRoot: string = componentsRootPath()
+): Promise<void> {
+	if (max === undefined) return activate();
+	const raw = await readFile(join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(() => undefined);
+	const preview = raw === undefined ? undefined : parseDeploymentPreview(raw, component);
+	if (!preview) return activate();
+	await withComponentPreparationLock(
+		join(componentsRoot, `.preview-admission-${encodeURIComponent(preview.app)}`),
+		async () => {
+			await assertPreviewCapacity(component, preview.app, max, await listLocalPreviews(componentsRoot));
+			await activate();
+		},
+		{ purpose: `preview admission for ${preview.app}` }
+	);
+}
+
+/**
+ * Drop every preview here whose `expiresAt` has passed; returns the components it dropped. Each drop names the release
+ * the listing saw, and every node skips it when its live release is another one, so a redeploy that lands first is
+ * kept.
  */
 export async function sweepExpiredPreviews(
-	drop: (component: string) => Promise<unknown>,
+	drop: (component: string, deploymentId: string) => Promise<{ componentRemoved?: boolean } | undefined>,
 	now: number = Date.now(),
-	previews?: LocalPreview[],
-	reread: (component: string) => Promise<LocalPreview | undefined> = readLocalPreview
+	previews?: LocalPreview[]
 ): Promise<string[]> {
 	const dropped: string[] = [];
 	for (const { component, deploymentId, preview } of previews ?? (await listLocalPreviews())) {
 		const expiresAt = previewExpiresAtMs(preview);
-		if (expiresAt === undefined || expiresAt > now) continue;
-		if ((await reread(component))?.deploymentId !== deploymentId) continue;
+		if (expiresAt === undefined || expiresAt > now || deploymentId === undefined) continue;
 		try {
-			await drop(component);
+			if ((await drop(component, deploymentId))?.componentRemoved === false) continue;
 			dropped.push(component);
 			logger.info?.(`Dropped preview ${component}: it expired at ${new Date(expiresAt).toISOString()}`);
 		} catch (error) {
@@ -115,19 +140,17 @@ export async function sweepExpiredPreviews(
 }
 
 /**
- * A replicated drop through the operations API, so every node removes it. It asks for a restart only to stop the
- * preview's own running worker: a drop with a restart and no such worker restarts the whole pool. A shared preview
- * stays served by the pool until its next restart.
+ * A replicated drop through the operations API, so every node removes it, and only while its live release is the one
+ * that expired. It stops an isolated preview's own worker; a shared preview stays served by the pool until its next
+ * restart.
  */
-async function dropPreview(component: string): Promise<unknown> {
+async function dropPreview(component: string, deploymentId: string): Promise<{ componentRemoved?: boolean }> {
 	const { server } = await import('../server/Server.ts');
-	const { getRunningIsolatedApplications } = await import('../server/threads/manageThreads.js');
-	const running: string[] = await getRunningIsolatedApplications(5000).catch(() => []);
 	return server.operation(
-		{ operation: 'drop_component', project: component, ...(running.includes(component) && { restart: true }) },
+		{ operation: 'drop_component', project: component, ifDeploymentId: deploymentId },
 		undefined,
 		false
-	);
+	) as Promise<{ componentRemoved?: boolean }>;
 }
 
 let sweepRegistered = false;

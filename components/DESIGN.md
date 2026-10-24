@@ -539,12 +539,9 @@ best-effort under filesystem failure and is not a storage quota — journaled, u
 directories are preserved by design and can still fill a volume.
 
 A preview's release keeps `deployment.previews.stagingRetention.maxCount` (default 1) instead (harper#3049,
-`stagingRetentionMaxCountOf`). Whether a release is a preview is read from its own tree's provenance, so the two reads
-deciding whether a displaced release is kept — `keptPredecessorOf` before the swap, which names it as the canary's
-restore target, and `retainDisplacedRelease` after it — both read the displaced release and cannot disagree. Nothing
-the decision reads may change with the activation's root-config effect, which publishes between those two reads: an
-override on the component's own entry would, since a package entry replaces it whole. A preview's payload is
-reclaimed after a successful deploy whatever its size.
+`stagingRetentionMaxCountOf`), read from the displaced release's own provenance, so `keptPredecessorOf` before the swap
+and `retainDisplacedRelease` after it cannot disagree; nothing they read may change with the activation's root-config
+effect, which publishes between them. A preview's payload is reclaimed after a successful deploy whatever its size.
 
 ### PR previews record what they came from, and expire
 
@@ -556,13 +553,12 @@ tree, `list_deployments` from the rows.
 
 - **The sweep is a scheduler internal job** (`components/previews.ts`), registered on the application primary worker
   at root load and again after each deploy, but only once the node holds a preview: a cluster that runs no previews
-  never joins the scheduler's leader election for it. The leader drops every preview whose `expiresAt` has passed with
-  a replicated `drop_component`. It asks for a restart only while the preview's own isolated worker runs, since a drop
-  with a restart and no such worker restarts the whole pool; a shared preview stays served by the pool until its next
-  restart.
+  never joins the scheduler's leader election for it. The leader drops each expired preview with a replicated
+  `drop_component` naming the release it listed (`ifDeploymentId`); each node compares that with its own live release
+  under the component lock, so a redeploy that went live first is kept.
 - **The cap counts the origin's live previews of the same `app`** (`deployment.previews.maxPerApplication`, unset
-  means none), refuses a new one with 409 before anything is recorded, and names the oldest by when its release was
-  built. A redeploy of a live preview never counts against it.
+  means none) where a release goes live: `admitPreviewActivation` holds one lock per app across the count and the swap,
+  for a deploy and a staged build's activation alike, and names the oldest. A redeploy of a live preview never counts.
 
 ### A deployment id keeps naming its release after the swap
 

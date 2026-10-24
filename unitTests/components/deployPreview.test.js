@@ -11,16 +11,22 @@ testUtils.preTestPrep();
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const validator = require('#js/components/operationsValidation');
-const { deployComponent, getComponents } = require('#js/components/operations');
+const { deployComponent, dropComponent, getComponents } = require('#js/components/operations');
 const { handleListDeployments, handleGetDeployment } = require('#src/components/deploymentOperations');
 const { stagingRetentionMaxCountOf } = require('#src/components/Application');
 const {
+	DEPLOYMENT_PROVENANCE_FILE,
 	formatDeploymentProvenance,
 	parseDeploymentPreview,
 	parseDeploymentProvenance,
 	previewExpiresAtMs,
 } = require('#src/components/deploymentProvenance');
-const { assertPreviewCapacity, listLocalPreviews, sweepExpiredPreviews } = require('#src/components/previews');
+const {
+	admitPreviewActivation,
+	assertPreviewCapacity,
+	listLocalPreviews,
+	sweepExpiredPreviews,
+} = require('#src/components/previews');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
 const { preserveRootConfig, removeDeployedComponents } = require('../rootConfigFixture.js');
@@ -100,29 +106,86 @@ describe('PR preview metadata (harper#3048)', () => {
 			await assertPreviewCapacity('shop-pr-3', 'shop', undefined, previews);
 		});
 
-		it('drops only the previews whose expiresAt has passed, and keeps going past a failed drop', async () => {
+		it('drops only the expired previews, naming the release it listed, and keeps going past a failed drop', async () => {
 			const dropped = [];
 			const failing = [live('shop-pr-0', 0, 0, 0), ...previews];
 			const result = await sweepExpiredPreviews(
-				async (component) => {
+				async (component, deploymentId) => {
 					if (component === 'shop-pr-0') throw new Error('boom');
-					dropped.push(component);
+					dropped.push([component, deploymentId]);
+					return { componentRemoved: true };
 				},
 				Date.now(),
-				failing,
-				async (component) => failing.find((entry) => entry.component === component)
+				failing
 			);
-			assert.deepStrictEqual(dropped, ['shop-pr-1']);
+			assert.deepStrictEqual(dropped, [['shop-pr-1', 'd-shop-pr-1']]);
 			assert.deepStrictEqual(result, ['shop-pr-1']);
 		});
 
-		it('skips a preview whose release changed after the listing, or is gone', async () => {
-			const dropped = [];
-			const drop = async (component) => dropped.push(component);
-			const renewed = { ...previews[0], deploymentId: 'd-renewed' };
-			await sweepExpiredPreviews(drop, Date.now(), previews, async () => renewed);
-			await sweepExpiredPreviews(drop, Date.now(), previews, async () => undefined);
-			assert.deepStrictEqual(dropped, []);
+		it('does not count a drop the node skipped, nor try one without a release to name', async () => {
+			const asked = [];
+			const skipped = async (component) => {
+				asked.push(component);
+				return { componentRemoved: false };
+			};
+			assert.deepStrictEqual(await sweepExpiredPreviews(skipped, Date.now(), previews), []);
+			assert.deepStrictEqual(
+				await sweepExpiredPreviews(skipped, Date.now(), [{ ...previews[0], deploymentId: undefined }]),
+				[]
+			);
+			assert.deepStrictEqual(asked, ['shop-pr-1']);
+		});
+	});
+
+	describe('admission at activation', () => {
+		let root;
+		beforeEach(async () => {
+			root = await fs.mkdtemp(path.join(os.tmpdir(), 'preview-admission-'));
+		});
+		afterEach(async () => {
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		async function candidate(component, pr) {
+			const dir = path.join(root, '.candidates', component);
+			await fs.mkdir(dir, { recursive: true });
+			await fs.writeFile(
+				path.join(dir, DEPLOYMENT_PROVENANCE_FILE),
+				formatDeploymentProvenance(component, `d-${component}`, preview(pr))
+			);
+			return dir;
+		}
+		// The swap: the candidate's provenance lands at the live path.
+		const goLive = (component, dir) => async () => {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			await fs.mkdir(path.join(root, component), { recursive: true });
+			await fs.copyFile(
+				path.join(dir, DEPLOYMENT_PROVENANCE_FILE),
+				path.join(root, component, DEPLOYMENT_PROVENANCE_FILE)
+			);
+		};
+
+		it('lets only one of two concurrent activations take the last slot', async () => {
+			const one = await candidate('shop-pr-1', 1);
+			const two = await candidate('shop-pr-2', 2);
+			const outcomes = await Promise.allSettled([
+				admitPreviewActivation('shop-pr-1', one, goLive('shop-pr-1', one), 1, root),
+				admitPreviewActivation('shop-pr-2', two, goLive('shop-pr-2', two), 1, root),
+			]);
+			assert.deepStrictEqual(outcomes.map((outcome) => outcome.status).sort(), ['fulfilled', 'rejected']);
+			assert.strictEqual(outcomes.find((outcome) => outcome.status === 'rejected').reason.statusCode, 409);
+			assert.strictEqual((await listLocalPreviews(root)).length, 1);
+		});
+
+		it('admits a redeploy of a live preview, a build that is not a preview, and anything with no cap', async () => {
+			const one = await candidate('shop-pr-1', 1);
+			await admitPreviewActivation('shop-pr-1', one, goLive('shop-pr-1', one), 1, root);
+			await admitPreviewActivation('shop-pr-1', one, async () => {}, 1, root);
+			const plain = path.join(root, '.candidates', 'shop-production');
+			await fs.mkdir(plain, { recursive: true });
+			await admitPreviewActivation('shop-production', plain, async () => {}, 1, root);
+			const two = await candidate('shop-pr-2', 2);
+			await admitPreviewActivation('shop-pr-2', two, async () => {}, undefined, root);
 		});
 	});
 
@@ -181,6 +244,22 @@ describe('PR preview metadata (harper#3048)', () => {
 			}
 		});
 
+		it('keeps a release that went live after the sweep listed the one that expired', async () => {
+			const expired = preview(13, { expiresAt: '2000-01-01T00:00:00.000Z' });
+			await deploy({ project: 'shop-pr-13', preview: expired });
+			const listed = (await listLocalPreviews()).filter((live) => live.component === 'shop-pr-13');
+			const renewed = await deploy({ project: 'shop-pr-13', preview: preview(13) });
+			const drop = (project, ifDeploymentId) => dropComponent({ operation: 'drop_component', project, ifDeploymentId });
+
+			assert.deepStrictEqual(await sweepExpiredPreviews(drop, Date.now(), listed), []);
+			const [kept] = (await listLocalPreviews()).filter((live) => live.component === 'shop-pr-13');
+			assert.strictEqual(kept?.deploymentId, renewed.deployment_id, 'the renewed release is still live');
+
+			const dropped = await drop('shop-pr-13', renewed.deployment_id);
+			assert.strictEqual(dropped.componentRemoved, true);
+			assert.ok(!(await listLocalPreviews()).some((live) => live.component === 'shop-pr-13'));
+		});
+
 		it('is not shown for a deploy that carried none', async () => {
 			await deploy({ project: 'shop-production' });
 			const entry = (await getComponents()).entries.find((component) => component.name === 'shop-production');
@@ -198,6 +277,37 @@ describe('PR preview metadata (harper#3048)', () => {
 				await deploy({ project: 'cap-pr-1', preview: preview(1, { app: 'cap' }) });
 				const { deployments } = await handleListDeployments({ project: 'cap-pr-2' });
 				assert.strictEqual(deployments.length, 0, 'no deployment was recorded');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION, undefined);
+			}
+		});
+
+		it('holds the cap when two staged previews are activated, and still admits a redeploy', async () => {
+			const stage = (pr) =>
+				deploy({
+					project: `staged-pr-${pr}`,
+					preview: preview(pr, { app: 'staged' }),
+					activate: false,
+					restart: undefined,
+				});
+			const activate = (pr, deployment_id) =>
+				deployComponent({ operation: 'deploy_component', project: `staged-pr-${pr}`, deployment_id });
+			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION, 1);
+			try {
+				const first = await stage(1);
+				const second = await stage(2);
+				await activate(1, first.deployment_id);
+				await assert.rejects(activate(2, second.deployment_id), (error) => {
+					assert.strictEqual(error.statusCode, 409);
+					assert.match(error.message, /oldest is 'staged-pr-1'/);
+					return true;
+				});
+				const live = (await listLocalPreviews()).filter((entry) => entry.preview.app === 'staged');
+				assert.deepStrictEqual(
+					live.map((entry) => entry.component),
+					['staged-pr-1']
+				);
+				await deploy({ project: 'staged-pr-1', preview: preview(1, { app: 'staged' }) });
 			} finally {
 				env.setProperty(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION, undefined);
 			}

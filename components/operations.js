@@ -37,6 +37,7 @@ const {
 	DEPLOY_STAGING_DIR,
 	dropComponentDirectory,
 	readDeploymentPreview,
+	readDeploymentProvenance,
 	retireComponentDirectory,
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
@@ -818,6 +819,11 @@ async function deployComponent(req) {
 				routing: declaredRouting,
 				isolated: Boolean(nowIsolated),
 			}),
+			// The cap is the origin's: a peer makes live what the origin admitted.
+			aroundActivation: isReplicatedExecution
+				? undefined
+				: (candidateDirPath, activate) =>
+						require('./previews.ts').admitPreviewActivation(req.project, candidateDirPath, activate),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
@@ -1777,6 +1783,7 @@ async function dropComponent(req) {
 				project: req.project,
 				restart: req.restart,
 				keepBranches: req.keepBranches,
+				ifDeploymentId: req.ifDeploymentId,
 				replicated: req.replicated,
 				startBy: Date.now() + DROP_START_BUDGET_MS,
 			},
@@ -1817,6 +1824,17 @@ async function dropApplication(request, requester, answerEarly) {
 				);
 			}
 			await assertNotCertifying(componentPath, project);
+			// Each node compares its own live release, so a peer that already has a newer one keeps it.
+			if (
+				req.ifDeploymentId !== undefined &&
+				(await readDeploymentProvenance(componentPath, project)) !== req.ifDeploymentId
+			) {
+				response = {
+					...nodeOutcome(false),
+					message: `Did not drop ${project}: its live release is not deployment ${req.ifDeploymentId}`,
+				};
+				return;
+			}
 			const present = (await fs.pathExists(componentPath)) || hasRootConfigEntry(project);
 			// a worker left running by a drop that failed after it removed the entry still counts
 			const running = (await manageThreads.getRunningIsolatedApplications()).includes(project);
