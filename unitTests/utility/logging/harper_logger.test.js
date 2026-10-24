@@ -3230,5 +3230,74 @@ describe('Test harper_logger module', () => {
 			_applyLogSettingsForTests(undefined);
 			assert.equal(getLogFilePath(), established, 'a config-less settle must not reconfigure logging');
 		});
+
+		describe('component loggers the config does not name', () => {
+			const { forComponent, logsAtLevel } = harperLoggerModule;
+
+			afterEach(() => {
+				_applyLogSettingsForTests({ logging: { level: 'info' } });
+			});
+
+			it('rebinds unnamed component and external loggers to logging.level', () => {
+				_applyLogSettingsForTests({ logging: { level: 'debug' } });
+				const custom = forComponent('applyLogSettingsCustom');
+				const external = forComponent('applyLogSettingsExternal', true);
+				assert.equal(custom.level, 2);
+				assert.equal(external.level, 2);
+
+				_applyLogSettingsForTests({ logging: { level: 'warn' } });
+
+				assert.equal(custom.level, 4);
+				assert.equal(external.level, 4);
+				assert.equal(custom.conditional.info, undefined);
+				assert.equal(external.conditional.info, undefined);
+				assert.equal(forComponent('external').level, 4);
+			});
+
+			it('reverts external loggers to the main level once logging.external is removed', () => {
+				const external = forComponent('applyLogSettingsExternal', true);
+				_applyLogSettingsForTests({ logging: { level: 'error', external: { level: 'warn' } } });
+				assert.equal(external.level, 4);
+				assert.equal(forComponent('external').level, 4);
+
+				_applyLogSettingsForTests({ logging: { level: 'error' } });
+
+				assert.equal(external.level, 5);
+				assert.equal(forComponent('external').level, 5);
+			});
+
+			it('applies trace to a component that is not a config key', () => {
+				const custom = forComponent('applyLogSettingsCustom');
+				_applyLogSettingsForTests({ logging: { level: 'trace' } });
+				assert.equal(custom.level, 1);
+				assert.equal(typeof custom.conditional.trace, 'function');
+			});
+
+			it('keeps a component with its own logging block on that level', () => {
+				const named = forComponent('applyLogSettingsNamed');
+				_applyLogSettingsForTests({
+					logging: { level: 'warn' },
+					applyLogSettingsNamed: { logging: { level: 'trace' } },
+				});
+				assert.equal(named.level, 1);
+			});
+
+			it('registers and levels a config-named component that has no logger yet', () => {
+				_applyLogSettingsForTests({
+					logging: { level: 'warn' },
+					applyLogSettingsFresh: { logging: { level: 'trace' } },
+				});
+				assert.equal(forComponent('applyLogSettingsFresh').level, 1);
+			});
+
+			it('keeps the exported logLevel in sync', () => {
+				_applyLogSettingsForTests({ logging: { level: 'error' } });
+				assert.equal(logsAtLevel('error'), true);
+				assert.equal(logsAtLevel('warn'), false);
+				assert.equal(harperLoggerModule.logLevel, 'error');
+				_applyLogSettingsForTests({ logging: { level: 'verbose' } });
+				assert.equal(harperLoggerModule.logLevel, 'error');
+			});
+		});
 	});
 });
