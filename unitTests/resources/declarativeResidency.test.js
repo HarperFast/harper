@@ -116,19 +116,23 @@ describe('Declarative residency', function () {
 		}
 	});
 
-	it('refuses a cold attribute patch that requests cached data only', async () => {
-		const Records = await declare(
-			'SlotCachedOnly',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
-			'region: Int @indexed\nbody: String'
-		);
-		await Records.put('remote', { id: 'remote', region: 1, body: 'complete' });
-		Records.sourcedFrom({ load: () => assert.fail('onlyIfCached must not fetch') }, { intermediateSource: true });
-		await assert.rejects(
-			async () => Records.patch('remote', { body: 'changed' }, { onlyIfCached: true }),
-			/complete resident record/
-		);
-	});
+	for (const context of [{ onlyIfCached: true }, { replicateFrom: false }])
+		it(`refuses a cold attribute patch without source access ${JSON.stringify(context)}`, async () => {
+			const Records = await declare(
+				`SlotCachedOnly_${context.onlyIfCached ? 'cached' : 'source_disabled'}`,
+				'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+				'region: Int @indexed\nbody: String'
+			);
+			await Records.put('remote', { id: 'remote', region: 1, body: 'complete' });
+			Records.sourcedFrom(
+				{ load: () => assert.fail('disabled source access must not fetch') },
+				{ intermediateSource: true }
+			);
+			await assert.rejects(
+				async () => Records.patch('remote', { body: 'changed' }, context),
+				/complete resident record/
+			);
+		});
 
 	it('refuses a conversion comparison after its table is dropped during a yield', async () => {
 		const database = 'slot_conversion_dropped';
@@ -142,6 +146,85 @@ describe('Declarative residency', function () {
 		const dropped = Records.dropTable();
 		await assert.rejects(comparison, /dropped|unloaded|changed|closed/);
 		await dropped;
+	});
+
+	it('does not activate a table while a staged map reassignment can still commit', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const database = 'slot_activation_race';
+		await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+		const Maps = getResidencyMapTable();
+		let release, staged;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		const ready = new Promise((resolve) => {
+			staged = resolve;
+		});
+		const update = transaction({}, async () => {
+			await Maps.put(database, createResidencyMap(database, 2, [{ start: 0, end: 2, shard: 1 }], 2));
+			staged();
+			await gate;
+		});
+		try {
+			await ready;
+			assert.throws(
+				() =>
+					table({
+						database,
+						table: 'Rows',
+						schemaDefined: true,
+						audit: true,
+						residency: { slots: 2 },
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				/residency.*(?:busy|progress)|(?:busy|progress).*residency/i
+			);
+		} finally {
+			release();
+			await update;
+		}
+		const Rows = table({
+			database,
+			table: 'Rows',
+			schemaDefined: true,
+			audit: true,
+			residency: { slots: 2 },
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		assert.equal(Rows.residency.slots, 2);
+		await assert.rejects(
+			initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] }),
+			/cannot be reassigned/
+		);
+	});
+
+	it('releases the activation fence after a failed declaration or aborted map batch', async () => {
+		const database = 'slot_activation_abort';
+		await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+		const definition = {
+			database,
+			table: 'Rows',
+			schemaDefined: true,
+			audit: true,
+			residency: { slots: 2 },
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		};
+		assert.throws(() => table({ ...definition, audit: false }), /requires audit logging/);
+		const Maps = getResidencyMapTable();
+		await assert.rejects(
+			transaction({}, async () => {
+				await Maps.put(database, createResidencyMap(database, 2, [{ start: 0, end: 2, shard: 1 }], 2));
+				throw new Error('abort activation fixture');
+			}),
+			/abort activation fixture/
+		);
+		assert.equal(readResidencyMap(database).version, 1);
+		await transaction({}, async () => {
+			await Maps.put(database, createResidencyMap(database, 2, [{ start: 0, end: 2, shard: 1 }], 2));
+			await Maps.put(database, createResidencyMap(database, 2, [{ start: 0, end: 2, shard: 0 }], 3));
+		});
+		assert.equal(readResidencyMap(database).version, 3);
+		assert.equal(table(definition).residency.slots, 2);
 	});
 
 	it('checks active slots when another thread created the database after its scan', async () => {
@@ -213,6 +296,79 @@ describe('Declarative residency', function () {
 			await worker.terminate();
 		}
 	});
+
+	for (const overrides of [{}, { audit: false }, { replicate: false }])
+		it(`preserves a cold table policy during programmatic redeclaration ${JSON.stringify(overrides)}`, async () => {
+			const { Worker } = require('node:worker_threads');
+			const worker = new Worker(
+				`
+			const { parentPort, workerData } = require('node:worker_threads');
+			require(workerData.testUtils).setupTestDBPath();
+			const { getDatabases, table } = require('#src/resources/databases');
+			getDatabases();
+			const { onMessageByType } = require('#js/server/threads/manageThreads');
+			onMessageByType('slot-redeclare-check', () => {});
+			parentPort.postMessage({ type: 'slot-redeclare-ready' });
+			parentPort.on('message', ({ type, database, overrides }) => {
+				if (type !== 'slot-redeclare-check') return;
+				let policy, error;
+				try {
+					policy = table({ database, table: 'LateTable', ...overrides,
+						attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'extra', indexed: true }] }).residency;
+				} catch (failure) { error = failure.message; }
+				parentPort.postMessage({ type: 'slot-redeclare-result', policy, error });
+			});
+			parentPort.ref();
+		`,
+				{
+					eval: true,
+					workerData: {
+						testUtils: require.resolve('../testUtils'),
+						noServerStart: true,
+						addPorts: [],
+						workerIndex: 9,
+						workerCount: 10,
+					},
+				}
+			);
+			const waitForMessage = (type) =>
+				new Promise((resolve, reject) => {
+					const timer = setTimeout(() => finish(new Error(`Worker did not send ${type}`)), 5000);
+					const exited = (code) => finish(new Error(`Catalog worker exited before ${type}: ${code}`));
+					function finish(error, message) {
+						clearTimeout(timer);
+						worker.off('message', listener);
+						worker.off('error', finish);
+						worker.off('exit', exited);
+						if (error) reject(error);
+						else resolve(message);
+					}
+					const listener = (message) => {
+						if (message.type !== type) return;
+						finish(null, message);
+					};
+					worker.on('message', listener);
+					worker.once('error', finish);
+					worker.once('exit', exited);
+				});
+			try {
+				await waitForMessage('slot-redeclare-ready');
+				const database = `slot_cold_redeclare_${overrides.audit === false ? 'audit' : overrides.replicate === false ? 'replicate' : 'inherit'}`;
+				await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+				await loadGQLSchema(
+					`type LateTable @table(database: "${database}") @residency(slots: 2) { id: ID @primaryKey }`
+				);
+				const answer = waitForMessage('slot-redeclare-result');
+				worker.postMessage({ type: 'slot-redeclare-check', database, overrides });
+				const result = await answer;
+				if (Object.keys(overrides).length)
+					assert.match(result.error ?? '', /requires audit logging|requires table replication/);
+				else assert.deepEqual(result.policy, { slots: 2, byAttribute: false });
+				assert.equal(databases[database].LateTable.dbisDB.getSync('LateTable/').residency?.slots, 2);
+			} finally {
+				await worker.terminate();
+			}
+		});
 
 	it('confirms an index-free non-owner write using its audit entry', async () => {
 		const Records = await declare('SlotNoIndexConfirmed', '@residency(slots: 10, slotFrom: "1")', 'body: String');
@@ -505,6 +661,36 @@ describe('Declarative residency', function () {
 			assert.deepEqual(Buffer.from(Records.primaryStore.getBinary(old.id)), old.bytes);
 		}
 	});
+
+	for (const first of ['put', 'patch'])
+		for (const returnLocal of [false, true])
+			it(`retains the complete same-batch attribute write through a non-owner projection (${first}, return=${returnLocal})`, async () => {
+				const Records = await declare(
+					`SlotChained_${first}_${returnLocal}`,
+					'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+					'region: Int @indexed\nbody: String\nextra: String'
+				);
+				await Records.put('row', { id: 'row', region: 0, body: 'original', extra: 'retained' });
+				setResidencyPlacementGuard(() => {});
+				replicationConfirmation(() => Promise.resolve());
+				await transaction({}, async () => {
+					if (first === 'put') await Records.put('row', { id: 'row', region: 1, body: 'first', extra: 'retained' });
+					else await Records.patch('row', { region: 1 });
+					await Records.patch('row', { body: 'second' });
+					if (returnLocal) await Records.patch('row', { region: 0 });
+				});
+				const entry = Records.primaryStore.getEntry('row');
+				assert.equal(entry.residencySlot, returnLocal ? 0 : 1);
+				assert.equal(Boolean(entry.metadataFlags & INVALIDATED), !returnLocal);
+				if (returnLocal) {
+					assert.equal(entry.value.body, 'second');
+					assert.equal(entry.value.extra, 'retained');
+				} else assert.equal(entry.value.body, undefined);
+				const rows = Array.from(Records.auditStore.getRange({ start: 1, log: 0 })).filter(
+					(row) => row.tableId === Records.tableId && row.recordId === 'row'
+				);
+				assert.ok(rows.some((row) => row.getValue(Records.primaryStore)?.body === 'second'));
+			});
 
 	it('requires mandatory confirmation only for transitioning records in a mixed transaction', async () => {
 		const Records = await declare(
@@ -926,7 +1112,7 @@ describe('Declarative residency', function () {
 		}
 	);
 
-	for (const mode of ['write', 'write-unflushed-map', 'write-scan-error'])
+	for (const mode of ['write', 'write-unflushed-map', 'write-scan-error', 'write-system-first'])
 		(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
 			`replays attribute slots before peer discovery after an unclean exit (${mode})`,
 			async function () {
@@ -961,7 +1147,13 @@ describe('Declarative residency', function () {
 					const written = await run(mode);
 					assert.equal(written.signal, 'SIGKILL', written.stderr);
 					assert.equal(readFileSync(marker, 'utf8'), 'written');
-					const replay = await run(mode === 'write-scan-error' ? 'replay-scan-error' : 'replay');
+					const replay = await run(
+						mode === 'write-scan-error'
+							? 'replay-scan-error'
+							: mode === 'write-system-first'
+								? 'replay-system-first'
+								: 'replay'
+					);
 					assert.equal(replay.code, 0, replay.stderr);
 					const result = JSON.parse(readFileSync(marker, 'utf8'));
 					assert.ok(result.replayed >= 4, JSON.stringify(result));

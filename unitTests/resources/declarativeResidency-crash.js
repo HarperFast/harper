@@ -3,6 +3,7 @@ const path = require('node:path');
 
 if (require.main === module) {
 	const [root, marker, mode] = process.argv.slice(2);
+	const database = mode.endsWith('system-first') ? 'zzslotcrash' : 'slotcrash';
 	const env = require('#src/utility/environment/environmentManager');
 	const terms = require('#src/utility/hdbTerms');
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, root);
@@ -35,10 +36,10 @@ if (require.main === module) {
 				[1, [{ name: 'other' }]],
 			]);
 			await loadGQLSchema(
-				'type CrashSlots @table(database: "slotcrash") @residency(slots: 2, byAttribute: true, slotFrom: "region") { id: ID @primaryKey region: Int @indexed body: String }'
+				`type CrashSlots @table(database: "${database}") @residency(slots: 2, byAttribute: true, slotFrom: "region") { id: ID @primaryKey region: Int @indexed body: String }`
 			);
 			if (mode === 'write') await getResidencyMapTable().primaryStore.rootStore.flush();
-			const Table = getDatabases().slotcrash.CrashSlots;
+			const Table = getDatabases()[database].CrashSlots;
 			await Table.put('local', { id: 'local', region: 0, body: 'complete' });
 			await Table.put('remote', { id: 'remote', region: 1, body: 'remote body' });
 			await Table.put('deleted', { id: 'deleted', region: 0, body: 'removed' });
@@ -46,6 +47,16 @@ if (require.main === module) {
 			writeFileSync(marker, 'written');
 			process.kill(process.pid, 'SIGKILL');
 		} else {
+			if (mode === 'replay-system-first') {
+				const fs = require('node:fs');
+				const readdir = fs.readdirSync;
+				fs.readdirSync = (directory, ...args) => {
+					const entries = readdir(directory, ...args);
+					return directory === path.join(root, 'database')
+						? entries.sort((a, b) => a.name.localeCompare(b.name))
+						: entries;
+				};
+			}
 			if (mode === 'replay-scan-error') {
 				const fs = require('node:fs');
 				const readdir = fs.readdirSync;
@@ -62,7 +73,7 @@ if (require.main === module) {
 					fs.readdirSync = readdir;
 				}
 			}
-			const Table = getDatabases().slotcrash.CrashSlots;
+			const Table = getDatabases()[database].CrashSlots;
 			const rows = Object.fromEntries(
 				['local', 'remote', 'deleted'].map((id) => {
 					const entry = Table.primaryStore.getEntry(id);

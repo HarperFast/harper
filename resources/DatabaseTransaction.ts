@@ -688,6 +688,7 @@ export type TransactionWrite = {
 	// A commit-time refusal must abort earlier writes too, including LMDB instructed writes.
 	requiresExclusiveCommit?: boolean;
 	checkResidency?: () => unknown;
+	releaseResidencyMapFence?: () => void;
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
@@ -746,6 +747,8 @@ export type TransactionWrite = {
 	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
 	// a retry round that takes an early return doesn't leave the prior round's state behind.
 	stagedEntry?: Partial<Entry>;
+	// A later attribute patch needs the complete write even when stagedEntry is a local index stub.
+	completeResidencyRecord?: any;
 	// a later write to the same key in this transaction replaced (or deleted) the record this write
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.
@@ -1810,6 +1813,7 @@ export class DatabaseTransaction implements Transaction {
 			for (const write of [...this.writes]) {
 				if (!write || this.isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight, fromAbort))
 					continue;
+				write.releaseResidencyMapFence?.();
 				this.detachWrite(write);
 			}
 			this.writes = this.writes.filter((write) => write);
@@ -1825,6 +1829,7 @@ export class DatabaseTransaction implements Transaction {
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
 		// context's current transaction as it did before `stagedIn` existed.
 		for (const write of this.writes) {
+			write?.releaseResidencyMapFence?.();
 			if (write?.stagedIn === this) write.stagedIn = undefined;
 			if (write) this.ownedWrites?.delete(write);
 		}
@@ -2350,6 +2355,7 @@ export class DatabaseTransaction implements Transaction {
 					operation.commit = () => {}; // noop if we try again
 					closeWriteInstance(operation);
 					if (immediateCommit) {
+						operation.releaseResidencyMapFence?.();
 						this.detachWrite(operation);
 						if (!this.activeCommitHandle) this.activeHandleStagedTxnTime = 0;
 						abortNativeTransaction(
@@ -2387,6 +2393,7 @@ export class DatabaseTransaction implements Transaction {
 			// is submitted must release it, and the floor reservation it carries, rather than leak both.
 			if (immediateCommit) {
 				this.drainCompletions(transaction, true);
+				operation.releaseResidencyMapFence?.();
 				this.detachWrite(operation);
 				if (!this.activeCommitHandle) this.activeHandleStagedTxnTime = 0;
 				abortNativeTransaction(
