@@ -223,8 +223,11 @@ export type DeployCertification = ActivationCertification & {
 export function deployCertification(spec: {
 	component: string;
 	deploymentId: string;
-	/** An isolation flip moves the release to a worker no restart has started yet, so it is not certified. */
-	eligible: () => boolean;
+	/**
+	 * An isolation flip moves the release to a worker no restart has started yet, so it is not certified. `wasAbsent`:
+	 * the component had no tree before this release.
+	 */
+	eligible: (wasAbsent: boolean) => boolean;
 	isolated: () => boolean;
 	scope: () => string | undefined;
 }): DeployCertification {
@@ -239,8 +242,8 @@ export function deployCertification(spec: {
 		get unavailableReason() {
 			return unavailableReason;
 		},
-		async arm() {
-			if (!spec.eligible()) {
+		async arm(_previous, wasAbsent) {
+			if (!spec.eligible(wasAbsent)) {
 				unavailableReason = 'ineligible';
 				return false;
 			}

@@ -189,6 +189,7 @@ export {
 	onMessageFromWorkers,
 	setIsolatedWorkerReconciler,
 	setRunningIsolatedApplicationsGetter,
+	reconcileIsolatedApplication,
 	isApplicationPrimaryWorker,
 	applicationWorkerIndex,
 	runsApplicationCodeSingletons,
@@ -229,6 +230,10 @@ export {
 	certificationRequest,
 	certificationRollout,
 	setCertificationHandler,
+	requestFromMainThread,
+	answerMainThreadRequests,
+	poolMayHold,
+	failedClosedInMemory,
 	setCanaryVerdictTimeout,
 	setRootComponentsReload,
 	processIncarnation,
@@ -531,6 +536,7 @@ listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_RESPONSE, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MAIN_THREAD_RESPONSE, null);
 
 /*
  * Release certification (main thread). While a release is registered here, every HTTP worker started that places it
@@ -600,7 +606,8 @@ function armCertification({ component, deploymentId, isolated, scope, requesterT
 		(worker) =>
 			worker.name === hdbTerms.THREAD_TYPES.HTTP && !worker.wasShutdown && placesCertification(certification, worker)
 	);
-	if (!placed) return { armed: false, reason: 'unavailable' };
+	// An isolated application with no worker yet gets one from its rollout's reconcile, held as the canary.
+	if (!placed && !(certification.isolated && workerHooks.reconcile)) return { armed: false, reason: 'unavailable' };
 	// A worker already loading was not held for this release, and its load can still reach the release once it goes
 	// live; it reports before it binds, and a report that comes after the commit is refused.
 	for (const worker of workers) {
@@ -691,6 +698,8 @@ async function completeCertification(certification, outcome) {
 			error
 		);
 	}
+	// Still registered, so no other release of it arms, until its slot is gone.
+	await certification.withdrawn;
 	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
 	if (stillRead(certification)) {
 		settledCertifications.set(settledKey(certification.component, certification.deploymentId), certification);
@@ -765,6 +774,11 @@ async function decideCertification(certification, decision, canary?: any) {
 			reason: `its certification could not be recorded: ${settled.recordError}`,
 		});
 	}
+	// Queued before the decision is read, so any later reconcile runs after it; awaited by the rollout's close, not here,
+	// since a worker it stops may be the requester, whose deploy answers only once it reads the decision.
+	if (leavesNothingToLoad(certification, certification.component, settled)) {
+		certification.withdrawn = withdrawRefusedSlot(certification);
+	}
 	certification.decision = settled;
 	certification.decided.resolve(settled);
 	settleHeldStarts();
@@ -796,7 +810,7 @@ async function recordDecision(certification, decision) {
 function deferStartBehindCertification(options, start) {
 	for (const certification of openCertificationsPlacedBy(options)) {
 		if (certification.phase === 'armed' || (certification.canary && !certification.decision)) {
-			certification.deferredStarts.push(start);
+			certification.deferredStarts.push({ application: options.application, start });
 			return true;
 		}
 	}
@@ -805,13 +819,30 @@ function deferStartBehindCertification(options, start) {
 
 function startDeferredStarts(certification) {
 	const starts = certification.deferredStarts.splice(0);
-	for (const start of starts) {
+	for (const { application, start } of starts) {
 		if (processShuttingDown) return;
+		if (leavesNothingToLoad(certification, application)) continue;
 		try {
 			start();
 		} catch (error) {
 			harperLogger.error('Could not start a worker held back for a release certification', error);
 		}
+	}
+}
+
+/** An isolated application whose refused release stays live: its dedicated worker would load nothing. */
+function leavesNothingToLoad(certification, application, decision = certification.decision) {
+	const { component, deploymentId } = certification;
+	if (!certification.isolated || application !== component || !decision || !refusesRelease(decision)) return false;
+	return decision.failedClosed === true || failClosedInMemory.get(component)?.deploymentId === deploymentId;
+}
+
+/** Its dedicated slot is withdrawn and any worker still in it stopped, so no worker or mirror outlives the refusal. */
+async function withdrawRefusedSlot(certification) {
+	try {
+		await workerHooks.reconcile?.(certification.component, true);
+	} catch (error) {
+		harperLogger.error(`Could not withdraw the dedicated worker slot of ${certification.component}`, error);
 	}
 }
 
@@ -844,6 +875,7 @@ function holdStart(worker, gated, startOptions) {
 	heldStarts.add(held);
 	const onMessage = (message) => {
 		if (message?.type !== hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT || held.components) return;
+		recordLoadedApplications(worker, message);
 		held.components = Array.isArray(message.components) ? message.components : [];
 		held.loadedAcross = loadedAcrossRelease(worker);
 		clearTimeout(held.timer);
@@ -952,6 +984,7 @@ function admitOnReport(worker, startOptions) {
 	const onMessage = (message) => {
 		if (message?.type !== hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT) return;
 		worker.off('message', onMessage);
+		recordLoadedApplications(worker, message);
 		const refusal = loadedAcrossRelease(worker);
 		if (!refusal) {
 			worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED });
@@ -1120,6 +1153,11 @@ function forgetIfUnread(certification) {
 	if (settledCertifications.get(key) === certification && !stillRead(certification)) settledCertifications.delete(key);
 }
 
+/** Releases main refused in memory, because the record of their refusal could not be written: component → refusal. */
+function failedClosedInMemory() {
+	return new Map(failClosedInMemory);
+}
+
 function failClosedComponentsPlacedBy(options) {
 	if (!isMainThread || options.name !== hdbTerms.THREAD_TYPES.HTTP || failClosedInMemory.size === 0) return undefined;
 	const failClosed = {};
@@ -1165,6 +1203,77 @@ function certificationRequest(action, payload) {
 			parentPort.off('message', onMessage);
 			reject(error);
 		}
+	});
+}
+
+let nextMainThreadRequestId = 0;
+/**
+ * A worker asks main to do `type` for it and waits for the answer, matched by id. Main finishes the work whether or not
+ * the asker is still waiting; `timeoutMs` only bounds the wait.
+ */
+function requestFromMainThread(type, payload, timeoutMs) {
+	return new Promise((resolve, reject) => {
+		const requestId = ++nextMainThreadRequestId;
+		const settle = () => {
+			clearTimeout(timer);
+			parentPort.off('message', onMessage);
+		};
+		const onMessage = (message) => {
+			if (message?.type !== hdbTerms.ITC_EVENT_TYPES.MAIN_THREAD_RESPONSE || message.requestId !== requestId) return;
+			settle();
+			if (message.error) {
+				const { message: text, ...identity } = message.error;
+				reject(Object.assign(new Error(text), identity));
+			} else resolve(message.result);
+		};
+		const timer = setTimeout(() => {
+			settle();
+			reject(new Error(`The main thread did not answer ${type} within ${timeoutMs}ms; it may still complete it`));
+		}, timeoutMs);
+		parentPort.on('message', onMessage);
+		try {
+			parentPort.postMessage({ type, requestId, payload });
+		} catch (error) {
+			settle();
+			reject(error);
+		}
+	});
+}
+
+/**
+ * Main answers `type` from workers with `handler(payload, worker, answerEarly)`: what it resolves to, or what it passed
+ * `answerEarly` first, for an asker the work is about to stop. An asker that is gone gets nothing.
+ */
+function answerMainThreadRequests(type, handler) {
+	onMessageByType(type, (message, port) => {
+		let answered = false;
+		const answer = (reply) => {
+			if (answered) return;
+			answered = true;
+			try {
+				port?.postMessage({
+					type: hdbTerms.ITC_EVENT_TYPES.MAIN_THREAD_RESPONSE,
+					requestId: message.requestId,
+					...reply,
+				});
+			} catch {
+				// the asker exited
+			}
+		};
+		Promise.resolve()
+			.then(() => handler(message.payload ?? {}, port, (result) => answer({ result })))
+			.then(
+				(result) => answer({ result }),
+				(error) =>
+					answer({
+						error: {
+							message: typeof error?.http_resp_msg === 'string' ? error.http_resp_msg : errorMessageOf(error),
+							statusCode: error?.statusCode,
+							errorName: error?.constructor?.name,
+							code: error?.code,
+						},
+					})
+			);
 	});
 }
 
@@ -1425,10 +1534,12 @@ async function restartWorkers(
 ) {
 	if (arguments.length < 5) application = '*';
 	if (isMainThread) {
-		if (!startReplacementThreads) return replaceWorkers(name, maxWorkersDown, false, onProgress, application);
+		if (!startReplacementThreads) {
+			return replaceWorkers(name, maxWorkersDown, false, onProgress, application, undefined, withPoolFor(application));
+		}
 		// One at a time, so no restart starts a worker on a release another restart's canary has not decided.
 		const replacing = replacementRestarts.then(() =>
-			replaceWorkers(name, maxWorkersDown, true, onProgress, application, certification)
+			replaceWorkers(name, maxWorkersDown, true, onProgress, application, certification, withPoolFor(application))
 		);
 		replacementRestarts = replacing.catch(() => {});
 		return replacing;
@@ -1441,13 +1552,39 @@ async function restartWorkers(
 	}
 }
 
+/**
+ * A pool worker keeps the applications it loaded until it exits, whatever the config says now. Each reports them
+ * before it is admitted; one that has not reported yet may hold any.
+ */
+function poolMayHold(application: string) {
+	return workers.some(
+		(worker) =>
+			worker.name === hdbTerms.THREAD_TYPES.HTTP &&
+			!worker.application &&
+			(!worker.loadedApplications || worker.loadedApplications.has(application))
+	);
+}
+
+/** Read when the restart takes its turn, so no earlier restart's replacement is still booting unreported. */
+function withPoolFor(application?: string) {
+	if (application === undefined || application === '*' || !poolMayHold(application)) return false;
+	harperLogger.info(`Restarting the shared workers with ${application}: one of them loaded it while it was shared`);
+	return true;
+}
+
+function recordLoadedApplications(worker: any, message: any) {
+	if (Array.isArray(message.applications)) worker.loadedApplications = new Set(message.applications);
+}
+
+/** `withPool`: a named application's restart also replaces the pool workers, which may still hold that application. */
 async function replaceWorkers(
 	name,
 	maxWorkersDown,
 	startReplacementThreads,
 	onProgress,
 	application,
-	certification?: any
+	certification?: any,
+	withPool = false
 ) {
 	{
 		// Declining is not the same as delegating: a caller reporting on the restart must not read this
@@ -1489,7 +1626,8 @@ async function replaceWorkers(
 				// isolated applications added or removed by the reload get their dedicated worker started or
 				// stopped; a crash-looping newcomer can take a while, so the heartbeat runs through this too
 				try {
-					for (const application of (await workerHooks.reconcile?.()) ?? []) freshlyStarted.add(application);
+					const only = application === '*' || application === undefined ? undefined : application;
+					for (const started of (await workerHooks.reconcile?.(only)) ?? []) freshlyStarted.add(started);
 				} catch (error) {
 					harperLogger.error('Could not reconcile isolated application workers', error);
 				}
@@ -1578,7 +1716,7 @@ async function replaceWorkers(
 			if ((name && !typeMatches(name, worker.name)) || worker.wasShutdown) continue; // filter by type, if specified
 			// exited on its own since the snapshot; its exit handler restarts it (or holds that start for a decision)
 			if (!workers.includes(worker)) continue;
-			if (application !== '*' && worker.application !== application) continue; // and by isolated application
+			if (application !== '*' && worker.application !== application && !(withPool && !worker.application)) continue;
 			if (worker.application && freshlyStarted.has(worker.application)) continue;
 			// A deploy whose release is decided waits on no rollout, and a drain would give it only the shutdown ceiling,
 			// which its peers' answers can outlast: retire its worker once it has answered, after the rest.
@@ -2067,6 +2205,9 @@ function decodeRestartScope(message?: any) {
 /** Registered by socketRouter: starts and stops dedicated workers to match the root config's isolated applications. */
 function setIsolatedWorkerReconciler(reconcile?: any) {
 	workerHooks.reconcile = reconcile;
+}
+function reconcileIsolatedApplication(application: string) {
+	return workerHooks.reconcile?.(application) ?? Promise.resolve([]);
 }
 function setRunningIsolatedApplicationsGetter(getter?: any) {
 	workerHooks.runningApplications = getter;

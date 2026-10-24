@@ -2,7 +2,12 @@ import { parentPort } from 'node:worker_threads';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { CONFIG_PARAMS, ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
-import { bootVerdictOf, trackBootOutcomes, type BootVerdictOutcome } from '../../components/componentLoader.ts';
+import {
+	applicationsPlacedOnThisThread,
+	bootVerdictOf,
+	trackBootOutcomes,
+	type BootVerdictOutcome,
+} from '../../components/componentLoader.ts';
 import { liveDeploymentId } from '../../components/releaseCertification.ts';
 
 export type HeldStartRequest = { component: string; deploymentId: string };
@@ -63,7 +68,11 @@ export async function awaitAdmission(
 			resolve();
 		};
 		parentPort.on('message', onMessage);
-		parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, components });
+		parentPort.postMessage({
+			type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
+			components,
+			applications: applicationsPlacedOnThisThread(),
+		});
 		onReported?.();
 	});
 }

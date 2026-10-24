@@ -217,7 +217,6 @@ describe('Reads of residency stubs', function () {
 			new Blobs('blob-record', context)._writeInvalidate('blob-record', { blob: first });
 			new Blobs('blob-record', context)._writeInvalidate('blob-record', { blob: second });
 		});
-		// A retained audit blob is still readable and can be referenced by a later write.
 		await Blobs.put('blob-record', { blob: first });
 		assert.deepEqual(Buffer.from(await (await Blobs.get('blob-record')).blob.arrayBuffer()), data);
 	});
@@ -337,7 +336,7 @@ describe('Reads of residency stubs', function () {
 	}
 
 	it('retains stored vectors on invalidation and maintains their graph on replacement and deletion', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // Matches the existing HNSW suite's engine coverage.
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		const Vectors = table({
 			database: 'test',
 			table: 'ResidencyVectors',

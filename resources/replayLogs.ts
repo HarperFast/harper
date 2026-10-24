@@ -259,11 +259,14 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				}
 				// Entry is replayable: build the context and instantiate the resource only now, so
 				// the skip paths above never pay those per-entry allocations (harper#1266).
+				// `timestamp` is the key the entry was appended under, which the replay handle carries; the write
+				// handlers take it from here, as for an apply, since replay holds no reservation of a minted key.
 				const context: Context = {
 					nodeId,
 					alreadyLogged: true,
 					version,
 					expiresAt,
+					timestamp: txnLogKey,
 					user: { username },
 				} as any;
 				const target = new RequestTarget();

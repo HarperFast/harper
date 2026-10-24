@@ -206,6 +206,17 @@ function dropComponentFileValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).optional(),
+		// A node on an earlier version ignores keepBranches and, restarting, removes the branches.
+		keepBranches: Joi.boolean()
+			.strict()
+			.optional()
+			.when('restart', {
+				is: true,
+				then: Joi.invalid(true).messages({
+					'any.invalid':
+						"'keepBranches' cannot be combined with 'restart: true'; drop without restart, then restart the workers",
+				}),
+			}),
 	});
 
 	return validator.validateBySchema(req, dropCompSchema);

@@ -117,6 +117,11 @@ a port, and the predecessor is retired at admission. Restarts that start replace
 (`replacementRestarts`), none starts one while a release is armed (`untilNoCertificationArmed`), and the worker
 that asked for a certifying restart is replaced last.
 
+Every HTTP worker's load report also lists the applications its loader placed on it (`applicationsPlacedOnThisThread`),
+which main keeps as what that worker may hold until it exits, since nothing unloads an application; one that has not
+reported may hold anything (`poolMayHold`). A restart named for one application replaces that application's
+dedicated worker and, when a pool worker may hold it, the pool too, and reconciles only that application.
+
 > HTTP worker startup requires `threadServer` to be the actual entry file. Imports from user/job workers do not start listeners; `index.ts` also sets `workerData.noServerStart = true` for unmanaged workers.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's

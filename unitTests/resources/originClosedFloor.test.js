@@ -229,7 +229,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert.equal((await Tbl.get('floor-counter')).n, 1, 'the re-delivery of a rekeyed apply is not applied twice');
 		assert.equal(entriesFor('floor-counter').length, 2);
 		assert(
-			Tbl.primaryStore.getEntry('floor-counter').additionalAuditRefs?.some((ref) => ref.version === version),
+			Tbl.primaryStore.getEntry('floor-counter').receivedIdentityRefs?.some((ref) => ref.version === version),
 			'the record keeps the received identity a re-delivery carries'
 		);
 	});
@@ -261,7 +261,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert.notEqual(entry.txnLogKey, readKey);
 	});
 
-	it('an explicit timestamp below the floor keeps the record version and takes a fresh key', async () => {
+	it('an explicit timestamp, below or above the floor, keeps the record version and takes a minted key', async () => {
 		await sleep(2);
 		const floor = certify();
 		const timestamp = floor - 1000;
@@ -276,9 +276,13 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		);
 		const future = floor + 60_000;
 		await transaction({ timestamp: future }, () => Tbl.put({ id: 'explicit-new', n: 1 }));
-		const [kept] = entriesFor('explicit-new');
-		assert.equal(kept.txnLogKey, future, 'an explicit timestamp above the floor is kept as the key');
-		assert.equal(kept.version, future);
+		const [ahead] = entriesFor('explicit-new');
+		assert.equal(ahead.version, future, 'an explicit timestamp above the floor is the record version too');
+		assert(
+			ahead.txnLogKey >= floor && ahead.txnLogKey < future,
+			`key ${ahead.txnLogKey} is minted between the floor and the explicit value`
+		);
+		assert.equal(Tbl.primaryStore.getEntry('explicit-new').version, future);
 	});
 
 	it('a source apply for a named remote origin keeps its key in that origin log, an unnamed id does not', async () => {

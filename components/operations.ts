@@ -62,6 +62,7 @@ import {
 import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 
 const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+const DROP_ANSWER_MARGIN_MS = 60_000;
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 function componentDropLockOptions(project?: any) {
@@ -454,8 +455,16 @@ async function packageComponent(req?: any) {
 	return { project, payload };
 }
 
-const BRANCH_STORAGE_RETAINED =
-	'. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data';
+const BRANCH_STORAGE_RETAINED = {
+	keepBranches:
+		'. Its branched database storage was left in place (keepBranches); drop it again without keepBranches to discard that data',
+	loaded:
+		'. Any branched database storage this application owns was left in place, since workers still have it loaded; ' +
+		'drop it again once they restart to discard that data',
+	restart:
+		'. Any branched database storage this application owns was left in place, since the restart did not finish ' +
+		'replacing every worker; drop it again to discard that data',
+};
 
 /** Report a restart outcome the operation's own success message cannot convey. */
 function logRestartOutcome(restart?: any, what?: any) {
@@ -752,7 +761,10 @@ async function deployComponent(req?: any) {
 				? loadRuntimeModule('components/canaryRollout').deployCertification({
 						component: req.project,
 						deploymentId: req.deployment_id ?? req._deploymentId,
-						eligible: () => (wasIsolated ?? initiallyIsolated) === (nowIsolated ?? initiallyIsolated),
+						// A new isolated application's first worker is the one its rollout starts, held as the canary.
+						eligible: (wasAbsent) =>
+							(wasIsolated ?? initiallyIsolated) === (nowIsolated ?? initiallyIsolated) ||
+							(wasAbsent && Boolean(nowIsolated ?? initiallyIsolated)),
 						isolated: () => Boolean(nowIsolated ?? initiallyIsolated),
 						scope: () => ((nowIsolated ?? initiallyIsolated) ? req.project : undefined),
 					})
@@ -907,11 +919,11 @@ async function deployComponent(req?: any) {
 			// when the per-peer callback already fired for these.
 			recorder.recordPeers(response.replicated);
 		}
-		// A still-isolated application restarts only its own dedicated worker. Everything else restarts the
-		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
-		// restartWorkers starts or stops the moving application's own worker. An already-live retry cannot know
-		// which workers loaded the previous release, so it restarts them all.
-		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
+		// The restart covers the workers that loaded the component or will load it. A shared application is loaded by
+		// the pool; an isolated one restarts its own worker, and main adds the pool when a pool worker reported loading
+		// it, as after an isolation flip. An already-live retry cannot know which workers loaded the previous release,
+		// so it restarts them all.
+		const restartScope = application.alreadyActive ? '*' : nowIsolated ? application.name : undefined;
 		const { awaitRestart } = loadRuntimeModule('components/awaitRestart');
 		// Main started this release's rollout at its commit; the origin only waits for it.
 		const awaitCertifiedRollout = async () => {
@@ -1634,8 +1646,49 @@ async function deleteEnvValue(req?: any) {
 	return response;
 }
 
+const DROP_START_BUDGET_MS = DROP_COMPONENT_LOCK_TIMEOUT_MS + DROP_ANSWER_MARGIN_MS;
+
+/** How long a drop may take on one node: its wait to start, a restart, and a dedicated worker's drain. */
+function dropAnswerTimeoutMs() {
+	const { RESTART_WAIT_CEILING_MS } = awaitRestartRuntimeModule;
+	const { getShutdownDrainCeilingMs } = loadRuntimeModule('components/shutdownDrain');
+	return Math.min(
+		DROP_START_BUDGET_MS + RESTART_WAIT_CEILING_MS + getShutdownDrainCeilingMs() + DROP_ANSWER_MARGIN_MS,
+		hdbTerms.MAX_SET_TIMEOUT_MS
+	);
+}
+
 /**
- * Deletes a component dir/file
+ * Each peer's outcome in the per-node shape, beside whatever else its answer carried; `null` where it did not say. The
+ * answer is read flat or from a wrapped body, as `isConfirmedStaging` reads it.
+ */
+function dropPeerResults(replicated) {
+	return replicated.map((peer) => {
+		const said = (field) => peer?.[field] ?? peer?.value?.[field] ?? peer?.body?.[field] ?? null;
+		return {
+			...peer,
+			node: peer?.node,
+			componentRemoved: said('componentRemoved'),
+			workerStopped: said('workerStopped'),
+			branchesRemoved: said('branchesRemoved'),
+			error: peer?.status === 'failed' ? (peer.reason ?? 'failed') : said('error'),
+		};
+	});
+}
+
+async function replicateDrop(req) {
+	const response = await server.replication.replicateOperation(req, { timeoutMs: dropAnswerTimeoutMs() });
+	if (response.replicated) response.replicated = dropPeerResults(response.replicated);
+	return response;
+}
+
+function nodeOutcome(componentRemoved) {
+	const { getThisNodeName } = loadRuntimeModule('server/nodeName');
+	return { node: getThisNodeName(), componentRemoved, workerStopped: false, branchesRemoved: false };
+}
+
+/**
+ * Deletes a component, or one file of it
  * @param req
  * @returns {Promise<{message:string}>}
  */
@@ -1644,20 +1697,169 @@ async function dropComponent(req?: any) {
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
+	if (req.file) return dropComponentFile(req);
+	if (isMainThread) return dropApplication(req);
+	try {
+		return await manageThreads.requestFromMainThread(
+			hdbTerms.ITC_EVENT_TYPES.DROP_COMPONENT_REQUEST,
+			{
+				operation: req.operation,
+				project: req.project,
+				restart: req.restart,
+				keepBranches: req.keepBranches,
+				replicated: req.replicated,
+				startBy: Date.now() + DROP_START_BUDGET_MS,
+			},
+			Math.min(2 * dropAnswerTimeoutMs(), hdbTerms.MAX_SET_TIMEOUT_MS)
+		);
+	} catch (error) {
+		// Errors render by constructor name, so another class is rebuilt as one that carries its name.
+		const name = error.errorName ?? 'Error';
+		const ErrorClass = { ClientError, ServerError }[name] ?? { [name]: class extends Error {} }[name];
+		const rebuilt = new ErrorClass(error.message, error.statusCode);
+		if (rebuilt.statusCode === undefined && error.statusCode !== undefined) rebuilt.statusCode = error.statusCode;
+		if (error.code !== undefined) rebuilt.code = error.code;
+		throw rebuilt;
+	}
+}
 
+/**
+ * A whole-component drop, on the main thread under the component's lock. A component this node does not have is
+ * dropped by doing nothing, and nothing restarts. An isolated application's dedicated worker is stopped whatever
+ * `restart` says, a leftover one included, and the shared workers restart only when asked and only when they may hold
+ * it. Its branched databases go last, once nothing holds them. `answerEarly` answers a worker that asked for this
+ * before a step that stops it; `null` in an answer means not known yet.
+ */
+async function dropApplication(request, requester?: any, answerEarly?: any) {
+	// the asker's own deadline, on its own clock: never sent to a peer
+	const { startBy, ...req } = request;
+	const { project } = req;
+	const componentPath = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), project);
+	const { applicationHasBranchStorage, removeBranchesForApplication } = branchDatabaseRuntimeModule;
+	let response;
+	await withComponentPreparationLock(
+		componentPath,
+		async () => {
+			// Past this, the worker that asked could give up before the drop finished, and report it not dropped.
+			if (startBy !== undefined && Date.now() > startBy) {
+				throw new ServerError(
+					`Did not drop ${project}: it waited for the component lock past the time it had to start`
+				);
+			}
+			await assertNotCertifying(componentPath, project);
+			const present = (await fs.pathExists(componentPath)) || hasRootConfigEntry(project);
+			// a worker left running by a drop that failed after it removed the entry still counts
+			const running = (await manageThreads.getRunningIsolatedApplications()).includes(project);
+			const isolated = configuredIsolated(project) || running;
+			const poolMayHold = manageThreads.poolMayHold(project);
+			const hadWorker = manageThreads.workersForApplication(project).length > 0;
+			if (present) await removeApplication(project, componentPath);
+			const restartsPool = present && req.restart === true && (!isolated || poolMayHold);
+			const outcome = nodeOutcome(present);
+			let message = present
+				? `Successfully dropped: ${project}${restartsPool ? ', restarting Harper' : ''}`
+				: `Successfully dropped: ${project}, which was not on this node`;
+			const branched = applicationHasBranchStorage(project);
+			let retained;
+			if (branched && req.keepBranches === true) retained = 'keepBranches';
+			else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
+			if (retained) message += BRANCH_STORAGE_RETAINED[retained];
+			const answerBeforeStop = (known?: any) =>
+				answerEarly?.({ ...response, branchesRemoved: branched && !retained ? null : false, ...known });
+
+			response = Object.assign(await replicateDrop(req), outcome, { message });
+			if (isolated && (present || running)) {
+				if (requester?.application === project) answerBeforeStop({ workerStopped: null });
+				await manageThreads.reconcileIsolatedApplication(project);
+				response.workerStopped = hadWorker && manageThreads.workersForApplication(project).length === 0;
+			}
+			let restart;
+			if (restartsPool) {
+				if (requester?.name === hdbTerms.THREAD_TYPES.HTTP && !requester.application) answerBeforeStop();
+				const { awaitRestart } = awaitRestartRuntimeModule;
+				restart = await awaitRestart((onProgress) =>
+					manageThreads.restartWorkers('http', undefined, undefined, onProgress, undefined)
+				);
+				logRestartOutcome(restart, `dropping ${project}`);
+			}
+			if (!branched || retained) return;
+			if (restart && (!restart.completed || restart.workersKeptOnOldCode)) {
+				log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
+				response.message += BRANCH_STORAGE_RETAINED.restart;
+				return;
+			}
+			try {
+				await removeBranchesForApplication(project);
+			} catch (error) {
+				log.error(`Branched database storage of ${project} could not be removed`, error);
+				throw new Error(
+					`Successfully dropped: ${project}, but its branched database storage could not be removed and was left ` +
+						`in place: ${error.message}. Drop it again to retry.`
+				);
+			}
+			response.branchesRemoved = true;
+		},
+		componentDropLockOptions(project)
+	);
+	return response;
+}
+
+/**
+ * Whether the root config marks `project` isolated, in this thread's view or in the file, which a worker may have
+ * published since. Read without refreshing this thread's config, which exits the process on a malformed file.
+ */
+function configuredIsolated(project) {
+	const { isIsolatedApplication } = isolatedApplicationsRuntimeModule;
+	if (isIsolatedApplication(project)) return true;
+	try {
+		return isIsolatedApplication(project, configUtils.parseYamlDoc(configUtils.getRootConfigFilePath()).toJSON());
+	} catch {
+		return false;
+	}
+}
+
+/** The tree, its root-config entry, and its install links. The entry goes last, so a failure never leaves it live without one. */
+async function removeApplication(project, componentPath) {
+	await assertRootConfigEffectPublishable(project, { kind: 'remove' });
+	const retired = await retireComponentDirectory(componentPath, project, log);
+	try {
+		await applyRootConfigEffect(project, { kind: 'remove' });
+	} catch (error) {
+		// Only while the entry is still there: a failure after the removal was written, in the refresh that
+		// follows it, leaves the drop committed, and the tree goes with it.
+		if (hasRootConfigEntry(project)) await retired.restore().catch((restoreError) => log.error(restoreError));
+		else await retired.discard();
+		throw error;
+	}
+	await retired.discard();
+	const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+	await fs.unlink(componentSymlink).catch((error) => {
+		if (error?.code !== 'ENOENT') log.warn(`Dropped ${project} but could not remove ${componentSymlink}:`, error);
+	});
+	const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+	if (await fs.pathExists(packageJsonPath)) {
+		const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+		if (packageJson?.dependencies?.[project]) {
+			delete packageJson.dependencies[project];
+		}
+		await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+	}
+}
+
+async function dropComponentFile(req) {
 	const { project, file } = req;
-	const projectPath = req.file ? path.join(project, file) : project;
+	const projectPath = path.join(project, file);
 	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const componentPath = path.join(componentsRoot, project);
 	const pathToComponent = path.join(componentsRoot, projectPath);
-	let restartScope;
-
 	let response;
 	await withComponentPreparationLock(
 		componentPath,
 		async () => {
 			await assertNotCertifying(componentPath, project);
-			if (req.restart === true) {
+			const present = (await fs.pathExists(componentPath)) || hasRootConfigEntry(project);
+			let restartScope;
+			if (present && req.restart === true) {
 				let runningApplications;
 				try {
 					runningApplications = await manageThreads.getRunningIsolatedApplications(
@@ -1666,65 +1868,25 @@ async function dropComponent(req?: any) {
 				} catch (error) {
 					throw handleHDBError(
 						error,
-						`Cannot drop '${project}' with a restart: the main thread's worker topology is unavailable: ${error.message}`,
+						`Cannot drop '${projectPath}' with a restart: the main thread's worker topology is unavailable: ${error.message}`,
 						HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 					);
 				}
 				if (runningApplications.includes(project)) restartScope = project;
 			}
-			if (!file) {
-				// The entry goes last, so a failed drop never leaves the component live without it.
-				await assertRootConfigEffectPublishable(project, { kind: 'remove' });
-				const retired = await retireComponentDirectory(componentPath, project, log);
-				try {
-					await applyRootConfigEffect(project, { kind: 'remove' });
-				} catch (error) {
-					// Only while the entry is still there: a failure after the removal was written, in the refresh that
-					// follows it, leaves the drop committed, and the tree goes with it.
-					if (hasRootConfigEntry(project)) await retired.restore().catch((restoreError) => log.error(restoreError));
-					else await retired.discard();
-					throw error;
-				}
-				await retired.discard();
-				const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-				await fs.unlink(componentSymlink).catch((error) => {
-					if (error?.code !== 'ENOENT') log.warn(`Dropped ${project} but could not remove ${componentSymlink}:`, error);
-				});
-			} else if (await fs.pathExists(pathToComponent)) {
-				await fs.remove(pathToComponent);
-			}
-
-			const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
-			if (!file && (await fs.pathExists(packageJsonPath))) {
-				const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
-				if (packageJson?.dependencies?.[project]) {
-					delete packageJson.dependencies[project];
-				}
-				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
-			}
-
-			response = await server.replication.replicateOperation(req);
-			const { applicationHasBranchStorage, removeBranchesForApplication } = branchDatabaseRuntimeModule;
-			const branched = !file && applicationHasBranchStorage(project);
-			if (req.restart !== true) {
+			if (await fs.pathExists(pathToComponent)) await fs.remove(pathToComponent);
+			response = Object.assign(await replicateDrop(req), nodeOutcome(false));
+			if (!present || req.restart !== true) {
 				response.message = `Successfully dropped: ${projectPath}`;
-				if (branched) response.message += BRANCH_STORAGE_RETAINED;
 				return;
 			}
-			// The branches go after the restart, under this lock; a worker is one of the threads being
-			// replaced, so it hands both to the main thread.
 			response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
 			if (!isMainThread) {
 				parentPort.postMessage({
 					type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 					workerType: 'http',
 					scope: manageThreads.encodeRestartScope(restartScope),
-					removeBranchesFor: file ? undefined : project,
 				});
-				if (branched) {
-					response.message +=
-						'; the main thread removes its branched database storage after the restart and logs the outcome';
-				}
 				return;
 			}
 			const { awaitRestart } = awaitRestartRuntimeModule;
@@ -1732,25 +1894,14 @@ async function dropComponent(req?: any) {
 				manageThreads.restartWorkers('http', undefined, undefined, onProgress, restartScope)
 			);
 			logRestartOutcome(restart, `dropping ${projectPath}`);
-			if (!branched) return;
-			if (restart.completed && !restart.workersKeptOnOldCode) {
-				try {
-					await removeBranchesForApplication(project);
-				} catch (error) {
-					log.error(`Branched database storage of ${project} could not be removed`, error);
-					throw new Error(
-						`Successfully dropped: ${projectPath}, but its branched database storage could not be removed and ` +
-							`was left in place: ${error.message}. Drop it again with restart: true to retry.`
-					);
-				}
-			} else {
-				log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
-				response.message += BRANCH_STORAGE_RETAINED;
-			}
 		},
 		componentDropLockOptions(project)
 	);
 	return response;
+}
+
+if (isMainThread) {
+	manageThreads.answerMainThreadRequests(hdbTerms.ITC_EVENT_TYPES.DROP_COMPONENT_REQUEST, dropApplication);
 }
 
 export { customFunctionsStatus };
@@ -1775,3 +1926,4 @@ export { getEnvKeys };
 export { setEnvValue };
 export { deleteEnvValue };
 export { dropComponent };
+export { dropPeerResults };

@@ -225,15 +225,30 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			database: 'replaysamekey',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
-		// A replication receiver stamps every apply with the origin's log key, so each re-delivery of a
-		// source transaction is a new native commit at the same key.
+		// A replication receiver files every apply in the origin's log under the origin's key, so each
+		// re-delivery of a source transaction is a new native commit at the same key there (the node's
+		// own `local` log never repeats a key).
+		SameKey.auditStore.ensureLogExists('peer-same');
+		const peerId = getIdOfRemoteNode('peer-same', SameKey.auditStore);
 		const logKey = Date.now();
-		await transaction({ timestamp: logKey }, () => SameKey.put({ id: 'a', n: 1 }));
-		await transaction({ timestamp: logKey }, async () => {
-			await SameKey.put({ id: 'b', n: 2 });
-			await SameKey.put({ id: 'c', n: 3 });
-		});
-		await transaction({ timestamp: logKey }, () => SameKey.put({ id: 'd', n: 4 }));
+		const commit = (records) => {
+			const context = { timestamp: logKey };
+			return transaction(context, () => {
+				for (const record of records) {
+					const target = new RequestTarget();
+					target.id = null;
+					const resource = SameKey.getResource(target, context, {});
+					resource._writeUpdate(record.id, record, true, { context, nodeId: peerId, version: logKey });
+					resource.save();
+				}
+			});
+		};
+		await commit([{ id: 'a', n: 1 }]);
+		await commit([
+			{ id: 'b', n: 2 },
+			{ id: 'c', n: 3 },
+		]);
+		await commit([{ id: 'd', n: 4 }]);
 
 		const logged = [...SameKey.auditStore.getRange({ start: 0, end: Infinity })].filter(
 			(entry) => entry.txnLogKey === logKey
@@ -282,7 +297,9 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
 		TwoLogs.auditStore.ensureLogExists('peer-a');
+		TwoLogs.auditStore.ensureLogExists('peer-b');
 		const peerId = getIdOfRemoteNode('peer-a', TwoLogs.auditStore);
+		const otherPeerId = getIdOfRemoteNode('peer-b', TwoLogs.auditStore);
 		const logKey = Date.now();
 		// Applies records the way the replay and replication paths do, so `nodeId` routes the audit
 		// entry to that origin's log.
@@ -304,7 +321,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 				{ id: 'l1', n: 1 },
 				{ id: 'l2', n: 2 },
 			],
-			0
+			otherPeerId
 		);
 		await commit(
 			[
@@ -313,7 +330,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			],
 			peerId
 		);
-		await commit([{ id: 'l3', n: 5 }], 0);
+		await commit([{ id: 'l3', n: 5 }], otherPeerId);
 		await commit([{ id: 'p3', n: 6 }], peerId);
 
 		const merged = [...TwoLogs.auditStore.getRange({ start: 0, end: Infinity, includeLogName: true })]
@@ -321,7 +338,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			.map(({ logName, recordId }) => `${logName}:${recordId}`);
 		assert.deepStrictEqual(
 			[...merged].sort(),
-			['local:l1', 'local:l2', 'local:l3', 'peer-a:p1', 'peer-a:p2', 'peer-a:p3'],
+			['peer-a:p1', 'peer-a:p2', 'peer-a:p3', 'peer-b:l1', 'peer-b:l2', 'peer-b:l3'],
 			'every entry at the key comes back from the aggregate range'
 		);
 		const logSwitches = merged.filter(
@@ -377,6 +394,34 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		const { commits, rows } = JSON.parse(readFileSync(markerPath, 'utf8'));
 		assert.deepStrictEqual(commits, [1, 2, 1], 'boot replay commits each native commit as its own transaction');
 		assert.deepStrictEqual(rows, { a: 1, b: 2, c: 3, d: 4 });
+	});
+
+	it('recovers an explicit-timestamp write with the pointer to its minted log key', async function () {
+		const crashDir = path.join(dbPath, 'replay-explicit-crash');
+		rmSync(crashDir, { recursive: true, force: true });
+		const childArgs = (root) => [
+			path.join(crashDir, root),
+			path.join(crashDir, 'shared'),
+			'explicitreplay',
+			'Rows',
+			path.join(crashDir, 'marker'),
+		];
+		const written = await runCrashChild([...childArgs('writer-root'), 'write-explicit']);
+		assert.strictEqual(
+			written.signal,
+			'SIGKILL',
+			`the writer should kill itself (exit ${written.code}): ${written.stderr}`
+		);
+		const version = readFileSync(path.join(crashDir, 'marker'), 'utf8');
+
+		const replayed = await runCrashChild([...childArgs('replayer-root'), 'replay-explicit', version]);
+		assert.strictEqual(replayed.code, 0, replayed.stderr);
+		assert.deepStrictEqual(JSON.parse(readFileSync(path.join(crashDir, 'marker'), 'utf8')), {
+			replayed: true,
+			version: true,
+			headRef: true,
+			n: 1,
+		});
 	});
 
 	it('discards only the torn commit, keeping a complete commit at the same key', async function () {

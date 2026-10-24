@@ -3,7 +3,7 @@ export const messagesQueuedByType = new Map<string, any[]>();
 export const messageListeners: Array<(message: any, port?: any) => void> = [];
 export const threadExitListeners: Array<(...args: any[]) => void> = [];
 export const workerHooks: {
-	reconcile: (() => any) | null;
+	reconcile: ((application?: string, withdraw?: boolean) => any) | null;
 	runningApplications: () => any[];
 	monitorListener?: () => void;
 	resetRestartNeeded?: () => void;
