@@ -13,7 +13,7 @@ const { RequestTarget } = require('#src/resources/RequestTarget');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 

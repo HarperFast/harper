@@ -11,7 +11,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { databases } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { defineTable, types } = require('#src/resources/defineTable');
 
 const { id, string, int, date } = types;

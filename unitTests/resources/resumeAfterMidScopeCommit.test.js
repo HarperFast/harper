@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { DatabaseTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
@@ -112,7 +112,7 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 	// would let the rest of the scope stage into a generation whose predecessor may not have landed.
 	// RocksDB only: forces a terminal failure through rocksdb-js's Transaction.
 	rocksOnly('does not rotate after a failed mid-scope commit', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = A.primaryStore.store.db;
 		let forcedFailures = 0;
@@ -154,7 +154,7 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 	// have to surrender ownership.
 	for (const mode of ['rejects', 'throws synchronously']) {
 		rocksOnly(`surrenders ownership when a chained database’s commit ${mode}`, async function () {
-			const { Transaction } = require('@harperfast/rocksdb-js');
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 			const originalCommit = Transaction.prototype.commit;
 			const chainedDb = Other.primaryStore.store.db;
 			const tag = mode === 'rejects' ? 'reject' : 'throw';
@@ -257,7 +257,7 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 	});
 
 	rocksOnly('aborts every store when an unowned commit fails', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = A.primaryStore.store.db;
 		const context = { transaction: new DatabaseTransaction() };

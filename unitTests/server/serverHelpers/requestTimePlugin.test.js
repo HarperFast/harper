@@ -1,7 +1,7 @@
 'use strict';
 
 const fastify = require('fastify');
-const request_time_plugin = require('#js/server/serverHelpers/requestTimePlugin');
+const request_time_plugin = require('#src/server/serverHelpers/requestTimePlugin').default;
 const chai = require('chai');
 const { expect } = chai;
 
@@ -30,7 +30,7 @@ describe('test requestTimePlugin', () => {
 });
 
 const assert = require('node:assert');
-const plugin = require('#js/server/serverHelpers/requestTimePlugin');
+const plugin = request_time_plugin;
 const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../../waitFor.js');
 

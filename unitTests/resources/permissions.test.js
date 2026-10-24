@@ -3,7 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Permissions through Resource API', () => {
 	let TestTable, restricted_user, authorized_role, attribute_authorized_role;

@@ -76,7 +76,7 @@ describe('dedicated worker pools', () => {
 
 	describe('admittedWorkerPools', () => {
 		const env = () => require('#src/utility/environment/environmentManager');
-		const harperLogger = () => require('#src/utility/logging/harper_logger');
+		const harperLogger = () => require('#js/utility/logging/harper_logger');
 		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 		const settings = {
 			[CONFIG_PARAMS.THREADS_COUNT]: undefined,

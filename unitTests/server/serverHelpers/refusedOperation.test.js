@@ -8,7 +8,7 @@ const { handleHDBError, hdbErrors } = require('#src/utility/errors/hdbError');
 const { server } = require('#src/server/Server');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const opAuth = require('#src/utility/operation_authorization');
-const { handlePostRequest, serverErrorHandler } = require('#js/server/serverHelpers/serverHandlers');
+const { handlePostRequest, serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
 

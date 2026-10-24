@@ -2,14 +2,14 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getOutstandingCommits, resetStuckCommitLogCooldownForTests } = require('#src/resources/DatabaseTransaction');
 const { setRegistryStatusForTests } = require('#src/resources/longLivedTransactions');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
 const { setTimeout: delay } = require('node:timers/promises');
-const { constants } = require('@harperfast/rocksdb-js');
+const { constants } = require('../rocksdbBindings.mts').rocksdbBindings();
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 
 // rocksdb-js parks a coordinated-retry commit on a conflicting write intent and returns control
@@ -73,7 +73,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 	// during these tests. `failFirst` releases the stub after N attempts so an uncapped (source-apply)
 	// retry can still converge.
 	function conflictCommits(targetTable, mode, { code, failFirst = Infinity } = {}) {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = targetTable.primaryStore.store.db;
 		const attempts = [];
@@ -123,7 +123,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		this.timeout(15000);
 		let releaseCommit;
 		const held = new Promise((resolve) => (releaseCommit = resolve));
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = DeadlineA.primaryStore.store.db;
 		let holdNext = true;

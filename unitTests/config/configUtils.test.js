@@ -8,7 +8,7 @@ const plainAssert = require('node:assert');
 const rewire = require('rewire');
 const path = require('path');
 const fs = require('fs-extra');
-const config_utils_rw = rewire('#src/config/configUtils');
+const config_utils_rw = rewire('#js/config/configUtils');
 const YAML = require('yaml');
 const logger = require('#src/utility/logging/harper_logger');
 const common_utils = require('#src/utility/common_utils');
@@ -1900,7 +1900,7 @@ describe('Test configUtils module', () => {
 			// Re-require the module to get a fresh copy
 			delete require.cache[require.resolve('#src/config/configUtils')];
 			require('#src/config/configUtils');
-			const freshRewire = rewire('#src/config/configUtils');
+			const freshRewire = rewire('#js/config/configUtils');
 			// Copy the fresh parseYamlDoc to our rewired module
 			const parseYamlDoc = freshRewire.__get__('parseYamlDoc');
 			config_utils_rw.__set__('parseYamlDoc', parseYamlDoc);

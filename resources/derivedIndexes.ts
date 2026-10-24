@@ -3,7 +3,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import { settleBeforeDeadline } from '../utility/when.ts';
 import { ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
-import { sendItcEventStrict } from '../server/threads/itc.js';
+import { sendItcEventStrict } from '../server/threads/itc.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import {

@@ -480,7 +480,7 @@ describe('contentTypes – an operations-server error to a request that negotiat
 	const { Readable } = require('node:stream');
 	const { decode: decodeCbor } = require('cbor-x');
 	const { registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
-	const { serverErrorHandler } = require('#js/server/serverHelpers/serverHandlers');
+	const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
 
 	// The shape chooseOperation throws when the role allowlist refuses an operation.
 	const refusal = {

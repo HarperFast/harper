@@ -8,7 +8,7 @@
 require('../testUtils');
 const assert = require('node:assert/strict');
 const { setupTestDBPath } = require('../testUtils');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 

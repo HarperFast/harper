@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { addSubscription } = require('#src/resources/transactionBroadcast');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
 

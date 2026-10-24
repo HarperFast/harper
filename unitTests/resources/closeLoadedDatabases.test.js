@@ -25,8 +25,8 @@ const {
 	completeDatabaseDropPreparation,
 	databases,
 } = require('#src/resources/databases');
-const { getRegistryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
-const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
+const { getRegistryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { schemaHandler } = require('#src/server/itc/serverHandlers');
 const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const { dropSchema } = require('#src/dataLayer/schema');

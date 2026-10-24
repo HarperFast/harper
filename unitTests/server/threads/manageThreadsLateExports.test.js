@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { pathToFileURL } = require('node:url');
 
-const manageThreadsPath = require.resolve('#js/server/threads/manageThreads');
+const manageThreadsPath = require.resolve('#src/server/threads/manageThreads');
 const LATE_BOUND_FUNCTIONS = ['sendToThread', 'getThreadInfo', 'getRunningIsolatedApplications'];
 const REPORT = 'late-export-report';
 

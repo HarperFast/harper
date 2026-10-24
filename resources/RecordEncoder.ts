@@ -34,7 +34,7 @@ import { asBinary } from './asBinary.ts';
 import { constants, RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import * as envMngr from '../utility/environment/environmentManager.js';
+import * as envMngr from '../utility/environment/environmentManager.ts';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // Dedicated stateless msgpackr encoder for persisting the shared-structures dictionary itself.

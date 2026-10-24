@@ -7,7 +7,7 @@ const {
 	sampleWorkerELU,
 	PINNED_ELU_UTILIZATION_THRESHOLD,
 	PINNED_ELU_SUSTAINED_TICKS,
-} = require('#js/server/threads/manageThreads');
+} = require('#src/server/threads/manageThreads');
 
 function makeFakeWorker(threadId, { initialActiveMs = 0, initialIdleMs = 1 } = {}) {
 	let idle = initialIdleMs;

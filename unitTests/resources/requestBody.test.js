@@ -7,7 +7,7 @@ const { Resource } = require('#src/resources/Resource');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { getDeserializer } = require('#src/server/serverHelpers/contentTypes');
 const { setupTestDBPath } = require('../testUtils.js');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 async function* parts(values) {
 	yield* values;

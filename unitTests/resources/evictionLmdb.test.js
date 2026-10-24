@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Regression for #1287 (LMDB leg). The cleanup scan keeps the per-record TableResource.evict() path
 // for LMDB (RocksDB coalesces into a batcher instead). evict()'s LMDB branch returned

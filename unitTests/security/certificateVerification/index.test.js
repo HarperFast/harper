@@ -21,7 +21,7 @@ describe('certificateVerification/index.ts', function () {
 
 	before(function () {
 		// Load the modules
-		indexModule = require('#src/security/certificateVerification/index');
+		indexModule = require('#js/security/certificateVerification/index');
 		verificationConfig = require('#src/security/certificateVerification/verificationConfig');
 		crlVerification = require('#src/security/certificateVerification/crlVerification');
 		ocspVerification = require('#src/security/certificateVerification/ocspVerification');

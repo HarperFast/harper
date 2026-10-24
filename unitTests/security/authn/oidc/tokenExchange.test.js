@@ -64,7 +64,7 @@ function installMockTable(name, primaryKey) {
  * intercept the factory rather than seeding `databases.system`, which that call would sail straight past.
  */
 function installMockTableFactory(name, mock) {
-	const databasesModule = require('#src/resources/databases');
+	const databasesModule = require('#js/resources/databases');
 	const realTable = databasesModule.table;
 	databasesModule.table = (definition) => (definition?.table === name ? mock : realTable(definition));
 	return () => (databasesModule.table = realTable);

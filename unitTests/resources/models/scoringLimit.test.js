@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../../testUtils');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	setGenerative,
 	setDecision,

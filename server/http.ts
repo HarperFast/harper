@@ -13,7 +13,7 @@ import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { atomicWriteFile, getConfigPath } from '../config/configUtils.ts';
-import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
+import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.ts';
 import {
 	applicationSocketName,
 	isolatedApplicationRoute,
@@ -45,19 +45,17 @@ import { METRIC } from '../resources/analytics/metadata.ts';
 import { Readable, Writable, finished, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
+import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
+import { loadNativePackage } from '../utility/packageUtils.js';
 
 const { errorToString, errorForLog } = harperLogger;
-server.http = httpServer;
-server.request = onRequest;
-server.ws = onWebSocket;
-server.upgrade = onUpgrade;
 const websocketServers = {};
+let bunWebSocketServer;
 const httpServers = {},
 	httpChain = {},
 	httpResponders: {
@@ -1946,7 +1944,10 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
 			installUwsWsHandler(uwsServeConfigs[port]);
 		} else if (!websocketServers[port]) {
-			websocketServers[port] = new WebSocketServer({
+			const WebSocketServerForPort = isBun
+				? (bunWebSocketServer ??= loadNativePackage('ws', 'index.js').WebSocketServer)
+				: WebSocketServer;
+			websocketServers[port] = new WebSocketServerForPort({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
@@ -2208,3 +2209,8 @@ export function getRequestId() {
 	}
 	return Number(Atomics.add(nextRequestId, 0, 1n));
 }
+
+server.http = httpServer;
+server.request = onRequest;
+server.ws = onWebSocket;
+server.upgrade = onUpgrade;

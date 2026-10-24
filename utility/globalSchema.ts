@@ -1,5 +1,5 @@
-import systemSchema from '../json/systemSchema.json';
-import { promisify } from 'util';
+import { systemSchema } from './systemSchema.js';
+import { promisify } from 'node:util';
 import { getDatabases } from '../resources/databases.ts';
 
 export const setSchemaDataToGlobalAsync = promisify(setSchemaDataToGlobal);

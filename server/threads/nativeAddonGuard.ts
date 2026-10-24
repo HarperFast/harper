@@ -3,6 +3,8 @@
  * `process`) so a standard-ABI addon is refused instead of crashing the process; a no-op otherwise.
  * Installs when loaded, so it must be the first module of every Harper thread; see server/DESIGN.md.
  */
+import { join } from 'node:path';
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import { assertNativeAddonLoadable, isPointerCompressionRuntime } from '../../utility/nativeAddonAbi.ts';
 
 type Dlopen = (...args: unknown[]) => unknown;
@@ -29,7 +31,9 @@ export function installNativeAddonGuard(
 
 /** The `execArgv` entries that install this guard first in a worker thread. */
 export function nativeAddonGuardExecArgv(pointerCompression = isPointerCompressionRuntime()): string[] {
-	return pointerCompression ? ['--require', __filename] : [];
+	return pointerCompression
+		? ['--require', join(RUNTIME_SRC_ROOT, 'server/threads/nativeAddonGuard' + RUNTIME_FILE_EXT)]
+		: [];
 }
 
 installNativeAddonGuard();

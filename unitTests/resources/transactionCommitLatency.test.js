@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setCommitLatencyRecorder } = require('#src/resources/DatabaseTransaction');
 // The commit-latency hook lives on the base DatabaseTransaction.commit() (RocksDB path). LMDB writes
 // route through the separate LMDBTransaction.commit() override (resources/LMDBTransaction.ts), which

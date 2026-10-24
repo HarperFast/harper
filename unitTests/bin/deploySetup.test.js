@@ -14,7 +14,7 @@ const {
 	storeSealedSecret,
 } = require('#src/bin/deploySetup');
 const { directoryProjectName } = require('#src/utility/componentNames');
-const cliOperationsModule = require('#src/bin/cliOperations');
+const cliOperationsModule = require('#js/bin/cliOperations');
 
 describe('deploySetup', () => {
 	describe('assertUsableComponentName', () => {

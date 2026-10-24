@@ -1,5 +1,6 @@
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
+const { Socket } = require('node:net');
 const { Unpackr, addExtension, unpack } = require('msgpackr');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -260,7 +261,7 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 		const sentFrames = [];
 		const ws = new EventEmitter();
 		ws.readyState = 1;
-		ws._socket = { writableNeedDrain: false };
+		ws._socket = new Socket();
 		ws.send = (frame) => {
 			sentFrames.push(Buffer.from(frame));
 		};
@@ -320,6 +321,7 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 			assert.deepStrictEqual(decodedEvent.value.data.data, payload);
 		} finally {
 			ws.emit('close');
+			ws._socket.destroy();
 			await wsSession;
 		}
 	});

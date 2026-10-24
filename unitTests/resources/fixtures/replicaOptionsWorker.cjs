@@ -7,9 +7,9 @@ const { transaction } = require('#src/resources/transaction');
 const { Resource } = require('#src/resources/Resource');
 const { REPLICA, setMinReplicaScanIntervalForTesting } = require('#src/resources/Table');
 const { server } = require('#src/server/Server');
-const { onMessageByType } = require('#js/server/threads/manageThreads');
-const { schemaHandler } = require('#js/server/itc/serverHandlers');
-const { SchemaEventMsg } = require('#js/server/threads/itc');
+const { onMessageByType } = require('#src/server/threads/manageThreads');
+const { schemaHandler } = require('#src/server/itc/serverHandlers');
+const { SchemaEventMsg } = require('#src/server/threads/itc');
 const { waitFor } = require('../../waitFor');
 
 const { database, role, sourcePort } = workerData;

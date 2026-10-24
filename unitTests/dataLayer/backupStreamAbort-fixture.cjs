@@ -9,7 +9,7 @@
 const { join } = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { createBackupStream } = require('#src/dataLayer/rocksdbBackup');
 
 const root = mkdtempSync(join(tmpdir(), 'harper.unit-test.backup-abort-'));

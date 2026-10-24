@@ -7,8 +7,8 @@ const assert = require('node:assert');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const path = require('path');
-const env_mgr = require('#src/utility/environment/environmentManager');
-const keys = rewire('#src/security/keys');
+const env_mgr = require('#js/utility/environment/environmentManager');
+const keys = rewire('#js/security/keys');
 const { generateSerialNumber } = require('#src/security/keys');
 const config_utils = require('#src/config/configUtils');
 const mkcert = require('mkcert');
@@ -1467,6 +1467,21 @@ describe('Test keys module', () => {
 		describe('ciphers and uses follow config while the certificate file is unchanged', () => {
 			const AES128 = 'TLS_AES_128_GCM_SHA256';
 			const AES256 = 'TLS_AES_256_GCM_SHA384';
+			let certCn;
+			let metadataCertPath;
+			let nextCertificate = 0;
+
+			beforeEach(() => {
+				// Reload callbacks retain their config, so earlier watches must not share this case's file or record.
+				certCn = `${actual_cert.name}-metadata-${++nextCertificate}`;
+				metadataCertPath = path.join(test_dir, `metadata-${nextCertificate}.pem`);
+				fs.copyFileSync(test_cert_path, metadataCertPath);
+			});
+
+			afterEach(async () => {
+				if (metadataCertPath) fs.removeSync(metadataCertPath);
+				if (certCn) await certTable.delete(certCn);
+			});
 			const stubTlsConfig = (config) => {
 				sandbox.restore();
 				sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
@@ -1475,10 +1490,15 @@ describe('Test keys module', () => {
 					return undefined;
 				});
 			};
-			const entry = (extra) => ({ certificate: test_cert_path, privateKey: test_private_key_path, ...extra });
+			const entry = (extra) => ({
+				name: certCn,
+				certificate: metadataCertPath,
+				privateKey: test_private_key_path,
+				...extra,
+			});
 			const loadFromNewerFile = async (extra) => {
-				await certTable.put({ ...originalRecord, file_timestamp: Date.now() - 24 * 60 * 60 * 1000 });
-				fs.utimesSync(test_cert_path, new Date(), new Date());
+				await certTable.put({ ...originalRecord, name: certCn, file_timestamp: Date.now() - 24 * 60 * 60 * 1000 });
+				fs.utimesSync(metadataCertPath, new Date(), new Date());
 				stubTlsConfig(entry(extra));
 				await reloadCertificates();
 			};
@@ -1531,8 +1551,14 @@ describe('Test keys module', () => {
 			it('adopts a record from before the ownership marker only when it already matches config', async () => {
 				const { from_config: _marker, ...legacy } = originalRecord;
 				const seedLegacy = (ciphers) =>
-					certTable.put({ ...legacy, ciphers, uses: ['https'], file_timestamp: Date.now() + 24 * 60 * 60 * 1000 });
-				fs.utimesSync(test_cert_path, new Date(), new Date());
+					certTable.put({
+						...legacy,
+						name: certCn,
+						ciphers,
+						uses: ['https'],
+						file_timestamp: Date.now() + 24 * 60 * 60 * 1000,
+					});
+				fs.utimesSync(metadataCertPath, new Date(), new Date());
 
 				await seedLegacy('DEFAULT@SECLEVEL=0');
 				let record = await reloadWith(entry({ ciphers: AES256, uses: ['https'] }));

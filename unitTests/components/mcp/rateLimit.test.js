@@ -7,7 +7,7 @@ const {
 	_setClockForTest,
 	_resetForTest,
 } = require('#src/components/mcp/rateLimit');
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 
 describe('mcp/rateLimit', () => {
 	let envOverrides;
