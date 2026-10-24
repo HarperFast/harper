@@ -1107,8 +1107,17 @@ export function getDatabases(): Databases {
 		return databases;
 	}
 	loadedDatabases = true;
-	deferredResidencyReplays = [];
+	deferredResidencyReplays ??= [];
+	try {
+		return loadDatabaseCatalogs();
+	} catch (error) {
+		// Retry the scan without exposing partially recovered tables or losing their pending tails.
+		loadedDatabases = false;
+		throw error;
+	}
+}
 
+function loadDatabaseCatalogs(): Databases {
 	definedDatabases = new Map();
 	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
@@ -3519,6 +3528,7 @@ function unregisterDatabase(databaseName: string): void {
  * thread's one teardown entry point — closes them too.
  */
 export async function closeLoadedDatabases({ requireClosed = false }: { requireClosed?: boolean } = {}): Promise<void> {
+	deferredResidencyReplays = undefined;
 	const closeFailures: unknown[] = [];
 	try {
 		await closeBranchDatabases(requireClosed);

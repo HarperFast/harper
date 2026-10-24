@@ -88,6 +88,7 @@ export function compileResidencyPolicy(policy: ResidencyPolicy): (id: any, recor
 		} catch (error) {
 			throw new ClientError(`@residency slotFrom failed: ${error.message}`, 400);
 		}
+		if (slot && typeof (slot as any).then === 'function') Promise.resolve(slot).catch(() => {});
 		if (!Number.isInteger(slot) || (slot as number) < 0 || (slot as number) >= normalized.slots)
 			throw new ClientError(`@residency slotFrom must return an integer slot from 0 to ${normalized.slots - 1}`, 400);
 		return slot as number;
@@ -186,6 +187,14 @@ export function expandResidencyMap(snapshot: ResidencyMapSnapshot): Uint16Array 
 	const shards = new Uint16Array(snapshot.slots);
 	for (const range of snapshot.ranges) shards.fill(range.shard, range.start, range.end);
 	return shards;
+}
+
+/** A later complete snapshot proves compatibility without retaining a map history per record. */
+export function residencyMapExtends(older: ResidencyMapSnapshot, newer: ResidencyMapSnapshot): boolean {
+	if (older.database !== newer.database || older.version >= newer.version || older.slots > newer.slots) return false;
+	const before = expandResidencyMap(older);
+	const after = expandResidencyMap(newer);
+	return before.every((shard, slot) => shard === after[slot]);
 }
 
 export function assertResidencyMapChange(

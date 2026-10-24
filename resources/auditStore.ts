@@ -1592,7 +1592,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const usernameStart = decoder.position;
 		const usernameEnd = (decoder.position += length);
 		let value: any;
-		return {
+		const entry = {
 			// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9 eviction, 10–15
 			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
 			// identical to the historical `& 7` for every pre-reload entry (bit 3 was always clear).
@@ -1675,12 +1675,13 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			extendedType: action,
 			residencyId,
 			previousResidencyId,
-			...(residencySlot === undefined ? {} : { residencySlot }),
-			...(previousResidencySlot === undefined ? {} : { previousResidencySlot }),
 			expiresAt,
 			originatingOperation,
 			previousAdditionalAuditRefs,
 		} as any;
+		if (residencySlot !== undefined) entry.residencySlot = residencySlot;
+		if (previousResidencySlot !== undefined) entry.previousResidencySlot = previousResidencySlot;
+		return entry;
 	} catch (error) {
 		harperLogger.error('Reading audit entry error', error, buffer);
 		return createCorruptAuditSentinel(buffer, start, end);

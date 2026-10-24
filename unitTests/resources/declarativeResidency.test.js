@@ -197,6 +197,98 @@ describe('Declarative residency', function () {
 		await write;
 	});
 
+	it('confirms attribute changes at their durable local audit position', async () => {
+		const Records = await declare(
+			'SlotAckPosition',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed'
+		);
+		await Records.put('moved', { id: 'moved', region: 0, body: 'complete' });
+		setResidencyPlacementGuard(() => {});
+		let confirmed;
+		replicationConfirmation((_database, position) => {
+			confirmed = position;
+			return Promise.resolve();
+		});
+		await transaction({}, () => Records.patch('moved', { region: 1 }));
+		const entry = Records.primaryStore.getEntry('moved');
+		const position = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? entry.localTime : entry.version;
+		assert.equal(confirmed, position, 'confirmation must include the committed audit entry');
+	});
+	it('keeps mandatory owner confirmation through a native RocksDB TryAgain retry', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const Records = await declare(
+			'SlotRetryConfirmation',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed'
+		);
+		await Records.put('moved', { id: 'moved', region: 0 });
+		const binding = Object.values(require.cache).find(
+			(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
+		)?.exports;
+		assert.ok(binding, 'the native engine exposes its commit-failure seam');
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const original = Transaction.prototype.commit;
+		const attempts = [];
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db === Records.primaryStore.store.db) attempts.push(this.id);
+			return original.apply(this, args);
+		};
+		setResidencyPlacementGuard(() => {});
+		const confirmations = [];
+		replicationConfirmation((_database, version, count, owners) => {
+			confirmations.push({ version, count, owners });
+			return Promise.resolve();
+		});
+		try {
+			await transaction({}, async () => {
+				await Records.patch('moved', { region: 1 });
+				binding.forceTryAgainForTesting(1);
+			});
+			assert.ok(attempts.length >= 2, 'native TryAgain forces a retry');
+			assert.equal(new Set(attempts).size, 1, 'retry retains the native handle that owns the durable log');
+			assert.equal(confirmations.length, 1);
+			assert.equal(confirmations[0].count, 1);
+			assert.deepEqual(confirmations[0].owners, [['slot-owner']]);
+			assert.equal(confirmations[0].version, Records.primaryStore.getEntry('moved').version);
+		} finally {
+			binding.forceTryAgainForTesting(0);
+			Transaction.prototype.commit = original;
+		}
+	});
+
+	it('rolls back every write when the new owner disconnects at the final admission check', async () => {
+		const Records = await declare(
+			'SlotLateRefusal',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed\nbody: String'
+		);
+		for (const id of ['local', 'moved']) await Records.put(id, { id, region: 0, body: 'original' });
+		const before = ['local', 'moved'].map((id) => ({
+			id,
+			version: Records.primaryStore.getEntry(id).version,
+			bytes: Buffer.from(Records.primaryStore.getBinary(id)),
+		}));
+		let admissions = 0;
+		setResidencyPlacementGuard((_database, _owners, connected) => {
+			if (connected && ++admissions === 2) throw new Error('new owner disconnected before submission');
+		});
+		replicationConfirmation(() => assert.fail('A refused commit must not request confirmation'));
+		await assert.rejects(
+			transaction({}, async () => {
+				await Records.patch('local', { body: 'changed' });
+				await Records.patch('moved', { region: 1 });
+			}),
+			/new owner disconnected before submission/
+		);
+		assert.equal(admissions, 2, 'the refusal occurs at the final check, after staging');
+		await Records.primaryStore.committed;
+		for (const old of before) {
+			assert.equal(Records.primaryStore.getEntry(old.id).version, old.version);
+			assert.deepEqual(Buffer.from(Records.primaryStore.getBinary(old.id)), old.bytes);
+		}
+	});
+
 	it('requires mandatory confirmation only for transitioning records in a mixed transaction', async () => {
 		const Records = await declare(
 			'SlotMixedConfirmation',
@@ -489,6 +581,98 @@ describe('Declarative residency', function () {
 		assert.deepEqual(extended.ranges.slice(0, -1), before.ranges.slice(0, -1));
 	});
 
+	it('keeps a newer compatible map when a lagging peer repeats the old snapshot', async () => {
+		const before = createResidencyMap('slot_extension_retry', 2, [{ start: 0, end: 2, shard: 0 }]);
+		await installResidencyMap(before);
+		const newer = createResidencyMap(
+			'slot_extension_retry',
+			4,
+			[
+				{ start: 0, end: 2, shard: 0 },
+				{ start: 2, end: 4, shard: 1 },
+			],
+			2
+		);
+		await installResidencyMap(newer);
+		const Maps = getResidencyMapTable();
+		const version = Maps.primaryStore.getEntry(before.database).version;
+		assert.deepEqual(await installResidencyMap(before), newer);
+		await Maps.put(before.database, before);
+		assert.equal(readResidencyMap(before.database).digest, newer.digest);
+		assert.equal(Maps.primaryStore.getEntry(before.database).version, version);
+		const conflict = createResidencyMap(before.database, 2, [{ start: 0, end: 2, shard: 1 }]);
+		await assert.rejects(installResidencyMap(conflict), /incompatible|reassigned|newer/);
+	});
+
+	it('refuses an attribute delete until its placement is known', async () => {
+		const Records = await declare(
+			'SlotAbsentDelete',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed'
+		);
+		await assert.rejects(Records.delete('not-yet-received'), /slot|placement/);
+		assert.equal(Records.primaryStore.getEntry('not-yet-received'), undefined);
+	});
+
+	it('preserves legacy indexed fields during an invalidation without residency', async () => {
+		const Legacy = table({
+			database: 'legacy_projection',
+			table: 'Rows',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag', indexed: true }, { name: 'body' }],
+		});
+		await Legacy.put('row', { id: 'row', tag: 'kept', body: 'old' });
+		const context = {};
+		await transaction(context, async () => {
+			const row = await Legacy.getResource('row', context, { ensureLoaded: false });
+			row._writeInvalidate('row', {}, { nodeId: 0 });
+		});
+		assert.equal(Legacy.primaryStore.getEntry('row').value.tag, 'kept');
+	});
+
+	it('selects legacy count placement on a cache fill with no previous residency', async () => {
+		const Legacy = table({
+			database: 'legacy_count_fill',
+			table: 'Rows',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag', indexed: true }, { name: 'body' }],
+		});
+		await Legacy.put('row', { id: 'row', tag: 'kept', body: 'old' });
+		const version = Legacy.primaryStore.getEntry('row').version;
+		const context = {};
+		await transaction(context, async () => {
+			const row = await Legacy.getResource('row', context, { ensureLoaded: false });
+			row._writeInvalidate('row', null);
+		});
+		Legacy.sourcedFrom({
+			async get(_id, context) {
+				context.lastModified = version + 1000;
+				return { id: 'row', tag: 'kept', body: 'fresh' };
+			},
+		});
+		const oldNodes = server.nodes;
+		server.nodes = [{ name: 'legacy-fill-peer' }];
+		try {
+			const row = await Legacy.getResource('row', { replicateTo: 1 }, { ensureLoaded: true });
+			assert.equal(row.getRecord().body, 'fresh');
+			let stored;
+			const deadline = Date.now() + 5000;
+			do {
+				stored = Legacy.primaryStore.getEntry('row');
+				if (stored?.value.body === 'fresh' && stored.residencyId) break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			} while (Date.now() < deadline);
+			assert.equal(stored?.value.body, 'fresh', 'the source fill commits before placement is inspected');
+			assert.ok(stored.residencyId, 'the committed legacy fill has count-based residency');
+			assert.deepEqual(
+				[...Legacy.getResidencyRecord(stored.residencyId)].sort(),
+				[server.hostname, 'legacy-fill-peer'].sort()
+			);
+		} finally {
+			server.nodes = oldNodes;
+		}
+	});
+
 	it('round-trips slot 65535 and preserves it through local invalidation and deletion', async () => {
 		await initializeResidencySlots({
 			database: 'max_slot',
@@ -525,7 +709,7 @@ describe('Declarative residency', function () {
 		}
 	);
 
-	for (const mode of ['write', 'write-unflushed-map'])
+	for (const mode of ['write', 'write-unflushed-map', 'write-scan-error'])
 		(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
 			`replays attribute slots before peer discovery after an unclean exit (${mode})`,
 			async function () {
@@ -560,7 +744,7 @@ describe('Declarative residency', function () {
 					const written = await run(mode);
 					assert.equal(written.signal, 'SIGKILL', written.stderr);
 					assert.equal(readFileSync(marker, 'utf8'), 'written');
-					const replay = await run('replay');
+					const replay = await run(mode === 'write-scan-error' ? 'replay-scan-error' : 'replay');
 					assert.equal(replay.code, 0, replay.stderr);
 					const result = JSON.parse(readFileSync(marker, 'utf8'));
 					assert.ok(result.replayed >= 4, JSON.stringify(result));
