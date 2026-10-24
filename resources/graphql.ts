@@ -544,11 +544,20 @@ async function processGraphQLSchema(
 	for (const typeDef of tables) {
 		if (typeDef.residency && branches?.has(typeDef.database || 'data'))
 			throw new ClientError('Cannot use declarative residency in application database branches', 400);
-		if (typeDef.residency)
-			await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, typeDef.residency);
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
-		typeDef.tableClass = declareTable(typeDef);
+		const residencyDeadline = Date.now() + 5000;
+		for (;;) {
+			try {
+				if (typeDef.residency)
+					await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, typeDef.residency);
+				typeDef.tableClass = declareTable(typeDef);
+				break;
+			} catch (error) {
+				if (!typeDef.residency || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+		}
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
 			const pk = (typeDef.attributes as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';

@@ -2205,6 +2205,7 @@ export class DatabaseTransaction implements Transaction {
 			// Through `detachWrite`, which also repairs the per-key chain: dropping it from `writes` alone
 			// leaves `writesByKey` pointing at a write that was refused, so a caller that catches this 409
 			// and stages the same key again would take the rejected operation as its merge basis.
+			operation.releaseResidencyMapFence?.();
 			this.detachWrite(operation);
 			throw lockNotHeldError(lockHandle);
 		}

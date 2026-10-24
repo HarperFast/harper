@@ -129,7 +129,12 @@ export function acquireResidencyMapFence(database: string, owner: object): () =>
 	const key = [Symbol.for('residency-map-activation'), database];
 	if (!fence || fence.owner !== owner) {
 		if (!store.tryLock(key))
-			throw new ClientError(`Residency map update or activation is in progress for ${database}; retry`, 503);
+			throw Object.assign(
+				new ClientError(`Residency map update or activation is in progress for ${database}; retry`, 503),
+				{
+					residencyMapBusy: true,
+				}
+			);
 		fences.set(database, (fence = { owner, references: 0 }));
 	}
 	fence.references++;
@@ -265,4 +270,8 @@ export function residencyIsLocal(database: string, slot: number, slots: number):
 export function requireConnectedResidencyOwner(database: string, owners: readonly string[]): void {
 	if (!placementGuard) residencyFailure(database, 'new-owner confirmation requires a replication connection');
 	placementGuard(database, owners, true);
+}
+
+export function assertResidencyWriteRoute(database: string, owners: readonly string[]): void {
+	placementGuard?.(database, owners, false);
 }

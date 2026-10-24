@@ -15,6 +15,7 @@ const {
 	getResidencyMapTable,
 	residencyDeclarationDatabases,
 	residencyIsLocal,
+	acquireResidencyMapFence,
 } = require('#src/resources/residencyMaps');
 const { createResidencyMap } = require('#src/resources/residencyPolicy');
 const { compareResidencyPlacement } = require('#src/resources/residencyConversion');
@@ -225,6 +226,99 @@ describe('Declarative residency', function () {
 		});
 		assert.equal(readResidencyMap(database).version, 3);
 		assert.equal(table(definition).residency.slots, 2);
+	});
+
+	it('releases a map fence after an expired locked write is detached during re-save', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
+		const { setTimeout: delay } = require('node:timers/promises');
+		const database = 'slot_expired_map_lock';
+		await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+		const Maps = getResidencyMapTable();
+		const next = createResidencyMap(database, 2, [{ start: 0, end: 2, shard: 1 }], 2);
+		await assert.rejects(
+			transaction({}, async (txn) => {
+				const locked = await Maps.lock(database, { lease: MIN_LOCK_LEASE_MS });
+				await locked._writeUpdate(database, next, true);
+				await locked.save();
+				let link = txn;
+				while (link && !link.writes) link = link.next;
+				const write = link.writes.find((write) => write?.key === database && write.releaseResidencyMapFence);
+				assert.ok(write?.lockHandle, 'the native map write holds both fences');
+				await delay(MIN_LOCK_LEASE_MS + 50);
+				link.save(write, undefined, true);
+			}),
+			(error) => error.statusCode === 409
+		);
+		assert.equal(readResidencyMap(database).version, 1);
+		await Maps.put(database, next);
+		assert.equal(readResidencyMap(database).version, 2);
+	});
+
+	it('redeclares an unchanged policy while its database map fence is held', async () => {
+		const database = 'slot_unchanged_declaration';
+		await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+		const definition = {
+			database,
+			table: 'Rows',
+			schemaDefined: true,
+			audit: true,
+			residency: { slots: 2 },
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		};
+		table(definition);
+		const release = acquireResidencyMapFence(database, {});
+		try {
+			assert.equal(table(definition).residency.slots, 2);
+		} finally {
+			release();
+		}
+	});
+
+	it('accepts an identical installed snapshot while its database map fence is held', async () => {
+		const database = 'slot_idempotent_fence';
+		const map = await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+		const release = acquireResidencyMapFence(database, {});
+		try {
+			await getResidencyMapTable().put(database, map);
+		} finally {
+			release();
+		}
+		assert.equal(readResidencyMap(database).digest, map.digest);
+	});
+	it('retries schema activation after another application releases its map fence', async () => {
+		const database = 'slot_activation_retry';
+		await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+		const release = acquireResidencyMapFence(database, {});
+		const timer = setTimeout(release, 25);
+		try {
+			await loadGQLSchema(`type Retried @table(database: "${database}") @residency(slots: 2) { id: ID @primaryKey }`);
+			assert.equal(databases[database].Retried.residency.slots, 2);
+		} finally {
+			clearTimeout(timer);
+			release();
+		}
+	});
+
+	it('refuses a cold attribute patch when its source returns another projection', async () => {
+		const Records = await declare(
+			'SlotIncompleteSource',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed\nbody: String'
+		);
+		await Records.put('row', { id: 'row', region: 1, body: 'complete' });
+		let calls = 0;
+		Records.sourcedFrom(
+			{
+				load: async (entry) => {
+					assert.equal(++calls, 1, 'a projection must not start another load');
+					return entry;
+				},
+			},
+			{ intermediateSource: true }
+		);
+		await assert.rejects(async () => Records.patch('row', { body: 'changed' }), /complete resident record/);
+		assert.equal(calls, 1);
 	});
 
 	it('checks active slots when another thread created the database after its scan', async () => {
@@ -692,6 +786,33 @@ describe('Declarative residency', function () {
 				assert.ok(rows.some((row) => row.getValue(Records.primaryStore)?.body === 'second'));
 			});
 
+	for (const context of [{ onlyIfCached: true }, { replicateFrom: false }])
+		it(`patches a queued full replacement of an existing attribute stub ${JSON.stringify(context)}`, async () => {
+			const Records = await declare(
+				`SlotQueuedStub_${context.onlyIfCached ? 'cached' : 'source_disabled'}`,
+				'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+				'region: Int @indexed\nbody: String\nextra: String'
+			);
+			await Records.put('row', { id: 'row', region: 1, body: 'old', extra: 'old' });
+			assert.ok(Records.primaryStore.getEntry('row').metadataFlags & INVALIDATED);
+			Records.sourcedFrom(
+				{ load: () => assert.fail('the queued replacement supplies the complete body') },
+				{
+					intermediateSource: true,
+				}
+			);
+			await transaction(context, async () => {
+				await Records.put('row', { id: 'row', region: 1, body: 'first', extra: 'retained' });
+				await Records.patch('row', { body: 'second' });
+				await Records.patch('row', { region: 0 });
+			});
+			const entry = Records.primaryStore.getEntry('row');
+			assert.equal(entry.residencySlot, 0);
+			assert.ok(!(entry.metadataFlags & INVALIDATED));
+			assert.equal(entry.value.body, 'second');
+			assert.equal(entry.value.extra, 'retained');
+		});
+
 	it('requires mandatory confirmation only for transitioning records in a mixed transaction', async () => {
 		const Records = await declare(
 			'SlotMixedConfirmation',
@@ -1112,7 +1233,7 @@ describe('Declarative residency', function () {
 		}
 	);
 
-	for (const mode of ['write', 'write-unflushed-map', 'write-scan-error', 'write-system-first'])
+	for (const mode of ['write', 'write-unflushed-map', 'write-scan-error', 'write-system-first', 'write-bad-config'])
 		(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
 			`replays attribute slots before peer discovery after an unclean exit (${mode})`,
 			async function () {
@@ -1147,6 +1268,11 @@ describe('Declarative residency', function () {
 					const written = await run(mode);
 					assert.equal(written.signal, 'SIGKILL', written.stderr);
 					assert.equal(readFileSync(marker, 'utf8'), 'written');
+					if (mode === 'write-bad-config') {
+						const refused = await run('replay-bad-config');
+						assert.equal(refused.code, 0, refused.stderr);
+						assert.equal(JSON.parse(readFileSync(marker, 'utf8')).refused, true, refused.stderr);
+					}
 					const replay = await run(
 						mode === 'write-scan-error'
 							? 'replay-scan-error'
