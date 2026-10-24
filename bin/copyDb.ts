@@ -1028,6 +1028,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						expiresAt: entryExpiresAt,
 						nodeId: entryNodeId,
 						residencyId: entryResidencyId,
+						residencySlot: entryResidencySlot,
 						metadataFlags: entryMetadataFlags,
 					} of sourceDbi.getRange({ start, transaction, versions: true })) {
 						try {
@@ -1049,7 +1050,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 									entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
 									entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
 									entryNodeId ?? sourceMeta?.nodeId ?? -1,
-									entryResidencyId ?? sourceMeta?.residencyId ?? 0
+									entryResidencyId ?? sourceMeta?.residencyId ?? 0,
+									entryResidencySlot ?? sourceMeta?.residencySlot
 								);
 							} else {
 								// A flags-word-only prefix (no leading timestamp) is misparsed by the RocksDB

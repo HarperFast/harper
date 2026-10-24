@@ -1,6 +1,8 @@
 import { dirname } from 'path';
 import { Script } from 'node:vm';
 import { scopedTableFactory, table } from './databases.ts';
+import { compileResidencyPolicy, normalizeResidencyPolicy } from './residencyPolicy.ts';
+import { prepareResidencyDeclaration } from './residencyMaps.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 import { Resources } from './Resources.ts';
@@ -145,6 +147,7 @@ if (!server.knownGraphQLDirectives) {
 }
 server.knownGraphQLDirectives.push(
 	'table',
+	'residency',
 	'sealed',
 	'export',
 	'primaryKey',
@@ -192,7 +195,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			entry.absolutePath,
 			scope.resources,
 			scopedTableFactory(scope.applicationScope?.branches, thisThreadOwnsApplication(scope.applicationScope?.name)),
-			scope.logger
+			scope.logger,
+			scope.applicationScope?.branches
 		);
 	});
 	// Settles with the load's real outcome, so a diagnosed failure is not left for the loader's watchdog
@@ -214,7 +218,8 @@ async function processGraphQLSchema(
 	filePath,
 	resources,
 	declareTable: typeof table = table,
-	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger
+	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger,
+	branches?: Map<string, unknown>
 ) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind, specifiedDirectives } = await import('graphql');
@@ -254,6 +259,7 @@ async function processGraphQLSchema(
 					properties: typeProperties,
 					fullTextIndexes: [],
 					fullTextFields: [],
+					residency: null,
 				};
 				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
@@ -262,6 +268,7 @@ async function processGraphQLSchema(
 					const directiveName = directive.name.value;
 					if (directiveName === 'table') {
 						for (const arg of directive.arguments) {
+							if (arg.name.value === 'residency') throw new ClientError('Use the @residency directive', 400);
 							typeDef[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
 						// @table is the canonical schema-defined declaration; pass the flag explicitly so
@@ -283,6 +290,17 @@ async function processGraphQLSchema(
 										.replace(/[\r\n]+/g, ' ')
 										.trim();
 						tables.push(typeDef);
+					}
+					if (directiveName === 'residency') {
+						if (typeDef.residency) throw new ClientError('A table may declare @residency only once', 400);
+						const policy = {};
+						for (const arg of directive.arguments ?? []) {
+							if (Object.hasOwn(policy, arg.name.value))
+								throw new ClientError(`Duplicate @residency argument ${arg.name.value}`, 400);
+							policy[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						typeDef.residency = normalizeResidencyPolicy(policy);
+						compileResidencyPolicy(typeDef.residency);
 					}
 					if (directive.name.value === 'sealed') typeDef.sealed = true;
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
@@ -464,6 +482,16 @@ async function processGraphQLSchema(
 					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
 				assertDerivedFieldOwnership(attributes as any[]);
+				if (typeDef.residency && !typeDef.table)
+					throw new ClientError('@residency is only supported on a @table type', 400);
+				if (
+					typeDef.residency?.byAttribute &&
+					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey)
+				)
+					throw new ClientError(
+						'@residency byAttribute requires a secondary index until slot-bearing id-only stubs are supported',
+						400
+					);
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
 					throw new ClientError('@fullText is only supported on a @table type', 400);
 				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);
@@ -514,9 +542,22 @@ async function processGraphQLSchema(
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
+		if (typeDef.residency && branches?.has(typeDef.database || 'data'))
+			throw new ClientError('Cannot use declarative residency in application database branches', 400);
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
-		typeDef.tableClass = declareTable(typeDef);
+		const residencyDeadline = Date.now() + 5000;
+		for (;;) {
+			try {
+				if (typeDef.residency)
+					await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, typeDef.residency);
+				typeDef.tableClass = declareTable(typeDef);
+				break;
+			} catch (error) {
+				if (!typeDef.residency || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+		}
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
 			const pk = (typeDef.attributes as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';

@@ -4,6 +4,13 @@ import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import type { Database, RootDatabase } from 'lmdb';
 import { compareKeys } from 'ordered-binary';
+import {
+	normalizeResidencyPolicy,
+	compileResidencyPolicy,
+	sameResidencyPolicy,
+	type ResidencyPolicy,
+} from './residencyPolicy.ts';
+import { acquireResidencyMapFence, getResidencyMap, readResidencyMap } from './residencyMaps.ts';
 import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
@@ -1070,6 +1077,7 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
+let deferredResidencyReplays: Array<() => void> | undefined;
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
@@ -1099,7 +1107,17 @@ export function getDatabases(): Databases {
 		return databases;
 	}
 	loadedDatabases = true;
+	deferredResidencyReplays ??= [];
+	try {
+		return loadDatabaseCatalogs();
+	} catch (error) {
+		// Keep deferred replay tails available to the next catalog scan.
+		loadedDatabases = false;
+		throw error;
+	}
+}
 
+function loadDatabaseCatalogs(): Databases {
 	definedDatabases = new Map();
 	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
@@ -1246,6 +1264,12 @@ export function getDatabases(): Databases {
 			//TODO: Iterate configured table paths
 		}
 	}
+	// Declarative rows depend on the system snapshot, including its unflushed audit tail.
+	while (deferredResidencyReplays.length) {
+		deferredResidencyReplays[0]();
+		deferredResidencyReplays.shift();
+	}
+	deferredResidencyReplays = undefined;
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
 		if (databaseUsesPreparedRoot(dbName)) continue;
@@ -1576,7 +1600,16 @@ function readRocksMetaDb(
 			// before the branch is published to any reader. See the contract note on
 			// `openBranchDatabase` (harper#643).
 			if (!isReadOnlyMode() && !destination) {
-				replayLogs(rootStore, databases[databaseName]);
+				const tables = databases[databaseName];
+				const replay = () => {
+					// A configuration refusal must happen before replay can skip entries or advance txn.state.
+					for (const Table of Object.values(tables))
+						if (Table.residency) getResidencyMap(databaseName, Table.residency.slots);
+					void replayLogs(rootStore, tables);
+				};
+				if (deferredResidencyReplays && Object.values(tables).some((Table) => Table.residency))
+					deferredResidencyReplays.push(replay);
+				else replay();
 			}
 		}
 		return rootStore;
@@ -1850,6 +1883,7 @@ function initStores(
 		);
 		const fullTextIndexRetirements = persistedFullTextIndexNames(primaryAttribute.fullTextIndexRetirements);
 		if (table && !recreateTable) {
+			if (primaryAttribute.residency) table._setResidencyPolicy(primaryAttribute.residency);
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
 			// Absent means unchanged, not `replicates`: NON_REPLICATING_SYSTEM_TABLES sets `replicate = false`
 			// on the live class and stores nothing, so an unconditional refresh would clear that override.
@@ -2009,6 +2043,7 @@ function initStores(
 					tableName,
 					tableId,
 					primaryKey: primaryAttribute.name,
+					residency: primaryAttribute.residency,
 					databasePath: isLegacy ? `${databaseName}/${tableName}` : databaseName,
 					databaseName,
 					storageGeneration: primaryAttribute.generation,
@@ -2365,6 +2400,8 @@ export function openBranchDatabase(
 		// before the open: table load schedules TTL, eviction and audit cleanup, which ask who owns this store
 		manageThreads.markBranchStorePath(path);
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
+		if (Object.values(tables).some((Table) => Table.residency))
+			throw new ClientError('Cannot use declarative residency in application database branches', 400);
 		// Pin the handle to the roots the caller proved this branch was published with, before it is
 		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
 		// configuration instead would let an appended volume take writes at an index the branch's own
@@ -2553,6 +2590,7 @@ export function resetDatabases() {
 
 interface TableDefinition {
 	table: string;
+	residency?: ResidencyPolicy | null;
 	database?: string;
 	path?: string;
 	/** Kept when a peer's definition creates the table here, so every copy of a generation shares one stamp. */
@@ -3495,6 +3533,7 @@ function unregisterDatabase(databaseName: string): void {
  * thread's one teardown entry point — closes them too.
  */
 export async function closeLoadedDatabases({ requireClosed = false }: { requireClosed?: boolean } = {}): Promise<void> {
+	deferredResidencyReplays = undefined;
 	const closeFailures: unknown[] = [];
 	try {
 		await closeBranchDatabases(requireClosed);
@@ -3782,6 +3821,10 @@ function internalDbisFor(rootStore: any, target: TableTarget): any {
 	return dbisDb;
 }
 
+export function getDatabaseCatalog(databaseName: string): any {
+	return internalDbisFor(database({ database: databaseName, table: undefined }), GLOBAL_TARGET);
+}
+
 /**
  * The factory a branched application declares tables through: each declaration goes to the branch
  * of the database it names, or to `table()` itself for a database the application did not branch.
@@ -3857,6 +3900,7 @@ export function reloadBranchAt(path: string): Tables | undefined {
 function declareTable<TableResourceType>(target: TableTarget, tableDefinition: TableDefinition): TableResourceType {
 	let {
 		table: tableName,
+		residency,
 		database: databaseName,
 		expiration,
 		eviction,
@@ -3882,6 +3926,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		fullTextFields,
 		createdTime,
 	} = tableDefinition;
+	if (target.branch && residency)
+		throw new ClientError('Cannot use declarative residency in application database branches', 400);
 	const auditExplicitlyEnabled = audit === true;
 	const auditExplicitlyDisabled = audit === false;
 	const fullTextIndexesExplicit = tableDefinition.fullTextIndexes !== undefined;
@@ -4105,7 +4151,53 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let armFullTextLiveStateRestore: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
+	let releaseResidencyFence: (() => void) | undefined;
 	try {
+		if (
+			residency ||
+			Table?.residency ||
+			(residency === null &&
+				persistedPrimaryDescriptor(Table?.dbisDB ?? internalDbisFor(rootStore, target)).descriptor?.residency)
+		) {
+			exclusiveLock();
+			const catalog = Table?.dbisDB ?? internalDbisFor(rootStore, target);
+			const persisted = persistedPrimaryDescriptor(catalog);
+			const previous = persisted.descriptor?.residency;
+			if (!previous) releaseResidencyFence = acquireResidencyMapFence(databaseName, {});
+			residency = residency === undefined ? previous : residency;
+			if (residency) {
+				if (schemaDefined === false) throw new ClientError('@residency requires a schema-defined table', 400);
+				const effectiveAudit =
+					audit ?? persisted.descriptor?.audit ?? Table?.audit ?? envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+				if (!effectiveAudit) throw new ClientError('@residency requires audit logging for durable replication', 400);
+				if ((replicate ?? persisted.descriptor?.replicate ?? Table?.replicate) === false)
+					throw new ClientError('@residency requires table replication', 400);
+				residency = normalizeResidencyPolicy(residency);
+				compileResidencyPolicy(residency);
+				if (residency.byAttribute && persisted.descriptor && !previous)
+					throw new ClientError(
+						'Cannot activate attribute residency on an existing table; its records have no stored slots',
+						409
+					);
+				if (
+					residency.byAttribute &&
+					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey) &&
+					!(origin === 'cluster' && Object.keys(Table?.indices ?? {}).length)
+				)
+					throw new ClientError('@residency byAttribute requires a secondary index', 400);
+				const map = readResidencyMap(databaseName);
+				if (!map || map.slots < residency.slots)
+					throw new ClientError(
+						`Install a residency map covering ${residency.slots} slots before declaring ${databaseName}.${tableName}`,
+						503
+					);
+			}
+			if (previous && !sameResidencyPolicy(previous, residency ?? undefined))
+				throw new ClientError(
+					`The @residency policy of ${databaseName}.${tableName} cannot be changed or removed`,
+					409
+				);
+		}
 		if (Table) {
 			refreshedLiveAttributes = true;
 			primaryKey = Table.primaryKey;
@@ -4555,6 +4647,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			if (residency) primaryKeyAttribute.residency = residency;
 			if (fullTextFieldsForPersistence.length > 0) primaryKeyAttribute.fullTextFields = fullTextFieldsForPersistence;
 			else delete primaryKeyAttribute.fullTextFields;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
@@ -4630,6 +4723,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// table was created while we were setting up; the lock is not reentrant, so release
 				// before the recursive reload
 				releaseLock();
+				releaseResidencyFence?.();
 				target.reload(databaseName);
 				return declareTable(target, tableDefinition);
 			}
@@ -4748,6 +4842,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				fullTextIndexRetirements: fullTextIndexRetirementNames ?? [],
 				schemaDefined,
 				dbisDB: attributesDbi,
+				residency,
 				description,
 				properties,
 				hidden,
@@ -5213,6 +5308,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 		}
+		if (residency && !deferredPrimaryRow) {
+			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
+			if (descriptor && !descriptor.residency) {
+				attributesDbi.putSync(key, { ...descriptor, residency });
+				hasChanges = true;
+			}
+			Table._setResidencyPolicy(residency);
+		}
 		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
 		// runs mid-create skips the table instead of building (and announcing) a partial one. It already
 		// carries this table's relationships (set on primaryKeyAttribute above), so the persistence block
@@ -5272,7 +5375,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		throw error;
 	} finally {
-		releaseLock();
+		try {
+			releaseLock();
+		} finally {
+			releaseResidencyFence?.();
+		}
 	}
 	if (fullTextFieldsForPersistence !== undefined) Table.fullTextFields = fullTextFieldsForPersistence;
 	if (activeFullTextIndexes !== undefined) {

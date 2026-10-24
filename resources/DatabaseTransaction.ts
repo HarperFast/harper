@@ -479,7 +479,21 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 	return residents;
 }
 
-let confirmReplication;
+const confirmingGroups = new WeakMap<readonly string[], string[]>();
+export function confirmingOwnerNames(store: any, owners: readonly string[], count: number, key: Id): string[] {
+	let peers = confirmingGroups.get(owners);
+	if (!peers) {
+		peers = Object.freeze(owners.filter((name) => name !== server.hostname)) as string[];
+		confirmingGroups.set(owners, peers);
+	}
+	if (count > peers.length)
+		throw new ClientError(
+			`Cannot confirm replication to ${count} node(s) for record ${describeKey(key)} in database "${store.rootStore.databaseName}": it has ${peers.length} other owners`
+		);
+	return peers;
+}
+
+export let confirmReplication;
 let confirmationFeasibility:
 	((databaseName: string, confirmationCount: number, residentPeerLists?: string[][]) => void) | undefined;
 /**
@@ -664,6 +678,12 @@ export type TransactionWrite = {
 	key: Id;
 	store: any; // using any here because of circular dependency and complex RootDatabaseKind
 	invalidated?: boolean;
+	residencyOwners?: readonly string[];
+	requiresOwnerConfirmation?: boolean;
+	// A commit-time refusal must abort earlier writes too, including LMDB instructed writes.
+	requiresExclusiveCommit?: boolean;
+	checkResidency?: () => unknown;
+	releaseResidencyMapFence?: () => void;
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
@@ -713,6 +733,8 @@ export type TransactionWrite = {
 	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
 	// a retry round that takes an early return doesn't leave the prior round's state behind.
 	stagedEntry?: Partial<Entry>;
+	// A later attribute patch needs the complete write even when stagedEntry is a local index stub.
+	completeResidencyRecord?: any;
 	// a later write to the same key in this transaction replaced (or deleted) the record this write
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.
@@ -920,6 +942,21 @@ export class DatabaseTransaction implements Transaction {
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
+	declare requiresOwnerConfirmation?: boolean;
+	get requestedConfirmationCount(): number {
+		return this.replicatedConfirmation || 0;
+	}
+	get confirmationCount(): number {
+		return Math.max(
+			this.requestedConfirmationCount,
+			this.requiresOwnerConfirmation &&
+				this.writes.some(
+					(write) => write?.saved && !write.skipReplicationConfirmation && write.requiresOwnerConfirmation
+				)
+				? 1
+				: 0
+		);
+	}
 	checkedResidentPeerLists?: string[][] | null;
 	checkedFor?: RocksTransaction;
 	// Set when this transaction is applying data from a canonical source of truth (replication peer
@@ -1762,6 +1799,7 @@ export class DatabaseTransaction implements Transaction {
 			for (const write of [...this.writes]) {
 				if (!write || this.isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight, fromAbort))
 					continue;
+				write.releaseResidencyMapFence?.();
 				this.detachWrite(write);
 			}
 			this.writes = this.writes.filter((write) => write);
@@ -1777,10 +1815,12 @@ export class DatabaseTransaction implements Transaction {
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
 		// context's current transaction as it did before `stagedIn` existed.
 		for (const write of this.writes) {
+			write?.releaseResidencyMapFence?.();
 			if (write?.stagedIn === this) write.stagedIn = undefined;
 			if (write) this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
+		if (this.requiresOwnerConfirmation) this.requiresOwnerConfirmation = false;
 		this.validated = 0;
 		this.writesByKey = undefined;
 		// The commit-fence latch belongs to the discarded batch. A reused transaction that once staged
@@ -1881,6 +1921,7 @@ export class DatabaseTransaction implements Transaction {
 				? this.residentPeerLists(committedTransaction)
 				: (this.checkedResidentPeerLists ?? undefined);
 		this.checkedResidentPeerLists = undefined;
+		if (!this.requestedConfirmationCount && !residentPeerLists) return;
 		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
 		// when some later write replicates
 		let version = this.writes.some(
@@ -1903,15 +1944,25 @@ export class DatabaseTransaction implements Transaction {
 	 * adds no list: N confirmations from any list already come from N distinct peers.
 	 */
 	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
-		let lists: Map<number, string[]> | undefined;
+		const count = this.confirmationCount;
+		let lists: Map<number | readonly string[], string[]> | undefined;
 		for (const write of this.writes) {
-			if (!write?.saved || !write.residencyId || write.skipReplicationConfirmation || lists?.has(write.residencyId))
+			if (!write?.saved || write.skipReplicationConfirmation) continue;
+			if (!this.requestedConfirmationCount && !write.requiresOwnerConfirmation) continue;
+			if (write.residencyOwners) {
+				if (submitted && write.appendedTo !== submitted) continue;
+				(lists ??= new Map()).set(
+					write.residencyOwners,
+					confirmingOwnerNames(write.store, write.residencyOwners, count, write.key)
+				);
 				continue;
+			}
+			if (!write.residencyId || lists?.has(write.residencyId)) continue;
 			// a residency recorded in a round whose batch an iterator replay discarded names no append
 			if (submitted && write.appendedTo !== submitted) continue;
 			(lists ??= new Map()).set(
 				write.residencyId,
-				confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key)
+				confirmingResidents(write.store, write.residencyId, count, write.key)
 			);
 		}
 		return lists && Array.from(lists.values());
@@ -1922,21 +1973,21 @@ export class DatabaseTransaction implements Transaction {
 	 * Confirmation requested after a write was saved skipped that write's own refusal, so the lists are
 	 * checked again here, and kept for the waiter.
 	 */
-	refuseUnconfirmable(transaction: RocksTransaction): void {
+	refuseUnconfirmable(transaction?: RocksTransaction): void {
 		// a retry of a submitted attempt (the same handle) must reach its native outcome
-		if ((transaction as RocksTransactionWithRetry).isRetry) return;
+		if ((transaction as RocksTransactionWithRetry)?.isRetry) return;
 		this.checkedResidentPeerLists = undefined;
 		this.checkedFor = transaction;
-		if (
-			!this.replicatedConfirmation ||
-			!this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation)
-		)
-			return;
 		try {
+			for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
+			if (!this.confirmationCount || !this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation))
+				return;
+
 			const residentPeerLists = this.residentPeerLists(transaction);
+			if (!this.requestedConfirmationCount && !residentPeerLists) return;
 			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
 			if (databaseName) {
-				const result: any = confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
+				const result: any = confirmationFeasibility?.(databaseName, this.confirmationCount, residentPeerLists);
 				if (result?.then) {
 					result.then(null, () => {});
 					throw new TypeError('A replication confirmation feasibility check must be synchronous');
@@ -1944,6 +1995,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 			this.checkedResidentPeerLists = residentPeerLists ?? null;
 		} catch (error) {
+			if (!transaction) throw error;
 			abortNativeTransaction(
 				transaction,
 				'aborting a transaction whose confirmation was refused',
@@ -2153,6 +2205,7 @@ export class DatabaseTransaction implements Transaction {
 			// Through `detachWrite`, which also repairs the per-key chain: dropping it from `writes` alone
 			// leaves `writesByKey` pointing at a write that was refused, so a caller that catches this 409
 			// and stages the same key again would take the rejected operation as its merge basis.
+			operation.releaseResidencyMapFence?.();
 			this.detachWrite(operation);
 			throw lockNotHeldError(lockHandle);
 		}
@@ -2303,6 +2356,7 @@ export class DatabaseTransaction implements Transaction {
 					operation.commit = () => {}; // noop if we try again
 					closeWriteInstance(operation);
 					if (immediateCommit) {
+						operation.releaseResidencyMapFence?.();
 						this.detachWrite(operation);
 						if (!this.activeCommitHandle) this.activeHandleStagedTxnTime = 0;
 						abortNativeTransaction(
@@ -2339,6 +2393,7 @@ export class DatabaseTransaction implements Transaction {
 			// is submitted must release it, and the floor reservation it carries, rather than leak both.
 			if (immediateCommit) {
 				this.drainCompletions(transaction, true);
+				operation.releaseResidencyMapFence?.();
 				this.detachWrite(operation);
 				if (!this.activeCommitHandle) this.activeHandleStagedTxnTime = 0;
 				abortNativeTransaction(
@@ -2985,7 +3040,7 @@ export class DatabaseTransaction implements Transaction {
 								return this.commit({ ...options, transaction });
 							}
 							const committedTxnKey = reservedLocalKey(transaction);
-							const committedLogKey = this.replicatedConfirmation ? committedTxnKey : undefined;
+							const committedLogKey = this.confirmationCount ? committedTxnKey : undefined;
 							const committedTransaction = transaction;
 							const committedImmediate = Boolean(
 								(committedTransaction as RocksTransactionWithRetry | undefined)?.immediateCommit
@@ -3028,7 +3083,7 @@ export class DatabaseTransaction implements Transaction {
 								if (store) completions.push(store.flushed);
 							}
 							let confirmation: Promise<void>;
-							if (this.replicatedConfirmation) {
+							if (this.confirmationCount) {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0]?.store.rootStore.databaseName;
@@ -3040,12 +3095,7 @@ export class DatabaseTransaction implements Transaction {
 											: undefined;
 									if (target) {
 										confirmation = confirmReplicationAfterCommit(() =>
-											confirmReplication(
-												databaseName,
-												target.version,
-												this.replicatedConfirmation,
-												target.residentPeerLists
-											)
+											confirmReplication(databaseName, target.version, this.confirmationCount, target.residentPeerLists)
 										);
 									}
 								} catch (error) {
@@ -3093,7 +3143,7 @@ export class DatabaseTransaction implements Transaction {
 							)
 								this.timestamp = 0; // reset the timestamp as well
 							const completed =
-								confirmation || (this.root ?? this).replicatedConfirmation
+								confirmation || (this.root ?? this).confirmationCount
 									? settleCommitCompletions(completions, confirmation)
 									: Promise.all(completions);
 							return completed.then(

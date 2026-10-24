@@ -358,7 +358,15 @@
 					"type": "boolean",
 					"description": "Attempt fail-over to different node when unreachable. Default: true"
 				},
-				"shard": { "type": "integer", "description": "Shard id for this instance." },
+				"shard": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "Shard id for this instance." },
+				"shards": {
+					"type": "array",
+					"minItems": 1,
+					"maxItems": 65536,
+					"uniqueItems": true,
+					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a declarative residency map automatically; installed maps remain authoritative. Different lists block declarative writes."
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		},

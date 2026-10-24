@@ -186,6 +186,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				version,
 				txnLogKey,
 				residencyId,
+				residencySlot,
 				expiresAt,
 				originatingOperation,
 				username,
@@ -295,7 +296,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				context.transaction = transaction;
 				const options = {
 					context,
+					isReplay: true,
 					residencyId,
+					residencySlot,
 					nodeId,
 					originatingOperation,
 					version,

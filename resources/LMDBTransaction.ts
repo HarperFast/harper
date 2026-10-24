@@ -8,6 +8,7 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	confirmReplication,
 	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
@@ -23,15 +24,15 @@ import type { RootDatabaseKind } from './databases.ts';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const trackedTxns = new Set<DatabaseTransaction>();
+function latestAuditPosition(store: any): number | undefined {
+	if (store) for (const key of store.getKeys({ start: Infinity, end: 1, reverse: true, limit: 1 })) return key;
+}
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-let confirmReplication;
-export function replicationConfirmation(callback) {
-	confirmReplication = callback;
-}
+export { replicationConfirmation } from './DatabaseTransaction.ts';
 
 export class LMDBTransaction extends DatabaseTransaction {
 	stagesWriteOnSave = false;
@@ -43,6 +44,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 	declare stale: boolean;
 	declare overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
+	get requestedConfirmationCount(): number {
+		if (this.replicatedConfirmation) return this.replicatedConfirmation;
+		const root = this.root;
+		// The wrapper's unclaimed root belongs to its first store; later databases keep existing confirmation semantics.
+		return root && root.next === this && !root.db ? root.replicatedConfirmation || 0 : 0;
+	}
 
 	renewIdleTimeout(): void {
 		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0);
@@ -248,12 +255,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 		let resolution;
 		const completions = [];
 		let commitCompletions: Promise<void>[];
+		let committedLogPosition: number | undefined;
 		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
 			let completion;
 			try {
-				completion = write.commit(txnTime, write.entry, retries);
+				completion = write.commit(txnTime, write.entry, retries, undefined, this);
+				write.saved = !write.skipped;
 			} finally {
 				closeWriteInstance(write);
 			}
@@ -288,6 +297,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				for (const write of this.writes) {
 					doWrite(write);
 				}
+				this.refuseUnconfirmable();
 			}
 		};
 
@@ -298,7 +308,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// will fail and retry due to contention. This is used to determine when to give up on optimistic writes and
 			// use a real (async) transaction to get exclusive access to the data
 			if (db?.retryRisk) db.retryRisk *= 0.99; // gradually decay the retry risk
-			if (this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
+			const requiresAbortableCommit =
+				this.requestedConfirmationCount || this.writes.some((write) => write.requiresExclusiveCommit);
+			if (!requiresAbortableCommit && this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
 				this.markNativeCommitSubmitted();
 				nextCondition();
 				if (commitCompletions) {
@@ -312,14 +324,25 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 				}
 			} else {
-				// if it is too big to expect optimistic writes to work, or we have done too many retries we use
-				// a real LMDB transaction to get exclusive access to reading and writing
+				// Neither ifVersion nor transaction aborts earlier writes when its callback throws.
+				// A child transaction keeps late placement/confirmation refusals atomic.
 				this.markNativeCommitSubmitted();
-				const transactionResolution = this.writes[0].store.transaction(() => {
+				const store = this.writes[0].store;
+				const runTransaction = requiresAbortableCommit ? store.childTransaction : store.transaction;
+				const transactionResolution = runTransaction.call(store, () => {
+					const auditStore = store.rootStore.auditStore;
+					const beforePosition = requiresAbortableCommit ? latestAuditPosition(auditStore) : undefined;
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);
 						doWrite(write);
+					}
+					this.refuseUnconfirmable();
+					if (this.confirmationCount) {
+						const afterPosition = latestAuditPosition(auditStore);
+						// This child holds the writer lock: a new audit key belongs to this batch, even
+						// when non-owner placement omitted every primary row.
+						if (afterPosition !== beforePosition) committedLogPosition = afterPosition;
 					}
 					return true; // success. always success
 				});
@@ -340,15 +363,21 @@ export class LMDBTransaction extends DatabaseTransaction {
 						if (store) completions.push(store.flushed);
 					}
 					let confirmation: Promise<void>;
-					if (this.replicatedConfirmation) {
+					if (this.confirmationCount) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
-						const lastEntry = this.lastConfirmableEntry();
-						if (confirmReplication && databaseName && lastEntry)
-							confirmation = confirmReplicationAfterCommit(() =>
-								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
-							);
+						if (confirmReplication && databaseName)
+							confirmation = confirmReplicationAfterCommit(() => {
+								const target = this.confirmationTarget(committedLogPosition ?? this.lastConfirmableEntry()?.localTime);
+								if (target)
+									return confirmReplication(
+										databaseName,
+										target.version,
+										this.confirmationCount,
+										target.residentPeerLists
+									);
+							});
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
 					// or whose stored record a later write to the same key replaced without an audit entry
@@ -364,7 +393,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.timestamp = 0;
 					this.next = null;
 					const completed =
-						confirmation || (this.root ?? this).replicatedConfirmation
+						confirmation || (this.root ?? this).confirmationCount
 							? settleCommitCompletions(completions, confirmation)
 							: Promise.all(completions);
 					return completed.then(() => {
