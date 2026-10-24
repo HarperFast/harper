@@ -185,27 +185,30 @@ CONCURRENT_RW_RESULT read_ops=NNN write_ops=NNN read_p50_ms=N.N read_p95_ms=N.N 
 
 Each request is one transaction that reads and increments a `Counter` record on an audited table.
 `hot1`/`hot4` touch 1 or 4 records out of 32, so concurrent commits conflict and Harper retries them;
-`cold1`/`cold4` draw from 100 000 records as a control. Reports commits/s, p50/p99 request latency and
-retries per commit (the native transaction handle's own retry count, returned by the resource), and
-checks that every key's final count equals the increments the client saw acknowledged.
+`cold1`/`cold4` draw from 100 000 records as a control. Reports commits/s, request latency (p50, p99,
+p99.9, max) and retries per commit (the native transaction handle's own retry count, returned by the
+resource; RocksDB only, LMDB reports 0), and checks that every key's final count equals the increments
+the client saw acknowledged. Exits 1 when that check fails in `add` mode or a window has no commits.
 
 ```sh
 node benchmarks/hot-key-commit/run.mts                       # 4 threads, all workloads
 node benchmarks/hot-key-commit/run.mts --threads=8 --workloads=hot1,hot4
 ```
 
-| Flag               | Default                 | Description                                                          |
-| ------------------ | ----------------------- | -------------------------------------------------------------------- |
-| `--threads`        | 4                       | Harper worker threads                                                |
-| `--concurrency`    | 16 × threads            | Closed-loop in-flight requests                                       |
-| `--client-threads` | 4                       | Load-generator worker threads                                        |
-| `--duration`       | 10 s                    | Measured window per workload                                         |
-| `--warmup`         | 3 s                     | Unmeasured load before each window                                   |
-| `--workloads`      | `hot1,hot4,cold1,cold4` | Workloads to run, in order                                           |
-| `--mode`           | `add`                   | `add` = `addTo(1)`; `set` = write read value + 1 (lossy, diagnostic) |
-| `--hot-keys`       | 32                      | Size of the hot key set                                              |
-| `--cold-keys`      | 100 000                 | Records seeded (the cold key set)                                    |
-| `--label`          | —                       | Free-form label echoed in the result line                            |
+| Flag                | Default                 | Description                                                          |
+| ------------------- | ----------------------- | -------------------------------------------------------------------- |
+| `--threads`         | 4                       | Harper worker threads                                                |
+| `--concurrency`     | 16 × threads            | Closed-loop in-flight requests                                       |
+| `--client-threads`  | 4                       | Load-generator worker threads                                        |
+| `--duration`        | 10 s                    | Measured window per workload                                         |
+| `--warmup`          | 3 s                     | Unmeasured load before each window                                   |
+| `--workloads`       | `hot1,hot4,cold1,cold4` | Workloads to run, in order                                           |
+| `--mode`            | `add`                   | `add` = `addTo(1)`; `set` = write read value + 1 (lossy, diagnostic) |
+| `--hot-keys`        | 32                      | Size of the hot key set                                              |
+| `--cold-keys`       | 100 000                 | Records seeded (the cold key set)                                    |
+| `--label`           | —                       | Free-form label echoed in the result line                            |
+| `--engine`          | `rocksdb`               | Storage engine (`HARPER_STORAGE_ENGINE`)                             |
+| `--startup-timeout` | 120 000 ms              | Harper startup timeout                                               |
 
 ### Parseable output line
 

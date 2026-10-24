@@ -1,47 +1,18 @@
 /**
- * Hot-key commit contention on an audited table.
+ * Hot-key commit contention on an audited table; flags and output format are in benchmarks/README.md.
  *
- * Each request is one transaction that reads N Counter records and increments each by 1. The hot
- * workloads draw keys from a small set (default 32), so concurrent transactions conflict on commit and
- * Harper retries them; the cold workloads draw from the whole table (default 100 000) as a near-parity
- * control. Built to measure what a change to the native commit path (conflict check, transaction-log
- * write, RocksDB write) costs Harper under contention.
+ * Each request is one transaction that reads N Counter records and increments each by 1. The hot workloads
+ * draw keys from a small set, so concurrent transactions conflict on commit and Harper retries them; the
+ * cold workloads draw from the whole table as a near-parity control.
  *
- * Workloads (`--workloads`, comma-separated):
- *   hot1  — 1 record from the hot set per transaction
- *   hot4  — 4 distinct records from the hot set per transaction
- *   cold1 — 1 record from the whole table
- *   cold4 — 4 distinct records from the whole table
+ * `--mode=add` (default) uses addTo(1), which Harper re-applies against the latest stored value on retry,
+ * so each key's final count must equal the increments the client saw acknowledged: `counts_ok=false` (exit
+ * code 1) when one is missing or extra, `inconclusive` when a failed request may or may not have applied.
+ * `--mode=set` writes the read value + 1, which a retry re-bases stale, so it only reports lost updates.
  *
- * `--mode=add` (default) increments with addTo(1), which Harper applies against the latest stored value
- * on retry, so the final counts must equal the acknowledged increments exactly. `--mode=set` writes the
- * read value + 1 instead; the count check then reports lost updates rather than asserting none.
- *
- * Correctness: before and after each workload the counts of every key it can touch are read back;
- * per key, the delta must equal the increments the client saw acknowledged (2xx). `counts_ok=false`
- * (and exit code 1) when an acknowledged increment is missing or more were applied than were sent;
- * `inconclusive` when a request failed or timed out (it may or may not have applied) and nothing was
- * provably wrong.
- *
- * Retries per commit: Harper exports no commit-retry counter, so the Increment resource commits
- * explicitly and returns the native transaction handle's own `retries` count, which both conflict-retry
- * paths in DatabaseTransaction.commit() (the coordinated RETRY_NOW resolve and the ERR_BUSY/ERR_TRY_AGAIN
- * rejection) increment. Summed over the commits measured.
- *
- * The load generator is closed-loop: `--concurrency` callers (default 16 per Harper thread), each
- * sending its next request when the previous one answers, spread over `--client-threads` Node worker
- * threads. Latency is per HTTP request (one transaction, including retries), for requests that complete
- * inside the measured window. `client_elu` is the busiest
- * client thread's event-loop utilization; near 1 means the client, not Harper, limits throughput.
- *
- * Usage (after npm run build from the repo root):
- *   node benchmarks/hot-key-commit/run.mts
- *   node benchmarks/hot-key-commit/run.mts --threads=8 --duration=15 --workloads=hot1,hot4
- *
- * Result format, one line per workload:
- *   HOT_KEY_COMMIT_RESULT label=… workload=hot1 mode=add threads=N concurrency=N commits=N commits_per_sec=N
- *     p50_ms=N.NN p99_ms=N.NN p999_ms=N.NN max_ms=N.NN retries=N retries_per_commit=N.NNN max_retries=N errors=N
- *     counts_ok=true|false|inconclusive harper_threads_seen=N client_elu=N.NN
+ * Retries come from the native transaction handle's own count (RocksDB only; LMDB reports 0). The load is
+ * closed-loop, so a stall also lowers the request rate; `max_ms` and `errors` include requests still in
+ * flight when the window closes, and `client_elu` near 1 means the client limits throughput.
  */
 import http from 'node:http';
 import { parseArgs } from 'node:util';
@@ -96,7 +67,12 @@ function parseOptions(): Options {
 		},
 		allowPositionals: false,
 	});
-	const threads = Number(values.threads);
+	const positive = (name: string, value: string | undefined): number => {
+		const n = Number(value);
+		if (!Number.isFinite(n) || n <= 0) throw new Error(`--${name} must be a positive number (got "${value}")`);
+		return n;
+	};
+	const threads = positive('threads', values.threads);
 	const workloads = (values.workloads as string).split(',');
 	for (const name of workloads) {
 		if (!WORKLOADS[name])
@@ -104,20 +80,26 @@ function parseOptions(): Options {
 	}
 	const mode = values.mode as string;
 	if (mode !== 'add' && mode !== 'set') throw new Error(`unknown mode "${mode}" (expected: add, set)`);
+	const hotKeys = positive('hot-keys', values['hot-keys']);
+	const coldKeys = positive('cold-keys', values['cold-keys']);
+	const maxRecordsPerTxn = Math.max(...workloads.map((name) => WORKLOADS[name].recordsPerTxn));
+	if (hotKeys < maxRecordsPerTxn || coldKeys < hotKeys) {
+		throw new Error(`need ${maxRecordsPerTxn} <= --hot-keys (${hotKeys}) <= --cold-keys (${coldKeys})`);
+	}
 	return {
 		threads,
 		// enough in-flight transactions per worker that no worker idles waiting on the client
-		concurrency: values.concurrency ? Number(values.concurrency) : 16 * threads,
-		clientThreads: Number(values['client-threads']),
-		durationSeconds: Number(values.duration),
+		concurrency: values.concurrency ? positive('concurrency', values.concurrency) : 16 * threads,
+		clientThreads: positive('client-threads', values['client-threads']),
+		durationSeconds: positive('duration', values.duration),
 		warmupSeconds: Number(values.warmup),
-		hotKeys: Number(values['hot-keys']),
-		coldKeys: Number(values['cold-keys']),
+		hotKeys,
+		coldKeys,
 		workloads,
 		mode,
 		engine: values.engine as string,
 		label: values.label as string,
-		startupTimeoutMs: Number(values['startup-timeout']),
+		startupTimeoutMs: positive('startup-timeout', values['startup-timeout']),
 	};
 }
 
@@ -208,6 +190,7 @@ interface WorkloadResult {
 	commits: number;
 	seconds: number;
 	latencies: Float64Array;
+	maxMs: number;
 	errors: number;
 	firstError?: string;
 	retries: number;
@@ -230,6 +213,7 @@ interface LoadResult {
 	acked: Int32Array;
 	uncertain: Int32Array;
 	latencies: Float64Array;
+	overrunMs: number;
 	errors: number;
 	firstError?: string;
 	retries: number;
@@ -253,6 +237,8 @@ function generateLoad(task: LoadTask): void {
 	let maxRetries = 0;
 	let measuring = false;
 	let stopped = false;
+	// longest request that was in flight when the window closed, so a stall spanning the close still shows
+	let overrunMs = 0;
 	let commits = 0;
 	let errors = 0;
 	let firstError: string | undefined;
@@ -262,6 +248,7 @@ function generateLoad(task: LoadTask): void {
 	const caller = async (): Promise<void> => {
 		while (!stopped) {
 			const ids = pickIds(task.keyCount, task.recordsPerTxn);
+			const startedBeforeClose = !stopped;
 			const start = performance.now();
 			let res: Response | undefined;
 			try {
@@ -270,6 +257,8 @@ function generateLoad(task: LoadTask): void {
 				firstError ??= String(error);
 			}
 			const elapsed = performance.now() - start;
+			const overran = stopped && startedBeforeClose;
+			if (overran && elapsed > overrunMs) overrunMs = elapsed;
 			if (res && res.status >= 200 && res.status < 300) {
 				for (const id of ids) acked[id]++;
 				// a commit counts when it completes inside the window, so stalls that began before it are kept
@@ -287,7 +276,7 @@ function generateLoad(task: LoadTask): void {
 			} else {
 				for (const id of ids) uncertain[id]++;
 				firstError ??= res ? `${res.status}: ${JSON.stringify(res.body).slice(0, 300)}` : undefined;
-				if (measuring) errors++;
+				if (measuring || overran) errors++;
 			}
 		}
 	};
@@ -308,6 +297,7 @@ function generateLoad(task: LoadTask): void {
 			acked,
 			uncertain,
 			latencies: latencies.subarray(0, commits),
+			overrunMs,
 			errors,
 			firstError,
 			retries,
@@ -344,13 +334,22 @@ async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: str
 				worker.once('exit', (code) => reject(new Error(`load worker exited (${code}) before reporting`)));
 			})
 	);
+	// handled now so a worker failing mid-window rejects here, after the sleeps, not as an unhandled rejection
+	const settled = Promise.all(results);
+	settled.catch(() => {});
 	await setTimeout(opts.warmupSeconds * 1000);
 	for (const worker of workers) worker.postMessage('measure');
 	const measureStart = performance.now();
 	await setTimeout(opts.durationSeconds * 1000);
 	for (const worker of workers) worker.postMessage('stop');
 	const seconds = (performance.now() - measureStart) / 1000;
-	const loads = await Promise.all(results);
+	let loads: LoadResult[];
+	try {
+		loads = await settled;
+	} catch (error) {
+		await Promise.all(workers.map((worker) => worker.terminate()));
+		throw error;
+	}
 
 	const acked = new Int32Array(keyCount);
 	const uncertain = new Int32Array(keyCount);
@@ -389,6 +388,7 @@ async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: str
 		commits: latencies.length,
 		seconds,
 		latencies: latencies.sort(),
+		maxMs: Math.max(latencies.at(-1) ?? 0, ...loads.map((load) => load.overrunMs)),
 		errors: loads.reduce((sum, load) => sum + load.errors, 0),
 		firstError: loads.find((load) => load.firstError)?.firstError,
 		retries: loads.reduce((sum, load) => sum + load.retries, 0),
@@ -438,14 +438,15 @@ async function main(): Promise<void> {
 				`HOT_KEY_COMMIT_RESULT label=${opts.label || '-'} workload=${name} mode=${opts.mode} threads=${opts.threads} ` +
 				`concurrency=${opts.concurrency} commits=${r.commits} commits_per_sec=${(r.commits / r.seconds).toFixed(0)} ` +
 				`p50_ms=${percentile(r.latencies, 0.5).toFixed(2)} p99_ms=${percentile(r.latencies, 0.99).toFixed(2)} ` +
-				`p999_ms=${percentile(r.latencies, 0.999).toFixed(2)} max_ms=${(r.latencies.at(-1) ?? 0).toFixed(2)} ` +
-				`retries=${r.retries} retries_per_commit=${(r.retries / r.commits).toFixed(3)} max_retries=${r.maxRetries} errors=${r.errors} ` +
+				`p999_ms=${percentile(r.latencies, 0.999).toFixed(2)} max_ms=${r.maxMs.toFixed(2)} ` +
+				`retries=${r.retries} retries_per_commit=${r.commits ? (r.retries / r.commits).toFixed(3) : 'n/a'} max_retries=${r.maxRetries} errors=${r.errors} ` +
 				`counts_ok=${r.countsOk} harper_threads_seen=${r.harperThreads} client_elu=${r.clientElu.toFixed(2)}`;
 			console.log(line);
 			if (r.countsOk === 'false') {
 				console.log(`  count check: ${r.countDetail}`);
-				process.exitCode = 1;
+				if (opts.mode === 'add') process.exitCode = 1;
 			}
+			if (r.commits === 0) process.exitCode = 1;
 			if (r.firstError) console.log(`  first error: ${r.firstError}`);
 		}
 	} finally {

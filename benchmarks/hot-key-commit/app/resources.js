@@ -2,11 +2,7 @@ import { threadId } from 'node:worker_threads';
 
 const { Counter } = tables;
 
-/**
- * POST /Increment/ {ids: number[], mode: 'set' | 'add'} — one transaction that reads each record and
- * increments its count by 1. 'set' writes the read value + 1; 'add' writes a commutative addTo(1).
- * Responds with the answering worker thread and how many times the native commit was retried.
- */
+/** POST /Increment/ {ids, mode} — one transaction incrementing each record's count by 1. */
 export class Increment extends Resource {
 	static loadAsInstance = false;
 
@@ -17,7 +13,8 @@ export class Increment extends Resource {
 			else record.addTo('count', 1);
 		}
 		// Commit here rather than after return so the native handle's retry count is final; both
-		// conflict-retry paths in DatabaseTransaction.commit() bump it and keep the same handle.
+		// conflict-retry paths in DatabaseTransaction.commit() bump it and keep the same handle (RocksDB;
+		// LMDB has no such handle and reports 0).
 		const transaction = this.getContext().transaction;
 		const handle = transaction.transaction;
 		await transaction.commit();
@@ -25,7 +22,7 @@ export class Increment extends Resource {
 	}
 }
 
-/** POST /Seed/ {start, count} — writes ids start..start+count-1 with count 0, in one transaction. */
+/** POST /Seed/ {start, count} */
 export class Seed extends Resource {
 	static loadAsInstance = false;
 
@@ -35,7 +32,7 @@ export class Seed extends Resource {
 	}
 }
 
-/** POST /Counts/ {ids: number[]} — the current count of each id, in order. */
+/** POST /Counts/ {ids} — each id's count, in order. */
 export class Counts extends Resource {
 	static loadAsInstance = false;
 
