@@ -570,6 +570,7 @@ export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
 const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
+let minReplicaScanIntervalMs = MIN_REPLICA_SCAN_INTERVAL_MS;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
 const REPLICA_SWEEP_YIELD_EVERY = 1000;
@@ -578,6 +579,10 @@ const replicaEvictionArmers = new Map<string, Set<() => void>>();
 onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: string; tableId: number }) => {
 	for (const arm of replicaEvictionArmers.get(`${storePath}:${tableId}`) ?? []) arm();
 });
+/** Tests only: lower the replica sweep's minimum interval; `undefined` restores it. */
+export function setMinReplicaScanIntervalForTesting(ms: number | undefined) {
+	minReplicaScanIntervalMs = ms ?? MIN_REPLICA_SCAN_INTERVAL_MS;
+}
 /** `replicaRefreshFraction`: the share of the lifetime after which a read hit renews a replica; 1 never renews. */
 export function replicaRefreshFractionOf(fraction: unknown): number | undefined {
 	if (fraction == null) return undefined;
@@ -4237,7 +4242,6 @@ export function makeTable(options): TableResourceClass {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
-				entry ??= primaryStore.getEntry(id, options);
 				if (observedDeadline !== undefined && !(entry?.metadataFlags & REPLICA)) return Promise.resolve();
 				if (isRocksDB && entry?.metadataFlags & REPLICA && entry.version === existingVersion) {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
@@ -10865,7 +10869,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function scheduleReplicaSweep() {
 		if (disposed || maintenanceClosed || replicaSweepTimer || replicaSweepRunning || !ownsCleanup()) return;
-		const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);
+		const interval = Math.max(replicaExpirationMs / 4, minReplicaScanIntervalMs);
 		replicaSweepTimer = setTimeout(
 			() => {
 				replicaSweepTimer = undefined;

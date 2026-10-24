@@ -5,6 +5,7 @@ const { waitFor } = require('../waitFor.js');
 const { table, openReplicaDeadlineStore } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMinReplicaScanIntervalForTesting } = require('#src/resources/Table');
 const { server } = require('#src/server/Server');
 const { DatabaseTransaction, getTxnExpiration, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
 const { getRegistryStatus } = require('@harperfast/rocksdb-js');
@@ -17,6 +18,7 @@ describe('Replica maintenance transaction lifetime', function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		setupTestDBPath();
 		setMainIsWorker(true);
+		setMinReplicaScanIntervalForTesting(20);
 		tracked = setTxnExpiration(getTxnExpiration());
 		Records = table({
 			database: 'test',
@@ -31,6 +33,7 @@ describe('Replica maintenance transaction lifetime', function () {
 		});
 		Records.dbisDB.putSync([Symbol.for('residency_by_id'), 123], ['resident-a']);
 	});
+	after(() => setMinReplicaScanIntervalForTesting(undefined));
 
 	async function stub(id) {
 		const context = {};

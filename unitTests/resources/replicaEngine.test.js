@@ -5,7 +5,7 @@ const { table, closeDatabase, resetDatabases } = require('#src/resources/databas
 const { waitFor } = require('../waitFor.js');
 const { transaction } = require('#src/resources/transaction');
 const { Resource } = require('#src/resources/Resource');
-const { INVALIDATED, REPLICA } = require('#src/resources/Table');
+const { INVALIDATED, REPLICA, setMinReplicaScanIntervalForTesting } = require('#src/resources/Table');
 const { setMainIsWorker, broadcast } = require('#js/server/threads/manageThreads');
 const { server } = require('#src/server/Server');
 
@@ -18,6 +18,7 @@ describe('Replica storage engine support', function () {
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
+		setMinReplicaScanIntervalForTesting(20);
 		Records = table({
 			database: 'test',
 			table: 'ReplicaEngine',
@@ -26,6 +27,7 @@ describe('Replica storage engine support', function () {
 		});
 		Records.dbisDB.putSync([Symbol.for('residency_by_id'), 123], ['resident-a']);
 	});
+	after(() => setMinReplicaScanIntervalForTesting(undefined));
 
 	async function stub(id) {
 		const context = {};

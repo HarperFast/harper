@@ -5,7 +5,7 @@ const { setupTestDBPath } = require('../../testUtils');
 const { table, resetDatabases, databases, openReplicaDeadlineStore } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { Resource } = require('#src/resources/Resource');
-const { REPLICA } = require('#src/resources/Table');
+const { REPLICA, setMinReplicaScanIntervalForTesting } = require('#src/resources/Table');
 const { server } = require('#src/server/Server');
 const { onMessageByType } = require('#js/server/threads/manageThreads');
 const { schemaHandler } = require('#js/server/itc/serverHandlers');
@@ -23,6 +23,8 @@ let sourceId = 0;
 const pendingSources = new Map();
 
 setupTestDBPath();
+// above the 50ms rescan cadence, so a rescan that restarted the sweep timer would postpone it indefinitely
+setMinReplicaScanIntervalForTesting(300);
 onMessageByType(CONTROL, () => {});
 sourcePort.on('message', (message) => {
 	if (role === 'writer') {
@@ -150,7 +152,7 @@ async function handle({ command, key, options, deadline, expectRenewal }) {
 					rescans++;
 					return !(Records.primaryStore.getEntry(key)?.metadataFlags & REPLICA);
 				},
-				{ timeout: 3500, interval: 100, message: 'unchanged rescans must not postpone the replica sweep' }
+				{ timeout: 3500, interval: 50, message: 'unchanged rescans must not postpone the replica sweep' }
 			);
 			await waitFor(() => snapshot().armed === 0, { timeout: 2500, message: 'the empty sweep stands down' });
 			await handle({ command: 'rescan' });

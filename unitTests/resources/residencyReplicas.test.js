@@ -5,7 +5,12 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { INVALIDATED, REPLICA, DEFAULT_REPLICA_EXPIRATION_MS } = require('#src/resources/Table');
+const {
+	INVALIDATED,
+	REPLICA,
+	DEFAULT_REPLICA_EXPIRATION_MS,
+	setMinReplicaScanIntervalForTesting,
+} = require('#src/resources/Table');
 const databases = require('#src/resources/databases');
 const { HAS_BLOBS } = require('#src/resources/auditStore');
 const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
@@ -15,14 +20,24 @@ const { server } = require('#src/server/Server');
 
 const RESIDENCY_ID = 123;
 const OTHER_RESIDENCY_ID = 456;
-const ID = 'record';
+// a key per test: a renewal check stamped while a test's clock ran ahead would throttle the next test's
+let ID;
+let records = 0;
+const realDateNow = Date.now;
+let clockOffset = 0;
+// renewal and expiry decisions read Date.now; write versions come from the monotonic clock
+function advanceClock(ms) {
+	clockOffset += ms;
+	Date.now = () => realDateNow() + clockOffset;
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitFor(condition, description, timeoutMs = 5000) {
-	const deadline = Date.now() + timeoutMs;
+	const deadline = performance.now() + timeoutMs;
 	for (;;) {
 		const result = await condition();
 		if (result) return result;
-		assert.ok(Date.now() < deadline, `timed out waiting for ${description}`);
+		assert.ok(performance.now() < deadline, `timed out waiting for ${description}`);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 }
@@ -35,8 +50,9 @@ describeReplicas('Local replicas of residency stubs', function () {
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
+		setMinReplicaScanIntervalForTesting(20);
 		Records = table({
-			database: 'test',
+			database: 'residencyReplicas',
 			table: 'ResidencyReplicas',
 			schemaDefined: true,
 			attributes: [
@@ -62,6 +78,12 @@ describeReplicas('Local replicas of residency stubs', function () {
 		);
 	});
 
+	after(() => setMinReplicaScanIntervalForTesting(undefined));
+	afterEach(() => {
+		Date.now = realDateNow;
+		clockOffset = 0;
+	});
+
 	let stubVersion;
 	async function invalidate(partial, options = {}, newer = 0) {
 		const before = Records.primaryStore.getEntry(ID);
@@ -78,6 +100,18 @@ describeReplicas('Local replicas of residency stubs', function () {
 		return Records.primaryStore.getEntry(ID);
 	}
 
+	// versioned past the row: a test may have written it ahead of the clock
+	async function remove(id) {
+		const prior = Records.primaryStore.getEntry(id);
+		if (!prior?.value) return;
+		const context = { sourceApply: true, timestamp: prior.version + 1 };
+		await transaction(context, async () => {
+			const resource = await Records.getResource(id, context, { ensureLoaded: false });
+			resource._writeDelete(id, { version: prior.version + 1, nodeId: prior.nodeId ?? 0 });
+		});
+		assert.equal(Records.primaryStore.getEntry(id)?.value, null);
+	}
+
 	beforeEach(async () => {
 		Records.setTTLExpiration({
 			replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000,
@@ -85,7 +119,8 @@ describeReplicas('Local replicas of residency stubs', function () {
 		});
 		calls = [];
 		stored = [];
-		if (Records.primaryStore.getEntry(ID)?.value) await Records.delete(ID);
+		if (ID) await remove(ID);
+		ID = `record-${++records}`;
 		const stub = await invalidate(Object.freeze({ name: 'indexed' }), {}, 1);
 		assert.ok(stub.metadataFlags & INVALIDATED);
 		stubVersion = stub.version;
@@ -188,7 +223,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 		const entry = await replica();
 		assert.equal(entry.expiresAt, expiresAt, 'the record expiry is stored exactly as reported');
 		assert.equal(deadlineOf(ID), expiresAt, 'the replica deadline never passes the record expiry');
-		await new Promise((resolve) => setTimeout(resolve, 600));
+		advanceClock(600);
 		calls = [];
 		assert.equal(await Records.get(ID), undefined, 'an expired record reads as a resident reads it: gone');
 		const demoted = await waitFor(() => {
@@ -221,7 +256,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 		await replica();
 		await Records.closeMaintenance();
 		try {
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			advanceClock(250);
 			const held = Records.primaryStore.getEntry(ID);
 			assert.ok(held.metadataFlags & REPLICA && deadlineOf(ID) < Date.now(), 'a replica past its deadline still held');
 			calls = [];
@@ -240,7 +275,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 
 	it('slides on a table with its own record expiry, never past that expiry, which a demoted stub keeps', async () => {
 		const Expiring = table({
-			database: 'test',
+			database: 'residencyReplicas',
 			table: 'ResidencyReplicasExpiring',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
 			audit: true,
@@ -280,7 +315,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 		assert.equal(entry.expiresAt, residentExpiresAt, 'the row keeps the record expiry as reported');
 		const first = deadlineOf(ID, Expiring);
 		assert.ok(first <= Date.now() + 2000 && first > Date.now() + 1500);
-		await new Promise((resolve) => setTimeout(resolve, 1100));
+		advanceClock(1100);
 		assert.equal((await Expiring.get(ID)).body, 'complete');
 		await waitFor(() => (deadlineOf(ID, Expiring) > first ? true : undefined), 'a read hit to renew the deadline');
 		assert.equal(Expiring.primaryStore.getEntry(ID).expiresAt, residentExpiresAt, 'a renewal never touches the row');
@@ -292,9 +327,9 @@ describeReplicas('Local replicas of residency stubs', function () {
 		entry = Expiring.primaryStore.getEntry(ID);
 		assert.equal(entry.expiresAt, residentExpiresAt);
 		assert.equal(deadlineOf(ID, Expiring), residentExpiresAt, 'the record expiry caps the deadline');
-		await new Promise((resolve) => setTimeout(resolve, 1100));
+		advanceClock(1100);
 		assert.equal((await Expiring.get(ID)).body, 'complete');
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await sleep(100);
 		assert.equal(deadlineOf(ID, Expiring), residentExpiresAt, 'a read hit never extends past the record expiry');
 		assert.deepEqual(loaded, [ID, ID]);
 
@@ -312,7 +347,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 
 	it('keeps committed computed index entries when the fetched body replaces a stub', async () => {
 		const Computed = table({
-			database: 'test',
+			database: 'residencyReplicas',
 			table: 'ResidencyReplicasComputed',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
@@ -495,10 +530,11 @@ describeReplicas('Local replicas of residency stubs', function () {
 		Records.setTTLExpiration({ replicaExpiration: 2 });
 		const entry = await replica();
 		const first = deadlineOf(ID);
+		advanceClock(100); // a renewal now would move the deadline
 		assert.equal((await Records.get(ID)).body, 'complete');
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await sleep(50);
 		assert.equal(deadlineOf(ID), first, 'a fresh replica is not renewed');
-		await new Promise((resolve) => setTimeout(resolve, 1050));
+		advanceClock(1050);
 		assert.equal((await Records.get(ID)).body, 'complete');
 		await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'the read hit to renew the deadline');
 		const current = Records.primaryStore.getEntry(ID);
@@ -512,7 +548,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 		Records.setTTLExpiration({ replicaExpiration: 2, replicaRefreshFraction: 0.25 });
 		await replica();
 		const first = deadlineOf(ID);
-		await new Promise((resolve) => setTimeout(resolve, 700));
+		advanceClock(700);
 		assert.equal((await Records.get(ID)).body, 'complete');
 		await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'a quarter of the lifetime to renew');
 
@@ -523,9 +559,9 @@ describeReplicas('Local replicas of residency stubs', function () {
 		response = { ...response, version: stub.version };
 		await replica();
 		const fixed = deadlineOf(ID);
-		await new Promise((resolve) => setTimeout(resolve, 1100));
+		advanceClock(1100);
 		assert.equal((await Records.get(ID)).body, 'complete');
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await sleep(100);
 		assert.equal(deadlineOf(ID), fixed, 'a fraction of 1 is a fixed lifetime');
 	});
 
@@ -539,11 +575,11 @@ describeReplicas('Local replicas of residency stubs', function () {
 		assert.ok(existsSync(filePath));
 		setDeletionDelay(0);
 		try {
-			await new Promise((resolve) => setTimeout(resolve, 1100));
+			advanceClock(1100);
 			assert.equal((await Records.get(ID)).body, 'complete');
 			await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'the read hit to renew the deadline');
 			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & HAS_BLOBS);
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await sleep(100);
 			assert.ok(existsSync(filePath), 'the renewal released the body’s own blob file');
 			assert.equal((await (await Records.get(ID)).file.arrayBuffer()).byteLength, 25000);
 		} finally {
@@ -560,7 +596,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 
 	it('gives a replica row without a deadline entry a lifetime on the first sweep after load', async () => {
 		const Repaired = table({
-			database: 'test',
+			database: 'residencyReplicas',
 			table: 'ResidencyReplicasRepaired',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
 			replicaExpiration: 2,
@@ -590,7 +626,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 
 	it('drops the deadline store with its table', async () => {
 		const Dropped = table({
-			database: 'test',
+			database: 'residencyReplicas',
 			table: 'ResidencyReplicasDropped',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
 		});
@@ -626,7 +662,8 @@ describeReplicas('Local replicas of residency stubs', function () {
 		await Records.closeMaintenance();
 		Records.setTTLExpiration({ expiration: 0, eviction: 0, replicaExpiration: 0 });
 		Records.resumeMaintenance();
-		await new Promise((resolve) => setTimeout(resolve, 1200));
+		advanceClock(250); // past the replica's deadline
+		await sleep(250); // five of the 50ms sweep intervals a 0.2s lifetime used
 		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & REPLICA, 'no sweep runs while replicas are disabled');
 		Records.setTTLExpiration({ replicaExpiration: 0.001 });
 		await waitFor(() => {
