@@ -30,7 +30,8 @@
  *
  * The load generator is closed-loop: `--concurrency` callers (default 16 per Harper thread), each
  * sending its next request when the previous one answers, spread over `--client-threads` Node worker
- * threads. Latency is per HTTP request (one transaction, including retries). `client_elu` is the busiest
+ * threads. Latency is per HTTP request (one transaction, including retries), for requests that complete
+ * inside the measured window. `client_elu` is the busiest
  * client thread's event-loop utilization; near 1 means the client, not Harper, limits throughput.
  *
  * Usage (after npm run build from the repo root):
@@ -39,7 +40,7 @@
  *
  * Result format, one line per workload:
  *   HOT_KEY_COMMIT_RESULT label=… workload=hot1 mode=add threads=N concurrency=N commits=N commits_per_sec=N
- *     p50_ms=N.NN p99_ms=N.NN retries=N retries_per_commit=N.NNN errors=N
+ *     p50_ms=N.NN p99_ms=N.NN p999_ms=N.NN max_ms=N.NN retries=N retries_per_commit=N.NNN max_retries=N errors=N
  *     counts_ok=true|false|inconclusive harper_threads_seen=N client_elu=N.NN
  */
 import http from 'node:http';
@@ -210,6 +211,7 @@ interface WorkloadResult {
 	errors: number;
 	firstError?: string;
 	retries: number;
+	maxRetries: number;
 	harperThreads: number;
 	clientElu: number;
 	countsOk: 'true' | 'false' | 'inconclusive';
@@ -231,6 +233,7 @@ interface LoadResult {
 	errors: number;
 	firstError?: string;
 	retries: number;
+	maxRetries: number;
 	harperThreads: number[];
 	elu: number;
 }
@@ -247,6 +250,7 @@ function generateLoad(task: LoadTask): void {
 	const uncertain = new Int32Array(task.keyCount);
 	const harperThreads = new Set<number>();
 	let retries = 0;
+	let maxRetries = 0;
 	let measuring = false;
 	let stopped = false;
 	let commits = 0;
@@ -258,7 +262,6 @@ function generateLoad(task: LoadTask): void {
 	const caller = async (): Promise<void> => {
 		while (!stopped) {
 			const ids = pickIds(task.keyCount, task.recordsPerTxn);
-			const counted = measuring;
 			const start = performance.now();
 			let res: Response | undefined;
 			try {
@@ -269,8 +272,10 @@ function generateLoad(task: LoadTask): void {
 			const elapsed = performance.now() - start;
 			if (res && res.status >= 200 && res.status < 300) {
 				for (const id of ids) acked[id]++;
-				if (counted && measuring) {
+				// a commit counts when it completes inside the window, so stalls that began before it are kept
+				if (measuring) {
 					retries += res.body.retries;
+					if (res.body.retries > maxRetries) maxRetries = res.body.retries;
 					harperThreads.add(res.body.thread);
 					if (commits === latencies.length) {
 						const grown = new Float64Array(latencies.length * 2);
@@ -282,7 +287,7 @@ function generateLoad(task: LoadTask): void {
 			} else {
 				for (const id of ids) uncertain[id]++;
 				firstError ??= res ? `${res.status}: ${JSON.stringify(res.body).slice(0, 300)}` : undefined;
-				if (counted && measuring) errors++;
+				if (measuring) errors++;
 			}
 		}
 	};
@@ -306,6 +311,7 @@ function generateLoad(task: LoadTask): void {
 			errors,
 			firstError,
 			retries,
+			maxRetries,
 			harperThreads: [...harperThreads],
 			elu,
 		};
@@ -386,6 +392,7 @@ async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: str
 		errors: loads.reduce((sum, load) => sum + load.errors, 0),
 		firstError: loads.find((load) => load.firstError)?.firstError,
 		retries: loads.reduce((sum, load) => sum + load.retries, 0),
+		maxRetries: Math.max(...loads.map((load) => load.maxRetries)),
 		harperThreads: harperThreads.size,
 		clientElu: Math.max(...loads.map((load) => load.elu)),
 		countsOk: mismatched ? 'false' : ambiguous ? 'inconclusive' : 'true',
@@ -431,7 +438,8 @@ async function main(): Promise<void> {
 				`HOT_KEY_COMMIT_RESULT label=${opts.label || '-'} workload=${name} mode=${opts.mode} threads=${opts.threads} ` +
 				`concurrency=${opts.concurrency} commits=${r.commits} commits_per_sec=${(r.commits / r.seconds).toFixed(0)} ` +
 				`p50_ms=${percentile(r.latencies, 0.5).toFixed(2)} p99_ms=${percentile(r.latencies, 0.99).toFixed(2)} ` +
-				`retries=${r.retries} retries_per_commit=${(r.retries / r.commits).toFixed(3)} errors=${r.errors} ` +
+				`p999_ms=${percentile(r.latencies, 0.999).toFixed(2)} max_ms=${(r.latencies.at(-1) ?? 0).toFixed(2)} ` +
+				`retries=${r.retries} retries_per_commit=${(r.retries / r.commits).toFixed(3)} max_retries=${r.maxRetries} errors=${r.errors} ` +
 				`counts_ok=${r.countsOk} harper_threads_seen=${r.harperThreads} client_elu=${r.clientElu.toFixed(2)}`;
 			console.log(line);
 			if (r.countsOk === 'false') {

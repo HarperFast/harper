@@ -210,7 +210,7 @@ node benchmarks/hot-key-commit/run.mts --threads=8 --workloads=hot1,hot4
 ### Parseable output line
 
 ```
-HOT_KEY_COMMIT_RESULT label=… workload=hot1 mode=add threads=N concurrency=N commits=N commits_per_sec=N p50_ms=N.NN p99_ms=N.NN retries=N retries_per_commit=N.NNN errors=N counts_ok=true|false|inconclusive harper_threads_seen=N client_elu=N.NN
+HOT_KEY_COMMIT_RESULT label=… workload=hot1 mode=add threads=N concurrency=N commits=N commits_per_sec=N p50_ms=N.NN p99_ms=N.NN p999_ms=N.NN max_ms=N.NN retries=N retries_per_commit=N.NNN max_retries=N errors=N counts_ok=true|false|inconclusive harper_threads_seen=N client_elu=N.NN
 ```
 
 ---
