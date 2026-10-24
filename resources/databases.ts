@@ -1134,7 +1134,7 @@ export function getDatabases(): Databases {
 	try {
 		return loadDatabaseCatalogs();
 	} catch (error) {
-		// Retry the scan without exposing partially recovered tables or losing their pending tails.
+		// Keep deferred replay tails available to the next catalog scan.
 		loadedDatabases = false;
 		throw error;
 	}
@@ -3841,6 +3841,10 @@ function internalDbisFor(rootStore: any, target: TableTarget): any {
 	return dbisDb;
 }
 
+export function getDatabaseCatalog(databaseName: string): any {
+	return internalDbisFor(database({ database: databaseName, table: undefined }), GLOBAL_TARGET);
+}
+
 /**
  * The factory a branched application declares tables through: each declaration goes to the branch
  * of the database it names, or to `table()` itself for a database the application did not branch.
@@ -4181,6 +4185,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			residency = residency === undefined ? previous : residency;
 			if (residency) {
 				if (schemaDefined === false) throw new ClientError('@residency requires a schema-defined table', 400);
+				const effectiveAudit =
+					audit ?? persisted.descriptor?.audit ?? Table?.audit ?? envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+				if (!effectiveAudit) throw new ClientError('@residency requires audit logging for durable replication', 400);
+				if ((replicate ?? persisted.descriptor?.replicate ?? Table?.replicate) === false)
+					throw new ClientError('@residency requires table replication', 400);
 				residency = normalizeResidencyPolicy(residency);
 				compileResidencyPolicy(residency);
 				if (residency.byAttribute && persisted.descriptor && !previous)

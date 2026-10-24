@@ -690,7 +690,9 @@ export class RecordEncoder extends StructonEncoder {
 						position += 4;
 					}
 					if (metadataFlags & HAS_RESIDENCY_SLOT) {
-						residencySlot = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength).getUint16(position);
+						const dataView =
+							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+						residencySlot = dataView.getUint16(position);
 						position += 2;
 					}
 					if (metadataFlags & HAS_NODE_ID) {

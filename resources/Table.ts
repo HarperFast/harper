@@ -5130,6 +5130,8 @@ export function makeTable(options): TableResourceClass {
 			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
 			checkValidId(id);
 			if (residencyPolicy?.byAttribute && writtenHere && !fullUpdate && needsResidentLoad(this.#entry, context)) {
+				if (context && 'onlyIfCached' in context && context.onlyIfCached)
+					throw new ClientError('An attribute residency patch requires the complete resident record', 503);
 				const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
 				transaction.disregardReadTxn();
 				return when(this.ensureLoaded(), () => this._writeUpdate(id, updates, fullUpdate, options));

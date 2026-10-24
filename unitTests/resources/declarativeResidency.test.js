@@ -14,6 +14,7 @@ const {
 	installResidencyMap,
 	getResidencyMapTable,
 	residencyDeclarationDatabases,
+	residencyIsLocal,
 } = require('#src/resources/residencyMaps');
 const { createResidencyMap } = require('#src/resources/residencyPolicy');
 const { compareResidencyPlacement } = require('#src/resources/residencyConversion');
@@ -77,6 +78,142 @@ describe('Declarative residency', function () {
 		await Records.put('remote', { id: 'remote', body: 'complete' });
 		assert.equal(Records.primaryStore.getEntry('remote')?.value, undefined);
 	});
+	for (const auditMode of ['explicit', 'default', 'disable'])
+		it(`refuses declarative placement without an audit log (${auditMode})`, async () => {
+			const prior = env.get('logging_auditLog');
+			const name = `SlotNoAudit${auditMode}`;
+			try {
+				if (auditMode === 'disable') await declare(name, '@residency(slots: 10)');
+				if (auditMode === 'default') env.setProperty('logging_auditLog', false);
+				await assert.rejects(
+					loadGQLSchema(`type ${name} @table(database: "slots_test"${auditMode === 'default' ? '' : ', audit: false'})
+						@residency(slots: 10) { id: ID @primaryKey }`),
+					/audit logging/
+				);
+			} finally {
+				env.setProperty('logging_auditLog', prior);
+			}
+		});
+
+	it('refuses to omit declarative records from a non-replicating table', async () => {
+		await assert.rejects(
+			loadGQLSchema(`type SlotNoReplication @table(database: "slots_test", replicate: false)
+			@residency(slots: 10) { id: ID @primaryKey }`),
+			/replication/
+		);
+	});
+
+	it('refuses a nonnumeric local shard even with a custom map and no shard list', async () => {
+		const list = env.get('replication_shards'),
+			shard = env.get('replication_shard');
+		try {
+			env.setProperty('replication_shards', undefined);
+			env.setProperty('replication_shard', '0');
+			assert.throws(() => residencyIsLocal('slots_test', 0, 10), /replication.shard/);
+		} finally {
+			env.setProperty('replication_shards', list);
+			env.setProperty('replication_shard', shard);
+		}
+	});
+
+	it('refuses a cold attribute patch that requests cached data only', async () => {
+		const Records = await declare(
+			'SlotCachedOnly',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed\nbody: String'
+		);
+		await Records.put('remote', { id: 'remote', region: 1, body: 'complete' });
+		Records.sourcedFrom({ load: () => assert.fail('onlyIfCached must not fetch') }, { intermediateSource: true });
+		await assert.rejects(
+			async () => Records.patch('remote', { body: 'changed' }, { onlyIfCached: true }),
+			/complete resident record/
+		);
+	});
+
+	it('refuses a conversion comparison after its table is dropped during a yield', async () => {
+		const database = 'slot_conversion_dropped';
+		const map = await initializeResidencySlots({ database, slots: 1, ranges: [{ start: 0, end: 1, shard: 0 }] });
+		const Records = table({ database, table: 'Rows', audit: true, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		Records.setResidencyById(() => 0);
+		await transaction({}, async () => {
+			for (let id = 0; id < 300; id++) await Records.put(id, { id });
+		});
+		const comparison = compareResidencyPlacement(Records, { slots: 1 }, map);
+		const dropped = Records.dropTable();
+		await assert.rejects(comparison, /dropped|unloaded|changed|closed/);
+		await dropped;
+	});
+
+	it('checks active slots when another thread created the database after its scan', async () => {
+		const { Worker } = require('node:worker_threads');
+		const worker = new Worker(
+			`
+			const { parentPort, workerData } = require('node:worker_threads');
+			require(workerData.testUtils).setupTestDBPath();
+			const { getDatabases } = require('#src/resources/databases');
+			const { activeResidencySlots, validateResidencyMapWrite } = require('#src/resources/residencyMaps');
+			getDatabases();
+			const { onMessageByType } = require('#js/server/threads/manageThreads');
+			onMessageByType('slot-catalog-check', () => {});
+			parentPort.postMessage({ type: 'slot-catalog-ready' });
+			parentPort.on('message', ({ type, previous, next }) => {
+				if (type !== 'slot-catalog-check') return;
+				let refused = false;
+				try { validateResidencyMapWrite(previous.database, next, previous); } catch { refused = true; }
+				parentPort.postMessage({ type: 'slot-catalog-result', slots: activeResidencySlots(previous.database), refused });
+			});
+			parentPort.ref();
+		`,
+			{
+				eval: true,
+				workerData: {
+					testUtils: require.resolve('../testUtils'),
+					noServerStart: true,
+					addPorts: [],
+					workerIndex: 9,
+					workerCount: 10,
+				},
+			}
+		);
+		const waitForMessage = (type) =>
+			new Promise((resolve, reject) => {
+				const timer = setTimeout(() => finish(new Error(`Worker did not send ${type}`)), 5000);
+				const exited = (code) => finish(new Error(`Catalog worker exited before ${type}: ${code}`));
+				function finish(error, message) {
+					clearTimeout(timer);
+					worker.off('message', listener);
+					worker.off('error', finish);
+					worker.off('exit', exited);
+					if (error) reject(error);
+					else resolve(message);
+				}
+				const listener = (message) => {
+					if (message.type !== type) return;
+					finish(null, message);
+				};
+				worker.on('message', listener);
+				worker.once('error', finish);
+				worker.once('exit', exited);
+			});
+		try {
+			await waitForMessage('slot-catalog-ready');
+			const database = 'slot_late_database';
+			const previous = await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+			await loadGQLSchema(`type LateTable @table(database: "${database}") @residency(slots: 2) { id: ID @primaryKey }`);
+			const answer = waitForMessage('slot-catalog-result');
+			worker.postMessage({
+				type: 'slot-catalog-check',
+				previous,
+				next: createResidencyMap(database, 2, [{ start: 0, end: 2, shard: 1 }], 2),
+			});
+			const result = await answer;
+			assert.equal(result.slots, 2, 'a cold thread must inspect the durable catalog: ' + JSON.stringify(result));
+			assert.equal(result.refused, true, 'active assignments cannot be changed from a cold thread');
+		} finally {
+			await worker.terminate();
+		}
+	});
+
 	it('confirms an index-free non-owner write using its audit entry', async () => {
 		const Records = await declare('SlotNoIndexConfirmed', '@residency(slots: 10, slotFrom: "1")', 'body: String');
 		const calls = [];
@@ -232,6 +369,69 @@ describe('Declarative residency', function () {
 		const position = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? entry.localTime : entry.version;
 		assert.equal(confirmed, position, 'confirmation must include the committed audit entry');
 	});
+	it('confirms the original LMDB commit when another write replaces its primary row', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
+		const Records = await declare(
+			'SlotAckReplaced',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed'
+		);
+		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
+		setResidencyPlacementGuard(() => {});
+		let confirmed;
+		let originalPosition;
+		replicationConfirmation((_database, position) => {
+			confirmed = position;
+			return Promise.resolve();
+		});
+		const store = Records.primaryStore;
+		const original = store.childTransaction;
+		let first = true;
+		store.childTransaction = function (...args) {
+			return original.apply(this, args).then(async (committed) => {
+				if (first) {
+					first = false;
+					originalPosition = store.getEntry('moved').localTime;
+					await transaction({}, () => Records.put('moved', { id: 'moved', region: 1, body: 'later' }));
+				}
+				return committed;
+			});
+		};
+		try {
+			await Records.patch('moved', { region: 1 });
+			assert.notEqual(store.getEntry('moved').localTime, originalPosition);
+			assert.equal(confirmed, originalPosition);
+		} finally {
+			store.childTransaction = original;
+		}
+	});
+	it('confirms an attribute transition followed by deletion in the same batch', async () => {
+		const Records = await declare(
+			'SlotAckThenDelete',
+			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'region: Int @indexed'
+		);
+		await Records.put('moved', { id: 'moved', region: 0 });
+		setResidencyPlacementGuard(() => {});
+		const confirmations = [];
+		replicationConfirmation((_database, position, count, owners) => {
+			confirmations.push({ position, count, owners });
+			return Promise.resolve();
+		});
+		await transaction({}, async () => {
+			await Records.patch('moved', { region: 1 });
+			await Records.delete('moved');
+		});
+		assert.equal(Records.primaryStore.getEntry('moved')?.value, undefined);
+		assert.equal(confirmations.length, 1, 'deleting the primary row must not erase the confirmation target');
+		assert.deepEqual(confirmations[0].owners, [['slot-owner']]);
+		const entries = [...Records.auditStore.getRange({ start: 1, log: 0 })].filter(
+			(entry) => entry.tableId === Records.tableId && entry.recordId === 'moved'
+		);
+		const last = entries.at(-1);
+		assert.equal(confirmations[0].position, last.txnLogKey ?? last.key);
+	});
+
 	it('keeps mandatory owner confirmation through a native RocksDB TryAgain retry', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const Records = await declare(

@@ -1,5 +1,6 @@
 import { setImmediate } from 'node:timers/promises';
 import { server } from '../server/Server.ts';
+import { databases } from './databases.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import {
 	compileResidencyPolicy,
@@ -43,7 +44,11 @@ export async function compareResidencyPlacement(Table: any, policy: unknown, sna
 			inspectedLists.add(entry.residencyId);
 			for (const name of Table.getResidencyRecord(entry.residencyId) ?? []) if (!known.has(name)) departed.add(name);
 		}
-		if (++checked % 256 === 0) await setImmediate();
+		if (++checked % 256 === 0) {
+			await setImmediate();
+			if (databases[Table.databaseName]?.[Table.tableName] !== Table || Table.primaryStore.status === 'closed')
+				throw new ClientError('The table was dropped or replaced during the residency comparison', 409);
+		}
 	}
 	return {
 		database: Table.databaseName,

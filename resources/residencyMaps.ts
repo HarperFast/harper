@@ -1,4 +1,4 @@
-import { databases, getDatabases, table } from './databases.ts';
+import { databases, getDatabaseCatalog, getDatabases, table } from './databases.ts';
 import { server } from '../server/Server.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -36,7 +36,7 @@ export function setResidencyPlacementGuard(guard: typeof placementGuard): void {
 	placementGuard = guard;
 }
 
-export function residencyFailure(database: string, reason: string): never {
+function residencyFailure(database: string, reason: string): never {
 	const reported = new Int32Array(
 		getResidencyMapTable().auditStore.getUserSharedBuffer(['residency-failure', database, reason], new ArrayBuffer(4))
 	);
@@ -62,6 +62,8 @@ let configuration: Readonly<{ shards: readonly number[] | undefined; shard: numb
 export function getResidencyConfiguration() {
 	const value = env.get('replication_shards');
 	const shard = env.get('replication_shard');
+	if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
+		throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
 	if (value !== configuredList) {
 		const shards = canonicalShards(value);
 		configuredList = value;
@@ -74,8 +76,14 @@ export function getResidencyConfiguration() {
 	return configuration;
 }
 
-export function assertResidencyConfiguration(database: string, hasMap: boolean): void {
-	const { shards, shard } = getResidencyConfiguration();
+function assertResidencyConfiguration(database: string, hasMap: boolean): void {
+	let current;
+	try {
+		current = getResidencyConfiguration();
+	} catch (error) {
+		residencyFailure(database, error.message);
+	}
+	const { shards, shard } = current;
 	if (!shards && !hasMap) residencyFailure(database, 'replication.shards is required before a map is installed');
 	if (shards && !shards.includes(shard)) residencyFailure(database, 'replication.shard is not in replication.shards');
 	placementGuard?.(database);
@@ -102,16 +110,14 @@ export function getResidencyMapTable(): any {
 
 export function activeResidencySlots(database: string): number {
 	let slots = 0;
-	const Tables = Object.values(getDatabases()[database] ?? {});
-	const catalog = Tables.find((Table) => Table.dbisDB)?.dbisDB;
-	if (catalog)
-		for (const { value } of catalog.getRange({ start: '', end: '\uffff' }))
-			slots = Math.max(slots, value?.residency?.slots ?? 0);
+	const catalog = getDatabaseCatalog(database);
+	for (const { value } of catalog.getRange({ start: '', end: '\uffff' }))
+		slots = Math.max(slots, value?.residency?.slots ?? 0);
 	return slots;
 }
 
 export function readResidencyMap(database: string): ResidencyMapSnapshot | undefined {
-	return databases.system?.[RESIDENCY_MAP_TABLE]?.primaryStore.getSync(database);
+	return getResidencyMapTable().primaryStore.getSync(database);
 }
 
 export function validateResidencyMapWrite(database: string, value: any, previous: any, replay = false): boolean {
@@ -174,7 +180,9 @@ export async function prepareResidencyDeclaration(
 ): Promise<void> {
 	getDatabases();
 	// Keep failed first activations visible even though their user table was never published.
-	getResidencyMapTable().dbisDB.putSync([DECLARATION_KEY, database], true);
+	const catalog = getResidencyMapTable().dbisDB;
+	const declaration = [DECLARATION_KEY, database];
+	if (!catalog.getSync(declaration)) catalog.putSync(declaration, true);
 	const existing = databases[database]?.[name];
 	const snapshot = readResidencyMap(database);
 	assertResidencyConfiguration(database, !!snapshot);
@@ -187,7 +195,6 @@ export async function prepareResidencyDeclaration(
 }
 
 export function getResidencyMap(database: string, requiredSlots = 1) {
-	// User database replay can precede the directory scan opening the system database.
 	const Maps = getResidencyMapTable();
 	const row = Maps?.primaryStore.getSync(database);
 	assertResidencyConfiguration(database, !!row);
