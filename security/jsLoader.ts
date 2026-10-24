@@ -313,6 +313,34 @@ function normalizeImportedModule(importedModule: any): any {
 }
 
 /**
+ * The names a CommonJS module assigns to `module.exports` at runtime that the namespace from a native
+ * `import()` lacks. Node 22 gives such a namespace no `'module.exports'` key, so the module is identified
+ * by its `require.cache` entry instead.
+ */
+function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, unknown> {
+	if (!moduleUrl.startsWith('file:')) return {};
+	const path = fileURLToPath(moduleUrl);
+	let cjsModule = require.cache[path];
+	if (!cjsModule) {
+		try {
+			cjsModule = require.cache[realpathSync(path)];
+		} catch {}
+	}
+	const cjsExports = cjsModule?.exports;
+	if (!cjsExports || cjsExports !== namespace.default) return {};
+	if (typeof cjsExports !== 'object' && typeof cjsExports !== 'function') return {};
+	if (Array.isArray(cjsExports) || ArrayBuffer.isView(cjsExports)) return {};
+	const names: Record<string, unknown> = Object.create(null);
+	for (const name of Object.keys(cjsExports)) {
+		if (name in namespace) continue;
+		try {
+			names[name] = cjsExports[name];
+		} catch {}
+	}
+	return names;
+}
+
+/**
  * Load a module using Node's vm.Module API with optional sandboxing
  * @param moduleUrl - The URL of the module to load
  * @param scope - The application scope
@@ -740,8 +768,9 @@ async function getCompartment(scope: ApplicationScope, globals) {
 							Object.assign(exports, harperExports);
 						},
 					};
-				} else if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
-					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+				}
+				checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+				if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
 					const nativeModule = createRequire(moduleSpecifier)(fileURLToPath(moduleSpecifier));
 					scope.markNativeRuntime?.();
 					const moduleExports = normalizeImportedModule(nativeModule);
@@ -773,8 +802,8 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
-					const moduleExports = await import(moduleSpecifier);
+					const namespace = await import(moduleSpecifier);
+					const moduleExports = { ...namespace, ...dynamicCjsExports(namespace, moduleSpecifier) };
 					return {
 						imports: [],
 						exports: Object.keys(moduleExports),
