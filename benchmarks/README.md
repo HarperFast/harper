@@ -9,6 +9,7 @@ This directory contains single-node storage and throughput benchmarks for Harper
 | **Indexed-write**  | `indexed-write/`                  | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                                                  |
 | **TTL-churn**      | `ttl-churn/`                      | Storage size stability under continuous insert-with-TTL (**ST-1**)                                          |
 | **Concurrent R+W** | `concurrent-rw/`                  | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**)                                 |
+| Hot-key commit     | `hot-key-commit/`                 | Commit throughput, latency and retries per commit when audited transactions contend on a few keys           |
 | **SQL engine A/B** | `sql-engine/`                     | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape                                   |
 | **Compression**    | `compression/`                    | RocksDB codec comparison: on-disk size and throughput per codec                                             |
 | WebSocket scale    | [`ws-scale/`](ws-scale/README.md) | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
@@ -177,6 +178,43 @@ CONCURRENT_RW_RESULT read_ops=NNN write_ops=NNN read_p50_ms=N.N read_p95_ms=N.N 
 ```
 
 ---
+
+---
+
+## Hot-key commit contention (`hot-key-commit/`)
+
+Each request is one transaction that reads and increments a `Counter` record on an audited table.
+`hot1`/`hot4` touch 1 or 4 records out of 32, so concurrent commits conflict and Harper retries them;
+`cold1`/`cold4` draw from 100 000 records as a control. Reports commits/s, request latency (p50, p99,
+p99.9, max) and retries per commit (the native transaction handle's own retry count, returned by the
+resource; RocksDB only, `n/a` on LMDB), and checks that every key's final count equals the increments
+the client saw acknowledged. Exits 1 when that check fails in `add` mode or a window has no commits.
+
+```sh
+node benchmarks/hot-key-commit/run.mts                       # 4 threads, all workloads
+node benchmarks/hot-key-commit/run.mts --threads=8 --workloads=hot1,hot4
+```
+
+| Flag                | Default                 | Description                                                          |
+| ------------------- | ----------------------- | -------------------------------------------------------------------- |
+| `--threads`         | 4                       | Harper worker threads                                                |
+| `--concurrency`     | 16 × threads            | Closed-loop in-flight requests                                       |
+| `--client-threads`  | 4                       | Load-generator worker threads                                        |
+| `--duration`        | 10 s                    | Measured window per workload                                         |
+| `--warmup`          | 3 s                     | Unmeasured load before each window                                   |
+| `--workloads`       | `hot1,hot4,cold1,cold4` | Workloads to run, in order                                           |
+| `--mode`            | `add`                   | `add` = `addTo(1)`; `set` = write read value + 1 (lossy, diagnostic) |
+| `--hot-keys`        | 32                      | Size of the hot key set                                              |
+| `--cold-keys`       | 100 000                 | Records seeded (the cold key set)                                    |
+| `--label`           | —                       | Free-form label echoed in the result line                            |
+| `--engine`          | `rocksdb`               | Storage engine (`HARPER_STORAGE_ENGINE`)                             |
+| `--startup-timeout` | 120 000 ms              | Harper startup timeout                                               |
+
+### Parseable output line
+
+```
+HOT_KEY_COMMIT_RESULT label=… workload=hot1 mode=add threads=N concurrency=N commits=N commits_per_sec=N p50_ms=N.NN p99_ms=N.NN p999_ms=N.NN max_ms=N.NN retries=N retries_per_commit=N.NNN max_retries=N errors=N counts_ok=true|false|inconclusive harper_threads_seen=N client_elu=N.NN
+```
 
 ---
 
