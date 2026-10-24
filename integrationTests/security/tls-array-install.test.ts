@@ -44,7 +44,7 @@ const SUBJECT_ALT_NAME_OID = '2.5.29.17';
 const TLS_HANDSHAKE_TIMEOUT_MS = 5000;
 const LOG_FLUSH_TIMEOUT_MS = 5000;
 // Under Bun's node:http emulation, createSecureServer({ SNICallback }) without a static
-// cert/key speaks plaintext on the secure port (see server/DESIGN.md). The install/config/DB
+// cert/key speaks plaintext on the secure port. The install/config/DB
 // assertions run on all runtimes; only the live TLS handshake probes skip under Bun.
 const isBun = process.env.HARPER_RUNTIME === 'bun';
 
