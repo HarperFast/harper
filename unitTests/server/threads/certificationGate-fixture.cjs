@@ -64,7 +64,7 @@ parentPort.on('message', (message) => {
 		return;
 	}
 	if (message?.type === 'fixture-main-request') {
-		const { requestFromMainThread } = require('#js/server/threads/manageThreads');
+		const { requestFromMainThread } = require('#src/server/threads/manageThreads');
 		requestFromMainThread(message.requestType, message.payload, message.timeoutMs).then(
 			(result) => parentPort.postMessage({ type: 'fixture-main-answer', tag: message.tag, result }),
 			(error) =>
