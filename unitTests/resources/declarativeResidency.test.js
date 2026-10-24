@@ -77,6 +77,23 @@ describe('Declarative residency', function () {
 		await Records.put('remote', { id: 'remote', body: 'complete' });
 		assert.equal(Records.primaryStore.getEntry('remote')?.value, undefined);
 	});
+	it('confirms an index-free non-owner write using its audit entry', async () => {
+		const Records = await declare('SlotNoIndexConfirmed', '@residency(slots: 10, slotFrom: "1")', 'body: String');
+		const calls = [];
+		replicationConfirmation((_database, position, count, owners) => {
+			calls.push({ position, count, owners });
+			return Promise.resolve();
+		});
+		await transaction({ replicatedConfirmation: 1 }, () => Records.put('remote', { id: 'remote', body: 'complete' }));
+		assert.equal(Records.primaryStore.getEntry('remote')?.value, undefined);
+		assert.equal(calls.length, 1, 'omitting the local primary row must not skip explicit confirmation');
+		assert.deepEqual(calls[0].owners, [['slot-owner']]);
+		assert.equal(calls[0].count, 1);
+		const entry = [...Records.auditStore.getRange({ start: 1, log: 0 })].find(
+			(entry) => entry.tableId === Records.tableId && entry.recordId === 'remote'
+		);
+		assert.equal(calls[0].position, entry.txnLogKey ?? entry.key);
+	});
 
 	it('stores attribute slot zero independently of legacy residency IDs', async () => {
 		const Records = await declare(
