@@ -331,14 +331,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 				const runTransaction = requiresAbortableCommit ? store.childTransaction : store.transaction;
 				const transactionResolution = runTransaction.call(store, () => {
 					const auditStore = store.rootStore.auditStore;
-					const beforePosition = this.requestedConfirmationCount ? latestAuditPosition(auditStore) : undefined;
+					const beforePosition = requiresAbortableCommit ? latestAuditPosition(auditStore) : undefined;
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);
 						doWrite(write);
 					}
 					this.refuseUnconfirmable();
-					if (this.requestedConfirmationCount) {
+					if (this.confirmationCount) {
 						const afterPosition = latestAuditPosition(auditStore);
 						// This child holds the writer lock: a new audit key belongs to this batch, even
 						// when non-owner placement omitted every primary row.
