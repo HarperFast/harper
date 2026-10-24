@@ -9758,6 +9758,14 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
+	// Not stagedEntry: a publish restamps the record without staging it, and a deferred save may not have run yet.
+	function followsAppliedWrite(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return true;
+		}
+		return false;
+	}
+
 	// The commit base is the committed record unless another write to the key already saved without being
 	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
@@ -10096,9 +10104,12 @@ export function makeTable(options): TableResourceClass {
 						// resolving the same tie could keep different values at the same version.
 						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
 						if (
-							racedVersion !== existingVersion &&
-							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
-							(existingVersion != null || !updatedRecord || !replacesRacedRecord)
+							// The source wrote this key through its context: that write is ahead of the fill in this
+							// transaction, and on LMDB existingEntry is the committed record, which cannot show it.
+							followsAppliedWrite(sourceWrite) ||
+							(racedVersion !== existingVersion &&
+								// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
+								(existingVersion != null || !updatedRecord || !replacesRacedRecord))
 						) {
 							logger.trace?.(
 								`Discarding resolved record from source with id: ${id}, source version: ${sourceVersion}, current version: ${racedVersion}`
@@ -10153,7 +10164,6 @@ export function makeTable(options): TableResourceClass {
 							logger.trace?.(
 								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
-							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 							const writeAudit = (audit && (hasChanges || omitLocalRecord)) || null;
 							updateRecord(
 								id,

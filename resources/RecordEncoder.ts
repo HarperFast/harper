@@ -975,6 +975,7 @@ export function recordUpdater(store, tableId, auditStore) {
 		// them all; nested values keep their own toJSON serialization.
 		record = storedFieldsOnly(store.encoder, record);
 		const isRocksDB = store instanceof RocksDatabase;
+		let replacingAuditEntry;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
 			// with rocksdb, we simplify to just storing the singular version/timestamp
@@ -982,11 +983,14 @@ export function recordUpdater(store, tableId, auditStore) {
 		} else if (audit == null)
 			// if not auditing, there is no local timestamp to reference
 			timestampNextEncoding = NO_TIMESTAMP;
-		else if (resolveRecord)
-			// preserve existing timestamp, if possible
-			timestampNextEncoding = existingEntry?.localTime
-				? TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS
-				: NO_TIMESTAMP;
+		else if (
+			resolveRecord &&
+			existingEntry?.localTime &&
+			(replacingAuditEntry = auditStore.get(existingEntry.localTime, tableId, id, existingEntry.nodeId))
+		)
+			// keep the local time only while its audit entry is there to replace: an appended entry is keyed by the
+			// last assigned time, which is this write's own only when it assigns one
+			timestampNextEncoding = TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS;
 		else
 			timestampNextEncoding = audit // for audit, we need it
 				? existingEntry?.localTime // we already have a timestamp, we need to record the previous one in the audit log
@@ -1004,14 +1008,12 @@ export function recordUpdater(store, tableId, auditStore) {
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
-			ifVersion?: number;
 			transaction?: any;
 		} = {
 			version: newVersion,
 			instructedWrite: timestampNextEncoding > 0,
 			transaction: options?.transaction,
 		};
-		let ifVersion;
 		let extendedType = 0;
 		try {
 			let previousResidencyId = existingEntry?.residencyId;
@@ -1048,8 +1050,6 @@ export function recordUpdater(store, tableId, auditStore) {
 			}
 			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
-			// we use resolveRecord outside of transaction, so must explicitly make it conditional
-			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
 				// Delete the prior row's blob files — except any the new record still references.
 				// Without the retention check, updating an unrelated attribute on a row that
@@ -1111,7 +1111,9 @@ export function recordUpdater(store, tableId, auditStore) {
 							}
 						}
 					}
-					replacingEntry ??= auditStore.get(replacingId, tableId, id, existingEntry.nodeId);
+					replacingEntry ??= isRocksDB
+						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId)
+						: replacingAuditEntry;
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](
@@ -1132,7 +1134,7 @@ export function recordUpdater(store, tableId, auditStore) {
 								structureVersion,
 								previousAdditionalAuditRefs,
 							},
-							{ ifVersion: ifVersion, transaction: options.transaction, nodeId, viaNodeId }
+							{ transaction: options.transaction, nodeId, viaNodeId }
 						);
 						return result;
 					}
@@ -1160,7 +1162,6 @@ export function recordUpdater(store, tableId, auditStore) {
 						// turn off append flag, as we are concerned this may be related to db corruption issues
 						// append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
 						instructedWrite: true,
-						ifVersion,
 						transaction: options.transaction,
 						nodeId,
 						viaNodeId,
