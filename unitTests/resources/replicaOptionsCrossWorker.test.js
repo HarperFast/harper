@@ -9,11 +9,10 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 // not one of the databases testUtils aliases onto one path: each alias would load its own class and sweep
 const DATABASE = 'replicaOptions';
 
-function fixtureWorker(tableName, role, sourcePort) {
+function fixtureWorker(role, sourcePort) {
 	const worker = new Worker(__dirname + '/fixtures/replicaOptionsWorker.cjs', {
 		workerData: {
 			database: DATABASE,
-			tableName,
 			role,
 			sourcePort,
 			noServerStart: true,
@@ -52,7 +51,10 @@ function fixtureWorker(tableName, role, sourcePort) {
 	};
 }
 
-async function withWorkers(name, options, run) {
+// one worker pair for the suite: a worker's startup costs more than each test
+let reader, writer;
+
+async function withTable(name, options, run) {
 	table({
 		database: DATABASE,
 		table: name,
@@ -62,15 +64,11 @@ async function withWorkers(name, options, run) {
 		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
 		...options,
 	});
-	const { port1, port2 } = new MessageChannel();
-	const writer = fixtureWorker(name, 'writer', port1);
-	const reader = fixtureWorker(name, 'reader', port2);
 	try {
-		await Promise.all([writer.call('init'), reader.call('init')]);
+		await Promise.all([writer.call('init', { table: name }), reader.call('init', { table: name })]);
 		await run(reader, writer);
-		await Promise.all([reader.call('close'), writer.call('close')]);
 	} finally {
-		await Promise.all([reader.worker.terminate(), writer.worker.terminate()]);
+		await Promise.allSettled([reader.call('close'), writer.call('close')]);
 	}
 }
 
@@ -100,10 +98,16 @@ async function updateAndRescan(writer, reader, options, key) {
 
 describe('Replica options across worker schema rescans', function () {
 	this.timeout(60000);
-	before(() => setupTestDBPath());
+	before(() => {
+		setupTestDBPath();
+		const { port1, port2 } = new MessageChannel();
+		writer = fixtureWorker('writer', port1);
+		reader = fixtureWorker('reader', port2);
+	});
+	after(() => Promise.all([reader?.worker.terminate(), writer?.worker.terminate()]));
 
 	it('applies an enabling lifetime to the next remote read without replacing the class', async () => {
-		await withWorkers(
+		await withTable(
 			'ReplicaOptionsEnable',
 			{ replicaExpiration: 0, replicaRefreshFraction: 1 },
 			async (reader, writer) => {
@@ -115,7 +119,7 @@ describe('Replica options across worker schema rescans', function () {
 	});
 
 	it('stops admissions on disable and retains an existing replica and deadline', async () => {
-		await withWorkers(
+		await withTable(
 			'ReplicaOptionsDisable',
 			{ replicaExpiration: 60, replicaRefreshFraction: 1 },
 			async (reader, writer) => {
@@ -132,7 +136,7 @@ describe('Replica options across worker schema rescans', function () {
 	});
 
 	it('applies changed lifetime and refresh fraction to admissions and read renewal', async () => {
-		await withWorkers(
+		await withTable(
 			'ReplicaOptionsRefresh',
 			{ replicaExpiration: 60, replicaRefreshFraction: 1 },
 			async (reader, writer) => {
@@ -154,7 +158,7 @@ describe('Replica options across worker schema rescans', function () {
 
 	it('keeps sweeping through unchanged schema rescans and stays stood down afterward', async function () {
 		if (isLMDB) this.skip();
-		await withWorkers('ReplicaOptionsSweep', { replicaExpiration: 0.2, replicaRefreshFraction: 1 }, async (reader) => {
+		await withTable('ReplicaOptionsSweep', { replicaExpiration: 0.2, replicaRefreshFraction: 1 }, async (reader) => {
 			assertReads(await reader.call('read', { key: 'expires' }), 0.2);
 			const result = await reader.call('sweep-through-rescans', { key: 'expires' });
 			assert.ok(result.rescans > 1);

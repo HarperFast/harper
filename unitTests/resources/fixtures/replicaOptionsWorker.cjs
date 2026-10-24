@@ -12,10 +12,11 @@ const { schemaHandler } = require('#js/server/itc/serverHandlers');
 const { SchemaEventMsg } = require('#js/server/threads/itc');
 const { waitFor } = require('../../waitFor');
 
-const { database, tableName, role, sourcePort } = workerData;
+const { database, role, sourcePort } = workerData;
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const CONTROL = 'replica-options-control';
 const REPLY = 'replica-options-reply';
+let tableName;
 let Records;
 let sourceCalls = 0;
 let admissions = [];
@@ -78,9 +79,10 @@ function snapshot(key) {
 	};
 }
 
-async function handle({ command, key, options, deadline, expectRenewal }) {
+async function handle({ command, table: name, key, options, deadline, expectRenewal }) {
 	switch (command) {
 		case 'init':
+			tableName = name;
 			Records = resetDatabases()[database][tableName];
 			assert.ok(Records);
 			if (role === 'reader') {
