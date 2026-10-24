@@ -551,9 +551,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// null, not searchByIndex's `true`: `true` sorts ABOVE null and false, so starting there
-			// would drop indexed rows the record predicate's compareKeys admits — an omission the
-			// post-filter cannot undo.
+			// Inclusive null, where searchByIndex starts just above it: the record predicate's compareKeys
+			// admits indexed nulls, and an omission here is one the post-filter cannot undo.
 			start = null;
 			end = value;
 			break;
@@ -598,21 +597,21 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
 	let estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. Only
-	// lt/le widen below that, and the block they add is read FIRST and can dwarf the rest of the
+	// estimateRangeCondition measures the range searchByIndex would run, which excludes the null
+	// block. Only lt/le scan from null, and that block is read FIRST and can dwarf the rest of the
 	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
 	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
 	// per-query cost this is here to avoid. The other comparators' own estimates already cover
 	// whatever they start at.
 	if (comparator === 'lt' || comparator === 'le') {
-		let belowTrue: number | undefined;
+		let nulls: number | undefined;
 		try {
-			belowTrue = index.estimateCount?.({ start: null, end: true })?.count;
+			nulls = index.estimateCount?.({ start: null, end: null, inclusiveEnd: true })?.count;
 		} catch {
 			return undefined;
 		}
-		if (!(belowTrue >= 0)) return undefined;
-		estimatedCount += belowTrue;
+		if (!(nulls >= 0)) return undefined;
+		estimatedCount += nulls;
 	}
 	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
@@ -964,6 +963,10 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
+	// A primary store keeps symbol-keyed metadata (0x02) below `false` and opens at `true`, as it always
+	// has; a secondary index starts just above its null block, which `true` would overshoot past `false`.
+	const openStart = isPrimaryKey ? true : null;
+	const openStartExclusive = !isPrimaryKey;
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
@@ -971,18 +974,22 @@ export function searchByIndex(
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
 		// and exclude matching rows in the filter. Without overriding the range,
 		// the bounded index iteration would only visit *included* rows.
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 		needFullScan = true;
 	} else if (fullTextMode) {
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 	} else
 		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 			case 'lt':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				break;
 			case 'le':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				inclusiveEnd = true;
 				break;
@@ -1005,7 +1012,8 @@ export function searchByIndex(
 			case 'starts_with':
 				start = value.toString();
 				if (start.length === 0) {
-					start = true;
+					start = openStart;
+					exclusiveStart = openStartExclusive;
 					needFullScan = true;
 				} else stringPrefix = true;
 				break;
@@ -1033,7 +1041,8 @@ export function searchByIndex(
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
 				// `value` is expected to be an array (empty array matches no rows).
 				if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			case 'ne':
@@ -1047,7 +1056,8 @@ export function searchByIndex(
 			case 'contains':
 			case 'ends_with':
 				// we have to revert to full table scan here
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			default:
@@ -1887,12 +1897,13 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	let range;
 	switch (searchType) {
 		case 'lt':
-			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
-			// index's `[null, primaryKey]` entries are outside the executed range
-			range = { start: true, end: value };
+			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
+			range = isPrimaryKey ? { start: true, end: value } : { start: null, exclusiveStart: true, end: value };
 			break;
 		case 'le':
-			range = { start: true, end: value, inclusiveEnd: true };
+			range = isPrimaryKey
+				? { start: true, end: value, inclusiveEnd: true }
+				: { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };
