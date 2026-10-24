@@ -5,6 +5,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as logger from '../utility/logging/harper_logger.ts';
 import {
 	assertResidencyMapChange,
+	residencyMapExtends,
 	canonicalShards,
 	createResidencyMap,
 	defaultResidencyMap,
@@ -57,15 +58,20 @@ export function residencyDeclarationDatabases(): string[] {
 let configuredList: unknown;
 let configuredShards: number[] | undefined;
 let configuredDigest: string | null = null;
+let configuration: Readonly<{ shards: readonly number[] | undefined; shard: number; digest: string | null }>;
 export function getResidencyConfiguration() {
 	const value = env.get('replication_shards');
+	const shard = env.get('replication_shard');
 	if (value !== configuredList) {
 		const shards = canonicalShards(value);
 		configuredList = value;
 		configuredShards = shards;
 		configuredDigest = shardListDigest(shards);
+		configuration = undefined;
 	}
-	return { shards: configuredShards, shard: env.get('replication_shard'), digest: configuredDigest };
+	if (!configuration || configuration.shard !== shard)
+		configuration = Object.freeze({ shards: configuredShards, shard, digest: configuredDigest });
+	return configuration;
 }
 
 export function assertResidencyConfiguration(database: string, hasMap: boolean): void {
@@ -108,12 +114,16 @@ export function readResidencyMap(database: string): ResidencyMapSnapshot | undef
 	return databases.system?.[RESIDENCY_MAP_TABLE]?.primaryStore.getSync(database);
 }
 
-export function validateResidencyMapWrite(database: string, value: any, previous: any, replay = false): void {
+export function validateResidencyMapWrite(database: string, value: any, previous: any, replay = false): boolean {
 	const next = validateResidencyMap(value, database);
 	const activeSlots = activeResidencySlots(database);
-	if (previous) assertResidencyMapChange(validateResidencyMap(previous, database), next, activeSlots);
-	else if (activeSlots && !replay)
+	if (previous) {
+		previous = validateResidencyMap(previous, database);
+		if (previous.digest === next.digest || residencyMapExtends(next, previous)) return false;
+		assertResidencyMapChange(previous, next, activeSlots);
+	} else if (activeSlots && !replay)
 		residencyFailure(database, 'the installed map is missing; restore it before placing writes');
+	return true;
 }
 
 const installations = new Map<string, Promise<ResidencyMapSnapshot>>();
@@ -130,14 +140,14 @@ export async function installResidencyMap(
 		const Maps = getResidencyMapTable();
 		const previous = Maps.primaryStore.getSync(database);
 		if (previous?.digest === snapshot.digest) return validateResidencyMap(previous, database);
-		validateResidencyMapWrite(database, snapshot, previous);
+		if (!validateResidencyMapWrite(database, snapshot, previous)) return validateResidencyMap(previous, database);
 		const { transaction } = await import('./transaction.ts');
 		const context = {};
 		await transaction(context, async () => {
 			const resource = await Maps.getResource(database, context);
 			resource._writeUpdate(database, snapshot, true, options);
 		});
-		return snapshot;
+		return validateResidencyMap(readResidencyMap(database), database);
 	})();
 	installations.set(database, operation);
 	try {

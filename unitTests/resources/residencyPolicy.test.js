@@ -47,6 +47,19 @@ describe('Residency policy and map identity', () => {
 		});
 	}
 
+	it('observes a rejected asynchronous expression while refusing it synchronously', () => {
+		const { spawnSync } = require('node:child_process');
+		const script = `const { compileResidencyPolicy } = require('#src/resources/residencyPolicy');
+		const slot = compileResidencyPolicy({ slots: 10, byAttribute: false, slotFrom: 'Promise.reject(new Error("async slot"))' });
+		try { slot('key'); process.exitCode = 2; } catch (error) { if (!/integer slot/.test(error.message)) throw error; }
+		setImmediate(() => {});`;
+		const result = spawnSync(process.execPath, ['--unhandled-rejections=strict', '-e', script], {
+			encoding: 'utf8',
+			timeout: 10000,
+		});
+		assert.equal(result.status, 0, result.stderr);
+	});
+
 	it('rejects syntax errors at declaration', () => {
 		assert.throws(
 			() => compileResidencyPolicy({ slots: 10, byAttribute: false, slotFrom: 'id.' }),

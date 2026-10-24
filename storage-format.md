@@ -115,19 +115,18 @@ The extended type must leave the low byte clear (`createAuditEntry` throws on
 `HAS_PREVIOUS_VERSION` flag in this word: the previous local time announces itself by its own leading
 byte, and it precedes this word, so a reader cannot consult a flag before deciding whether to skip it.
 
-| Value          | Name                         | Description                          |
-| -------------- | ---------------------------- | ------------------------------------ |
-| 256 (0x100)    | HAS_STRUCTURE_UPDATE         | Entry advances the structure set     |
-| 512 (0x200)    | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included        |
-| 1024 (0x400)   | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included       |
-| 2048 (0x800)   | HAS_ORIGINATING_OPERATION    | Originating operation type included  |
-| 4096 (0x1000)  | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included        |
-| 8192 (0x2000)  | HAS_BLOBS                    | Binary blob data included            |
-| 16384 (0x4000) | HAS_ADDITIONAL_AUDIT_REFS    | Additional audit references included |
-| 32768 (0x8000) | LOCAL_ONLY                   | Never forwarded to replication peers |
-
-| 65536 (0x10000) | HAS_CURRENT_RESIDENCY_SLOT | Current attribute-derived slot included |
-| 131072 (0x20000) | HAS_PREVIOUS_RESIDENCY_SLOT | Previous attribute-derived slot included |
+| Value            | Name                         | Description                              |
+| ---------------- | ---------------------------- | ---------------------------------------- |
+| 256 (0x100)      | HAS_STRUCTURE_UPDATE         | Entry advances the structure set         |
+| 512 (0x200)      | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included            |
+| 1024 (0x400)     | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included           |
+| 2048 (0x800)     | HAS_ORIGINATING_OPERATION    | Originating operation type included      |
+| 4096 (0x1000)    | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included            |
+| 8192 (0x2000)    | HAS_BLOBS                    | Binary blob data included                |
+| 16384 (0x4000)   | HAS_ADDITIONAL_AUDIT_REFS    | Additional audit references included     |
+| 32768 (0x8000)   | LOCAL_ONLY                   | Never forwarded to replication peers     |
+| 65536 (0x10000)  | HAS_CURRENT_RESIDENCY_SLOT   | Current attribute-derived slot included  |
+| 131072 (0x20000) | HAS_PREVIOUS_RESIDENCY_SLOT  | Previous attribute-derived slot included |
 
 Slot fields follow the two optional residency IDs and precede expiration, using the integer codec below. A changed/deleted attribute slot preserves its previous slot in the audit entry even when no body is present. Values are bounded to `0..65535`; key-derived records never set either slot flag.
 

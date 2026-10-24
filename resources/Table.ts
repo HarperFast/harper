@@ -4247,6 +4247,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit:
+					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				invalidated: true,
@@ -4302,7 +4304,9 @@ export function makeTable(options): TableResourceClass {
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 						const incomingValue = incomingRecord?.[name];
 						partialRecord[name] =
-							incomingValue === undefined && !incomingRecord && options?.nodeId === undefined && !options?.residencyId
+							incomingValue === undefined &&
+							!options?.residencyId &&
+							(!residencyPolicy || (!incomingRecord && options?.nodeId === undefined))
 								? existingRecord?.[name]
 								: incomingValue;
 					}
@@ -4360,6 +4364,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit:
+					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				invalidated: true,
@@ -5184,6 +5190,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit:
+					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry,
@@ -5322,8 +5330,7 @@ export function makeTable(options): TableResourceClass {
 					let existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
 						if (!fullUpdate) throw new ClientError('A residency map must be written as a complete snapshot', 400);
-						validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying);
-						if (existingRecord?.digest === recordUpdate.digest) {
+						if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
 							write.skipped = true;
 							return;
 						}
@@ -6274,6 +6281,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit:
+					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry,
@@ -6318,11 +6327,11 @@ export function makeTable(options): TableResourceClass {
 						residencySlot = residencyPolicy.byAttribute
 							? (options?.residencySlot ?? priorStaged?.residencySlot ?? existingEntry?.residencySlot)
 							: undefined;
-						// An already-absent attribute row has no placement to delete.
-						if (residencyPolicy.byAttribute && residencySlot === undefined && !existingRecord) {
-							write.skipped = true;
-							return;
-						}
+						if (residencyPolicy.byAttribute && residencySlot === undefined)
+							throw new ClientError(
+								'Attribute residency slot is unknown; retry the delete after placement is available',
+								503
+							);
 						const slot = residencySlot ?? calculateResidencySlot(id);
 						captureResidencyOwners(write, slot, options?.isReplay);
 					}
@@ -8416,6 +8425,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit:
+					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry: this.#entry,
@@ -8494,6 +8505,8 @@ export function makeTable(options): TableResourceClass {
 				tableTxn.addWrite({
 					key: null,
 					store: primaryStore,
+					requiresExclusiveCommit:
+						Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
 						return updateRecord(
@@ -8539,6 +8552,8 @@ export function makeTable(options): TableResourceClass {
 					tableTxn.addWrite({
 						key: null,
 						store: primaryStore,
+						requiresExclusiveCommit:
+							Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 						skipReplicationConfirmation: true,
 						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) => {
 							position = txnTime;
@@ -10755,6 +10770,8 @@ export function makeTable(options): TableResourceClass {
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
+					requiresExclusiveCommit:
+						Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
 					entry: undefined,
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
@@ -10786,9 +10803,9 @@ export function makeTable(options): TableResourceClass {
 						dropReplicaDeadline(id, existingEntry, transaction);
 						if (updatedRecord) {
 							if (existingEntry) {
-								context.previousResidency = Array.from(
-									TableResource.getRecordResidency({ ...existingEntry, key: id }) ?? []
-								);
+								context.previousResidency = residencyPolicy
+									? Array.from(TableResource.getRecordResidency({ ...existingEntry, key: id }))
+									: TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
 							let auditRecord: any;
 							let omitLocalRecord = false;

@@ -685,6 +685,8 @@ export type TransactionWrite = {
 	invalidated?: boolean;
 	residencyOwners?: readonly string[];
 	requiresOwnerConfirmation?: boolean;
+	// A commit-time refusal must abort earlier writes too, including LMDB instructed writes.
+	requiresExclusiveCommit?: boolean;
 	checkResidency?: () => unknown;
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;

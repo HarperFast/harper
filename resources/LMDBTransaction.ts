@@ -307,7 +307,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// will fail and retry due to contention. This is used to determine when to give up on optimistic writes and
 			// use a real (async) transaction to get exclusive access to the data
 			if (db?.retryRisk) db.retryRisk *= 0.99; // gradually decay the retry risk
-			if (this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
+			const requiresAbortableCommit =
+				this.requestedConfirmationCount || this.writes.some((write) => write.requiresExclusiveCommit);
+			if (!requiresAbortableCommit && this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
 				this.markNativeCommitSubmitted();
 				nextCondition();
 				if (commitCompletions) {
@@ -321,10 +323,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 				}
 			} else {
-				// if it is too big to expect optimistic writes to work, or we have done too many retries we use
-				// a real LMDB transaction to get exclusive access to reading and writing
+				// Neither ifVersion nor transaction aborts earlier writes when its callback throws.
+				// A child transaction keeps late placement/confirmation refusals atomic.
 				this.markNativeCommitSubmitted();
-				const transactionResolution = this.writes[0].store.transaction(() => {
+				const store = this.writes[0].store;
+				const runTransaction = requiresAbortableCommit ? store.childTransaction : store.transaction;
+				const transactionResolution = runTransaction.call(store, () => {
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);
@@ -354,7 +358,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
-						const target = confirmReplication && databaseName ? this.confirmationTarget(txnTime) : undefined;
+						const target =
+							confirmReplication && databaseName
+								? this.confirmationTarget(this.lastConfirmableEntry()?.localTime)
+								: undefined;
 						if (target)
 							confirmation = confirmReplicationAfterCommit(() =>
 								confirmReplication(databaseName, target.version, this.confirmationCount, target.residentPeerLists)

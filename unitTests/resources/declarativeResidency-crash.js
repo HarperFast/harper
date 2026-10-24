@@ -15,7 +15,7 @@ if (require.main === module) {
 	const logger = require('#src/utility/logging/harper_logger');
 	logger.error = (...args) => console.error(...args);
 	let replayed = 0;
-	if (mode === 'replay') {
+	if (mode.startsWith('replay')) {
 		const commit = DatabaseTransaction.prototype.directCommitSync;
 		DatabaseTransaction.prototype.directCommitSync = function () {
 			if (this.isReplay) replayed += this.writes.filter((write) => write && !write.skipped).length;
@@ -46,6 +46,22 @@ if (require.main === module) {
 			writeFileSync(marker, 'written');
 			process.kill(process.pid, 'SIGKILL');
 		} else {
+			if (mode === 'replay-scan-error') {
+				const fs = require('node:fs');
+				const readdir = fs.readdirSync;
+				fs.readdirSync = (directory, ...args) => {
+					if (directory === path.join(root, 'database', 'system')) throw new Error('injected scan failure');
+					const entries = readdir(directory, ...args);
+					return directory === path.join(root, 'database')
+						? entries.sort((a, b) => a.name.localeCompare(b.name))
+						: entries;
+				};
+				try {
+					require('node:assert').throws(() => getDatabases(), /injected scan failure/);
+				} finally {
+					fs.readdirSync = readdir;
+				}
+			}
 			const Table = getDatabases().slotcrash.CrashSlots;
 			const rows = Object.fromEntries(
 				['local', 'remote', 'deleted'].map((id) => {
