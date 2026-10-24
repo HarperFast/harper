@@ -237,7 +237,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 				publishUdsMetadata(new Promise((resolve) => (ready = resolve)), server, () =>
 					writeUdsMetadata(yamlPath, 9925, server)
 				);
-				// a certificate listener firing before TLS readiness and the first read must not publish
+				// a certificate listener firing before the list has been read must not publish
 				server.secureContextsListeners.forEach((listener) => listener());
 				assert.strictEqual(fs.existsSync(yamlPath), false);
 				ready();
