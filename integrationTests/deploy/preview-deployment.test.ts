@@ -3,11 +3,13 @@
  * preview metadata, the shared port refusing its host, and its drop.
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
-import { join } from 'node:path';
+import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
+import { execFile } from 'node:child_process';
+import { join, resolve } from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { parse } from 'yaml';
 import {
 	startHarper,
@@ -18,6 +20,7 @@ import {
 } from '@harperfast/integration-testing';
 
 const PROJECT = 'shop-pr-12';
+const HARPER_BIN = resolve(import.meta.dirname, '../../dist/bin/harper.js');
 const HOST = 'pr-12.app.qa.test';
 // Windows has no UDS mirrors, so admission refuses a dedicated worker there; the Bun listener path is not yet exercised.
 const UNSUPPORTED_HERE = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
@@ -33,6 +36,37 @@ async function waitFor<T>(probe: () => Promise<T>, accept: (value: T) => boolean
 		await new Promise((resolve) => setTimeout(resolve, 250));
 	} while (Date.now() < deadline);
 	throw new Error(`${what}: ${JSON.stringify(last)}`);
+}
+
+/** The CLI as CI runs it, in a child process: cliOperations() calls process.exit(). */
+async function harperPreview(ctx: ContextWithHarper, args: string[]): Promise<string> {
+	const home = await mkdtemp(join(tmpdir(), 'preview-cli-'));
+	const env: Record<string, string | undefined> = { ...process.env };
+	for (const key of Object.keys(env)) {
+		if (key.startsWith('HARPER_CLI_') || key.startsWith('CLI_TARGET_')) delete env[key];
+	}
+	delete env.NODE_OPTIONS;
+	delete env.DOTENV_CONFIG_PATH;
+	try {
+		const { stdout } = await promisify(execFile)(
+			process.execPath,
+			[HARPER_BIN, 'preview', ...args, `target=${ctx.harper.operationsAPIURL}`],
+			{
+				cwd: home,
+				env: {
+					...env,
+					HOME: home,
+					USERPROFILE: home,
+					HARPER_CLI_USERNAME: ctx.harper.admin.username,
+					HARPER_CLI_PASSWORD: ctx.harper.admin.password,
+				},
+				timeout: 60_000,
+			}
+		);
+		return stdout;
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
 }
 
 async function dedicatedWorkers(ctx: ContextWithHarper): Promise<ThreadInfo[]> {
@@ -123,8 +157,9 @@ suite('a PR preview deployed from a build (harper#3042)', { skip: UNSUPPORTED_HE
 		deepStrictEqual(await rootConfigEntry(ctx), { host: HOST, isolated: true, branchedDatabases: true });
 	});
 
-	test('dropping it stops its worker and removes its entry', async () => {
-		await sendOperation(ctx.harper, { operation: 'drop_component', project: PROJECT, restart: true });
+	test('harper preview drop stops its worker and removes its entry', async () => {
+		const stdout = await harperPreview(ctx, ['drop', 'app=shop', 'pr=12']);
+		match(stdout, new RegExp(`Successfully dropped: ${PROJECT}`));
 		await waitFor(
 			() => dedicatedWorkers(ctx),
 			(workers) => workers.length === 0,

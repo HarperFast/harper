@@ -163,6 +163,21 @@ async function listComponents(
 	};
 }
 
+/**
+ * The drop request `harper preview drop` sends. It goes even when the preview is not listed: a drop also stops a
+ * leftover worker and reclaims branches a failed drop left behind.
+ */
+export function planPreviewDrop(args: Record<string, any>): Record<string, unknown> {
+	const { project } = previewProject(args.app, args.pr);
+	return {
+		...transportContext(args),
+		operation: 'drop_component',
+		project,
+		...(args.restart !== undefined && { restart: args.restart }),
+		...(args.keepBranches !== undefined && { keepBranches: args.keepBranches }),
+	};
+}
+
 export function formatPreviewList(entries: ComponentEntry[], app?: string): string {
 	const previews = entries.filter((entry) => entry.preview && (app === undefined || entry.preview.app === app));
 	if (previews.length === 0) return app ? `No previews of ${app}.` : 'No previews.';
@@ -194,18 +209,17 @@ export async function runPreviewCommand(argv: readonly string[] = process.argv):
 			return `Preview: https://${host}/`;
 		}
 		case 'drop': {
-			const { project } = previewProject(args.app, args.pr);
-			const { entries } = await listComponents(args);
-			if (!entries.some((entry) => entry.name === project)) return `${project} is not deployed; nothing to drop.`;
-			await cliOperations({ ...transportContext(args), operation: 'drop_component', project }, true);
-			return `Dropped ${project}.`;
+			const request = planPreviewDrop(args);
+			const response: any = await cliOperations(request, true);
+			return response?.message ?? `Dropped ${request.project}.`;
 		}
 		case 'list':
 			return formatPreviewList((await listComponents(args)).entries, args.app);
 		default:
 			throw usageError(
 				'usage: harper preview deploy app=<component> pr=<n> branch=<name> [label=<dns-label>] [domain=<domain>] ' +
-					'[ttl=<days>] | harper preview drop app=<component> pr=<n> | harper preview list [app=<component>]'
+					'[ttl=<days>] | harper preview drop app=<component> pr=<n> [restart=true] [keepBranches=true] | ' +
+					'harper preview list [app=<component>]'
 			);
 	}
 }

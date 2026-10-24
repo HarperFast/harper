@@ -1,7 +1,13 @@
 'use strict';
 
 const assert = require('node:assert');
-const { previewSlug, defaultPreviewDomain, planPreviewDeploy, formatPreviewList } = require('#src/bin/preview');
+const {
+	previewSlug,
+	defaultPreviewDomain,
+	planPreviewDeploy,
+	planPreviewDrop,
+	formatPreviewList,
+} = require('#src/bin/preview');
 
 describe('harper preview (harper#3054)', () => {
 	describe('previewSlug', () => {
@@ -140,5 +146,27 @@ describe('harper preview (harper#3054)', () => {
 		);
 		assert.strictEqual(formatPreviewList(entries).split('\n').length, 2);
 		assert.strictEqual(formatPreviewList(entries, 'studio'), 'No previews of studio.');
+	});
+
+	describe('planPreviewDrop', () => {
+		it('drops <app>-pr-<n>, leaving the restart and the branches to the server unless asked', () => {
+			assert.deepStrictEqual(planPreviewDrop({ app: 'shop', pr: 12 }), {
+				operation: 'drop_component',
+				project: 'shop-pr-12',
+			});
+		});
+
+		it('passes restart and keepBranches through, with the target', () => {
+			assert.deepStrictEqual(
+				planPreviewDrop({ app: 'shop', pr: 12, restart: true, keepBranches: false, target: 'https://a.example.com' }),
+				{
+					target: 'https://a.example.com',
+					operation: 'drop_component',
+					project: 'shop-pr-12',
+					restart: true,
+					keepBranches: false,
+				}
+			);
+		});
 	});
 });
