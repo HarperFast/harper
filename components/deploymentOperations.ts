@@ -8,6 +8,7 @@ import { databases } from '../resources/databases.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getActiveDeployment } from './deploymentRecorder.ts';
+import { logger } from '../utility/logging/logger.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
@@ -98,13 +99,12 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 // A deployment whose release went live on the node that received it; a rolling one may still be reaching the others.
 const RELEASED_STATUSES = new Set(['success', 'rolling_out', 'partial']);
 const RELEASE_FIELDS = ['deployment_id', 'project', 'status', 'activated_from', 'completed_at'];
-const MARKERLESS_LOOKUP_LIMIT = 100;
 
 /**
  * The record that made a component's live release live: the newest released deploy or activation naming the id in
  * its tree's provenance marker, found by key and by `activated_from` so a long history is never scanned. A tree without
  * one (installed before 5.3, by `add_component`, or from a `file:` link) is described by the project's newest
- * released deployment.
+ * released deployment, one bounded search per released status, so no run of unreleased deploys can hide it.
  */
 export async function deploymentOfLiveRelease(
 	project: string,
@@ -119,8 +119,13 @@ export async function deploymentOfLiveRelease(
 	};
 	if (liveDeploymentId) {
 		const named = [await table.get(liveDeploymentId)];
-		const conditions = [{ attribute: 'activated_from', value: liveDeploymentId }];
-		for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) named.push(row);
+		try {
+			const conditions = [{ attribute: 'activated_from', value: liveDeploymentId }];
+			for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) named.push(row);
+		} catch (error) {
+			// A catalog upgraded before `activated_from` was registered cannot search it; the record found by key stands.
+			logger.debug?.(`Searching deployments activated from ${liveDeploymentId} failed`, error);
+		}
 		for (const row of named) consider(row);
 		// A deploy that swapped here and then failed on a peer is recorded failed, yet the marker says it is live.
 		if (!newest) {
@@ -130,14 +135,16 @@ export async function deploymentOfLiveRelease(
 			}
 		}
 	} else {
-		// Newest first, so the walk ends at the first released row rather than at the end of the project's history.
-		const conditions = [{ attribute: 'project', value: project }];
 		const sort = { attribute: 'completed_at', descending: true };
-		let read = 0;
-		for await (const row of table.search({ conditions, sort, select: RELEASE_FIELDS })) {
-			consider(row);
-			// Bounded even for a project with no released row at all, which would otherwise walk its whole history.
-			if (newest || ++read >= MARKERLESS_LOOKUP_LIMIT) break;
+		for (const status of RELEASED_STATUSES) {
+			const conditions = [
+				{ attribute: 'project', value: project },
+				{ attribute: 'status', value: status },
+			];
+			for await (const row of table.search({ conditions, sort, select: RELEASE_FIELDS, limit: 1 })) {
+				consider(row);
+				break;
+			}
 		}
 	}
 	return newest && { deployment_id: newest.deployment_id, completed_at: newest.completed_at };

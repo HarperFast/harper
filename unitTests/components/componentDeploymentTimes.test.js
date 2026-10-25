@@ -140,6 +140,40 @@ describe('get_components deployment times (harper#564)', () => {
 	});
 });
 
+describe("finding the live release's record when the catalog or history is awkward (harper#564)", () => {
+	const { deploymentOfLiveRelease } = require('#src/components/deploymentOperations');
+	let restoreTable;
+	afterEach(() => restoreTable?.());
+
+	it('keeps the record found by key when the activated_from search cannot run', async () => {
+		restoreTable = installDeploymentRows([
+			{ deployment_id: 'b', project: 'web', status: 'success', completed_at: 200 },
+		]);
+		databases.system[DEPLOYMENT_TABLE].search = () => {
+			// An upgraded catalog that lacks the attribute
+			throw new Error('activated_from is not an attribute of hdb_deployment');
+		};
+		assert.deepStrictEqual(await deploymentOfLiveRelease('web', 'b'), { deployment_id: 'b', completed_at: 200 });
+	});
+
+	it('finds a markerless release behind any number of newer unreleased deploys', async () => {
+		const rows = [{ deployment_id: 'released', project: 'old', status: 'success', completed_at: 1 }];
+		for (let i = 0; i < 150; i++) {
+			rows.push({
+				deployment_id: `failed-${i}`,
+				project: 'old',
+				status: i % 2 ? 'failed' : 'staged',
+				completed_at: 10 + i,
+			});
+		}
+		restoreTable = installDeploymentRows(rows);
+		assert.deepStrictEqual(await deploymentOfLiveRelease('old', undefined), {
+			deployment_id: 'released',
+			completed_at: 1,
+		});
+	});
+});
+
 describe("finding the live release's record in the deployment table (harper#564)", () => {
 	const { deploymentOfLiveRelease } = require('#src/components/deploymentOperations');
 	const rows = [
