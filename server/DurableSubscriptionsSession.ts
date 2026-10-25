@@ -918,15 +918,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						}
 					: { qos, topic }
 			);
-			// a record saved before the scalar was capped can hold one above its token's floor
-			if (checkpoint !== undefined) {
-				try {
-					validateCheckpoint(checkpoint);
-					lowerScalar(state.entry);
-				} catch {
-					// a malformed token is refused at resume, which falls back to the scalar
-				}
-			}
 			// keys from another node's log, or from before a restore or copy, name nothing here; receipts kept with
 			// a checkpoint name origin keys, which are the same on every node
 			if (entry.receiptsGeneration === currentGeneration(topic) || checkpoint !== undefined) {

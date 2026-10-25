@@ -183,7 +183,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		second.session.disconnect(true);
 	});
 
-	it('freezes the scalar while no checkpoint is certified, and lowers a saved one above its checkpoint', async () => {
+	it('freezes the scalar at the kept checkpoint while none is certified', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const topic = `${name}/#`;
@@ -203,16 +203,6 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await first.session.writes;
 		assert.ok(state.entry.startTime <= scalarCap(checkpoint), 'the scalar stays at the kept checkpoint');
 		first.session.disconnect(true);
-		await first.session.writes;
-		const entry = (await stored(clientId)).subscriptions[0];
-		// a record saved before the scalar was capped
-		await databases.system.hdb_durable_session.put({
-			id: clientId,
-			subscriptions: [{ ...entry, startTime: entry.checkpoint.time + 1_000_000 }],
-		});
-		const second = await connect(clientId);
-		assert.ok((await stored(clientId)).subscriptions[0].startTime <= scalarCap(entry.checkpoint));
-		second.session.disconnect(true);
 	});
 
 	it('holds an origin at an unacknowledged delivery, by origin', async () => {
