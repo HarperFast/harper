@@ -8,12 +8,21 @@ import { defineResource, t, schemaOf, projectTableFragment } from '../resources/
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
+import * as _vm from 'node:vm';
+import { createContext, runInContext, runInThisContext } from 'node:vm';
+// SourceTextModule and SyntheticModule require `--experimental-vm-modules`. Pull
+// them off the vm namespace at runtime so the named ESM import doesn't fail when
+// the flag isn't passed (e.g. CLI paths that never touch the JS loader).
+const { SourceTextModule, SyntheticModule } = _vm as any;
+type SourceTextModule = any;
+type SyntheticModule = any;
 import { ApplicationScope } from '../components/ApplicationScope.ts';
 import { getSecretsForComponent, runWithComponentBinding } from '../components/componentSecrets.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
-import * as env from '../utility/environment/environmentManager';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+const nativeRequire = createRequire(join(PACKAGE_ROOT, 'package.json'));
+import * as env from '../utility/environment/environmentManager.ts';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 
@@ -33,11 +42,12 @@ import {
 	withFileRetry,
 	writePidRecord,
 } from './spawnPidFile.ts';
-import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
-const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+let APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
 const HARPER_MODULE_IDS = new Set([
 	'harper',
 	'harperdb',
@@ -135,7 +145,7 @@ let amaro: typeof import('amaro') | undefined;
 function stripTypeScriptTypes(source: string): string {
 	// Use amaro - the library that Node.js uses internally for type stripping
 	if (!amaro) {
-		amaro = require('amaro');
+		amaro = nativeRequire('amaro');
 	}
 	return amaro.transformSync(source, { mode: 'strip-only' }).code;
 }
@@ -432,7 +442,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		return cjsModule;
 	}
 	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
-		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
+		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: nativeRequire(url) };
 		let exports = cjsModule.exports;
 		if (exports.default === undefined) {
 			// provide the default export for compatibility
@@ -713,10 +723,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 // The ESM shims ses/index.js composes, in its order: ses's CommonJS bundle fails its own strict-mode check on Bun,
 // which drops function-level 'use strict' in CommonJS
 function loadSES(): void {
-	require('ses/lockdown-shim.js');
-	require('ses/compartment-shim.js');
-	require('ses/assert-shim.js');
-	require('ses/console-shim.js');
+	nativeRequire('ses/lockdown-shim.js');
+	nativeRequire('ses/compartment-shim.js');
+	nativeRequire('ses/assert-shim.js');
+	nativeRequire('ses/console-shim.js');
 }
 
 async function getCompartment(scope: ApplicationScope, globals) {
@@ -960,14 +970,21 @@ function getHarperExports(scope: ApplicationScope) {
 		User: undefined,
 	};
 }
-const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES)
-	? new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES))
-	: {
-			// if we don't have a list of allowed modules, allow everything
-			has() {
-				return true;
-			},
-		};
+function getAllowedNodeBuiltinModules() {
+	return env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES)
+		? new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES))
+		: {
+				// if we don't have a list of allowed modules, allow everything
+				has() {
+					return true;
+				},
+			};
+}
+let ALLOWED_NODE_BUILTIN_MODULES = getAllowedNodeBuiltinModules();
+onStartup(() => {
+	APPLICATIONS_LOCKDOWN = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+	ALLOWED_NODE_BUILTIN_MODULES = getAllowedNodeBuiltinModules();
+});
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),

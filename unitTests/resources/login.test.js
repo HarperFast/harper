@@ -48,4 +48,32 @@ describe('login resource', () => {
 
 		assert.deepEqual(seen, [{ username: 'bob', password: undefined, token: 'tok' }]);
 	});
+
+	it('collects multipart credentials before calling login', async () => {
+		async function* body() {
+			yield { name: 'username', value: 'carol' };
+			yield { name: 'password', value: 'pw' };
+		}
+		const seen = [];
+		const result = await Login.post(null, body(), {
+			login(...credentials) {
+				seen.push(credentials);
+				return 'session-token';
+			},
+		});
+		assert.deepEqual(seen, [['carol', 'pw', undefined]]);
+		assert.equal(result.data, 'session-token');
+	});
+
+	it('passes empty credentials to authentication for nullish bodies', async () => {
+		for (const body of [undefined, null]) {
+			const seen = [];
+			await Login.post(null, body, {
+				login(...credentials) {
+					seen.push(credentials);
+				},
+			});
+			assert.deepEqual(seen, [[undefined, undefined, undefined]]);
+		}
+	});
 });

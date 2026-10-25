@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const manageThreads = require('#js/server/threads/manageThreads');
+const manageThreads = require('#src/server/threads/manageThreads');
 const { setMainIsWorker } = manageThreads;
 
 const WAIT_MS = 30000;

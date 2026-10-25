@@ -11,8 +11,8 @@ const {
 } = require('#src/resources/Table');
 const { logger } = require('#src/utility/logging/logger');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const TEST_DB = 'test';
 const LOCK_KEY = 'update-attributes';

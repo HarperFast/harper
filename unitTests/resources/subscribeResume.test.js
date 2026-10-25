@@ -14,7 +14,7 @@ const {
 	ResumeHistoryUnavailableError,
 } = require('#src/utility/errors/hdbError');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 

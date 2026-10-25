@@ -12,8 +12,8 @@ const {
 	getDatabases,
 	resetDatabases,
 } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { databaseCommitsSuspended, getSuspendedDatabaseRootCount } = require('#src/resources/DatabaseTransaction');
 const {
 	beginRestore,
@@ -296,7 +296,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
 	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
-	const { getRegistryStatus } = require('@harperfast/rocksdb-js');
+	const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 	// the real observable for a released handle: rocksdb-js's registry is process-global and its
 	// refCount only drops to zero once every column family opened under a path has been closed

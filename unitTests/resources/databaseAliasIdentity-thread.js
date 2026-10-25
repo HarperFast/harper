@@ -2,7 +2,7 @@
 
 const { parentPort, workerData } = require('node:worker_threads');
 const { closeLoadedDatabases, getDatabases } = require('#src/resources/databases');
-const { onMessageByType, setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { onMessageByType, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const MESSAGE_TYPE = 'database-alias-identity-test';
 const CONTROL_TYPE = 'database-alias-identity-control';
@@ -14,7 +14,7 @@ function aliasState() {
 }
 
 function run() {
-	require('#js/server/threads/itc');
+	require('#src/server/threads/itc');
 	setMainIsWorker(true);
 	onMessageByType(CONTROL_TYPE, () => {});
 	const keepAlive = setInterval(() => {}, 1000);

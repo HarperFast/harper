@@ -4,7 +4,7 @@
  * its only caller, which is why the existing debugLongTransactions suites never covered it.
  */
 const assert = require('node:assert');
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 describe('harper#2222 debugLongTransactions reads', function () {

@@ -16,6 +16,8 @@ The log bridge redacts complete URL credentials before its 500-character summary
 
 ## A deploy builds off to the side, is certified, and only then goes live
 
+The main thread reserves `operationsApi` and `agent` in `TRUSTED_RESOURCE_PLUGINS` at module evaluation using core-owned runtime URLs. Cold `deployComponent` calls therefore enforce the protected-name guard before startup imports the real modules. The startup hook replaces only its unchanged default URLs, preserving explicit plugin overrides. `unitTests/server/threads/typestrip-runtime.test.mjs` checks the cold deployment refusal in both runtimes.
+
 `deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, certifies
 _that_ tree, and only then activates it; a deploy that restarts workers is then decided by its canary
 (below). Two things share the word: a build's certification (`.complete`) vouches for its bytes on disk, and
@@ -820,22 +822,19 @@ differ while the code matches. This prevents nothing, and a restart can still re
 `ProgressEmitter` event in `event_log`. Nothing internal travels through that emitter, which every subscriber sees
 (#3062): a `get_deployment` tail ends on the promise `finish()` settles after its terminal write.
 
-### A rolling deploy's record follows its activation job
-
-The origin finishes a certified rolling deploy `rolling_out` with `restart_job_id` (#3060). The job, on that node,
-loads the node list itself (a job thread starts with an empty `server.nodes`), adds each peer's outcome to its
-`peer_results` entry as `activation`, and ends the row `success`, or `partial` with `error.nodes`. It waits once, up
-to ten minutes, for the origin's `rolling_out` write, since a later put of the origin's in-memory row would erase its
-own; an origin that writes last keeps the stored outcomes (`keepRolloutProgress`). Writes land
-`rolloutTiming.writeSpacingMs` apart, since a burst to one row can commit out of order on a loaded peer (#1170). A job
-that throws ends the row `partial` itself (`abandonRollout`); one a restart cut short is ended at boot
-(`settleInterruptedRollouts`). `harper deploy restart=rolling` follows the record rather than `hdb_job`, which does
-not replicate (`bin/deployRollout.ts`, #3058), polling with the deploy's own token; a 401/403 ends the wait at once.
+**A rolling deploy's record follows its activation job.** The origin finishes a certified rolling deploy `rolling_out`
+with `restart_job_id` (#3060). The job, on that node, loads the node list itself (a job thread starts with an empty
+`server.nodes`), adds each peer's outcome to its `peer_results` entry as `activation`, and ends the row `success`, or
+`partial` with `error.nodes`. It first waits (ten minutes at most) for the origin's `rolling_out` write, since an
+origin put landing later would erase its own; an origin that does write last keeps the stored outcomes
+(`keepRolloutProgress`). Writes land `rolloutTiming.writeSpacingMs` apart, as a burst to one row can commit out of
+order on a loaded peer (#1170). A job that throws ends the row `partial` (`abandonRollout`); one a restart cut short
+is ended at boot (`settleInterruptedRollouts`). `harper deploy restart=rolling` follows the record, not `hdb_job`,
+which does not replicate (`bin/deployRollout.ts`, #3058); a 401/403 ends its wait at once.
 
 **A deployment records where it came from.** `source` (#3061) is `via: 'oidc'` when the exchange signed the policy and
-the run's verified claims into the operation token (security/DESIGN.md), else `via: 'declared'`, the client's own word
-(`bin/deploySource.ts`). `deploymentSource` keeps known fields as capped strings, forces a declared one to say
-`declared`, and lets an attested one win.
+the run's verified claims into the operation token (security/DESIGN.md), else `via: 'declared'`, the client's word
+(`bin/deploySource.ts`); `deploymentSource` keeps known fields, capped, and a declared one never passes as attested.
 
 **Failed deploys keep their payloads only so long.** `sweepFailedPayloads` (`components/payloadRetention.ts`, #2681)
 drops a project's `failed` payloads beyond `failedMaxCount` or older than `failedMaxAge`, never its newest; rows rank

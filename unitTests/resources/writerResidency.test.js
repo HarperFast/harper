@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { hostname } = require('node:os');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { INVALIDATED } = require('#src/resources/Table');
 const { logger } = require('#src/utility/logging/logger');
@@ -254,7 +254,7 @@ describe('Writer residency (harper#2257)', () => {
 
 	describe('when replication worker pool is active', () => {
 		const { setActiveWorkerPools } = require('#src/server/threads/workerPools');
-		const harperLogger = require('#src/utility/logging/harper_logger');
+		const harperLogger = require('#js/utility/logging/harper_logger');
 
 		function capturingErrors(run) {
 			const errors = [];

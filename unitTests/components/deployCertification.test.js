@@ -23,7 +23,7 @@ const {
 	writeCertificationRecord,
 	certificationRecordPath,
 } = require('#src/components/releaseCertification');
-const { processIncarnation } = require('#js/server/threads/manageThreads');
+const { processIncarnation } = require('#src/server/threads/manageThreads');
 const {
 	recordCertificationDecision,
 	closeCertification,

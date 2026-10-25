@@ -3,14 +3,14 @@ const assert = require('assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { DatabaseTransaction, RELEASED_TRANSACTION, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { resetReplayedWritesWarning } = require('#src/resources/DatabaseTransaction');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 

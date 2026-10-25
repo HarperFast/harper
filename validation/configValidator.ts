@@ -1,12 +1,12 @@
 'use strict';
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import Joi from 'joi';
-import * as os from 'os';
+import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
-import { totalmem } from 'os';
-import * as path from 'path';
+import { totalmem } from 'node:os';
+import * as path from 'node:path';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';

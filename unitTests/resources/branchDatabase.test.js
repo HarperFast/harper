@@ -3,13 +3,13 @@ const assert = require('assert');
 const { existsSync } = require('node:fs');
 const { mkdir, rename, rm, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
 const { getOrCreateBranch, removeBranches, closeBranchAt } = require('#src/resources/branchDatabase');
 const { getAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { replayLogs } = require('#src/resources/replayLogs');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const { writeFileSync: _writeFileSync, mkdirSync: _mkdirSync } = require('node:fs');
 const { join: _join } = require('node:path');
@@ -785,9 +785,9 @@ describeUnlessLmdb('declaring a table from a branched application (harper#2264)'
 
 	it('reloads the branch on a schema-change signal that names it, where the branch is open', async function () {
 		const { branch, declare } = await branchedFactory();
-		const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
-		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
-		const { SchemaEventMsg } = require('#js/server/threads/itc');
+		const { schemaHandler } = require('#src/server/itc/serverHandlers');
+		const ITCEventObject = require('#src/server/itc/utility/ITCEventObject.js');
+		const { SchemaEventMsg } = require('#src/server/threads/itc');
 		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 		// the handler has no way to remove a listener; this one only records into a local array
 		const signalled = [];

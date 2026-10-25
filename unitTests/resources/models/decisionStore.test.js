@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../../testUtils');
 const { resetDatabases, getDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	DecisionStore,
 	DecisionNotFoundError,

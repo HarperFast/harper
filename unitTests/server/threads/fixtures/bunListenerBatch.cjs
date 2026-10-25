@@ -27,7 +27,10 @@ for (const key of Object.keys(http.bunServeConfigs)) delete http.bunServeConfigs
 		const first = listenOnPorts();
 		const bunServer = SERVERS[bunKey];
 		try {
-			await Promise.all([first, listenOnPorts(), listenOnPorts()]);
+			const repeated = listenOnPorts();
+			assert.strictEqual(typeof first.then, 'function');
+			assert.strictEqual(typeof repeated.then, 'function');
+			await Promise.all([first, repeated, listenOnPorts()]);
 			assert.strictEqual(SERVERS[bunKey], bunServer, 'A repeated call replaced a live Bun server');
 			assert.ok(raw.listening);
 			const rawPort = raw.address().port;

@@ -1,10 +1,10 @@
 'use strict';
 
 import minimist from 'minimist';
-import { isMainThread, parentPort } from 'worker_threads';
+import { isMainThread, parentPort } from 'node:worker_threads';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
-import * as processMan from '../utility/processManagement/processManagement.js';
+import * as processMan from '../utility/processManagement/processManagement.ts';
 import { compactOnStart } from './copyDb.ts';
 import {
 	beginProcessShutdown,
@@ -13,7 +13,7 @@ import {
 	getRunningIsolatedApplications,
 	onMessageByType,
 	shutdownWorkersNow,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
@@ -23,8 +23,12 @@ import { getThisNodeName } from '../server/nodeName.ts';
 import { REPLICATION_NOT_IMPLEMENTED } from '../server/Server.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
-envMgr.initSync();
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const RESTART_RESPONSE = `Restarting ${PRODUCT_NAME}. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
@@ -69,7 +73,7 @@ async function restart(req: any) {
 	if (calledFromCli) {
 		const hdbPid = processMan.getHdbPid();
 		console.error(hdbPid ? `Restarting ${PRODUCT_NAME}...` : `Starting ${PRODUCT_NAME}...`);
-		require('./run').launch(true);
+		(await import('./run.ts')).launch(true);
 		return RESTART_RESPONSE;
 	}
 
@@ -101,7 +105,7 @@ async function restart(req: any) {
 				// and shut down.
 				hdbLogger.debug('Shutdown workers');
 				await shutdownWorkersNow();
-				const { closeServers } = require('../server/threads/threadServer.js');
+				const { closeServers } = await import('../server/threads/threadServer.ts');
 				await closeServers();
 				await processMan.cleanupChildrenProcesses(false);
 				// remove pid file so it doesn't trip up the launch
@@ -114,7 +118,7 @@ async function restart(req: any) {
 					process.exit(0);
 				}
 				// now launch the new process and exit this process
-				await require('./run').launch(true);
+				await (await import('./run.ts')).launch(true);
 			} catch (error) {
 				hdbLogger.fatal(`Restart teardown failed; exiting ${PRODUCT_NAME}`, error);
 				process.exit(1);
@@ -208,7 +212,7 @@ async function activateEachPeer(
 	unrecorded: any[]
 ) {
 	const replication = (global as any).server.replication;
-	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.js');
+	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.ts');
 	const { recordPeerActivation } = await import('../components/deploymentRecorder.ts');
 	const timeoutMs = peerDeployAnswerTimeoutMs({ restart: true });
 	for (const node of peers) {

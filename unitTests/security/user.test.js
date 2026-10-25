@@ -10,7 +10,7 @@ const chai = require('chai');
 const chaiAsPromised = require('chai-as-promised').default;
 chai.use(chaiAsPromised);
 const { expect } = chai;
-const env_mgr = require('#src/utility/environment/environmentManager');
+const env_mgr = require('#js/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { databases } = require('#src/resources/databases');
 const password = require('#src/utility/password');

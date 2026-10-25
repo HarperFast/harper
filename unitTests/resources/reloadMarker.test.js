@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const {
 	DatabaseTransaction,

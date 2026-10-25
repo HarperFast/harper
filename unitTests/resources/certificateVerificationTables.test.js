@@ -18,7 +18,7 @@ const { databases, table, resetDatabases } = require('#src/resources/databases')
 const { Resource } = require('#src/resources/Resource');
 const bridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const CreateTableObject = require('#src/dataLayer/CreateTableObject').default;
-const manageThreads = require('#js/server/threads/manageThreads');
+const manageThreads = require('#src/server/threads/manageThreads');
 const { verifyCertificate } = require('#src/security/certificateVerification/index');
 const { verifyOCSP } = require('#src/security/certificateVerification/ocspVerification');
 const {

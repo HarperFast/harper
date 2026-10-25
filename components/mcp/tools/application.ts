@@ -1,3 +1,5 @@
+import * as ResourcesCjsModule from '../../../resources/Resources.ts';
+import * as RequestTargetCjsModule from '../../../resources/RequestTarget.ts';
 /**
  * Application-profile tool generation. Walks Harper's `Resources` registry
  * and registers verb tools (`get_*`, `search_*`, `create_*`, `update_*`,
@@ -344,7 +346,7 @@ let _resourcesModule: { resources?: ResourcesRegistry } | undefined;
 function loadResources(): ResourcesRegistry | undefined {
 	if (_resourcesOverride) return _resourcesOverride;
 	try {
-		_resourcesModule ??= require('../../../resources/Resources');
+		_resourcesModule ??= ResourcesCjsModule as any;
 		return _resourcesModule!.resources as ResourcesRegistry;
 	} catch (err) {
 		harperLogger.trace(`MCP application tools: Resources registry unavailable (${(err as Error).message})`);
@@ -355,7 +357,7 @@ function loadResources(): ResourcesRegistry | undefined {
 function loadRequestTarget(): RequestTargetCtor | undefined {
 	if (_requestTargetCtorOverride) return _requestTargetCtorOverride;
 	try {
-		return require('../../../resources/RequestTarget').RequestTarget as RequestTargetCtor;
+		return RequestTargetCjsModule.RequestTarget as unknown as RequestTargetCtor;
 	} catch {
 		// Tests that don't use the real RequestTarget can supply a fake.
 		return undefined;

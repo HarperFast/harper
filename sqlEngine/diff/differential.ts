@@ -1,3 +1,4 @@
+import * as indexCjsModule from '../../sqlTranslator/index.ts';
 /**
  * Differential test harness.
  *
@@ -31,7 +32,7 @@ interface SqlTranslator {
 }
 
 function loadLegacy(): SqlTranslator {
-	return require('../../sqlTranslator/index.js');
+	return indexCjsModule;
 }
 
 function runLegacy(sql: string, opts: DifferentialOptions): Promise<unknown> {

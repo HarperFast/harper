@@ -1,4 +1,4 @@
-const { Scope, MissingDefaultFilesOptionError } = require('#src/components/Scope');
+const { Scope, MissingDefaultFilesOptionError } = require('#js/components/Scope');
 const { Models } = require('#src/resources/models/Models');
 const { EventEmitter } = require('node:events');
 const assert = require('node:assert');

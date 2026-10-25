@@ -1,7 +1,7 @@
 import { threadId } from 'node:worker_threads';
 import type { Transaction as RocksTransaction, RocksDatabase } from '@harperfast/rocksdb-js';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
-import { onMessageByType } from '../server/threads/manageThreads.js';
+import { onMessageByType } from '../server/threads/manageThreads.ts';
 
 /**
  * Origin-closed timestamp floor (harper-pro#922, item 1).
