@@ -137,6 +137,8 @@ if (require.main === module) {
 						});
 					});
 					assert.deepEqual(tail(), before, 'new worker did not replay after repair');
+					// A graceful shutdown must preserve the same replay obligation as an abrupt exit.
+					await require('#src/resources/databases').closeLoadedDatabases({ requireClosed: true });
 				}
 				writeFileSync(marker, JSON.stringify({ refused: true }));
 				process.exit(0);
