@@ -162,6 +162,7 @@ async function activateDeploymentOnPeers(activation: any) {
 	const { finishRollout, abandonRollout } = await import('../components/deploymentRecorder.ts');
 	const thisNode = getThisNodeName();
 	const results = [];
+	let ending = false;
 	try {
 		const otherNodes = otherKnownNodes(thisNode);
 		const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
@@ -175,9 +176,16 @@ async function activateDeploymentOnPeers(activation: any) {
 				unrecorded.push(result);
 			}
 		}
+		ending = true;
 		await finishRollout(deploymentRow, results, unrecorded);
 	} catch (error) {
-		await abandonRollout(deploymentRow, error?.message ?? String(error));
+		// The job's own record keeps every outcome, for the boot-time settlement to recover when the row could not take it.
+		if (error && typeof error === 'object') error.http_resp_msg ??= { error: error.message, activated: results };
+		// Only a job that failed before visiting every peer: the outcomes it holds are no reason to call one it did `partial`.
+		if (!ending)
+			await abandonRollout(deploymentRow, error?.message ?? String(error)).catch((abandonError) =>
+				hdbLogger.warn(`Failed to end the record of deployment ${deploymentId}:`, abandonError)
+			);
 		throw error;
 	}
 	const failed = results.filter((result) => result.error);
@@ -235,8 +243,8 @@ async function activateEachPeer(
 			results.push({ node: node.name, error: error?.message ?? String(error) });
 		}
 		const result = results[results.length - 1];
-		if (node === peers[peers.length - 1]) unrecorded.push(result);
-		else await recordPeerActivation(deploymentRow, result);
+		if (node === peers[peers.length - 1] || !(await recordPeerActivation(deploymentRow, result)))
+			unrecorded.push(result);
 	}
 }
 

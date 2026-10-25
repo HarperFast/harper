@@ -825,12 +825,14 @@ differ while the code matches. This prevents nothing, and a restart can still re
 **A rolling deploy's record follows its activation job.** The origin finishes a certified rolling deploy `rolling_out`
 with `restart_job_id` (#3060). The job, on that node, loads the node list itself (a job thread starts with an empty
 `server.nodes`), adds each peer's outcome to its `peer_results` entry as `activation`, and ends the row `success`, or
-`partial` with `error.nodes`. It first waits (ten minutes at most) for the origin's `rolling_out` write, since an
-origin put landing later would erase its own; an origin that does write last keeps the stored outcomes
-(`keepRolloutProgress`). Writes land `rolloutTiming.writeSpacingMs` apart, as a burst to one row can commit out of
-order on a loaded peer (#1170). A job that throws ends the row `partial` (`abandonRollout`); one a restart cut short
-is ended at boot (`settleInterruptedRollouts`). `harper deploy restart=rolling` follows the record, not `hdb_job`,
-which does not replicate (`bin/deployRollout.ts`, #3058); a 401/403 ends its wait at once.
+`partial` with `error.nodes`. It first waits (ten minutes at most) for the origin's `rolling_out` write, which would
+otherwise erase its own; an origin that writes last keeps the stored outcomes (`keepRolloutProgress`). Each
+read-merge-write holds the row's node-scoped lock (`withRolloutRowLock`; none on LMDB): a conflict retry replays a put,
+not its merge. Writes land `rolloutTiming.writeSpacingMs` apart, as a burst to one row can commit out of order on a
+loaded peer (#1170). The final write carries any peer whose own write failed, and retries, then fails the job with every
+outcome in its record; boot ends a row a restart cut short from that record (`settleInterruptedRollouts`), and a job
+that throws ends it `partial` (`abandonRollout`). `harper deploy restart=rolling` follows the row, not `hdb_job`, which
+does not replicate (`bin/deployRollout.ts`, #3058); a 401/403 ends its wait, as does its deadline mid-read.
 
 **A deployment records where it came from.** `source` (#3061) is `via: 'oidc'` when the exchange signed the policy and
 the run's verified claims into the operation token (security/DESIGN.md), else `via: 'declared'`, the client's word

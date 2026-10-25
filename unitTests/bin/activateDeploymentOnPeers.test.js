@@ -177,6 +177,7 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	const DEPLOYMENT_TABLE = SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 	const { rolloutTiming } = require('#src/components/deploymentRecorder');
 	const writeSpacingMs = rolloutTiming.writeSpacingMs;
+	const retryDelayMs = rolloutTiming.retryDelayMs;
 	let previousServer;
 	let previousTable;
 	let rows;
@@ -189,6 +190,7 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	beforeEach(() => {
 		// The spacing between the job's writes, shortened so these tests do not each wait it out.
 		rolloutTiming.writeSpacingMs = 50;
+		rolloutTiming.retryDelayMs = retryDelayMs;
 		ROW = randomUUID();
 		activation = { project: 'web', deployment_id: DEPLOYMENT, deployment_row: ROW };
 		previousServer = global.server;
@@ -220,6 +222,7 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 	});
 	afterEach(() => {
 		rolloutTiming.writeSpacingMs = writeSpacingMs;
+		rolloutTiming.retryDelayMs = retryDelayMs;
 		global.server = previousServer;
 		if (databases.system) databases.system[DEPLOYMENT_TABLE] = previousTable;
 	});
@@ -288,6 +291,44 @@ describe("recording each peer's activation on the deployment's row (harper#3060)
 		assert.strictEqual(puts.length, 2);
 		assert.ok(puts[1].at - puts[0].at >= 390, `writes ${puts[1].at - puts[0].at}ms apart`);
 		assert.strictEqual(rows.get(ROW).status, 'partial');
+	});
+
+	it("carries a peer's outcome whose own write failed into the final write", async () => {
+		rows.set(ROW, stagedRow());
+		const table = databases.system[DEPLOYMENT_TABLE];
+		const put = table.put;
+		let failed = false;
+		table.put = async (row) => {
+			if (!failed && row.peer_results?.some((peer) => peer.activation)) {
+				failed = true;
+				throw new Error('disk full');
+			}
+			return put(row);
+		};
+		await activateDeploymentOnPeers(activation);
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'success');
+		assert.ok(row.peer_results.every(({ activation }) => activation?.activated));
+	});
+
+	it('fails the job, keeping every outcome, when the final write cannot land', async () => {
+		rows.set(ROW, stagedRow());
+		rolloutTiming.retryDelayMs = 1;
+		const table = databases.system[DEPLOYMENT_TABLE];
+		const put = table.put;
+		table.put = async (row) => {
+			if (row.status !== 'rolling_out') throw new Error('disk full');
+			return put(row);
+		};
+		await assert.rejects(activateDeploymentOnPeers(activation), (error) => {
+			assert.match(error.message, /disk full/);
+			assert.deepStrictEqual(
+				error.http_resp_msg.activated.map(({ node, error: failure }) => ({ node, failed: !!failure })),
+				['peer-a', 'peer-b', 'peer-c'].map((node) => ({ node, failed: false }))
+			);
+			return true;
+		});
+		assert.strictEqual(rows.get(ROW).status, 'rolling_out', 'not ended partial for activations that all took');
 	});
 
 	it('ends the record success once every node took the release', async () => {

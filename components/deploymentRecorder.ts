@@ -526,7 +526,6 @@ export class DeploymentRecorder {
 		}
 		this.record.status = status;
 		this.record.completed_at = Date.now();
-		if (status === 'rolling_out') await this.keepRolloutProgress();
 		if (error) {
 			const e = error as { message?: string; code?: string | number; stack?: string };
 			this.record.error = {
@@ -535,16 +534,22 @@ export class DeploymentRecorder {
 				phase: this.record.phase,
 			};
 		}
-		await this.put();
+		if (status !== 'rolling_out') return this.put();
+		const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+		await withRolloutRowLock(table, this.deploymentId, async () => {
+			await this.keepRolloutProgress(table);
+			await this.put();
+		});
 	}
 
 	/**
 	 * A rolling deploy's activation job writes this row too, and normally waits for this write first; should it have
-	 * written already, what it recorded is kept rather than replaced by this in-memory copy.
+	 * written already, what it recorded is kept rather than replaced by this in-memory copy. Runs under the row's lock,
+	 * which the job's writes take too, so none lands between this read and the write that follows.
 	 */
-	private async keepRolloutProgress(): Promise<void> {
-		const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
-		const stored = await table?.get(this.deploymentId).catch(() => undefined);
+	private async keepRolloutProgress(table: any): Promise<void> {
+		const stored: any =
+			table && (await withIsolatedTransaction(() => table.get(this.deploymentId)).catch(() => undefined));
 		if (!stored) return;
 		if (stored.status === 'success' || stored.status === 'partial') {
 			this.record.status = stored.status;
@@ -589,7 +594,8 @@ export class DeploymentRecorder {
 const ROLLOUT_RECORD_WAIT_MS = 10 * 60_000;
 // The least time between two writes to the row while the job runs. A peer that fails at once (connection refused)
 // would otherwise put two writes moments apart, the burst that can commit out of order on a loaded peer (#1170).
-export const rolloutTiming = { writeSpacingMs: 1000 };
+// The job's final write retries this often, `retryDelayMs` apart and growing, before the job fails with every outcome.
+export const rolloutTiming = { writeSpacingMs: 1000, finalWriteAttempts: 3, retryDelayMs: 1000 };
 const lastRolloutWrite = new Map<string, number>();
 // Rows whose wait for the origin's write is over, whether a write of the job's then landed or not.
 const handedOff = new Set<string>();
@@ -604,11 +610,11 @@ export interface PeerActivation {
 /**
  * Record one peer's outcome of a rolling deploy's activation job on the deployment's row, beside the staging outcome
  * its `peer_results` entry already holds. Runs in the job, on the node that wrote the row, one peer at a time, so
- * each write lands seconds apart and replicates like the origin's own. Never throws: the job's own result is the
- * authority, and a lost write costs only the record.
+ * each write lands seconds apart and replicates like the origin's own. Never throws; resolves false when the write
+ * did not land, for the job to carry the outcome into its final write.
  */
-export async function recordPeerActivation(deploymentId: string, outcome: PeerActivation): Promise<void> {
-	await updateRolloutRow(deploymentId, (row) => applyPeerActivation(row, outcome));
+export function recordPeerActivation(deploymentId: string, outcome: PeerActivation): Promise<boolean> {
+	return updateRolloutRow(deploymentId, (row) => applyPeerActivation(row, outcome));
 }
 
 /**
@@ -616,33 +622,38 @@ export async function recordPeerActivation(deploymentId: string, outcome: PeerAc
  * release, otherwise `partial`, naming the nodes that did not. `unrecorded` are outcomes no earlier write carried; the
  * job hands the last peer's here rather than writing it moments before this, since a tight burst of writes to one row
  * can commit out of order on a loaded peer (#1170). Leaves a row the origin ended some other way (it failed after
- * starting the job) with the status it has.
+ * starting the job) with the status it has. Retries, then throws, so a job whose record cannot be ended fails with
+ * the outcomes it holds rather than completing over a row still `rolling_out`.
  */
 export async function finishRollout(
 	deploymentId: string,
 	outcomes: PeerActivation[],
 	unrecorded: PeerActivation[] = []
 ): Promise<void> {
-	await updateRolloutRow(deploymentId, (row) => {
-		for (const outcome of unrecorded) applyPeerActivation(row, outcome);
-		// A row still short of the origin's write gets the outcome anyway: the origin's write keeps it
-		// (`keepRolloutProgress`). Only a row the origin ended some other way keeps its status.
-		if (ENDED_ROW_STATUSES.has(row.status)) return;
-		const failed = outcomes.filter((outcome) => outcome.error);
-		row.completed_at = Date.now();
-		if (failed.length === 0) {
-			row.status = 'success';
-			return;
-		}
-		row.status = 'partial';
-		row.error = {
-			message:
-				`Not activated on ${failed.length} of ${outcomes.length} peer node(s): ` +
-				failed.map((outcome) => `${outcome.node} (${outcome.error})`).join('; '),
-			nodes: failed.map((outcome) => outcome.node),
-			phase: 'restart',
-		};
-	});
+	await updateRolloutRow(
+		deploymentId,
+		(row) => {
+			for (const outcome of unrecorded) applyPeerActivation(row, outcome);
+			// A row still short of the origin's write gets the outcome anyway: the origin's write keeps it
+			// (`keepRolloutProgress`). Only a row the origin ended some other way keeps its status.
+			if (ENDED_ROW_STATUSES.has(row.status)) return;
+			const failed = outcomes.filter((outcome) => outcome.error);
+			row.completed_at = Date.now();
+			if (failed.length === 0) {
+				row.status = 'success';
+				return;
+			}
+			row.status = 'partial';
+			row.error = {
+				message:
+					`Not activated on ${failed.length} of ${outcomes.length} peer node(s): ` +
+					failed.map((outcome) => `${outcome.node} (${outcome.error})`).join('; '),
+				nodes: failed.map((outcome) => outcome.node),
+				phase: 'restart',
+			};
+		},
+		true
+	);
 }
 
 function applyPeerActivation(row: Record<string, any>, outcome: PeerActivation): void {
@@ -661,33 +672,77 @@ function applyPeerActivation(row: Record<string, any>, outcome: PeerActivation):
 	row.event_log = [...(row.event_log ?? []), { t: Date.now(), event: 'peer_activation', data: outcome }];
 }
 
-async function updateRolloutRow(deploymentId: string, update: (row: Record<string, any>) => void): Promise<void> {
+async function updateRolloutRow(
+	deploymentId: string,
+	update: (row: Record<string, any>) => void,
+	required = false
+): Promise<boolean> {
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
-	if (!table) return;
-	try {
-		// Once per row: after a wait that saw the origin's write, or gave up on it, the job's own writes are what change
-		// the row, so waiting again would only hold each later activation back by the whole bound.
-		const deadline = handedOff.has(deploymentId) ? 0 : Date.now() + ROLLOUT_RECORD_WAIT_MS;
-		let current = await table.get(deploymentId);
-		while (current && !ROLLOUT_RECORD_STATUSES.has(current.status) && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			current = await table.get(deploymentId);
+	if (!table) return false;
+	const attempts = required ? rolloutTiming.finalWriteAttempts : 1;
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await writeRolloutRow(table, deploymentId, update);
+		} catch (error) {
+			if (attempt < attempts) {
+				await new Promise((resolve) => setTimeout(resolve, rolloutTiming.retryDelayMs * attempt));
+				continue;
+			}
+			logger.warn?.(`Failed to record the rollout of deployment ${deploymentId}`, error);
+			if (required) throw error;
+			return false;
 		}
-		if (!current) return;
-		handedOff.add(deploymentId);
-		// The origin's own `rolling_out` write is one of them: its finish stamps `completed_at`, on this node's clock.
-		const lastWrite = Math.max(lastRolloutWrite.get(deploymentId) ?? 0, current.completed_at ?? 0);
-		const sinceLastWrite = Date.now() - lastWrite;
-		if (sinceLastWrite < rolloutTiming.writeSpacingMs) {
-			await new Promise((resolve) => setTimeout(resolve, rolloutTiming.writeSpacingMs - sinceLastWrite));
-			current = (await table.get(deploymentId)) ?? current;
-		}
-		const row = { ...current };
+	}
+}
+
+async function writeRolloutRow(
+	table: any,
+	deploymentId: string,
+	update: (row: Record<string, any>) => void
+): Promise<boolean> {
+	// Once per row: after a wait that saw the origin's write, or gave up on it, the job's own writes are what change
+	// the row, so waiting again would only hold each later activation back by the whole bound.
+	const deadline = handedOff.has(deploymentId) ? 0 : Date.now() + ROLLOUT_RECORD_WAIT_MS;
+	let current = await table.get(deploymentId);
+	while (current && !ROLLOUT_RECORD_STATUSES.has(current.status) && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		current = await table.get(deploymentId);
+	}
+	if (!current) return false;
+	handedOff.add(deploymentId);
+	// The origin's own `rolling_out` write is one of them: its finish stamps `completed_at`, on this node's clock.
+	const lastWrite = Math.max(lastRolloutWrite.get(deploymentId) ?? 0, current.completed_at ?? 0);
+	const sinceLastWrite = Date.now() - lastWrite;
+	if (sinceLastWrite < rolloutTiming.writeSpacingMs) {
+		await new Promise((resolve) => setTimeout(resolve, rolloutTiming.writeSpacingMs - sinceLastWrite));
+	}
+	await withRolloutRowLock(table, deploymentId, async () => {
+		const row = { ...((await withIsolatedTransaction(() => table.get(deploymentId))) ?? current) };
 		update(row);
 		await withIsolatedTransaction(() => table.put(row));
-		lastRolloutWrite.set(deploymentId, Date.now());
+	});
+	lastRolloutWrite.set(deploymentId, Date.now());
+	return true;
+}
+
+/**
+ * Runs a read-modify-write of a rollout row under the row's node-scoped record lock. The origin's terminal write and
+ * the activation job's writes both run on the node that received the deploy, so the lock keeps either from landing
+ * between the other's read and write. LMDB has no record locks (501); there, as when the lock cannot be had, the write
+ * goes ahead unlocked.
+ */
+async function withRolloutRowLock<T>(table: any, deploymentId: string, write: () => Promise<T>): Promise<T> {
+	let locked: any;
+	try {
+		locked = await table?.lock?.(deploymentId, { hold: true, scope: 'node' }, {});
 	} catch (error) {
-		logger.warn?.(`Failed to record the rollout of deployment ${deploymentId}`, error);
+		if ((error as { statusCode?: number })?.statusCode !== 501)
+			logger.warn?.(`Writing the rollout of deployment ${deploymentId} without its row lock`, error);
+	}
+	try {
+		return await write();
+	} finally {
+		await locked?.unlock?.().catch((error: unknown) => logger.warn?.('Failed to release a rollout row lock', error));
 	}
 }
 
@@ -717,9 +772,13 @@ function partialRollout(row: Record<string, any>, reason: string): void {
  * confirmed activation, so whatever follows the record is not left waiting out its bound on a job that has ended.
  */
 export async function abandonRollout(deploymentId: string, reason: string): Promise<void> {
-	await updateRolloutRow(deploymentId, (row) => {
-		if (!ENDED_ROW_STATUSES.has(row.status)) partialRollout(row, `The activation job failed: ${reason}`);
-	});
+	await updateRolloutRow(
+		deploymentId,
+		(row) => {
+			if (!ENDED_ROW_STATUSES.has(row.status)) partialRollout(row, `The activation job failed: ${reason}`);
+		},
+		true
+	);
 }
 
 /**
@@ -743,7 +802,16 @@ export async function settleInterruptedRollouts(): Promise<number> {
 			const job = row.restart_job_id ? await jobs.get(row.restart_job_id) : undefined;
 			if (job?.status === terms.JOB_STATUS_ENUM.CREATED || job?.status === terms.JOB_STATUS_ENUM.IN_PROGRESS) continue;
 			const updated: Record<string, any> = { ...row, completed_at: Date.now() };
-			if (job?.status === terms.JOB_STATUS_ENUM.COMPLETE && unconfirmedPeers(row).length === 0) {
+			// The job's own record keeps every outcome it reached, including those whose writes to this row were lost.
+			const outcomes = jobActivations(job);
+			for (const outcome of outcomes) {
+				const recorded = updated.peer_results?.some((peer: any) => peer?.node === outcome.node && peer.activation);
+				if (!recorded) applyPeerActivation(updated, outcome);
+			}
+			const visitedEveryPeer =
+				job?.status === terms.JOB_STATUS_ENUM.COMPLETE ||
+				(outcomes.length > 0 && outcomes.every((outcome) => !outcome.error));
+			if (visitedEveryPeer && unconfirmedPeers(updated).length === 0) {
 				updated.status = 'success';
 			} else {
 				partialRollout(
@@ -760,6 +828,12 @@ export async function settleInterruptedRollouts(): Promise<number> {
 	}
 	if (settled > 0) logger.warn?.(`Ended ${settled} rolling deploy record(s) whose activation job was interrupted`);
 	return settled;
+}
+
+/** The peer outcomes an activation job recorded on its own row: its result when it completed, its message when it failed. */
+function jobActivations(job: any): PeerActivation[] {
+	const activated = job?.result?.activated ?? job?.message?.activated;
+	return Array.isArray(activated) ? activated.filter((outcome) => typeof outcome?.node === 'string') : [];
 }
 
 let rolloutSettlement: Promise<number> | undefined;

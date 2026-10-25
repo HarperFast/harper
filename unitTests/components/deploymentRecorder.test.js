@@ -858,6 +858,46 @@ describe("a rolling deploy's own terminal write (harper#3060)", () => {
 		assert.deepStrictEqual(stored.peer_results[0].activation, activation);
 		assert.ok(stored.event_log.some((entry) => entry.event === 'peer_activation'));
 	});
+
+	it("holds the row's lock across its read and write, so a job write cannot land between them", async () => {
+		const { recordPeerActivation, rolloutTiming } = require('#src/components/deploymentRecorder');
+		const writeSpacingMs = rolloutTiming.writeSpacingMs;
+		rolloutTiming.writeSpacingMs = 0;
+		try {
+			const recorder = await DeploymentRecorder.create({ project: 'p' });
+			recorder.recordPeer({ node: 'peer-a', status: 'success' });
+			recorder.seal();
+			// The job's wait for this write is over, as after its bound ran out.
+			installed.mock.rows.set(recorder.deploymentId, { ...recorder.row, status: 'rolling_out' });
+			let holder = Promise.resolve();
+			installed.mock.lock = async (_id, options) => {
+				assert.strictEqual(options.hold, true);
+				assert.strictEqual(options.scope, 'node');
+				const previous = holder;
+				let release;
+				holder = new Promise((resolve) => (release = resolve));
+				await previous;
+				return { unlock: async () => release() };
+			};
+			const get = installed.mock.get;
+			let jobWrite;
+			installed.mock.get = async (id) => {
+				const row = await get(id);
+				if (!jobWrite) {
+					// The job records a peer while the origin has read the row and not yet written it back.
+					jobWrite = recordPeerActivation(id, { node: 'peer-a', certification: 'certified' });
+					await Promise.race([jobWrite, new Promise((resolve) => setTimeout(resolve, 200))]);
+				}
+				return row;
+			};
+			await recorder.finish('rolling_out');
+			await jobWrite;
+			const stored = installed.mock.rows.get(recorder.deploymentId);
+			assert.strictEqual(stored.peer_results[0].activation?.activated, true);
+		} finally {
+			rolloutTiming.writeSpacingMs = writeSpacingMs;
+		}
+	});
 });
 
 describe('ending a rolling deploy record whose activation job was interrupted (harper#3060)', () => {
@@ -910,5 +950,52 @@ describe('ending a rolling deploy record whose activation job was interrupted (h
 		assert.strictEqual(rows.get('finished').status, 'success');
 		assert.strictEqual(rows.get('running').status, 'rolling_out');
 		assert.strictEqual(rows.get('elsewhere').status, 'rolling_out');
+	});
+
+	it("recovers each peer's outcome from the job's own record when its writes to the row were lost", async () => {
+		const took = (node) => ({ node, certification: 'certified' });
+		rollout('completed', 'COMPLETE', [took('a'), { node: 'b' }]);
+		jobs.get('job-completed').result = { activated: [took('a'), took('b')] };
+		rollout('unpublished', 'ERROR', [{ node: 'a' }, { node: 'b' }]);
+		jobs.get('job-unpublished').message = { error: 'disk full', activated: [took('a'), took('b')] };
+		rollout('rejected', 'ERROR', [{ node: 'a' }, { node: 'b' }]);
+		jobs.get('job-rejected').message = { error: 'rejected', activated: [took('a'), { node: 'b', error: 'rejected' }] };
+
+		assert.strictEqual(await settleInterruptedRollouts(), 3);
+		const rows = installed.mock.rows;
+		assert.strictEqual(rows.get('completed').status, 'success');
+		assert.strictEqual(rows.get('completed').peer_results[1].activation.activated, true);
+		assert.strictEqual(rows.get('unpublished').status, 'success');
+		assert.strictEqual(rows.get('rejected').status, 'partial');
+		assert.deepStrictEqual(rows.get('rejected').error.nodes, ['b']);
+	});
+});
+
+describe("the rollout row's lock on the system table (harper#3060)", () => {
+	const { recordPeerActivation, rolloutTiming } = require('#src/components/deploymentRecorder');
+	const ID = '33333333-3333-3333-3333-333333333333';
+	let table;
+	let writeSpacingMs;
+	before(async () => {
+		await testUtils.ensureSystemTables();
+		table = databases.system[DEPLOYMENT_TABLE];
+		writeSpacingMs = rolloutTiming.writeSpacingMs;
+		rolloutTiming.writeSpacingMs = 0;
+	});
+	after(async () => {
+		rolloutTiming.writeSpacingMs = writeSpacingMs;
+		await table?.delete(ID);
+	});
+
+	it("makes the job's write wait while another writer holds the row", async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // LMDB has no record locks
+		await table.put({ deployment_id: ID, project: 'p', status: 'rolling_out', peer_results: [{ node: 'peer-a' }] });
+		const holder = await table.lock(ID, { hold: true, scope: 'node' }, {});
+		const write = recordPeerActivation(ID, { node: 'peer-a', certification: 'certified' });
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.strictEqual((await table.get(ID)).peer_results[0].activation, undefined, 'written while the row was held');
+		await holder.unlock();
+		assert.strictEqual(await write, true);
+		assert.strictEqual((await table.get(ID)).peer_results[0].activation.activated, true);
 	});
 });
