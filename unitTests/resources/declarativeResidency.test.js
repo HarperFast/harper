@@ -1288,6 +1288,23 @@ describe('Declarative residency', function () {
 		}
 	);
 
+	it('does not quarantine a runtime-opened root on a later catalog rescan', function () {
+		this.timeout(45_000);
+		const { mkdtempSync, rmSync } = require('node:fs');
+		const { join } = require('node:path');
+		const { tmpdir } = require('node:os');
+		const { execFileSync } = require('node:child_process');
+		const root = mkdtempSync(join(tmpdir(), 'residency-live-root-'));
+		try {
+			execFileSync(
+				process.execPath,
+				[join(__dirname, 'declarativeResidency-crash.js'), root, join(root, 'result'), 'runtime-open-rescan'],
+				{ timeout: 40_000 }
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 	for (const mode of [
 		'write',
 		'write-unflushed-map',

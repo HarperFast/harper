@@ -21,6 +21,7 @@ import {
 	acquireResidencyMapFence,
 	assertResidencyWriteRoute,
 	RESIDENCY_MAP_TABLE,
+	ResidencyPlacementError,
 } from './residencyMaps.ts';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -11394,7 +11395,7 @@ export function makeTable(options): TableResourceClass {
 			const current = residencyOwners(databaseName, slot, residencyPolicy.slots);
 			if (localWrite) assertResidencyWriteRoute(databaseName, current);
 			if (current.length !== owners.length || current.some((name) => !owners.includes(name)))
-				throw new ClientError('Residency owners changed before commit; retry the write', 409);
+				throw new ResidencyPlacementError('Residency owners changed before commit; retry the write', 409);
 		};
 		return owners;
 	}
@@ -11680,17 +11681,11 @@ export function makeTable(options): TableResourceClass {
 	}
 	function retainedAuditBlobFiles(id: Id, entry: Entry, alreadyRetained?: Set<string>): Set<string> | undefined {
 		if (!residencyPolicy || !audit || !(entry?.metadataFlags & REPLICA)) return;
-		let releasingFile = false;
-		for (const file of collectRetainedFileIds(entry.value) ?? []) {
-			if (!alreadyRetained?.has(file)) {
-				releasingFile = true;
-				break;
-			}
-		}
-		// Scalar PATCHes retain their files directly; walking their growing audit chain would be quadratic.
-		if (!releasingFile) return;
-		// A refetch creates different local files. Follow partial audit entries back to their full
-		// snapshot so a scalar PATCH cannot hide a blob still needed to deliver an earlier write.
+		const candidates = collectRetainedFileIds(entry.value) ?? new Set<string>();
+		for (const file of alreadyRetained ?? []) candidates.delete(file);
+		if (!candidates.size) return;
+		// Only files being released need protection. Stop when they are found so replacing a
+		// writer replica's blob does not rescan every earlier partial update of the record.
 		const retained = new Set<string>();
 		const visited = new Set<string>();
 		let { version, nodeId, additionalAuditRefs } = entry;
@@ -11701,8 +11696,10 @@ export function makeTable(options): TableResourceClass {
 			visited.add(identity);
 			const record = ('entry' in head && head.entry) || auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
 			if (!record) break;
-			for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) retained.add(file);
-			if (record.type === 'put' || record.type === 'delete') break;
+			for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) {
+				if (candidates.delete(file)) retained.add(file);
+			}
+			if (!candidates.size || record.type === 'put' || record.type === 'delete') break;
 			version = record.previousVersion;
 			nodeId = record.previousNodeId;
 			additionalAuditRefs = record.previousAdditionalAuditRefs;

@@ -39,7 +39,8 @@ export function setResidencyPlacementGuard(guard: typeof placementGuard): void {
 	placementGuard = guard;
 }
 
-export class ResidencyConfigurationError extends ClientError {}
+export class ResidencyPlacementError extends ClientError {}
+export class ResidencyConfigurationError extends ResidencyPlacementError {}
 
 function residencyFailure(database: string, reason: string): never {
 	const reported = new Int32Array(

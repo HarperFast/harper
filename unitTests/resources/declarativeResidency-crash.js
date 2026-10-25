@@ -30,6 +30,27 @@ if (require.main === module) {
 	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	setMainIsWorker(true);
 	(async () => {
+		if (mode === 'runtime-open-rescan') {
+			const assert = require('node:assert');
+			const { resetDatabases, databaseResidencyBlockReason } = require('#src/resources/databases');
+			getDatabases();
+			server.shards = new Map([
+				[0, [{ name: server.hostname }]],
+				[1, [{ name: 'other' }]],
+			]);
+			await loadGQLSchema(
+				`type RuntimeSlots @table(database: "${database}") @residency(slots: 2, byAttribute: true, slotFrom: "region") { id: ID @primaryKey region: Int @indexed body: String }`
+			);
+			const Table = getDatabases()[database].RuntimeSlots;
+			await Table.put('local', { id: 'local', region: 0, body: 'complete' });
+			env.setProperty('replication_shards', [1]);
+			resetDatabases();
+			env.setProperty('replication_shards', [0, 1]);
+			assert.equal(databaseResidencyBlockReason(database), undefined, 'runtime-opened root was already recovered');
+			assert.equal((await Table.get('local')).body, 'complete');
+			await Table.put('repaired', { id: 'repaired', region: 0, body: 'available' });
+			process.exit(0);
+		}
 		if (mode.startsWith('write')) {
 			const Healthy = table({
 				database: 'healthy',

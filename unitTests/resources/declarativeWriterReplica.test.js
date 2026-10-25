@@ -216,6 +216,28 @@ describe('Declarative writer replicas', function () {
 			Rows.auditStore.getSync = original;
 		}
 	});
+	it('bounds audit reads when each patch replaces a blob', async function () {
+		if (isLMDB) return this.skip();
+		const { createBlob } = require('#src/resources/blob');
+		const { randomBytes } = require('node:crypto');
+		const Rows = await declare();
+		await Rows.put('blob', { id: 'blob', region: 1, body: await createBlob(randomBytes(32768)) });
+		const original = Rows.auditStore.getSync;
+		let reads = 0;
+		Rows.auditStore.getSync = function (...args) {
+			reads++;
+			return original.apply(this, args);
+		};
+		try {
+			for (let i = 0; i < 10; i++) await Rows.patch('blob', { body: await createBlob(randomBytes(32768)) });
+			const firstTen = reads;
+			reads = 0;
+			for (let i = 0; i < 10; i++) await Rows.patch('blob', { body: await createBlob(randomBytes(32768)) });
+			assert.ok(reads <= firstTen + 20, `blob replacement audit reads grew: ${firstTen} then ${reads}`);
+		} finally {
+			Rows.auditStore.getSync = original;
+		}
+	});
 	it('keeps earlier audit blobs after patches and replica eviction or replacement', async function () {
 		if (isLMDB) return this.skip();
 		const { createBlob, getFilePathForBlob, cleanupOrphans } = require('#src/resources/blob');
