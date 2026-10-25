@@ -13,13 +13,13 @@ const {
 	AUDIT_STORE_OPTIONS,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	removeStorageReclamation,
 	runReclamationHandlers,
 	setAvailableSpaceRatioGetter,
 } = require('#src/server/storageReclamation');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
@@ -28,7 +28,7 @@ const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const { transaction } = require('#src/resources/transaction');
 const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { logger } = require('#src/utility/logging/logger');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 require('#src/server/serverHelpers/serverUtilities');
@@ -624,7 +624,7 @@ describe('Audit log', () => {
 	});
 	it('RocksDB versioned removal preserves records recreated before or during removal', async function () {
 		if (!AuditedTable.primaryStore.isPrimaryRocksDatabase) return this.skip();
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const recordId = 'rocks-cleanup-race';
 		try {
 			await AuditedTable.put(recordId, { name: 'deleted' });

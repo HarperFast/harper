@@ -7,13 +7,13 @@ const fs = require('fs-extra');
 const assert = require('node:assert');
 const path = require('path');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 const { setupTestDBPath } = require('../testUtils');
 const copyDB = require('#src/bin/copyDb');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { RecordEncoder, RecordObject } = require('#src/resources/RecordEncoder');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 

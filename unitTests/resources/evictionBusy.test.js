@@ -4,8 +4,8 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
 const { suspendDatabaseCommits, setTxnExpiration, getTxnExpiration } = require('#src/resources/DatabaseTransaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { getRegistryStatus } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 // Regression for #1287 (RocksDB leg). The cleanup scan's batcher retries ERR_BUSY, but the two
 // fire-and-forget evict() call sites (the read-path expiry check and runRecordExpirationEviction on
@@ -28,7 +28,7 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 	});
 
 	it('returns a thenable that resolves when the eviction commit hits ERR_BUSY', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		await BusyTable.put('b1', { id: 'b1' });
 		const entry = BusyTable.primaryStore.getEntry('b1');
@@ -67,7 +67,7 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 	});
 
 	it('waits for a maintenance commit before disposing the table', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		await BusyTable.put('b2', { id: 'b2' });
 		const entry = BusyTable.primaryStore.getEntry('b2');

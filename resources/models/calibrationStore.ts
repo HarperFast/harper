@@ -2,7 +2,7 @@ import { getDatabases, isReadOnlyMode, table } from '../databases.ts';
 import { contextStorage, transaction } from '../transaction.ts';
 import type { Context } from '../ResourceInterface.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { isApplicationPrimaryWorker } from '../../server/threads/manageThreads.js';
+import { isApplicationPrimaryWorker } from '../../server/threads/manageThreads.ts';
 import { recordAction } from '../analytics/write.ts';
 import {
 	internalJobOwner,

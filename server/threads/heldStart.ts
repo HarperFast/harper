@@ -43,7 +43,8 @@ export async function beginHeldStart(requests: HeldStartRequest[]): Promise<Map<
  */
 export async function awaitAdmission(
 	requests: HeldStartRequest[],
-	loaded: Map<string, string | undefined>
+	loaded: Map<string, string | undefined>,
+	onReported?: () => void
 ): Promise<void> {
 	while (requests.some(({ component }) => bootVerdictOf(component).outcome === 'pending')) {
 		await delay(DEFERRED_LOAD_POLL_MS);
@@ -72,5 +73,6 @@ export async function awaitAdmission(
 			components,
 			applications: applicationsPlacedOnThisThread(),
 		});
+		onReported?.();
 	});
 }

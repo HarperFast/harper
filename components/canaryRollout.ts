@@ -10,7 +10,7 @@ import {
 	certificationRollout,
 	processIncarnation,
 	setCertificationHandler,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
 import { Application, prepareApplication, withSettledComponent, type ActivationCertification } from './Application.ts';
 import {
 	liveDeploymentId,

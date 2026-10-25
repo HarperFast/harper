@@ -71,6 +71,9 @@
 		"test:integration:bun": "HARPER_RUNTIME=bun harper-integration-test-run",
 		"test:unit": "mocha",
 		"test:unit:main": "mocha \"unitTests/**/*test.*js\" --exclude \"unitTests/apiTests/**/*\" --exclude \"unitTests/dataLayer/harperBridge/**/*\" --exclude \"unitTests/resources/**/*\"",
+		"test:unit:main:core": "npm run test:unit:main -- --exclude \"unitTests/components/**/*\" --exclude \"unitTests/server/**/*\"",
+		"test:unit:main:components": "mocha \"unitTests/components/**/*test.*js\"",
+		"test:unit:main:server": "mocha \"unitTests/server/**/*test.*js\"",
 		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
 		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb mocha unitTests/server/preconditions.test.js && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
@@ -88,10 +91,31 @@
 		"test:unit:server": "mocha \"unitTests/server/**/*.js\"",
 		"test:unit:config": "mocha \"unitTests/config/**/*.js\"",
 		"test:unit:windows": "node unitTests/windowsGate.mjs",
-		"test:unit:typestrip": "env NODE_OPTIONS=\"--conditions=typestrip\" npm run test:unit",
-		"test:unit:typestrip:all": "npm run test:unit:typestrip unitTests"
+		"test:unit:typestrip": "node unitTests/runTypeStripTests.mts --source-only",
+		"test:unit:typestrip:all": "node unitTests/runTypeStripTests.mts \"unitTests/**/*test.*js\"",
+		"test:unit:typestrip:resources": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
+		"test:unit:typestrip:main": "node unitTests/runTypeStripTests.mts",
+		"test:unit:typestrip:resources:core": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:typestrip:resources:indexes": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
+		"test:types:unit": "tsc --project unitTests/tsconfig.harness.json"
 	},
 	"imports": {
+		"#src/*.js": {
+			"typestrip": "./*.js",
+			"default": "./dist/*.js"
+		},
+		"#src/globals": {
+			"typestrip": "./globals.js",
+			"default": "./dist/globals.js"
+		},
+		"#src/utility/packageUtils": {
+			"typestrip": "./utility/packageUtils.js",
+			"default": "./dist/utility/packageUtils.js"
+		},
+		"#src/utility/terms/certificates": {
+			"typestrip": "./utility/terms/certificates.js",
+			"default": "./dist/utility/terms/certificates.js"
+		},
 		"#src/*": {
 			"import": {
 				"typestrip": "./*.ts",
@@ -103,14 +127,8 @@
 			}
 		},
 		"#js/*": {
-			"import": {
-				"typestrip": "./*.js",
-				"default": "./dist/*.js"
-			},
-			"require": {
-				"typestrip": "./*.js",
-				"default": "./dist/*.js"
-			}
+			"typestrip": null,
+			"default": "./dist/*.js"
 		}
 	},
 	"engines": {

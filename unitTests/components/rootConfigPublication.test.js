@@ -24,7 +24,7 @@ const {
 	componentPreparationLockPaths,
 	COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
 } = require('#src/components/componentPreparationLock');
-const envModule = require('#src/utility/environment/environmentManager');
+const envModule = require('#js/utility/environment/environmentManager');
 const { waitFor } = require('../waitFor.js');
 const { preserveRootConfig, readRootConfig, setRootConfigEntry: writeEntry } = require('../rootConfigFixture.js');
 

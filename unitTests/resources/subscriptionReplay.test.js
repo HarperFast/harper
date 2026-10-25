@@ -5,7 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 require('#src/server/serverHelpers/serverUtilities');
 
 // The count branch in Table.ts uses `start: 'z'` for reverse audit log iteration, which is an

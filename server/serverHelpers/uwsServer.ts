@@ -1,3 +1,4 @@
+import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 /**
  * uWebSockets.js HTTP server adapter (#914, github.com/HarperFast/harper, default-off backend).
  *
@@ -88,7 +89,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	// uWS always links V8's C++ API, so a binary the scanner cannot read (Mach-O, PE) needs evidence too.
 	if (isPointerCompressionRuntime()) {
 		const uwsBinary = join(
-			dirname(createRequire(__filename).resolve('uWebSockets.js')),
+			dirname(createRequire(join(PACKAGE_ROOT, 'package.json')).resolve('uWebSockets.js')),
 			`uws_${process.platform}_${process.arch}_${process.versions.modules}.node`
 		);
 		// a missing binary is an unsupported Node.js version, which uws.js itself reports accurately
@@ -515,6 +516,11 @@ export class UwsWebSocket extends EventEmitter {
 	#raw: any;
 	#open = true;
 	#closeEmitted = false;
+	#drainPending = false;
+	#flushDrain = () => {
+		this.#drainPending = false;
+		if (this.#open && !this._socket.writableNeedDrain) this._socket.emit('drain');
+	};
 	public _socket: UwsSocketShim;
 	public binaryType = 'nodebuffer';
 
@@ -575,7 +581,9 @@ export class UwsWebSocket extends EventEmitter {
 		this.emit('message', Buffer.from(new Uint8Array(message)), isBinary);
 	}
 	_drain(): void {
-		this._socket.emit('drain');
+		if (this.#drainPending) return;
+		this.#drainPending = true;
+		setImmediate(this.#flushDrain);
 	}
 	_closed(code: number, message: ArrayBuffer): void {
 		this.#open = false;

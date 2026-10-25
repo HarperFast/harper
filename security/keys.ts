@@ -1,27 +1,29 @@
-'use strict';
+import { loadNativePackage } from '../utility/packageUtils.js';
+('use strict');
 
-import * as path from 'path';
-import * as fs from 'fs-extra';
+import * as path from 'node:path';
+import fs from 'fs-extra';
 import type * as Forge from 'node-forge';
-import * as net from 'net';
+import * as net from 'node:net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
 
-import * as util from 'util';
+import * as util from 'node:util';
 const generateKeyPair = util.promisify(generateKeyPairOrig);
 
-const loadForge = () => require('node-forge') as typeof Forge;
+const loadForge = () => loadNativePackage('node-forge') as typeof Forge;
 import { v4 as uuidv4 } from 'uuid';
 import { forComponent } from '../utility/logging/harper_logger.ts';
 import * as envManager from '../utility/environment/environmentManager.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 import * as certificatesTerms from '../utility/terms/certificates.js';
-const tls = require('node:tls');
+import tls from 'node:tls';
 import { relative, join, dirname, resolve } from 'node:path';
 import { open } from 'node:fs/promises';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
 import * as configUtils from '../config/configUtils.ts';
+import { filterArgsAgainstRuntimeConfig } from '../config/harperConfigEnvVars.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
 import { transaction } from '../resources/transaction.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -42,8 +44,8 @@ export const getPrivateKeys = () => {
 };
 
 import { readFileSync, statSync, watchFile } from 'node:fs';
-import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
-import { isMainThread } from 'worker_threads';
+import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.ts';
+import { isMainThread } from 'node:worker_threads';
 import {
 	POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,
@@ -1002,7 +1004,6 @@ export function updateConfigCert() {
 	// Filter out any cert config keys already set by HARPER_SET_CONFIG so we don't overwrite them
 	// with defaults. On first boot, HARPER_SET_CONFIG values are written to the config file during
 	// createConfigFile(), but updateConfigCert() runs afterward without re-applying HARPER_SET_CONFIG.
-	const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
 	const filteredCerts = filterArgsAgainstRuntimeConfig(newCerts);
 
 	configUtils.updateConfigValue(undefined, undefined, filteredCerts, false, true);

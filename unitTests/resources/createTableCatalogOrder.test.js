@@ -3,9 +3,9 @@ const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath, routePutThroughPutSync } = require('../testUtils');
 const { database, databases, getDatabases, resetDatabases, table } = require('#src/resources/databases');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const storageReclamation = require('#src/server/storageReclamation');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const storageReclamation = require('#js/server/storageReclamation');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('create table catalog write order', () => {
 	before(() => {

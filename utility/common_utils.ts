@@ -1,24 +1,30 @@
-'use strict';
-import * as path from 'path';
-import * as fs from 'fs-extra';
+import { loadNativePackage } from './packageUtils.js';
+('use strict');
+import * as path from 'node:path';
+import fs from 'fs-extra';
 import log from './logging/harper_logger.ts';
-import * as fsExtra from 'fs-extra';
-import * as os from 'os';
-import * as net from 'net';
+import fsExtra from 'fs-extra';
+import * as os from 'node:os';
+import * as net from 'node:net';
 import RecursiveIterator from 'recursive-iterator';
 import * as terms from './hdbTerms.ts';
 import { PACKAGE_ROOT } from './packageUtils.js';
 export { PACKAGE_ROOT };
-import * as papaParse from 'papaparse';
+import papaParse from 'papaparse';
 import isNumber from 'is-number';
 import minimist from 'minimist';
-import * as https from 'https';
-import * as http from 'http';
+import * as https from 'node:https';
+import * as http from 'node:http';
+// Lazy getDatabases accessor: importing databases.ts here creates circular deps
+// (databases.ts → Table.ts/auditStore.ts/etc → common_utils.ts). Instead we use a
+// shared registry module that has no deps of its own; databases.ts registers its
+// getter there at load time, and we read it here at call time.
+import { getDatabases } from './databasesRef.ts';
 
 const ISO_DATE =
 	/^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
 
-import * as util from 'util';
+import * as util from 'node:util';
 export const asyncSetTimeout = util.promisify(setTimeout);
 
 const EMPTY_STRING = '';
@@ -456,7 +462,7 @@ export async function isPortTaken(port: number) {
  * @returns string returns a thrown message if schema and or table does not exist
  */
 export function checkGlobalSchemaTable(schemaName: string, tableName: string) {
-	let databases = require('../resources/databases').getDatabases();
+	let databases = getDatabases();
 	if (!databases[schemaName]) {
 		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaName);
 	}
@@ -540,7 +546,6 @@ export function checkSchemaTableExist(schema: string, table: string) {
  * @returns {string}
  */
 export function checkSchemaExists(schema: string) {
-	const { getDatabases } = require('../resources/databases');
 	if (!getDatabases()[schema]) {
 		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
 	}
@@ -553,7 +558,6 @@ export function checkSchemaExists(schema: string) {
  * @returns {string}
  */
 export function checkTableExists(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
 	if (!getDatabases()[schema][table]) {
 		return hdbErrors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
 	}
@@ -564,7 +568,7 @@ export function checkTableExists(schema: string, table: string) {
  * @returns {number}
  */
 export function getStartOfTomorrowInSeconds() {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let tomorowSeconds = moment().utc().add(1, 'd').startOf('d').unix();
 	let nowSeconds = moment().utc().unix();
 	return tomorowSeconds - nowSeconds;
@@ -575,7 +579,7 @@ export function getStartOfTomorrowInSeconds() {
  * @returns {string}
  */
 export function getLimitKey() {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	return moment().utc().format('DD-MM-YYYY');
 }
 
@@ -659,8 +663,7 @@ export function autoCastBooleanStrict(value: any) {
  * Gets a tables hash attribute from the global schema
  */
 export function getTableHashAttribute(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
-	let tableObj = getDatabases()[schema]?.[table];
+	let tableObj = getDatabases()[schema]?.[table] as any;
 	return tableObj?.primaryKey || tableObj?.hash_attribute;
 }
 
@@ -670,7 +673,6 @@ export function getTableHashAttribute(schema: string, table: string) {
  * @returns {boolean} - returns true if schema exists
  */
 export function doesSchemaExist(schema: string) {
-	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema] !== undefined;
 }
 
@@ -681,7 +683,6 @@ export function doesSchemaExist(schema: string) {
  * @returns {boolean} - returns true if table exists
  */
 export function doesTableExist(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema]?.[table] !== undefined;
 }
 
@@ -704,7 +705,7 @@ export function stringifyObj(value: any) {
  * @returns {*}
  */
 export function ms_to_time(ms: number) {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	const duration = moment.duration(ms);
 	const sec = duration.seconds() > 0 ? duration.seconds() + 's' : '';
 	const min = duration.minutes() > 0 ? duration.minutes() + 'm ' : '';

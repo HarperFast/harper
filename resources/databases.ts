@@ -1,5 +1,7 @@
+import { loadNativePackage } from '../utility/packageUtils.js';
 import { EventEmitter } from 'node:events';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { setDatabasesGetter } from '../utility/databasesRef.ts';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import type { Database, RootDatabase } from 'lmdb';
@@ -19,7 +21,7 @@ import { rm } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
-} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import {
 	makeTable,
 	replicaExpirationMsOf,
@@ -47,11 +49,11 @@ export { isReadOnlyMode, __setReadOnlyModeForTest };
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
-import { workerData } from 'worker_threads';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
+import { workerData } from 'node:worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
-import * as manageThreads from '../server/threads/manageThreads.js';
+import * as manageThreads from '../server/threads/manageThreads.ts';
 import {
 	establishAuditFloor,
 	openAuditStore,
@@ -104,7 +106,7 @@ import {
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
-import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import {
 	compileFullTextDefinitions,
 	compileFullTextFields,
@@ -151,7 +153,7 @@ function createOpenDBIObject(dupSort = false, isPrimary = false) {
 }
 // lmdb allocates a 16 MB native buffer per thread on load, so it is loaded only when an LMDB store is opened
 function openLmdb(options: Parameters<typeof import('lmdb').open>[0]): RootDatabase {
-	const environment = (require('lmdb') as typeof import('lmdb')).open(options);
+	const environment = (loadNativePackage('lmdb') as typeof import('lmdb')).open(options);
 	// lmdb resolves a root's close() before the native close while reads are in flight on an environment that has
 	// not written; its close callback runs only once the environment is closed
 	const close = environment.close as (callback: () => void) => Promise<void> | undefined;
@@ -181,7 +183,11 @@ const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
 const CATALOG_RELATIONSHIP = Symbol('catalog-relationship');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
-initSync();
+try {
+	initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 
 type RelationshipTarget = { database: string; table: string };
 type PersistedRelationship = {
@@ -1108,6 +1114,9 @@ export function getTables(): Tables {
  * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
  * can span any tables in the database.
  */
+// Register getter in the shared registry so common_utils.ts can access databases
+// without importing this module directly (which would create a circular dep).
+setDatabasesGetter(() => getDatabases());
 export function getDatabases(): Databases {
 	if (loadedDatabases) {
 		return databases;

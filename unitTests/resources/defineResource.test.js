@@ -6,7 +6,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { defineResource, t, schemaOf, projectTableFragment } = require('#src/resources/defineResource');
 const { defineTable, types } = require('#src/resources/defineTable');
 const { RequestTarget } = require('#src/resources/RequestTarget');

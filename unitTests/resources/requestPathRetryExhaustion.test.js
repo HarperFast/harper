@@ -2,10 +2,10 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
-const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
+const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 
 // A request-path (non-sourceApply) transaction whose commit conflicts past the retry cap must
 // REJECT the promise chain the request handler awaits — the caller gets a loud ServerError (500),
@@ -59,7 +59,7 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	// timers (hdb_analytics aggregation) commit their own transactions during the ~20s backoff
 	// window, and failing those spawns unrelated retry chains that pollute the attempt count.
 	function failCommits(mode, code, { failFirst = Infinity, targetTable = ExhaustTable } = {}) {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = targetTable.primaryStore.store.db;
 		const attempts = [];
@@ -157,7 +157,7 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 
 	it('keeps retrying a durably logged transaction past MAX_RETRIES and commits once contention clears', async function () {
 		this.timeout(15000);
-		const harperLogger = require('#src/utility/logging/harper_logger');
+		const harperLogger = require('#js/utility/logging/harper_logger');
 		const warnLines = [];
 		const originalWarn = harperLogger.warn;
 		harperLogger.warn = function (...args) {

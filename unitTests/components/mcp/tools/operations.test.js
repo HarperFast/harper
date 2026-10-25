@@ -9,7 +9,7 @@ const {
 	_setProcessLocalTransactionForTest,
 } = require('#src/components/mcp/tools/operations');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 const { existsSync, readFileSync } = require('node:fs');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { handleHDBError } = require('#src/utility/errors/hdbError');

@@ -1,7 +1,7 @@
 'use strict';
 
 import RecursiveIterator from 'recursive-iterator';
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import clone from 'clone';
 import * as commonUtils from '../utility/common_utils.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
@@ -100,7 +100,7 @@ class SelectValidator {
 		}
 
 		//let theTable = clone(table);
-		let schemaTable = databases[table.databaseid][table.tableid];
+		let schemaTable: any = databases[table.databaseid][table.tableid];
 		/*TODO rather than putting every attribute in an array we will create a Map there will be a map element for every table and every table alias
  (this will create duplicate map elements) this will have downstream effects in comparison functions like findColumn*/
 		schemaTable.attributes.forEach((attribute) => {

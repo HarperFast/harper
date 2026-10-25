@@ -6,7 +6,7 @@ const { RequestTarget } = require('#src/resources/RequestTarget');
 const { table } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { writeKey } = require('ordered-binary');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Contract under test: resources/DESIGN.md → "What do chained conditions mean over array
 // values?". Convention: tests titled `pins harper#NNNN` assert today's defective output so

@@ -11,12 +11,14 @@ const {
 	rmSync,
 	writeFileSync,
 } = require('node:fs');
-const { dirname, join } = require('node:path');
+const { dirname, join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const { extract } = require('tar-stream');
-const { RocksDatabase, fileLockRelease, getRegistryStatus, tryFileLock } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, fileLockRelease, getRegistryStatus, tryFileLock } =
+	require('../rocksdbBindings.mts').rocksdbBindings();
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const {
 	backupDirForDatabase,
 	createBackup,
@@ -41,7 +43,7 @@ const {
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
-const blobBackupModule = require('#src/dataLayer/blobBackup');
+const blobBackupModule = require('#js/dataLayer/blobBackup');
 const { blobSnapshotDir } = blobBackupModule;
 const { deleteBackupManifest, isBackupComplete } = require('#src/dataLayer/backupManifest');
 const backupManifestModule = require('#src/dataLayer/backupManifest');
@@ -65,7 +67,7 @@ const {
 	unpinBackup,
 	withBackupRepositoryLock,
 } = require('#src/dataLayer/backupRepository');
-const { backups } = require('@harperfast/rocksdb-js');
+const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { closeLoadedDatabases, table } = require('#src/resources/databases');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
@@ -1023,7 +1025,7 @@ describe('rocksdbBackup', function () {
 					const { dirname } = require('node:path');
 					const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
 					env.initSync();
-					env.setProperty('storage.backupPath', ${JSON.stringify(getBackupsRoot())});
+					env.setProperty(${JSON.stringify(CONFIG_PARAMS.STORAGE_BACKUPPATH)}, ${JSON.stringify(resolve(getBackupsRoot()))});
 					const { fsyncDirectory } = require(${JSON.stringify(require.resolve('#src/utility/durableFile'))});
 					const rename = fs.renameSync;
 					fs.renameSync = (from, to) => {

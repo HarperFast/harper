@@ -23,7 +23,7 @@ process.on('exit', () => {
 
 const envMgr = require('#src/utility/environment/environmentManager');
 // Loaded before the setting is assigned, as bin/run.ts loads it before install and env-var config are written.
-const { startWorker, workers } = require('#js/server/threads/manageThreads');
+const { startWorker, workers } = require('#src/server/threads/manageThreads');
 
 async function main() {
 	const results = [];

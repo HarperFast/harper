@@ -170,7 +170,7 @@ export function ensurePreviewSweep(): Promise<boolean> {
 }
 
 async function registerPreviewSweep(): Promise<boolean> {
-	const { isApplicationPrimaryWorker } = await import('../server/threads/manageThreads.js');
+	const { isApplicationPrimaryWorker } = await import('../server/threads/manageThreads.ts');
 	if (!isApplicationPrimaryWorker(undefined)) return false;
 	const { isReadOnlyMode } = await import('../resources/readOnlyMode.ts');
 	if (isReadOnlyMode()) return false;

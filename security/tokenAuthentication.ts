@@ -30,11 +30,19 @@ import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
-
+import { onStartup } from '../utility/lifecycle.ts';
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 type StringValue = SignOptions['expiresIn'];
-const OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
-const REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
+let OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
+let REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
+onStartup(() => {
+	OPERATION_TOKEN_TIMEOUT = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
+	REFRESH_TOKEN_TIMEOUT = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
+});
 // Default lifetime of a login-purpose token (see TOKEN_TYPE.LOGIN below). It only exists to be
 // exchanged for a session cookie, so it defaults far shorter than an operation token; callers can
 // still override via expires_in.

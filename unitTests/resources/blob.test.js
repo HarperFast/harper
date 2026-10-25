@@ -6,7 +6,7 @@ const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { setAuditRetention } = require('#src/resources/auditStore');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
 	blobFileMissingOrIncomplete,
@@ -58,7 +58,7 @@ const {
 	rmSync,
 } = require('fs');
 const { dirname, join } = require('path');
-const { pack } = require('msgpackr');
+const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');

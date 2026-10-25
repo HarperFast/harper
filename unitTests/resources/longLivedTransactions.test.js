@@ -20,7 +20,7 @@ const {
 	setRegistryStatusForTests,
 	startLongLivedTransactionReporting,
 } = require('#src/resources/longLivedTransactions');
-const { getRegistryStatus } = require('@harperfast/rocksdb-js');
+const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	DatabaseTransaction,
 	getOutstandingCommits,
@@ -29,8 +29,8 @@ const {
 	trackOutstandingCommit,
 } = require('#src/resources/DatabaseTransaction');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { table } = require('#src/resources/databases');
 const { waitFor } = require('../waitFor.js');
 
@@ -858,7 +858,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			const dbPath = path.join(os.tmpdir(), `harper-2471-${process.pid}-${Date.now()}`);
 			const worker = new Worker(
-				`const { RocksDatabase, Transaction } = require('@harperfast/rocksdb-js');
+				`const { RocksDatabase, Transaction } = require(${JSON.stringify(require.resolve('../rocksdbBindings.mts'))}).rocksdbBindings();
 				const { parentPort } = require('node:worker_threads');
 				const db = RocksDatabase.open(${JSON.stringify(dbPath)});
 				const txn = new Transaction(db.store, { coordinatedRetry: true });

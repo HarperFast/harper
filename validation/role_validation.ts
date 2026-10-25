@@ -1,5 +1,6 @@
-const validate = require('validate.js');
-const validator = require('./validationWrapper');
+import validate from 'validate.js';
+import * as _validator from './validationWrapper.ts';
+const validator = _validator;
 import * as terms from '../utility/hdbTerms.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
 import { COMPONENT_GRANT_KEY, componentGrantError } from '../security/componentGrant.ts';
@@ -7,7 +8,6 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-
 const constraintsTemplate = () => ({
 	role: {
 		presence: true,

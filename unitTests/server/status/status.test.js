@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const sinon = require('sinon');
 
 // Load modules
-const { internal } = require('#src/components/status/index');
+const { internal } = require('#js/components/status/index');
 const { ComponentStatusRegistry } = internal;
 const requestRestartModule = require('#src/components/requestRestart');
 

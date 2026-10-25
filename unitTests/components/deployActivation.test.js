@@ -8,7 +8,7 @@ const os = require('node:os');
 const { Readable } = require('node:stream');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger = require('#js/utility/logging/harper_logger');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();

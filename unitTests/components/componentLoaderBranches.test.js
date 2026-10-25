@@ -11,7 +11,7 @@ const { table, databases } = require('#src/resources/databases');
 const { removeBranches } = require('#src/resources/branchDatabase');
 const { bindIsolatedApplicationGlobals, scopedBindings } = require('#src/security/jsLoader');
 const { server } = require('#src/server/Server');
-const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
 
 const BASE = 'loaderbranchbase';
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';

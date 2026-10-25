@@ -228,7 +228,9 @@ describe('SES loading', () => {
 		const sesIndex = readFileSync(join(dirname(require.resolve('ses/package.json')), 'index.js'), 'utf8');
 		const loaderSource = readFileSync(join(__dirname, '..', '..', '..', 'security', 'jsLoader.ts'), 'utf8');
 		const sesShims = [...sesIndex.matchAll(/^import '\.\/src\/([\w-]+-shim\.js)';$/gm)].map((match) => match[1]);
-		const loadedShims = [...loaderSource.matchAll(/require\('ses\/([\w-]+-shim\.js)'\)/g)].map((match) => match[1]);
+		const loadedShims = [...loaderSource.matchAll(/(?:require|nativeRequire)\('ses\/([\w-]+-shim\.js)'\)/g)].map(
+			(match) => match[1]
+		);
 		expect(sesShims).to.have.length.above(0);
 		expect(loadedShims).to.deep.equal(sesShims);
 	});
