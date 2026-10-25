@@ -10,7 +10,7 @@ import {
 } from './originClosedFloor.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { convertToMS } from '../utility/common_utils.ts';
+import { parseDurationMs } from '../utility/common_utils.ts';
 
 /**
  * Exclusive per-record locks (harper#483).
@@ -202,7 +202,7 @@ function maxLockClockSkewMs(): number {
 	if (maxLockClockSkew !== undefined) return maxLockClockSkew;
 	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
 	if (configured == null) return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
-	const skew = parseMaxLockClockSkewMs(configured);
+	const skew = parseDurationMs(configured);
 	if (Number.isFinite(skew) && skew >= 0) return (maxLockClockSkew = skew);
 	harperLogger.warn?.(
 		`storage.maxLockClockSkew must be a finite, non-negative duration, but is ${configured}; using ${DEFAULT_MAX_LOCK_CLOCK_SKEW_MS}ms`
@@ -210,12 +210,7 @@ function maxLockClockSkewMs(): number {
 	return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
 }
 
-export function parseMaxLockClockSkewMs(configured: unknown): number {
-	if (typeof configured === 'number') return convertToMS(configured);
-	if (typeof configured !== 'string' || !/^\d+(?:\.\d+)?(?:ms|[smhd])?$/.test(configured)) return NaN;
-	if (configured.endsWith('ms')) return Number(configured.slice(0, -2));
-	return convertToMS(configured);
-}
+export { parseDurationMs as parseMaxLockClockSkewMs };
 
 /**
  * The stamp a new holder's writes start from, given its admission floor. A floor above `acquiredAt` is
@@ -224,11 +219,16 @@ export function parseMaxLockClockSkewMs(configured: unknown): number {
  * of the clock within the configured skew lifts every later local key on this node above it; a floor
  * beyond that limit is rejected before it can reserve a local key.
  */
-export function admissionStamp(rootStore: any, floor: number, acquiredAt: number): { floor: number; stamp: number } {
+export function admissionStamp(
+	rootStore: any,
+	floor: number,
+	acquiredAt: number,
+	claim = true
+): { floor: number; stamp: number } {
 	if (floor <= acquiredAt) return { floor, stamp: acquiredAt };
 	const maxSkew = maxLockClockSkewMs();
 	const skew = floor - rootStore.getMonotonicTimestamp();
-	if (skew <= maxSkew) return { floor, stamp: claimLocalKey(rootStore, floor) };
+	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor };
 	throw new LockUnavailableError(
 		`A record lock cannot be admitted on state ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; fix the source peer clock or wait.`
 	);

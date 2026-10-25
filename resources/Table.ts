@@ -5029,6 +5029,9 @@ export function makeTable(options): TableResourceClass {
 			const clusterStart = performance.now();
 			// One read for both the floor and the reload: a write landing between two reads would be uncovered.
 			let admittedEntry: any;
+			let previousTimestamp: number | undefined;
+			let raisedTimestamp: number | undefined;
+			let writesBeforeTimestampRaise: number | undefined;
 			// What a follower waits on must span the cluster round and registration, not just the native
 			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
 			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
@@ -5118,7 +5121,15 @@ export function makeTable(options): TableResourceClass {
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
 					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
-					if (floor !== undefined) admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt);
+					if (floor !== undefined) {
+						const explicit = link.open === TRANSACTION_STATE.OPEN && !link.saveCommits;
+						const transactionCannotAdopt =
+							explicit &&
+							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
+								link.hasUnlockedWrite() ||
+								(link.timestamp !== undefined && link.timestamp >= floor));
+						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
+					}
 				} catch (error) {
 					handle.release();
 					throw error;
@@ -5141,8 +5152,12 @@ export function makeTable(options): TableResourceClass {
 						admitted.floor > link.timestamp &&
 						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
 						!link.hasUnlockedWrite()
-					)
+					) {
+						previousTimestamp = link.timestamp;
+						writesBeforeTimestampRaise = link.writes.length;
 						link.timestamp = Math.max(admitted.stamp, link.timestamp || handle.acquiredAt);
+						raisedTimestamp = link.timestamp;
+					}
 					if (!resolved.hold && link.transaction) {
 						// Scoped lock: the read snapshot may predate the lock; drop it so the
 						// scope reads what it locked.  Hold locks use acquiredAt directly and
@@ -5167,12 +5182,22 @@ export function makeTable(options): TableResourceClass {
 			return acquisition.then(
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					try {
-						return this.#reloadLocked(id, handle, false, { entry: admittedEntry });
-					} catch (error) {
+					const releaseAfterReloadFailure = (error) => {
 						link.unregisterRecordLock(handle);
 						handle.release();
+						if (
+							raisedTimestamp !== undefined &&
+							link.timestamp === raisedTimestamp &&
+							link.writes.length === writesBeforeTimestampRaise
+						)
+							link.timestamp = previousTimestamp;
 						throw error;
+					};
+					try {
+						const result = this.#reloadLocked(id, handle, false, { entry: admittedEntry });
+						return result?.then ? result.catch(releaseAfterReloadFailure) : result;
+					} catch (error) {
+						return releaseAfterReloadFailure(error);
 					}
 				},
 				(error) => {

@@ -1795,6 +1795,35 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(entryOf(recordId).version > predecessorTimestamp, 'stamped above the admitted version');
 		});
 
+		it('does not claim a future lock floor when an explicit transaction already staged an unlocked write', async function () {
+			if (isLMDB) return this.skip();
+			const lockedId = id();
+			const unlockedId = id();
+			const rootStore = LockTest.primaryStore.rootStore;
+			const predecessorTimestamp = Math.max(Date.now(), localIssuanceRatchet(rootStore)) + 2_000;
+			await applyFromPeer(lockedId, predecessorTimestamp);
+			const ceilingBefore = readLocalIssuanceCeiling(LockTest.auditStore);
+			const context = {};
+			await transaction(context, async () => {
+				const unlocked = await LockTest.getResource(unlockedId, context);
+				await unlocked._writeUpdate(unlockedId, { id: unlockedId, n: 1 }, true);
+				await LockTest.lock(lockedId, undefined, context);
+			});
+			assert.ok(
+				localIssuanceRatchet(rootStore) < predecessorTimestamp,
+				'the unused floor did not move the local ratchet into the future'
+			);
+			assert.strictEqual(
+				readLocalIssuanceCeiling(LockTest.auditStore),
+				ceilingBefore,
+				'the unused floor did not persist a ceiling'
+			);
+			assert.ok(
+				entryOf(unlockedId).version < predecessorTimestamp,
+				'the earlier unlocked write kept its own transaction clock'
+			);
+		});
+
 		it('rejects an over-cap admission after an unrelated write committed in its own transaction', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
