@@ -185,24 +185,33 @@ export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyRepl
 
 /**
  * A pipe that loses its destination after the response, by `unpipe()` or a destination error, leaves the part
- * paused but not destroyed, so its `close` never comes. Node's pipe cleanup removes the part's `data` listener in
- * both cases, so a removed listener is when to look again; `pause` is no signal, since a part already paused by
- * backpressure emits none.
+ * paused but not destroyed, so its `close` never comes. Every lost pipe ends in the part's own `unpipe()`, the
+ * route's or the pipe cleanup's, and a consumer that drops its `data` listener removes one; either is when to look
+ * again. `pause` is no signal, since a part already paused by backpressure emits none, and Node 24.0 and 22.18
+ * remove a pipe's `data` listener without emitting `removeListener`.
  */
 function watchForAbandonment(upload: Upload): void {
 	const { file } = upload;
 	if (!file || file.readableEnded || file.destroyed) return;
-	const onRemoved = (event: string | symbol) => {
-		// Only `data`: a consumer reading with `once(part, 'readable')` holds no listener between reads.
-		if (event !== 'data') return;
-		// The cleanup removes several listeners and settles `readableFlowing` as it goes; look once it is done.
+	// The cleanup removes several listeners and settles `readableFlowing` as it goes; look once it is done.
+	const look = () =>
 		setImmediate(() => {
 			if (upload.discarding || !isAbandoned(upload)) return;
 			stop();
 			discardUnreadUpload(upload);
 		});
+	const onRemoved = (event: string | symbol) => {
+		// Only `data`: a consumer reading with `once(part, 'readable')` holds no listener between reads.
+		if (event === 'data') look();
+	};
+	const unpipe = file.unpipe;
+	file.unpipe = function (this: Readable, destination?: NodeJS.WritableStream) {
+		const result = unpipe.call(this, destination);
+		look();
+		return result;
 	};
 	const stop = () => {
+		file.unpipe = unpipe;
 		file.off('removeListener', onRemoved);
 		file.off('end', stop);
 		file.off('close', stop);
