@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792912967450,
+  "lastUpdate": 1792919643076,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -25251,6 +25251,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1863,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "45581f85e33907b033c635764c400dc569ce8a30",
+          "message": "Cover MQTT shared encoding across protocol versions, codecs and QoS levels (#3190)\n\n* Cover the MQTT shared-encoding protocol, codec and QoS cross product\n\n* Require complete QoS 1 delivery and start disconnect victims before survivors",
+          "timestamp": "2026-10-25T03:18:04Z",
+          "url": "https://github.com/HarperFast/harper/commit/45581f85e33907b033c635764c400dc569ce8a30"
+        },
+        "date": 1792919639575,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 20183,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 9623,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 10858,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 21595008,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3574,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 190998,
             "unit": "ops"
           }
         ]
