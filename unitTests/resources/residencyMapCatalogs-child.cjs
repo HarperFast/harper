@@ -1,17 +1,20 @@
-require('../testUtils');
 const assert = require('node:assert');
-const { dirname } = require('node:path');
-const { setupTestDBPath } = require('../testUtils');
+const { dirname, join } = require('node:path');
+const { mkdirSync } = require('node:fs');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS, HDB_SETTINGS_NAMES } = require('#src/utility/hdbTerms');
+const root = process.argv[2];
+mkdirSync(join(root, 'database'));
+env.setProperty(HDB_SETTINGS_NAMES.HDB_ROOT_KEY, root);
+env.setProperty(CONFIG_PARAMS.STORAGE_PATH, join(root, 'database'));
+env.setProperty(CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 const { table, resetDatabases, databases } = require('#src/resources/databases');
 const { initializeResidencySlots, getResidencyMapTable, readResidencyMap } = require('#src/resources/residencyMaps');
 const { createResidencyMap } = require('#src/resources/residencyPolicy');
 const { server } = require('#src/server/Server');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const env = require('#src/utility/environment/environmentManager');
-const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 (async () => {
-	setupTestDBPath();
 	setMainIsWorker(true);
 	env.setProperty(CONFIG_PARAMS.REPLICATION_SHARD, 0);
 	env.setProperty(CONFIG_PARAMS.REPLICATION_SHARDS, [0, 1]);
