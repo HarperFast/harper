@@ -56,7 +56,7 @@ describe('compile cache', function () {
 				`${CURRENT}-0123abcd-2000`,
 				'v1.2.3-x64-abc-1000',
 				'v1.2.3-x64-0123abcd0-1000',
-				'v1.2.3-x64-0123ABCD-1000',
+				'v1.2.4-x64-0123ABCD-1000', // uppercase hex; another version, as a case-insensitive filesystem folds names
 				'v1.2.3-sparc-0123abcd-1000',
 				'v1.2.3-rc.1-x64-0123abcd-1000',
 				'notes',
