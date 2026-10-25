@@ -5031,6 +5031,8 @@ export function makeTable(options): TableResourceClass {
 			let admittedEntry: any;
 			let previousTimestamp: number | undefined;
 			let raisedTimestamp: number | undefined;
+			let pinnedTimestamp: number | undefined;
+			let timestampChanged = false;
 			let writesBeforeTimestampRaise: number | undefined;
 			// What a follower waits on must span the cluster round and registration, not just the native
 			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
@@ -5117,7 +5119,7 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
-				let admitted: { floor: number; stamp: number } | undefined;
+				let admitted: { floor: number; stamp: number; claimed: boolean } | undefined;
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
 					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
@@ -5134,7 +5136,8 @@ export function makeTable(options): TableResourceClass {
 					handle.release();
 					throw error;
 				}
-				if (admitted) handle.noteCandidateFloor(admitted.stamp);
+				if (admitted)
+					handle.noteCandidateFloor(admitted.stamp, !admitted.claimed && admitted.floor > handle.acquiredAt);
 				link.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
@@ -5145,7 +5148,11 @@ export function makeTable(options): TableResourceClass {
 					// excluded (saveCommits=true) — its clock is never pinned in lock();
 					// each save() stamps from the handle's committed version floor instead.
 					if (link.writes.length === 0 && !link.timestamp) {
+						previousTimestamp = link.timestamp;
+						writesBeforeTimestampRaise = link.writes.length;
+						timestampChanged = true;
 						link.timestamp = handle.acquiredAt;
+						pinnedTimestamp = link.timestamp;
 					}
 					if (
 						admitted &&
@@ -5153,8 +5160,11 @@ export function makeTable(options): TableResourceClass {
 						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
 						!link.hasUnlockedWrite()
 					) {
-						previousTimestamp = link.timestamp;
-						writesBeforeTimestampRaise = link.writes.length;
+						if (!timestampChanged) {
+							previousTimestamp = link.timestamp;
+							writesBeforeTimestampRaise = link.writes.length;
+							timestampChanged = true;
+						}
 						link.timestamp = Math.max(admitted.stamp, link.timestamp || handle.acquiredAt);
 						raisedTimestamp = link.timestamp;
 					}
@@ -5186,8 +5196,8 @@ export function makeTable(options): TableResourceClass {
 						link.unregisterRecordLock(handle);
 						handle.release();
 						if (
-							raisedTimestamp !== undefined &&
-							link.timestamp === raisedTimestamp &&
+							timestampChanged &&
+							(link.timestamp === raisedTimestamp || link.timestamp === pinnedTimestamp) &&
 							link.writes.length === writesBeforeTimestampRaise
 						)
 							link.timestamp = previousTimestamp;

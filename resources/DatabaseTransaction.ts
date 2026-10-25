@@ -783,6 +783,7 @@ export type TransactionWrite = {
 	// keeps its own candidate version across retries instead of falling back to stagedTxnTime or an
 	// explicit this.timestamp shared on the transaction.
 	lockStamp?: number;
+	lockWriteRefused?: boolean;
 	// Version staged by a write that actually changed the record this round. It advances any
 	// same-key held handle's floor only after the native transaction commits successfully.
 	appliedRecordVersion?: number;
@@ -2259,7 +2260,7 @@ export class DatabaseTransaction implements Transaction {
 			if (this.disconnected) throw requestAbortedError();
 		}
 		const lockHandle = operation.lockHandle;
-		if (lockHandle?.writeRefused) {
+		if (operation.lockWriteRefused || (!operation.saved && lockHandle?.writeRefused)) {
 			if (!operation.saved) {
 				operation.dropped = true;
 				this.detachWrite(operation);
@@ -2308,6 +2309,7 @@ export class DatabaseTransaction implements Transaction {
 						operation.lockStamp = lockHandle.holderVersionCandidate();
 					} catch (error) {
 						lockHandle.writeRefused = true;
+						operation.lockWriteRefused = true;
 						if (!operation.saved) {
 							operation.dropped = true;
 							this.detachWrite(operation);
@@ -2380,7 +2382,10 @@ export class DatabaseTransaction implements Transaction {
 			const joinedKey = operation.lockStamp && !operation.saved ? reservedLocalKey(transaction) : undefined;
 			if (joinedKey !== undefined && joinedKey < operation.lockStamp) {
 				operation.dropped = true;
-				if (lockHandle) lockHandle.writeRefused = true;
+				if (lockHandle) {
+					lockHandle.writeRefused = true;
+					operation.lockWriteRefused = true;
+				}
 				this.detachWrite(operation);
 				throw new ClientError(
 					'Record lock write joined a commit already in flight under an earlier log key; unlock, then lock and retry once it settles',
@@ -2399,6 +2404,7 @@ export class DatabaseTransaction implements Transaction {
 					if (lockHandle) {
 						operation.dropped = true;
 						lockHandle.writeRefused = true;
+						operation.lockWriteRefused = true;
 					}
 					this.detachWrite(operation);
 				}

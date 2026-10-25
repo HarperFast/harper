@@ -214,8 +214,9 @@ class ThreadRegistry {
 			const again = this.rootStore.getMonotonicTimestamp();
 			if (this.admitNative(toBits(again))) return again;
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
-			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) === ratchet)
-				return this.covered(fromBits(ratchet + 1n));
+			const next = ratchet + 1n;
+			this.covered(fromBits(next));
+			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, next) === ratchet) return fromBits(next);
 		}
 	}
 
@@ -229,6 +230,11 @@ class ThreadRegistry {
 			if (cover) this.coveredThrough = cover(key);
 		}
 		return key;
+	}
+
+	/** Persist a claim's ceiling before making its floor visible to other workers. */
+	coverBeforeClaim(floor: number): void {
+		this.covered(floor);
 	}
 
 	reserve(handle: RocksTransaction, explicit: number | undefined): number {
@@ -395,6 +401,7 @@ export function freshLocalKey(rootStore: any): number {
 /** Claim a record-version floor with a fresh local key, leaving all later local keys above it. */
 export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	const registry = registryFor(rootStore);
+	registry.coverBeforeClaim(floor);
 	storeMax(registry.words, WORD_RATCHET, fromBits(toBits(floor) - 1n));
 	return registry.freshKey();
 }

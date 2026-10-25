@@ -11,6 +11,7 @@ const { Transaction, RocksDatabase } = require('../rocksdbBindings.mts').rocksdb
 const {
 	certifyOriginFloor,
 	claimLocalKey,
+	localIssuanceRatchet,
 	getOriginClosedFloor,
 	localStartBound,
 	publishOriginFloor,
@@ -510,6 +511,20 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		retireOriginFloorSlots(threadId);
 		await sleep(2);
 		assert(certify() > key, 'the terminated worker holds nothing once retired');
+	});
+
+	it('does not advance the shared ratchet when claim coverage fails', () => {
+		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), () => {
+			throw new Error('simulated ceiling write failure');
+		});
+		const before = localIssuanceRatchet(rootStore);
+		const floor = Math.max(rootStore.getMonotonicTimestamp(), before, readLocalIssuanceCeiling(auditStore)) + 100;
+		try {
+			assert.throws(() => claimLocalKey(rootStore, floor), /simulated ceiling write failure/);
+			assert.equal(localIssuanceRatchet(rootStore), before);
+		} finally {
+			seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
+		}
 	});
 
 	it('claims at one floor ahead of the clock are unique, and every later local key is above them', async () => {

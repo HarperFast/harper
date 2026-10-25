@@ -85,7 +85,7 @@ export interface RecordLockHandle {
 	 * Raise the floor holder writes start from without treating it as a committed write: a caller
 	 * timestamp, or the stamp above the state the lock was admitted on.
 	 */
-	noteCandidateFloor(version: number): void;
+	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
 	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
@@ -224,11 +224,11 @@ export function admissionStamp(
 	floor: number,
 	acquiredAt: number,
 	claim = true
-): { floor: number; stamp: number } {
-	if (floor <= acquiredAt) return { floor, stamp: acquiredAt };
+): { floor: number; stamp: number; claimed: boolean } {
+	if (floor <= acquiredAt) return { floor, stamp: acquiredAt, claimed: false };
 	const maxSkew = maxLockClockSkewMs();
 	const skew = floor - rootStore.getMonotonicTimestamp();
-	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor };
+	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor, claimed: claim };
 	throw new LockUnavailableError(
 		`A record lock cannot be admitted on state ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; fix the source peer clock or wait.`
 	);
@@ -267,6 +267,7 @@ class KeyLockHandle implements RecordLockHandle {
 	clusterTsR: number | undefined;
 	#lastHolderVersion: number | undefined;
 	#candidateFloor: number | undefined;
+	#candidateFloorToClaim: number | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	// Monotonic mirror of expiresAt. The wall-clock field stays public (callers and the cluster
 	// protocol both speak in timestamps) but the enforcement compares monotonic readings, so neither
@@ -293,17 +294,27 @@ class KeyLockHandle implements RecordLockHandle {
 
 	noteHolderVersion(version: number): void {
 		this.#lastHolderVersion = Math.max(this.#lastHolderVersion ?? version, version);
+		if (this.#candidateFloorToClaim != null && version >= this.#candidateFloorToClaim)
+			this.#candidateFloorToClaim = undefined;
 	}
 
-	noteCandidateFloor(version: number): void {
+	noteCandidateFloor(version: number, claimOnWrite = false): void {
 		this.#candidateFloor = Math.max(this.#candidateFloor ?? version, version);
+		if (claimOnWrite) this.#candidateFloorToClaim = Math.max(this.#candidateFloorToClaim ?? version, version);
 	}
 
 	holderVersionCandidate(floor?: number): number {
+		const candidateFloor = Math.max(this.#candidateFloor ?? -Infinity, floor ?? -Infinity);
+		const lastVersion = this.#lastHolderVersion;
+		if (this.#candidateFloorToClaim != null && this.#candidateFloorToClaim > (lastVersion ?? this.acquiredAt)) {
+			const rootStore = this.store.rootStore;
+			if (typeof rootStore?.getUserSharedBuffer === 'function')
+				return Math.max(claimLocalKey(rootStore, timestampAbove(this.#candidateFloorToClaim)), candidateFloor);
+		}
 		return Math.max(
-			this.#lastHolderVersion != null ? this.#stepPast(this.#lastHolderVersion) : this.acquiredAt,
+			lastVersion != null ? this.#stepPast(lastVersion) : this.acquiredAt,
 			this.acquiredAt,
-			this.#candidateFloor ?? -Infinity,
+			candidateFloor,
 			floor ?? -Infinity
 		);
 	}
@@ -317,11 +328,10 @@ class KeyLockHandle implements RecordLockHandle {
 		const step = timestampAbove(version);
 		const rootStore = this.store.rootStore;
 		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
+		if (step <= timestampAbove(localIssuanceRatchet(rootStore))) return claimLocalKey(rootStore, step);
 		const lead = step - rootStore.getMonotonicTimestamp();
 		if (lead <= 0) return step;
-		return lead <= maxLockClockSkewMs() || step <= timestampAbove(localIssuanceRatchet(rootStore))
-			? claimLocalKey(rootStore, step)
-			: step;
+		return lead <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
 	}
 
 	isExpired(): boolean {

@@ -1381,7 +1381,7 @@ describe('Record locks (harper#483)', () => {
 				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 });
 				lockHandle = [...txn.recordLocks.values()][0].values().next().value;
 				assert.strictEqual(
-					lockHandle.nextHolderVersion(),
+					lockHandle.holderVersionCandidate(),
 					lockHandle.acquiredAt,
 					'acquisition did not prime the floor'
 				);
@@ -1824,6 +1824,31 @@ describe('Record locks (harper#483)', () => {
 			);
 		});
 
+		it('claims an unadopted holder floor when its first save follows the explicit transaction', async function () {
+			if (isLMDB) return this.skip();
+			const lockedId = id();
+			const unlockedId = id();
+			const predecessorTimestamp = futureTimestamp(1000);
+			await applyFromPeer(lockedId, predecessorTimestamp);
+			const context = {};
+			let holder;
+			try {
+				await transaction(context, async () => {
+					const unlocked = await LockTest.getResource(unlockedId, context);
+					await unlocked._writeUpdate(unlockedId, { id: unlockedId, n: 1 }, true);
+					holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
+				});
+				holder.set('n', 1);
+				await holder.save();
+				assert.ok(
+					entryOf(lockedId).version > predecessorTimestamp,
+					'the later holder save outranks its admitted state'
+				);
+			} finally {
+				await holder?.unlock();
+			}
+		});
+
 		it('rejects an over-cap admission after an unrelated write committed in its own transaction', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
@@ -2115,6 +2140,7 @@ describe('Record locks (harper#483)', () => {
 			if (isLMDB) return this.skip();
 			const claimedId = id();
 			const recordId = id();
+			const rootStore = LockTest.primaryStore.rootStore;
 			await LockTest.put({ id: recordId, n: 0 });
 			await transaction({ timestamp: futureTimestamp() }, () => LockTest.put({ id: claimedId, n: 0 }));
 			await transaction(async () => {
@@ -2127,9 +2153,13 @@ describe('Record locks (harper#483)', () => {
 			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 }, context);
 			holder.set('n', 1);
 			await holder.save();
-			await holder.unlock();
 			await LockTest.put({ id: recordId, n: 2 });
-			assert.strictEqual(entryOf(recordId).value.n, 2, 'the later put is not taken for a re-delivery of the hold save');
+			const interveningVersion = entryOf(recordId).version;
+			await waitFor(() => rootStore.getMonotonicTimestamp() > interveningVersion, 5000);
+			holder.set('n', 3);
+			await holder.save();
+			await holder.unlock();
+			assert.strictEqual(entryOf(recordId).value.n, 3, 'the holder does not reuse an intervening write version');
 		});
 
 		it('rejects a floor beyond storage.maxLockClockSkew without advancing the clock to it', async function () {
