@@ -26,6 +26,7 @@ const caches = new WeakMap<
 			snapshot: ResidencyMapSnapshot;
 			shards: Uint16Array;
 			membership?: unknown;
+			localShard?: number;
 			owners: Map<number, readonly string[]>;
 		}
 	>
@@ -254,8 +255,10 @@ export function residencyOwners(database: string, slot: number, slots: number): 
 	if (!Number.isInteger(slot) || slot < 0 || slot >= slots)
 		residencyFailure(database, 'missing or invalid record residency slot');
 	const map = getResidencyMap(database, slots);
-	if (map.membership !== server.shards) {
+	const localShard = getResidencyConfiguration().shard;
+	if (map.membership !== server.shards || map.localShard !== localShard) {
 		map.membership = server.shards;
+		map.localShard = localShard;
 		map.owners.clear();
 	}
 	const shard = map.shards[slot];
@@ -264,6 +267,10 @@ export function residencyOwners(database: string, slot: number, slots: number): 
 		const members = server.shards?.get(shard);
 		if (!members?.length) residencyFailure(database, `shard ${shard} has no known owners`);
 		owners = Object.freeze([...new Set(members.map((node: any) => (typeof node === 'string' ? node : node.name)))]);
+		// Recovery uses the configured shard before peer discovery. Never admit live writes under
+		// a conflicting self-membership view that would replay with a different ownership decision.
+		if (owners.includes(server.hostname) !== (shard === localShard))
+			residencyFailure(database, 'local shard membership disagrees with replication.shard');
 		map.owners.set(shard, owners);
 	}
 	placementGuard?.(database, owners);

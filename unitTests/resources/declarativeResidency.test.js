@@ -15,6 +15,7 @@ const {
 	getResidencyMapTable,
 	residencyDeclarationDatabases,
 	residencyIsLocal,
+	residencyOwners,
 	acquireResidencyMapFence,
 } = require('#src/resources/residencyMaps');
 const { createResidencyMap } = require('#src/resources/residencyPolicy');
@@ -133,6 +134,38 @@ describe('Declarative residency', function () {
 			assert.throws(() => residencyIsLocal('slots_test', 0, 10), /replication.shard/);
 		} finally {
 			env.setProperty('replication_shards', list);
+			env.setProperty('replication_shard', shard);
+		}
+	});
+
+	it('keeps an unsharded custom-map reader non-owning and refuses inconsistent live membership', async () => {
+		const list = env.get('replication_shards'),
+			shard = env.get('replication_shard'),
+			membership = server.shards;
+		await installResidencyMap(createResidencyMap('slot_reader_membership', 2, [{ start: 0, end: 2, shard: 0 }], 1));
+		try {
+			env.setProperty('replication_shards', undefined);
+			env.setProperty('replication_shard', undefined);
+			server.shards = new Map([[0, [{ name: 'slot-owner' }]]]);
+			assert.deepEqual(residencyOwners('slot_reader_membership', 0, 2), ['slot-owner']);
+			assert.equal(residencyIsLocal('slot_reader_membership', 0, 2), false);
+			server.shards = new Map([[0, [{ name: server.hostname }]]]);
+			assert.throws(() => residencyOwners('slot_reader_membership', 0, 2), /local shard membership/);
+		} finally {
+			server.shards = membership;
+			env.setProperty('replication_shards', list);
+			env.setProperty('replication_shard', shard);
+		}
+	});
+
+	it('invalidates cached owners when the configured local shard changes', async () => {
+		const shard = env.get('replication_shard');
+		await installResidencyMap(createResidencyMap('slot_cached_membership', 2, [{ start: 0, end: 2, shard: 0 }], 1));
+		try {
+			assert.ok(residencyOwners('slot_cached_membership', 0, 2).includes(server.hostname));
+			env.setProperty('replication_shard', 1);
+			assert.throws(() => residencyOwners('slot_cached_membership', 0, 2), /local shard membership/);
+		} finally {
 			env.setProperty('replication_shard', shard);
 		}
 	});

@@ -172,6 +172,43 @@ describe('Declarative writer replicas', function () {
 			env.setProperty('storage_blobRetention', priorRetention);
 		}
 	});
+	it('keeps earlier audit blobs after patches and replica eviction or replacement', async function () {
+		if (isLMDB) return this.skip();
+		const { createBlob, getFilePathForBlob, cleanupOrphans } = require('#src/resources/blob');
+		const { randomBytes } = require('node:crypto');
+		const { existsSync } = require('node:fs');
+		const priorRetention = env.get('storage_blobRetention');
+		env.setProperty('storage_blobRetention', 0);
+		try {
+			for (const replacement of [false, true]) {
+				for (const staged of [false, true]) {
+					const Rows = await declare();
+					const bytes = randomBytes(32768);
+					const blob = await createBlob(bytes);
+					const write = async () => {
+						await Rows.put('blob', { id: 'blob', region: 1, body: blob });
+						await Rows.patch('blob', { marker: 'patched' });
+					};
+					if (staged) await transaction({}, write);
+					else await write();
+					const file = getFilePathForBlob(blob);
+					assert.ok(file, 'the body is file-backed');
+					const written = Rows.primaryStore.getEntry('blob');
+					if (replacement) await invalidate(Rows, 'blob', written.version + 100);
+					else await Rows.evict('blob', written.value, written.version);
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					await cleanupOrphans({ [Rows.tableName]: Rows }, 'writer_replicas');
+					assert.ok(existsSync(file), 'delivery still needs the original audit body');
+					const full = Array.from(Rows.auditStore.getRange({ start: 1 })).find(
+						(entry) => entry.tableId === Rows.tableId && entry.type === 'put'
+					);
+					assert.deepEqual(Buffer.from(await full.getValue(Rows.primaryStore).body.arrayBuffer()), bytes);
+				}
+			}
+		} finally {
+			env.setProperty('storage_blobRetention', priorRetention);
+		}
+	});
 	it('reclaims fetched replica blobs without losing the original audit blob', async function () {
 		if (isLMDB) return this.skip();
 		const { createBlob, getFilePathForBlob, cleanupOrphans } = require('#src/resources/blob');
@@ -185,6 +222,7 @@ describe('Declarative writer replicas', function () {
 				const bytes = randomBytes(32768);
 				const original = await createBlob(bytes);
 				await Rows.put('blob', { id: 'blob', region: 1, body: original });
+				await Rows.patch('blob', { marker: 'patched' });
 				const originalFile = getFilePathForBlob(original);
 				const written = Rows.primaryStore.getEntry('blob');
 				await Rows.evict('blob', written.value, written.version);

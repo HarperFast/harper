@@ -11678,10 +11678,25 @@ export function makeTable(options): TableResourceClass {
 	}
 	function retainedAuditBlobFiles(id: Id, entry: Entry): Set<string> | undefined {
 		if (!residencyPolicy || !audit || !(entry?.metadataFlags & REPLICA)) return;
-		// A refetch preserves the canonical writer/version but creates different local blob files.
-		const head = resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs);
-		const record = ('entry' in head && head.entry) || auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
-		return collectRetainedFileIds(record?.getValue(primaryStore));
+		// A refetch creates different local files. Follow partial audit entries back to their full
+		// snapshot so a scalar PATCH cannot hide a blob still needed to deliver an earlier write.
+		const retained = new Set<string>();
+		const visited = new Set<string>();
+		let { version, nodeId, additionalAuditRefs } = entry;
+		while (version) {
+			const head = resolveAuditHead(id, version, nodeId, additionalAuditRefs);
+			const identity = `${head.nodeId ?? 0}:${head.txnLogKey}`;
+			if (visited.has(identity)) break;
+			visited.add(identity);
+			const record = ('entry' in head && head.entry) || auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
+			if (!record) break;
+			for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) retained.add(file);
+			if (record.type === 'put' || record.type === 'delete') break;
+			version = record.previousVersion;
+			nodeId = record.previousNodeId;
+			additionalAuditRefs = record.previousAdditionalAuditRefs;
+		}
+		return retained;
 	}
 	function noteReplicaStored(): void {
 		const state = replicaSweep();
