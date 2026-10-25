@@ -70,7 +70,7 @@ describe('handleGetDeploymentPayload', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('rejects a caller with no hdb_user as forbidden, before any deployment lookup', async () => {
 		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'd1' }), (err) => {
@@ -126,7 +126,7 @@ describe('handleDeleteDeploymentPayload', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('rejects a missing deployment_id', async () => {
 		await assert.rejects(handleDeleteDeploymentPayload({}), /'deployment_id' is required/);
@@ -198,7 +198,7 @@ describe('handleGetDeployment live tail (harper#3062)', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('forwards live events, sends no internal event, and ends with the terminal row once the deploy finishes', async () => {
 		const deployEmitter = new ProgressEmitter();

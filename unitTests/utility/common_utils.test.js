@@ -645,25 +645,26 @@ describe('Test common_utils module', () => {
 
 	describe('Test httpRequest abort signal on a trickling response', () => {
 		const http = require('node:http');
-		let server, port, trickle;
+		let trickleServer, port, trickle;
 
 		before((done) => {
 			// A byte every 20ms keeps the idle timer from ever firing.
-			server = http.createServer((req, res) => {
+			trickleServer = http.createServer((req, res) => {
 				res.writeHead(200, { 'Content-Type': 'application/json' });
 				trickle = setInterval(() => res.write(' '), 20);
 				res.on('close', () => clearInterval(trickle));
 			});
-			server.listen(0, '127.0.0.1', () => {
-				port = server.address().port;
+			trickleServer.listen(0, '127.0.0.1', () => {
+				port = trickleServer.address().port;
 				done();
 			});
 		});
 
 		after((done) => {
 			clearInterval(trickle);
-			server.closeAllConnections();
-			server.close(done);
+			if (!trickleServer) return done();
+			trickleServer.closeAllConnections();
+			trickleServer.close(done);
 		});
 
 		it('rejects once the signal aborts, though the body is still arriving', async () => {

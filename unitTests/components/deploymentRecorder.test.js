@@ -57,7 +57,7 @@ describe('DeploymentRecorder.recordPeer', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('normalizes a single-peer success result', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -184,7 +184,7 @@ describe('DeploymentRecorder.recordPeers (bulk wrapper)', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('iterates the input array and upserts each entry', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -217,7 +217,7 @@ describe('DeploymentRecorder.getFailedPeers', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('returns an empty array when no peers were recorded', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -280,7 +280,7 @@ describe('DeploymentRecorder.seal', () => {
 			},
 		};
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('stops persisting intermediate updates once sealed, but finish() writes the terminal state', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -315,7 +315,7 @@ describe('DeploymentRecorder.dropPayload', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('nulls the payload_blob and returns the freed size, retaining size/hash metadata', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -375,7 +375,7 @@ describe('awaitDeploymentRow', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('returns the row immediately when it is already present with payload_blob', async () => {
 		const row = { deployment_id: 'd1', payload_blob: { fake: true } };
@@ -811,7 +811,7 @@ describe('DeploymentRecorder.finish (harper#3062)', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('ends the deploy without sending an internal event through its emitter or into event_log', async () => {
 		const emitter = new ProgressEmitter();
