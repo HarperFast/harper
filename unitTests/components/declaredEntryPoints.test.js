@@ -86,6 +86,26 @@ describe('declared entry points (harper#1719)', () => {
 		assert.match(await missingEntryPointsWarning('web', dir), /'src\/\*\.js'/);
 	});
 
+	it("honors a declaration's only: files and only: directories, as the loader does", async () => {
+		// A directory named like the file does not satisfy a files-only declaration.
+		const directoryForFile = await at({
+			'config.yaml': "jsResource:\n  files:\n    source: 'resources*'\n    only: files\n",
+			'resources.d/index.txt': '',
+		});
+		assert.match(await missingEntryPointsWarning('web', directoryForFile), /'resources\*'/);
+		// A file named like the directory does not satisfy a directories-only declaration.
+		const fileForDirectory = await at({
+			'config.yaml': "jsResource:\n  files:\n    source: 'lib*'\n    only: directories\n",
+			'lib.js': '',
+		});
+		assert.match(await missingEntryPointsWarning('web', fileForDirectory), /'lib\*'/);
+		const satisfied = await at({
+			'config.yaml': "jsResource:\n  files:\n    source: 'lib*'\n    only: directories\n",
+			'lib/index.js': '',
+		});
+		assert.strictEqual(await missingEntryPointsWarning('web', satisfied), undefined);
+	});
+
 	it('checks nothing for a tree without a config of its own, or for plugins that are not entry points', async () => {
 		assert.strictEqual(await missingEntryPointsWarning('web', await at({ 'index.js': '' })), undefined);
 		const staticOnly = await at({ 'config.yaml': "static:\n  files: 'web/**'\nrest: true\n" });

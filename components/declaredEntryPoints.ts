@@ -42,7 +42,8 @@ export async function missingEntryPointsWarning(componentName: string, treePath:
 		].map(relative);
 		for (const pattern of source) {
 			if (pattern.startsWith('!')) continue;
-			if (!(await matchesAnything(treePath, relative(pattern), ignore))) missing.push(`${plugin}.files '${pattern}'`);
+			if (!(await matchesAnything(treePath, relative(pattern), ignore, globs)))
+				missing.push(`${plugin}.files '${pattern}'`);
 		}
 	}
 	if (missing.length === 0) return undefined;
@@ -52,8 +53,14 @@ export async function missingEntryPointsWarning(componentName: string, treePath:
 	);
 }
 
-async function matchesAnything(cwd: string, pattern: string, ignore: string[]): Promise<boolean> {
-	// Stops at the first match, so only a pattern that is about to fail walks the whole tree.
-	for await (const _match of fg.stream(pattern, { cwd, ignore, dot: true, onlyFiles: false })) return true;
+async function matchesAnything(
+	cwd: string,
+	pattern: string,
+	ignore: string[],
+	{ onlyFiles, onlyDirectories }: { onlyFiles: boolean; onlyDirectories: boolean }
+): Promise<boolean> {
+	// The loader's `only` filters (ComponentV1), so what matches here is what it could load. Stops at the first match,
+	// so only a pattern that is about to fail walks the whole tree.
+	for await (const _match of fg.stream(pattern, { cwd, ignore, dot: true, onlyFiles, onlyDirectories })) return true;
 	return false;
 }
