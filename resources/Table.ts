@@ -7646,7 +7646,9 @@ export function makeTable(options): TableResourceClass {
 								return;
 							}
 							if (!inScope(id)) continue;
-							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+							// a lagging origin's write can be merged into another origin's newer one already delivered below
+							// that origin's boundary, so it is the only delivery of the merged state, as live
+							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
 							if (!event) continue;
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 							if (!send(event)) return;
