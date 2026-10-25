@@ -11,15 +11,15 @@ import {
 
 /** Read-only comparison on the application thread that owns the actual legacy function. */
 export async function compareResidencyPlacement(Table: any, policy: unknown, snapshot: unknown) {
-	if (Table.residency) throw new ClientError('The table already has a declarative residency policy', 409);
+	if (Table.residency) throw new ClientError('The table already has a sharding policy', 409);
 	const legacy = Table.getResidencyById;
 	if (typeof legacy !== 'function')
-		throw new ClientError('Run the residency comparison on an application thread with setResidencyById installed', 409);
+		throw new ClientError('Run the sharding comparison on an application thread with setResidencyById installed', 409);
 	const proposed = normalizeResidencyPolicy(policy);
-	if (proposed.byAttribute)
-		throw new ClientError('Online residency conversion supports key-derived policies only', 400);
+	if (proposed.byAttribute) throw new ClientError('Online sharding conversion supports key-derived policies only', 400);
 	const map = validateResidencyMap(snapshot, Table.databaseName);
-	if (map.slots < proposed.slots) throw new ClientError('The installed map does not cover the proposed slots', 400);
+	if (map.slots !== proposed.slots)
+		throw new ClientError(`Proposed slot count ${proposed.slots} differs from database map count ${map.slots}`, 400);
 	const shards = expandResidencyMap(map);
 	const slotFor = compileResidencyPolicy(proposed);
 	const coverage = new Set<number>();
@@ -47,7 +47,7 @@ export async function compareResidencyPlacement(Table: any, policy: unknown, sna
 		if (++checked % 256 === 0) {
 			await setImmediate();
 			if (databases[Table.databaseName]?.[Table.tableName] !== Table || Table.primaryStore.status === 'closed')
-				throw new ClientError('The table was dropped or replaced during the residency comparison', 409);
+				throw new ClientError('The table was dropped or replaced during the sharding comparison', 409);
 		}
 	}
 	return {

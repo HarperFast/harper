@@ -1,7 +1,6 @@
 import { dirname } from 'node:path';
 import { Script } from 'node:vm';
 import { scopedTableFactory, table, databaseResidencyBlockReason, databases as loadedDatabases } from './databases.ts';
-import { compileResidencyPolicy, normalizeResidencyPolicy } from './residencyPolicy.ts';
 import { prepareResidencyDeclaration } from './residencyMaps.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
@@ -147,7 +146,7 @@ if (!server.knownGraphQLDirectives) {
 }
 server.knownGraphQLDirectives.push(
 	'table',
-	'residency',
+	'sharded',
 	'sealed',
 	'export',
 	'primaryKey',
@@ -243,6 +242,7 @@ async function processGraphQLSchema(
 	}
 	const types = new Map();
 	const tables = [];
+	const shardedDeclarations = new Map<any, any>();
 	// we begin by iterating through the definitions in the AST to get the types and convert them
 	// to a friendly format for table attributes
 	for (const definition of ast.definitions) {
@@ -268,7 +268,8 @@ async function processGraphQLSchema(
 					const directiveName = directive.name.value;
 					if (directiveName === 'table') {
 						for (const arg of directive.arguments) {
-							if (arg.name.value === 'residency') throw new ClientError('Use the @residency directive', 400);
+							if (arg.name.value === 'residency' || arg.name.value === 'sharded')
+								throw new ClientError('Use the @sharded directive', 400);
 							typeDef[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
 						// @table is the canonical schema-defined declaration; pass the flag explicitly so
@@ -291,16 +292,18 @@ async function processGraphQLSchema(
 										.trim();
 						tables.push(typeDef);
 					}
-					if (directiveName === 'residency') {
-						if (typeDef.residency) throw new ClientError('A table may declare @residency only once', 400);
+					if (directiveName === 'residency') throw new ClientError('Unknown directive @residency; use @sharded', 400);
+					if (directiveName === 'sharded') {
+						if (shardedDeclarations.has(typeDef)) throw new ClientError('A table may declare @sharded only once', 400);
 						const policy = {};
 						for (const arg of directive.arguments ?? []) {
+							if (!['slots', 'by', 'slotFrom'].includes(arg.name.value))
+								throw new ClientError(`Unknown @sharded argument ${arg.name.value}`, 400);
 							if (Object.hasOwn(policy, arg.name.value))
-								throw new ClientError(`Duplicate @residency argument ${arg.name.value}`, 400);
+								throw new ClientError(`Duplicate @sharded argument ${arg.name.value}`, 400);
 							policy[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
-						typeDef.residency = normalizeResidencyPolicy(policy);
-						compileResidencyPolicy(typeDef.residency);
+						shardedDeclarations.set(typeDef, policy);
 					}
 					if (directive.name.value === 'sealed') typeDef.sealed = true;
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
@@ -482,14 +485,14 @@ async function processGraphQLSchema(
 					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
 				assertDerivedFieldOwnership(attributes as any[]);
-				if (typeDef.residency && !typeDef.table)
-					throw new ClientError('@residency is only supported on a @table type', 400);
+				if (shardedDeclarations.has(typeDef) && !typeDef.table)
+					throw new ClientError('@sharded is only supported on a @table type', 400);
 				if (
-					typeDef.residency?.byAttribute &&
+					shardedDeclarations.get(typeDef)?.by !== undefined &&
 					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey)
 				)
 					throw new ClientError(
-						'@residency byAttribute requires a secondary index until slot-bearing id-only stubs are supported',
+						'@sharded by requires a secondary index until slot-bearing id-only stubs are supported',
 						400
 					);
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
@@ -542,8 +545,14 @@ async function processGraphQLSchema(
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
-		if (typeDef.residency && branches?.has(typeDef.database || 'data'))
-			throw new ClientError('Cannot use declarative residency in application database branches', 400);
+		const declaration = shardedDeclarations.get(typeDef);
+		if (declaration?.by !== undefined) {
+			const attribute = typeDef.attributes.find((attribute) => attribute.name === declaration.by);
+			if (!attribute || attribute.computed || attribute.type === 'FullText')
+				throw new ClientError('@sharded by must name a declared stored attribute', 400);
+		}
+		if (declaration && branches?.has(typeDef.database || 'data'))
+			throw new ClientError('Cannot use sharding in application database branches', 400);
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
 		const quarantined = databaseResidencyBlockReason(typeDef.database || 'data');
@@ -555,12 +564,12 @@ async function processGraphQLSchema(
 		const residencyDeadline = Date.now() + 5000;
 		for (; !quarantined;) {
 			try {
-				if (typeDef.residency)
-					await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, typeDef.residency);
+				if (declaration)
+					typeDef.residency = await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, declaration);
 				typeDef.tableClass = declareTable(typeDef);
 				break;
 			} catch (error) {
-				if (!typeDef.residency || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;
+				if (!declaration || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;
 				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
 		}

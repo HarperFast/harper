@@ -38,7 +38,7 @@ if (require.main === module) {
 		}
 	);
 } else {
-	describe('Residency map upgrade', () => {
+	describe('Shard map upgrade', () => {
 		it('provisions an audited table on 5.4 upgrade and preserves an existing map on rerun', function () {
 			this.timeout(15000);
 			const { mkdtempSync, rmSync } = require('node:fs');

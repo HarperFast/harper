@@ -632,7 +632,7 @@ function validateResidencyRecovery(): void {
 		let reason =
 			databaseResidencyBlockReason(databaseName) ??
 			(size > 0 ? Buffer.from(state.subarray(4, 4 + size)).toString() : undefined);
-		if (!reason && residencyRootsToValidate.has(databaseName)) {
+		if (!reason && isMainThread && residencyRootsToValidate.has(databaseName)) {
 			try {
 				for (const Table of declarations) getResidencyMap(databaseName, Table.residency.slots, true);
 			} catch (error) {
@@ -2508,7 +2508,7 @@ export function openBranchDatabase(
 		manageThreads.markBranchStorePath(path);
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
 		if (Object.values(tables).some((Table) => Table.residency))
-			throw new ClientError('Cannot use declarative residency in application database branches', 400);
+			throw new ClientError('Cannot use sharding in application database branches', 400);
 		// Pin the handle to the roots the caller proved this branch was published with, before it is
 		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
 		// configuration instead would let an appended volume take writes at an index the branch's own
@@ -4036,8 +4036,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		fullTextFields,
 		createdTime,
 	} = tableDefinition;
-	if (target.branch && residency)
-		throw new ClientError('Cannot use declarative residency in application database branches', 400);
+	if (target.branch && residency) throw new ClientError('Cannot use sharding in application database branches', 400);
 	const auditExplicitlyEnabled = audit === true;
 	const auditExplicitlyDisabled = audit === false;
 	const fullTextIndexesExplicit = tableDefinition.fullTextIndexes !== undefined;
@@ -4276,17 +4275,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (!previous) releaseResidencyFence = acquireResidencyMapFence(databaseName, {});
 			residency = residency === undefined ? previous : residency;
 			if (residency) {
-				if (schemaDefined === false) throw new ClientError('@residency requires a schema-defined table', 400);
+				if (schemaDefined === false) throw new ClientError('@sharded requires a schema-defined table', 400);
 				const effectiveAudit =
 					audit ?? persisted.descriptor?.audit ?? Table?.audit ?? envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
-				if (!effectiveAudit) throw new ClientError('@residency requires audit logging for durable replication', 400);
+				if (!effectiveAudit) throw new ClientError('@sharded requires audit logging for durable replication', 400);
 				if ((replicate ?? persisted.descriptor?.replicate ?? Table?.replicate) === false)
-					throw new ClientError('@residency requires table replication', 400);
+					throw new ClientError('@sharded requires table replication', 400);
 				residency = normalizeResidencyPolicy(residency);
 				compileResidencyPolicy(residency);
 				if (residency.byAttribute && persisted.descriptor && !previous)
 					throw new ClientError(
-						'Cannot activate attribute residency on an existing table; its records have no stored slots',
+						'Cannot activate attribute sharding on an existing table; its records have no stored slots',
 						409
 					);
 				if (
@@ -4294,19 +4293,21 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey) &&
 					!(origin === 'cluster' && Object.keys(Table?.indices ?? {}).length)
 				)
-					throw new ClientError('@residency byAttribute requires a secondary index', 400);
+					throw new ClientError('@sharded by requires a secondary index', 400);
 				const map = readResidencyMap(databaseName);
-				if (!map || map.slots < residency.slots)
+				if (!map)
 					throw new ClientError(
-						`Install a residency map covering ${residency.slots} slots before declaring ${databaseName}.${tableName}`,
+						`Install a shard map with ${residency.slots} slots before declaring ${databaseName}.${tableName}`,
 						503
+					);
+				if (map.slots !== residency.slots)
+					throw new ClientError(
+						`@sharded slot count ${residency.slots} differs from database ${databaseName} map count ${map.slots}`,
+						400
 					);
 			}
 			if (previous && !sameResidencyPolicy(previous, residency ?? undefined))
-				throw new ClientError(
-					`The @residency policy of ${databaseName}.${tableName} cannot be changed or removed`,
-					409
-				);
+				throw new ClientError(`The @sharded policy of ${databaseName}.${tableName} cannot be changed or removed`, 409);
 		}
 		if (Table) {
 			refreshedLiveAttributes = true;

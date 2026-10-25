@@ -1592,7 +1592,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		}
 		if (action & HAS_CURRENT_RESIDENCY_SLOT) residencySlot = decoder.readInt();
 		if (action & HAS_PREVIOUS_RESIDENCY_SLOT) previousResidencySlot = decoder.readInt();
-		if (residencySlot > 65535 || previousResidencySlot > 65535) throw new RangeError('Invalid audit residency slot');
+		if (residencySlot > 65535 || previousResidencySlot > 65535) throw new RangeError('Invalid audit sharding slot');
 		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
 			expiresAt = decoder.readFloat64();
 		}

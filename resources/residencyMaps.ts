@@ -6,6 +6,8 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as logger from '../utility/logging/harper_logger.ts';
 import {
 	assertResidencyMapChange,
+	normalizeResidencyPolicy,
+	compileResidencyPolicy,
 	residencyMapExtends,
 	canonicalShards,
 	createResidencyMap,
@@ -47,9 +49,9 @@ function residencyFailure(database: string, reason: string): never {
 		getResidencyMapTable().auditStore.getUserSharedBuffer(['residency-failure', database, reason], new ArrayBuffer(4))
 	);
 	if (Atomics.compareExchange(reported, 0, 0, 1) === 0) {
-		logger.warn?.(`Declarative residency blocked for ${database}: ${reason}`);
+		logger.warn?.(`Sharding blocked for ${database}: ${reason}`);
 	}
-	throw new ResidencyConfigurationError(`Declarative residency blocked for ${database}: ${reason}`, 503);
+	throw new ResidencyConfigurationError(`Sharding blocked for ${database}: ${reason}`, 503);
 }
 
 export function residencyDeclarationDatabases(): string[] {
@@ -141,7 +143,7 @@ export function acquireResidencyMapFence(database: string, owner: object): () =>
 	if (!fence || fence.owner !== owner) {
 		if (!store.tryLock(key))
 			throw Object.assign(
-				new ClientError(`Residency map update or activation is in progress for ${database}; retry`, 503),
+				new ClientError(`Shard map update or activation is in progress for ${database}; retry`, 503),
 				{
 					residencyMapBusy: true,
 				}
@@ -217,8 +219,8 @@ export async function initializeResidencySlots(request: { database: string; slot
 export async function prepareResidencyDeclaration(
 	database: string,
 	name: string,
-	policy: ResidencyPolicy
-): Promise<void> {
+	policy: Partial<ResidencyPolicy>
+): Promise<Readonly<ResidencyPolicy>> {
 	getDatabases();
 	// Keep failed first activations visible even though their user table was never published.
 	const catalog = getResidencyMapTable().dbisDB;
@@ -226,21 +228,36 @@ export async function prepareResidencyDeclaration(
 	if (!catalog.getSync(declaration)) catalog.putSync(declaration, true);
 	const existing = databases[database]?.[name];
 	const snapshot = readResidencyMap(database);
+	const resolved = normalizeResidencyPolicy({
+		...policy,
+		slots: policy.slots === undefined ? (snapshot?.slots ?? 1024) : policy.slots,
+	});
+	compileResidencyPolicy(resolved);
 	assertResidencyConfiguration(database, !!snapshot);
 	if (snapshot) {
-		if (snapshot.slots < policy.slots) residencyFailure(database, 'installed map does not cover the declared slots');
-		return;
+		if (snapshot.slots !== resolved.slots)
+			throw new ClientError(
+				`@sharded slot count ${resolved.slots} differs from database ${database} map count ${snapshot.slots}`,
+				400
+			);
+		return resolved;
 	}
-	if (existing) residencyFailure(database, 'an existing table requires its custom map before @residency activation');
-	await installResidencyMap(defaultResidencyMap(database, policy.slots, env.get(CONFIG_PARAMS.REPLICATION_SHARDS)));
+	if (existing) residencyFailure(database, 'an existing table requires its custom map before @sharded activation');
+	try {
+		await installResidencyMap(defaultResidencyMap(database, resolved.slots, env.get(CONFIG_PARAMS.REPLICATION_SHARDS)));
+	} catch (error) {
+		if (!(error instanceof ClientError) || !readResidencyMap(database)) throw error;
+	}
+	return prepareResidencyDeclaration(database, name, policy);
 }
 
-export function getResidencyMap(database: string, requiredSlots = 1, forRecovery = false) {
+export function getResidencyMap(database: string, requiredSlots?: number, forRecovery = false) {
 	const Maps = getResidencyMapTable();
 	const row = Maps?.primaryStore.getSync(database);
 	assertResidencyConfiguration(database, !!row, forRecovery);
-	if (!row) residencyFailure(database, 'no residency map is installed');
-	if (row.slots < requiredSlots) residencyFailure(database, 'installed map does not cover the declared slots');
+	if (!row) residencyFailure(database, 'no shard map is installed');
+	if (requiredSlots !== undefined && row.slots !== requiredSlots)
+		residencyFailure(database, `table slot count ${requiredSlots} differs from database map count ${row.slots}`);
 	let cache = caches.get(Maps.primaryStore);
 	if (!cache) caches.set(Maps.primaryStore, (cache = new Map()));
 	let current = cache.get(database);
@@ -259,7 +276,7 @@ export function getResidencyMap(database: string, requiredSlots = 1, forRecovery
 
 export function residencyOwners(database: string, slot: number, slots: number): readonly string[] {
 	if (!Number.isInteger(slot) || slot < 0 || slot >= slots)
-		residencyFailure(database, 'missing or invalid record residency slot');
+		residencyFailure(database, 'missing or invalid record sharding slot');
 	const map = getResidencyMap(database, slots);
 	const localShard = getResidencyConfiguration().shard;
 	if (map.membership !== server.shards || map.localShard !== localShard) {
@@ -285,7 +302,7 @@ export function residencyOwners(database: string, slot: number, slots: number): 
 
 export function residencyIsLocal(database: string, slot: number, slots: number): boolean {
 	if (!Number.isInteger(slot) || slot < 0 || slot >= slots)
-		residencyFailure(database, 'missing or invalid record residency slot');
+		residencyFailure(database, 'missing or invalid record sharding slot');
 	return getResidencyMap(database, slots, true).shards[slot] === getResidencyConfiguration().shard;
 }
 

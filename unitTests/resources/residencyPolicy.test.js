@@ -101,7 +101,7 @@ describe('Residency policy and map identity', () => {
 		assert.throws(() => validateResidencyMap({ ...one, digest: 'bad' }), /digest mismatch/);
 	});
 
-	it('allows extending coverage while refusing active reassignment and version forks', () => {
+	it('allows resizing before activation but refuses active count changes, reassignment and forks', () => {
 		const first = createResidencyMap('data', 2, [{ start: 0, end: 2, shard: 0 }]);
 		const extension = createResidencyMap(
 			'data',
@@ -113,7 +113,8 @@ describe('Residency policy and map identity', () => {
 			2
 		);
 		assert.doesNotThrow(() => assertResidencyMapChange(first, first, 2));
-		assert.doesNotThrow(() => assertResidencyMapChange(first, extension, 2));
+		assert.doesNotThrow(() => assertResidencyMapChange(first, extension, 0));
+		assert.throws(() => assertResidencyMapChange(first, extension, 2), /count 4.*count 2/);
 		const changed = createResidencyMap('data', 2, [{ start: 0, end: 2, shard: 1 }], 2);
 		assert.throws(() => assertResidencyMapChange(first, changed, 2), /cannot be reassigned/);
 		assert.doesNotThrow(() => assertResidencyMapChange(first, changed, 0));
@@ -130,7 +131,7 @@ describe('Residency policy and map identity', () => {
 		[{ start: 0, end: 5, shard: 0 }],
 	]) {
 		it(`refuses incomplete or overlapping coverage ${JSON.stringify(ranges)}`, () => {
-			assert.throws(() => createResidencyMap('data', 4, ranges), /[Rr]esidency/);
+			assert.throws(() => createResidencyMap('data', 4, ranges), /[Ss]hard/);
 		});
 	}
 });

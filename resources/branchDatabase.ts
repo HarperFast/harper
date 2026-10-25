@@ -330,7 +330,7 @@ async function materializeBranch(
 	}
 	const base = database({ database: baseName, table: undefined });
 	if (Object.values(databases[baseName] ?? {}).some((Table) => Table.residency))
-		throw new Error('Cannot use declarative residency in application database branches');
+		throw new Error('Cannot use sharding in application database branches');
 	// What the base's own rows resolve through, which is not the configured list if `storage.blobPaths`
 	// changed while its store was open. Refuse before taking a checkpoint: the configuration already
 	// proves that publishing this clone would leave rows on an omitted volume unreadable.

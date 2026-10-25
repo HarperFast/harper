@@ -44,13 +44,13 @@ describe('Declarative writer replicas', function () {
 	async function declare(expiration = 3600) {
 		const name = `WriterReplica${++sequence}`;
 		await loadGQLSchema(`type ${name} @table(database: "writer_replicas", replicaExpiration: ${expiration})
-			@residency(slots: 2, byAttribute: true, slotFrom: "region") {
+			@sharded(slots: 2, by: "region", slotFrom: "region") {
 			id: ID @primaryKey region: Int @indexed body: Any
 		}`);
 		return databases.writer_replicas[name];
 	}
 	async function invalidate(Rows, id, version) {
-		const context = {};
+		const context = { timestamp: version };
 		await transaction(context, async () => {
 			const row = await Rows.getResource(id, context, { ensureLoaded: false });
 			row._writeInvalidate(id, { id, region: 1 }, { version, residencySlot: 1 });
@@ -78,7 +78,7 @@ describe('Declarative writer replicas', function () {
 		it(`keeps a key-policy patch over an incomplete base invalidated (slot ${slot})`, async () => {
 			const name = `KeyWriterReplica${++sequence}`;
 			await loadGQLSchema(`type ${name} @table(database: "writer_replicas", replicaExpiration: 3600)
-				@residency(slots: 2, slotFrom: "${slot}") {
+				@sharded(slots: 2, slotFrom: "${slot}") {
 				id: ID @primaryKey tag: String @indexed body: String extra: String
 			}`);
 			const Rows = databases.writer_replicas[name];
@@ -238,6 +238,91 @@ describe('Declarative writer replicas', function () {
 			Rows.auditStore.getSync = original;
 		}
 	});
+	for (const references of [false, true])
+		it(`bounds fetched-replica cleanup and automatically reclaims files (references=${references})`, async function () {
+			if (isLMDB) return this.skip();
+			const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
+			const { randomBytes } = require('node:crypto');
+			const { existsSync } = require('node:fs');
+			const priorRetention = env.get('storage_blobRetention');
+			env.setProperty('storage_blobRetention', 0);
+			try {
+				for (const replacement of [false, true]) {
+					const Rows = await declare();
+					const bytes = randomBytes(32768);
+					const canonical = await createBlob(bytes);
+					await Rows.put('blob', { id: 'blob', region: 1, body: canonical });
+					const base = Date.now() + 60_000;
+					for (let i = 0; i < 100; i++)
+						await Rows.patch('blob', { marker: i }, references ? { timestamp: base + i } : undefined);
+					const written = Rows.primaryStore.getEntry('blob');
+					if (references)
+						assert.ok(written.additionalAuditRefs?.length, 'native patches carry distinct audit log keys');
+					const original = Rows.auditStore.getSync;
+					let sawPut = false;
+					Rows.auditStore.getSync = function (...args) {
+						const record = original.apply(this, args);
+						if (record?.type === 'put' && record.recordId === 'blob') sawPut = true;
+						return record;
+					};
+					try {
+						await Rows.evict('blob', written.value, written.version);
+						await waitFor(() => sawPut, { timeout: 3000 });
+					} finally {
+						Rows.auditStore.getSync = original;
+					}
+					for (let cycle = 0; cycle < 3; cycle++) {
+						const stub = Rows.primaryStore.getEntry('blob');
+						const fetched = await createBlob(Buffer.from(bytes));
+						assert.equal(
+							await Rows._storeReplica(stub, {
+								key: 'blob',
+								value: { id: 'blob', region: 1, body: fetched },
+								version: stub.version,
+								originNode: server.hostname,
+							}),
+							true
+						);
+						let reads = 0,
+							maximum = 0,
+							turns = 0,
+							timer;
+						const reset = () => {
+							reads = 0;
+							turns++;
+							timer = setImmediate(reset);
+						};
+						timer = setImmediate(reset);
+						Rows.auditStore.getSync = function (...args) {
+							maximum = Math.max(maximum, ++reads);
+							return original.apply(this, args);
+						};
+						try {
+							if (replacement) await invalidate(Rows, 'blob', stub.version + 100);
+							else await Rows.evict('blob', stub.value, stub.version);
+							await waitFor(() => !existsSync(getFilePathForBlob(fetched)), { timeout: 3000 }).catch((error) => {
+								throw new Error(
+									`references=${references}, replacement=${replacement}, cycle=${cycle}, reads=${maximum}, flags=${Rows.primaryStore.getEntry('blob').metadataFlags}`,
+									{ cause: error }
+								);
+							});
+							assert.ok(maximum <= 40, `cleanup performed ${maximum} native reads in one event-loop turn`);
+							assert.ok(turns > 0, 'long-chain cleanup yields and automatically reclaims without orphan scanning');
+						} finally {
+							clearImmediate(timer);
+							Rows.auditStore.getSync = original;
+						}
+						assert.ok(existsSync(getFilePathForBlob(canonical)), 'canonical delivery still needs its original file');
+					}
+					const full = Array.from(Rows.auditStore.getRange({ start: 1 })).find(
+						(entry) => entry.tableId === Rows.tableId && entry.type === 'put'
+					);
+					assert.deepEqual(Buffer.from(await full.getValue(Rows.primaryStore).body.arrayBuffer()), bytes);
+				}
+			} finally {
+				env.setProperty('storage_blobRetention', priorRetention);
+			}
+		});
 	it('keeps earlier audit blobs after patches and replica eviction or replacement', async function () {
 		if (isLMDB) return this.skip();
 		const { createBlob, getFilePathForBlob, cleanupOrphans } = require('#src/resources/blob');

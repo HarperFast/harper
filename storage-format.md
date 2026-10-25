@@ -6,9 +6,11 @@ This document describes the binary format used to store audit/transaction log en
 
 ## Primary-record residency metadata
 
-`RecordEncoder.ts` inserts optional primary fields in this order: local timestamp, metadata word, expiration, legacy residency ID, attribute residency slot, origin node ID, additional audit references, encoded value. `HAS_RESIDENCY_SLOT` (`0x200` in the primary metadata word) adds a two-byte unsigned big-endian slot immediately after the optional four-byte legacy residency ID. Zero is a present slot; absence is `undefined`. The two bytes count toward the reserved-prefix budget before additional audit references are bounded.
+`RecordEncoder.ts` inserts optional primary fields in this order: local timestamp, metadata word, expiration, legacy residency ID, attribute sharding slot, origin node ID, additional audit references, encoded value. `HAS_RESIDENCY_SLOT` (`0x200` in the primary metadata word) adds a two-byte unsigned big-endian slot immediately after the optional four-byte legacy residency ID. Zero is a present slot; absence is `undefined`. The two bytes count toward the reserved-prefix budget before additional audit references are bounded.
 
-Only `@residency(..., byAttribute: true)` writes this field. Key-derived policies compute the slot from the key and add no primary/audit field or flag. Historical legacy IDs remain decodable but declarative placement ignores them. Default key hashing is FNV-1a 32-bit over the ordered-binary key encoding (offset `2166136261`, multiplier `16777619`, unsigned result modulo the table's fixed slot count).
+Only `@sharded(by: "attribute", ...)` writes this field. Key-derived policies compute the slot from the key and add no primary/audit field or flag. Historical legacy IDs remain decodable but declarative placement ignores them. Default key hashing is FNV-1a 32-bit over the ordered-binary key encoding (offset `2166136261`, multiplier `16777619`, unsigned result modulo the database's fixed slot count).
+
+The persisted table policy retains `slots`, `slotFrom`, and the internal `byAttribute` flag; the optional `by` attribute name selects default attribute hashing and the non-null guard. Explicit expressions remain unchanged strings in catalog/schema metadata. The public directive rename changes no record fields or wire framing.
 
 The primary `0x200` flag and audit `0x200` flag have different meanings. A copy sender must translate metadata, not copy the primary flags directly into an audit entry.
 

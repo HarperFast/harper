@@ -647,14 +647,15 @@ export function frozenRecordView(record: any): any {
 	});
 }
 export const INVALIDATED = 1;
-// A complete record fetched from a resident and kept locally only: never audited, replicated, served as
-// a complete record, or counted as a resident. Exclusive with INVALIDATED; the stub's residencyId stays.
+// A complete local cache, never served as a resident or counted toward confirmation. Canonical audit
+// entries are independent of the cached body. Exclusive with INVALIDATED; placement metadata stays.
 export const REPLICA = 4;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
 const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
+const REPLICA_BLOB_AUDIT_READ_BUDGET = 32;
 let minReplicaScanIntervalMs = MIN_REPLICA_SCAN_INTERVAL_MS;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
@@ -1771,8 +1772,20 @@ export function makeTable(options): TableResourceClass {
 		refs?: Array<{ version: number; nodeId: number }>
 	) {
 		if (!refs?.length) return { txnLogKey: version, nodeId };
+		const steps = resolveAuditHeadSteps(id, version, nodeId, refs);
+		let result = steps.next();
+		while (!result.done) result = steps.next();
+		return result.value;
+	}
+	function* resolveAuditHeadSteps(
+		id: Id,
+		version: number | undefined,
+		nodeId: number | undefined,
+		refs?: Array<{ version: number; nodeId: number }>
+	) {
+		if (!refs?.length) return { txnLogKey: version, nodeId };
 		const visited = new Set<string>();
-		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
+		function* findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
 			if (!candidateRefs) return;
 			const pending: Array<{ version: number; nodeId: number }> = candidateRefs.slice().reverse();
 			while (pending.length > 0) {
@@ -1780,6 +1793,7 @@ export function makeTable(options): TableResourceClass {
 				const identity = `${ref.nodeId ?? 0}:${ref.version}`;
 				if (visited.has(identity)) continue;
 				visited.add(identity);
+				yield;
 				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
 				if (!entry) continue;
 				if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
@@ -1790,9 +1804,10 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 		}
-		const referencedHead = findHead(refs);
+		const referencedHead = yield* findHead(refs);
 		if (referencedHead) return referencedHead;
 		if (version != null) {
+			yield;
 			const directHead = auditStore.getSync(version, tableId, id, nodeId);
 			if (directHead?.version === version && (nodeId == null || (directHead.nodeId ?? 0) === nodeId))
 				return { txnLogKey: version, nodeId, entry: directHead };
@@ -2065,7 +2080,7 @@ export function makeTable(options): TableResourceClass {
 		static _setResidencyPolicy(policy: ResidencyPolicy) {
 			const normalized = normalizeResidencyPolicy(policy);
 			if (residencyPolicy && !sameResidencyPolicy(residencyPolicy, normalized))
-				throw new ClientError(`The @residency policy of ${databaseName}.${tableName} is immutable`, 409);
+				throw new ClientError(`The @sharded policy of ${databaseName}.${tableName} is immutable`, 409);
 			residencyPolicy = normalized;
 			calculateResidencySlot = compileResidencyPolicy(normalized);
 		}
@@ -3234,7 +3249,7 @@ export function makeTable(options): TableResourceClass {
 			);
 		}
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
-			if (residencyPolicy) throw new ClientError(`Cannot call setResidency on @residency table ${tableName}`, 409);
+			if (residencyPolicy) throw new ClientError(`Cannot call setResidency on @sharded table ${tableName}`, 409);
 			if (typeof getResidency === 'function') TableResource.#reportResidencyPoolHook('setResidency');
 			TableResource.getResidency = getResidency
 				? (record: object, context: Context) => {
@@ -3248,7 +3263,7 @@ export function makeTable(options): TableResourceClass {
 				: defaultGetResidency;
 		}
 		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
-			if (residencyPolicy) throw new ClientError(`Cannot call setResidencyById on @residency table ${tableName}`, 409);
+			if (residencyPolicy) throw new ClientError(`Cannot call setResidencyById on @sharded table ${tableName}`, 409);
 			if (typeof getResidencyById === 'function') TableResource.#reportResidencyPoolHook('setResidencyById');
 			TableResource.getResidencyById =
 				getResidencyById &&
@@ -3337,7 +3352,7 @@ export function makeTable(options): TableResourceClass {
 
 		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean> {
 			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
-				throw new ClientError('Installed residency maps cannot be cleared or dropped', 409);
+				throw new ClientError('Installed shard maps cannot be cleared or dropped', 409);
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -5161,12 +5176,12 @@ export function makeTable(options): TableResourceClass {
 						(context && 'replicateFrom' in context && context.replicateFrom === false) ||
 						(context && 'onlyIfCached' in context && context.onlyIfCached)
 					)
-						throw new ClientError('An attribute residency patch requires the complete resident record', 503);
+						throw new ClientError('An attribute sharding patch requires the complete resident record', 503);
 					const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
 					transaction.disregardReadTxn();
 					return when(this.ensureLoaded(), () => {
 						if (!this.#entry?.value || this.#entry.metadataFlags & INVALIDATED)
-							throw new ClientError('An attribute residency patch requires the complete resident record', 503);
+							throw new ClientError('An attribute sharding patch requires the complete resident record', 503);
 						return this._writeUpdate(id, updates, fullUpdate, options);
 					});
 				}
@@ -5367,16 +5382,22 @@ export function makeTable(options): TableResourceClass {
 					let existingRecord =
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
-						if (!fullUpdate) throw new ClientError('A residency map must be written as a complete snapshot', 400);
-						if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
-							write.skipped = true;
-							return;
-						}
-						if (!replaying)
-							write.releaseResidencyMapFence ??= acquireResidencyMapFence(String(id), committedBy ?? transaction);
-						if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
-							write.skipped = true;
-							return;
+						try {
+							if (!fullUpdate) throw new ClientError('A shard map must be written as a complete snapshot', 400);
+							if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
+								write.skipped = true;
+								return;
+							}
+							if (!replaying)
+								write.releaseResidencyMapFence ??= acquireResidencyMapFence(String(id), committedBy ?? transaction);
+							if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
+								write.skipped = true;
+								return;
+							}
+						} catch (error) {
+							if (!writtenHere && error instanceof ClientError && !(error instanceof ResidencyPlacementError))
+								throw Object.assign(new ResidencyPlacementError(error.message, error.statusCode), { cause: error });
+							throw error;
 						}
 					}
 					if (
@@ -5397,7 +5418,7 @@ export function makeTable(options): TableResourceClass {
 								: loadedEntry.nodeId !== existingEntry.nodeId)
 						)
 							throw new ClientError(
-								'Load the current complete record before changing attribute residency; retry the write',
+								'Load the current complete record before changing attribute sharding; retry the write',
 								409
 							);
 						existingRecord = loadedEntry.value;
@@ -6331,7 +6352,7 @@ export function makeTable(options): TableResourceClass {
 		_writeDelete(id: Id, options?: any): MaybePromise<boolean> {
 			this.#assertLiveHandle(id);
 			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
-				throw new ClientError('Installed residency maps cannot be deleted', 409);
+				throw new ClientError('Installed shard maps cannot be deleted', 409);
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
@@ -6394,7 +6415,7 @@ export function makeTable(options): TableResourceClass {
 							: undefined;
 						if (residencyPolicy.byAttribute && residencySlot === undefined)
 							throw new ClientError(
-								'Attribute residency slot is unknown; retry the delete after placement is available',
+								'Attribute sharding slot is unknown; retry the delete after placement is available',
 								503
 							);
 						const slot = residencySlot ?? calculateResidencySlot(id);
@@ -9663,7 +9684,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static async clear() {
 			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
-				throw new ClientError('Installed residency maps cannot be cleared or dropped', 409);
+				throw new ClientError('Installed shard maps cannot be cleared or dropped', 409);
 			const rootStore = primaryStore.rootStore;
 			const assertNoFullTextDeclaration = () => {
 				const namedPrimaryDescriptor = (dbisDb as any).getSync(`${tableName}/${primaryKey}`);
@@ -11395,7 +11416,7 @@ export function makeTable(options): TableResourceClass {
 			const current = residencyOwners(databaseName, slot, residencyPolicy.slots);
 			if (localWrite) assertResidencyWriteRoute(databaseName, current);
 			if (current.length !== owners.length || current.some((name) => !owners.includes(name)))
-				throw new ResidencyPlacementError('Residency owners changed before commit; retry the write', 409);
+				throw new ResidencyPlacementError('Shard owners changed before commit; retry the write', 409);
 		};
 		return owners;
 	}
@@ -11679,33 +11700,64 @@ export function makeTable(options): TableResourceClass {
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
-	function retainedAuditBlobFiles(id: Id, entry: Entry, alreadyRetained?: Set<string>): Set<string> | undefined {
+	function retainedAuditBlobFiles(
+		id: Id,
+		entry: Entry,
+		alreadyRetained?: Set<string>,
+		transaction?: any
+	): Set<string> | undefined {
 		if (!residencyPolicy || !audit || !(entry?.metadataFlags & REPLICA)) return;
 		const candidates = collectRetainedFileIds(entry.value) ?? new Set<string>();
 		for (const file of alreadyRetained ?? []) candidates.delete(file);
 		if (!candidates.size) return;
-		// Only files being released need protection. Stop when they are found so replacing a
-		// writer replica's blob does not rescan every earlier partial update of the record.
-		const retained = new Set<string>();
-		const visited = new Set<string>();
-		let { version, nodeId, additionalAuditRefs } = entry;
-		while (version) {
-			const head = resolveAuditHead(id, version, nodeId, additionalAuditRefs);
-			const identity = `${head.nodeId ?? 0}:${head.txnLogKey}`;
-			if (visited.has(identity)) break;
-			visited.add(identity);
-			const record = ('entry' in head && head.entry) || auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
-			if (!record) break;
-			for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) {
-				if (candidates.delete(file)) retained.add(file);
+		const retained = new Set<string>(alreadyRetained);
+		function* scan() {
+			const visited = new Set<string>();
+			let { version, nodeId, additionalAuditRefs } = entry;
+			while (version) {
+				const head = yield* resolveAuditHeadSteps(id, version, nodeId, additionalAuditRefs);
+				const identity = `${head.nodeId ?? 0}:${head.txnLogKey}`;
+				if (visited.has(identity)) break;
+				visited.add(identity);
+				let record = 'entry' in head && head.entry;
+				if (!record) {
+					yield;
+					record = auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
+				}
+				if (!record) break;
+				for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) {
+					if (candidates.delete(file)) retained.add(file);
+				}
+				if (!candidates.size || record.type === 'put' || record.type === 'delete') break;
+				version = record.previousVersion;
+				nodeId = record.previousNodeId;
+				additionalAuditRefs = record.previousAdditionalAuditRefs;
 			}
-			if (!candidates.size || record.type === 'put' || record.type === 'delete') break;
-			version = record.previousVersion;
-			nodeId = record.previousNodeId;
-			additionalAuditRefs = record.previousAdditionalAuditRefs;
 		}
-		return retained;
+		const steps = scan();
+		let next = steps.next();
+		const batch = () => {
+			for (let reads = 0; reads < REPLICA_BLOB_AUDIT_READ_BUDGET && !next.done; reads++) next = steps.next();
+		};
+		batch();
+		if (next.done) return retained;
+		const finish = () => {
+			void trackMaintenanceCommit(
+				(async () => {
+					do {
+						await rest();
+						batch();
+					} while (!next.done);
+					for (const file of collectRetainedFileIds(primaryStore.getEntry(id)?.value) ?? []) retained.add(file);
+					deleteBlobsInObject(entry.value, retained);
+				})().catch((error) => logger.warn?.('Error releasing replica blobs', id, error))
+			);
+		};
+		if (transaction) (transaction.replicaCommitNotifications ??= new Set()).add(finish);
+		else finish();
+		return new Set([...retained, ...candidates]);
 	}
+
 	function noteReplicaStored(): void {
 		const state = replicaSweep();
 		Atomics.add(state, 0, 1);

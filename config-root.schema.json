@@ -405,7 +405,7 @@
 					"maximum": 2147483647,
 					"description": "Max time (ms) to wait for explicit replicatedConfirmation. Default: 900000, or blobTimeout if greater. An explicit value overrides that default."
 				},
-				"residencyConfirmationTimeout": {
+				"shardingConfirmationTimeout": {
 					"type": "integer",
 					"minimum": 1,
 					"maximum": 2147483647,
@@ -468,7 +468,7 @@
 					"maxItems": 65536,
 					"uniqueItems": true,
 					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
-					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a declarative residency map automatically; installed maps remain authoritative. Different lists block declarative writes."
+					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a sharding map automatically; installed maps remain authoritative. Different lists block declarative writes."
 				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}

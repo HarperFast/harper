@@ -322,9 +322,11 @@ directive @relationship(
 ) on FIELD_DEFINITION
 
 """
-Fix a table's residency policy. The key or record maps to a slot, whose database map names a shard.
-slots is 1..65536. slotFrom is a synchronous integer expression in [0, slots); id is always available.
-With byAttribute, record and its attributes are also available, and a secondary index is required.
+Fix a table's sharding policy. The key or record maps to a slot, whose database map names a shard.
+slots is database-wide, optional, and 1..65536; omitted adopts the map count or defaults to 1024.
+by hashes a non-null attribute instead of the key and requires a secondary index.
+slotFrom is a synchronous integer expression in [0, slots); id is always available.
+With by, record and its attributes are also available.
 The policy cannot be changed or removed after activation.
 """
-directive @residency(slots: Int!, slotFrom: String, byAttribute: Boolean = false) on OBJECT
+directive @sharded(slots: Int, by: String, slotFrom: String) on OBJECT

@@ -5,7 +5,7 @@ const schema = require('../../config-root.schema.json');
 describe('Replication confirmation configuration', () => {
 	for (const [constant, name] of [
 		['REPLICATION_CONFIRMATIONTIMEOUT', 'confirmationTimeout'],
-		['REPLICATION_RESIDENCYCONFIRMATIONTIMEOUT', 'residencyConfirmationTimeout'],
+		['REPLICATION_SHARDINGCONFIRMATIONTIMEOUT', 'shardingConfirmationTimeout'],
 	])
 		it(`registers replication.${name} for configuration and bounds the native timer`, () => {
 			assert.equal(CONFIG_PARAMS[constant], `replication_${name}`);

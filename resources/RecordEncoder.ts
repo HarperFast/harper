@@ -991,7 +991,7 @@ export function recordUpdater(
 	store,
 	tableId,
 	auditStore,
-	retainAuditBlobs?: (id: any, entry: any, retained?: Set<string>) => Set<string> | undefined
+	retainAuditBlobs?: (id: any, entry: any, retained?: Set<string>, transaction?: any) => Set<string> | undefined
 ) {
 	return function (
 		id,
@@ -1057,7 +1057,7 @@ export function recordUpdater(
 			const previousResidencySlot = existingEntry?.residencySlot;
 			if (residencySlot !== undefined) {
 				if (!Number.isInteger(residencySlot) || residencySlot < 0 || residencySlot > 65535)
-					throw new RangeError('Invalid residency slot');
+					throw new RangeError('Invalid sharding slot');
 				residencySlotAtNextEncoding = residencySlot;
 				metadataInNextEncoding |= HAS_RESIDENCY_SLOT;
 				extendedType |= HAS_CURRENT_RESIDENCY_SLOT;
@@ -1112,8 +1112,8 @@ export function recordUpdater(
 						if (fileId) (retainedFileIds ??= new Set()).add(fileId);
 					});
 				}
-				for (const fileId of retainAuditBlobs?.(id, existingEntry, retainedFileIds) ?? [])
-					(retainedFileIds ??= new Set()).add(fileId);
+				const auditFiles = retainAuditBlobs?.(id, existingEntry, retainedFileIds, options?.transaction);
+				if (auditFiles) for (const fileId of auditFiles) (retainedFileIds ??= new Set()).add(fileId);
 				deleteBlobsInObject(existingEntry.value, retainedFileIds);
 			}
 			let result: Promise<void>;

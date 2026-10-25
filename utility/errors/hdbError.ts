@@ -179,7 +179,7 @@ export class DatabaseClosingError extends ServerError {
 			503
 		);
 		this.name = 'DatabaseClosingError';
-		this.code = residencyReason ? 'DATABASE_RESIDENCY_BLOCKED' : 'DATABASE_CLOSING';
+		this.code = residencyReason ? 'DATABASE_SHARDING_BLOCKED' : 'DATABASE_CLOSING';
 		this.retryable = residencyReason ? false : retryable;
 	}
 }

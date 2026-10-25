@@ -951,7 +951,7 @@ describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)',
 		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.branched-residency-'));
 		writeFileSync(
 			join(directory, 'schema.graphql'),
-			`type BranchSlots @table(database: "${BASE}") @residency(slots: 2) { id: ID @primaryKey }`
+			`type BranchSlots @table(database: "${BASE}") @sharded(slots: 2) { id: ID @primaryKey }`
 		);
 		const configFilePath = join(directory, 'config.yaml');
 		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'schema.graphql' } }));
@@ -959,7 +959,7 @@ describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)',
 		await openScope.ready;
 		try {
 			assert.strictEqual(readResidencyMap(BASE), undefined);
-			await assert.rejects(handleApplication(openScope), /declarative residency.*branches/);
+			await assert.rejects(handleApplication(openScope), /sharding.*branches/);
 			assert.strictEqual(readResidencyMap(BASE), undefined);
 			assert.strictEqual(applicationScope.branches.get(BASE).tables.BranchSlots, undefined);
 			const { scopedTableFactory } = require('#src/resources/databases');
@@ -971,7 +971,7 @@ describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)',
 						residency: { slots: 2 },
 						attributes: [{ name: 'id', isPrimaryKey: true }],
 					}),
-				/declarative residency.*branches/
+				/sharding.*branches/
 			);
 		} finally {
 			env.setProperty('replication_shards', oldList);

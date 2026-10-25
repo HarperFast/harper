@@ -23,7 +23,7 @@ const { compareResidencyPlacement } = require('#src/resources/residencyConversio
 const { replicationConfirmation } = require('#src/resources/DatabaseTransaction');
 const { transaction } = require('#src/resources/transaction');
 
-describe('Declarative residency', function () {
+describe('Sharding', function () {
 	this.timeout(20_000);
 	let oldShards, oldConfiguredShards, oldShard;
 	before(() => {
@@ -60,7 +60,7 @@ describe('Declarative residency', function () {
 		'keeps a non-owner write as a local replica without fetching an owner',
 		async () => {
 			await loadGQLSchema(`type SlotWriterReplica @table(database: "slots_test", replicaExpiration: 60)
-				@residency(slots: 10, slotFrom: "1") { id: ID @primaryKey tag: String @indexed body: String }`);
+				@sharded(slots: 10, slotFrom: "1") { id: ID @primaryKey tag: String @indexed body: String }`);
 			const Records = databases.slots_test.SlotWriterReplica;
 			Records.sourcedFrom({
 				load() {
@@ -77,7 +77,7 @@ describe('Declarative residency', function () {
 	);
 
 	it('persists the policy and places a main-thread write without an application hook', async () => {
-		const Records = await declare('SlotKeys', '@residency(slots: 10, slotFrom: "Number(id.slice(-1))")');
+		const Records = await declare('SlotKeys', '@sharded(slots: 10, slotFrom: "Number(id.slice(-1))")');
 		await Records.put('key1', { id: 'key1', tag: 'indexed', body: 'complete' });
 		const entry = Records.primaryStore.getEntry('key1');
 		assert.ok(entry.metadataFlags & INVALIDATED);
@@ -90,13 +90,13 @@ describe('Declarative residency', function () {
 	});
 
 	it('refuses both function setters on a declarative table', async () => {
-		const Records = await declare('SlotSetters', '@residency(slots: 10)');
-		assert.throws(() => Records.setResidency(() => [server.hostname]), /@residency/);
-		assert.throws(() => Records.setResidencyById(() => 0), /@residency/);
+		const Records = await declare('SlotSetters', '@sharded(slots: 10)');
+		assert.throws(() => Records.setResidency(() => [server.hostname]), /@sharded/);
+		assert.throws(() => Records.setResidencyById(() => 0), /@sharded/);
 	});
 
 	it('does not retain a non-owner row without secondary indexes', async () => {
-		const Records = await declare('SlotNoIndex', '@residency(slots: 10, slotFrom: "1")', 'body: String');
+		const Records = await declare('SlotNoIndex', '@sharded(slots: 10, slotFrom: "1")', 'body: String');
 		await Records.put('remote', { id: 'remote', body: 'complete' });
 		assert.equal(Records.primaryStore.getEntry('remote')?.value, undefined);
 	});
@@ -105,11 +105,11 @@ describe('Declarative residency', function () {
 			const prior = env.get('logging_auditLog');
 			const name = `SlotNoAudit${auditMode}`;
 			try {
-				if (auditMode === 'disable') await declare(name, '@residency(slots: 10)');
+				if (auditMode === 'disable') await declare(name, '@sharded(slots: 10)');
 				if (auditMode === 'default') env.setProperty('logging_auditLog', false);
 				await assert.rejects(
 					loadGQLSchema(`type ${name} @table(database: "slots_test"${auditMode === 'default' ? '' : ', audit: false'})
-						@residency(slots: 10) { id: ID @primaryKey }`),
+						@sharded(slots: 10) { id: ID @primaryKey }`),
 					/audit logging/
 				);
 			} finally {
@@ -120,7 +120,7 @@ describe('Declarative residency', function () {
 	it('refuses to omit declarative records from a non-replicating table', async () => {
 		await assert.rejects(
 			loadGQLSchema(`type SlotNoReplication @table(database: "slots_test", replicate: false)
-			@residency(slots: 10) { id: ID @primaryKey }`),
+			@sharded(slots: 10) { id: ID @primaryKey }`),
 			/replication/
 		);
 	});
@@ -174,7 +174,7 @@ describe('Declarative residency', function () {
 		it(`refuses a cold attribute patch without source access ${JSON.stringify(context)}`, async () => {
 			const Records = await declare(
 				`SlotCachedOnly_${context.onlyIfCached ? 'cached' : 'source_disabled'}`,
-				'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+				'@sharded(slots: 10, by: "region", slotFrom: "region")',
 				'region: Int @indexed\nbody: String'
 			);
 			await Records.put('remote', { id: 'remote', region: 1, body: 'complete' });
@@ -231,7 +231,7 @@ describe('Declarative residency', function () {
 						residency: { slots: 2 },
 						attributes: [{ name: 'id', isPrimaryKey: true }],
 					}),
-				/residency.*(?:busy|progress)|(?:busy|progress).*residency/i
+				/shard.*(?:busy|progress)|(?:busy|progress).*shard/i
 			);
 		} finally {
 			release();
@@ -345,7 +345,7 @@ describe('Declarative residency', function () {
 		const release = acquireResidencyMapFence(database, {});
 		const timer = setTimeout(release, 25);
 		try {
-			await loadGQLSchema(`type Retried @table(database: "${database}") @residency(slots: 2) { id: ID @primaryKey }`);
+			await loadGQLSchema(`type Retried @table(database: "${database}") @sharded(slots: 2) { id: ID @primaryKey }`);
 			assert.equal(databases[database].Retried.residency.slots, 2);
 		} finally {
 			clearTimeout(timer);
@@ -356,7 +356,7 @@ describe('Declarative residency', function () {
 	it('refuses a cold attribute patch when its source returns another projection', async () => {
 		const Records = await declare(
 			'SlotIncompleteSource',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		await Records.put('row', { id: 'row', region: 1, body: 'complete' });
@@ -383,7 +383,7 @@ describe('Declarative residency', function () {
 			const { getDatabases } = require('#src/resources/databases');
 			const { activeResidencySlots, validateResidencyMapWrite } = require('#src/resources/residencyMaps');
 			getDatabases();
-			const { onMessageByType } = require('#js/server/threads/manageThreads');
+			const { onMessageByType } = require('#src/server/threads/manageThreads');
 			onMessageByType('slot-catalog-check', () => {});
 			parentPort.postMessage({ type: 'slot-catalog-ready' });
 			parentPort.on('message', ({ type, previous, next }) => {
@@ -429,7 +429,7 @@ describe('Declarative residency', function () {
 			await waitForMessage('slot-catalog-ready');
 			const database = 'slot_late_database';
 			const previous = await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
-			await loadGQLSchema(`type LateTable @table(database: "${database}") @residency(slots: 2) { id: ID @primaryKey }`);
+			await loadGQLSchema(`type LateTable @table(database: "${database}") @sharded(slots: 2) { id: ID @primaryKey }`);
 			const answer = waitForMessage('slot-catalog-result');
 			worker.postMessage({
 				type: 'slot-catalog-check',
@@ -453,7 +453,7 @@ describe('Declarative residency', function () {
 			require(workerData.testUtils).setupTestDBPath();
 			const { getDatabases, table } = require('#src/resources/databases');
 			getDatabases();
-			const { onMessageByType } = require('#js/server/threads/manageThreads');
+			const { onMessageByType } = require('#src/server/threads/manageThreads');
 			onMessageByType('slot-redeclare-check', () => {});
 			parentPort.postMessage({ type: 'slot-redeclare-ready' });
 			parentPort.on('message', ({ type, database, overrides }) => {
@@ -502,9 +502,7 @@ describe('Declarative residency', function () {
 				await waitForMessage('slot-redeclare-ready');
 				const database = `slot_cold_redeclare_${overrides.audit === false ? 'audit' : overrides.replicate === false ? 'replicate' : 'inherit'}`;
 				await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
-				await loadGQLSchema(
-					`type LateTable @table(database: "${database}") @residency(slots: 2) { id: ID @primaryKey }`
-				);
+				await loadGQLSchema(`type LateTable @table(database: "${database}") @sharded(slots: 2) { id: ID @primaryKey }`);
 				const answer = waitForMessage('slot-redeclare-result');
 				worker.postMessage({ type: 'slot-redeclare-check', database, overrides });
 				const result = await answer;
@@ -518,7 +516,7 @@ describe('Declarative residency', function () {
 		});
 
 	it('confirms an index-free non-owner write using its audit entry', async () => {
-		const Records = await declare('SlotNoIndexConfirmed', '@residency(slots: 10, slotFrom: "1")', 'body: String');
+		const Records = await declare('SlotNoIndexConfirmed', '@sharded(slots: 10, slotFrom: "1")', 'body: String');
 		const calls = [];
 		replicationConfirmation((_database, position, count, owners) => {
 			calls.push({ position, count, owners });
@@ -538,7 +536,7 @@ describe('Declarative residency', function () {
 	it('stores attribute slot zero independently of legacy residency IDs', async () => {
 		const Records = await declare(
 			'SlotAttributes',
-			'@residency(slots: 10, slotFrom: "region", byAttribute: true)',
+			'@sharded(slots: 10, slotFrom: "region", by: "region")',
 			'tag: String @indexed\nregion: Int\nbody: String'
 		);
 		await Records.put('zero', { id: 'zero', region: 0, tag: 'zero', body: 'complete' });
@@ -552,7 +550,7 @@ describe('Declarative residency', function () {
 		it(`returns absent records with a replication source (byAttribute=${byAttribute})`, async () => {
 			const Records = await declare(
 				`SlotMissing${byAttribute}`,
-				`@residency(slots: 10, slotFrom: "0", byAttribute: ${byAttribute})`
+				`@sharded(slots: 10, slotFrom: "0"${byAttribute ? ', by: "tag"' : ''})`
 			);
 			Records.sourcedFrom(
 				{ load: () => assert.fail('An absent local row is not an invalidation') },
@@ -567,7 +565,7 @@ describe('Declarative residency', function () {
 		it(`publishes an event without changing attribute placement (slot=${region})`, async () => {
 			const Records = await declare(
 				`SlotPublished${region}`,
-				'@residency(slots: 10, slotFrom: "region", byAttribute: true)',
+				'@sharded(slots: 10, slotFrom: "region", by: "region")',
 				'region: Int @indexed\nbody: String'
 			);
 			await Records.put('published', { id: 'published', region, body: 'complete' });
@@ -582,7 +580,7 @@ describe('Declarative residency', function () {
 	it('refuses an attribute-slot transition before commit without a connected new owner', async () => {
 		const Records = await declare(
 			'SlotOffline',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		await Records.put('moved', { id: 'moved', region: 0, body: 'retained' });
@@ -600,7 +598,7 @@ describe('Declarative residency', function () {
 	it('waits for the new owner, records both slots, and retains only an index stub', async () => {
 		const Records = await declare(
 			'SlotConfirmed',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		await Records.put('moved', { id: 'moved', region: 0, body: 'complete' });
@@ -657,7 +655,7 @@ describe('Declarative residency', function () {
 	it('confirms attribute changes at their durable local audit position', async () => {
 		const Records = await declare(
 			'SlotAckPosition',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed'
 		);
 		await Records.put('moved', { id: 'moved', region: 0, body: 'complete' });
@@ -676,7 +674,7 @@ describe('Declarative residency', function () {
 		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
 		const Records = await declare(
 			'SlotAckReplaced',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed'
 		);
 		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
@@ -711,7 +709,7 @@ describe('Declarative residency', function () {
 	it('confirms an attribute transition followed by deletion in the same batch', async () => {
 		const Records = await declare(
 			'SlotAckThenDelete',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed'
 		);
 		await Records.put('moved', { id: 'moved', region: 0 });
@@ -739,7 +737,7 @@ describe('Declarative residency', function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const Records = await declare(
 			'SlotRetryConfirmation',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed'
 		);
 		await Records.put('moved', { id: 'moved', region: 0 });
@@ -747,7 +745,7 @@ describe('Declarative residency', function () {
 			(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
 		)?.exports;
 		assert.ok(binding, 'the native engine exposes its commit-failure seam');
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const original = Transaction.prototype.commit;
 		const attempts = [];
 		Transaction.prototype.commit = function (...args) {
@@ -780,7 +778,7 @@ describe('Declarative residency', function () {
 	it('rolls back every write when the new owner disconnects at the final admission check', async () => {
 		const Records = await declare(
 			'SlotLateRefusal',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		for (const id of ['local', 'moved']) await Records.put(id, { id, region: 0, body: 'original' });
@@ -814,7 +812,7 @@ describe('Declarative residency', function () {
 			it(`retains the complete same-batch attribute write through a non-owner projection (${first}, return=${returnLocal})`, async () => {
 				const Records = await declare(
 					`SlotChained_${first}_${returnLocal}`,
-					'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+					'@sharded(slots: 10, by: "region", slotFrom: "region")',
 					'region: Int @indexed\nbody: String\nextra: String'
 				);
 				await Records.put('row', { id: 'row', region: 0, body: 'original', extra: 'retained' });
@@ -843,7 +841,7 @@ describe('Declarative residency', function () {
 		it(`patches a queued full replacement of an existing attribute stub ${JSON.stringify(context)}`, async () => {
 			const Records = await declare(
 				`SlotQueuedStub_${context.onlyIfCached ? 'cached' : 'source_disabled'}`,
-				'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+				'@sharded(slots: 10, by: "region", slotFrom: "region")',
 				'region: Int @indexed\nbody: String\nextra: String'
 			);
 			await Records.put('row', { id: 'row', region: 1, body: 'old', extra: 'old' });
@@ -869,7 +867,7 @@ describe('Declarative residency', function () {
 	it('requires mandatory confirmation only for transitioning records in a mixed transaction', async () => {
 		const Records = await declare(
 			'SlotMixedConfirmation',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
@@ -893,7 +891,7 @@ describe('Declarative residency', function () {
 	it('keeps explicit confirmation requirements for every record in a mixed transaction', async () => {
 		const Records = await declare(
 			'SlotExplicitConfirmation',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
@@ -913,7 +911,7 @@ describe('Declarative residency', function () {
 	it('does not carry mandatory owner confirmation into a later commit in the same scope', async () => {
 		const Records = await declare(
 			'SlotConfirmationReuse',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
@@ -935,7 +933,7 @@ describe('Declarative residency', function () {
 	it('preserves slot zero on an invalidation and a later delete', async () => {
 		const Records = await declare(
 			'SlotInvalidation',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed\nbody: String'
 		);
 		const context = {};
@@ -993,7 +991,7 @@ describe('Declarative residency', function () {
 			);
 			assert.equal(wrong.mismatches, wrong.checked);
 			await loadGQLSchema(`type Converted @table(database: "slot_conversion")
-				@residency(slots: 10, slotFrom: "Number(id.slice(-1))") { id: ID @primaryKey tag: String @indexed body: String }`);
+				@sharded(slots: 10, slotFrom: "Number(id.slice(-1))") { id: ID @primaryKey tag: String @indexed body: String }`);
 			const converted = databases.slot_conversion.Converted;
 			for (const old of before) {
 				assert.deepEqual(Buffer.from(converted.primaryStore.getBinary(old.id)), old.bytes);
@@ -1058,7 +1056,7 @@ describe('Declarative residency', function () {
 		});
 		await assert.rejects(
 			loadGQLSchema(`type Legacy @table(database: "slot_attribute_adoption")
-				@residency(slots: 2, byAttribute: true, slotFrom: "region") {
+				@sharded(slots: 2, by: "region", slotFrom: "region") {
 				id: ID @primaryKey region: Int @indexed body: String }`),
 			/existing table.*attribute|attribute.*existing table/i
 		);
@@ -1068,14 +1066,14 @@ describe('Declarative residency', function () {
 	});
 
 	it('refuses invalid slot results before a record is stored', async () => {
-		const Records = await declare('SlotInvalidResult', '@residency(slots: 10, slotFrom: "NaN")');
+		const Records = await declare('SlotInvalidResult', '@sharded(slots: 10, slotFrom: "NaN")');
 		await assert.rejects(async () => Records.put('invalid', { id: 'invalid', body: 'discard' }), /slot/);
 		assert.equal(Records.primaryStore.getEntry('invalid')?.value, undefined);
 	});
 
 	it('rejects attribute placement without an index', async () => {
 		await assert.rejects(
-			declare('SlotUnindexedAttributes', '@residency(slots: 10, byAttribute: true, slotFrom: "region")', 'region: Int'),
+			declare('SlotUnindexedAttributes', '@sharded(slots: 10, by: "region", slotFrom: "region")', 'region: Int'),
 			/index/
 		);
 	});
@@ -1085,7 +1083,7 @@ describe('Declarative residency', function () {
 		const before = readResidencyMap('slots_test');
 		env.setProperty('replication_shards', [2, 1, 0]);
 		try {
-			await declare('SlotAddedShard', '@residency(slots: 10)');
+			await declare('SlotAddedShard', '@sharded(slots: 10)');
 			assert.equal(readResidencyMap('slots_test').digest, before.digest);
 			env.setProperty('replication_shard', 3);
 			await assert.rejects(
@@ -1120,13 +1118,13 @@ describe('Declarative residency', function () {
 
 	it('refuses policy changes and removal, and reloads the policy from the catalog', async () => {
 		await assert.rejects(declare('SlotKeys', ''), /immutable|removed/);
-		await assert.rejects(declare('SlotKeys', '@residency(slots: 9)'), /changed|immutable/);
-		await declare('SlotKeys', '@residency(slots: 10, slotFrom: "Number(id.slice(-1))")');
+		await assert.rejects(declare('SlotKeys', '@sharded(slots: 9)'), /count 9.*count 10/);
+		await declare('SlotKeys', '@sharded(slots: 10, slotFrom: "Number(id.slice(-1))")');
 		const { resetDatabases } = require('#src/resources/databases');
 		resetDatabases();
 		const Records = databases.slots_test.SlotKeys;
 		assert.equal(Records.getResidencySlot('key8'), 8);
-		assert.throws(() => Records.setResidencyById(() => 0), /@residency/);
+		assert.throws(() => Records.setResidencyById(() => 0), /@sharded/);
 	});
 
 	it('installs identical snapshots once and refuses a competing same-version snapshot before LWW', async () => {
@@ -1137,27 +1135,28 @@ describe('Declarative residency', function () {
 		await Maps.put('concurrent_slots', snapshot);
 		assert.equal(Maps.primaryStore.getEntry('concurrent_slots').version, installedVersion);
 		const conflict = createResidencyMap('concurrent_slots', 10, [{ start: 0, end: 10, shard: 1 }]);
-		await assert.rejects(async () => Maps.put('concurrent_slots', conflict), /Conflicting residency map version/);
+		await assert.rejects(async () => Maps.put('concurrent_slots', conflict), /Conflicting shard map version/);
 		assert.equal(readResidencyMap('concurrent_slots').digest, snapshot.digest);
 		await assert.rejects(async () => Maps.delete('concurrent_slots'), /cannot be deleted/);
 		await assert.rejects(async () => Maps.clear(), /cannot be cleared/);
 		await assert.rejects(async () => Maps.dropTable(), /cannot be cleared or dropped/);
 	});
 
-	it('refuses active reassignment but extends coverage without changing existing assignments', async () => {
+	it('refuses active reassignment and changes to the database slot count', async () => {
 		const before = readResidencyMap('slots_test');
 		await assert.rejects(
 			initializeResidencySlots({ database: 'slots_test', slots: 10, ranges: [{ start: 0, end: 10, shard: 0 }] }),
 			/cannot be reassigned/
 		);
-		const extended = await initializeResidencySlots({
-			database: 'slots_test',
-			slots: 12,
-			ranges: [...before.ranges, { start: 10, end: 12, shard: 1 }],
-		});
-		assert.equal(extended.version, before.version + 1);
-		assert.equal(extended.slots, 12);
-		assert.deepEqual(extended.ranges.slice(0, -1), before.ranges.slice(0, -1));
+		await assert.rejects(
+			initializeResidencySlots({
+				database: 'slots_test',
+				slots: 12,
+				ranges: [...before.ranges, { start: 10, end: 12, shard: 1 }],
+			}),
+			/count 12.*count 10/
+		);
+		assert.deepEqual(readResidencyMap('slots_test'), before);
 	});
 
 	it('keeps a newer compatible map when a lagging peer repeats the old snapshot', async () => {
@@ -1186,7 +1185,7 @@ describe('Declarative residency', function () {
 	it('refuses an attribute delete until its placement is known', async () => {
 		const Records = await declare(
 			'SlotAbsentDelete',
-			'@residency(slots: 10, byAttribute: true, slotFrom: "region")',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
 			'region: Int @indexed'
 		);
 		await assert.rejects(Records.delete('not-yet-received'), /slot|placement/);
@@ -1258,7 +1257,7 @@ describe('Declarative residency', function () {
 			slots: 65536,
 			ranges: [{ start: 0, end: 65536, shard: 0 }],
 		});
-		await loadGQLSchema(`type MaxSlot @table(database: "max_slot") @residency(slots: 65536, byAttribute: true, slotFrom: "region") {
+		await loadGQLSchema(`type MaxSlot @table(database: "max_slot") @sharded(slots: 65536, by: "region", slotFrom: "region") {
 			id: ID @primaryKey region: Int @indexed body: String }`);
 		const Records = databases.max_slot.MaxSlot;
 		await Records.put('max', { id: 'max', region: 65535, body: 'body' });
@@ -1281,36 +1280,38 @@ describe('Declarative residency', function () {
 		async () => {
 			const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
 			try {
-				await assert.rejects(getOrCreateBranch('slots_test', 'slotBranch'), /declarative residency.*branches/);
+				await assert.rejects(getOrCreateBranch('slots_test', 'slotBranch'), /sharding.*branches/);
 			} finally {
 				await removeBranches();
 			}
 		}
 	);
 
-	it('does not quarantine a runtime-opened root on a later catalog rescan', function () {
-		this.timeout(45_000);
-		const { mkdtempSync, rmSync } = require('node:fs');
-		const { join } = require('node:path');
-		const { tmpdir } = require('node:os');
-		const { execFileSync } = require('node:child_process');
-		const root = mkdtempSync(join(tmpdir(), 'residency-live-root-'));
-		try {
-			execFileSync(
-				process.execPath,
-				[join(__dirname, 'declarativeResidency-crash.js'), root, join(root, 'result'), 'runtime-open-rescan'],
-				{ timeout: 40_000 }
-			);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+	for (const mode of ['runtime-open-rescan', 'runtime-worker-rescan'])
+		it(`does not quarantine a runtime-opened root on a later catalog rescan (${mode})`, function () {
+			this.timeout(45_000);
+			const { mkdtempSync, rmSync } = require('node:fs');
+			const { join } = require('node:path');
+			const { tmpdir } = require('node:os');
+			const { execFileSync } = require('node:child_process');
+			const root = mkdtempSync(join(tmpdir(), 'residency-live-root-'));
+			try {
+				execFileSync(
+					process.execPath,
+					[join(__dirname, 'declarativeResidency-crash.js'), root, join(root, 'result'), mode],
+					{ timeout: 40_000 }
+				);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
 	for (const mode of [
 		'write',
 		'write-unflushed-map',
 		'write-scan-error',
 		'write-system-first',
 		'write-bad-config',
+		'write-bad-count',
 		'write-rescan-config',
 		'write-rescan-guard',
 		'write-initial-guard',
@@ -1349,6 +1350,12 @@ describe('Declarative residency', function () {
 					const written = await run(mode);
 					assert.equal(written.signal, 'SIGKILL', written.stderr);
 					assert.equal(readFileSync(marker, 'utf8'), 'written');
+					if (mode === 'write-bad-count') {
+						const refused = await run('replay-bad-count');
+						assert.equal(refused.code, 0, refused.stderr);
+						assert.equal(JSON.parse(readFileSync(marker, 'utf8')).refused, true);
+						return;
+					}
 					if (mode === 'write-bad-config') {
 						const refused = await run('replay-bad-config');
 						assert.equal(refused.code, 0, refused.stderr);
@@ -1377,7 +1384,7 @@ describe('Declarative residency', function () {
 
 	for (const slots of ['0', '65537', '1.5']) {
 		it(`rejects slot count ${slots}`, async () => {
-			await assert.rejects(declare('SlotInvalidCount', `@residency(slots: ${slots})`), /slots/);
+			await assert.rejects(declare('SlotInvalidCount', `@sharded(slots: ${slots})`), /slots/);
 		});
 	}
 });
