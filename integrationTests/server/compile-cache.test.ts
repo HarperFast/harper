@@ -30,13 +30,17 @@ const STALE = 'v1.2.3-x64-0123abcd-1000';
 suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx: ContextWithHarper) => {
 	let scratch: string;
 	let probeOut: string;
-	const harperEnv = (extra: Record<string, string | undefined> = {}) => ({
-		NODE_COMPILE_CACHE: undefined,
-		NODE_DISABLE_COMPILE_CACHE: undefined,
-		NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(MAIN_HOOK)}`.trim(),
-		COMPILE_CACHE_PROBE_OUT: probeOut,
-		...extra,
-	});
+	const harperEnv = (extra: Record<string, string | undefined> = {}) => {
+		// a start whose hook never fires must not be judged by the previous start's report
+		rmSync(probeOut, { force: true });
+		return {
+			NODE_COMPILE_CACHE: undefined,
+			NODE_DISABLE_COMPILE_CACHE: undefined,
+			NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(MAIN_HOOK)}`.trim(),
+			COMPILE_CACHE_PROBE_OUT: probeOut,
+			...extra,
+		};
+	};
 	let cacheBase: string;
 
 	async function probe(): Promise<{ threadId: number; cacheDirectory: string | null }> {

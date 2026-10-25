@@ -86,7 +86,8 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.HELP:
 			return help();
 		case SERVICE_ACTIONS_ENUM.START: {
-			await initEnv();
+			const env = await initEnv();
+			enableCompileCache(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
 			const mod = await import('./run.ts');
 			// runStartup() is drained inside run.ts main() after initialize()
 			// completes, so server.X singletons and auth's table() resolution

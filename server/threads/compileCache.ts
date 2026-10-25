@@ -17,11 +17,13 @@ let workerCacheDirectory: string | undefined;
  * it off. Only server starts call this: a CLI run by another uid would create the directory as that uid.
  */
 export function enableCompileCache(rootPath: string | undefined): void {
-	if (!rootPath || process.env.NODE_COMPILE_CACHE || typeof nodeModule.enableCompileCache !== 'function') return;
+	const statuses = nodeModule.constants?.compileCacheStatus;
+	if (!rootPath || process.env.NODE_COMPILE_CACHE || typeof nodeModule.enableCompileCache !== 'function' || !statuses)
+		return;
 	const directory = join(rootPath, 'cache', 'compile');
 	if (directory === workerCacheDirectory) return;
 	const result = nodeModule.enableCompileCache(directory);
-	const { ENABLED, ALREADY_ENABLED, FAILED } = nodeModule.constants.compileCacheStatus;
+	const { ENABLED, ALREADY_ENABLED, FAILED } = statuses;
 	// ALREADY_ENABLED after an earlier call: initialize() moved rootPath (a command-line or env override) after this
 	// thread latched the old one, which Node cannot change; the workers still follow the final root
 	if (result?.status === ENABLED || (result?.status === ALREADY_ENABLED && workerCacheDirectory)) {
