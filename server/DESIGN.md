@@ -971,6 +971,14 @@ An entry that is not a flag fails startup, by design, unlike `threads.maxHeapMem
 
 `v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying at `startHTTPThreads` entry places that abort before Harper serves.
 
+## Every server start enables Node's compile cache before its first worker (`server/threads/compileCache.ts`)
+
+`enableCompileCache()` runs twice per server start: in `bin/harper.ts` right after config init, before `bin/run.ts` loads (938 of the main thread's ~1,630 modules compile while `run.ts`'s import graph loads), and in `main()` after `initialize()`, which covers a fresh install (no rootPath until the installer runs) and entries that call `main()` directly (harper-pro's clone path). It is never enabled at module load or in `initSync()`: `threadServer.ts` imports `run.ts`, and non-server CLI processes call `initSync()`, so a CLI run by another uid would create `<rootPath>/cache/compile` as that uid.
+
+Node does not hand an enabled cache to workers; only `NODE_COMPILE_CACHE` in a worker's env does. `startWorker()` sets `env` after `...options`, merging the directory under the caller's env (job workers pass their own). The main thread's `process.env` stays unset, so its spawns (`npm install`) do not inherit it. An operator's `NODE_COMPILE_CACHE` wins even when Node could not use it.
+
+Pruning keeps every subdirectory for the running Node version and arch: Node names them by V8's `cachedDataVersionTag`, which folds in V8 flags, and `threads.v8Flags` applies after main enables the cache but before workers start, so main and workers can use two same-version subdirectories. `unitTests/server/threads/compileCache.test.js` and `integrationTests/server/compile-cache.test.ts` pin this.
+
 ## HTTP request preconditions (`REST.ts`, `Table.ts`)
 
 `preconditions.test.js` and `http-preconditions.test.ts` enforce RFC 9110 ordering: successful GET/HEAD responses use strong `If-Match`, weak `If-None-Match`, and whole-second HTTP dates; 304 retains validators, closes the producer and skips serialization when validators describe materialized data. Lazy GET reads settle their startup authorization/error gate first; HEAD retains its existing no-startup behavior. Errors take precedence. The ETag encoding is unchanged. `rest.preconditions: false` leaves conditional handling to application code.

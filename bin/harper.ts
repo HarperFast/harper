@@ -10,6 +10,7 @@ import { help } from './help.ts';
 import { packageJson, PRODUCT_NAME, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { enableCompileCache } from '../server/threads/compileCache.ts';
 const { SERVICE_ACTIONS_ENUM, OPERATIONS_ENUM } = hdbTerms as any;
 
 /**
@@ -41,6 +42,7 @@ export function wantsTopLevelHelp(argv: readonly string[], service: string | und
 async function initEnv() {
 	const env = await import('../utility/environment/environmentManager.ts');
 	env.initSync();
+	return env;
 }
 
 /**
@@ -202,7 +204,9 @@ async function harper() {
 		case undefined: {
 			// run harperdb in the foreground in standard mode.
 			// runStartup() is drained inside run.ts main() after initialize().
-			await initEnv();
+			const env = await initEnv();
+			// before run.ts, whose import graph is most of what the main thread compiles
+			enableCompileCache(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
 			const mod = await import('./run.ts');
 			return mod.main();
 		}

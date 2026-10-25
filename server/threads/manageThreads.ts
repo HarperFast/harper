@@ -33,6 +33,7 @@ import { PACKAGE_ROOT, PRODUCT_NAME, RUNTIME_FILE_EXT } from '../../utility/pack
 import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
+import { compileCacheWorkerEnv } from './compileCache.ts';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { resolveWatchTarget } from '../../utility/watchPath.ts';
 import {
@@ -1435,6 +1436,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		},
 		transferList: portsToSend,
 		...options,
+		env: compileCacheWorkerEnv(options.env),
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
