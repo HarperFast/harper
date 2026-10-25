@@ -643,6 +643,50 @@ describe('Test common_utils module', () => {
 		});
 	});
 
+	describe('Test httpRequest abort signal on a trickling response', () => {
+		const http = require('node:http');
+		let server, port, trickle;
+
+		before((done) => {
+			// A byte every 20ms keeps the idle timer from ever firing.
+			server = http.createServer((req, res) => {
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				trickle = setInterval(() => res.write(' '), 20);
+				res.on('close', () => clearInterval(trickle));
+			});
+			server.listen(0, '127.0.0.1', () => {
+				port = server.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			clearInterval(trickle);
+			server.closeAllConnections();
+			server.close(done);
+		});
+
+		it('rejects once the signal aborts, though the body is still arriving', async () => {
+			const started = Date.now();
+			await assert.rejects(
+				cu.httpRequest(
+					{
+						protocol: 'http:',
+						hostname: '127.0.0.1',
+						port,
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						timeout: 1000,
+						signal: AbortSignal.timeout(150),
+					},
+					{}
+				),
+				(err) => err.name === 'AbortError'
+			);
+			assert.ok(Date.now() - started < 1000);
+		});
+	});
+
 	describe('Test httpRequest timeout mid-stream (SSE-style streamResponse)', () => {
 		const http = require('node:http');
 		let server, port;

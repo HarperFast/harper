@@ -747,6 +747,29 @@ describe('cliOperations', () => {
 			assert.ok(errorLines.some((line) => line.startsWith('error: Not activated on 1 of 2 peer node(s): peer-b')));
 		});
 
+		it('ends at wait_timeout even while a read keeps trickling bytes', async () => {
+			cluster([]);
+			const deployOnly = commonUtilsModule.httpRequest;
+			// A trickle keeps the socket's idle timer reset, so only an absolute deadline ends the read.
+			commonUtilsModule.httpRequest = (options, req) =>
+				req.operation === 'get_deployment'
+					? new Promise((_resolve, reject) =>
+							options.signal?.addEventListener('abort', () => reject(options.signal.reason))
+						)
+					: deployOnly(options, req);
+			const started = Date.now();
+			const outcome = await Promise.race([
+				deploy({ wait_timeout: 200 }).then(
+					() => 'returned',
+					(error) => error
+				),
+				new Promise((resolve) => setTimeout(resolve, 5000, 'still waiting')),
+			]);
+			assert.ok(outcome instanceof ProcessExitSignal && outcome.code === 1, `ended with ${outcome}`);
+			assert.ok(Date.now() - started < 2000);
+			assert.ok(errorLines.some((line) => /^error: timed out after \d+s waiting for deployment/.test(line)));
+		});
+
 		it('refuses a wait_timeout it cannot use before sending anything', async () => {
 			const calls = cluster([{ deployment_id: ID, status: 'success' }]);
 			await assert.rejects(deploy({ wait_timeout: '10m' }), (error) => error instanceof ProcessExitSignal);

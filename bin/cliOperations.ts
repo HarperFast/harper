@@ -925,7 +925,12 @@ async function followRollout(options: any, response: any, waitTimeout: unknown):
 		response.deployment_id,
 		async (deploymentId, remainingMs) => {
 			const reply = await httpRequest(
-				{ ...pollOptions, timeout: Math.min(CLI_OPERATION_TIMEOUT_MS, remainingMs) },
+				// The idle timeout restarts on every byte, so a reply that trickles in would outlive the wait without the signal.
+				{
+					...pollOptions,
+					timeout: Math.min(CLI_OPERATION_TIMEOUT_MS, remainingMs),
+					signal: AbortSignal.timeout(remainingMs),
+				},
 				{ operation: 'get_deployment', deployment_id: deploymentId }
 			);
 			if (reply.statusCode !== 200) {
