@@ -714,14 +714,12 @@ every request path in `http.ts` (Node, uWS, Bun) asks `isolatedApplicationUnavai
 answers 503 with `Retry-After` and `Cache-Control: no-store` for a host the root config gives an isolated application;
 a WebSocket closes with 1013. The dedicated worker itself and the operations server return before any lookup.
 
-The hosts come from the config alone, not from which components are on disk, because a package installed after a
-worker's first request changes no config to signal it. They are a `Set` seeded from, and rebuilt on each change seen by,
-the shared `RootConfigWatcher` the logger starts in every worker, because once a new isolated application starts only
-its own worker (harper#3045), no pool restart tells the pool of it; this worker's memoized config would be stale. The
-guard never starts that watcher itself: a process that has none reads the config on each request instead. A configured
-host is compared as written, lowercased: it carries no port and may be a bare IPv6 literal, so it is never parsed as a
-Host header. With no isolated application the cost per request is one
-`size` check.
+The hosts come from the config alone, since a package installed after a worker's first request changes no config to
+signal it. They are a `Set` seeded from, and rebuilt on each change seen by, the shared `RootConfigWatcher` the logger
+starts in every worker: a new isolated application starts only its own worker (harper#3045), so no pool restart tells
+the pool of it. The guard never starts that watcher itself; a process with none reads the config on each request. A
+configured host is compared as written, lowercased, never parsed as a Host header: it carries no port and may be a bare
+IPv6 literal. With no isolated application the cost per request is one `size` check.
 
 ## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.ts`)
 
