@@ -239,6 +239,17 @@ export function captureCertifiedFloors(auditStore: any, dbisDb: any): CertifiedF
 	return { origins: states, capturedAt: Date.now() };
 }
 
+const KEY_SCRATCH = new Float64Array(1);
+const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
+/** The greatest double below a log key, so a replay after it starts at the key. */
+export function positionBefore(key: number): number {
+	if (key === 0) return -Number.MIN_VALUE;
+	// doubles of one sign order by their bit patterns, read as signed integers
+	KEY_SCRATCH[0] = key;
+	KEY_BITS[0] += key > 0 ? -1n : 1n;
+	return KEY_SCRATCH[0];
+}
+
 /** Folds per-origin boundaries into the compact form; a boundary is never raised. */
 export function encodeCheckpoint(scope: string, boundaries: Map<string, MemberBoundary>): SubscriptionCheckpoint {
 	let time = 0;

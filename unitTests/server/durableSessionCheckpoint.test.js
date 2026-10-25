@@ -5,7 +5,7 @@ const { table, databases } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { getDatabaseGeneration, persistOriginClosedFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
-const { membersDigest } = require('#src/resources/subscriptionCheckpoint');
+const { membersDigest, positionBefore } = require('#src/resources/subscriptionCheckpoint');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const { transaction } = require('#src/resources/transaction');
 const { getSession } = require('#src/server/DurableSubscriptionsSession');
@@ -52,6 +52,11 @@ async function connect(clientId) {
 	});
 	session.closeConnection = (error) => closed.push(error ?? 'superseded');
 	return { session, received, closed };
+}
+
+/** The newest scalar a kept checkpoint allows: just below its lowest boundary. */
+function scalarCap(checkpoint) {
+	return positionBefore(Math.min(checkpoint.time - checkpoint.overlap, ...Object.values(checkpoint.exceptions)));
 }
 
 const stored = (clientId) => databases.system.hdb_durable_session.get(clientId);
@@ -148,6 +153,65 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		const second = await connect(clientId);
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes('late'));
+		second.session.disconnect(true);
+	});
+
+	it('keeps the scalar position below the checkpoint, so a scalar fallback delivers an open transaction', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `scalar-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await waitFor(() => values(first.received).includes('early'));
+		await ackAll(first.session, first.received);
+		await storedCheckpoint(T, first.session, clientId);
+		first.session.disconnect(true);
+		await first.session.writes;
+		const entry = (await stored(clientId)).subscriptions[0];
+		assert.ok(entry.startTime <= scalarCap(entry.checkpoint), 'the scalar claims nothing the checkpoint does not');
+		await commitLate();
+		// an older reader, or a checkpoint refused as another scope, resumes from the scalar
+		await databases.system.hdb_durable_session.put({
+			id: clientId,
+			subscriptions: [{ ...entry, checkpoint: { ...entry.checkpoint, scope: 'another' } }],
+		});
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		second.session.disconnect(true);
+	});
+
+	it('freezes the scalar while no checkpoint is certified, and lowers a saved one above its checkpoint', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `freeze-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => values(first.received).includes('a'));
+		await ackAll(first.session, first.received);
+		const checkpoint = await storedCheckpoint(T, first.session, clientId);
+		const state = first.session.topics.get(topic);
+		state.subscription.checkpoint = () => undefined;
+		await T.put('b', { value: 'b' });
+		await waitFor(() => values(first.received).includes('b'));
+		await ackAll(first.session, first.received);
+		first.session.checkpoint();
+		await first.session.writes;
+		assert.ok(state.entry.startTime <= scalarCap(checkpoint), 'the scalar stays at the kept checkpoint');
+		first.session.disconnect(true);
+		await first.session.writes;
+		const entry = (await stored(clientId)).subscriptions[0];
+		// a record saved before the scalar was capped
+		await databases.system.hdb_durable_session.put({
+			id: clientId,
+			subscriptions: [{ ...entry, startTime: entry.checkpoint.time + 1_000_000 }],
+		});
+		const second = await connect(clientId);
+		assert.ok((await stored(clientId)).subscriptions[0].startTime <= scalarCap(entry.checkpoint));
 		second.session.disconnect(true);
 	});
 

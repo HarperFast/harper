@@ -15,6 +15,7 @@ import { getThisNodeName } from './nodeName.ts';
 import {
 	ORIGIN_ID,
 	admitCheckpoint,
+	positionBefore,
 	validateCheckpoint,
 	type SubscriptionCheckpoint,
 } from '../resources/subscriptionCheckpoint.ts';
@@ -773,17 +774,6 @@ type TopicState = {
 /** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
 const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
 
-const KEY_SCRATCH = new Float64Array(1);
-const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
-/** The greatest double below a log key, so a replay after it starts at the key. */
-function positionBefore(key: number): number {
-	if (key === 0) return -Number.MIN_VALUE;
-	// doubles of one sign order by their bit patterns, read as signed integers
-	KEY_SCRATCH[0] = key;
-	KEY_BITS[0] += key > 0 ? -1n : 1n;
-	return KEY_SCRATCH[0];
-}
-
 function logKeysPerEntry(topic: string): boolean {
 	const auditStore = resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
 	return Boolean(auditStore) && !auditStore.reusableIterable;
@@ -802,7 +792,12 @@ function sessionRecordResumable(record: any): boolean {
 	for (const entry of record.subscriptions || []) {
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
 		// a checkpoint names origin keys, so it is checked here whichever node issued it, record topics too
-		if (entry.checkpoint !== undefined && !checkpointAdmissible(match?.Resource, entry.checkpoint)) return false;
+		const admission =
+			entry.checkpoint === undefined ? 'fallback' : checkpointAdmission(match?.Resource, entry.checkpoint);
+		if (admission === 'refused') return false;
+		// the scalar sits at or below the token's floor, so a lagging origin can hold it under retention; it is
+		// only read if the token is refused
+		if (admission === 'admitted') continue;
 		if (!/[+#]/.test(match?.relativeURL ?? '')) continue;
 		if (!boundToCurrentGeneration(entry)) continue;
 		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
@@ -810,26 +805,41 @@ function sessionRecordResumable(record: any): boolean {
 	return true;
 }
 
-/** Only a 410 refuses before CONNACK; a malformed or re-scoped checkpoint falls back to the scalar after it. */
-function checkpointAdmissible(Resource: any, checkpoint: unknown): boolean {
-	if (!Resource?.auditStore || !Resource.dbisDB) return true;
+/**
+ * Only a 410 refuses before CONNACK; a malformed or re-scoped checkpoint falls back to the scalar after it. A
+ * topic's other scope parts (target, collection, filter key) follow from the topic itself.
+ */
+function checkpointAdmission(Resource: any, checkpoint: unknown): 'admitted' | 'fallback' | 'refused' {
+	if (!Resource?.auditStore?.reusableIterable || !Resource.dbisDB) return 'fallback';
 	try {
 		const token = validateCheckpoint(checkpoint);
-		// a token for another table is a 409 and a scalar fallback after CONNACK, not a reset
-		const [database, table] = JSON.parse(token.scope);
-		if (database !== Resource.databaseName || table !== Resource.name) return true;
+		// a token for another table, or a recreated one, is a 409 and a scalar fallback after CONNACK, not a reset
+		const [database, table, tableGeneration] = JSON.parse(token.scope);
+		if (
+			database !== Resource.databaseName ||
+			table !== Resource.name ||
+			tableGeneration !== (Resource.storageGeneration ?? null)
+		) {
+			return 'fallback';
+		}
 		admitCheckpoint(Resource.auditStore, Resource.dbisDB, token);
-		return true;
+		return 'admitted';
 	} catch (error) {
-		return error?.statusCode !== 410;
+		return error?.statusCode === 410 ? 'refused' : 'fallback';
 	}
 }
 
 /** The lowest key the checkpoint certifies everything below: the common boundary, or the lowest exception. */
 function checkpointFloor(checkpoint: SubscriptionCheckpoint): number {
 	let floor = checkpoint.time - checkpoint.overlap;
-	for (const boundary of Object.values(checkpoint.exceptions)) if (boundary < floor) floor = boundary;
+	const exceptions = checkpoint.exceptions;
+	for (const name in exceptions) if (exceptions[name] < floor) floor = exceptions[name];
 	return floor;
+}
+
+/** The newest scalar position a topic keeping `checkpoint` may hold: an older reader or a fallback replays from it. */
+function scalarCap(checkpoint: SubscriptionCheckpoint): number {
+	return positionBefore(checkpointFloor(checkpoint));
 }
 
 function auditStoreOf(topic: string): any {
@@ -908,6 +918,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						}
 					: { qos, topic }
 			);
+			// a record saved before the scalar was capped can hold one above its token's floor
+			if (checkpoint !== undefined) {
+				try {
+					validateCheckpoint(checkpoint);
+					lowerScalar(state.entry);
+				} catch {
+					// a malformed token is refused at resume, which falls back to the scalar
+				}
+			}
 			// keys from another node's log, or from before a restore or copy, name nothing here; receipts kept with
 			// a checkpoint name origin keys, which are the same on every node
 			if (entry.receiptsGeneration === currentGeneration(topic) || checkpoint !== undefined) {
@@ -1398,8 +1417,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (fresh) this.advanceCount++;
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
-			const next = this.nextPosition(state);
+			let next = this.nextPosition(state);
 			if (next === undefined) continue;
+			// the scalar never claims more than the token: it is capped by the current one, else frozen at the kept one
+			const checkpoint = this.currentCheckpoint(state) ?? state.entry.checkpoint;
+			if (checkpoint !== undefined) {
+				const cap = scalarCap(checkpoint);
+				if (cap < next) next = cap;
+			}
 			const bound = state.entry.databaseGeneration !== undefined;
 			// an unbound start came from a clock, so a certified position replaces it rather than racing it
 			if (bound && !(next > state.entry.startTime)) continue;
@@ -1407,13 +1432,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state.entry.startTime = next;
 			// a checkpoint resume replays from its boundaries, below which a remote origin can sit under the scalar:
 			// once floors certify a boundary, nothing above it is pruned, from the very call that establishes the token
-			if (state.entry.checkpoint === undefined) {
-				const checkpoint = this.currentCheckpoint(state);
-				this.pruneReceipts(
-					state,
-					checkpoint === undefined ? next : Math.min(next, positionBefore(checkpointFloor(checkpoint)))
-				);
-			}
+			if (state.entry.checkpoint === undefined) this.pruneReceipts(state, next);
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
 				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
@@ -1422,13 +1441,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
 			const checkpoint = this.currentCheckpoint(state);
-			if (!checkpoint || sameCheckpoint(checkpoint, state.entry.checkpoint)) continue;
-			// the scalar watermark was compacted against a position an origin can commit below; from the first
-			// checkpoint on, receipts are bounded by its floor only
-			if (state.entry.checkpoint === undefined) state.receivedThrough = undefined;
-			state.entry.checkpoint = checkpoint;
-			this.pruneReceipts(state, positionBefore(checkpointFloor(checkpoint)));
-			changed = true;
+			if (checkpoint && !sameCheckpoint(checkpoint, state.entry.checkpoint)) {
+				// the scalar watermark was compacted against a position an origin can commit below; from the first
+				// checkpoint on, receipts are bounded by its floor only
+				if (state.entry.checkpoint === undefined) state.receivedThrough = undefined;
+				state.entry.checkpoint = checkpoint;
+				this.pruneReceipts(state, scalarCap(checkpoint));
+				changed = true;
+			}
+			// the first token, or a floor a hold lowered, can sit under a scalar the monotonic advance kept
+			if (lowerScalar(state.entry)) changed = true;
 		}
 		return changed;
 	}
@@ -1684,6 +1706,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 const SEAL_WAIT = 5_000;
 function sealWait() {
 	return new Promise<void>((resolve) => setTimeout(resolve, SEAL_WAIT).unref());
+}
+
+/** Lowers a kept scalar to its checkpoint's cap; true if it moved. */
+function lowerScalar(entry: DurableEntry): boolean {
+	if (entry.checkpoint === undefined || !(entry.startTime > scalarCap(entry.checkpoint))) return false;
+	entry.startTime = scalarCap(entry.checkpoint);
+	return true;
 }
 
 function sameCheckpoint(a: SubscriptionCheckpoint, b: SubscriptionCheckpoint | undefined): boolean {

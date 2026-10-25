@@ -12,6 +12,7 @@ const {
 	MAX_OVERLAP_MS,
 	encodeCheckpoint,
 	membersDigest,
+	positionBefore,
 	resolveMembership,
 	validateCheckpoint,
 } = require('#src/resources/subscriptionCheckpoint');
@@ -275,6 +276,21 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			await waitFor(() => second.values().includes('c'));
 			assert.deepStrictEqual(second.values(), ['b', 'c']);
 			assert.strictEqual(resumed.ungated, true);
+			resumed.end();
+		});
+
+		it('reports a resumed scalar progress below the lowest boundary, which is not yet delivered', async () => {
+			const T = tableInOwnDatabase();
+			const first = collector();
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: first });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => first.values().includes('a'));
+			const checkpoint = await certifiedCheckpoint(T, subscription);
+			subscription.end();
+			const resumed = await T.subscribe({ resume: checkpoint, omitCurrent: true, listener: collector() });
+			assert.strictEqual(await resumed.resumeVerified, true);
+			const boundary = checkpoint.time - checkpoint.overlap;
+			assert.ok(resumed.progress() <= positionBefore(boundary), 'the boundary key itself is not claimed');
 			resumed.end();
 		});
 

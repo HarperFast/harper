@@ -75,6 +75,7 @@ import {
 	bumpOriginStateEpoch,
 	checkpointScope,
 	encodeCheckpoint,
+	positionBefore,
 	readOriginStateEpoch,
 	validateCheckpoint,
 	type MemberBoundary,
@@ -7425,10 +7426,13 @@ export function makeTable(options): TableResourceClass {
 					return queueSend.call(this, event);
 				};
 				const collection = request.isCollection ?? thisId == null;
-				// a checkpoint resume's scalar shadow is its lowest boundary: safe for an older reader, never above it
+				// a checkpoint resume's scalar shadow is just below its lowest boundary, which is not yet delivered; a
+				// zero boundary stays 0, the start of the log
 				let planFloor: number | undefined;
-				if (plan)
+				if (plan) {
 					for (const { boundary } of plan.boundaries.values()) if (!(planFloor <= boundary)) planFloor = boundary;
+					if (planFloor > 0) planFloor = positionBefore(planFloor);
+				}
 				const beforeLive = (): number | undefined =>
 					plan
 						? planFloor
