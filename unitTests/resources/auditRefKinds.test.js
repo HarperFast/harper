@@ -77,7 +77,7 @@ describe('Audit references state their kind', () => {
 		assert.equal(patch?.txnLogKey, K(7));
 	});
 
-	it('a retried save whose minted key equals its caller’s value recognizes its own staging', async () => {
+	it('a retried save keeps its lock stamp with a distinct local log key', async () => {
 		const T = tableInOwnDatabase();
 		const floor = Date.now() + 600_000;
 		publishOriginFloor(T.primaryStore.rootStore, floor);
@@ -95,13 +95,13 @@ describe('Audit references state their kind', () => {
 				}
 				return originalCommit.apply(this, args);
 			};
-			// the holder's first stamp is K(2), which is also the next key minted
+			// The holder's first stamp is K(2); local log keys remain separately minted.
 			holder = await T.lock('held', { hold: true, lease: 15_000 }, { timestamp: K(2) });
 			holder.set('name', 'first');
 			await holder.save();
 			assert.ok(conflicted, 'the first save must have been retried');
 			const first = T.primaryStore.getEntry('held');
-			assert.deepEqual([first.version, entriesFor(T, 'held').at(-1).txnLogKey], [K(2), K(2)]);
+			assert.deepEqual([first.version, entriesFor(T, 'held').at(-1).txnLogKey], [K(2), K(3)]);
 			holder.set('name', 'second');
 			await holder.save();
 			const second = T.primaryStore.getEntry('held');
