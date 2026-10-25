@@ -22,6 +22,7 @@ import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
+import { enableCompileCache } from '../server/threads/compileCache.ts';
 
 try {
 	envMgr.initSync();
@@ -72,6 +73,7 @@ async function restart(req: any) {
 	if (calledFromCli) {
 		const hdbPid = processMan.getHdbPid();
 		console.error(hdbPid ? `Restarting ${PRODUCT_NAME}...` : `Starting ${PRODUCT_NAME}...`);
+		enableCompileCache(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
 		(await import('./run.ts')).launch(true);
 		return RESTART_RESPONSE;
 	}
