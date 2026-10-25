@@ -23,14 +23,21 @@ if (require.main === module) {
 			return commit.call(this);
 		};
 	}
-	const { getDatabases } = require('#src/resources/databases');
+	const { getDatabases, table, flushDatabases } = require('#src/resources/databases');
 	const { loadGQLSchema } = require('#src/resources/graphql');
 	const { getResidencyMapTable } = require('#src/resources/residencyMaps');
 	const { server } = require('#src/server/Server');
-	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	setMainIsWorker(true);
 	(async () => {
 		if (mode.startsWith('write')) {
+			const Healthy = table({
+				database: 'healthy',
+				table: 'Rows',
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'body' }],
+			});
+			await Healthy.put('good', { id: 'good', body: 'healthy tail' });
 			server.shards = new Map([
 				[0, [{ name: server.hostname }]],
 				[1, [{ name: 'other' }]],
@@ -73,16 +80,65 @@ if (require.main === module) {
 					fs.readdirSync = readdir;
 				}
 			}
-			if (mode === 'replay-bad-config') {
-				let refused = false;
-				try {
-					getDatabases();
-				} catch (error) {
-					if (!/replication.shard/.test(error.message)) throw error;
-					refused = true;
+			if (mode === 'replay-bad-config' || mode === 'worker-repaired') {
+				const assert = require('node:assert');
+				const loaded = getDatabases();
+				const Blocked = loaded[database].CrashSlots;
+				const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+				const bridge = new ResourceBridge();
+				assert.throws(
+					() =>
+						bridge.searchByHash({
+							database,
+							schema: database,
+							table: 'CrashSlots',
+							hash_values: ['local'],
+							get_attributes: ['*'],
+						}),
+					/replication.shard/
+				);
+				await assert.rejects(bridge.getBackup({ database }), /replication.shard/);
+				const tail = () =>
+					Array.from(
+						Blocked.auditStore.getRange({ startFromLastFlushed: true, readUncommitted: true }),
+						(entry) => entry.txnLogKey
+					);
+				const before = tail();
+				assert.ok(before.length >= 4, 'unreplayed tail remains');
+				assert.throws(
+					() => Blocked.get('local'),
+					(error) =>
+						error.code === 'DATABASE_RESIDENCY_BLOCKED' &&
+						error.retryable === false &&
+						/replication.shard/.test(error.message)
+				);
+				await assert.rejects(async () => Blocked.put('no', { id: 'no', region: 0 }), /replication.shard/);
+				assert.equal((await loaded.healthy.Rows.get('good')).body, 'healthy tail');
+				await loaded.healthy.Rows.put('still', { id: 'still', body: 'available' });
+				await flushDatabases();
+				assert.deepEqual(tail(), before, 'healthy flush must not consume the blocked tail');
+				if (mode === 'replay-bad-config') {
+					env.setProperty('replication_shards', [0, 1]);
+					await loadGQLSchema(`type CrashSlots @table(database: "${database}") @residency(slots: 2, byAttribute: true, slotFrom: "region") { id: ID @primaryKey region: Int @indexed body: String }
+						type HealthyReload @table(database: "healthy") { id: ID @primaryKey }`);
+					assert.throws(() => Blocked.get('local'), /replication.shard/);
+					await getDatabases().healthy.HealthyReload.put('ok', { id: 'ok' });
+					const { Worker } = require('node:worker_threads');
+					await new Promise((resolve, reject) => {
+						const worker = new Worker(__filename, { argv: [root, marker, 'worker-repaired'] });
+						const deadline = setTimeout(() => {
+							void worker.terminate();
+							reject(new Error('blocked worker timed out'));
+						}, 10000);
+						worker.once('error', reject);
+						worker.once('exit', (code) => {
+							clearTimeout(deadline);
+							code === 0 ? resolve() : reject(new Error(`blocked worker exit ${code}`));
+						});
+					});
+					assert.deepEqual(tail(), before, 'new worker did not replay after repair');
 				}
-				if (!refused) await getDatabases()[database].CrashSlots.primaryStore.rootStore.flush();
-				writeFileSync(marker, JSON.stringify({ refused }));
+				writeFileSync(marker, JSON.stringify({ refused: true }));
 				process.exit(0);
 			}
 			const Table = getDatabases()[database].CrashSlots;

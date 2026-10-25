@@ -171,11 +171,16 @@ export class DerivedIndexLagError extends ServerError {
 export class DatabaseClosingError extends ServerError {
 	code: string;
 	retryable: boolean;
-	constructor(databaseName: string, retryable = true) {
-		super(`Database '${databaseName}' is closing; retry after it is available`, 503);
+	constructor(databaseName: string, retryable = true, residencyReason?: string) {
+		super(
+			residencyReason
+				? `${residencyReason}; repair the configuration and restart this node`
+				: `Database '${databaseName}' is closing; retry after it is available`,
+			503
+		);
 		this.name = 'DatabaseClosingError';
-		this.code = 'DATABASE_CLOSING';
-		this.retryable = retryable;
+		this.code = residencyReason ? 'DATABASE_RESIDENCY_BLOCKED' : 'DATABASE_CLOSING';
+		this.retryable = residencyReason ? false : retryable;
 	}
 }
 

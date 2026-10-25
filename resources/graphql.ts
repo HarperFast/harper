@@ -2,6 +2,7 @@ import { dirname } from 'node:path';
 import { Script } from 'node:vm';
 import { scopedTableFactory, table } from './databases.ts';
 import { compileResidencyPolicy, normalizeResidencyPolicy } from './residencyPolicy.ts';
+import { databaseResidencyBlockReason, databases as loadedDatabases } from './databases.ts';
 import { prepareResidencyDeclaration } from './residencyMaps.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
@@ -549,6 +550,13 @@ async function processGraphQLSchema(
 		const residencyDeadline = Date.now() + 5000;
 		for (;;) {
 			try {
+				const blocked =
+					databaseResidencyBlockReason(typeDef.database || 'data') &&
+					loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+				if (blocked) {
+					typeDef.tableClass = blocked;
+					break;
+				}
 				if (typeDef.residency)
 					await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, typeDef.residency);
 				typeDef.tableClass = declareTable(typeDef);

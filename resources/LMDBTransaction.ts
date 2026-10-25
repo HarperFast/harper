@@ -378,7 +378,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 										databaseName,
 										target.version,
 										this.confirmationCount,
-										target.residentPeerLists
+										target.residentPeerLists,
+										!this.requestedConfirmationCount
 									);
 							});
 					}

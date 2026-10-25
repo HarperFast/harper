@@ -987,7 +987,7 @@ export function clearNextEncoding() {
 	additionalAuditRefsNextEncoding = undefined;
 	receivedIdentityRefsNextEncoding = undefined;
 }
-export function recordUpdater(store, tableId, auditStore) {
+export function recordUpdater(store, tableId, auditStore, retainAuditBlobs?: (entry: any) => boolean) {
 	return function (
 		id,
 		record,
@@ -1094,7 +1094,13 @@ export function recordUpdater(store, tableId, auditStore) {
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
 			// we use resolveRecord outside of transaction, so must explicitly make it conditional
 			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
-			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
+			if (
+				existingEntry &&
+				existingEntry.value &&
+				type !== 'message' &&
+				existingEntry.metadataFlags & HAS_BLOBS &&
+				!retainAuditBlobs?.(existingEntry)
+			) {
 				// Delete the prior row's blob files — except any the new record still references.
 				// Without the retention check, updating an unrelated attribute on a row that
 				// carries a file-backed blob unlinks the blob ~deletionDelay ms later, leaving

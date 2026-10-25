@@ -322,6 +322,11 @@
 								"additionalProperties": false,
 								"properties": {
 									"hostname": { "type": "string" },
+									"url": {
+										"type": "string",
+										"format": "uri",
+										"description": "Connection URL; its host may be an alias of the canonical hostname."
+									},
 									"port": { "type": "integer" },
 									"startTime": {
 										"type": "string",
@@ -329,7 +334,8 @@
 										"description": "ISO 8601 UTC start time to begin replication."
 									}
 								},
-								"required": ["hostname", "port"]
+								"required": ["hostname"],
+								"anyOf": [{ "required": ["port"] }, { "required": ["url"] }]
 							}
 						]
 					}
@@ -392,6 +398,18 @@
 							]
 						}
 					}
+				},
+				"confirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for explicit replicatedConfirmation. Default: 900000, or blobTimeout if greater. An explicit value overrides that default."
+				},
+				"residencyConfirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for automatic new-owner confirmation after an attribute-slot change. Default: 30000. Timeout reports an uncertain committed outcome."
 				},
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
 				"blobGapReconnectMs": {

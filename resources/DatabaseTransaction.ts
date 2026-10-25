@@ -3061,6 +3061,11 @@ export class DatabaseTransaction implements Transaction {
 							} catch (error) {
 								harperLogger.warn?.('onCommit handler failed after commit', error);
 							}
+							try {
+								for (const notify of (transaction as any).replicaCommitNotifications ?? []) notify();
+							} catch (error) {
+								harperLogger.warn?.('Replica sweep notification failed after commit', error);
+							}
 							if (this.recordLocks) this.noteCommittedLockVersions(committedTransaction);
 							releaseTransactionLockHolds(transaction);
 							if (
@@ -3099,7 +3104,13 @@ export class DatabaseTransaction implements Transaction {
 											: undefined;
 									if (target) {
 										confirmation = confirmReplicationAfterCommit(() =>
-											confirmReplication(databaseName, target.version, this.confirmationCount, target.residentPeerLists)
+											confirmReplication(
+												databaseName,
+												target.version,
+												this.confirmationCount,
+												target.residentPeerLists,
+												!this.requestedConfirmationCount
+											)
 										);
 									}
 								} catch (error) {

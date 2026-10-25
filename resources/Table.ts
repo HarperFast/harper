@@ -121,6 +121,7 @@ import { SchemaEventMsg } from '../server/threads/itc.ts';
 import { isDedicatedPoolWorker, isWorkerPoolActive } from '../server/threads/workerPools.ts';
 import {
 	databases,
+	databaseResidencyBlockReason,
 	table,
 	dropColumnFamily,
 	markDropInProgress,
@@ -1578,7 +1579,7 @@ export function makeTable(options): TableResourceClass {
 		options;
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
-	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
+	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, isLocallyAuditedReplica);
 	// Created on first cluster-scoped lock() or first arriving control entry, and only while a
 	// transport is registered for this database.
 	let lockCoordinator: LockCoordinator | undefined;
@@ -1798,7 +1799,11 @@ export function makeTable(options): TableResourceClass {
 	// Teardown rejects every producer; source/replay paths only bypass derived-index lag shedding.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
 		if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
-			throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
+			throw new DatabaseClosingError(
+				databaseName,
+				!transaction?.root && !transaction?.snapshotFree,
+				databaseResidencyBlockReason(databaseName)
+			);
 		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
 		if (reason) throw new DerivedIndexLagError(reason);
@@ -2834,7 +2839,8 @@ export function makeTable(options): TableResourceClass {
 			if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
 				throw new DatabaseClosingError(
 					databaseName,
-					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
+					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree,
+					databaseResidencyBlockReason(databaseName)
 				);
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
 			const condition = request?.[WRITE_CONDITION];
@@ -5130,6 +5136,10 @@ export function makeTable(options): TableResourceClass {
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
 			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
+			const writerReplicaEligible = Boolean(
+				residencyPolicy && writtenHere && replicaExpirationMs && hasSecondaryIndices()
+			);
+			if (writerReplicaEligible) openReplicaDeadlines(true);
 			checkValidId(id);
 			if (
 				residencyPolicy?.byAttribute &&
@@ -5407,6 +5417,7 @@ export function makeTable(options): TableResourceClass {
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
+					let keepWriterReplica = false;
 					const appendedLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
@@ -6067,8 +6078,9 @@ export function makeTable(options): TableResourceClass {
 							throw error;
 						}
 					}
-					if (omitLocalRecord) {
-						auditRecordToStore ??= recordToStore;
+					keepWriterReplica = omitLocalRecord && writerReplicaEligible && !patchesStub;
+					if (omitLocalRecord) auditRecordToStore ??= recordToStore;
+					if (omitLocalRecord && !keepWriterReplica) {
 						recordToStore = residencyPolicy
 							? hasSecondaryIndices()
 								? residencyStub(recordToStore)
@@ -6107,7 +6119,13 @@ export function makeTable(options): TableResourceClass {
 							}
 						})()
 					);
-					updateIndices(id, existingRecord, recordToStore, transaction && { transaction }, omitLocalRecord);
+					updateIndices(
+						id,
+						existingRecord,
+						recordToStore,
+						transaction && { transaction },
+						omitLocalRecord && !keepWriterReplica
+					);
 					dropReplicaDeadline(id, existingEntry, transaction);
 
 					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
@@ -6159,7 +6177,7 @@ export function makeTable(options): TableResourceClass {
 							isRocksDB
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
-							omitLocalRecord ? INVALIDATED : 0,
+							keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0,
 							// copy-apply rows are snapshots, not transactions: write the record + indices but no audit entry
 							isCopyApply ? false : audit,
 							{
@@ -6186,17 +6204,23 @@ export function makeTable(options): TableResourceClass {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						if (storeRecord && keepWriterReplica) {
+							replicaDeadlines.putSync(id, replicaDeadlineFor(expiresAt), { transaction });
+							(transaction.replicaCommitNotifications ??= new Set()).add(noteReplicaStored);
+						}
 						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
 							write.residencyId = residencyId;
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
-							write.stagedEntry = omitLocalRecord
-								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId, residencySlot }
-								: residencySlot === undefined
-									? { value: recordToStore }
-									: { value: recordToStore, residencySlot };
+							write.stagedEntry = keepWriterReplica
+								? { value: recordToStore, metadataFlags: REPLICA, residencySlot }
+								: omitLocalRecord
+									? { value: recordToStore, metadataFlags: INVALIDATED, residencyId, residencySlot }
+									: residencySlot === undefined
+										? { value: recordToStore }
+										: { value: recordToStore, residencySlot };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
 							// then owns their lifetime; and any record an earlier write in this transaction
 							// stored is now replaced, so mark those writes for the superseded-blob cleanup
@@ -11616,10 +11640,7 @@ export function makeTable(options): TableResourceClass {
 						// the row is committed; nothing after this may turn a kept replica into "not kept"
 						if (stored) {
 							try {
-								const state = replicaSweep();
-								Atomics.add(state, 0, 1);
-								if (Atomics.load(state, 1) === 0)
-									void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+								noteReplicaStored();
 								releaseReplacedBlobs(current);
 							} catch (error) {
 								logger.warn?.('Error after storing replica', id, error);
@@ -11662,7 +11683,20 @@ export function makeTable(options): TableResourceClass {
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
+	function isLocallyAuditedReplica(entry: Entry): boolean {
+		return (
+			Boolean(residencyPolicy && audit && entry?.metadataFlags & REPLICA) &&
+			(entry.nodeId ?? 0) === (getThisNodeId(auditStore) ?? 0)
+		);
+	}
+	function noteReplicaStored(): void {
+		const state = replicaSweep();
+		Atomics.add(state, 0, 1);
+		if (Atomics.load(state, 1) === 0)
+			void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+	}
 	function releaseReplacedBlobs(replaced: Entry) {
+		if (isLocallyAuditedReplica(replaced)) return;
 		if (!(replaced.metadataFlags & HAS_BLOBS)) return;
 		// what the key holds now, not what this write stored: a later write may have re-referenced a file
 		const live = primaryStore.getEntry(replaced.key);

@@ -12,7 +12,13 @@ import {
 	sameResidencyPolicy,
 	type ResidencyPolicy,
 } from './residencyPolicy.ts';
-import { acquireResidencyMapFence, getResidencyMap, readResidencyMap } from './residencyMaps.ts';
+import {
+	acquireResidencyMapFence,
+	getResidencyMap,
+	readResidencyMap,
+	getResidencyMapTable,
+	ResidencyConfigurationError,
+} from './residencyMaps.ts';
 import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
@@ -57,7 +63,7 @@ import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.ts';
-import { workerData } from 'node:worker_threads';
+import { workerData, isMainThread } from 'node:worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.ts';
@@ -573,9 +579,79 @@ type IncompleteDatabaseClose = {
 };
 const incompleteDatabaseCloses = new Map<string, IncompleteDatabaseClose>();
 
+const residencyBlockedRoots = new Map<string, string>();
+const residencyBlockedDatabases = new Map<string, string>();
+
+export function databaseResidencyBlockReason(databaseName: string): string | undefined {
+	return residencyBlockedDatabases.get(databaseName);
+}
+
+export function assertDatabaseResidencyAvailable(databaseName: string): void {
+	const reason = databaseResidencyBlockReason(databaseName);
+	if (reason) throw new DatabaseClosingError(databaseName, false, reason);
+}
+
+function residencyQuarantineState(databaseName: string): Uint8Array {
+	return new Uint8Array(
+		getResidencyMapTable().auditStore.getUserSharedBuffer(['residency-quarantine', databaseName], new ArrayBuffer(4100))
+	);
+}
+
+function quarantineResidencyDatabase(databaseName: string, dbTables: Tables, reason: string): void {
+	residencyBlockedDatabases.set(databaseName, reason);
+	const roots = new Set<any>();
+	for (const Table of Object.values(dbTables)) {
+		const root = Table.primaryStore?.rootStore;
+		if (root) {
+			roots.add(root);
+			residencyBlockedRoots.set(resolve(root.path), reason);
+		}
+	}
+	permanentlySuspendDatabaseCommits(roots);
+	for (const root of roots) {
+		permanentlySuspendDerivedIndexActivation(root);
+		void root.auditStore
+			?.stopAuditCleanup?.()
+			.catch((error) => logger.error('Error stopping quarantined audit cleanup', error));
+	}
+	for (const Table of Object.values(dbTables))
+		void Table.closeMaintenance?.().catch((error) =>
+			logger.error('Error stopping quarantined table maintenance', error)
+		);
+}
+
+function validateResidencyRecovery(): void {
+	for (const [databaseName, dbTables] of Object.entries(databases)) {
+		const declarations = Object.values(dbTables).filter((Table) => Table.residency);
+		if (!declarations.length) continue;
+		const state = residencyQuarantineState(databaseName);
+		const length = new Int32Array(state.buffer, state.byteOffset, 1);
+		const size = Atomics.load(length, 0);
+		let reason =
+			databaseResidencyBlockReason(databaseName) ??
+			(size > 0 ? Buffer.from(state.subarray(4, 4 + size)).toString() : undefined);
+		if (!reason) {
+			try {
+				for (const Table of declarations) getResidencyMap(databaseName, Table.residency.slots);
+			} catch (error) {
+				if (!(error instanceof ResidencyConfigurationError) || databaseName === 'system') throw error;
+				reason = error.message;
+				if (isMainThread) {
+					const bytes = Buffer.from(reason);
+					const size = Math.min(bytes.length, state.length - 4);
+					state.set(bytes.subarray(0, size), 4);
+					Atomics.store(length, 0, size);
+				}
+			}
+		}
+		if (reason) quarantineResidencyDatabase(databaseName, dbTables, reason);
+	}
+}
+
 function databaseRootUnavailable(rootPath: string): boolean {
 	return (
 		databaseDropPrepared(rootPath) ||
+		(residencyBlockedRoots.size > 0 && residencyBlockedRoots.has(resolve(rootPath))) ||
 		(incompleteDatabaseCloses.size > 0 && incompleteDatabaseCloses.has(resolve(rootPath)))
 	);
 }
@@ -1097,7 +1173,7 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
-let deferredResidencyReplays: Array<() => void> | undefined;
+let deferredResidencyReplays: Array<{ database: string; replay: () => void }> | undefined;
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
@@ -1287,12 +1363,14 @@ function loadDatabaseCatalogs(): Databases {
 			//TODO: Iterate configured table paths
 		}
 	}
-	// Declarative rows depend on the system snapshot, including its unflushed audit tail.
-	while (deferredResidencyReplays.length) {
-		deferredResidencyReplays[0]();
-		deferredResidencyReplays.shift();
+	// System recovery must precede placement validation for every root of a database.
+	validateResidencyRecovery();
+	const blockedReplays = [];
+	for (const entry of deferredResidencyReplays) {
+		if (databaseResidencyBlockReason(entry.database)) blockedReplays.push(entry);
+		else entry.replay();
 	}
-	deferredResidencyReplays = undefined;
+	deferredResidencyReplays = blockedReplays.length ? blockedReplays : undefined;
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
 		if (databaseUsesPreparedRoot(dbName)) continue;
@@ -1625,13 +1703,10 @@ function readRocksMetaDb(
 			if (!isReadOnlyMode() && !destination) {
 				const tables = databases[databaseName];
 				const replay = () => {
-					// A configuration refusal must happen before replay can skip entries or advance txn.state.
-					for (const Table of Object.values(tables))
-						if (Table.residency) getResidencyMap(databaseName, Table.residency.slots);
 					void replayLogs(rootStore, tables);
 				};
-				if (deferredResidencyReplays && Object.values(tables).some((Table) => Table.residency))
-					deferredResidencyReplays.push(replay);
+				if (deferredResidencyReplays && databaseName !== 'system')
+					deferredResidencyReplays.push({ database: databaseName, replay });
 				else replay();
 			}
 		}
@@ -2760,10 +2835,12 @@ function openDatabaseRoot(
 ) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	getDatabases();
+	if (!allowPreparedDrop) assertDatabaseResidencyAvailable(databaseName);
 	let definedDatabase = definedDatabases.get(databaseName);
 	if ((definedDatabase as any)?.rootStore) {
 		const rootStore = (definedDatabase as any).rootStore;
-		if (!allowPreparedDrop && databaseRootUnavailable(rootStore.path)) throw new DatabaseClosingError(databaseName);
+		if (!allowPreparedDrop && databaseRootUnavailable(rootStore.path))
+			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
 		return rootStore;
 	}
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
@@ -2773,7 +2850,7 @@ function openDatabaseRoot(
 	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
 	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
 	if (!allowPreparedDrop && configuredDropPendingWithin(databasePath, databaseConfig))
-		throw new DatabaseClosingError(databaseName);
+		throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
 	// A configured path is a scan root, not an exact database path, so an unresolved alias can
 	// target any child store. Keep first-open fenced until the destructive operation completes.
 	if (!allowPreparedDrop && databaseConfig[databaseName]?.path) {
@@ -2785,7 +2862,8 @@ function openDatabaseRoot(
 			error.statusCode = 409;
 			throw error;
 		}
-		if (databaseDropPreparedWithin(databasePath)) throw new DatabaseClosingError(databaseName);
+		if (databaseDropPreparedWithin(databasePath))
+			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
 		if (scanBlockedDatabaseDrops(databasePath).length > 0) {
 			const error: any = new Error(
 				`Database '${databaseName}' shares a configured path with an incomplete drop; retry drop_database to recover it`
@@ -2800,7 +2878,8 @@ function openDatabaseRoot(
 	const path = useRocksdb
 		? join(databasePath, tablePath ? tableName : databaseName)
 		: join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
-	if (!allowPreparedDrop && databaseRootUnavailable(path)) throw new DatabaseClosingError(databaseName);
+	if (!allowPreparedDrop && databaseRootUnavailable(path))
+		throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
 	throwIfBlockedByRestore(path, databaseName);
 	ensureDB(databaseName);
 	definedDatabase = definedDatabases.get(databaseName);
@@ -3066,7 +3145,7 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 				(entry) => paths.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			)
 		)
-			throw new DatabaseClosingError(databaseName);
+			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
 		for (const rootPath of paths)
 			lockDatabaseForDrop(rootPath, databaseName, dropLocks, inferDropBlobDatabaseName(databaseName, rootPath));
 		destructiveWorkStarted = true;
@@ -3126,7 +3205,8 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				(entry) =>
 					detachedRootPathSet.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			);
-		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
+		if (detachedRootHasForeignHandle())
+			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
 		destructiveWorkStarted = true;
 		for (const rootStore of rootStores) {
@@ -3174,7 +3254,8 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				ownedRocksStores.delete(rootStore.path);
 			}
 		}
-		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
+		if (detachedRootHasForeignHandle())
+			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
 		for (const rootPath of detachedRootPaths) await rm(rootPath, { recursive: true, force: true });
 
 		await deleteBlobPaths(dropLocks.flatMap((lock) => lock.blobPaths));
@@ -3523,11 +3604,11 @@ function databaseUsesRootStore(databaseName: string, rootStore: any): boolean {
 
 function databaseUsesPreparedRoot(databaseName: string): boolean {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-	if (definedRoot && databaseDropPrepared(definedRoot.path)) return true;
+	if (definedRoot && databaseRootUnavailable(definedRoot.path)) return true;
 	const dbTables = databases[databaseName];
 	for (const tableName in dbTables) {
 		const rootStore = (dbTables[tableName] as any)?.primaryStore?.rootStore;
-		if (rootStore && databaseDropPrepared(rootStore.path)) return true;
+		if (rootStore && databaseRootUnavailable(rootStore.path)) return true;
 	}
 	return false;
 }
@@ -6541,5 +6622,9 @@ export function getDefaultCompression() {
  */
 export async function flushDatabases() {
 	// flush all RocksDB databases
-	return Promise.all(Array.from(rocksdbDatabaseEnvs.values()).map((db) => db.flush()));
+	return Promise.all(
+		Array.from(rocksdbDatabaseEnvs.values())
+			.filter((db) => !residencyBlockedRoots.has(resolve(db.path)))
+			.map((db) => db.flush())
+	);
 }

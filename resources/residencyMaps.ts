@@ -37,6 +37,8 @@ export function setResidencyPlacementGuard(guard: typeof placementGuard): void {
 	placementGuard = guard;
 }
 
+export class ResidencyConfigurationError extends ClientError {}
+
 function residencyFailure(database: string, reason: string): never {
 	const reported = new Int32Array(
 		getResidencyMapTable().auditStore.getUserSharedBuffer(['residency-failure', database, reason], new ArrayBuffer(4))
@@ -44,7 +46,7 @@ function residencyFailure(database: string, reason: string): never {
 	if (Atomics.compareExchange(reported, 0, 0, 1) === 0) {
 		logger.warn?.(`Declarative residency blocked for ${database}: ${reason}`);
 	}
-	throw new ClientError(`Declarative residency blocked for ${database}: ${reason}`, 503);
+	throw new ResidencyConfigurationError(`Declarative residency blocked for ${database}: ${reason}`, 503);
 }
 
 export function residencyDeclarationDatabases(): string[] {
@@ -111,7 +113,8 @@ export function getResidencyMapTable(): any {
 
 export function activeResidencySlots(database: string): number {
 	let slots = 0;
-	const catalog = getDatabaseCatalog(database);
+	const catalog =
+		Object.values(databases[database] ?? {}).find((Table) => Table.dbisDB)?.dbisDB ?? getDatabaseCatalog(database);
 	for (const { value } of catalog.getRange({ start: '', end: '\uffff' }))
 		slots = Math.max(slots, value?.residency?.slots ?? 0);
 	return slots;
@@ -234,7 +237,12 @@ export function getResidencyMap(database: string, requiredSlots = 1) {
 	if (!cache) caches.set(Maps.primaryStore, (cache = new Map()));
 	let current = cache.get(database);
 	if (!current || current.snapshot.digest !== row.digest) {
-		const snapshot = validateResidencyMap(row, database);
+		let snapshot: ResidencyMapSnapshot;
+		try {
+			snapshot = validateResidencyMap(row, database);
+		} catch (error) {
+			residencyFailure(database, error.message);
+		}
 		current = { snapshot, shards: expandResidencyMap(snapshot), owners: new Map() };
 		cache.set(database, current);
 	}

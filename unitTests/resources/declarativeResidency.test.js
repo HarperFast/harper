@@ -5,7 +5,7 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const { databases, table } = require('#src/resources/databases');
 const { server } = require('#src/server/Server');
 const env = require('#src/utility/environment/environmentManager');
-const { INVALIDATED } = require('#src/resources/Table');
+const { INVALIDATED, REPLICA } = require('#src/resources/Table');
 const {
 	setResidencyPlacementGuard,
 	initializeResidencySlots,
@@ -48,12 +48,32 @@ describe('Declarative residency', function () {
 	});
 
 	async function declare(name, directive, fields = 'tag: String @indexed\nbody: String') {
-		await loadGQLSchema(`type ${name} @table(database: "slots_test") ${directive} {
+		await loadGQLSchema(`type ${name} @table(database: "slots_test", replicaExpiration: 0) ${directive} {
 			id: ID @primaryKey
 			${fields}
 		}`);
 		return databases.slots_test[name];
 	}
+
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'keeps a non-owner write as a local replica without fetching an owner',
+		async () => {
+			await loadGQLSchema(`type SlotWriterReplica @table(database: "slots_test", replicaExpiration: 60)
+				@residency(slots: 10, slotFrom: "1") { id: ID @primaryKey tag: String @indexed body: String }`);
+			const Records = databases.slots_test.SlotWriterReplica;
+			Records.sourcedFrom({
+				load() {
+					throw new Error('owner delivery is held');
+				},
+			});
+			await Records.put('remote', { id: 'remote', tag: 'indexed', body: 'written here' });
+			const entry = Records.primaryStore.getEntry('remote');
+			assert.ok(entry.metadataFlags & REPLICA);
+			assert.ok(!(entry.metadataFlags & INVALIDATED));
+			assert.equal((await Records.get('remote')).body, 'written here');
+			assert.deepEqual(Records.getRecordResidency(entry), ['slot-owner']);
+		}
+	);
 
 	it('persists the policy and places a main-thread write without an application hook', async () => {
 		const Records = await declare('SlotKeys', '@residency(slots: 10, slotFrom: "Number(id.slice(-1))")');
@@ -949,8 +969,10 @@ describe('Declarative residency', function () {
 			}
 			await converted.put('new2', { id: 'new2', tag: 'new', body: 'after conversion' });
 			assert.equal(converted.primaryStore.getEntry('new2').residencySlot, undefined);
+			converted.setTTLExpiration({ replicaExpiration: 0 });
 			await converted.put('new6', { id: 'new6', tag: 'new', body: 'remote body' });
 			const stub = converted.primaryStore.getEntry('new6');
+			converted.setTTLExpiration({ replicaExpiration: 3600 });
 			const cachesReplicas = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 			assert.equal(
 				await converted._storeReplica(stub, {
