@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792919643076,
+  "lastUpdate": 1792919647443,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -30569,6 +30569,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 801.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "45581f85e33907b033c635764c400dc569ce8a30",
+          "message": "Cover MQTT shared encoding across protocol versions, codecs and QoS levels (#3190)\n\n* Cover the MQTT shared-encoding protocol, codec and QoS cross product\n\n* Require complete QoS 1 delivery and start disconnect victims before survivors",
+          "timestamp": "2026-10-25T03:18:04Z",
+          "url": "https://github.com/HarperFast/harper/commit/45581f85e33907b033c635764c400dc569ce8a30"
+        },
+        "date": 1792919646098,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4156.43,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4156.43,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 407.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1388.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1754.9,
             "unit": "ms"
           }
         ]
