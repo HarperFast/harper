@@ -1,8 +1,7 @@
 import { dirname } from 'node:path';
 import { Script } from 'node:vm';
-import { scopedTableFactory, table } from './databases.ts';
+import { scopedTableFactory, table, databaseResidencyBlockReason, databases as loadedDatabases } from './databases.ts';
 import { compileResidencyPolicy, normalizeResidencyPolicy } from './residencyPolicy.ts';
-import { databaseResidencyBlockReason, databases as loadedDatabases } from './databases.ts';
 import { prepareResidencyDeclaration } from './residencyMaps.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';

@@ -15,6 +15,11 @@ const {
 } = require('#src/resources/residencyPolicy');
 
 describe('Residency policy and map identity', () => {
+	for (const database of ['.', '..', '../outside', 'nested/database', 'nested\\database', '`reserved', '\u0000']) {
+		it(`rejects a map database that is not a safe database name ${JSON.stringify(database)}`, () => {
+			assert.throws(() => createResidencyMap(database, 2, [{ start: 0, end: 2, shard: 0 }]), /database name/);
+		});
+	}
 	for (const [id, hex, hash] of [
 		['', '1b', 504136826],
 		['key1', '6b657931', 927623783],

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Script } from 'node:vm';
 import { writeKey } from 'ordered-binary';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 
 export interface ResidencyPolicy {
 	slots: number;
@@ -23,7 +24,7 @@ export interface ResidencyMapSnapshot {
 	ranges: ResidencyRange[];
 }
 
-export function validateSlotCount(slots: unknown): asserts slots is number {
+function validateSlotCount(slots: unknown): asserts slots is number {
 	if (!Number.isInteger(slots) || (slots as number) < 1 || (slots as number) > 65536)
 		throw new ClientError('@residency slots must be an integer from 1 to 65536', 400);
 }
@@ -152,7 +153,16 @@ export function createResidencyMap(
 	ranges: unknown,
 	version = 1
 ): ResidencyMapSnapshot {
-	if (typeof database !== 'string' || !database || database.length > 255 || database === 'system')
+	if (
+		typeof database !== 'string' ||
+		!database ||
+		database.length > commonValidators.schema_length.maximum ||
+		database === 'system' ||
+		!schemaRegex.test(database) ||
+		database.includes('\\') ||
+		database === '.' ||
+		database === '..'
+	)
 		throw new ClientError('Residency maps require a non-system database name', 400);
 	if (!Number.isSafeInteger(version) || version < 1)
 		throw new ClientError('Residency map version must be a positive safe integer', 400);

@@ -1,5 +1,5 @@
 import { databases, getDatabaseCatalog, getDatabases, table } from './databases.ts';
-import { SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
 import { server } from '../server/Server.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -65,8 +65,8 @@ let configuredShards: number[] | undefined;
 let configuredDigest: string | null = null;
 let configuration: Readonly<{ shards: readonly number[] | undefined; shard: number; digest: string | null }>;
 export function getResidencyConfiguration() {
-	const value = env.get('replication_shards');
-	const shard = env.get('replication_shard');
+	const value = env.get(CONFIG_PARAMS.REPLICATION_SHARDS);
+	const shard = env.get(CONFIG_PARAMS.REPLICATION_SHARD);
 	if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
 		throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
 	if (value !== configuredList) {
@@ -115,10 +115,15 @@ export function getResidencyMapTable(): any {
 
 export function activeResidencySlots(database: string): number {
 	let slots = 0;
-	const catalog =
-		Object.values(databases[database] ?? {}).find((Table) => Table.dbisDB)?.dbisDB ?? getDatabaseCatalog(database);
-	for (const { value } of catalog.getRange({ start: '', end: '\uffff' }))
-		slots = Math.max(slots, value?.residency?.slots ?? 0);
+	const catalogs = new Set(
+		Object.values(databases[database] ?? {})
+			.map((Table) => Table.dbisDB)
+			.filter(Boolean)
+	);
+	if (!catalogs.size) catalogs.add(getDatabaseCatalog(database));
+	for (const catalog of catalogs)
+		for (const { value } of catalog.getRange({ start: '', end: '\uffff' }))
+			slots = Math.max(slots, value?.residency?.slots ?? 0);
 	return slots;
 }
 
@@ -226,7 +231,7 @@ export async function prepareResidencyDeclaration(
 		return;
 	}
 	if (existing) residencyFailure(database, 'an existing table requires its custom map before @residency activation');
-	await installResidencyMap(defaultResidencyMap(database, policy.slots, env.get('replication_shards')));
+	await installResidencyMap(defaultResidencyMap(database, policy.slots, env.get(CONFIG_PARAMS.REPLICATION_SHARDS)));
 }
 
 export function getResidencyMap(database: string, requiredSlots = 1, forRecovery = false) {

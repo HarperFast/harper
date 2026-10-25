@@ -74,6 +74,26 @@ describe('Declarative writer replicas', function () {
 			assert.deepEqual(Rows.getRecordResidency(entry), ['writer-replica-owner']);
 		});
 	}
+	for (const slot of [0, 1]) {
+		it(`keeps a key-policy patch over an incomplete base invalidated (slot ${slot})`, async () => {
+			const name = `KeyWriterReplica${++sequence}`;
+			await loadGQLSchema(`type ${name} @table(database: "writer_replicas", replicaExpiration: 3600)
+				@residency(slots: 2, slotFrom: "${slot}") {
+				id: ID @primaryKey tag: String @indexed body: String extra: String
+			}`);
+			const Rows = databases.writer_replicas[name];
+			await Rows.put('row', { id: 'row', tag: 'before', body: 'complete' });
+			await Rows.invalidate('row');
+			const before = Rows.primaryStore.getEntry('row');
+			assert.ok(before.metadataFlags & INVALIDATED, 'the patch starts from an actual stub');
+			assert.equal(before.value.body, undefined);
+			await Rows.patch('row', { tag: 'after', extra: 'partial' });
+			const after = Rows.primaryStore.getEntry('row');
+			assert.equal(after.value.tag, 'after', 'the patch committed its indexed field');
+			assert.ok(after.metadataFlags & INVALIDATED, 'a partial body cannot become a complete row');
+			assert.ok(!(after.metadataFlags & REPLICA), 'a partial body cannot become a complete replica');
+		});
+	}
 	it('expires through the sweep without appending an audit entry', async function () {
 		if (isLMDB) return this.skip();
 		const Rows = await declare(0.08);
@@ -170,6 +190,30 @@ describe('Declarative writer replicas', function () {
 			}
 		} finally {
 			env.setProperty('storage_blobRetention', priorRetention);
+		}
+	});
+	it('does not rescan growing audit history while a patch retains every blob', async function () {
+		if (isLMDB) return this.skip();
+		const { createBlob } = require('#src/resources/blob');
+		const { randomBytes } = require('node:crypto');
+		const Rows = await declare();
+		const bytes = randomBytes(32768);
+		await Rows.put('blob', { id: 'blob', region: 1, body: await createBlob(bytes) });
+		const original = Rows.auditStore.getSync;
+		let reads = 0;
+		Rows.auditStore.getSync = function (...args) {
+			reads++;
+			return original.apply(this, args);
+		};
+		try {
+			for (let i = 0; i < 10; i++) await Rows.patch('blob', { marker: i });
+			const firstTen = reads;
+			reads = 0;
+			for (let i = 10; i < 20; i++) await Rows.patch('blob', { marker: i });
+			assert.ok(reads <= firstTen + 20, `audit reads grew with retained history: ${firstTen} then ${reads}`);
+			assert.deepEqual(Buffer.from(await Rows.primaryStore.getEntry('blob').value.body.arrayBuffer()), bytes);
+		} finally {
+			Rows.auditStore.getSync = original;
 		}
 	});
 	it('keeps earlier audit blobs after patches and replica eviction or replacement', async function () {

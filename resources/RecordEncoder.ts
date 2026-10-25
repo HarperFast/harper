@@ -991,7 +991,7 @@ export function recordUpdater(
 	store,
 	tableId,
 	auditStore,
-	retainAuditBlobs?: (id: any, entry: any) => Set<string> | undefined
+	retainAuditBlobs?: (id: any, entry: any, retained?: Set<string>) => Set<string> | undefined
 ) {
 	return function (
 		id,
@@ -1105,13 +1105,15 @@ export function recordUpdater(
 				// carries a file-backed blob unlinks the blob ~deletionDelay ms later, leaving
 				// the new (otherwise valid) row pointing at a missing file. See HarperFast/harper#641
 				// (deployment tracking) for the production repro.
-				let retainedFileIds = retainAuditBlobs?.(id, existingEntry);
+				let retainedFileIds: Set<string> | undefined;
 				if (record) {
 					findBlobsInObject(record, (blob) => {
 						const fileId = getFileId(blob);
 						if (fileId) (retainedFileIds ??= new Set()).add(fileId);
 					});
 				}
+				for (const fileId of retainAuditBlobs?.(id, existingEntry, retainedFileIds) ?? [])
+					(retainedFileIds ??= new Set()).add(fileId);
 				deleteBlobsInObject(existingEntry.value, retainedFileIds);
 			}
 			let result: Promise<void>;

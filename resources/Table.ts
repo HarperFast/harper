@@ -1050,6 +1050,7 @@ interface TableResourceClass {
 	dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean>;
 	/**
 	 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`; resolves true when stored.
+	 * Optional-cache callers must handle synchronous admission errors as well as rejected commits.
 	 */
 	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean>;
 	/**
@@ -4464,7 +4465,7 @@ export function makeTable(options): TableResourceClass {
 		/**
 		 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`. Placement is
 		 * untouched: the row keeps the stub's residency and canonical identity, gets no audit entry and never
-		 * replicates. Resolves true when the replica was stored.
+		 * replicates. Resolves true when the replica was stored; admission can throw before a commit is submitted.
 		 */
 		static _storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean> {
 			if (
@@ -6010,7 +6011,8 @@ export function makeTable(options): TableResourceClass {
 						!(
 							residencyPolicy &&
 							writtenHere &&
-							(priorStagedOp?.completeResidencyRecord || existingRecord === loadedEntry?.value)
+							(priorStagedOp?.completeResidencyRecord ||
+								(existingRecord === loadedEntry?.value && !(loadedEntry?.metadataFlags & INVALIDATED)))
 						);
 					if (residencyPolicy?.byAttribute && !patchesStub) write.completeResidencyRecord = recordToStore;
 					if (residencyPolicy) {
@@ -11676,8 +11678,17 @@ export function makeTable(options): TableResourceClass {
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
-	function retainedAuditBlobFiles(id: Id, entry: Entry): Set<string> | undefined {
+	function retainedAuditBlobFiles(id: Id, entry: Entry, alreadyRetained?: Set<string>): Set<string> | undefined {
 		if (!residencyPolicy || !audit || !(entry?.metadataFlags & REPLICA)) return;
+		let releasingFile = false;
+		for (const file of collectRetainedFileIds(entry.value) ?? []) {
+			if (!alreadyRetained?.has(file)) {
+				releasingFile = true;
+				break;
+			}
+		}
+		// Scalar PATCHes retain their files directly; walking their growing audit chain would be quadratic.
+		if (!releasingFile) return;
 		// A refetch creates different local files. Follow partial audit entries back to their full
 		// snapshot so a scalar PATCH cannot hide a blob still needed to deliver an earlier write.
 		const retained = new Set<string>();
@@ -11709,7 +11720,7 @@ export function makeTable(options): TableResourceClass {
 		// what the key holds now, not what this write stored: a later write may have re-referenced a file
 		const live = primaryStore.getEntry(replaced.key);
 		const retained = collectRetainedFileIds(live?.value) ?? new Set<string>();
-		for (const file of retainedAuditBlobFiles(replaced.key, replaced) ?? []) retained.add(file);
+		for (const file of retainedAuditBlobFiles(replaced.key, replaced, retained) ?? []) retained.add(file);
 		deleteBlobsInObject(replaced.value, retained);
 	}
 	function replicaSweep(): Int32Array {
