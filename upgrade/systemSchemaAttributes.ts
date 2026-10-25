@@ -1,5 +1,5 @@
 import { databases } from '../resources/databases.ts';
-import systemSchema from '../json/systemSchema.json';
+import { systemSchema } from '../utility/systemSchema.js';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 
 interface SchemaAttribute {
