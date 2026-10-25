@@ -48,7 +48,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	get requestedConfirmationCount(): number {
 		if (this.replicatedConfirmation) return this.replicatedConfirmation;
 		const root = this.root;
-		// The wrapper's unclaimed root belongs to its first store; later databases keep existing confirmation semantics.
+		// A root without a database passes its request to its first child; later database children use their own count.
 		return root && root.next === this && !root.db ? root.replicatedConfirmation || 0 : 0;
 	}
 
@@ -311,8 +311,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// will fail and retry due to contention. This is used to determine when to give up on optimistic writes and
 			// use a real (async) transaction to get exclusive access to the data
 			if (db?.retryRisk) db.retryRisk *= 0.99; // gradually decay the retry risk
-			const requiresAbortableCommit =
-				this.requestedConfirmationCount || this.writes.some((write) => write.requiresExclusiveCommit);
+			const requiresAbortableCommit = this.requestedConfirmationCount || this.hasExclusiveWrites;
 			if (!requiresAbortableCommit && this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
 				this.markNativeCommitSubmitted();
 				nextCondition();

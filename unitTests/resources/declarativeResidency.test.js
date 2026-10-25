@@ -1255,7 +1255,16 @@ describe('Declarative residency', function () {
 		}
 	);
 
-	for (const mode of ['write', 'write-unflushed-map', 'write-scan-error', 'write-system-first', 'write-bad-config'])
+	for (const mode of [
+		'write',
+		'write-unflushed-map',
+		'write-scan-error',
+		'write-system-first',
+		'write-bad-config',
+		'write-rescan-config',
+		'write-rescan-guard',
+		'write-initial-guard',
+	])
 		(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
 			`replays attribute slots before peer discovery after an unclean exit (${mode})`,
 			async function () {
@@ -1300,7 +1309,9 @@ describe('Declarative residency', function () {
 							? 'replay-scan-error'
 							: mode === 'write-system-first'
 								? 'replay-system-first'
-								: 'replay'
+								: mode.startsWith('write-rescan-') || mode === 'write-initial-guard'
+									? mode.replace('write-', 'replay-')
+									: 'replay'
 					);
 					assert.equal(replay.code, 0, replay.stderr);
 					const result = JSON.parse(readFileSync(marker, 'utf8'));

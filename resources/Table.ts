@@ -1579,7 +1579,8 @@ export function makeTable(options): TableResourceClass {
 		options;
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
-	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, isLocallyAuditedReplica);
+	const isResidencyMapTable = databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE;
+	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, retainedAuditBlobFiles);
 	// Created on first cluster-scoped lock() or first arriving control entry, and only while a
 	// transport is registered for this database.
 	let lockCoordinator: LockCoordinator | undefined;
@@ -4255,8 +4256,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
-				requiresExclusiveCommit:
-					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				invalidated: true,
@@ -4372,8 +4372,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
-				requiresExclusiveCommit:
-					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				invalidated: true,
@@ -5226,8 +5225,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
-				requiresExclusiveCommit:
-					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry,
@@ -6346,8 +6344,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
-				requiresExclusiveCommit:
-					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry,
@@ -8490,8 +8487,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
-				requiresExclusiveCommit:
-					Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry: this.#entry,
@@ -8570,8 +8566,7 @@ export function makeTable(options): TableResourceClass {
 				tableTxn.addWrite({
 					key: null,
 					store: primaryStore,
-					requiresExclusiveCommit:
-						Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
 						return updateRecord(
@@ -8617,8 +8612,7 @@ export function makeTable(options): TableResourceClass {
 					tableTxn.addWrite({
 						key: null,
 						store: primaryStore,
-						requiresExclusiveCommit:
-							Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+						requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 						skipReplicationConfirmation: true,
 						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) => {
 							position = txnTime;
@@ -10833,8 +10827,7 @@ export function makeTable(options): TableResourceClass {
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
-					requiresExclusiveCommit:
-						Boolean(residencyPolicy) || (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE),
+					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					entry: undefined,
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
@@ -11390,7 +11383,7 @@ export function makeTable(options): TableResourceClass {
 		);
 	}
 	function captureResidencyOwners(write: any, slot: number, replay = false, localWrite = false): readonly string[] {
-		// Crash replay restores local rows before Pro has discovered peer membership.
+		// Crash replay restores local rows before peer discovery.
 		if (replay) return residencyIsLocal(databaseName, slot, residencyPolicy.slots) ? [server.hostname] : [];
 		const owners = residencyOwners(databaseName, slot, residencyPolicy.slots);
 		if (localWrite) assertResidencyWriteRoute(databaseName, owners);
@@ -11683,11 +11676,12 @@ export function makeTable(options): TableResourceClass {
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
-	function isLocallyAuditedReplica(entry: Entry): boolean {
-		return (
-			Boolean(residencyPolicy && audit && entry?.metadataFlags & REPLICA) &&
-			(entry.nodeId ?? 0) === (getThisNodeId(auditStore) ?? 0)
-		);
+	function retainedAuditBlobFiles(id: Id, entry: Entry): Set<string> | undefined {
+		if (!residencyPolicy || !audit || !(entry?.metadataFlags & REPLICA)) return;
+		// A refetch preserves the canonical writer/version but creates different local blob files.
+		const head = resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs);
+		const record = ('entry' in head && head.entry) || auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
+		return collectRetainedFileIds(record?.getValue(primaryStore));
 	}
 	function noteReplicaStored(): void {
 		const state = replicaSweep();
@@ -11696,11 +11690,12 @@ export function makeTable(options): TableResourceClass {
 			void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
 	}
 	function releaseReplacedBlobs(replaced: Entry) {
-		if (isLocallyAuditedReplica(replaced)) return;
 		if (!(replaced.metadataFlags & HAS_BLOBS)) return;
 		// what the key holds now, not what this write stored: a later write may have re-referenced a file
 		const live = primaryStore.getEntry(replaced.key);
-		deleteBlobsInObject(replaced.value, collectRetainedFileIds(live?.value));
+		const retained = collectRetainedFileIds(live?.value) ?? new Set<string>();
+		for (const file of retainedAuditBlobFiles(replaced.key, replaced) ?? []) retained.add(file);
+		deleteBlobsInObject(replaced.value, retained);
 	}
 	function replicaSweep(): Int32Array {
 		return (replicaSweepState ??= new Int32Array(

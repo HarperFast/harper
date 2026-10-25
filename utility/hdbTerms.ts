@@ -225,6 +225,7 @@ export const SYSTEM_TABLE_NAMES = {
 	USER_TABLE_NAME: 'hdb_user',
 	INFO_TABLE_NAME: 'hdb_info',
 	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
+	RESIDENCY_SLOTS_TABLE_NAME: 'hdb_residency_slots',
 	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
 	SECRET_TABLE_NAME: 'hdb_secret',
 	OIDC_TRUST_TABLE_NAME: 'hdb_oidc_trust',

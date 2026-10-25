@@ -1,4 +1,5 @@
 import { databases, getDatabaseCatalog, getDatabases, table } from './databases.ts';
+import { SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
 import { server } from '../server/Server.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -16,7 +17,7 @@ import {
 	type ResidencyPolicy,
 } from './residencyPolicy.ts';
 
-export const RESIDENCY_MAP_TABLE = 'hdb_residency_slots';
+export const RESIDENCY_MAP_TABLE = SYSTEM_TABLE_NAMES.RESIDENCY_SLOTS_TABLE_NAME;
 const caches = new WeakMap<
 	object,
 	Map<
@@ -79,7 +80,7 @@ export function getResidencyConfiguration() {
 	return configuration;
 }
 
-function assertResidencyConfiguration(database: string, hasMap: boolean): void {
+function assertResidencyConfiguration(database: string, hasMap: boolean, forRecovery = false): void {
 	let current;
 	try {
 		current = getResidencyConfiguration();
@@ -89,7 +90,7 @@ function assertResidencyConfiguration(database: string, hasMap: boolean): void {
 	const { shards, shard } = current;
 	if (!shards && !hasMap) residencyFailure(database, 'replication.shards is required before a map is installed');
 	if (shards && !shards.includes(shard)) residencyFailure(database, 'replication.shard is not in replication.shards');
-	placementGuard?.(database);
+	if (!forRecovery) placementGuard?.(database);
 }
 
 export function getResidencyMapTable(): any {
@@ -227,10 +228,10 @@ export async function prepareResidencyDeclaration(
 	await installResidencyMap(defaultResidencyMap(database, policy.slots, env.get('replication_shards')));
 }
 
-export function getResidencyMap(database: string, requiredSlots = 1) {
+export function getResidencyMap(database: string, requiredSlots = 1, forRecovery = false) {
 	const Maps = getResidencyMapTable();
 	const row = Maps?.primaryStore.getSync(database);
-	assertResidencyConfiguration(database, !!row);
+	assertResidencyConfiguration(database, !!row, forRecovery);
 	if (!row) residencyFailure(database, 'no residency map is installed');
 	if (row.slots < requiredSlots) residencyFailure(database, 'installed map does not cover the declared slots');
 	let cache = caches.get(Maps.primaryStore);
@@ -272,7 +273,7 @@ export function residencyOwners(database: string, slot: number, slots: number): 
 export function residencyIsLocal(database: string, slot: number, slots: number): boolean {
 	if (!Number.isInteger(slot) || slot < 0 || slot >= slots)
 		residencyFailure(database, 'missing or invalid record residency slot');
-	return getResidencyMap(database, slots).shards[slot] === getResidencyConfiguration().shard;
+	return getResidencyMap(database, slots, true).shards[slot] === getResidencyConfiguration().shard;
 }
 
 export function requireConnectedResidencyOwner(database: string, owners: readonly string[]): void {

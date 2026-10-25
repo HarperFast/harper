@@ -987,7 +987,12 @@ export function clearNextEncoding() {
 	additionalAuditRefsNextEncoding = undefined;
 	receivedIdentityRefsNextEncoding = undefined;
 }
-export function recordUpdater(store, tableId, auditStore, retainAuditBlobs?: (entry: any) => boolean) {
+export function recordUpdater(
+	store,
+	tableId,
+	auditStore,
+	retainAuditBlobs?: (id: any, entry: any) => Set<string> | undefined
+) {
 	return function (
 		id,
 		record,
@@ -1094,19 +1099,13 @@ export function recordUpdater(store, tableId, auditStore, retainAuditBlobs?: (en
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
 			// we use resolveRecord outside of transaction, so must explicitly make it conditional
 			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
-			if (
-				existingEntry &&
-				existingEntry.value &&
-				type !== 'message' &&
-				existingEntry.metadataFlags & HAS_BLOBS &&
-				!retainAuditBlobs?.(existingEntry)
-			) {
+			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
 				// Delete the prior row's blob files — except any the new record still references.
 				// Without the retention check, updating an unrelated attribute on a row that
 				// carries a file-backed blob unlinks the blob ~deletionDelay ms later, leaving
 				// the new (otherwise valid) row pointing at a missing file. See HarperFast/harper#641
 				// (deployment tracking) for the production repro.
-				let retainedFileIds: Set<string> | undefined;
+				let retainedFileIds = retainAuditBlobs?.(id, existingEntry);
 				if (record) {
 					findBlobsInObject(record, (blob) => {
 						const fileId = getFileId(blob);

@@ -120,6 +120,7 @@ if (require.main === module) {
 				if (mode === 'replay-bad-config') {
 					env.setProperty('replication_shards', [0, 1]);
 					await loadGQLSchema(`type CrashSlots @table(database: "${database}") @residency(slots: 2, byAttribute: true, slotFrom: "region") { id: ID @primaryKey region: Int @indexed body: String }
+						type NewBlocked @table(database: "${database}") { id: ID @primaryKey }
 						type HealthyReload @table(database: "healthy") { id: ID @primaryKey }`);
 					assert.throws(() => Blocked.get('local'), /replication.shard/);
 					await getDatabases().healthy.HealthyReload.put('ok', { id: 'ok' });
@@ -143,7 +144,38 @@ if (require.main === module) {
 				writeFileSync(marker, JSON.stringify({ refused: true }));
 				process.exit(0);
 			}
+			if (mode === 'replay-initial-guard')
+				require('#src/resources/residencyMaps').setResidencyPlacementGuard(() => {
+					throw new Error('peer discovery has not settled');
+				});
 			const Table = getDatabases()[database].CrashSlots;
+			if (mode === 'replay-initial-guard')
+				require('#src/resources/residencyMaps').setResidencyPlacementGuard(undefined);
+			if (mode.startsWith('replay-rescan-')) {
+				const assert = require('node:assert');
+				const { resetDatabases, databaseResidencyBlockReason } = require('#src/resources/databases');
+				const { setResidencyPlacementGuard } = require('#src/resources/residencyMaps');
+				server.shards = new Map([
+					[0, [{ name: server.hostname }]],
+					[1, [{ name: 'other' }]],
+				]);
+				try {
+					if (mode === 'replay-rescan-config') env.setProperty('replication_shards', [1]);
+					else
+						setResidencyPlacementGuard(() => {
+							throw new Error('temporary topology disagreement');
+						});
+					resetDatabases();
+					assert.equal((await getDatabases().healthy.Rows.get('good')).body, 'healthy tail');
+				} finally {
+					env.setProperty('replication_shards', [0, 1]);
+					setResidencyPlacementGuard(undefined);
+				}
+				assert.equal(databaseResidencyBlockReason(database), undefined, 'runtime refusal is not startup quarantine');
+				assert.equal((await Table.get('local')).body, 'complete');
+				await Table.put('after-rescan', { id: 'after-rescan', region: 0, body: 'recovered' });
+				assert.equal((await Table.get('after-rescan')).body, 'recovered');
+			}
 			const rows = Object.fromEntries(
 				['local', 'remote', 'deleted'].map((id) => {
 					const entry = Table.primaryStore.getEntry(id);

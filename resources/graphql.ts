@@ -547,16 +547,15 @@ async function processGraphQLSchema(
 			throw new ClientError('Cannot use declarative residency in application database branches', 400);
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
+		const quarantined = databaseResidencyBlockReason(typeDef.database || 'data');
+		if (quarantined) {
+			typeDef.tableClass = loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+			// Defer new tables in this database until a repaired restart; healthy declarations still load.
+			if (!typeDef.tableClass) continue;
+		}
 		const residencyDeadline = Date.now() + 5000;
-		for (;;) {
+		for (; !quarantined;) {
 			try {
-				const blocked =
-					databaseResidencyBlockReason(typeDef.database || 'data') &&
-					loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
-				if (blocked) {
-					typeDef.tableClass = blocked;
-					break;
-				}
 				if (typeDef.residency)
 					await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, typeDef.residency);
 				typeDef.tableClass = declareTable(typeDef);

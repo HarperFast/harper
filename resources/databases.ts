@@ -620,6 +620,8 @@ function quarantineResidencyDatabase(databaseName: string, dbTables: Tables, rea
 		);
 }
 
+const residencyRootsToValidate = new Set<string>();
+
 function validateResidencyRecovery(): void {
 	for (const [databaseName, dbTables] of Object.entries(databases)) {
 		const declarations = Object.values(dbTables).filter((Table) => Table.residency);
@@ -630,9 +632,9 @@ function validateResidencyRecovery(): void {
 		let reason =
 			databaseResidencyBlockReason(databaseName) ??
 			(size > 0 ? Buffer.from(state.subarray(4, 4 + size)).toString() : undefined);
-		if (!reason) {
+		if (!reason && residencyRootsToValidate.has(databaseName)) {
 			try {
-				for (const Table of declarations) getResidencyMap(databaseName, Table.residency.slots);
+				for (const Table of declarations) getResidencyMap(databaseName, Table.residency.slots, true);
 			} catch (error) {
 				if (!(error instanceof ResidencyConfigurationError) || databaseName === 'system') throw error;
 				reason = error.message;
@@ -646,6 +648,7 @@ function validateResidencyRecovery(): void {
 		}
 		if (reason) quarantineResidencyDatabase(databaseName, dbTables, reason);
 	}
+	residencyRootsToValidate.clear();
 }
 
 function databaseRootUnavailable(rootPath: string): boolean {
@@ -1662,6 +1665,7 @@ export function readMetaDb(
 		} else {
 			rootStore = openLmdb(envInit) as any;
 			lmdbDatabaseEnvs.set(path, rootStore);
+			residencyRootsToValidate.add(databaseName);
 		}
 
 		rootStore.dbisDb?.resetReadTxn();
@@ -1694,6 +1698,7 @@ function readRocksMetaDb(
 		} else {
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
+			if (!destination) residencyRootsToValidate.add(databaseName);
 			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
 			// A branch (`destination`) recovers its transaction-log tail in `openOrCreate`
 			// (branchDatabase.ts), not here: the branch claim elects exactly one replaying thread —
@@ -2850,7 +2855,7 @@ function openDatabaseRoot(
 	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
 	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
 	if (!allowPreparedDrop && configuredDropPendingWithin(databasePath, databaseConfig))
-		throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
+		throw new DatabaseClosingError(databaseName, true);
 	// A configured path is a scan root, not an exact database path, so an unresolved alias can
 	// target any child store. Keep first-open fenced until the destructive operation completes.
 	if (!allowPreparedDrop && databaseConfig[databaseName]?.path) {
@@ -2862,8 +2867,7 @@ function openDatabaseRoot(
 			error.statusCode = 409;
 			throw error;
 		}
-		if (databaseDropPreparedWithin(databasePath))
-			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
+		if (databaseDropPreparedWithin(databasePath)) throw new DatabaseClosingError(databaseName, true);
 		if (scanBlockedDatabaseDrops(databasePath).length > 0) {
 			const error: any = new Error(
 				`Database '${databaseName}' shares a configured path with an incomplete drop; retry drop_database to recover it`
@@ -3145,7 +3149,7 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 				(entry) => paths.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			)
 		)
-			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
+			throw new DatabaseClosingError(databaseName, true);
 		for (const rootPath of paths)
 			lockDatabaseForDrop(rootPath, databaseName, dropLocks, inferDropBlobDatabaseName(databaseName, rootPath));
 		destructiveWorkStarted = true;
@@ -3205,8 +3209,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				(entry) =>
 					detachedRootPathSet.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
 			);
-		if (detachedRootHasForeignHandle())
-			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
+		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName, true);
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
 		destructiveWorkStarted = true;
 		for (const rootStore of rootStores) {
@@ -3254,8 +3257,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				ownedRocksStores.delete(rootStore.path);
 			}
 		}
-		if (detachedRootHasForeignHandle())
-			throw new DatabaseClosingError(databaseName, true, databaseResidencyBlockReason(databaseName));
+		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName, true);
 		for (const rootPath of detachedRootPaths) await rm(rootPath, { recursive: true, force: true });
 
 		await deleteBlobPaths(dropLocks.flatMap((lock) => lock.blobPaths));
@@ -3604,11 +3606,13 @@ function databaseUsesRootStore(databaseName: string, rootStore: any): boolean {
 
 function databaseUsesPreparedRoot(databaseName: string): boolean {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-	if (definedRoot && databaseRootUnavailable(definedRoot.path)) return true;
+	if (definedRoot && (databaseDropPrepared(definedRoot.path) || residencyBlockedRoots.has(resolve(definedRoot.path))))
+		return true;
 	const dbTables = databases[databaseName];
 	for (const tableName in dbTables) {
 		const rootStore = (dbTables[tableName] as any)?.primaryStore?.rootStore;
-		if (rootStore && databaseRootUnavailable(rootStore.path)) return true;
+		if (rootStore && (databaseDropPrepared(rootStore.path) || residencyBlockedRoots.has(resolve(rootStore.path))))
+			return true;
 	}
 	return false;
 }

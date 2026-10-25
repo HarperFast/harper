@@ -1,5 +1,5 @@
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { loadGQLSchema } = require('#src/resources/graphql');
@@ -163,6 +163,54 @@ describe('Declarative writer replicas', function () {
 				await new Promise((resolve) => setTimeout(resolve, 100));
 				await cleanupOrphans({ [Rows.tableName]: Rows }, 'writer_replicas');
 				assert.ok(existsSync(file), 'delivery still needs the original audit body');
+				const full = Array.from(Rows.auditStore.getRange({ start: 1 })).find(
+					(entry) => entry.tableId === Rows.tableId && entry.type === 'put'
+				);
+				assert.deepEqual(Buffer.from(await full.getValue(Rows.primaryStore).body.arrayBuffer()), bytes);
+			}
+		} finally {
+			env.setProperty('storage_blobRetention', priorRetention);
+		}
+	});
+	it('reclaims fetched replica blobs without losing the original audit blob', async function () {
+		if (isLMDB) return this.skip();
+		const { createBlob, getFilePathForBlob, cleanupOrphans } = require('#src/resources/blob');
+		const { randomBytes } = require('node:crypto');
+		const { existsSync } = require('node:fs');
+		const priorRetention = env.get('storage_blobRetention');
+		env.setProperty('storage_blobRetention', 0);
+		try {
+			for (const replacement of [false, true]) {
+				const Rows = await declare();
+				const bytes = randomBytes(32768);
+				const original = await createBlob(bytes);
+				await Rows.put('blob', { id: 'blob', region: 1, body: original });
+				const originalFile = getFilePathForBlob(original);
+				const written = Rows.primaryStore.getEntry('blob');
+				await Rows.evict('blob', written.value, written.version);
+				const stub = Rows.primaryStore.getEntry('blob');
+				assert.ok(stub.metadataFlags & INVALIDATED);
+				const fetched = await createBlob(Buffer.from(bytes));
+				assert.equal(
+					await Rows._storeReplica(stub, {
+						key: 'blob',
+						value: { id: 'blob', region: 1, body: fetched },
+						version: written.version,
+						originNode: server.hostname,
+					}),
+					true
+				);
+				const fetchedFile = getFilePathForBlob(fetched);
+				assert.ok(originalFile && fetchedFile);
+				assert.notEqual(fetchedFile, originalFile, 'a source fetch creates a separate local file');
+				assert.ok(Rows.primaryStore.getEntry('blob').metadataFlags & REPLICA);
+				await cleanupOrphans({ [Rows.tableName]: Rows }, 'writer_replicas');
+				assert.ok(existsSync(originalFile), 'a fetched replica must not hide the audit blob from cleanup');
+				assert.ok(existsSync(fetchedFile), 'the live replica still needs its fetched file');
+				if (replacement) await invalidate(Rows, 'blob', written.version + 100);
+				else await Rows.evict('blob', written.value, written.version);
+				await waitFor(() => !existsSync(fetchedFile), { timeout: 2000 });
+				assert.ok(existsSync(originalFile), 'delayed delivery still needs the original audit file');
 				const full = Array.from(Rows.auditStore.getRange({ start: 1 })).find(
 					(entry) => entry.tableId === Rows.tableId && entry.type === 'put'
 				);

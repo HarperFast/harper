@@ -501,6 +501,8 @@ let confirmationFeasibility:
 /**
  * Register the replication layer's confirmation waiter, and optionally a check that runs before native
  * submission and throws when the requested confirmation can never be met, so the write never lands.
+ * The registered waiter owns the explicit/automatic timeout configuration; core wraps post-commit
+ * failures as uncertain outcomes and supplies the automatic-confirmation flag as its fifth argument.
  */
 export function replicationConfirmation(callback, feasibility?: typeof confirmationFeasibility) {
 	confirmReplication = callback;
@@ -892,6 +894,8 @@ export class DatabaseTransaction implements Transaction {
 	}
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	ownedWrites?: WeakSet<TransactionWrite>;
+	// Conservative until the batch clears: detaching a write may leave this set.
+	declare hasExclusiveWrites?: boolean;
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
@@ -1350,6 +1354,7 @@ export class DatabaseTransaction implements Transaction {
 	 * (see priorStagedWrite). Called by both engines' addWrite.
 	 */
 	linkWrite(operation: TransactionWrite): void {
+		if (operation.requiresExclusiveCommit) this.hasExclusiveWrites = true;
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
@@ -1834,6 +1839,7 @@ export class DatabaseTransaction implements Transaction {
 			if (write) this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
+		if (this.hasExclusiveWrites) this.hasExclusiveWrites = false;
 		if (this.requiresOwnerConfirmation) this.requiresOwnerConfirmation = false;
 		this.validated = 0;
 		this.writesByKey = undefined;
@@ -1997,7 +2003,8 @@ export class DatabaseTransaction implements Transaction {
 		this.checkedResidentPeerLists = undefined;
 		this.checkedFor = transaction;
 		try {
-			for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
+			if (this.hasExclusiveWrites)
+				for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
 			if (!this.confirmationCount || !this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation))
 				return;
 
@@ -3062,7 +3069,8 @@ export class DatabaseTransaction implements Transaction {
 								harperLogger.warn?.('onCommit handler failed after commit', error);
 							}
 							try {
-								for (const notify of (transaction as any).replicaCommitNotifications ?? []) notify();
+								const notifications = (transaction as any).replicaCommitNotifications;
+								if (notifications) for (const notify of notifications) notify();
 							} catch (error) {
 								harperLogger.warn?.('Replica sweep notification failed after commit', error);
 							}
