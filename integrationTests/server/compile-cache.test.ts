@@ -1,9 +1,3 @@
-/**
- * A Harper server enables Node's compile cache in <rootPath>/cache/compile (on an existing install, before its main
- * thread loads bin/run.js), every worker it starts (restart replacements included) uses the same directory, a restart reuses the
- * entries instead of rewriting them, pruning removes only other Node versions, and NODE_DISABLE_COMPILE_CACHE turns
- * all of it off.
- */
 import { after, before, suite, test } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import {
@@ -34,8 +28,8 @@ const STALE = 'v1.2.3-x64-0123abcd-1000';
 
 // Bun has no module.enableCompileCache, so Harper leaves the cache off there.
 suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx: ContextWithHarper) => {
-	const scratch = mkdtempSync(join(tmpdir(), 'harper-compile-cache-'));
-	const probeOut = join(scratch, 'main-thread.json');
+	let scratch: string;
+	let probeOut: string;
 	const harperEnv = (extra: Record<string, string | undefined> = {}) => ({
 		NODE_COMPILE_CACHE: undefined,
 		NODE_DISABLE_COMPILE_CACHE: undefined,
@@ -68,6 +62,8 @@ suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx
 	}
 
 	before(async () => {
+		scratch = mkdtempSync(join(tmpdir(), 'harper-compile-cache-'));
+		probeOut = join(scratch, 'main-thread.json');
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, { env: harperEnv() });
 		cacheBase = join(ctx.harper.dataRootDir, 'cache', 'compile');
 	});
@@ -111,6 +107,8 @@ suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx
 		// rootPath is known before run.js loads only once the install exists
 		ok(mainThreadCacheDirectory()?.startsWith(join(cacheBase, `${process.version}-`)), mainThreadCacheDirectory());
 		ok((await probe()).cacheDirectory);
+		for (const deadline = Date.now() + 10_000; existsSync(join(cacheBase, STALE)) && Date.now() < deadline;)
+			await sleep(50);
 		await killHarper(ctx);
 
 		// An entry V8 rejected would have been recompiled and rewritten when the threads exited.

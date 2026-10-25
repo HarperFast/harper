@@ -40,9 +40,9 @@ async function workerReport(options) {
 async function main() {
 	if (scenario !== 'import-only') enableCompileCache(rootPath);
 	if (scenario === 'repeat') enableCompileCache(rootPath);
+	if (scenario === 'moved-root') enableCompileCache(join(rootPath, 'moved'));
 	const staleCache = process.env.COMPILE_CACHE_TEST_STALE;
 	if (staleCache) {
-		// pruning runs in the background; give it a bounded window
 		for (let waited = 0; existsSync(staleCache) && waited < 10000; waited += 50) await sleep(50);
 	}
 	const report = {

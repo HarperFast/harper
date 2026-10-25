@@ -19,9 +19,12 @@ let workerCacheDirectory: string | undefined;
 export function enableCompileCache(rootPath: string | undefined): void {
 	if (!rootPath || process.env.NODE_COMPILE_CACHE || typeof nodeModule.enableCompileCache !== 'function') return;
 	const directory = join(rootPath, 'cache', 'compile');
+	if (directory === workerCacheDirectory) return;
 	const result = nodeModule.enableCompileCache(directory);
-	const { ENABLED, FAILED } = nodeModule.constants.compileCacheStatus;
-	if (result?.status === ENABLED) {
+	const { ENABLED, ALREADY_ENABLED, FAILED } = nodeModule.constants.compileCacheStatus;
+	// ALREADY_ENABLED after an earlier call: initialize() moved rootPath (a command-line or env override) after this
+	// thread latched the old one, which Node cannot change; the workers still follow the final root
+	if (result?.status === ENABLED || (result?.status === ALREADY_ENABLED && workerCacheDirectory)) {
 		workerCacheDirectory = directory;
 		void pruneStaleCompileCaches(directory);
 	} else if (result?.status === FAILED) {
@@ -29,18 +32,20 @@ export function enableCompileCache(rootPath: string | undefined): void {
 	}
 }
 
-/** The `env` for a new worker: the caller's (or a copy of `process.env`) with Harper's cache directory as default. */
 export function compileCacheWorkerEnv(
 	callerEnv?: NodeJS.Dict<string> | symbol
 ): NodeJS.Dict<string> | symbol | undefined {
 	// a symbol is SHARE_ENV: the worker shares this thread's env, where Harper leaves the cache directory unset
 	if (!workerCacheDirectory || typeof callerEnv === 'symbol') return callerEnv;
-	return { NODE_COMPILE_CACHE: workerCacheDirectory, ...(callerEnv ?? process.env) };
+	const env = { ...(callerEnv ?? process.env) };
+	// Node treats an empty NODE_COMPILE_CACHE as unset, and so does a caller's explicit undefined
+	env.NODE_COMPILE_CACHE ||= workerCacheDirectory;
+	return env;
 }
 
 /**
- * Removes the subdirectories Node created for another Node version or architecture. Every subdirectory for this
- * version and architecture is kept: `threads.v8Flags` gives workers a different V8 tag than the main thread.
+ * Every subdirectory for this Node version and architecture is kept: `threads.v8Flags` gives workers a different V8
+ * tag than the main thread.
  */
 export async function pruneStaleCompileCaches(directory: string): Promise<void> {
 	const current = `${process.version}-${process.arch}`;

@@ -109,13 +109,35 @@ describe('compile cache', function () {
 			assert.strictEqual(report.staleCacheRemains, false);
 			assert.strictEqual(report.worker.envDirectory, cache);
 			assert.ok(report.worker.cacheDirectory.startsWith(path.join(cache, `${CURRENT}-`)));
-			// a job worker passes its own env: it keeps its own variables and gains the cache directory
 			assert.strictEqual(report.job.jobMark, 'job-1');
 			assert.strictEqual(report.job.envDirectory, cache);
 			assert.ok(report.job.cacheDirectory.startsWith(path.join(cache, `${CURRENT}-`)));
-			// a caller's own NODE_COMPILE_CACHE wins
 			assert.strictEqual(report.callerJob.envDirectory, callerDirectory);
 			assert.ok(report.callerJob.cacheDirectory.startsWith(callerDirectory));
+		});
+
+		it('treats an empty NODE_COMPILE_CACHE as unset, in the main thread and in every worker', async () => {
+			const rootPath = path.join(scratch, 'root');
+			const cache = path.join(rootPath, 'cache', 'compile');
+			const report = await runHarness(rootPath, 'default', { NODE_COMPILE_CACHE: '' });
+			assert.ok(report.mainDirectory.startsWith(cache));
+			assert.strictEqual(report.worker.envDirectory, cache);
+			assert.strictEqual(report.job.envDirectory, cache);
+			assert.ok(report.job.cacheDirectory.startsWith(cache));
+		});
+
+		it('moves the workers to a rootPath that changed after the first call, and prunes there', async () => {
+			const rootPath = path.join(scratch, 'root');
+			const moved = path.join(rootPath, 'moved', 'cache', 'compile');
+			const stale = path.join(moved, 'v1.2.3-x64-0123abcd-1000');
+			mkdirSync(stale, { recursive: true });
+			const report = await runHarness(rootPath, 'moved-root', { COMPILE_CACHE_TEST_STALE: stale });
+			// Node cannot move the main thread's cache once enabled
+			assert.ok(report.mainDirectory.startsWith(path.join(rootPath, 'cache', 'compile')));
+			assert.strictEqual(report.staleCacheRemains, false);
+			assert.strictEqual(report.worker.envDirectory, moved);
+			assert.ok(report.worker.cacheDirectory.startsWith(moved));
+			assert.ok(report.job.cacheDirectory.startsWith(moved));
 		});
 
 		it('is a no-op when called again', async () => {

@@ -236,7 +236,8 @@ async function main(calledByInstall = false) {
 			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
-		// a no-op after bin/harper.ts's earlier call; covers a fresh install and entries that call main() directly
+		// after bin/harper.ts's earlier call: covers a fresh install, entries that call main() directly, and a rootPath
+		// that initialize() just moved
 		enableCompileCache(env.get(terms.CONFIG_PARAMS.ROOTPATH));
 
 		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
