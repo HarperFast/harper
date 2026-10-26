@@ -44,8 +44,7 @@ type CachedItem @table(expiration: 3600) @export {
 	cat: Cat @relationship(from: "catId") @enumerable
 }
 
-# A cache table whose timestamps and computed attribute are indexed. `name` is not indexed, so an
-# invalidation stub keeps no input for the computed resolver.
+# `name` is not indexed, so an invalidation stub keeps no input for the computed resolver.
 type StampedProduct @table(expiration: 3600) @export {
 	id: ID @primaryKey
 	name: String
