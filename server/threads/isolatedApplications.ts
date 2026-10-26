@@ -10,7 +10,8 @@
  * metadata names the application and its hosts for the fronting proxy to route by.
  */
 import { isMainThread, workerData } from 'node:worker_threads';
-import { getWorkerIndex } from './manageThreads.ts';
+import { failedClosedInMemory, getWorkerIndex, processIncarnation } from './manageThreads.ts';
+import { failClosedReleases, liveDeploymentId } from '../../components/releaseCertification.ts';
 import { getConfigObj, getConfigPath } from '../../config/configUtils.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -75,6 +76,82 @@ export function isolatedApplicationCapacityRefusal(
 	const running = new Set(runningApplications);
 	if (running.has(appName) || running.size < max) return undefined;
 	return `the instance already runs ${max} isolated application(s) (threads.maxIsolated)`;
+}
+
+/**
+ * The isolated applications that get a dedicated worker, and why each other present one does not. Ones already running
+ * keep their place; the rest are admitted in config order, the order boot admits them, so a restart keeps the same
+ * applications, up to `threads.maxIsolated`. One whose live release fails closed, or whose worker nothing could reach,
+ * is refused and holds no place. Undefined `failedClosed` means it could not be read: running ones keep running and no
+ * new one is admitted.
+ */
+export function admittedIsolatedApplications(
+	running: Iterable<string>,
+	failedClosed: Map<string, Error> | undefined,
+	names: string[] = presentIsolatedApplicationNames(),
+	max = maxIsolatedApplications()
+): { admitted: string[]; refused: Map<string, string> } {
+	const admitted: string[] = [];
+	const refused = new Map<string, string>();
+	const refusalOf = (name: string) => failedClosed?.get(name)?.message ?? isolatedApplicationRefusal(name);
+	for (const name of running) {
+		if (!names.includes(name)) continue;
+		const refusal = refusalOf(name);
+		if (refusal) refused.set(name, refusal);
+		else admitted.push(name);
+	}
+	for (const name of names) {
+		if (admitted.includes(name) || refused.has(name)) continue;
+		const refusal =
+			(failedClosed ? refusalOf(name) : 'which releases may load could not be read') ??
+			isolatedApplicationCapacityRefusal(name, admitted, max);
+		if (refusal) refused.set(name, refusal);
+		else admitted.push(name);
+	}
+	return { admitted, refused };
+}
+
+/**
+ * Why deploying `candidate` isolated would leave it without a dedicated worker. It is placed where the reconcile after
+ * the deploy finds it: at its own root-config entry, or where a new one enumerates. Its own refused release does not
+ * count, since the deploy replaces it. A reconcile scoped to it stops no other worker, so those still running count
+ * against `threads.maxIsolated` too, except failed-closed ones, whose refusal already withdrew or is withdrawing them.
+ */
+export function isolatedApplicationAdmissionRefusal(
+	candidate: string,
+	running: string[],
+	failedClosed: Map<string, Error>,
+	config: Record<string, any> | undefined = getConfigObj(),
+	present: string[] = presentIsolatedApplicationNames(config)
+): string | undefined {
+	const names = isolatedApplicationNames({ ...config, [candidate]: { ...config?.[candidate], isolated: true } }).filter(
+		(name) => name === candidate || present.includes(name)
+	);
+	const othersFailedClosed = new Map(failedClosed);
+	othersFailedClosed.delete(candidate);
+	return (
+		admittedIsolatedApplications(running, othersFailedClosed, names).refused.get(candidate) ??
+		isolatedApplicationCapacityRefusal(
+			candidate,
+			running.filter((name) => !othersFailedClosed.has(name))
+		)
+	);
+}
+
+/**
+ * Applications whose live release must not load, so a dedicated worker would load nothing. Read from the certification
+ * records, which any thread reads alike, plus the refusals main holds only in memory because their record could not be
+ * written (none on a worker); each of those holds only while the release it refused is still the live one.
+ */
+export async function failedClosedApplications(): Promise<Map<string, Error>> {
+	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	const failedClosed: Map<string, Error> = await failClosedReleases(componentsRoot, processIncarnation);
+	for (const [name, { deploymentId }] of failedClosedInMemory()) {
+		if (failedClosed.has(name)) continue;
+		if ((await liveDeploymentId(componentsRoot, name).catch(() => undefined)) !== deploymentId) continue;
+		failedClosed.set(name, new Error(`its live release ${deploymentId} was refused`));
+	}
+	return failedClosed;
 }
 
 /**

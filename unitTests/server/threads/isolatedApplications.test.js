@@ -117,6 +117,128 @@ describe('isolated applications (harper#642 tier 2)', () => {
 		});
 	});
 
+	describe('admission to the dedicated-worker budget', () => {
+		const env = () => require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const refused = (reason) => new Error(reason);
+		const isolated = (...names) => Object.fromEntries(names.map((name) => [name, { package: 'x', isolated: true }]));
+		/**
+		 * Runs `check` where every dedicated worker would be reachable (a secure port, UDS mirrors, a socket directory
+		 * short enough for any name) and `threads.maxIsolated` is `max`. Synchronous, so nothing else sees the settings.
+		 */
+		function reachable(check, max = 1) {
+			const settings = [
+				[CONFIG_PARAMS.HTTP_SECUREPORT, 9927],
+				[CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS, true],
+				[CONFIG_PARAMS.THREADS_MAXISOLATED, max],
+			];
+			const saved = settings.map(([key]) => [key, env().get(key)]);
+			const basePath = env().getHdbBasePath();
+			const mainWasWorker = threads().getWorkerIndex() === 0;
+			try {
+				for (const [key, value] of settings) env().setProperty(key, value);
+				env().setHdbBasePath(os.tmpdir());
+				threads().setMainIsWorker(false);
+				assert.strictEqual(iso().isolatedApplicationRefusal('probe'), undefined);
+				return check();
+			} finally {
+				for (const [key, value] of saved) env().setProperty(key, value);
+				env().setHdbBasePath(basePath);
+				threads().setMainIsWorker(mainWasWorker);
+			}
+		}
+		before(function () {
+			if (process.platform === 'win32') this.skip(); // no dedicated workers there
+		});
+
+		const admit = (...args) => reachable(() => iso().admittedIsolatedApplications(...args));
+		const refusal = (candidate, running, failedClosed, config, present, max) =>
+			reachable(
+				() => iso().isolatedApplicationAdmissionRefusal(candidate, running, failedClosed, config, present),
+				max
+			);
+
+		it('keeps running ones, then admits in config order up to the budget; a failed-closed one holds no place', () => {
+			const { admitted, refused: refusals } = admit(
+				['b'],
+				new Map([['a', refused('its live release was refused')]]),
+				['a', 'b', 'c', 'd'],
+				2
+			);
+			assert.deepStrictEqual(admitted, ['b', 'c']);
+			assert.deepStrictEqual([...refusals.keys()], ['a', 'd']);
+			assert.strictEqual(refusals.get('a'), 'its live release was refused');
+			assert.match(refusals.get('d'), /threads\.maxIsolated/);
+		});
+
+		it('keeps running ones and admits no new one when the refusals cannot be read', () => {
+			const { admitted, refused: refusals } = admit(['b'], undefined, ['a', 'b'], 8);
+			assert.deepStrictEqual(admitted, ['b']);
+			assert.match(refusals.get('a'), /could not be read/);
+		});
+
+		it('admits a deploy past a first release that failed closed', () => {
+			const config = isolated('broken');
+			const failedClosed = new Map([['broken', refused('its canary rejected it')]]);
+			assert.strictEqual(refusal('next', [], failedClosed, config, ['broken']), undefined);
+			assert.match(
+				String(refusal('next', [], new Map(), config, ['broken'])),
+				/already runs 1 isolated application/,
+				'one that may load still holds its place'
+			);
+		});
+
+		it("does not hold a candidate's own refused release against it, but refuses it while the budget is full", () => {
+			const failedClosed = new Map([['broken', refused('its canary rejected it')]]);
+			assert.strictEqual(
+				refusal('broken', [], failedClosed, isolated('broken'), ['broken']),
+				undefined,
+				'its fixed release replaces the refused one'
+			);
+			assert.match(
+				String(refusal('broken', ['other'], failedClosed, isolated('broken', 'other'), ['broken', 'other'])),
+				/threads\.maxIsolated/
+			);
+			assert.ok(failedClosed.has('broken'), 'the refusals it was given are left as they were');
+		});
+
+		it('refuses a present application that boot order would not admit (two present, budget of one)', () => {
+			const config = isolated('first', 'live');
+			assert.match(String(refusal('live', [], new Map(), config, ['first', 'live'])), /threads\.maxIsolated/);
+			assert.strictEqual(refusal('first', [], new Map(), config, ['first', 'live']), undefined);
+		});
+
+		it('places the candidate where its root-config entry enumerates', () => {
+			const config = { ...isolated('z'), flipped: { package: 'x' }, ...isolated('later') };
+			assert.strictEqual(
+				refusal('1', [], new Map(), config, ['z', 'later']),
+				undefined,
+				'a new integer-like name enumerates first, as boot will read it'
+			);
+			assert.match(String(refusal('new', [], new Map(), config, ['z'])), /threads\.maxIsolated/);
+			const flipping = { flipped: { package: 'x' }, ...isolated('z') };
+			assert.strictEqual(
+				refusal('flipped', [], new Map(), flipping, ['z']),
+				undefined,
+				'an application turning isolated keeps its own entry, ahead of later ones'
+			);
+			assert.deepStrictEqual(flipping.flipped, { package: 'x' }, 'the config it was given is left as it was');
+		});
+
+		it('counts a worker still running for an application no longer isolated, unless its release failed closed', () => {
+			assert.match(String(refusal('new', ['stale'], new Map(), {}, [])), /threads\.maxIsolated/);
+			assert.strictEqual(
+				refusal('new', ['stale'], new Map([['stale', refused('refused')]]), {}, []),
+				undefined,
+				'its refusal withdraws its worker'
+			);
+		});
+
+		it('refuses every candidate with a budget of zero', () => {
+			assert.match(String(refusal('any', [], new Map(), {}, [], 0)), /already runs 0/);
+		});
+	});
+
 	describe('socket naming', () => {
 		it('is injective and filesystem-safe, and cannot collide with a pool socket', () => {
 			const names = ['my-app', 'my_app', 'my app', 'my/app', 'my%app', 'app-1', 'App', '1-9926'];

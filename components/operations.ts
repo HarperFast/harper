@@ -586,8 +586,7 @@ async function deployComponent(req?: any) {
 	// then report any node-local inability to run it through component lifecycle status.
 	const assertIsolationAdmission = async (isolated) => {
 		if (!isolated || isReplicatedExecution) return;
-		const { isolatedApplicationRefusal, isolatedApplicationCapacityRefusal, presentIsolatedApplicationNames } =
-			isolatedApplicationsRuntimeModule;
+		const { isolatedApplicationAdmissionRefusal, failedClosedApplications } = isolatedApplicationsRuntimeModule;
 		let runningApplications;
 		try {
 			runningApplications = await manageThreads.getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
@@ -598,12 +597,17 @@ async function deployComponent(req?: any) {
 				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 			);
 		}
-		runningApplications = new Set([
-			...runningApplications,
-			...presentIsolatedApplicationNames().filter((application) => !isolatedApplicationRefusal(application)),
-		]);
-		const refusal =
-			isolatedApplicationRefusal(req.project) ?? isolatedApplicationCapacityRefusal(req.project, runningApplications);
+		let failedClosed;
+		try {
+			failedClosed = await failedClosedApplications();
+		} catch (error) {
+			throw handleHDBError(
+				error,
+				`Cannot deploy '${req.project}' as an isolated application: which releases may load could not be read: ${error.message}`,
+				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
+			);
+		}
+		const refusal = isolatedApplicationAdmissionRefusal(req.project, runningApplications, failedClosed);
 		if (refusal) {
 			throw handleHDBError(
 				new Error(),
@@ -835,17 +839,22 @@ async function deployComponent(req?: any) {
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
-				// A package artifact publishes its own root-config entry, and a payload artifact that set routing owns
-				// those keys, so the recorded intent is what will be in force. Any other payload artifact owns no
-				// `isolated` key, so the effective configuration is the only authority there — a saved `false` must
-				// not admit past an isolation the operator set between the stage and this call.
-				nowIsolated = descriptor.rootConfig || descriptor.routing ? descriptor.isolated : wasIsolated;
-				const published = descriptor.rootConfig ?? descriptor.routing;
-				assertGrantConstraints(
-					published
-						? { isolated: nowIsolated, host: published.host, branchedDatabases: published.branchedDatabases }
-						: currentRouting(nowIsolated)
-				);
+				if (descriptor) {
+					// A package artifact publishes its own root-config entry, and a payload artifact that set routing
+					// owns those keys, so the recorded intent is what will be in force. Any other payload artifact owns
+					// no `isolated` key, so the effective configuration is the only authority there — a saved `false`
+					// must not admit past an isolation the operator set between the stage and this call.
+					nowIsolated = descriptor.rootConfig || descriptor.routing ? descriptor.isolated : wasIsolated;
+					const published = descriptor.rootConfig ?? descriptor.routing;
+					assertGrantConstraints(
+						published
+							? { isolated: nowIsolated, host: published.host, branchedDatabases: published.branchedDatabases }
+							: currentRouting(nowIsolated)
+					);
+				} else {
+					// the release already live, certified again: it publishes nothing, so only its isolation is admitted
+					nowIsolated = wasIsolated;
+				}
 				await assertIsolationAdmission(nowIsolated);
 			},
 			beforePrepare: async () => {

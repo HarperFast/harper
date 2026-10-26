@@ -174,8 +174,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    main queues a withdrawal of its slot that stops any worker still in it, which the rollout's close waits for while the
    release stays registered, so a fixed redeploy neither arms nor reconciles before it (not awaited by the decision
    itself, since the worker it stops can be the requester, whose deploy answers only once it reads the decision); and the
-   reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`; refusals that cannot be read start no
-   new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
+   reconcile, boot and deploy admission refuse it, so it holds no place in `threads.maxIsolated`
+   (`server/threads/isolatedApplications.ts`; refusals that cannot be read start no new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
    the component it is live for, so an unreadable sidecar never lets a refused release load; retention pins its
    predecessor the same way, and pins everything when a record can be attributed to no one. When even the record
    write fails, main refuses it in memory, bound to that deployment id so a later release

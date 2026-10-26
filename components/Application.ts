@@ -4964,8 +4964,11 @@ export type PrepareApplicationOptions = {
 	 * what determines it, and that runs after these options have been constructed.
 	 */
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; routing?: PayloadRouting; isolated: boolean };
-	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
-	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
+	/**
+	 * `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap; without a
+	 * descriptor, the live release's, before it is certified again.
+	 */
+	admitIsolation?: (descriptor?: ArtifactDescriptor) => Promise<void>;
 	/** Wraps the swap, so a caller can hold its own admission across a check and the release going live. */
 	aroundActivation?: (candidateDirPath: string, activate: () => Promise<void>) => Promise<void>;
 	fingerprintInstall?: boolean;
@@ -5142,7 +5145,7 @@ export async function prepareApplication(application: Application, options: Prep
 						application.alreadyActive = true;
 						application.packageMetadataChanged = true;
 						application.logger.debug?.(`Deployment ${artifactId} is already live; nothing to swap`);
-						await recertifyLiveRelease(application, artifactId, options.certification);
+						await recertifyLiveRelease(application, artifactId, options.certification, options.admitIsolation);
 						return;
 					}
 					await activateStagedArtifact(application, artifactId, previousPackageMetadata, options);
@@ -5356,7 +5359,8 @@ function activateAround(
 async function recertifyLiveRelease(
 	application: Application,
 	deploymentId: string,
-	certification: ActivationCertification | undefined
+	certification: ActivationCertification | undefined,
+	admitIsolation?: PrepareApplicationOptions['admitIsolation']
 ): Promise<void> {
 	if (!certification) return;
 	let live = await liveCertification(dirname(application.dirPath), application.name);
@@ -5386,6 +5390,8 @@ async function recertifyLiveRelease(
 			409
 		);
 	}
+	// Armed again, a refused isolated release is started by a reconcile that must have room for it.
+	await admitIsolation?.();
 	const predecessor = { previous: live.record.previous, wasAbsent: live.record.wasAbsent };
 	if (await beginCertification(application, deploymentId, certification, predecessor)) await certification.commit();
 }

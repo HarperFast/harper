@@ -269,6 +269,46 @@ describe('activating a release for certification', () => {
 		assert.equal((await readCertificationRecord(root, 'd1')).state, 'pending');
 	});
 
+	it('admits the isolation of a rejected live release before arming it again, and arms nothing when refused', async function () {
+		this.timeout(30000);
+		await deploy(root, 'd1', 'V1\n');
+		await writeCertificationRecord(root, {
+			component: 'web',
+			deploymentId: 'd1',
+			previous: null,
+			wasAbsent: true,
+			state: 'rejected',
+			incarnation: 'a-previous-process',
+			reason: 'threw at load',
+		});
+		const admissions = [];
+		const activate = (certification, admitIsolation) =>
+			prepareApplication(applicationAt(root), { mode: 'activate', artifactId: 'd1', certification, admitIsolation });
+
+		let certification = recordingCertification(root);
+		await assert.rejects(
+			activate(certification, async (descriptor) => {
+				admissions.push(descriptor);
+				throw new Error('no dedicated worker to spare');
+			}),
+			/no dedicated worker to spare/
+		);
+		assert.deepStrictEqual(admissions, [undefined], 'the live release is admitted, with no artifact to read');
+		assert.deepStrictEqual(certification.calls, [], 'a refused activation arms nothing');
+		assert.equal((await readCertificationRecord(root, 'd1')).state, 'rejected', 'and the release stays refused');
+
+		certification = recordingCertification(root);
+		await activate(certification, async (descriptor) => admissions.push(descriptor));
+		assert.deepStrictEqual(
+			certification.calls.map(({ call }) => call),
+			['arm', 'commit']
+		);
+
+		// A retry of a release already being certified joins it; there is nothing new to admit.
+		await activate(recordingCertification(root), async (descriptor) => admissions.push(descriptor));
+		assert.equal(admissions.length, 2);
+	});
+
 	it('reads a decision that closed before its activation joined it from the record it left', async function () {
 		this.timeout(30000);
 		await deploy(root, 'd1', 'V1\n');
