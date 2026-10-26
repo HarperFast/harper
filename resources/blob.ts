@@ -294,6 +294,15 @@ export function watchInProgressFile(
 	});
 	return watcher;
 }
+class BlobReclamationBusyError extends Error {
+	statusCode = 503;
+	code = 'BLOB_RECLAMATION_BUSY';
+	retryable = true;
+	constructor() {
+		super('Blob storage is being reclaimed; reload the record before retrying the write');
+		this.name = 'BlobReclamationBusyError';
+	}
+}
 class BlobReadError extends Error {
 	statusCode: number;
 	code?: string;
@@ -1448,11 +1457,7 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 	if (state) {
 		Atomics.add(state.table, state.slot + REFERENCE_GENERATION, 1);
 		if (Atomics.load(state.table, state.slot + HOLDS) < 0) {
-			throw Object.assign(new Error('Blob storage is being reclaimed; reload the record before retrying the write'), {
-				statusCode: 503,
-				code: 'BLOB_RECLAMATION_BUSY',
-				retryable: true,
-			});
+			throw new BlobReclamationBusyError();
 		}
 	}
 	if (pendingReclamation.size === 0) return;

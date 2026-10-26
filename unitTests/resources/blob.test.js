@@ -620,6 +620,7 @@ describe('Blob test', () => {
 					assert.equal(error.statusCode, 503);
 					assert.equal(error.retryable, true);
 					assert.equal(error.code, 'BLOB_RECLAMATION_BUSY');
+					assert.equal(error.name, 'BlobReclamationBusyError');
 					return true;
 				}
 			);

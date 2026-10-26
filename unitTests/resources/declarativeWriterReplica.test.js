@@ -353,7 +353,12 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 			assert.equal(
 				await Rows._storeReplica(stub, {
 					key: 'blob',
-					value: { id: 'blob', region: 1, body: await createBlob(Buffer.from(bytes)) },
+					value: {
+						id: 'blob',
+						region: 1,
+						body: await createBlob(Buffer.from(bytes)),
+						cleanup: await createBlob(randomBytes(32768)),
+					},
 					version: stub.version,
 					originNode: server.hostname,
 				}),
@@ -361,6 +366,8 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 			);
 			const fetched = Rows.primaryStore.getEntry('blob').value.body;
 			const fetchedPath = getFilePathForBlob(fetched);
+			const cleanupPath = getFilePathForBlob(Rows.primaryStore.getEntry('blob').value.cleanup);
+			assert.ok(existsSync(cleanupPath));
 			Transaction.prototype.commit = function (...args) {
 				if (this.store?.db === Rows.primaryStore.store.db && this.replicaCommitNotifications?.size) {
 					for (const notify of this.replicaCommitNotifications) parked.push(notify);
@@ -384,8 +391,10 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 			);
 			assert.ok(referenced, 'the later canonical reference committed before cleanup');
 			for (const notify of parked.splice(0)) notify();
-			await Rows.closeMaintenance();
-			Rows.resumeMaintenance();
+			await waitFor(() => !existsSync(cleanupPath), {
+				timeout: 5000,
+				message: 'deferred cleanup must reclaim its unreferenced file before checking retention',
+			});
 			await Rows.put('barrier', { id: 'barrier', region: 1, body: await createBlob(randomBytes(32768)) });
 			await deleteBlobAndWait(Rows.primaryStore.getEntry('barrier').value.body);
 			assert.ok(existsSync(fetchedPath), 'the intermediate canonical audit entry still owns the fetched file');
