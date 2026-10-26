@@ -46,12 +46,13 @@ function preventFunctionConstructor() {
 // Properties must stay writable: a read-only prototype elements kind costs every store into an array hole its V8
 // fast path, process-wide (security/DESIGN.md).
 function sealIntrinsics() {
-	for (const intrinsic of currentIntrinsics().concat(realmIntrinsics)) {
+	Object.seal(Function);
+	Object.seal(Function.prototype);
+	// originals first, so a replacement that refuses to seal cannot leave them open
+	for (const intrinsic of realmIntrinsics.concat(currentIntrinsics())) {
 		Object.seal(intrinsic);
 		Object.seal((intrinsic as any)?.prototype);
 	}
-	Object.seal(Function);
-	Object.seal(Function.prototype);
 }
 
 function freezeIntrinsics() {
