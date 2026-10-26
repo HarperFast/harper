@@ -5,6 +5,7 @@ import { type Databases, databases, table, type Tables, tables } from './databas
 import { isApplicationPrimaryWorker } from '../server/threads/manageThreads.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { type Attribute } from './Table.ts';
 import { type FileEntry } from '../components/EntryHandler.ts';
@@ -35,23 +36,30 @@ let _hashTrackingTable: ReturnType<typeof table>;
 
 /**
  * Computes a deterministic hash of a record's content for tracking data file changes.
- * The hash is computed from a stable JSON representation (sorted keys) to ensure
- * the same content always produces the same hash, regardless of key order.
+ * Object keys are sorted at every depth (arrays keep their order), so the same content
+ * always produces the same hash regardless of key order.
  *
  * @param record - The record object to hash
  * @returns A hex string hash of the record content
  */
 export function computeRecordHash(record: Record<string, any>): string {
-	// Sort keys for deterministic hashing
-	const sortedKeys = Object.keys(record).sort();
-	const sortedRecord: Record<string, any> = {};
-	for (const key of sortedKeys) {
-		sortedRecord[key] = record[key];
-	}
+	return createHash('sha256').update(JSON.stringify(record, sortObjectKeys)).digest('hex');
+}
 
-	// Compute hash of the stable JSON representation
-	const content = JSON.stringify(sortedRecord);
-	return createHash('sha256').update(content).digest('hex');
+// A JSON.stringify replacer runs after toJSON, so Dates, Buffers etc. serialize exactly as without it
+function sortObjectKeys(_key: string, value: any) {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+	// null prototype, so a `__proto__` key stays an own property and in the digest
+	const sorted = Object.create(null);
+	for (const key of Object.keys(value).sort()) sorted[key] = value[key];
+	return sorted;
+}
+
+/** The hash earlier versions stored, which sorted only top-level keys */
+function computeLegacyRecordHash(record: Record<string, any>): string {
+	const sortedRecord: Record<string, any> = {};
+	for (const key of Object.keys(record).sort()) sortedRecord[key] = record[key];
+	return createHash('sha256').update(JSON.stringify(sortedRecord)).digest('hex');
 }
 
 /**
@@ -83,39 +91,40 @@ function getHashTrackingTable(databasesRef: Databases): any {
 }
 
 /**
- * Gets the stored hash for a record from the tracking table
+ * The key prefixes a record's hash may be stored under; the first is where it is written. The default
+ * database keeps the unprefixed form; earlier versions also stored it as `data:` when a file named it.
+ */
+function getHashKeyPrefixes(database: string | undefined, tableName: string): string[] {
+	if (!database || database === DEFAULT_DATABASE_NAME)
+		return [`${tableName}:`, `${DEFAULT_DATABASE_NAME}:${tableName}:`];
+	return [`${database}:${tableName}:`];
+}
+
+/**
+ * Finds the stored hash for a record: the first candidate key that has an entry is authoritative.
  */
 async function getStoredHash(
-	database: string | undefined,
-	tableName: string,
-	recordId: string,
-	databasesRef: Databases
-): Promise<string | null> {
-	try {
-		const trackingTable = getHashTrackingTable(databasesRef);
-		const hashId = database ? `${database}:${tableName}:${recordId}` : `${tableName}:${recordId}`;
-		const hashRecord = await trackingTable.get(hashId);
-		return hashRecord?.hash || null;
-	} catch (error) {
-		dataLoaderLogger.error?.(`Failed to get stored hash: ${error.message}`);
-		return null;
+	databasesRef: Databases,
+	hashKeyPrefixes: string[],
+	recordIds: any[]
+): Promise<{ key: string; hash: string; recordId: any } | undefined> {
+	const trackingTable = getHashTrackingTable(databasesRef);
+	for (const recordId of recordIds) {
+		for (const prefix of hashKeyPrefixes) {
+			const key = prefix + recordId;
+			const hashRecord = await trackingTable.get(key);
+			if (hashRecord) return { key, hash: hashRecord.hash, recordId };
+		}
 	}
 }
 
 /**
  * Stores the hash for a record in the tracking table
  */
-async function storeHash(
-	database: string | undefined,
-	tableName: string,
-	recordId: string,
-	hash: string,
-	databasesRef: Databases
-): Promise<void> {
+async function storeHash(hashKey: string, hash: string, databasesRef: Databases): Promise<void> {
 	try {
 		const trackingTable = getHashTrackingTable(databasesRef);
-		const hashId = database ? `${database}:${tableName}:${recordId}` : `${tableName}:${recordId}`;
-		await trackingTable.put({ id: hashId, hash });
+		await trackingTable.put({ id: hashKey, hash });
 	} catch (error) {
 		dataLoaderLogger.error?.(`Failed to store hash: ${error.message}`);
 	}
@@ -210,12 +219,12 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 		let tableRef;
 
 		// If a database is specified, check if the table exists in that database
-		if (database && databasesRef[database] && databasesRef[database][tableName]) {
+		if (database && databasesRef[database]?.[tableName]) {
 			dataLoaderLogger.debug?.(`Using existing table ${tableIdentifier} from database tables`);
 			tableRef = databasesRef[database][tableName];
 		}
 		// If no database is specified, check if the table exists in the global tables
-		else if (tablesRef && tablesRef[tableName]) {
+		else if (!database && tablesRef?.[tableName]) {
 			dataLoaderLogger.debug?.(`Using existing table ${tableIdentifier} from global tables`);
 			tableRef = tablesRef[tableName];
 		} else {
@@ -247,12 +256,16 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 			});
 		}
 
+		const primaryKey = tableRef.primaryKey ?? 'id';
+		const hashKeyPrefixes = getHashKeyPrefixes(database, tableName);
+
 		// Process records with timestamp comparison
 		// Count metrics
 		const dataFIleRecords = records.length;
 		let newRecords = 0;
 		let updatedRecords = 0;
 		let skippedRecords = 0;
+		let unmatchedLegacyRecords = 0;
 
 		// Process each record in a batch to avoid excessive memory usage
 		const batchSize = 100; // Process in batches of 100 records
@@ -267,7 +280,7 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 					try {
 						// Get existing record with the same ID if it exists
 						let existingRecord: Record<string, any> | null = null;
-						const recordId = newRecord.id;
+						const recordId = newRecord[primaryKey];
 
 						if (recordId !== undefined) {
 							existingRecord = await tableRef.get(recordId);
@@ -275,20 +288,26 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 
 						// Compute hash of the new record from the data file
 						const newRecordHash = computeRecordHash(newRecord);
+						const hashKey = hashKeyPrefixes[0] + recordId;
 
 						if (!existingRecord) {
 							// If the record doesn't exist yet, insert it
 							newRecords++;
 							const result = await tableRef.put(newRecord);
-							// Store the hash in the tracking table
-							await storeHash(database, tableName, recordId, newRecordHash, databasesRef);
+							// A record without a primary key value can't be looked up again, so there is nothing to track
+							if (recordId !== undefined) await storeHash(hashKey, newRecordHash, databasesRef);
 							return result;
 						}
 
-						// Check if there's a stored hash for this record
-						const existingHash = await getStoredHash(database, tableName, recordId, databasesRef);
+						// Earlier versions keyed every record by its `id` field, so with another primary key a
+						// record's hash may be under that value, or under `undefined` (shared by the whole table)
+						const stored = await getStoredHash(
+							databasesRef,
+							hashKeyPrefixes,
+							primaryKey === 'id' ? [recordId] : [recordId, newRecord.id]
+						);
 
-						if (!existingHash) {
+						if (!stored) {
 							// No hash means this record wasn't loaded by the data loader
 							// (likely created via operations API or other means)
 							// Don't overwrite user-created records
@@ -298,8 +317,6 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 
 						// Compute hash of only the fields that exist in the data file
 						// This allows users to add extra fields without triggering a "modified" detection
-						// Note: This is a simple top-level field comparison - nested object changes
-						// within data file fields will still be detected as modifications
 						const existingRecordSubset: Record<string, any> = {};
 						for (const key of Object.keys(newRecord)) {
 							if (key in existingRecord) {
@@ -308,27 +325,31 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 						}
 						const existingRecordHash = computeRecordHash(existingRecordSubset);
 
-						if (existingRecordHash !== existingHash) {
+						if (existingRecordHash !== stored.hash && computeLegacyRecordHash(existingRecordSubset) !== stored.hash) {
 							// The existing record's data file fields don't match the stored hash,
 							// meaning those fields were modified externally (via operations API, etc.)
 							// Don't overwrite user-modified records
+							if (stored.recordId === undefined) unmatchedLegacyRecords++;
 							skippedRecords++;
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
 
-						// Compare hashes to detect actual content changes in the data file
-						if (newRecordHash !== existingHash) {
-							// Hash differs - the data file content has changed
+						// The stored hash may be in a legacy form or under a legacy key, so compare content
+						if (newRecordHash !== existingRecordHash) {
+							// The data file content has changed
 							// Use patch to update only the fields from the data file,
 							// preserving any additional fields the user may have added
 							updatedRecords++;
 							await tableRef.patch(recordId, newRecord);
-							await storeHash(database, tableName, recordId, newRecordHash, databasesRef);
+							await storeHash(hashKey, newRecordHash, databasesRef);
 							// Return a result indicating update (patch doesn't return a value)
 							return { updated: 1 };
 						} else {
-							// Hash matches - content hasn't changed, skip update
+							// Content hasn't changed, skip update
 							skippedRecords++;
+							if (stored.key !== hashKey || stored.hash !== newRecordHash) {
+								await storeHash(hashKey, newRecordHash, databasesRef);
+							}
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
 					} catch (error) {
@@ -349,6 +370,12 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 
 			// Execute batch promises. Currently not doing anything about errors or the put() results.
 			await Promise.all(batchPromises.map((fn) => fn()));
+		}
+
+		if (unmatchedLegacyRecords > 0) {
+			dataLoaderLogger.warn?.(
+				`${unmatchedLegacyRecords} records in ${tableIdentifier} are left unchanged and will not receive data file updates: an earlier version did not track them by the primary key '${primaryKey}'. Delete them to reload them from the data file.`
+			);
 		}
 
 		// Return a single result object

@@ -9,9 +9,12 @@ const sinon = require('sinon');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const loggerStub = {
 	info: sinon.stub(),
+	warn: sinon.stub(),
 	error: sinon.stub(),
 	debug: sinon.stub(),
 	trace: sinon.stub(),
+	// modules that first load under this stub (security/auth.ts when this file runs alone) tag their logger
+	withTag: sinon.stub().returnsThis(),
 };
 const forComponentStub = sinon.stub(harperLogger, 'forComponent').returns(loggerStub);
 
@@ -298,13 +301,75 @@ records:
 				put: sinon.stub().resolves({ inserted: 1 }),
 			};
 
-			mockTables.test_table_json = mockTable;
+			mockTables.test_yml = mockTable;
 
-			const result = await loadDataFile(await createFileEntry(jsonDataFile), mockTables, mockDatabases);
+			const result = await loadDataFile(await createFileEntry(ymlDataFile), mockTables, mockDatabases);
 
 			assert.ok(result instanceof DataLoaderResult);
 			assert.equal(result.status, 'success');
-			assert.equal(mockTable.put.callCount, 2);
+			assert.equal(mockTable.put.callCount, 1);
+		});
+
+		it('should not fall back to a stored hash under a legacy key when reading the primary key fails', async function () {
+			const legacyFile = join(tempDir, 'legacy-read-failure.json');
+			await writeFile(legacyFile, JSON.stringify({ table: 'legacy_table', records: [{ id: 1, name: 'New' }] }));
+
+			const mockHashTable = {
+				get: sinon.stub().callsFake((id) => {
+					if (id === 'legacy_table:1') return Promise.reject(new Error('read failed'));
+					return Promise.resolve({ id, hash: computeRecordHash({ id: 1, name: 'Old' }) });
+				}),
+				put: sinon.stub().resolves(),
+			};
+			const mockTable = {
+				get: sinon.stub().resolves(createMockRecord({ id: 1, name: 'Old' })),
+				put: sinon.stub().resolves(),
+				patch: sinon.stub().resolves(),
+			};
+			mockDatabases.system = { hdb_dataloader_hash: mockHashTable };
+			mockTables.legacy_table = mockTable;
+
+			loggerStub.error.resetHistory();
+			await loadDataFile(await createFileEntry(legacyFile), mockTables, mockDatabases);
+
+			assert.equal(mockTable.patch.callCount, 0);
+			assert.equal(mockHashTable.put.callCount, 0);
+			assert.ok(loggerStub.error.calledWithMatch(/read failed/), 'the read failure is reported as a record error');
+		});
+
+		it('should warn about records an earlier version tracked only in the shared slot of a custom primary key table', async function () {
+			const skuFile = join(tempDir, 'sku.json');
+			await writeFile(skuFile, JSON.stringify({ table: 'sku_table', records: [{ sku: 'a', value: 2 }] }));
+
+			const mockHashTable = {
+				get: sinon
+					.stub()
+					.callsFake((id) =>
+						Promise.resolve(
+							id === 'sku_table:undefined' ? { id, hash: computeRecordHash({ sku: 'c', value: 1 }) } : undefined
+						)
+					),
+				put: sinon.stub().resolves(),
+			};
+			const mockTable = {
+				primaryKey: 'sku',
+				get: sinon.stub().resolves(createMockRecord({ sku: 'a', value: 1 })),
+				put: sinon.stub().resolves(),
+				patch: sinon.stub().resolves(),
+			};
+			mockDatabases.system = { hdb_dataloader_hash: mockHashTable };
+			mockTables.sku_table = mockTable;
+
+			loggerStub.warn.resetHistory();
+			const result = await loadDataFile(await createFileEntry(skuFile), mockTables, mockDatabases);
+
+			assert.equal(result.status, 'skipped');
+			assert.equal(mockTable.get.firstCall.args[0], 'a');
+			assert.equal(mockTable.patch.callCount, 0);
+			assert.ok(
+				loggerStub.warn.calledWithMatch(/^1 records in sku_table are left unchanged/),
+				'the unmatched record is reported'
+			);
 		});
 
 		it('should handle empty records array', async function () {
