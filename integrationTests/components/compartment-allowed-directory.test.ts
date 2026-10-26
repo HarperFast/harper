@@ -46,8 +46,10 @@ async function componentStatuses(ctx: ContextWithHarper): Promise<Map<string, st
 }
 
 suite('compartment loader applies allowedDirectory to plain file imports', (ctx: ContextWithHarper) => {
+	let dataRootDir: string;
+
 	before(async () => {
-		const dataRootDir = await mkdtemp(
+		dataRootDir = await mkdtemp(
 			join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 		);
 		ctx.harper = { dataRootDir };
@@ -116,8 +118,11 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
-		if (ctx.harper?.dataRootDir) await rm(ctx.harper.dataRootDir, { recursive: true, force: true });
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (dataRootDir) await rm(dataRootDir, { recursive: true, force: true });
+		}
 	});
 
 	test('a component importing inside its own directory loads and serves', async () => {
