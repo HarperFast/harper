@@ -273,8 +273,10 @@ replaces one of these globals while it loads, sealing locks both the replacement
 literals and async functions keep using. Freezing locks only the current global, because freezing the original
 would skip its overridable accessors.
 
-`lockDownIntrinsics` matches mode names exactly: any other value, including a typo or a non-string, freezes
-eagerly (fails closed).
+`lockDownIntrinsics` matches mode names exactly: any other truthy value, including a typo or a non-string, freezes
+eagerly (fails closed). A falsy value skips lockdown, like `none` (`security/jsLoader.ts`). Only fresh installs get
+the default: the installer writes the whole default config into each instance's `harperdb-config.yaml`, so an
+upgraded instance keeps the `freeze-after-load` it was installed with.
 
 Enforced by `unitTests/security/intrinsicsLockdown.test.js`, which runs each mode in a fresh `Worker` because
 lockdown cannot be undone in a realm, and by `integrationTests/components/intrinsics-lockdown.test.ts`. The cost of
