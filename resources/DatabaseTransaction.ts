@@ -492,6 +492,9 @@ export function replicationConfirmation(callback, feasibility?: typeof confirmat
 	confirmReplication = callback;
 	confirmationFeasibility = feasibility;
 }
+export function registeredReplicationConfirmation() {
+	return confirmReplication;
+}
 
 export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
 	let result;
@@ -1872,8 +1875,8 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * What a `replicatedConfirmation` commit waits for: the log position peers must acknowledge (the
 	 * committed transaction's own log key when a confirmable write appended an audit entry to it,
-	 * else the last confirmable write's entry version as in lastConfirmableEntry), and the residents of its
-	 * writes, as checked before submission.
+	 * else the last confirmable write's entry version), and the residents of its writes, as checked
+	 * before submission.
 	 */
 	confirmationTarget(
 		committedLogKey?: number,
@@ -1959,24 +1962,6 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.debug?.('cleaning up a transaction whose confirmation was refused', abortError);
 			}
 			throw error;
-		}
-	}
-
-	/**
-	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
-	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
-	 * replicable writes staged earlier: writes that explicitly opt out (audit-only markers, which stage
-	 * no record), and writes with no stored entry at all — a delete leaves a readable tombstone on any
-	 * audited or delete-tracking table, so only a delete on a table with neither is entry-less. Such a
-	 * `put(A); delete(B)` confirms on A's entry, whose version is this transaction's (every write in a
-	 * transaction is stamped with one version).
-	 */
-	lastConfirmableEntry(): Partial<Entry> | undefined {
-		for (let i = this.writes.length - 1; i >= 0; i--) {
-			const write = this.writes[i];
-			if (!write || write.skipReplicationConfirmation) continue;
-			const entry = write.store.getEntry(write.key);
-			if (entry) return entry;
 		}
 	}
 

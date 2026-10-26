@@ -615,12 +615,16 @@ export function hasAsyncSerialization() {
 	return !!asyncSerializations;
 }
 
+export function getMaxRequestBodySize(): number {
+	return envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+}
+
 type RequestBodyStream = AsyncIterable<Uint8Array> & {
 	on(event: string, listener: (...args: any[]) => void): unknown;
 };
 
 function streamToBuffer(stream: RequestBodyStream): Promise<Buffer> {
-	const MAX_REQUEST_BODY_SIZE = envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+	const MAX_REQUEST_BODY_SIZE = getMaxRequestBodySize();
 	return new Promise((resolve, reject) => {
 		const buffers = [];
 		let size = 0;
