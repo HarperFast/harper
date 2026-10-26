@@ -1370,6 +1370,37 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.error.code, -32602);
 			});
 		});
+
+		it('passes the request baseUrl to resources/list and harper://openapi', async () => {
+			class Orders {
+				get() {}
+			}
+			_setResourcesForTest(makeFakeResources([['Orders', Orders]]));
+			_setHttpUrlPrefixForTest(undefined);
+			const superUser = { username: 'alice', role: { permission: { super_user: true } } };
+			const baseUrl = 'https://public.example.com';
+			const call = (id, method, params) =>
+				handleMcpRequest(
+					makeReq({
+						body: jsonRpc(id, method, params),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						userObject: superUser,
+						baseUrl,
+					})
+				);
+
+			const list = await call(70, 'resources/list');
+			assert.ok(list.jsonBody.result.resources.some((r) => r.uri === 'harper+rest://public.example.com/Orders'));
+
+			let serverUrl;
+			_setOpenApiGeneratorForTest((_resources, url) => ((serverUrl = url), { openapi: '3.0.3' }));
+			try {
+				await call(72, 'resources/read', { uri: 'harper://openapi' });
+			} finally {
+				_setOpenApiGeneratorForTest(undefined);
+			}
+			assert.equal(serverUrl, baseUrl);
+		});
 	});
 
 	describe('GET /mcp', () => {

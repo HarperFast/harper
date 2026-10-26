@@ -586,7 +586,7 @@ describe('mcp/resources', () => {
 		});
 
 		it('uses the request base URL over the server guess (load balancer / Fabric)', async () => {
-			_setHttpUrlPrefixForTest(undefined); // no override: exercise the real resolution
+			_setHttpUrlPrefixForTest(undefined);
 			const baseUrl = 'https://public.example.com';
 			const uris = listResources({ user: SUPER, profile: 'application', baseUrl }).resources.map((r) => r.uri);
 			assert.ok(uris.includes('harper+rest://public.example.com/HasVerbs'));

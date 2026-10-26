@@ -947,7 +947,7 @@ function guessAppHttpUrlPrefix(baseUrl?: string): string | undefined {
 	if (_httpUrlPrefixOverride !== undefined) return _httpUrlPrefixOverride || undefined;
 	// The request's own protocol + Host is what the client actually reached, so it
 	// is right behind a load balancer (e.g. Fabric) where the server's hostname and
-	// port are internal. Same source REST uses for its OpenAPI server URL.
+	// port are internal.
 	if (baseUrl) return baseUrl;
 	// No request (list_changed snapshots, tests): best-effort guess. Hostname comes
 	// from the server module post-boot; the port comes from config. When neither is
