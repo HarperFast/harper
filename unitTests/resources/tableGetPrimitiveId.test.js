@@ -258,7 +258,6 @@ describe('Table.get by a primitive id', function () {
 				[Records, '_updateResource', 1],
 				[Records.prototype, '_loadRecord', 1],
 				[Records.prototype, 'getRecord'],
-				// read by onlyIfCached only, so not called here
 				[Records.prototype, 'doesExist', 0],
 			]) {
 				const hook = owner[name];

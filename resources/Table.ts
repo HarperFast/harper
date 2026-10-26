@@ -11039,13 +11039,7 @@ export function makeTable(options): TableResourceClass {
 	function isSearchTarget(target: RequestTargetOrId): target is RequestTarget {
 		return typeof target === 'object' && target && (target as RequestTarget).isCollection;
 	}
-	/**
-	 * The record load behind both `_loadRecord` and the primitive-id `get`: read the local entry through the
-	 * request's transaction, then resolve it from residency or source when `ensureLoaded`. `installLocal`
-	 * receives the local entry before any source load starts (stale-while-revalidate reads the instance),
-	 * `installLoaded` the entry a source load produced; the load resolves to what the last one returned.
-	 * The caller has run checkValidId.
-	 */
+	/** installLocal runs before any source load starts: stale-while-revalidate reads the installed instance. */
 	function loadRecord<T>(
 		id: Id,
 		request: Context,

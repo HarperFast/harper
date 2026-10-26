@@ -744,7 +744,7 @@ function transactional(
 	const hasContent = options.hasContent;
 	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
 	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
-	// the primitive-id getter resolves the second argument as a context, which only a body-less get may do
+	// a primitive-id getter takes the second argument as the context, as only a body-less get does
 	const isGet = options.method === 'get' && hasContent === false;
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
