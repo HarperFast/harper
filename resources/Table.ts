@@ -4404,7 +4404,10 @@ export function makeTable(options): TableResourceClass {
 			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this.#savingOperation?.fullUpdate)
-					(this as any).set(property, addValues(this.getProperty(property), value));
+					(this as any).set(
+						property,
+						addValues(Object.hasOwn(this, property) ? this[property] : this.getProperty(property), value)
+					);
 				else {
 					if (!this.#savingOperation) (this as any).update();
 					addToChanges(this, property, value);

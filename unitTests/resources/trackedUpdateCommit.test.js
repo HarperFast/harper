@@ -581,6 +581,18 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			});
 			assert.strictEqual((await QA1955Table.get('add-own-new'))?.dynamicCount, undefined);
 		});
+		it('a full update composes addTo with an undeclared property assigned on the instance', async () => {
+			await QA1955Table.put('add-own-full', { title: 't' });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('add-own-full', ctx);
+				rec.update({ title: 'full' }, true);
+				rec.dynamicCount = 100;
+				rec.addTo('dynamicCount', 7);
+			});
+			const saved = await QA1955Table.get('add-own-full');
+			assert.strictEqual(saved.title, 'full');
+			assert.strictEqual(saved.dynamicCount, 107);
+		});
 	});
 
 	describe('Reading untracked object values', () => {
