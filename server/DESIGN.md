@@ -977,7 +977,9 @@ An entry that is not a flag fails startup, by design, unlike `threads.maxHeapMem
 
 Node does not hand an enabled cache to workers; only `NODE_COMPILE_CACHE` in a worker's env does. `startWorker()` sets `env` after `...options`, merging the directory under the caller's env (job workers pass their own). The main thread's `process.env` stays unset, so its spawns, an operations-API deploy's `npm install` included, do not inherit it; processes spawned from a worker (application code, a deploy replicated to this node) do. An operator's `NODE_COMPILE_CACHE` wins even when Node could not use it.
 
-Pruning keeps every subdirectory for the running Node version and arch: Node names them by V8's `cachedDataVersionTag`, which folds in V8 flags, and `threads.v8Flags` applies after main enables the cache but before workers start, so main and workers can use two same-version subdirectories. `unitTests/server/threads/compileCache.test.js` and `integrationTests/server/compile-cache.test.ts` pin this.
+Pruning keeps every subdirectory for the running Node version and arch: Node names them by V8's `cachedDataVersionTag`, which folds in V8 flags, and `threads.v8Flags` applies after main enables the cache but before workers start, so main and workers can use two same-version subdirectories. Inside those it removes only Node's persist temp files (`<entry>.XXXXXX`) older than 10 minutes: an exiting process (a CLI restart overlapping the old one, old workers in a rolling restart) may still be renaming a younger one into place. A non-directory at this thread's subdirectory name gets a warning and is left alone; Node reports ENABLED for any existing path and then fails every write, so workers are not handed it.
+
+The default is on only from the Node release, per line, listed in `server/threads/compileCacheNodeReleases.ts`. Before that release Node keeps every entry it read until the thread exits, about 7 MiB of RSS per thread; the table stays empty until a release frees accepted entries. `unitTests/server/threads/compileCache.test.js` and `integrationTests/server/compile-cache.test.ts` pin this.
 
 ## HTTP request preconditions (`REST.ts`, `Table.ts`)
 

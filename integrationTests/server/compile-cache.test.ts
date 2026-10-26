@@ -21,33 +21,59 @@ import {
 	teardownHarper,
 	type ContextWithHarper,
 } from '@harperfast/integration-testing';
+import { nodeFreesAcceptedCompileCacheEntries } from '../../dist/server/threads/compileCacheNodeReleases.js';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/compile-cache-probe');
 const MAIN_HOOK = resolve(import.meta.dirname, 'fixtures/compile-cache-main-hook.cjs').replaceAll('\\', '/');
 const STALE = 'v1.2.3-x64-0123abcd-1000';
-
 // Bun has no module.enableCompileCache, so Harper leaves the cache off there.
-suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx: ContextWithHarper) => {
+const BUN = process.env.HARPER_RUNTIME === 'bun';
+const DEFAULT_ON = nodeFreesAcceptedCompileCacheEntries();
+const CLEAN_ENV = { NODE_COMPILE_CACHE: undefined, NODE_DISABLE_COMPILE_CACHE: undefined };
+
+async function probe(ctx: ContextWithHarper): Promise<{ threadId: number; cacheDirectory: string | null }> {
+	const response = await fetch(`${ctx.harper.httpURL}/CompileCacheProbe`);
+	strictEqual(response.status, 200, await response.clone().text());
+	return response.json();
+}
+
+suite(
+	'Node compile cache on a Node release that keeps accepted entries',
+	{ skip: BUN || DEFAULT_ON },
+	(ctx: ContextWithHarper) => {
+		before(async () => {
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, { env: CLEAN_ENV });
+		});
+
+		after(async () => {
+			await teardownHarper(ctx);
+		});
+
+		test('stays off on a fresh install and on the next start', async () => {
+			strictEqual((await probe(ctx)).cacheDirectory, null);
+			await killHarper(ctx);
+			await startHarper(ctx, { env: CLEAN_ENV });
+			strictEqual((await probe(ctx)).cacheDirectory, null);
+			await killHarper(ctx);
+			ok(!existsSync(join(ctx.harper.dataRootDir, 'cache')), 'no cache directory is created');
+		});
+	}
+);
+
+suite('Node compile cache', { skip: BUN || !DEFAULT_ON }, (ctx: ContextWithHarper) => {
 	let scratch: string;
 	let probeOut: string;
 	const harperEnv = (extra: Record<string, string | undefined> = {}) => {
 		// a start whose hook never fires must not be judged by the previous start's report
 		rmSync(probeOut, { force: true });
 		return {
-			NODE_COMPILE_CACHE: undefined,
-			NODE_DISABLE_COMPILE_CACHE: undefined,
+			...CLEAN_ENV,
 			NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(MAIN_HOOK)}`.trim(),
 			COMPILE_CACHE_PROBE_OUT: probeOut,
 			...extra,
 		};
 	};
 	let cacheBase: string;
-
-	async function probe(): Promise<{ threadId: number; cacheDirectory: string | null }> {
-		const response = await fetch(`${ctx.harper.httpURL}/CompileCacheProbe`);
-		strictEqual(response.status, 200, await response.clone().text());
-		return response.json();
-	}
 
 	function mainThreadCacheDirectory(): string | null {
 		return JSON.parse(readFileSync(probeOut, 'utf8')).cacheDirectory;
@@ -78,12 +104,12 @@ suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx
 	});
 
 	test('the worker uses <rootPath>/cache/compile on a fresh install', async () => {
-		const { cacheDirectory } = await probe();
+		const { cacheDirectory } = await probe(ctx);
 		ok(cacheDirectory?.startsWith(join(cacheBase, `${process.version}-`)), cacheDirectory);
 	});
 
 	test('replacement workers from restart_service http_workers use it too', async () => {
-		const before = await probe();
+		const before = await probe(ctx);
 		const { job_id } = await sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' });
 		const deadline = Date.now() + 60_000;
 		for (;;) {
@@ -93,7 +119,7 @@ suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx
 			ok(Date.now() < deadline, `restart job did not complete: ${JSON.stringify(job)}`);
 			await sleep(100);
 		}
-		const after = await probe();
+		const after = await probe(ctx);
 		ok(after.threadId !== before.threadId, 'expected a replacement worker to answer');
 		ok(after.cacheDirectory?.startsWith(join(cacheBase, `${process.version}-`)), after.cacheDirectory);
 	});
@@ -110,7 +136,7 @@ suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx
 		await startHarper(ctx, { env: harperEnv() });
 		// rootPath is known before run.js loads only once the install exists
 		ok(mainThreadCacheDirectory()?.startsWith(join(cacheBase, `${process.version}-`)), mainThreadCacheDirectory());
-		ok((await probe()).cacheDirectory);
+		ok((await probe(ctx)).cacheDirectory);
 		for (const deadline = Date.now() + 10_000; existsSync(join(cacheBase, STALE)) && Date.now() < deadline;)
 			await sleep(50);
 		await killHarper(ctx);
@@ -125,6 +151,6 @@ suite('Node compile cache', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx
 	test('NODE_DISABLE_COMPILE_CACHE turns it off', async () => {
 		await startHarper(ctx, { env: harperEnv({ NODE_DISABLE_COMPILE_CACHE: '1' }) });
 		strictEqual(mainThreadCacheDirectory(), null);
-		strictEqual((await probe()).cacheDirectory, null);
+		strictEqual((await probe(ctx)).cacheDirectory, null);
 	});
 });

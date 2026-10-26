@@ -1,13 +1,20 @@
 import * as nodeModule from 'node:module';
-import { readdir, rm } from 'node:fs/promises';
+import { statSync } from 'node:fs';
+import { lstat, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { nodeFreesAcceptedCompileCacheEntries } from './compileCacheNodeReleases.ts';
 
 const NODE_ARCHES = 'arm|arm64|ia32|loong64|mips|mipsel|ppc|ppc64|riscv64|s390|s390x|x64';
 // Node names its subdirectory `<version>-<arch>-<V8 cachedDataVersionTag as 8 hex digits>[-<uid>]`; group 1 is
 // `<version>-<arch>`. Names in any other shape are not Node's, so pruning never touches them.
 const NODE_CACHE_SUBDIRECTORY = new RegExp(`^(v\\d+\\.\\d+\\.\\d+-(?:${NODE_ARCHES}))-[0-9a-f]{8}(?:-\\d+)?$`);
+// Node persists an entry to `<entry>.XXXXXX` (mkstemp) and renames it into place; a kill in between leaves the file
+const NODE_PERSIST_TEMP_FILE = /^[0-9a-f]{8}\.[0-9A-Za-z]{6}$/;
+// An exiting process may still be persisting: a CLI restart overlapping the old process, or old workers in a rolling
+// restart. A temp file this old is no longer anyone's.
+const ORPHAN_TEMP_FILE_AGE_MS = 10 * 60 * 1000;
 
 let workerCacheDirectory: string | undefined;
 
@@ -18,7 +25,13 @@ let workerCacheDirectory: string | undefined;
  */
 export function enableCompileCache(rootPath: string | undefined): void {
 	const statuses = nodeModule.constants?.compileCacheStatus;
-	if (!rootPath || process.env.NODE_COMPILE_CACHE || typeof nodeModule.enableCompileCache !== 'function' || !statuses)
+	if (
+		!rootPath ||
+		process.env.NODE_COMPILE_CACHE ||
+		typeof nodeModule.enableCompileCache !== 'function' ||
+		!statuses ||
+		!nodeFreesAcceptedCompileCacheEntries()
+	)
 		return;
 	const directory = join(rootPath, 'cache', 'compile');
 	if (directory === workerCacheDirectory) return;
@@ -27,6 +40,12 @@ export function enableCompileCache(rootPath: string | undefined): void {
 	// ALREADY_ENABLED after an earlier call: initialize() moved rootPath (a command-line or env override) after this
 	// thread latched the old one, which Node cannot change; the workers still follow the final root
 	if (result?.status === ENABLED || (result?.status === ALREADY_ENABLED && workerCacheDirectory)) {
+		const slot = nodeModule.getCompileCacheDir();
+		if (result.status === ENABLED && !isDirectory(slot)) {
+			// Node accepts any existing path as its directory and then fails every write
+			harperLogger.warn(`The Node compile cache is off: ${slot} is not a directory. Remove it to turn the cache on.`);
+			return;
+		}
 		workerCacheDirectory = directory;
 		void pruneStaleCompileCaches(directory);
 	} else if (result?.status === FAILED) {
@@ -46,22 +65,41 @@ export function compileCacheWorkerEnv(
 }
 
 /**
- * Every subdirectory for this Node version and architecture is kept: `threads.v8Flags` gives workers a different V8
- * tag than the main thread.
+ * Removes the subdirectories for other Node versions or architectures, and orphaned persist temp files from this
+ * version's. Every subdirectory for this version is kept: `threads.v8Flags` gives workers a different V8 tag than the
+ * main thread.
  */
-export async function pruneStaleCompileCaches(directory: string): Promise<void> {
+export async function pruneStaleCompileCaches(directory: string, now = Date.now()): Promise<void> {
 	const current = `${process.version}-${process.arch}`;
 	try {
 		for (const entry of await readdir(directory, { withFileTypes: true })) {
 			const versionAndArch = NODE_CACHE_SUBDIRECTORY.exec(entry.name)?.[1];
-			if (!entry.isDirectory() || !versionAndArch || versionAndArch === current) continue;
+			if (!entry.isDirectory() || !versionAndArch) continue;
 			try {
-				await rm(join(directory, entry.name), { recursive: true, force: true });
+				if (versionAndArch === current) await removeOrphanTempFiles(join(directory, entry.name), now);
+				else await rm(join(directory, entry.name), { recursive: true, force: true });
 			} catch (error) {
-				harperLogger.debug(`Could not remove stale Node compile cache ${entry.name} in ${directory}`, error);
+				harperLogger.debug(`Could not prune Node compile cache ${entry.name} in ${directory}`, error);
 			}
 		}
 	} catch (error) {
 		harperLogger.debug(`Could not prune stale Node compile caches in ${directory}`, error);
+	}
+}
+
+async function removeOrphanTempFiles(versionDirectory: string, now: number): Promise<void> {
+	for (const name of await readdir(versionDirectory)) {
+		if (!NODE_PERSIST_TEMP_FILE.test(name)) continue;
+		const path = join(versionDirectory, name);
+		const stats = await lstat(path);
+		if (stats.isFile() && now - stats.mtimeMs > ORPHAN_TEMP_FILE_AGE_MS) await rm(path, { force: true });
+	}
+}
+
+function isDirectory(path: string | undefined): boolean {
+	try {
+		return path !== undefined && statSync(path).isDirectory();
+	} catch {
+		return false;
 	}
 }

@@ -4,6 +4,7 @@
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const nodeModule = require('node:module');
 const { join } = require('node:path');
+const { cachedDataVersionTag } = require('node:v8');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { HARPER_CONFIG_FILE } = require('#src/utility/hdbTerms');
 
@@ -18,6 +19,20 @@ writeFileSync(
 process.env.ROOTPATH = rootPath;
 if (scenario === 'unsupported') nodeModule.enableCompileCache = undefined;
 
+// No Node release frees accepted entries yet, so every case but this one opens the gate for the running version.
+if (scenario !== 'gate-closed') {
+	const { COMPILE_CACHE_FREES_ACCEPTED_ENTRIES } = require('#src/server/threads/compileCacheNodeReleases');
+	COMPILE_CACHE_FREES_ACCEPTED_ENTRIES[Number(process.versions.node.split('.')[0])] = process.version;
+}
+const warnings = [];
+const loggerModule = require('#src/utility/logging/harper_logger');
+// the built module exports the logger itself; the TypeScript source has it as its default export
+const logger = loggerModule.default ?? loggerModule;
+const warn = logger.warn;
+logger.warn = (...args) => {
+	warnings.push(args.join(' '));
+	return warn.apply(logger, args);
+};
 const { enableCompileCache } = require('#src/server/threads/compileCache');
 const { startWorker } = require('#src/server/threads/manageThreads');
 
@@ -38,6 +53,14 @@ async function workerReport(options) {
 }
 
 async function main() {
+	if (scenario === 'file-slot') {
+		// the subdirectory Node names for this thread, taken by a regular file
+		const tag = cachedDataVersionTag().toString(16).padStart(8, '0');
+		const uid = process.getuid ? `-${process.getuid()}` : '';
+		const cache = join(rootPath, 'cache', 'compile');
+		mkdirSync(cache, { recursive: true });
+		writeFileSync(join(cache, `${process.version}-${process.arch}-${tag}${uid}`), 'not a directory');
+	}
 	if (scenario !== 'import-only') enableCompileCache(rootPath);
 	if (scenario === 'repeat') enableCompileCache(rootPath);
 	if (scenario === 'moved-root') enableCompileCache(join(rootPath, 'moved'));
@@ -49,6 +72,7 @@ async function main() {
 		mainDirectory: nodeModule.getCompileCacheDir?.(),
 		mainEnvDirectory: process.env.NODE_COMPILE_CACHE,
 		staleCacheRemains: staleCache ? existsSync(staleCache) : undefined,
+		warnings,
 		worker: await workerReport({}),
 		job: await workerReport({ env: { ...process.env, COMPILE_CACHE_TEST_JOB: 'job-1' } }),
 	};
