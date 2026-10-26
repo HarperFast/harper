@@ -43,6 +43,10 @@ interface HarperHttpRequest {
 	isWebSocket?: boolean;
 	/** Client socket IP (Harper Request getter; present on Node and Bun). */
 	ip?: string;
+	/** 'http' | 'https' (Harper Request getter; honors the PROXY v2 TLS flag on the UDS mirror). */
+	protocol?: string;
+	/** Host header / HTTP/2 :authority (Harper Request getter). */
+	host?: string;
 }
 
 interface HarperHttpResponse {
@@ -85,6 +89,7 @@ export function createHarperHttpHandler(profile: McpProfile) {
 			userObject: request.user as NormRequest['userObject'],
 			profile,
 			clientIp: request.ip,
+			baseUrl: request.protocol && request.host ? `${request.protocol}://${request.host}` : undefined,
 		};
 
 		const res = await handleMcpRequest(norm);
