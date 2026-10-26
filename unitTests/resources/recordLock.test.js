@@ -7,7 +7,6 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 const { MIN_LOCK_LEASE_MS, makeKeyLockHandle, resolveLockOptions } = require('#src/resources/recordLock');
-const { Transaction } = require('@harperfast/rocksdb-js');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -1519,12 +1518,16 @@ describe('Record locks (harper#483)', () => {
 		});
 	});
 
-	// A conflict retry or an open-iterator replay re-saves every write of an explicit transaction after
-	// commit() closed it. The re-save must keep the version the first save chose, as it does for an
-	// unlocked write, rather than re-stamp the locked one from its handle (harper#3487).
+	// Conflict retries and open-iterator replays re-save an explicit transaction's writes after commit()
+	// closed it; a re-save keeps the version the first save chose (harper#3487).
 	describe('explicit transaction retry and replay keep a lock write’s version', function () {
+		this.timeout(5000);
 		let StampTest;
+		let Transaction;
+		let originalCommit;
+		const cleanups = [];
 		before(function () {
+			({ Transaction } = require('../rocksdbBindings.mts').rocksdbBindings());
 			StampTest = table({
 				table: 'RecordLockStampTest',
 				database: 'test',
@@ -1535,24 +1538,28 @@ describe('Record locks (harper#483)', () => {
 				],
 			});
 		});
+		afterEach(async function () {
+			if (originalCommit) Transaction.prototype.commit = originalCommit;
+			originalCommit = undefined;
+			while (cleanups.length) await cleanups.pop()();
+		});
 		const stampedEntry = (recordId) => StampTest.primaryStore.getEntry(recordId);
-		// Committed from its own context, between the outer transaction's staging and its commit.
 		const putElsewhere = (record) => transaction({}, () => StampTest.put(record));
-		// The most native commit attempts any one transaction on StampTest's database made during `run`.
-		async function maxCommitAttempts(run) {
+		const holdLock = async (recordId) => {
+			const holder = await StampTest.lock(recordId, { hold: true, lease: 5000 });
+			cleanups.push(() => holder.unlock());
+			return holder;
+		};
+		// Native commit attempts per transaction id on StampTest's database.
+		function countCommitAttempts() {
 			const db = StampTest.primaryStore.store.db;
 			const attempts = new Map();
-			const originalCommit = Transaction.prototype.commit;
+			const commit = (originalCommit = Transaction.prototype.commit);
 			Transaction.prototype.commit = function (...args) {
 				if (this.store?.db === db) attempts.set(this.id, (attempts.get(this.id) ?? 0) + 1);
-				return originalCommit.apply(this, args);
+				return commit.apply(this, args);
 			};
-			try {
-				await run();
-			} finally {
-				Transaction.prototype.commit = originalCommit;
-			}
-			return Math.max(0, ...attempts.values());
+			return attempts;
 		}
 
 		it('a conflict retry keeps a mixed transaction’s locked write', async function () {
@@ -1561,37 +1568,30 @@ describe('Record locks (harper#483)', () => {
 			const otherId = id();
 			const conflictId = id();
 			for (const recordId of [lockedId, otherId, conflictId]) await StampTest.put({ id: recordId, n: 0 });
+			const attempts = countCommitAttempts();
 			let holder;
-			const attempts = await maxCommitAttempts(() =>
-				transaction(async (txn) => {
-					await StampTest.update(otherId, { n: 1 }); // staged first, so lock() leaves the clock unpinned
-					holder = await StampTest.lock(lockedId, { hold: true, lease: 5000 });
-					await delay(5);
-					await putElsewhere({ id: lockedId, n: 50 });
-					// The next native transaction versions this one above the plain write: without a retry, the holder wins.
-					txn.releaseReadTxn();
-					holder.set('n', 100);
-					await holder.save();
-					await StampTest.put({ id: conflictId, n: 1 });
-					await putElsewhere({ id: conflictId, n: 2 });
-				})
-			);
-			try {
-				assert.ok(attempts > 1, 'the conflicting write forced a retry');
-				const committed = stampedEntry(lockedId);
-				assert.strictEqual(committed.value.n, 100, 'the retry dropped the lock holder’s write');
-				assert.strictEqual(committed.version, stampedEntry(otherId).version, 'one version for the transaction');
-				holder.set('n', 101);
+			let outerId;
+			await transaction(async (txn) => {
+				await StampTest.update(otherId, { n: 1 }); // staged first, so lock() leaves the clock unpinned
+				holder = await holdLock(lockedId);
+				await delay(5);
+				await putElsewhere({ id: lockedId, n: 50 });
+				// A fresh native transaction versions this one above the plain write: without a retry, the holder wins.
+				txn.releaseReadTxn();
+				holder.set('n', 100);
 				await holder.save();
-				assert.strictEqual(
-					stampedEntry(lockedId).value.n,
-					101,
-					'the surviving hold writes above its committed version'
-				);
-				assert.ok(stampedEntry(lockedId).version > committed.version);
-			} finally {
-				await holder.unlock();
-			}
+				await StampTest.put({ id: conflictId, n: 1 });
+				outerId = txn.transaction.id;
+				await putElsewhere({ id: conflictId, n: 2 });
+			});
+			assert.ok(attempts.get(outerId) > 1, 'the conflicting write forced a retry');
+			const committed = stampedEntry(lockedId);
+			assert.strictEqual(committed.value.n, 100, 'the retry dropped the lock holder’s write');
+			assert.strictEqual(committed.version, stampedEntry(otherId).version);
+			holder.set('n', 101);
+			await holder.save();
+			assert.strictEqual(stampedEntry(lockedId).value.n, 101, 'the surviving hold writes above its committed version');
+			assert.ok(stampedEntry(lockedId).version > committed.version);
 		});
 
 		it('a conflict retry keeps transaction({ timestamp }) on its version and @updatedTime', async function () {
@@ -1601,18 +1601,17 @@ describe('Record locks (harper#483)', () => {
 			await StampTest.put({ id: lockedId, n: 0 });
 			await StampTest.put({ id: otherId, n: 0 });
 			const timestamp = Date.now() + 60_000;
-			let holder;
-			const attempts = await maxCommitAttempts(() =>
-				transaction({ timestamp }, async () => {
-					holder = await StampTest.lock(lockedId, { hold: true, lease: 5000 });
-					holder.set('n', 1);
-					await holder.save();
-					await StampTest.put({ id: otherId, n: 1 });
-					await putElsewhere({ id: otherId, n: 2 }); // conflicts on the unlocked sibling
-				})
-			);
-			await holder.unlock();
-			assert.ok(attempts > 1, 'the sibling conflict forced a retry');
+			const attempts = countCommitAttempts();
+			let outerId;
+			await transaction({ timestamp }, async (txn) => {
+				const holder = await holdLock(lockedId);
+				holder.set('n', 1);
+				await holder.save();
+				await StampTest.put({ id: otherId, n: 1 });
+				outerId = txn.transaction.id;
+				await putElsewhere({ id: otherId, n: 2 });
+			});
+			assert.ok(attempts.get(outerId) > 1, 'the sibling conflict forced a retry');
 			const locked = stampedEntry(lockedId);
 			assert.strictEqual(locked.value.n, 1);
 			assert.strictEqual(locked.version, timestamp, 'the retry re-stamped the locked write');
@@ -1623,25 +1622,25 @@ describe('Record locks (harper#483)', () => {
 		it('an open-iterator replay keeps transaction({ timestamp }) on its version', async function () {
 			if (isLMDB) return this.skip();
 			const lockedId = id();
+			const otherId = id();
 			await StampTest.put({ id: lockedId, n: 0 });
+			await StampTest.put({ id: otherId, n: 0 });
 			const timestamp = Date.now() + 60_000;
-			let holder;
-			let iterator;
 			await transaction({ timestamp }, async (txn) => {
-				holder = await StampTest.lock(lockedId, { hold: true, lease: 5000 });
+				const holder = await holdLock(lockedId);
 				holder.set('n', 1);
 				await holder.save();
-				// Still open at commit, so the commit replays its writes onto a fresh native transaction.
-				iterator = StampTest.search({ conditions: [] }, txn)[Symbol.asyncIterator]();
+				await StampTest.put({ id: otherId, n: 1 });
+				const iterator = StampTest.search({ conditions: [] }, txn)[Symbol.asyncIterator]();
+				cleanups.push(() => iterator.return?.());
 				await iterator.next();
-				assert.ok(txn.readTxnsUsed > 1, 'an iterator holds the read transaction');
+				assert.ok(txn.readTxnsUsed > 1, 'the iterator is still open at commit');
 			});
-			await iterator.return?.();
-			await holder.unlock();
 			const locked = stampedEntry(lockedId);
 			assert.strictEqual(locked.value.n, 1);
 			assert.strictEqual(locked.version, timestamp, 'the replay re-stamped the locked write');
 			assert.strictEqual(locked.value.updatedAt.getTime(), timestamp);
+			assert.strictEqual(stampedEntry(otherId).version, timestamp);
 		});
 	});
 
