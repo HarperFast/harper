@@ -165,11 +165,10 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		});
 	}
 
-	it('treats equal-version writes from unmapped origins as one write', async function () {
+	it('applies equal-version writes from distinct unmapped origins as two writes', async function () {
 		if (isLMDB) return this.skip();
-		// Unmapped origins (an id with no node name) are filed in `local`, where every key is minted, so
-		// their writes carry no origin key an equal version could be told apart by; an origin gives
-		// distinct writes distinct versions (resources/DESIGN.md, "Origin-closed timestamp floor").
+		// Unmapped origins (an id with no node name) are filed in `local` under minted keys, so only one
+		// origin's equal version is a re-delivery; distinct ids are distinct origins (harper#3516).
 		const version = Date.now() + 86400000;
 		const state = await fixture('UnmappedOrigins', version);
 		const { write } = await conflict(
@@ -178,8 +177,8 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 			{ version, originId: 35 },
 			{ version, originId: 36 }
 		);
-		assert.equal(write.skipped, true, 'an equal version in `local` is a re-delivery');
-		assert.equal((await state.T.get('counter')).count, 1);
+		assert.equal(write.skipped, false, 'another unmapped origin’s write is not this one');
+		assert.equal((await state.T.get('counter')).count, 2);
 	});
 
 	it('does not mistake its own staged counter for committed state when another key conflicts', async function () {

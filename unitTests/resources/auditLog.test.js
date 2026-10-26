@@ -27,6 +27,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const { transaction } = require('#src/resources/transaction');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
 const harperLogger = require('#js/utility/logging/harper_logger');
 const { logger } = require('#src/utility/logging/logger');
@@ -1676,7 +1677,7 @@ describe('Audit log', () => {
 		assert.strictEqual(store.nodeLogs[0], fakeLog, 'nodeLogs[0] must be the local log');
 	});
 
-	it('a numeric log id with no log misses without creating one', async function () {
+	it('a numeric log id with no log reads where put files it, without creating one', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // numeric log ids are RocksDB-only
 		const auditStore = AuditedTable.auditStore;
 		const id = 'numeric-log-miss';
@@ -1703,12 +1704,46 @@ describe('Audit log', () => {
 			'an absent node id must still search every log'
 		);
 
+		// An unnamed id's writes are filed in `local` (logForOrigin), so it reads `local`, and only its own entries.
 		const unknownNodeId = auditStore.loadLogs().length + 1000;
-		assert.equal(auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId), undefined);
+		assert.equal(
+			auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId),
+			undefined,
+			'another origin’s entry in `local` is not this id’s'
+		);
 		const range = auditStore.getRange({ start: 1, log: unknownNodeId });
-		assert.deepEqual(Array.from(range), []);
+		assert.ok(
+			Array.from(range).some((entry) => entry.recordId === id),
+			'an unnamed id reads `local`'
+		);
 		assert.equal(range.failedLogs.size, 0);
 		assert.equal(range.exactStartFailures.size, 0);
+		const unnamedId = 'numeric-log-unnamed';
+		const unnamedContext = { source: {}, sourceApply: true, timestamp: peerTime };
+		await transaction(unnamedContext, async () => {
+			const resource = await AuditedTable.getResource(unnamedId, unnamedContext);
+			return resource._writeUpdate(unnamedId, { name: unnamedId }, true, {
+				isNotification: true,
+				nodeId: unknownNodeId,
+				version: peerTime,
+			});
+		});
+		const unnamedEntry = Array.from(auditStore.getRange({ start: 1, log: unknownNodeId })).find(
+			(entry) => entry.recordId === unnamedId
+		);
+		assert.equal(unnamedEntry?.nodeId, unknownNodeId);
+		assert.equal(
+			auditStore.get(unnamedEntry.txnLogKey, AuditedTable.tableId, unnamedId, unknownNodeId)?.recordId,
+			unnamedId,
+			'an unnamed id finds its own entry in `local`'
+		);
+		assert.equal(auditStore.get(unnamedEntry.txnLogKey, AuditedTable.tableId, unnamedId, unknownNodeId + 1), undefined);
+		const namedNodeId = getIdOfRemoteNode('numeric-log-named-without-log', auditStore);
+		assert.deepEqual(
+			Array.from(auditStore.getRange({ start: 1, log: namedNodeId })),
+			[],
+			'a named id reads only its own log'
+		);
 		assert.ok(
 			!auditStore.rootStore.listLogs().includes(String(unknownNodeId)),
 			`reading by node id ${unknownNodeId} must not create a transaction log named after it`

@@ -10264,10 +10264,14 @@ export function makeTable(options): TableResourceClass {
 					if (nodeNameToId[node_name] === nodeId) updatedNodeName = node_name;
 					if (nodeNameToId[node_name] === existingNodeId) existingNodeName = node_name;
 				}
-				if (updatedNodeName > existingNodeName)
+				// Distinct ids never tie: callers read 0 as a re-delivery. An origin with no mapped name (v4-era,
+				// or relayed before its name arrives) ranks below every named one; two such order by local id.
+				if (updatedNodeName !== undefined && existingNodeName !== undefined)
 					// if the updated node name is greater (alphabetically), it wins (it doesn't precede the existing version)
-					return 1;
-				if (updatedNodeName === existingNodeName) return 0; // a tie
+					return updatedNodeName > existingNodeName ? 1 : -1;
+				if (updatedNodeName !== undefined) return 1;
+				if (existingNodeName !== undefined) return -1;
+				return nodeId > existingNodeId ? 1 : -1;
 			}
 			// transaction time is older than existing version, so we treat that as an update that loses to the existing record version
 			return -1;

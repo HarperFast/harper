@@ -219,11 +219,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 				throw new Error('recordId must be provided');
 			}
 			// this a request for a transaction log entry by a timestamp
+			// An origin with no log of its own shares `local` (logForOrigin), so only its own entries are its.
+			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
 			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.recordId === recordId && entry.tableId === tableId) {
+				if (entry.txnLogKey !== key) return; // no longer in this transaction
+				if (entry.recordId === recordId && entry.tableId === tableId && (!sharedLog || entry.nodeId === nodeId)) {
 					return entry;
 				}
-				if (entry.txnLogKey !== key) return; // no longer in this transaction
 			}
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead
@@ -373,7 +375,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		};
 		let log: TransactionLog | undefined;
 		if (typeof options.log === 'number') {
-			log = this.logById(options.log);
+			log = this.logById(options.log) ?? (this.isLocalOrigin(options.log) ? this.log : undefined);
 		} else if (options.log !== undefined) {
 			log = this.logByName.get(options.log);
 			if (!log) {
@@ -411,8 +413,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 						})
 					: () => queryIterator;
 		} else if (typeof options.log === 'number') {
-			// A node id is a key into the id→log map, never a log name (useLog would create one): a node
-			// with no log of its own has no entries here.
+			// A node id is a key into the id→log map, never a log name (useLog would create one): a named
+			// node with no log yet has no entries here.
 			iterable.iterate = () => [][Symbol.iterator]();
 		} else {
 			const onlyKeys = options.onlyKeys;
