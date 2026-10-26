@@ -628,7 +628,7 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 
 ## The primary key is never removable (`Table.removeAttributes`)
 
-`table()` re-prepends an omitted primary descriptor, so a declaration cannot carry a removal; only `Table.removeAttributes(names)` does, and it rejects any list naming `primaryKey` (ClientError 400) before changing anything. `drop_attribute` checks first. Before this, dropping the key from a dynamic table succeeded as a no-op and `ResourceBridge.dropAttribute` then stripped the key property from every stored record ([harper#3573](https://github.com/HarperFast/harper/pull/3573)). Enforced by `unitTests/resources/dropAttributePrimaryKey.test.js`.
+`table()` re-prepends an omitted primary descriptor, so a declaration cannot carry a removal; only `Table.removeAttributes(names)` does, and it rejects any list naming `primaryKey` (ClientError 400) before changing anything. `drop_attribute` checks first. Before this, dropping the key from a dynamic table succeeded as a no-op and `ResourceBridge.dropAttribute` then stripped the key property from every stored record ([harper#3574](https://github.com/HarperFast/harper/pull/3574)). Enforced by `unitTests/resources/dropAttributePrimaryKey.test.js`.
 
 ## A table is invisible to catalog scans until its create is complete (`databases.ts` `table()` / `initStores`)
 
