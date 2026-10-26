@@ -13,6 +13,7 @@ const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNa
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
 const fullTextPackageVersion = require('../../package.json').optionalDependencies['@harperfast/fulltext'];
+const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
 const limits = {
 	indexingThreads: 2,
@@ -46,6 +47,7 @@ class FakeNativeModule {
 			applyMutationBatch() {}
 			publish() {}
 			close() {}
+			searchPage() {}
 		};
 		this.runtimeInfoCalls = 0;
 		this.inspection = { state: 'missing' };
@@ -62,11 +64,11 @@ class FakeNativeModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 3,
+			queryApiVersion: 4,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
@@ -75,6 +77,7 @@ class FakeNativeModule {
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
 				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
 				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
@@ -140,22 +143,16 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	});
 
 	it('loads the published registry package and persists a searchable checkpoint', async function () {
-		const glibcVersion =
-			process.platform === 'linux' ? process.report?.getReport().header.glibcVersionRuntime : undefined;
-		const supportedTarget =
-			(process.platform === 'darwin' && process.arch === 'arm64') ||
-			(process.platform === 'linux' && glibcVersion && ['arm64', 'x64'].includes(process.arch)) ||
-			(process.platform === 'win32' && process.arch === 'x64');
-		if (!supportedTarget) this.skip();
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
 
 		const binding = await loadFullTextNativeBinding();
 		const runtime = await binding.runtimeInfo();
 		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
 		assert.strictEqual(runtime.tantivyVersion, '0.26.2');
-		assert.strictEqual(runtime.nativeAbiVersion, 8);
+		assert.strictEqual(runtime.nativeAbiVersion, 9);
 		assert.strictEqual(runtime.lifecycleApiVersion, 1);
 		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
-		assert.strictEqual(runtime.queryApiVersion, 3);
+		assert.strictEqual(runtime.queryApiVersion, 4);
 		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { surfaceTerms: true }));
 		await lifecycle.initialize();
@@ -482,11 +479,11 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 3,
+			queryApiVersion: 4,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
@@ -495,6 +492,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
 				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
 				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
@@ -511,7 +509,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
@@ -520,6 +518,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 				maxRecordIdBytes: 4_096,
 				maxRecordVersionBytes: 4_096,
 				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
 				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
