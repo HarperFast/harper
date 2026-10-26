@@ -287,6 +287,7 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
+const NUMERIC_TYPES = new Set(['Int', 'Long', 'Float', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
@@ -8403,11 +8404,38 @@ export function makeTable(options): TableResourceClass {
 			const addError = (path: string, code: string, message: string) => {
 				(validationErrors || (validationErrors = [])).push({ path, code, message });
 			};
-			const validateValue = (value, attribute: Attribute, name) => {
+			// Returns a coerced replacement for `value`, or undefined to keep it. A patch operation envelope
+			// (`{ __op__: 'add', value }`) is never replaced: the commit applies it, so only its operand is
+			// checked and coerced.
+			const validateValue = (value, attribute: Attribute, name, isOperand?: boolean) => {
+				if (patch && !isOperand && value?.__op__) {
+					if (attribute.type && attribute.type !== 'Any') {
+						if (!NUMERIC_TYPES.has(attribute.type)) {
+							addError(
+								name,
+								'type',
+								`Operation ${stringify(value.__op__)} in property ${name} requires a numeric property, not ${attribute.type}`
+							);
+							return;
+						}
+						if (value.value == null) {
+							addError(
+								name,
+								'type',
+								`Value ${stringify(value.value)} for operation ${stringify(value.__op__)} in property ${name} must be a number`
+							);
+							return;
+						}
+					}
+					const coerced = validateValue(value.value, attribute, name, true);
+					if (coerced === undefined) return;
+					if (Object.isFrozen(value)) return { __op__: value.__op__, value: coerced };
+					value.value = coerced;
+					return;
+				}
 				if (attribute.type && value != null) {
-					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
-						if (typeof value !== 'object') {
+						if (typeof value !== 'object' || Array.isArray(value)) {
 							addError(
 								name,
 								'type',
@@ -8415,31 +8443,32 @@ export function makeTable(options): TableResourceClass {
 									attribute.type ? ' (' + attribute.type + ')' : ''
 								}`
 							);
-						}
-						const properties = attribute.properties;
-						for (let i = 0, l = properties.length; i < l; i++) {
-							const attribute = properties[i];
-							if (attribute.relationship || attribute.computed) {
-								if (record.hasOwnProperty(attribute.name)) {
-									addError(
-										`${name}.${attribute.name}`,
-										'computed',
-										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
-									);
+						} else {
+							const properties = attribute.properties;
+							for (let i = 0, l = properties.length; i < l; i++) {
+								const attribute = properties[i];
+								if (attribute.relationship || attribute.computed) {
+									if (Object.hasOwn(value, attribute.name)) {
+										addError(
+											`${name}.${attribute.name}`,
+											'computed',
+											`Computed property ${name}.${attribute.name} may not be directly assigned a value`
+										);
+									}
+									continue;
 								}
-								continue;
+								const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
+								if (updated !== undefined) value[attribute.name] = updated;
 							}
-							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
-							if (updated) value[attribute.name] = updated;
-						}
-						if (attribute.sealed && value != null && typeof value === 'object') {
-							for (const key in value) {
-								if (!properties.find((property) => property.name === key)) {
-									addError(
-										`${name}.${key}`,
-										'unknown_property',
-										`Property ${key} is not allowed within object in property ${name}`
-									);
+							if (attribute.sealed) {
+								for (const key in value) {
+									if (!properties.find((property) => property.name === key)) {
+										addError(
+											`${name}.${key}`,
+											'unknown_property',
+											`Property ${key} is not allowed within object in property ${name}`
+										);
+									}
 								}
 							}
 						}
@@ -8524,7 +8553,7 @@ export function makeTable(options): TableResourceClass {
 										for (let i = 0, l = value.length; i < l; i++) {
 											const element = value[i];
 											const updated = validateValue(element, attribute.elements, name + '[*]');
-											if (updated) value[i] = updated;
+											if (updated !== undefined) value[i] = updated;
 										}
 									}
 								} else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be an Array`);
