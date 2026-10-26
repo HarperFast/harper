@@ -162,12 +162,6 @@ unit switch does not shift the estimate on its own. The ef term remains the conf
 not the runtime auto-scaled value, so the planner increasingly underestimates vector traversal cost
 as an automatically scaled graph grows.
 
-## A non-driving filter admits only what its condition's index scan returns (`search.ts` `filterByType`, harper#3212)
-
-`Table.search` filters every condition but the leading one with `filterByType`, so it must match `searchByIndex`: no index
-holds an omitted value and `lt`/`le` ranges start above `null`, so those reject both and `ne null` rejects omitted values.
-SQL `IS NULL` (omitted counts as NULL) is pushed as filter-only `{ ne, null, negated: true }`, never an index driver.
-
 ## A filtered vector search may admit from an index key set only if the set holds every predicate match
 
 `search.ts → planCandidateKeys` turns companion AND conditions a secondary index answers (equality,

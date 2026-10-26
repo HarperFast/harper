@@ -3524,9 +3524,8 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 	it('returns what the predicate path returns when a condition admits a record the index does not hold', async () => {
 		const customIndex = A.indices.vector.customIndex;
 		for (const [condition, planned] of [
-			// Satisfied by id 0, which has no rank, so no index range can supply every match.
-			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
 			// Satisfied by a rank of 0, which a record written as -0 holds and its index entry cannot supply.
+			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
 			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
 			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
 			[{ attribute: 'rank', comparator: 'equals', value: 0 }, false],

@@ -1,9 +1,7 @@
 /**
- * SQL WHERE conjunctions over indexed columns holding values, explicit NULLs and omitted attributes (harper#3212).
- * Table.search drives one condition through its index and filters the rest in memory; the row set (and the rows an
- * UPDATE or DELETE touches) must not depend on which conjunct leads. `a` and `b` are seeded symmetrically, so a
- * commuted pair such as `a <= 1 AND b <= 1` / `b <= 1 AND a <= 1` ties on estimate and each order leads once.
- * An omitted attribute is NULL: it fails every comparison and matches IS NULL.
+ * harper#3212: SELECT, UPDATE and DELETE row sets over values, explicit NULLs and omitted attributes must not depend on
+ * which conjunct leads the index scan. `a` and `b` are seeded symmetrically, so a commuted pair such as
+ * `a <= 1 AND b <= 1` / `b <= 1 AND a <= 1` ties on estimate and each order leads once.
  */
 
 import { suite, test, before, after } from 'node:test';
@@ -155,7 +153,6 @@ for (const sqlEngine of ['auto', 'new']) {
 				}
 			});
 
-			// REST shares Table.search
 			for (const [query, expected] of [
 				['c=alpha&b=lt=3', ['r1']],
 				['b=lt=3&c=alpha', ['r1']],

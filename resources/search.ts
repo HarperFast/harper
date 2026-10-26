@@ -1769,6 +1769,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
+					if (recordValue === undefined) return false;
 					const cmpStart = compareKeys(recordValue, value[0]);
 					const cmpEnd = compareKeys(recordValue, value[1]);
 					return (startInclusive ? cmpStart >= 0 : cmpStart > 0) && (endInclusive ? cmpEnd <= 0 : cmpEnd < 0);
@@ -1788,14 +1789,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
 			break;
 		}
+		// A range admits only what searchByIndex's range for it holds: no index has an entry for an omitted
+		// (undefined) value, and lt/le ranges start above null.
 		case 'gt':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) > 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) > 0
+			);
 			break;
 		case 'ge':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) >= 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) >= 0
+			);
 			break;
-		// Match searchByIndex: an lt/le range starts above null, and no index holds an entry for an omitted
-		// (undefined) value, so `ne null` must exclude it too.
 		case 'lt':
 			baseFilter = attributeComparator(
 				attribute,
@@ -1809,6 +1816,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			);
 			break;
 		case 'ne':
+			// `ne null` is the range above null, so an omitted value fails it too
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
