@@ -944,6 +944,8 @@ describe('Test configValidator module', () => {
 			const result = configValidator(config, true);
 			expect(result.error).to.not.be.undefined;
 			expect(result.error.message).to.include("'mcp.operations.enabled' must be a boolean");
+			config.mcp = { operations: { enabled: 'false' } };
+			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
 		});
 
 		it('rejects mcp.operations.maxTools below 1', () => {

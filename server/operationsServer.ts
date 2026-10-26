@@ -214,7 +214,7 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 	registerContentHandlers(app);
 
 	// Presence-based enablement (matches Harper's `replication` convention):
-	// register iff `mcp.operations` is present in the merged config. The
+	// register iff `mcp.operations` is present and not `enabled: false`. The
 	// nested config tree from `getConfigObj()` is used directly here because
 	// Joi defaults under `mcp` are not propagated to env.get's flat map —
 	// only six hardcoded defaults are re-applied in configUtils.validateConfig.
