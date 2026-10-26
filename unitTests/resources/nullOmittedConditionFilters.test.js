@@ -1,9 +1,4 @@
-/**
- * Table.search runs its first condition as an index scan and the rest as in-memory filters. The index holds no
- * entry for an omitted attribute, and an `lt`/`le` range starts above `null`, so a non-driving filter must exclude
- * null and omitted values exactly as that scan does, or the rows returned depend on which condition leads
- * (harper#3212).
- */
+// harper#3212
 
 require('../testUtils');
 const assert = require('node:assert');

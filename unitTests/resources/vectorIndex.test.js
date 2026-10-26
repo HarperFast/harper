@@ -3650,9 +3650,9 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
-	it('keeps the predicate on a lt/le allow-set over an untyped attribute that can mix BigInt and Number', async () => {
+	it('leaves lt/le on an untyped attribute to the predicate, which nested arrays and BigInts can defeat', async () => {
 		const M = table({
-			table: 'HNSWAllowMixedNumeric',
+			table: 'HNSWAllowUntypedRange',
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
@@ -3661,43 +3661,47 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			],
 		});
 		try {
-			// -2n has the same index key as -2, but `-2n < -1` is false to the record predicate
+			// -2n has the index key of -2 but fails `< -1`; [[-2]] passes it but has no index entry
 			await M.put(1, { rank: -2n, vector: [0, 0] });
-			await M.put(2, { rank: 5, vector: [0.5, 0] });
-			await M.put(3, { rank: -2, vector: [1, 0] });
+			await M.put(2, { rank: [[-2]], vector: [0.25, 0] });
+			await M.put(3, { rank: 5, vector: [0.5, 0] });
+			await M.put(4, { rank: -2, vector: [1, 0] });
+			for (let i = 10; i < 60; i++) await M.put(i, { rank: i, vector: [i, 0] });
 			const customIndex = M.indices.vector.customIndex;
 			const original = customIndex.search;
-			let plan;
-			customIndex.search = function (condition, context, options) {
-				plan = options.candidateKeys && options.candidateKeys.collect(100_000);
-				return original.call(this, condition, context, options);
-			};
 			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
-			let results;
 			try {
-				results = await fromAsync(
-					M.search(
-						{
-							conditions: [
-								{ attribute: 'vector', comparator: 'sort', ...sort },
-								{ attribute: 'rank', comparator: 'lt', value: -1 },
-							],
-							sort,
-							enforceExecutionOrder: true,
-							select: ['id'],
-							limit: 1,
-						},
-						{}
-					)
-				);
+				for (const comparator of ['lt', 'le']) {
+					let candidateKeys;
+					customIndex.search = function (condition, context, options) {
+						candidateKeys = options.candidateKeys;
+						return original.call(this, condition, context, options);
+					};
+					const results = await fromAsync(
+						M.search(
+							{
+								conditions: [
+									{ attribute: 'vector', comparator: 'sort', ...sort },
+									{ attribute: 'rank', comparator, value: -1 },
+								],
+								sort,
+								enforceExecutionOrder: true,
+								select: ['id'],
+								limit: 2,
+							},
+							{}
+						)
+					);
+					assert.strictEqual(candidateKeys, undefined, `${comparator}: no allow-set`);
+					assert.deepStrictEqual(
+						results.map((record) => record.id),
+						[2, 4],
+						comparator
+					);
+				}
 			} finally {
 				customIndex.search = original;
 			}
-			assert.strictEqual(plan.complete, false);
-			assert.deepStrictEqual(
-				results.map((record) => record.id),
-				[3]
-			);
 		} finally {
 			M.dropTable();
 		}

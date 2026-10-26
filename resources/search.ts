@@ -559,21 +559,18 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	const attributeType = findAttribute(table.attributes, attributeName)?.type;
 	const numericType =
 		attributeType === 'Int' || attributeType === 'Long' || attributeType === 'Float' || attributeType === 'BigInt';
-	// ordered-binary encodes a BigInt as the Number of the same value, which the record predicate never matches
-	// or orders as equal, so where both can be stored an equality or lt/le range holds keys the predicate rejects.
+	// On an untyped attribute an lt/le set could omit a nested-array element the predicate admits but the index
+	// never holds, or hold a BigInt that shares a Number's index key but fails the predicate.
+	if ((comparator === 'lt' || comparator === 'le') && !numericType) return undefined;
 	const predicateExact =
-		comparator === 'equals'
-			? value === null || typeof value === 'string' || typeof value === 'boolean' || numericType
-			: comparator === 'lt' || comparator === 'le'
-				? numericType
-				: true;
+		comparator !== 'equals' || value === null || typeof value === 'string' || typeof value === 'boolean' || numericType;
 	let start;
 	let end;
 	let inclusiveEnd = false;
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// Just above the null block, like searchByIndex: the record predicate rejects null and admits `false`.
+			// just above the null block, like searchByIndex
 			start = null;
 			exclusiveStart = true;
 			end = value;
