@@ -81,6 +81,9 @@ export function createHarperHttpHandler(profile: McpProfile) {
 			throw error;
 		}
 
+		// uWS passes X-Forwarded-Proto through verbatim (e.g. `ws`), and only an http(s) base
+		// makes valid harper+rest:// and OpenAPI URLs; anything else falls back to the config guess.
+		const protocol = request.protocol === 'http' || request.protocol === 'https' ? request.protocol : undefined;
 		const norm: NormRequest = {
 			method: request.method,
 			headers,
@@ -89,7 +92,7 @@ export function createHarperHttpHandler(profile: McpProfile) {
 			userObject: request.user as NormRequest['userObject'],
 			profile,
 			clientIp: request.ip,
-			baseUrl: request.protocol && request.host ? `${request.protocol}://${request.host}` : undefined,
+			baseUrl: protocol && request.host ? `${protocol}://${request.host}` : undefined,
 		};
 
 		const res = await handleMcpRequest(norm);
