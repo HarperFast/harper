@@ -114,7 +114,8 @@ export function admittedIsolatedApplications(
  * Why deploying `candidate` isolated would leave it without a dedicated worker. It is placed where the reconcile after
  * the deploy finds it: at its own root-config entry, or where a new one enumerates. Its own refused release does not
  * count, since the deploy replaces it. A reconcile scoped to it stops no other worker, so those still running count
- * against `threads.maxIsolated` too, unless their refusal withdrew their slot (`RejectedReleaseError.slotWithdrawn`).
+ * against `threads.maxIsolated` too, unless their refusal withdrew their slot (`RejectedReleaseError.slotWithdrawn`),
+ * which main does only for a release that is isolated: one turned shared keeps its old worker until the pool restarts.
  */
 export function isolatedApplicationAdmissionRefusal(
 	candidate: string,
@@ -128,11 +129,13 @@ export function isolatedApplicationAdmissionRefusal(
 	);
 	const othersFailedClosed = new Map(failedClosed);
 	othersFailedClosed.delete(candidate);
+	const slotWithdrawn = (name: string) =>
+		names.includes(name) && (othersFailedClosed.get(name) as RejectedReleaseError | undefined)?.slotWithdrawn;
 	return (
 		admittedIsolatedApplications(running, othersFailedClosed, names).refused.get(candidate) ??
 		isolatedApplicationCapacityRefusal(
 			candidate,
-			running.filter((name) => !(othersFailedClosed.get(name) as RejectedReleaseError | undefined)?.slotWithdrawn)
+			running.filter((name) => !slotWithdrawn(name))
 		)
 	);
 }

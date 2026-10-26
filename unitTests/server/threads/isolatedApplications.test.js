@@ -236,6 +236,11 @@ describe('isolated applications (harper#642 tier 2)', () => {
 				/threads\.maxIsolated/,
 				'a record that cannot be read refuses the release but stops no worker'
 			);
+			assert.match(
+				String(refusal('new', ['turned-shared'], new Map([['turned-shared', rejected]]), {}, [])),
+				/threads\.maxIsolated/,
+				'main withdraws the worker only of a release that is isolated'
+			);
 		});
 
 		it('refuses every candidate with a budget of zero', () => {

@@ -188,8 +188,8 @@ export function rejectionReason(live: LiveCertification, incarnation: string): s
 export class RejectedReleaseError extends Error {
 	/**
 	 * Rejected and still live, failed closed, because there was nothing to restore or main could not record the
-	 * rejection: deciding it withdrew any dedicated worker. Not a release being restored, nor a record that cannot be read
-	 * or was never decided.
+	 * rejection: if the release is isolated, deciding it withdrew its dedicated worker. Not a release being restored, nor a
+	 * record that cannot be read or was never decided.
 	 */
 	slotWithdrawn: boolean;
 	constructor(component: string, deploymentId: string, reason: string, slotWithdrawn = false) {
