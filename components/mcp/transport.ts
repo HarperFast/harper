@@ -848,8 +848,6 @@ async function dispatchPromptsGet(
 			profile: request.profile,
 			sessionId: session.id,
 		});
-		// An author render that returns the wrong shape (e.g. a bare messages array)
-		// would otherwise reach the client as an empty prompt with no trace.
 		if (!Array.isArray(rendered?.messages)) {
 			harperLogger.warn(`MCP prompts/get ${name}: render must return { messages: [...] }, got ${typeName(rendered)}`);
 			return jsonResponse(
