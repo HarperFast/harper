@@ -5304,7 +5304,8 @@ export function makeTable(options): TableResourceClass {
 				// A precondition lock only refreshes the entry its predicate is checked against: a pending
 				// tracked write keeps the record it was made against (a full replacement's cleared one too),
 				// and the record does not become lock-writable.
-				if (this.#savingOperation instanceof ConditionLockWait) this.#record = callerRecord;
+				if (callerRecord !== undefined && this.#savingOperation instanceof ConditionLockWait)
+					this.#record = callerRecord;
 				return this;
 			}
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that

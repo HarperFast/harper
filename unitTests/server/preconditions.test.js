@@ -1643,9 +1643,11 @@ describe('conditional writes through a tracked record instance', () => {
 		let lockSettled;
 		class DelayedSave extends Tracked {
 			async lock(...args) {
-				const locked = await super.lock(...args);
-				lockSettled.resolve();
-				return locked;
+				try {
+					return await super.lock(...args);
+				} finally {
+					lockSettled.resolve();
+				}
 			}
 			async patch(data) {
 				lockSettled = Promise.withResolvers();
@@ -1700,9 +1702,11 @@ describe('conditional writes through a tracked record instance', () => {
 		const lockSettled = Promise.withResolvers();
 		class AcrossLock extends Tracked {
 			async lock(...args) {
-				const locked = await super.lock(...args);
-				lockSettled.resolve();
-				return locked;
+				try {
+					return await super.lock(...args);
+				} finally {
+					lockSettled.resolve();
+				}
 			}
 			async patch(data) {
 				this.addTo('n', data.add);
@@ -1784,6 +1788,25 @@ describe('conditional writes through a tracked record instance', () => {
 		assert.strictEqual(response.status, 204, await bodyOf(response));
 		assert.strictEqual(observed, undefined);
 		assert.deepStrictEqual(stored('replace-update'), { id: 'replace-update', name: 'after', m: 2 });
+	});
+
+	it('reads the stored record under the precondition lock through a record it never loaded', async () => {
+		let seen;
+		class Unloaded extends Tracked {
+			static loadAsInstance = false;
+			async patch(target, data) {
+				await this.update();
+				seen = this.name;
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		resources.set('Unloaded', Unloaded, { rest: true });
+		await Tracked.put('unloaded', { n: 10, name: 'before' });
+		const response = await request('PATCH', '/Unloaded/unloaded', { add: 5 }, { 'if-match': etagOf('unloaded') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(seen, 'before');
+		assert.deepStrictEqual(stored('unloaded'), { id: 'unloaded', n: 15, name: 'before' });
 	});
 
 	it('keeps a full replacement on the instance and closes it on save()', async () => {
