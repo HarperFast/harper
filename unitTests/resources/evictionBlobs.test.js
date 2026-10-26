@@ -298,6 +298,45 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		assert.equal(Table.primaryStore.getEntry('gained-expiry'), undefined, 'omitted, only the version is checked');
 	});
 
+	it('evict() keeps a cached record a revalidation renewed under an unchanged source version', async function () {
+		const Table = newTable();
+		const sourceVersion = Date.now() - 10_000;
+		let sourceExpiresAt = EXPIRED();
+		Table.sourcedFrom({
+			get(id, context) {
+				context.lastModified = sourceVersion;
+				context.expiresAt = sourceExpiresAt;
+				return { id, tag: 'cached' };
+			},
+		});
+		await Table.get('revalidated');
+		await waitFor(() => Table.primaryStore.getEntry('revalidated') && !Table.primaryStore.hasLock('revalidated'), {
+			message: 'the first fill must commit',
+		});
+		const read = Table.primaryStore.getEntry('revalidated');
+		sourceExpiresAt = LIVE();
+		await Table.get('revalidated');
+		await waitFor(
+			() =>
+				Table.primaryStore.getEntry('revalidated')?.expiresAt === sourceExpiresAt &&
+				!Table.primaryStore.hasLock('revalidated'),
+			{ message: 'the revalidation must commit' }
+		);
+		const revalidated = Table.primaryStore.getEntry('revalidated');
+		assert.equal(revalidated.version, read.version, 'precondition: the revalidation kept the source version');
+		assert.ok(revalidated.metadataFlags & VERSION_REUSED, 'precondition: the version is marked reused');
+
+		await Table.evict('revalidated', read.value, read.version, undefined, read.expiresAt);
+		assert.ok(Table.primaryStore.getEntry('revalidated'), 'the revalidated record must survive');
+		assert.equal(Table.indices.tag.getValuesCount('cached'), 1);
+		await Table.evict('revalidated', revalidated.value, revalidated.version, undefined, revalidated.expiresAt);
+		assert.equal(
+			Table.primaryStore.getEntry('revalidated'),
+			undefined,
+			'an eviction of what is stored still removes it'
+		);
+	});
+
 	it('the read-path expiry check hands evict() the expiry it read', async function () {
 		const Table = newTable();
 		await Table.put('read', { id: 'read' }, { expiresAt: EXPIRED() });
@@ -418,8 +457,7 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		};
 		const restore = scanReadsBefore(Table, [read, unchanged]);
 		try {
-			// the first attempt and its one retry both conflict, so the batch is abandoned
-			await waitFor(() => conflicts >= 2, { message: 'both batch commits must conflict' });
+			await waitFor(() => conflicts >= 2, { message: 'the first batch commit and its one retry must conflict' });
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 			restore();

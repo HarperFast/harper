@@ -10741,7 +10741,7 @@ export function makeTable(options): TableResourceClass {
 					if (entry.value != null) continue; // resurrected since the scan
 				} else {
 					if (entry.value == null) continue; // already removed
-					// the scan routed it here on flags read before a same-version write could add these
+					// a same-version write can add these after the scan routed the record here
 					if (entry.metadataFlags & (HAS_BLOBS | REPLICA)) continue;
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
 					updateIndices(item.key, entry.value, null, options);
@@ -11031,7 +11031,7 @@ export function makeTable(options): TableResourceClass {
 									recordEntry.value,
 									recordEntry.version,
 									undefined,
-									recordEntry.expiresAt ?? null
+									fieldExpiresAtMs(recordEntry.value)
 								);
 								if (eviction) {
 									const backpressure = trackInFlight(eviction);
@@ -11567,8 +11567,7 @@ export function makeTable(options): TableResourceClass {
 	}
 }
 
-// A reused version names more than one stored value, so it vouches for an eviction decision only while the
-// expiry that decision read is still the entry's own.
+// a reused version names more than one stored value (RecordEncoder.ts VERSION_REUSED)
 function reusedVersionChangedExpiry(entry: Entry, observedExpiresAt: number | null | undefined): boolean {
 	return Boolean(entry.metadataFlags & VERSION_REUSED) && (entry.expiresAt ?? null) !== (observedExpiresAt ?? null);
 }
