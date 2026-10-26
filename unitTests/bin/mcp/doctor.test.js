@@ -86,7 +86,7 @@ describe('bin/mcp/doctor.runDoctor', () => {
 		assert.match(result.steps[0].detail, /JSON-RPC error: nope/);
 	});
 
-	it('tolerates session-cleanup failure (still reports overall OK)', async () => {
+	it('reports a 405 session cleanup as OK (allowClientDelete off by default)', async () => {
 		fake = await startFakeServer(async (req, res) => {
 			const body = await readBody(req);
 			if (req.method === 'POST') {
@@ -109,8 +109,36 @@ describe('bin/mcp/doctor.runDoctor', () => {
 			res.end();
 		});
 		const result = await runDoctor({ ...BASE, target: `http://127.0.0.1:${fake.port}` });
-		// initialize + tools/list pass; cleanup fails but doesn't tank overall OK.
+		// 405 is the default config, reported as OK so the summary doesn't contradict a FAIL line.
 		assert.equal(result.ok, true);
-		assert.equal(result.steps.find((s) => s.name === 'session cleanup').ok, false);
+		const cleanup = result.steps.find((s) => s.name === 'session cleanup');
+		assert.equal(cleanup.ok, true);
+		assert.match(cleanup.detail, /allowClientDelete/);
+	});
+
+	it('fails overall when session cleanup errors with something other than 405', async () => {
+		fake = await startFakeServer(async (req, res) => {
+			const body = await readBody(req);
+			if (req.method === 'POST') {
+				const parsed = JSON.parse(body);
+				res.writeHead(200, {
+					'content-type': 'application/json',
+					...(parsed.method === 'initialize' ? { 'mcp-session-id': 'sid-4' } : {}),
+				});
+				res.end(
+					JSON.stringify({
+						jsonrpc: '2.0',
+						id: parsed.id,
+						result: parsed.method === 'initialize' ? { protocolVersion: '2025-06-18' } : { tools: [] },
+					})
+				);
+				return;
+			}
+			res.writeHead(500);
+			res.end();
+		});
+		const result = await runDoctor({ ...BASE, target: `http://127.0.0.1:${fake.port}` });
+		assert.equal(result.ok, false);
+		assert.equal(result.steps.find((s) => s.name === 'session cleanup').detail, 'HTTP 500');
 	});
 });

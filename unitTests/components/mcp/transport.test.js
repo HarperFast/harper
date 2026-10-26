@@ -1,5 +1,6 @@
 const assert = require('node:assert');
 const rewire = require('rewire');
+const { AccessViolation } = require('#src/utility/errors/hdbError');
 const transport_mod = rewire('#js/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
@@ -1167,6 +1168,22 @@ describe('mcp/transport', () => {
 					})
 				);
 				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('returns -32602 permission denied with the request id when the subscribe is denied', async () => {
+				_setSubscribeImplForTest(async () => {
+					throw new AccessViolation({ username: 'alice' });
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(76, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.id, 76);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.match(res.jsonBody.error.message, /^permission denied: /);
 			});
 
 			it('returns -32602 when params.uri is missing', async () => {
