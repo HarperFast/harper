@@ -778,7 +778,7 @@ describe('compartment importHook', () => {
 			assert.strictEqual(result.wrapped, 'X');
 		});
 
-		it('does not fail the import for a getter that throws', async () => {
+		it('does not fail the import for a getter or Proxy trap that throws', async () => {
 			writePackage(
 				'getterpkg',
 				{
@@ -789,6 +789,16 @@ describe('compartment importHook', () => {
 			);
 			const result = await importKeys("export { ok } from 'getterpkg';\n");
 			assert.strictEqual(result.ok, 1);
+
+			writePackage(
+				'proxypkg',
+				{
+					'index.cjs': "module.exports = new Proxy({ ok: 2 }, { ownKeys() { throw new Error('ownKeys trap'); } });\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const proxyResult = await importKeys("import proxypkg from 'proxypkg';\nexport const ok = proxypkg.ok;\n");
+			assert.strictEqual(proxyResult.ok, 2);
 		});
 
 		it('keeps an own __proto__ export as a name', async () => {
