@@ -778,17 +778,21 @@ describe('compartment importHook', () => {
 			assert.strictEqual(result.wrapped, 'X');
 		});
 
-		it('does not fail the import for a getter or Proxy trap that throws', async () => {
+		it('does not invoke an unextracted getter or fail for a Proxy trap that throws', async () => {
 			writePackage(
 				'getterpkg',
 				{
 					'index.cjs':
-						"exports.ok = 1;\nfor (const name of ['bad']) Object.defineProperty(exports, name, { enumerable: true, get() { throw new Error('unused getter'); } });\n",
+						'exports.ok = 1;\nexports.getterRuns = 0;\n' +
+						"for (const name of ['lazy']) Object.defineProperty(exports, name, { enumerable: true, get() { exports.getterRuns++; throw new Error('unused getter'); } });\n",
 				},
 				{ main: 'index.cjs' }
 			);
-			const result = await importKeys("export { ok } from 'getterpkg';\n");
+			const result = await importKeys(
+				"import getterpkg, { ok } from 'getterpkg';\nexport { ok };\nexport const runs = getterpkg.getterRuns;\n"
+			);
 			assert.strictEqual(result.ok, 1);
+			assert.strictEqual(result.runs, 0);
 
 			writePackage(
 				'proxypkg',
