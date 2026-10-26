@@ -1,7 +1,13 @@
 import { dirname } from 'node:path';
 import { Script } from 'node:vm';
 import { scopedTableFactory, table, databaseResidencyBlockReason, databases as loadedDatabases } from './databases.ts';
-import { prepareResidencyDeclaration } from './residencyMaps.ts';
+import {
+	prepareResidencyDeclaration,
+	readResidencyMap,
+	assertResidencyEngine,
+	ResidencyPlacementError,
+} from './residencyMaps.ts';
+import { normalizeResidencyPolicy, sameResidencyPolicy } from './residencyPolicy.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 import { Resources } from './Resources.ts';
@@ -548,8 +554,10 @@ async function processGraphQLSchema(
 		const declaration = shardedDeclarations.get(typeDef);
 		if (declaration?.by !== undefined) {
 			const attribute = typeDef.attributes.find((attribute) => attribute.name === declaration.by);
-			if (!attribute || attribute.computed || attribute.type === 'FullText')
+			if (!attribute || attribute.computed || attribute.relationship)
 				throw new ClientError('@sharded by must name a declared stored attribute', 400);
+			if (!declaration.slotFrom && !['ID', 'String', 'Int', 'Float', 'Long', 'Any'].includes(attribute.type))
+				throw new ClientError('@sharded by must name a string or number attribute unless slotFrom is provided', 400);
 		}
 		if (declaration && branches?.has(typeDef.database || 'data'))
 			throw new ClientError('Cannot use sharding in application database branches', 400);
@@ -564,15 +572,31 @@ async function processGraphQLSchema(
 		const residencyDeadline = Date.now() + 5000;
 		for (; !quarantined;) {
 			try {
-				if (declaration)
-					typeDef.residency = await prepareResidencyDeclaration(typeDef.database || 'data', typeDef.table, declaration);
+				if (declaration) {
+					const database = typeDef.database || 'data';
+					const previous = loadedDatabases[database]?.[typeDef.table]?.residency;
+					if (previous) assertResidencyEngine(database);
+					const resolved = normalizeResidencyPolicy({
+						...declaration,
+						slots: declaration.slots ?? readResidencyMap(database)?.slots ?? 1024,
+					});
+					typeDef.residency =
+						previous && sameResidencyPolicy(previous, resolved)
+							? previous
+							: await prepareResidencyDeclaration(database, typeDef.table, declaration);
+				}
 				typeDef.tableClass = declareTable(typeDef);
 				break;
 			} catch (error) {
+				if (error instanceof ResidencyPlacementError && error.statusCode === 503 && !(error as any).residencyMapBusy) {
+					typeDef.tableClass = loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+					break;
+				}
 				if (!declaration || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;
 				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
 		}
+		if (!typeDef.tableClass) continue;
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
 			const pk = (typeDef.attributes as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';

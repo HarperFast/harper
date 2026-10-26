@@ -86,6 +86,51 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	assert.ok(joined.Ordinary && joined.Placed, 'the configured database loads both physical catalogs');
 	assert.notStrictEqual(joined.Ordinary.dbisDB, joined.Placed.dbisDB, 'the fixture must span native roots');
 	assert.strictEqual(Object.values(joined)[0], joined.Ordinary, 'the first catalog has no declarative table');
+	if (process.argv[3] === 'owner-assertion') {
+		const { hasExistingOwnerAssertion } = require('#src/resources/shardingCompleteness');
+		const key = [Symbol.for('sharding-existing-owner'), 'joined_catalogs'];
+		const request = {
+			database: 'joined_catalogs',
+			existing_owner: true,
+			expected_digest: readResidencyMap('joined_catalogs').digest,
+		};
+		await initializeResidencySlots(request);
+		assert.equal(hasExistingOwnerAssertion('joined_catalogs'), true);
+		const first = joined.Ordinary.dbisDB.getSync(key);
+		const second = joined.Placed.dbisDB.getSync(key);
+		assert.equal(first.roots.length, new Set(Object.values(joined).map((Table) => Table.dbisDB)).size);
+		assert.deepEqual(first, second);
+		await joined.Placed.dbisDB.remove(key);
+		assert.equal(hasExistingOwnerAssertion('joined_catalogs'), false, 'partial assertion cannot certify the database');
+		await initializeResidencySlots(request);
+		assert.equal(hasExistingOwnerAssertion('joined_catalogs'), true, 'retry repairs a partial assertion');
+		await joined.Placed.dbisDB.put(key, { ...second, roots: second.roots.slice(1) });
+		assert.equal(
+			hasExistingOwnerAssertion('joined_catalogs'),
+			false,
+			'each receipt must agree on the complete root set'
+		);
+		await initializeResidencySlots(request);
+		const Later = table({
+			database: 'joined_catalogs',
+			table: 'LaterLegacy',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Later.put('old', { id: 'old' });
+		table({
+			database: 'joined_catalogs',
+			table: 'LaterLegacy',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			residency: { slots: 2 },
+		});
+		assert.equal(hasExistingOwnerAssertion('joined_catalogs'), false, 'an assertion cannot cover a later legacy table');
+		await initializeResidencySlots(request);
+		assert.equal(hasExistingOwnerAssertion('joined_catalogs'), true);
+		console.log('multi-root map fence passed');
+		exit(0);
+	}
 	const map = createResidencyMap('joined_catalogs', 2, [{ start: 0, end: 2, shard: 1 }], 2);
 	await assert.rejects(async () => getResidencyMapTable().put('joined_catalogs', map), /migration|reassign|move/i);
 	assert.equal(readResidencyMap('joined_catalogs').version, 1, 'the active placement stays unchanged');

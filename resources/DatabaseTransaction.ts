@@ -1,9 +1,12 @@
+import { databaseLiveHoldReason } from './databaseLiveGuard.ts';
+export { databaseLiveHoldReason } from './databaseLiveGuard.ts';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import type { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import {
 	ClientError,
 	DatabaseClosingError,
+	DatabaseShardingHeldError,
 	DatabaseDrainTimeoutError,
 	ReplicationConfirmationError,
 	withoutReplicationUnconfirmed,
@@ -209,9 +212,10 @@ export function trackOutstandingCommit(
 	commitResolution.then(untrack, untrack);
 }
 
-export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
+export function databaseCommitsSuspended(rootStore: object | undefined, forRecovery = false): boolean {
 	if (rootStore == null) return false;
 	if ((rootStore as any).status === 'closed') return true;
+	if (!forRecovery && databaseLiveHoldReason(rootStore)) return true;
 	if (suspendedDatabaseRootCount === 0 && !hasPermanentlySuspendedDatabaseRoots) return false;
 	if ((rootStore as any)[permanentlySuspended]) return true;
 	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
@@ -243,7 +247,12 @@ export function commitTrackedRocksTransaction(
 		try {
 			transaction.abort();
 		} catch {}
-		return Promise.reject(new DatabaseClosingError(rootStore?.databaseName ?? rootStore?.path ?? 'unknown'));
+		const reason = databaseLiveHoldReason(rootStore);
+		return Promise.reject(
+			reason
+				? new DatabaseShardingHeldError(rootStore?.databaseName ?? rootStore?.path ?? 'unknown', reason)
+				: new DatabaseClosingError(rootStore?.databaseName ?? rootStore?.path ?? 'unknown')
+		);
 	}
 	let commitResolution: Promise<number | void>;
 	try {
@@ -3016,6 +3025,7 @@ export class DatabaseTransaction implements Transaction {
 						(commitResult) => {
 							const txnWithRetry = transaction as RocksTransactionWithRetry;
 							if (commitResult === RETRY_NOW_VALUE) {
+								(transaction as any).replicaCommitNotifications?.clear();
 								this.setHandleCommitInFlight(transaction, false);
 								const retries = (txnWithRetry.retries = (txnWithRetry.retries ?? 0) + 1);
 								if (!isImmediateCommit || this.open !== TRANSACTION_STATE.OPEN) this.retries = retries;
@@ -3068,12 +3078,15 @@ export class DatabaseTransaction implements Transaction {
 							} catch (error) {
 								harperLogger.warn?.('onCommit handler failed after commit', error);
 							}
-							try {
-								const notifications = (transaction as any).replicaCommitNotifications;
-								if (notifications) for (const notify of notifications) notify();
-							} catch (error) {
-								harperLogger.warn?.('Replica sweep notification failed after commit', error);
-							}
+							const notifications = (transaction as any).replicaCommitNotifications;
+							if (notifications)
+								for (const notify of notifications) {
+									try {
+										notify();
+									} catch (error) {
+										harperLogger.warn?.('Replica sweep notification failed after commit', error);
+									}
+								}
 							if (this.recordLocks) this.noteCommittedLockVersions(committedTransaction);
 							releaseTransactionLockHolds(transaction);
 							if (
@@ -3205,6 +3218,7 @@ export class DatabaseTransaction implements Transaction {
 							// retried here, the rejection propagated out of the unawaited onCommit() handler as an
 							// unhandled rejection and the write was silently dropped — records lost mid-copy (#308).
 							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
+								(transaction as any).replicaCommitNotifications?.clear();
 								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 								// for future transactions
 								const retries = (txnWithRetry.retries = (txnWithRetry.retries ?? 0) + 1);
@@ -3480,7 +3494,8 @@ export class DatabaseTransaction implements Transaction {
 	private assertDatabaseCommitAllowed(transaction: RocksTransaction): void {
 		if (hasDurableLog(transaction)) return;
 		const rootStore = this.writes[0]?.store?.rootStore;
-		if (!databaseCommitsSuspended(rootStore)) return;
+		const reason = this.isReplay ? undefined : databaseLiveHoldReason(rootStore);
+		if (!reason && !databaseCommitsSuspended(rootStore, this.isReplay)) return;
 		const retryable = !this.root && !this.snapshotFree;
 		if (this.transaction === transaction) this.detachOwnedTransaction();
 		abortNativeTransaction(
@@ -3494,6 +3509,7 @@ export class DatabaseTransaction implements Transaction {
 		} catch (error) {
 			harperLogger.debug?.('cleaning up a transaction while its database is closing', error);
 		}
+		if (reason) throw new DatabaseShardingHeldError(rootStore?.databaseName ?? rootStore?.path ?? 'unknown', reason);
 		throw new DatabaseClosingError(rootStore?.databaseName ?? rootStore?.path ?? 'unknown', retryable);
 	}
 

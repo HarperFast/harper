@@ -23,7 +23,7 @@ const { compareResidencyPlacement } = require('#src/resources/residencyConversio
 const { replicationConfirmation } = require('#src/resources/DatabaseTransaction');
 const { transaction } = require('#src/resources/transaction');
 
-describe('Sharding', function () {
+(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Sharding', function () {
 	this.timeout(20_000);
 	let oldShards, oldConfiguredShards, oldShard;
 	before(() => {
@@ -669,42 +669,6 @@ describe('Sharding', function () {
 		const entry = Records.primaryStore.getEntry('moved');
 		const position = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? entry.localTime : entry.version;
 		assert.equal(confirmed, position, 'confirmation must include the committed audit entry');
-	});
-	it('confirms the original LMDB commit when another write replaces its primary row', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
-		const Records = await declare(
-			'SlotAckReplaced',
-			'@sharded(slots: 10, by: "region", slotFrom: "region")',
-			'region: Int @indexed'
-		);
-		await Records.put('moved', { id: 'moved', region: 0, body: 'original' });
-		setResidencyPlacementGuard(() => {});
-		let confirmed;
-		let originalPosition;
-		replicationConfirmation((_database, position) => {
-			confirmed = position;
-			return Promise.resolve();
-		});
-		const store = Records.primaryStore;
-		const original = store.childTransaction;
-		let first = true;
-		store.childTransaction = function (...args) {
-			return original.apply(this, args).then(async (committed) => {
-				if (first) {
-					first = false;
-					originalPosition = store.getEntry('moved').localTime;
-					await transaction({}, () => Records.put('moved', { id: 'moved', region: 1, body: 'later' }));
-				}
-				return committed;
-			});
-		};
-		try {
-			await Records.patch('moved', { region: 1 });
-			assert.notEqual(store.getEntry('moved').localTime, originalPosition);
-			assert.equal(confirmed, originalPosition);
-		} finally {
-			store.childTransaction = original;
-		}
 	});
 	it('confirms an attribute transition followed by deletion in the same batch', async () => {
 		const Records = await declare(

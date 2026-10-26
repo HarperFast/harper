@@ -184,6 +184,18 @@ export class DatabaseClosingError extends ServerError {
 	}
 }
 
+export class DatabaseShardingHeldError extends ServerError {
+	code = 'DATABASE_SHARDING_HELD';
+	retryable = true;
+	constructor(databaseName: string, reason: string) {
+		super(
+			`Sharding held for ${databaseName}: ${reason}; retry after sharding agreement and recovery are restored`,
+			503
+		);
+		this.name = 'DatabaseShardingHeldError';
+	}
+}
+
 export class DatabaseGenerationChangedError extends ClientError {
 	code: string;
 	constructor() {

@@ -1,6 +1,8 @@
 import {
 	DatabaseTransaction,
 	confirmsNothing,
+	databaseCommitsSuspended,
+	databaseLiveHoldReason,
 	closeWriteInstance,
 	deferForCommitInFlight,
 	describeCommitIdentity,
@@ -16,7 +18,12 @@ import {
 	type CommitResolution,
 } from './DatabaseTransaction.ts';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
-import { ServerError, withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
+import {
+	ServerError,
+	DatabaseClosingError,
+	DatabaseShardingHeldError,
+	withoutReplicationUnconfirmed,
+} from '../utility/errors/hdbError.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
@@ -178,6 +185,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 	/** Preserve the synchronous empty-commit path while the outer method funnels every failure once. */
 	private performCommitAttempt(options: CommitOptions = {}): any {
+		const rootStore = this.writes.find((write) => write)?.store?.rootStore;
+		const reason = this.isReplay ? undefined : databaseLiveHoldReason(rootStore);
+		if (reason || databaseCommitsSuspended(rootStore, this.isReplay)) {
+			const database = rootStore?.databaseName ?? rootStore?.path ?? 'unknown';
+			if (reason) throw new DatabaseShardingHeldError(database, reason);
+			throw new DatabaseClosingError(database);
+		}
 		options = options || {};
 		let txnTime = this.timestamp;
 		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();

@@ -13,7 +13,7 @@ const { server } = require('#src/server/Server');
 const env = require('#src/utility/environment/environmentManager');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-describe('Declarative writer replicas', function () {
+(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Declarative writer replicas', function () {
 	this.timeout(10000);
 	let priorShards, priorList, priorShard;
 	let sequence = 0;
@@ -56,6 +56,98 @@ describe('Declarative writer replicas', function () {
 			row._writeInvalidate(id, { id, region: 1 }, { version, residencySlot: 1 });
 		});
 	}
+	for (const logOffset of [0, 1])
+		it(`applies a complete origin PUT after a same-identity owner projection (log offset=${logOffset})`, async function () {
+			if (isLMDB) return this.skip();
+			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+			const Rows = await declare();
+			await Rows.put('copy-target', { id: 'copy-target', region: 0, body: 'old' });
+			const nodeId = getIdOfRemoteNode('writer-origin', Rows.auditStore);
+			const version = Date.now() + 100;
+			const context = { source: {}, sourceApply: true, timestamp: version + logOffset };
+			await transaction(context, async () => {
+				const row = await Rows.getResource('copy-target', context, { ensureLoaded: false });
+				row._writeInvalidate(
+					'copy-target',
+					{ id: 'copy-target', region: 0 },
+					{ nodeId, version, residencySlot: 0, isCopyApply: true }
+				);
+			});
+			const before = Rows.primaryStore.getEntry('copy-target');
+			assert.ok(before.metadataFlags & INVALIDATED);
+			assert.equal(before.version, version);
+			assert.equal(before.nodeId, nodeId);
+			const originEntries = () =>
+				Array.from(Rows.auditStore.getRange({ start: 1, log: nodeId })).filter(
+					(entry) => entry.tableId === Rows.tableId && entry.recordId === 'copy-target'
+				);
+			assert.equal(originEntries().length, 0, 'a snapshot projection cannot occupy an origin-log identity');
+			const apply = async () => {
+				const context = { source: {}, sourceApply: true, timestamp: version + logOffset };
+				await transaction(context, async () => {
+					const row = await Rows.getResource('copy-target', context, { ensureLoaded: false });
+					row._writeUpdate('copy-target', { id: 'copy-target', region: 0, body: 'canonical body' }, true, {
+						nodeId,
+						version,
+					});
+				});
+			};
+			await apply();
+			const complete = Rows.primaryStore.getEntry('copy-target');
+			assert.equal(complete.value.body, 'canonical body');
+			assert.ok(!(complete.metadataFlags & (INVALIDATED | REPLICA)));
+			assert.equal(complete.version, version);
+			assert.equal(complete.nodeId, nodeId);
+			await apply();
+			assert.equal((await Rows.get('copy-target')).body, 'canonical body');
+			assert.equal(originEntries().length, 1, 'only one canonical origin transaction exists');
+		});
+	for (const slot of [0, 1])
+		it(`keeps snapshot identity handling scoped to ownership (slot=${slot})`, async function () {
+			if (isLMDB) return this.skip();
+			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+			const Rows = await declare();
+			const nodeId = getIdOfRemoteNode('snapshot-source', Rows.auditStore);
+			const version = Date.now() + 100;
+			const apply = async (copy, invalidated) => {
+				const context = { source: {}, sourceApply: true, timestamp: version };
+				await transaction(context, async () => {
+					const row = await Rows.getResource('snapshot', context, { ensureLoaded: false });
+					const options = { nodeId, version, residencySlot: slot, isCopyApply: copy };
+					if (invalidated) row._writeInvalidate('snapshot', { id: 'snapshot', region: slot }, options);
+					else row._writeUpdate('snapshot', { id: 'snapshot', region: slot, body: 'complete' }, true, options);
+				});
+			};
+			await apply(true, true);
+			assert.ok(Rows.primaryStore.getEntry('snapshot').metadataFlags & INVALIDATED);
+			const originalGet = Rows.auditStore.getSync;
+			const originalRange = Rows.auditStore.getRange;
+			let logReads = 0;
+			Rows.auditStore.getSync = function (key, ...args) {
+				if (key === version) logReads++;
+				return originalGet.call(this, key, ...args);
+			};
+			Rows.auditStore.getRange = function (options, ...args) {
+				if (options?.start === version || options?.log === nodeId) logReads++;
+				return originalRange.call(this, options, ...args);
+			};
+			try {
+				await apply(slot === 0, false);
+				assert.equal(logReads, 0, 'snapshot repair and nonowner duplicate do not read audit history');
+				await apply(true, true);
+			} finally {
+				Rows.auditStore.getSync = originalGet;
+				Rows.auditStore.getRange = originalRange;
+			}
+			const entry = Rows.primaryStore.getEntry('snapshot');
+			assert.equal(Boolean(entry.metadataFlags & INVALIDATED), slot === 1);
+			assert.equal(entry.value.body, slot === 0 ? 'complete' : undefined);
+			assert.equal(
+				Array.from(Rows.auditStore.getRange({ start: 1, log: nodeId })).filter((entry) => entry.recordId === 'snapshot')
+					.length,
+				0
+			);
+		});
 	for (const expiration of [0, 3600]) {
 		it(`retains complete writes only when replicas are enabled (${expiration})`, async () => {
 			const Rows = await declare(expiration);
@@ -238,6 +330,226 @@ describe('Declarative writer replicas', function () {
 			Rows.auditStore.getSync = original;
 		}
 	});
+	it('retains a newer canonical audit reference when deferred replica cleanup resumes', async function () {
+		if (isLMDB) return this.skip();
+		const { createBlob, getFilePathForBlob, deleteBlobAndWait } = require('#src/resources/blob');
+		const { randomBytes } = require('node:crypto');
+		const { existsSync } = require('node:fs');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+		const priorRetention = env.get('storage_blobRetention');
+		const originalCommit = Transaction.prototype.commit;
+		const parked = [];
+		env.setProperty('storage_blobRetention', 0);
+		try {
+			const Rows = await declare();
+			const bytes = randomBytes(32768);
+			await Rows.put('blob', { id: 'blob', region: 1, body: await createBlob(bytes) });
+			for (let i = 0; i < 100; i++) await Rows.patch('blob', { marker: i });
+			const before = Rows.primaryStore.getEntry('blob');
+			await Rows.evict('blob', before.value, before.version);
+			await Rows.closeMaintenance();
+			Rows.resumeMaintenance();
+			const stub = Rows.primaryStore.getEntry('blob');
+			assert.equal(
+				await Rows._storeReplica(stub, {
+					key: 'blob',
+					value: { id: 'blob', region: 1, body: await createBlob(Buffer.from(bytes)) },
+					version: stub.version,
+					originNode: server.hostname,
+				}),
+				true
+			);
+			const fetched = Rows.primaryStore.getEntry('blob').value.body;
+			const fetchedPath = getFilePathForBlob(fetched);
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db === Rows.primaryStore.store.db && this.replicaCommitNotifications?.size) {
+					for (const notify of this.replicaCommitNotifications) parked.push(notify);
+					this.replicaCommitNotifications.clear();
+				}
+				return originalCommit.apply(this, args);
+			};
+			await invalidate(Rows, 'blob', stub.version + 100);
+			Transaction.prototype.commit = originalCommit;
+			assert.ok(parked.length, 'parked a real deferred audit cleanup');
+			await Rows.put('blob', { id: 'blob', region: 1, body: fetched }, { timestamp: stub.version + 101 });
+			const referencedVersion = Rows.primaryStore.getEntry('blob').version;
+			await Rows.put(
+				'blob',
+				{ id: 'blob', region: 1, body: await createBlob(randomBytes(32768)) },
+				{ timestamp: stub.version + 102 }
+			);
+			assert.equal(referencedVersion, stub.version + 101);
+			const referenced = Array.from(Rows.auditStore.getRange({ start: 1 })).find(
+				(entry) => entry.tableId === Rows.tableId && entry.type === 'put' && entry.version === referencedVersion
+			);
+			assert.ok(referenced, 'the later canonical reference committed before cleanup');
+			for (const notify of parked.splice(0)) notify();
+			await Rows.closeMaintenance();
+			Rows.resumeMaintenance();
+			await Rows.put('barrier', { id: 'barrier', region: 1, body: await createBlob(randomBytes(32768)) });
+			await deleteBlobAndWait(Rows.primaryStore.getEntry('barrier').value.body);
+			assert.ok(existsSync(fetchedPath), 'the intermediate canonical audit entry still owns the fetched file');
+			assert.deepEqual(Buffer.from(await referenced.getValue(Rows.primaryStore).body.arrayBuffer()), bytes);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+			for (const notify of parked) notify();
+			env.setProperty('storage_blobRetention', priorRetention);
+		}
+	});
+	for (const operation of ['refresh', 'demote']) {
+		it(`retains later canonical blobs across raw ${operation} completion`, async function () {
+			if (isLMDB) return this.skip();
+			const { createBlob, getFilePathForBlob, deleteBlobAndWait } = require('#src/resources/blob');
+			const { randomBytes } = require('node:crypto');
+			const { existsSync } = require('node:fs');
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const originalCommit = Transaction.prototype.commit;
+			const priorRetention = env.get('storage_blobRetention');
+			env.setProperty('storage_blobRetention', 0);
+			try {
+				const Rows = await declare();
+				const bytes = randomBytes(32768);
+				await Rows.put('blob', { id: 'blob', region: 1, body: await createBlob(bytes) });
+				const original = Rows.primaryStore.getEntry('blob');
+				await Rows.evict('blob', original.value, original.version);
+				const stub = Rows.primaryStore.getEntry('blob');
+				assert.equal(
+					await Rows._storeReplica(stub, {
+						key: 'blob',
+						value: { id: 'blob', region: 1, body: await createBlob(Buffer.from(bytes)) },
+						version: stub.version,
+						originNode: server.hostname,
+					}),
+					true
+				);
+				const replica = Rows.primaryStore.getEntry('blob');
+				const fetched = replica.value.body;
+				const path = getFilePathForBlob(fetched);
+				let crossedCommit = false;
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db !== Rows.primaryStore.store.db) return originalCommit.apply(this, args);
+					Transaction.prototype.commit = originalCommit;
+					return originalCommit.apply(this, args).then(async (result) => {
+						crossedCommit = true;
+						await Rows.put('blob', { id: 'blob', region: 1, body: fetched }, { timestamp: stub.version + 101 });
+						await Rows.put(
+							'blob',
+							{ id: 'blob', region: 1, body: await createBlob(randomBytes(32768)) },
+							{ timestamp: stub.version + 102 }
+						);
+						return result;
+					});
+				};
+				if (operation === 'demote') await Rows.evict('blob', replica.value, replica.version);
+				else
+					assert.equal(
+						await Rows._storeReplica(replica, {
+							key: 'blob',
+							value: { id: 'blob', region: 1, body: await createBlob(randomBytes(32768)) },
+							version: stub.version + 1,
+							originNode: server.hostname,
+						}),
+						true
+					);
+				assert.ok(crossedCommit);
+				const referenced = Array.from(Rows.auditStore.getRange({ start: 1 })).find(
+					(entry) => entry.tableId === Rows.tableId && entry.type === 'put' && entry.version === stub.version + 101
+				);
+				assert.ok(referenced, 'the later canonical body is durable');
+				await Rows.closeMaintenance();
+				Rows.resumeMaintenance();
+				await Rows.put('barrier', { id: 'barrier', region: 1, body: await createBlob(randomBytes(32768)) });
+				await deleteBlobAndWait(Rows.primaryStore.getEntry('barrier').value.body);
+				assert.ok(existsSync(path), 'a later canonical audit entry retains the fetched file');
+				assert.deepEqual(Buffer.from(await referenced.getValue(Rows.primaryStore).body.arrayBuffer()), bytes);
+			} finally {
+				Transaction.prototype.commit = originalCommit;
+				env.setProperty('storage_blobRetention', priorRetention);
+			}
+		});
+	}
+	for (const fault of ['earlier callback throws', 'native attempt retries'])
+		it(`reclaims fetched files after commit when ${fault}`, async function () {
+			if (isLMDB) return this.skip();
+			const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
+			const { randomBytes } = require('node:crypto');
+			const { existsSync } = require('node:fs');
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const binding = Object.values(require.cache).find(
+				(module) => typeof module.exports?.forceTryAgainForTesting === 'function'
+			)?.exports;
+			const priorRetention = env.get('storage_blobRetention');
+			const originalCommit = Transaction.prototype.commit;
+			env.setProperty('storage_blobRetention', 0);
+			try {
+				const Rows = await declare();
+				const bytes = randomBytes(32768);
+				const canonical = await createBlob(bytes);
+				await Rows.put('blob', { id: 'blob', region: 1, body: canonical });
+				for (let i = 0; i < 100; i++) await Rows.patch('blob', { marker: i });
+				const before = Rows.primaryStore.getEntry('blob');
+				await Rows.evict('blob', before.value, before.version);
+				await Rows.closeMaintenance();
+				Rows.resumeMaintenance();
+				const stub = Rows.primaryStore.getEntry('blob');
+				const fetched = await createBlob(Buffer.from(bytes));
+				assert.equal(
+					await Rows._storeReplica(stub, {
+						key: 'blob',
+						value: { id: 'blob', region: 1, body: fetched },
+						version: stub.version,
+						originNode: server.hostname,
+					}),
+					true
+				);
+				let injected = false,
+					abandonedCalls = 0;
+				const attempts = [];
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db === Rows.primaryStore.store.db && this.replicaCommitNotifications?.size) {
+						attempts.push(this.id);
+						if (!injected) {
+							injected = true;
+							if (fault === 'earlier callback throws') {
+								this.replicaCommitNotifications = new Set([
+									() => {
+										throw new Error('earlier notification failed');
+									},
+									...this.replicaCommitNotifications,
+								]);
+							} else {
+								assert.ok(binding, 'native retry seam is available');
+								this.replicaCommitNotifications = new Set(
+									[...this.replicaCommitNotifications].map((notify) => () => {
+										abandonedCalls++;
+										notify();
+									})
+								);
+								binding.forceTryAgainForTesting(1);
+							}
+						}
+					}
+					return originalCommit.apply(this, args);
+				};
+				await invalidate(Rows, 'blob', stub.version + 100);
+				assert.ok(injected, 'the real deferred cleanup registered a post-commit callback');
+				if (fault === 'native attempt retries') {
+					assert.ok(attempts.length >= 2);
+					assert.equal(new Set(attempts).size, 1, 'the native retry reused its handle');
+					assert.equal(abandonedCalls, 0, 'only callbacks from the committed attempt may run');
+				}
+				await waitFor(() => !existsSync(getFilePathForBlob(fetched)), { timeout: 3000 });
+				assert.ok(existsSync(getFilePathForBlob(canonical)), 'canonical audit files remain retained');
+				const audit = Array.from(Rows.auditStore.getRange({ start: 1 })).find(
+					(entry) => entry.tableId === Rows.tableId && entry.type === 'put'
+				);
+				assert.deepEqual(Buffer.from(await audit.getValue(Rows.primaryStore).body.arrayBuffer()), bytes);
+			} finally {
+				Transaction.prototype.commit = originalCommit;
+				binding?.forceTryAgainForTesting(0);
+				env.setProperty('storage_blobRetention', priorRetention);
+			}
+		});
 	for (const references of [false, true])
 		it(`bounds fetched-replica cleanup and automatically reclaims files (references=${references})`, async function () {
 			if (isLMDB) return this.skip();

@@ -1,4 +1,8 @@
-import { databases, getDatabaseCatalog, getDatabases, table } from './databases.ts';
+import { setDatabaseLiveGuard, setDatabaseBaselineGuard } from './databaseLiveGuard.ts';
+import { ensureShardingConfiguration, shardingRecoveryConfiguration } from '../config/shardingConfiguration.ts';
+import { isMainThread } from 'node:worker_threads';
+import { databases, database as openDatabase, getDatabaseCatalog, getDatabases, table } from './databases.ts';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { CONFIG_PARAMS, SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
 import { server } from '../server/Server.ts';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -35,14 +39,91 @@ const caches = new WeakMap<
 >();
 const DECLARATION_KEY = Symbol.for('residency_declaration');
 const mapFences = new WeakMap<object, Map<string, { owner: object; references: number }>>();
-let placementGuard: ((database: string, owners?: readonly string[], requireConnected?: boolean) => void) | undefined;
+let placementGuard:
+	| ((database: string, owners?: readonly string[], requireConnected?: boolean, shard?: number, root?: object) => void)
+	| undefined;
+const ownerShards = new WeakMap<readonly string[], number>();
 
 export function setResidencyPlacementGuard(guard: typeof placementGuard): void {
 	placementGuard = guard;
 }
 
+const guardedRoots = new WeakMap<object, Map<string, () => string | undefined>>();
+let baselineGuard: ((database: string, root: object) => string | undefined) | undefined;
+
+export function setResidencyBaselineGuard(guard: typeof baselineGuard): void {
+	baselineGuard = guard;
+}
+
+export function registerResidencyRoot(database: string, root: object, declared = false): void {
+	if (database === 'system' || guardedRoots.get(root)?.has(database)) return;
+	const mapTable = Object.getOwnPropertyDescriptor(databases, 'system')?.value?.[RESIDENCY_MAP_TABLE];
+	const catalog = mapTable?.dbisDB;
+	if (
+		!declared &&
+		!catalog?.getSync([DECLARATION_KEY, database]) &&
+		!Object.values(databases[database] ?? {}).some((Table) => Table.residency)
+	)
+		return;
+	let hasMap = !!mapTable?.primaryStore.getSync(database);
+	const guard = () => {
+		try {
+			assertResidencyEngine(database, root);
+			if (!hasMap)
+				hasMap = !!Object.getOwnPropertyDescriptor(databases, 'system')?.value?.[
+					RESIDENCY_MAP_TABLE
+				]?.primaryStore.getSync(database);
+			assertResidencyConfiguration(database, hasMap);
+			if (!hasMap) return 'no shard map is installed';
+		} catch (error) {
+			return error.message ?? 'sharding agreement is unavailable';
+		}
+	};
+	let rootGuards = guardedRoots.get(root);
+	if (!rootGuards) {
+		rootGuards = new Map();
+		guardedRoots.set(root, rootGuards);
+		setDatabaseLiveGuard(root, guard);
+		setDatabaseBaselineGuard(root, () => {
+			if (!baselineGuard) return;
+			for (const database of rootGuards.keys()) {
+				const reason = baselineGuard(database, root);
+				if (reason) return reason;
+			}
+		});
+	} else {
+		setDatabaseLiveGuard(root, () => {
+			for (const guard of rootGuards.values()) {
+				const reason = guard();
+				if (reason) return reason;
+			}
+		});
+	}
+	rootGuards.set(database, guard);
+}
+
 export class ResidencyPlacementError extends ClientError {}
 export class ResidencyConfigurationError extends ResidencyPlacementError {}
+
+export function recordResidencyDeclaration(database: string): void {
+	const catalog = getResidencyMapTable().dbisDB;
+	const key = [DECLARATION_KEY, database];
+	if (!catalog.getSync(key)) catalog.putSync(key, true);
+}
+
+export function assertResidencyEngine(database: string, root?: object): void {
+	const roots = root
+		? [root]
+		: Object.values(databases[database] ?? {})
+				.map((Table) => Table.primaryStore?.rootStore)
+				.filter(Boolean);
+	if (!roots.length) roots.push(openDatabase({ database, table: undefined }));
+	if (roots.some((root) => !(root instanceof RocksDatabase)))
+		throw new ResidencyConfigurationError(
+			`Sharding for ${database} requires RocksDB; LMDB supports legacy residency only`,
+			503
+		);
+}
 
 function residencyFailure(database: string, reason: string): never {
 	const reported = new Int32Array(
@@ -67,7 +148,22 @@ let configuredList: unknown;
 let configuredShards: number[] | undefined;
 let configuredDigest: string | null = null;
 let configuration: Readonly<{ shards: readonly number[] | undefined; shard: number; digest: string | null }>;
-export function getResidencyConfiguration() {
+let recoveryConfiguration: typeof configuration;
+export function getResidencyConfiguration(forRecovery = false) {
+	if (forRecovery && shardingRecoveryConfiguration) {
+		const shard = shardingRecoveryConfiguration.shard;
+		if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
+			throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
+		if (!recoveryConfiguration) {
+			const shards = canonicalShards(shardingRecoveryConfiguration.shards);
+			recoveryConfiguration = Object.freeze({
+				shards,
+				shard: shardingRecoveryConfiguration.shard,
+				digest: shardListDigest(shards),
+			});
+		}
+		return recoveryConfiguration;
+	}
 	const value = env.get(CONFIG_PARAMS.REPLICATION_SHARDS);
 	const shard = env.get(CONFIG_PARAMS.REPLICATION_SHARD);
 	if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
@@ -84,10 +180,15 @@ export function getResidencyConfiguration() {
 	return configuration;
 }
 
-function assertResidencyConfiguration(database: string, hasMap: boolean, forRecovery = false): void {
+function assertResidencyConfiguration(
+	database: string,
+	hasMap: boolean,
+	forRecovery = false,
+	snapshot?: typeof configuration
+): void {
 	let current;
 	try {
-		current = getResidencyConfiguration();
+		current = snapshot ?? getResidencyConfiguration(forRecovery);
 	} catch (error) {
 		residencyFailure(database, error.message);
 	}
@@ -206,7 +307,34 @@ export async function installResidencyMap(
 	}
 }
 
-export async function initializeResidencySlots(request: { database: string; slots: number; ranges: unknown }) {
+export async function initializeResidencySlots(request: {
+	database: string;
+	slots?: number;
+	ranges?: unknown;
+	existing_owner?: unknown;
+	expected_digest?: unknown;
+	hdb_user?: { username?: string };
+}) {
+	const assertion = Object.hasOwn(request, 'existing_owner');
+	if (
+		assertion &&
+		(request.existing_owner !== true ||
+			typeof request.expected_digest !== 'string' ||
+			Object.hasOwn(request, 'slots') ||
+			Object.hasOwn(request, 'ranges'))
+	)
+		throw new ClientError(
+			'An existing-owner assertion requires existing_owner: true and expected_digest, without slots or ranges',
+			400
+		);
+	if (!assertion && Object.hasOwn(request, 'expected_digest'))
+		throw new ClientError('expected_digest requires existing_owner: true', 400);
+	getDatabases();
+	assertResidencyEngine(request.database);
+	if (assertion) {
+		const { assertExistingShardOwner } = await import('./shardingCompleteness.ts');
+		return assertExistingShardOwner(request.database, request.expected_digest as string, request.hdb_user?.username);
+	}
 	const previous = readResidencyMap(request.database);
 	const candidate = createResidencyMap(request.database, request.slots, request.ranges, previous?.version ?? 1);
 	if (previous?.digest === candidate.digest) return previous;
@@ -221,11 +349,16 @@ export async function prepareResidencyDeclaration(
 	name: string,
 	policy: Partial<ResidencyPolicy>
 ): Promise<Readonly<ResidencyPolicy>> {
+	if (!isMainThread) await ensureShardingConfiguration();
 	getDatabases();
 	// Keep failed first activations visible even though their user table was never published.
-	const catalog = getResidencyMapTable().dbisDB;
-	const declaration = [DECLARATION_KEY, database];
-	if (!catalog.getSync(declaration)) catalog.putSync(declaration, true);
+	recordResidencyDeclaration(database);
+	for (const Table of Object.values(databases[database] ?? {}))
+		if (Table.primaryStore?.rootStore) registerResidencyRoot(database, Table.primaryStore.rootStore, true);
+	assertResidencyEngine(database);
+	const root = openDatabase({ database, table: name });
+	registerResidencyRoot(database, root, true);
+	assertResidencyEngine(database, root);
 	const existing = databases[database]?.[name];
 	const snapshot = readResidencyMap(database);
 	const resolved = normalizeResidencyPolicy({
@@ -233,7 +366,8 @@ export async function prepareResidencyDeclaration(
 		slots: policy.slots === undefined ? (snapshot?.slots ?? 1024) : policy.slots,
 	});
 	compileResidencyPolicy(resolved);
-	assertResidencyConfiguration(database, !!snapshot);
+	const current = getResidencyConfiguration();
+	assertResidencyConfiguration(database, !!snapshot, false, current);
 	if (snapshot) {
 		if (snapshot.slots !== resolved.slots)
 			throw new ClientError(
@@ -244,7 +378,7 @@ export async function prepareResidencyDeclaration(
 	}
 	if (existing) residencyFailure(database, 'an existing table requires its custom map before @sharded activation');
 	try {
-		await installResidencyMap(defaultResidencyMap(database, resolved.slots, env.get(CONFIG_PARAMS.REPLICATION_SHARDS)));
+		await installResidencyMap(defaultResidencyMap(database, resolved.slots, current.shards));
 	} catch (error) {
 		if (!(error instanceof ClientError) || !readResidencyMap(database)) throw error;
 	}
@@ -295,8 +429,9 @@ export function residencyOwners(database: string, slot: number, slots: number): 
 		if (owners.includes(server.hostname) !== (shard === localShard))
 			residencyFailure(database, 'local shard membership disagrees with replication.shard');
 		map.owners.set(shard, owners);
+		ownerShards.set(owners, shard);
 	}
-	placementGuard?.(database, owners);
+	placementGuard?.(database, owners, undefined, shard);
 	return owners;
 }
 
@@ -308,9 +443,9 @@ export function residencyIsLocal(database: string, slot: number, slots: number):
 
 export function requireConnectedResidencyOwner(database: string, owners: readonly string[]): void {
 	if (!placementGuard) residencyFailure(database, 'new-owner confirmation requires a replication connection');
-	placementGuard(database, owners, true);
+	placementGuard(database, owners, true, ownerShards.get(owners));
 }
 
-export function assertResidencyWriteRoute(database: string, owners: readonly string[]): void {
-	placementGuard?.(database, owners, false);
+export function assertResidencyWriteRoute(database: string, owners: readonly string[], root?: object): void {
+	placementGuard?.(database, owners, false, ownerShards.get(owners), root);
 }

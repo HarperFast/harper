@@ -14,6 +14,8 @@ const {
 	repairBlobFile,
 	getFilePathForBlob,
 	deleteBlob,
+	deleteBlobAndWait,
+	captureBlobReclamation,
 	setDeletionDelay,
 	holdBlobFile,
 	getBlobHoldStateForTesting,
@@ -532,14 +534,13 @@ describe('Blob test', () => {
 		await BlobTest.put({ id: 304, blob: await createBlob(randomBytes(20000)) }); // queues reclamation
 		// Another worker writes a record referencing the original file again.
 		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
-		Atomics.store(table, slot + 1, 1);
+		const referenceGeneration = Atomics.add(table, slot + 1, 1) + 1;
 
-		// Wait for the reclaimer to consume the signal rather than sleeping a fixed span: an entry's
-		// deadline is clamped to the queue tail, so work queued by earlier tests can push this one out.
-		await waitFor(() => Atomics.load(table, slot + 1) === 0, {
-			timeout: 10000,
-			message: 'the re-reference signal should be consumed',
-		});
+		const barrier = await createBlob(Buffer.alloc(32768, 7));
+		await BlobTest.put({ id: 305, blob: barrier });
+		await BlobTest.delete(305);
+		await deleteBlobAndWait(barrier);
+		assert.equal(Atomics.load(table, slot + 1), referenceGeneration, 'reclamation does not consume a reference');
 		assert(existsSync(filePath), 'a re-referenced blob must not be reclaimed');
 
 		await BlobTest.delete(304);
@@ -549,6 +550,89 @@ describe('Blob test', () => {
 		unlinkSync(filePath);
 		setDeletionDelay(500); // restore the default
 	});
+	it('refuses an encode after another worker has claimed the file for reclamation', async () => {
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 311, blob });
+		const before = BlobTest.primaryStore.getEntry(311);
+		const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, getFileId(blob));
+		const generation = Atomics.load(table, slot + 1);
+		assert.equal(Atomics.compareExchange(table, slot, 0, -1 << 20), 0);
+		try {
+			await assert.rejects(async () => BlobTest.put({ id: 311, blob }), /being reclaimed/);
+			assert.equal(BlobTest.primaryStore.getEntry(311).version, before.version);
+			assert.ok(Atomics.load(table, slot + 1) > generation);
+		} finally {
+			Atomics.store(table, slot, 0);
+		}
+		await BlobTest.delete(311);
+		await deleteBlobAndWait(blob);
+	});
+	it('a colliding supersession does not consume another file reference generation', async () => {
+		setDeletionDelay(50);
+		const first = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 309, blob: first });
+		const store = BlobTest.primaryStore.rootStore;
+		const firstState = getBlobHoldStateForTesting(store, getFileId(first));
+		const allocator = new BigInt64Array(store.getUserSharedBuffer('blob-file-id', new ArrayBuffer(8)));
+		const next = Atomics.load(allocator, 0);
+		let collision = next;
+		while (getBlobHoldStateForTesting(store, collision.toString(16)).slot !== firstState.slot) {
+			collision++;
+			assert.ok(collision - next < 1000000n, 'find a collision without allocating files');
+		}
+		assert.equal(Atomics.compareExchange(allocator, 0, next, collision), next);
+		deleteBlob(first);
+		const second = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 310, blob: second });
+		assert.notEqual(getFileId(first), getFileId(second));
+		assert.equal(getBlobHoldStateForTesting(store, getFileId(second)).slot, firstState.slot);
+		await BlobTest.delete(310);
+		await deleteBlobAndWait(second);
+		assert.ok(existsSync(getFilePathForBlob(first)), 'the first pending cleanup sees the later generation');
+		await BlobTest.delete(309);
+		await deleteBlobAndWait(first);
+		setDeletionDelay(500);
+	});
+	for (const throughWorker of [false, true]) {
+		it(`keeps a later shared reference when delayed cleanup queues (worker=${throughWorker})`, async () => {
+			setDeletionDelay(0);
+			const id = throughWorker ? 307 : 306;
+			const blob = await createBlob(randomBytes(20000));
+			await BlobTest.put({ id, blob });
+			const path = getFilePathForBlob(blob);
+			const release = captureBlobReclamation({ blob });
+			const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, getFileId(blob));
+			const generation = Atomics.load(table, slot + 1);
+			if (throughWorker) {
+				const { Worker } = require('node:worker_threads');
+				await new Promise((resolve, reject) => {
+					const worker = new Worker(
+						`
+						const { workerData } = require('node:worker_threads');
+						const { RocksDatabase } = require('@harperfast/rocksdb-js');
+						const db = RocksDatabase.open(workerData.path);
+						const buffer = db.getUserSharedBuffer('blob-hold-table', new ArrayBuffer(4096 * 8));
+						Atomics.add(new Int32Array(buffer), workerData.index, 1);
+						db.close();
+					`,
+						{ eval: true, workerData: { path: BlobTest.primaryStore.rootStore.path, index: slot + 1 } }
+					);
+					worker.on('error', reject);
+					worker.on('exit', (code) => (code ? reject(new Error(`Worker exited ${code}`)) : resolve()));
+				});
+			} else Atomics.add(table, slot + 1, 1);
+			release();
+			const barrier = await createBlob(randomBytes(20000));
+			await BlobTest.put({ id: 308, blob: barrier });
+			await BlobTest.delete(308);
+			await deleteBlobAndWait(barrier);
+			assert.equal(Atomics.load(table, slot + 1), generation + 1);
+			assert.ok(existsSync(path));
+			await BlobTest.delete(id);
+			await deleteBlobAndWait(blob);
+			setDeletionDelay(500);
+		});
+	}
 	it('an in-progress stream keeps its blob alive past the retention window (#2134)', async () => {
 		// stream() takes a hold for the life of the read, so a read that outlives the window — a slow
 		// or backpressured consumer — still gets its bytes. The payload has to be large enough that the

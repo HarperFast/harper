@@ -208,6 +208,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## config/
 
+- [Live sharding configuration and recovery](config/DESIGN.md#live-sharding-configuration-and-recovery) — Root-file repair reaches existing workers and main-thread operations while replay keeps the immutable startup verdict.
 - [Model configuration writes (`config/configUtils.ts`)](config/DESIGN.md#model-configuration-writes-configconfigutilsts) — the operations API replaces validated model blocks without adding bare env ingestion, rejects env-pinned writes, and redacts credentials.
 - [Root config is adopted only when it parses (`config/configUtils.ts`)](config/DESIGN.md#root-config-is-adopted-only-when-it-parses-configconfigutilsts) — malformed and duplicate-key YAML is rejected before backfill or active-config replacement on boot and forced reload, enforced by `unitTests/config/configUtils-parseErrors.test.js`.
 - [`set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)](config/DESIGN.md#set_configuration-replication-is-opt-in-replicateoperation-is-default-on-configconfigutilsts) — `replicateOperation` is default-on, so `setConfiguration` keeps an explicit opt-in guard and strips `replicated` on both sides.

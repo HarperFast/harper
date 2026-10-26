@@ -67,7 +67,7 @@ const keyBuffer = Buffer.allocUnsafeSlow(8192);
 export function hashResidencyKey(id: any): number {
 	let end: number;
 	try {
-		end = writeKey(id, keyBuffer, 0);
+		end = writeKey(id === 0 ? 0 : id, keyBuffer, 0);
 	} catch {
 		throw new ClientError('Value cannot be encoded for sharding', 400);
 	}

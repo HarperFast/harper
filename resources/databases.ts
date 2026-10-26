@@ -14,6 +14,9 @@ import {
 } from './residencyPolicy.ts';
 import {
 	acquireResidencyMapFence,
+	registerResidencyRoot,
+	assertResidencyEngine,
+	recordResidencyDeclaration,
 	getResidencyMap,
 	readResidencyMap,
 	getResidencyMapTable,
@@ -97,6 +100,7 @@ import {
 	type RocksDatabaseOptions,
 } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
+import { markShardingConversion } from './shardingCompleteness.ts';
 import {
 	databaseCommitsSuspended,
 	getDatabaseCommitDrainTimeoutMilliseconds,
@@ -625,6 +629,9 @@ const residencyRootsToValidate = new Set<string>();
 function validateResidencyRecovery(): void {
 	for (const [databaseName, dbTables] of Object.entries(databases)) {
 		const declarations = Object.values(dbTables).filter((Table) => Table.residency);
+		for (const Table of Object.values(dbTables))
+			if (Table.primaryStore?.rootStore)
+				registerResidencyRoot(databaseName, Table.primaryStore.rootStore, declarations.length > 0);
 		if (!declarations.length) continue;
 		const state = residencyQuarantineState(databaseName);
 		const length = new Int32Array(state.buffer, state.byteOffset, 1);
@@ -634,6 +641,7 @@ function validateResidencyRecovery(): void {
 			(size > 0 ? Buffer.from(state.subarray(4, 4 + size)).toString() : undefined);
 		if (!reason && isMainThread && residencyRootsToValidate.has(databaseName)) {
 			try {
+				for (const Table of declarations) assertResidencyEngine(databaseName, Table.primaryStore.rootStore);
 				for (const Table of declarations) getResidencyMap(databaseName, Table.residency.slots, true);
 			} catch (error) {
 				if (!(error instanceof ResidencyConfigurationError) || databaseName === 'system') throw error;
@@ -4275,6 +4283,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (!previous) releaseResidencyFence = acquireResidencyMapFence(databaseName, {});
 			residency = residency === undefined ? previous : residency;
 			if (residency) {
+				recordResidencyDeclaration(databaseName);
+				registerResidencyRoot(databaseName, rootStore, true);
+				assertResidencyEngine(databaseName, rootStore);
 				if (schemaDefined === false) throw new ClientError('@sharded requires a schema-defined table', 400);
 				const effectiveAudit =
 					audit ?? persisted.descriptor?.audit ?? Table?.audit ?? envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
@@ -5422,6 +5433,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (residency && !deferredPrimaryRow) {
 			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
 			if (descriptor && !descriptor.residency) {
+				markShardingConversion(attributesDbi, tableName, descriptor, rootStore, databaseName);
 				attributesDbi.putSync(key, { ...descriptor, residency });
 				hasChanges = true;
 			}
@@ -6472,9 +6484,9 @@ function completeInterruptedDrop(
 						const retired = await retireFullTextIndexes(
 							{ databaseName, tableName, primaryStore: { rootStore } },
 							names.map((name) => ({ name })),
-							() => rootStore.status === 'open' && !databaseCommitsSuspended(rootStore)
+							() => rootStore.status === 'open' && !databaseCommitsSuspended(rootStore, true)
 						);
-						if (!retired || rootStore.status === 'closed' || databaseCommitsSuspended(rootStore)) return;
+						if (!retired || rootStore.status === 'closed' || databaseCommitsSuspended(rootStore, true)) return;
 						await withUpdateAttributesLockNonBlocking(
 							rootStore,
 							`complete interrupted drop of '${databaseName}.${tableName}'`,

@@ -17,7 +17,7 @@ const { hashResidencyKey, createResidencyMap } = require('#src/resources/residen
 const { server } = require('#src/server/Server');
 const env = require('#src/utility/environment/environmentManager');
 
-describe('Public sharding policy', function () {
+(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Public sharding policy', function () {
 	this.timeout(15000);
 	let priorShards, priorList, priorShard;
 	let sequence = 0;
@@ -44,6 +44,88 @@ describe('Public sharding policy', function () {
 		}`);
 		return databases[database][name];
 	}
+	for (const healthyFirst of [false, true])
+		it(`keeps database-local live refusal out of schema loading (healthy first=${healthyFirst})`, async () => {
+			const { setResidencyPlacementGuard } = require('#src/resources/residencyMaps');
+			const { databaseResidencyBlockReason, resetDatabases } = require('#src/resources/databases');
+			const database = `sharded_live_${sequence++}`;
+			const healthy = database + '_healthy';
+			const declarations = [
+				`type Held @table(database: "${database}") @sharded { id: ID @primaryKey body: String }`,
+				`type Healthy @table(database: "${healthy}") { id: ID @primaryKey body: String }`,
+			];
+			if (healthyFirst) declarations.reverse();
+			declarations.push(`type PlainSibling @table(database: "${database}") { id: ID @primaryKey body: String }`);
+			const schema = declarations.join('\n');
+			await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+			await loadGQLSchema(schema);
+			await databases[healthy].Healthy.put('good', { body: 'healthy' });
+			try {
+				setResidencyPlacementGuard((name) => {
+					if (name === database) throw new ResidencyPlacementError('temporary peer disagreement', 503);
+				});
+				await loadGQLSchema(schema);
+				resetDatabases();
+				assert.equal((await databases[healthy].Healthy.get('good')).body, 'healthy');
+				await assert.rejects(
+					async () => databases[database].Held.put('blocked', { body: 'no' }),
+					(error) => error.code === 'DATABASE_SHARDING_HELD' && error.retryable === true
+				);
+				assert.equal(databases[database].Held.primaryStore.getEntry('blocked'), undefined);
+				await assert.rejects(
+					async () => databases[database].PlainSibling.put('blocked', { body: 'no' }),
+					(error) => error.code === 'DATABASE_SHARDING_HELD'
+				);
+				assert.equal(databases[database].PlainSibling.primaryStore.getEntry('blocked'), undefined);
+				assert.equal(databaseResidencyBlockReason(database), undefined);
+			} finally {
+				setResidencyPlacementGuard(undefined);
+			}
+			await databases[database].Held.put('fixed', { body: 'repaired' });
+			assert.equal((await databases[database].Held.get('fixed')).body, 'repaired');
+		});
+	it('refuses a staged transaction at commit when a live hold begins after staging', async () => {
+		const { setResidencyPlacementGuard } = require('#src/resources/residencyMaps');
+		const database = `sharded_commit_hold_${sequence++}`;
+		await initializeResidencySlots({ database, slots: 2, ranges: [{ start: 0, end: 2, shard: 0 }] });
+		await declare('@sharded', database);
+		await loadGQLSchema(`type Plain @table(database: "${database}") { id: ID @primaryKey body: String }`);
+		const Rows = databases[database].Plain;
+		let held = false;
+		try {
+			setResidencyPlacementGuard((name) => {
+				if (name === database && held) throw new ResidencyPlacementError('held after staging', 503);
+			});
+			await assert.rejects(
+				transaction({}, async () => {
+					await Rows.put('staged', { id: 'staged', body: 'must not commit' });
+					held = true;
+				}),
+				(error) => error.code === 'DATABASE_SHARDING_HELD'
+			);
+			assert.equal(Rows.primaryStore.getEntry('staged'), undefined);
+		} finally {
+			setResidencyPlacementGuard(undefined);
+		}
+		await Rows.put('staged', { id: 'staged', body: 'repair succeeds' });
+		assert.equal((await Rows.get('staged')).body, 'repair succeeds');
+	});
+	it('defers a newly refused declaration and registers it on the next valid reload', async () => {
+		const { setResidencyPlacementGuard } = require('#src/resources/residencyMaps');
+		const database = `sharded_deferred_${sequence++}`;
+		const schema = `type Deferred @table(database: "${database}") @sharded { id: ID @primaryKey }`;
+		try {
+			setResidencyPlacementGuard((name) => {
+				if (name === database) throw new ResidencyPlacementError('temporary disagreement', 503);
+			});
+			await loadGQLSchema(schema);
+			assert.equal(databases[database]?.Deferred, undefined);
+		} finally {
+			setResidencyPlacementGuard(undefined);
+		}
+		await loadGQLSchema(schema);
+		assert.ok(databases[database].Deferred.residency);
+	});
 	it('creates a 1024-slot database map for the first declaration with no count', async () => {
 		const Rows = await declare('@sharded');
 		assert.equal(Rows.residency.slots, 1024);
@@ -92,6 +174,57 @@ describe('Public sharding policy', function () {
 				/declared stored attribute/
 			);
 		});
+	for (const type of ['Date', 'Boolean', 'BigInt', 'Bytes', 'Blob', '[String]', 'Payload'])
+		it(`refuses a default by type that cannot be hashed before installing a map: ${type}`, async () => {
+			const database = `sharded_type_${sequence++}`;
+			await assert.rejects(
+				loadGQLSchema(`type Payload { value: String }
+				type Rows @table(database: "${database}") @sharded(by: "tenantId") {
+					id: ID @primaryKey tenantId: ${type} tag: String @indexed
+				}`),
+				/@sharded.*(type|string|number)/
+			);
+			assert.equal(readResidencyMap(database), undefined);
+			assert.equal(databases[database]?.Rows, undefined);
+		});
+	it('refuses a relationship as the by field even with an explicit expression', async () => {
+		const database = `sharded_type_${sequence++}`;
+		await assert.rejects(
+			loadGQLSchema(`type Tenant @table(database: "${database}") { id: ID @primaryKey }
+			type Rows @table(database: "${database}") @sharded(by: "tenant", slotFrom: "0") {
+				id: ID @primaryKey tenantId: ID @indexed tenant: Tenant @relationship(from: "tenantId")
+			}`),
+			/declared stored attribute/
+		);
+		assert.equal(readResidencyMap(database), undefined);
+	});
+	it('allows a stored date when an explicit expression chooses the slot', async () => {
+		const database = `sharded_type_${sequence++}`;
+		await loadGQLSchema(`type Rows @table(database: "${database}")
+			@sharded(by: "createdAt", slotFrom: "createdAt.getUTCMonth()") {
+			id: ID @primaryKey createdAt: Date tag: String @indexed
+		}`);
+		const Rows = databases[database].Rows;
+		await Rows.put('row', { id: 'row', createdAt: new Date('2026-01-01T00:00:00Z'), tag: 'date' });
+		assert.equal(Rows.primaryStore.getEntry('row').residencySlot, 0);
+	});
+	it('keeps negative-zero affinity through native encoding, source apply and patch', async () => {
+		const database = `sharded_zero_${sequence++}`;
+		await initializeResidencySlots({ database, slots: 1024, ranges: [{ start: 0, end: 1024, shard: 0 }] });
+		const Origin = await declare('@sharded(by: "tenantId")', database, 'Origin');
+		const Peer = await declare('@sharded(by: "tenantId")', database, 'Peer');
+		await Origin.put('row', { id: 'row', tenantId: -0, body: 'complete' });
+		const encoded = Origin.primaryStore.getBinary('row');
+		const native = Origin.primaryStore.decoder.decode(encoded);
+		const decoded = Origin.primaryStore.decoder.isRocksDB ? native.value : native;
+		assert.ok(Object.is(decoded.tenantId, 0), 'record encoding canonicalizes negative zero');
+		await transaction({ sourceApply: true }, () => Peer.put('row', decoded));
+		const slot = Origin.primaryStore.getEntry('row').residencySlot;
+		assert.equal(slot, hashResidencyKey(0) % 1024);
+		assert.equal(Peer.primaryStore.getEntry('row').residencySlot, slot);
+		await Origin.patch('row', { body: 'updated' });
+		assert.equal(Origin.primaryStore.getEntry('row').residencySlot, slot);
+	});
 	it('refuses oversized hashed attributes before commit', async () => {
 		const Rows = await declare('@sharded(by: "tenantId")');
 		for (const size of [2100, 100000]) {
