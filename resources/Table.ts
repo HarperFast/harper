@@ -9674,7 +9674,7 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
-	// Not stagedEntry: a publish restamps the record without staging it, and a deferred save may not have run yet.
+	// Not stagedEntry: a publish restamps the record without staging it.
 	function followsAppliedWrite(write: any): boolean {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
 			if (!prior.skipped) return true;
@@ -10022,7 +10022,7 @@ export function makeTable(options): TableResourceClass {
 						if (
 							// The source wrote this key through its context: that write is ahead of the fill in this
 							// transaction, and on LMDB existingEntry is the committed record, which cannot show it.
-							followsAppliedWrite(sourceWrite) ||
+							(!isRocksDB && followsAppliedWrite(sourceWrite)) ||
 							(racedVersion !== existingVersion &&
 								// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
 								(existingVersion != null || !updatedRecord || !replacesRacedRecord))

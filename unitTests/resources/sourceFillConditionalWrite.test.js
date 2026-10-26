@@ -218,7 +218,7 @@ describe('Source fill racing a local write', function () {
 		});
 	}
 
-	// update() defers staging to commit on RocksDB, so it has not run when the fill decides
+	// RocksDB saves update() after the fill, so the update applies on top of the source record
 	it('keeps an update the source makes to the key it is resolving', async function () {
 		const id = 'source-updates';
 		await seedInvalidated(id);
@@ -229,11 +229,26 @@ describe('Source fill racing a local write', function () {
 		await committed(id);
 		const entry = FillTable.primaryStore.getEntry(id);
 		assert.equal(entry.value?.name, 'local ' + id);
-		assert.equal(entry.value?.payload, undefined, 'the update merged onto the source record');
+		assert.equal(entry.value?.payload, isLMDB ? undefined : 'from source');
 		assert.equal(indexCount('local ' + id), 1);
 		assert.equal(indexCount('source ' + id), 0);
 		const audit = await auditOf(id);
-		assert(!audit.includes('put:source ' + id), `the discarded fill was audited: ${audit}`);
+		if (isLMDB) assert(!audit.includes('put:source ' + id), `the discarded fill was audited: ${audit}`);
+	});
+
+	it('fills over an update the source makes that changes nothing', async function () {
+		const id = 'source-updates-nothing';
+		await seedInvalidated(id);
+		const { fill } = await startFill(id);
+		await FillTable.update(id, {}, sourceRequest.context);
+		respond({ id, name: 'source ' + id });
+		assert.equal((await fill).name, 'source ' + id);
+		await committed(id);
+		const entry = FillTable.primaryStore.getEntry(id);
+		assert.equal(entry.value.name, 'source ' + id);
+		assert(!(entry.metadataFlags & INVALIDATED));
+		assert.equal(indexCount('source ' + id), 1);
+		assert.equal((await auditOf(id)).at(-1), 'put:source ' + id);
 	});
 
 	it('leaves the record invalidated when the source invalidates the key it is resolving', async function () {
