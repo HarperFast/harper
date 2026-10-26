@@ -1518,9 +1518,7 @@ describe('Record locks (harper#483)', () => {
 		});
 	});
 
-	// Conflict retries and open-iterator replays re-save an explicit transaction's writes after commit()
-	// closed it; a re-save keeps the version the first save chose (harper#3487).
-	describe('explicit transaction retry and replay keep a lock write’s version', function () {
+	describe('explicit transaction retry and replay keep a lock write’s version (harper#3487)', function () {
 		this.timeout(5000);
 		let StampTest;
 		let Transaction;
@@ -1550,7 +1548,6 @@ describe('Record locks (harper#483)', () => {
 			cleanups.push(() => holder.unlock());
 			return holder;
 		};
-		// Native commit attempts per transaction id on StampTest's database.
 		function countCommitAttempts() {
 			const db = StampTest.primaryStore.store.db;
 			const attempts = new Map();
@@ -1626,6 +1623,8 @@ describe('Record locks (harper#483)', () => {
 			await StampTest.put({ id: lockedId, n: 0 });
 			await StampTest.put({ id: otherId, n: 0 });
 			const timestamp = Date.now() + 60_000;
+			const attempts = countCommitAttempts();
+			let retainedId;
 			await transaction({ timestamp }, async (txn) => {
 				const holder = await holdLock(lockedId);
 				holder.set('n', 1);
@@ -1634,8 +1633,9 @@ describe('Record locks (harper#483)', () => {
 				const iterator = StampTest.search({ conditions: [] }, txn)[Symbol.asyncIterator]();
 				cleanups.push(() => iterator.return?.());
 				await iterator.next();
-				assert.ok(txn.readTxnsUsed > 1, 'the iterator is still open at commit');
+				retainedId = txn.transaction.id;
 			});
+			assert.ok(!attempts.has(retainedId), 'the writes committed on a replay transaction, not the iterator’s');
 			const locked = stampedEntry(lockedId);
 			assert.strictEqual(locked.value.n, 1);
 			assert.strictEqual(locked.version, timestamp, 'the replay re-stamped the locked write');
