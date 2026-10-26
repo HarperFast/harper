@@ -4249,6 +4249,16 @@ export function makeTable(options): TableResourceClass {
 						partialRecord[name] =
 							incomingValue === undefined && !options?.residencyId ? existingRecord?.[name] : incomingValue;
 					}
+					// a refill takes its created time from the stub, so a cache invalidation carries it forward too
+					const createdTime = createdTimeProperty?.name;
+					if (
+						createdTime &&
+						partialRecord &&
+						!options?.residencyId &&
+						partialRecord[createdTime] === undefined &&
+						existingRecord?.[createdTime] != null
+					)
+						partialRecord[createdTime] = existingRecord[createdTime];
 					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
 					// Computed indexes need the full record's inputs; keep them as committed until a full write.
 					updateIndices(

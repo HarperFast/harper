@@ -27,7 +27,7 @@ async function settledFill(Table, id, calls) {
 
 describe('Source fills', function () {
 	this.timeout(10_000);
-	let Stamped, Placed, Computed, calls, names;
+	let Stamped, Unindexed, Placed, Computed, calls, names;
 
 	before(() => {
 		setupTestDBPath();
@@ -40,6 +40,15 @@ describe('Source fills', function () {
 				{ name: 'name' },
 				{ name: 'createdAt', type: 'Float', assignCreatedTime: true, indexed: true },
 				{ name: 'updatedAt', type: 'Float', assignUpdatedTime: true, indexed: true },
+			],
+		});
+		Unindexed = table({
+			database: 'test',
+			table: 'SourceFillUnindexedStamps',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'createdAt', type: 'Float', assignCreatedTime: true },
 			],
 		});
 		Placed = table({
@@ -62,7 +71,7 @@ describe('Source fills', function () {
 		// `name` is not indexed, so no stub carries the resolver's input; `sku` is, so `skuKey` resolves over a stub
 		Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
 		Computed.setComputedAttribute('skuKey', (record) => record.sku.toLowerCase());
-		for (const Table of [Stamped, Placed, Computed]) {
+		for (const Table of [Stamped, Unindexed, Placed, Computed]) {
 			Table.sourcedFrom({
 				get(id) {
 					calls.push(id);
@@ -113,6 +122,15 @@ describe('Source fills', function () {
 				assert.deepEqual(indexedKeys(Stamped, 'updatedAt', id), [stored.updatedAt]);
 			});
 		}
+
+		it('a refill after a cache invalidation keeps a created time that is not indexed', async () => {
+			await Unindexed.put('kept', { id: 'kept', name: 'local' });
+			const original = Unindexed.primaryStore.getEntry('kept').value.createdAt;
+			await Unindexed.invalidate('kept');
+			const stored = (await settledFill(Unindexed, 'kept', calls)).value;
+			assert.equal(stored.name, 'from source');
+			assert.equal(stored.createdAt, original);
+		});
 
 		it('a noCacheStore read returns both timestamps without storing the record', async () => {
 			const record = await Stamped.get('uncached', { noCacheStore: true });
