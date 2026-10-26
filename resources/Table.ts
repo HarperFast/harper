@@ -1171,6 +1171,7 @@ interface TableResourceClass {
 		[verb: string]: {
 			query?: JsonSchemaFragment;
 			body?: JsonSchemaFragment;
+			bodyRequired?: boolean;
 		};
 	};
 	withSchema<Base extends new (...args: any[]) => any, const C extends Contract>(
