@@ -24,8 +24,10 @@ const INTRINSIC_NAMES = [
 	'FinalizationRegistry',
 ];
 const currentIntrinsics = () => INTRINSIC_NAMES.map((name) => globalThis[name]);
-// A component may replace one of these globals while it loads; literals and async functions keep using the original.
-const realmIntrinsics = currentIntrinsics();
+// A component may replace one of these globals while it loads; literals, functions and async functions keep using
+// the originals, so seal modes capture them, and `Object.seal` itself, at import.
+const realmIntrinsics = [Function, ...currentIntrinsics()];
+const { seal } = Object;
 
 /** An unrecognized mode freezes eagerly: config values are not validated, so a typo fails closed. */
 export function lockDownIntrinsics(
@@ -43,15 +45,11 @@ function preventFunctionConstructor() {
 	Function.prototype.constructor = function () {}; // prevent this from being used to eval data in a parent context
 }
 
-// Properties must stay writable: a read-only prototype elements kind costs every store into an array hole its V8
-// fast path, process-wide (security/DESIGN.md).
+// seal only, never read-only: security/DESIGN.md has the V8 cost
 function sealIntrinsics() {
-	Object.seal(Function);
-	Object.seal(Function.prototype);
-	// originals first, so a replacement that refuses to seal cannot leave them open
-	for (const intrinsic of realmIntrinsics.concat(currentIntrinsics())) {
-		Object.seal(intrinsic);
-		Object.seal((intrinsic as any)?.prototype);
+	for (const intrinsic of new Set([...realmIntrinsics, globalThis.Function, ...currentIntrinsics()])) {
+		seal(intrinsic);
+		seal((intrinsic as any)?.prototype);
 	}
 }
 

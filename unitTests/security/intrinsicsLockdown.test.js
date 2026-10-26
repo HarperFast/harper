@@ -146,11 +146,11 @@ describe('lockDownIntrinsics', function () {
 		});
 	}
 
-	it('"seal-after-load": a lock that throws rejects the promise it returns', async () => {
-		const result = await probeLockdown('seal-after-load', { refusingGlobal: true });
+	it('"seal-after-load": replacements that refuse to seal reject the lock, after the originals are sealed', async () => {
+		const result = await probeLockdown('seal-after-load', { refusingGlobals: true });
 		assert.strictEqual(result.lockOutcome, 'TypeError');
 		assert.strictEqual(result.afterLoad.originalOfReplacedSealed, true);
-		assert.strictEqual(result.afterLoad.functionPrototypeExtensible, false);
 		assert.strictEqual(result.afterLoad.strictAdd['Object.prototype'], 'TypeError');
+		assert.strictEqual(result.afterLoad.strictAdd['Function.prototype'], 'TypeError');
 	});
 });

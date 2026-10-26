@@ -25,6 +25,7 @@ const LOCKED_NAMES = [
 	'WeakRef',
 	'FinalizationRegistry',
 ];
+const originalFunction = Function;
 const ADD_TARGETS = {
 	'Object.prototype': Object.prototype,
 	'Array.prototype': Array.prototype,
@@ -88,17 +89,17 @@ function probe(phase) {
 			);
 		}),
 		originalOfReplacedSealed: Object.isSealed(originalWeakRef) && Object.isSealed(originalWeakRef.prototype),
-		functionSealed: Object.isSealed(Function),
-		functionPrototypeExtensible: Object.isExtensible(Function.prototype),
+		functionSealed: Object.isSealed(originalFunction),
+		functionPrototypeExtensible: Object.isExtensible(originalFunction.prototype),
 		frozen: {
 			'Object.prototype': Object.isFrozen(Object.prototype),
 			'Array.prototype': Object.isFrozen(Array.prototype),
-			'Function.prototype': Object.isFrozen(Function.prototype),
+			'Function.prototype': Object.isFrozen(originalFunction.prototype),
 		},
 		descriptors: {
 			'Object.prototype.toString': describeProperty(Object.prototype, 'toString'),
 			'Array.prototype.push': describeProperty(Array.prototype, 'push'),
-			'Function.prototype.call': describeProperty(Function.prototype, 'call'),
+			'Function.prototype.call': describeProperty(originalFunction.prototype, 'call'),
 			'Promise.prototype.then': describeProperty(Promise.prototype, 'then'),
 			'Map.prototype.get': describeProperty(Map.prototype, 'get'),
 			'Math.PI': describeProperty(Math, 'PI'),
@@ -110,8 +111,11 @@ function probe(phase) {
 const originalWeakRef = WeakRef;
 globalThis.WeakRef = class ReplacedWeakRef extends WeakRef {};
 delete globalThis.FinalizationRegistry;
-if (workerData.refusingGlobal)
-	globalThis.WeakRef = new Proxy(class RefusingWeakRef {}, { preventExtensions: () => false });
+if (workerData.refusingGlobals) {
+	const refusing = { preventExtensions: () => false };
+	globalThis.Function = new Proxy(function RefusingFunction() {}, refusing);
+	globalThis.WeakRef = new Proxy(class RefusingWeakRef {}, refusing);
+}
 let markLoaded;
 const whenLoaded = new Promise((resolve) => (markLoaded = resolve));
 const locking = lockDownIntrinsics(workerData.mode, whenLoaded);
