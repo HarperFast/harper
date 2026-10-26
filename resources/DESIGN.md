@@ -126,16 +126,7 @@ entry's key in the per-origin transaction log: write identity, the record→log 
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and
 `#2409`'s `recordVersion` alias is now absorbed back into `version`.
 
-<<<<<<< HEAD
-They hold the same value for every write whose record version is its own commit timestamp, which is
-every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
-(`getFromSource`, core #2065): the record is stored at the source-reported version while its log
-entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
-when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that
-compatibility pointer with a dedicated log-key word.
-=======
 They match for every ordinary local write (its record version is its own commit timestamp), so confusing them stays invisible until a **source fill** (`getFromSource`, core #2065) stores the record at the source-reported version and keys its log entry at the fill's commit. A RocksDB record keeps its version in the existing word and, when the clocks diverge, its audit head in `additionalAuditRefs`; stage 2 can replace that pointer with a dedicated log-key word.
->>>>>>> ed89e94ce (docs: reuse upstream design-note trim to restore lint budget)
 
 Consequences worth knowing:
 
@@ -805,42 +796,6 @@ an LMDB root once, only while `open`, skips its dbis, and closes every alias sha
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
 
-<<<<<<< HEAD
-=======
-## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
-
-A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) used to reopen
-`__dbis__` and every indexed column family, overwriting the references the table graph holds. rocksdb-js
-releases a native handle only on close or garbage collection, so the replaced wrappers held the
-process-global refCount up and online `restore_backup` (which waits 3 s for closure) refused the database
-as held open. `declareTable` now reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a
-redeclare, a plain index's open wrapper on an unchanged store (`indexFor`); a custom index (HNSW) is
-always reopened, since `openIndex` builds its state from the current options, and is never reused for a
-plain declaration. Every wrapper `initStores` or `declareTable` opens for a global RocksDB root is
-recorded in `ownedRocksStores` under the root path, as a `WeakRef` so collection still releases an
-unreachable one. `closeDatabaseStores` closes the live entries before the root, and drains the record
-again afterward for a declaration that resolved the root mid-close. A wrapper whose close failed
-(including a custom index's cleanup close after its setup threw) is held strongly, since collection may
-not release it; the record is keyed by path because a lenient close discards the root object even after
-a failure. A wrapper is never closed when the graph stops pointing at it: a query that took it before
-the redeclare still opens ranges through it, and a closed wrapper would refuse them (a range already open
-keeps reading either way). Short-lived wrappers (column-family drops, the blob sweep) close themselves
-and are not recorded; `destroy()` closes every wrapper on the root, so a drop only forgets the record.
-Enforced by the redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.test.js`
-and, end to end, `integrationTests/database/restore-backup-online.test.ts`.
-
-## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
-
-A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` file at the top level
-of the storage path and of every configured database path, and each one a directory below the storage
-path as a legacy `<schema>/<table>.mdb` table. lmdb-js (3.5.6, and still 3.5.7) crashes the process
-when `mdb_env_open` fails: the failure path in `EnvWrap::openEnv` frees its `ExtendedEnv`, then
-`closeEnv` frees it again. A file there that is not an LMDB environment therefore takes the process
-down with SIGSEGV and no stack, at whatever moment the next rescan runs. Until lmdb-js returns the
-open error instead, tests keep non-database fixtures outside those paths;
-`unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists (harper#2669).
-
->>>>>>> ed89e94ce (docs: reuse upstream design-note trim to restore lint budget)
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
 `LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's
