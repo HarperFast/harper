@@ -6883,6 +6883,8 @@ export function makeTable(options): TableResourceClass {
 								} else {
 									let entry = iteration.value;
 									if (entry?.then) entry = await entry;
+									// an id that transformToEntries loaded asynchronously and found missing
+									if (entry === SKIP) continue;
 									// if the index has already provided the first order of sorting, we only need to sort
 									// within each grouping
 									if (dbOrderedAttribute) {
@@ -7103,6 +7105,9 @@ export function makeTable(options): TableResourceClass {
 						let value;
 						if (resolver) {
 							const filterMap = filtered?.[attribute_name];
+							// Related keys are loaded by the target table's transform below, so a related record that
+							// is not in memory is read in the background when this query is iterated asynchronously.
+							let keysOnly = false;
 							if (filterMap) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
@@ -7111,12 +7116,15 @@ export function makeTable(options): TableResourceClass {
 								} else {
 									value = filterMap.fromRecord?.(record);
 								}
+							} else if (resolver.resolveKeys) {
+								keysOnly = true;
+								value = resolver.resolveKeys(record, context);
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
 							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) return callback(value, attribute_name);
-								if (value && typeof value === 'object') {
+								if (keysOnly ? value != null : value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
 									// Use the target table's own read transaction; each table's readTxn is
@@ -7140,7 +7148,8 @@ export function makeTable(options): TableResourceClass {
 											undefined,
 											typeof attribute.sort === 'object' && attribute.sort
 										));
-									if (Array.isArray(value)) {
+									// a single related record may have a composite (array) key
+									if (keysOnly ? resolver.toMany : Array.isArray(value)) {
 										const results = [];
 										const iterator = targetTable
 											.transformToOrderedSelect(
@@ -7158,7 +7167,10 @@ export function makeTable(options): TableResourceClass {
 												results.push(iteration.value);
 												iteration = iterator.next();
 											}
-											callback(results, attribute_name);
+											callback(
+												keysOnly && resolver.relationship?.filterMissing ? results.filter(exists) : results,
+												attribute_name
+											);
 										};
 										const promised = nextValue(iterator.next());
 										if (promised) {
@@ -8894,28 +8906,29 @@ export function makeTable(options): TableResourceClass {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
+							const searchRelated = (object, context) =>
+								searchByIndex(
+									{ attribute: relationship.to, value: object[relationship.from ? relationship.from : primaryKey] },
+									txnForContext(context).getReadTxn(),
+									false,
+									attribute.elements.definition.tableClass,
+									{ allowFullScan: false }
+								) as any;
 							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
-								// TODO: Get raw record/entry?
-								const id = object[relationship.from ? relationship.from : primaryKey];
 								const relatedTable = attribute.elements.definition.tableClass;
 								if (returnEntry) {
-									return (
-										searchByIndex(
-											{ attribute: relationship.to, value: id },
-											txnForContext(context).getReadTxn(),
-											false,
-											relatedTable,
-											{ allowFullScan: false }
-										) as any
-									).map((entry) => {
+									return searchRelated(object, context).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
 										return relatedTable.primaryStore.getEntry(entry, {
 											transaction: txnForContext(context).getReadTxn(),
 										});
 									}).asArray;
 								}
+								const id = object[relationship.from ? relationship.from : primaryKey];
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
+							attribute.resolve.resolveKeys = (object, context) => searchRelated(object, context).asArray;
+							attribute.resolve.toMany = true;
 							attribute.set = () => {
 								// ideally we want to throw an error here, but if the user had (accidently?) set a property into storage
 								// conflicts with this attribute, we don't want to prevent loading
@@ -8975,6 +8988,13 @@ export function makeTable(options): TableResourceClass {
 									object[relationship.from] = attribute.elements ? [targetId] : targetId;
 								}
 							};
+							attribute.resolve.resolveKeys = (object) => {
+								const ids = object[relationship.from];
+								if (ids == null || !attribute.elements || Array.isArray(ids)) return ids;
+								return [ids];
+							};
+							attribute.resolve.toMany = Boolean(attribute.elements);
+							attribute.resolve.relationship = relationship;
 							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
 							attribute.resolve.from = relationship.from;
 						} else {
