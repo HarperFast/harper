@@ -638,6 +638,9 @@ type MaybePromise<T> = T | Promise<T>;
  */
 export type OwnedReadIterator = { onDone?: (() => void) | null };
 
+/** A read reference on one database's link, held for a search whose own handle is on `holder`. */
+export type ReadLease = OwnedReadIterator & { holder: DatabaseTransaction; readTxn: ReadTransaction };
+
 export type CommitOptions = {
 	doneWriting?: boolean;
 	timestamp?: number;
@@ -1006,6 +1009,9 @@ export class DatabaseTransaction implements Transaction {
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
+	// Read references held for searches running on other links (a join into this database). While a
+	// holder keeps its own handle, this link is not idle: the search it serves is still alive.
+	declare readLeases?: Set<ReadLease>;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
 	declare private activeCommitHandle?: RocksTransaction;
@@ -1192,6 +1198,24 @@ export class DatabaseTransaction implements Transaction {
 
 	unregisterReadIterator(iterator: OwnedReadIterator): void {
 		this.ownedReadIterators?.delete(iterator);
+	}
+
+	leaseReadTxn(holder: DatabaseTransaction, disableSnapshot?: boolean): ReadLease {
+		const readTxn = this.useReadTxn(disableSnapshot);
+		const generation = this.readTxnGeneration;
+		const lease: ReadLease = {
+			holder,
+			readTxn,
+			onDone: () => {
+				lease.onDone = null;
+				this.readLeases.delete(lease);
+				this.unregisterReadIterator(lease);
+				if (readTxn) this.doneReadTxn(generation);
+			},
+		};
+		(this.readLeases ??= new Set()).add(lease);
+		this.registerReadIterator(lease);
+		return lease;
 	}
 
 	/**
@@ -4261,6 +4285,13 @@ function startMonitoringTxns() {
 		if (txn.rangeReadActive) {
 			txn.rangeReadActive = false;
 			txn.renewReadTimeout();
+		} else if (txn.readLeases) {
+			for (const lease of txn.readLeases) {
+				if (lease.holder.transaction || lease.holder.readTxn) {
+					txn.renewReadTimeout();
+					break;
+				}
+			}
 		}
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{

@@ -56,6 +56,7 @@ import {
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
+	type ReadLease,
 	confirmingResidents,
 	getReadTransactionGuard,
 } from './DatabaseTransaction.ts';
@@ -1249,6 +1250,7 @@ interface TableResourceClass {
 		isDone?: boolean;
 		isCommitted?: boolean;
 	};
+	_txnForContext(context: any): DatabaseTransaction;
 	transactions: DatabaseTransactionRecord[] & {
 		timestamp: number;
 	};
@@ -6686,6 +6688,23 @@ export function makeTable(options): TableResourceClass {
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
 			const readTxnGeneration = txn.readTxnGeneration;
+			// A join into another database scans that database's indexes lazily, after the request commits,
+			// so the results hold a lease on each such link until they are done.
+			let relatedLeases: Map<DatabaseTransaction, ReadLease> | undefined;
+			const readTxnFor =
+				hasRelationships && hasPathCondition(conditions)
+					? (relatedTable: typeof TableResource) => {
+							const link = relatedTable._txnForContext(context);
+							if (link === txn) return readTxn;
+							relatedLeases ??= new Map();
+							let lease = relatedLeases.get(link);
+							if (!lease) {
+								lease = link.leaseReadTxn(txn, target.snapshot === false);
+								relatedLeases.set(link, lease);
+							}
+							return lease.readTxn;
+						}
+					: undefined;
 			// The explicit row filter participates in query execution: it is pushed into HNSW
 			// traversal for vector sorts, applied after conditions otherwise, and checked again after
 			// cache/source materialization below. A policy error aborts the query instead of silently
@@ -6714,7 +6733,8 @@ export function makeTable(options): TableResourceClass {
 					context,
 					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 					filtered,
-					recordAccess
+					recordAccess,
+					readTxnFor
 				);
 				const ensure_loaded = (target as any).ensureLoaded !== false;
 				// The guards inside executeConditions evaluate the
@@ -6831,7 +6851,11 @@ export function makeTable(options): TableResourceClass {
 							try {
 								(transformToRecord as any).return?.();
 							} finally {
-								if (readTxn) txn.doneReadTxn(readTxnGeneration);
+								try {
+									if (readTxn) txn.doneReadTxn(readTxnGeneration);
+								} finally {
+									releaseLeases(relatedLeases);
+								}
 							}
 						}
 						let total: number | null;
@@ -6874,6 +6898,7 @@ export function makeTable(options): TableResourceClass {
 					(transformToRecord as any).return?.();
 					txn.unregisterReadIterator(results);
 					if (readTxn) txn.doneReadTxn(readTxnGeneration);
+					releaseLeases(relatedLeases);
 				};
 				// Recorded ownership: if the request dies before anything consumes these results, the
 				// transaction closes them itself rather than leaving its read snapshot pinned.
@@ -6883,6 +6908,7 @@ export function makeTable(options): TableResourceClass {
 				return results;
 			} catch (error) {
 				if (readTxn) txn.doneReadTxn(readTxnGeneration);
+				releaseLeases(relatedLeases);
 				throw error;
 			}
 		}
@@ -9592,10 +9618,14 @@ export function makeTable(options): TableResourceClass {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
-							const searchRelated = (object, context) =>
+							const searchRelated = (
+								object,
+								context,
+								transaction = attribute.elements.definition.tableClass._readTxnForContext(context)
+							) =>
 								searchByIndex(
 									{ attribute: relationship.to, value: object[relationship.from ? relationship.from : primaryKey] },
-									txnForContext(context).getReadTxn(),
+									transaction,
 									false,
 									attribute.elements.definition.tableClass,
 									{ allowFullScan: false }
@@ -9611,11 +9641,10 @@ export function makeTable(options): TableResourceClass {
 							) => {
 								const relatedTable = attribute.elements.definition.tableClass;
 								if (returnEntry) {
-									const candidates = searchRelated(object, context).map((entry) => {
+									const transaction = relatedTable._readTxnForContext(context);
+									const candidates = searchRelated(object, context, transaction).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
-										return relatedTable.primaryStore.getEntry(entry, {
-											transaction: txnForContext(context).getReadTxn(),
-										});
+										return relatedTable.primaryStore.getEntry(entry, { transaction });
 									});
 									return lazy ? candidates : candidates.asArray;
 								}
@@ -9672,7 +9701,7 @@ export function makeTable(options): TableResourceClass {
 									// intermittent MaybePromise into user code
 									const store = definition.tableClass.primaryStore;
 									const method = returnEntry ? 'getEntry' : 'getSync';
-									const options = { transaction: txnForContext(context).getReadTxn() };
+									const options = { transaction: definition.tableClass._readTxnForContext(context) };
 									const results = (lazy ? new ExtendedIterable(normalizedIds) : normalizedIds).map((id) => {
 										const value = store[method](id, options);
 										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
@@ -9682,7 +9711,7 @@ export function makeTable(options): TableResourceClass {
 								}
 								markRelatedReadUncacheable(context);
 								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'getSync'](ids, {
-									transaction: txnForContext(context).getReadTxn(),
+									transaction: definition.tableClass._readTxnForContext(context),
 								});
 								if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 								return value;
@@ -10202,6 +10231,9 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
+		}
+		static _txnForContext(context) {
+			return txnForContext(context);
 		}
 	}
 	type _TableResourceMatchesItsDeclaredTypes = [
@@ -10850,7 +10882,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	// must settle to what the relationship resolver returns with returnEntry
 	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
-		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
+		const options = { transaction: relatedTable._readTxnForContext(context), async: true };
 		const entries = [];
 		for (let i = 0; i < keys.length; i++) {
 			const key = keys[i];
@@ -10894,7 +10926,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
 		const entry = relatedTable.primaryStore.getEntry(key, {
-			transaction: txnForContext(context).getReadTxn(),
+			transaction: relatedTable._readTxnForContext(context),
 			async: true,
 		});
 		return entry?.then ? entry.then(freezeRelatedEntry) : freezeRelatedEntry(entry);
@@ -12629,6 +12661,21 @@ const RELATED_READS_IN_FLIGHT = 16;
 // for filtering
 function exists(value) {
 	return value != null;
+}
+
+function releaseLeases(leases: Map<DatabaseTransaction, ReadLease> | undefined) {
+	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
+/** Whether any condition names a path (a relationship join or a nested property). */
+function hasPathCondition(conditions: any[]): boolean {
+	for (const condition of conditions) {
+		if (
+			condition.conditions ? hasPathCondition(condition.conditions) : Array.isArray(condition.attribute ?? condition[0])
+		)
+			return true;
+	}
+	return false;
 }
 
 function stringify(value) {

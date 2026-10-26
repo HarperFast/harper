@@ -75,7 +75,8 @@ export function executeConditions(
 	context,
 	transformToEntries,
 	filtered,
-	recordAccess?
+	recordAccess?,
+	readTxnFor?: (relatedTable: any) => any
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -150,13 +151,16 @@ export function executeConditions(
 				request,
 				context,
 				transformToEntries,
-				filtered
+				filtered,
 				// recordAccess intentionally omitted: guards run once, at the top level (see above).
+				undefined,
+				readTxnFor
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
+			readTxnFor,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
@@ -899,13 +903,15 @@ export function searchByIndex(
 		minResults?: number;
 		// Rows before this offset are needed for correct paging but do not need highlight metadata.
 		resultOffset?: number;
+		// A join into another database reads through this; without it, that database's latest committed state.
+		readTxnFor?: (relatedTable: any) => any;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults, resultOffset } = options;
+	const { allowFullScan, filtered, context, minResults, resultOffset, readTxnFor } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -940,10 +946,10 @@ export function searchByIndex(
 					comparator,
 					negated: searchCondition.negated,
 				},
-				transaction,
+				relatedTable.primaryStore.path === Table.primaryStore.path ? transaction : readTxnFor?.(relatedTable),
 				reverse,
 				relatedTable,
-				{ allowFullScan, filtered: joined }
+				{ allowFullScan, filtered: joined, readTxnFor }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match

@@ -880,6 +880,25 @@ remainder the pre-commit phase or an earlier hop happened to leave (harper#2675)
 hop: a native commit that stalls for a whole window still lets the monitor reap the waiting links,
 and the cascade gains no crash or cross-store atomicity from this.
 
+## A related-table read uses the related table's own database link (`Table.ts` relationship resolvers, `search.ts` join)
+
+A native read transaction belongs to one database; RocksDB rejects it on another database's store
+("Transaction belongs to a different database") and LMDB silently reads the wrong data. A
+`@relationship` may target a table in another database, so every read of a related table takes its
+transaction from that table (`relatedTable._readTxnForContext(context)` / `_txnForContext`), never
+from the `txnForContext` closure of the table that declared the relationship. Point reads take it
+per call. A search join (`?vault.name==x`) scans the related index lazily, after REST has committed
+the request, so `Table.search` takes a lease on each related link (`DatabaseTransaction.leaseReadTxn`,
+through its `readTxnFor` callback) and releases the leases with its own handle (`onDone`, the counting
+drain, the error path). A lease is registered on its own link, never as the outer results: abandoned-
+read cleanup on that link releases only that link. The RocksDB monitor does not idle-reap a link while
+any lease's holder still owns a handle: the related scan is often idle while the source scans (a
+drained join map, an inner scan whose rows are filtered or sorted), and the holder's own idle limit
+already bounds the search. A same-database related table reuses the caller's transaction; a join
+reached without `readTxnFor` reads another database's latest committed state rather than a foreign
+handle. A related read after the request committed takes a handle-free transaction. Each database is
+read at its own snapshot; a cross-database read is not one consistent snapshot.
+
 ## `enc:v1:` env values decrypt through a registered decryptor, and skip non-fatally without one (`resources/loadEnv.ts`, `resources/secretDecryptor.ts`, `utility/envFile.ts`)
 
 Core recognises the `enc:v1:` value prefix (`isEncryptedEnvValue`), exposes a decryptor registration
