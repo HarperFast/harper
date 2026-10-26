@@ -49,12 +49,19 @@ export class RocksIndexStore extends RocksDatabase {
 	}
 
 	/**
-	 * Get all entries matching the range
+	 * Get all entries matching the range, as `{ key: indexedValue, value: primaryKey }`. Both come from
+	 * the composite key, so the stored (null) values are never read, whatever `options.values` says.
 	 * @param options
 	 */
 	getRange(options: StoreIteratorOptions): Iterable<any> {
-		return trackReadRange(options.transaction, () => super.getRange(translateIndexBounds(options))).map(({ key }) => {
-			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
+		return trackReadRange(options.transaction, () =>
+			super.getRange({ ...translateIndexBounds(options), values: false })
+		).map((entry) => {
+			// each iteration yields a fresh entry object, so it can be rewritten in place
+			const key = entry.key;
+			entry.key = key[0];
+			entry.value = key.length > 2 ? key.slice(1) : key[1];
+			return entry;
 		});
 	}
 

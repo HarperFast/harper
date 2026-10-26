@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { RocksDatabase, Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 const { transaction } = require('#src/resources/transaction');
 
@@ -214,6 +214,39 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(advanced.value.count, 2, 'the merged count survives the in-order write');
 		store.getEntry(11);
 		assert(store.verifyVersion(11, advanced.version), 'vouching resumes for a version of its own');
+	});
+
+	it('a caching read hands rocksdb-js the transaction and version keys, not a copy of the caller options', async function () {
+		const store = TestTable.primaryStore;
+		await TestTable.put(30, { name: 'thirty' });
+		const passed = [];
+		const originalGetSync = RocksDatabase.prototype.getSync;
+		RocksDatabase.prototype.getSync = function (id, options) {
+			if (this === store) passed.push(options);
+			return originalGetSync.call(this, id, options);
+		};
+		const transaction = new Transaction(store.store);
+		try {
+			// shaped like the DatabaseTransaction HNSW passes as its read options
+			const options = { transaction, writes: [], completions: [], readTxnRefCount: 1, timeout: 60_000 };
+			const cold = store.getEntry(30, options);
+			const warm = store.getEntry(30, options);
+			assert.equal(cold.value.name, 'thirty');
+			assert.equal(warm.value.name, 'thirty');
+			assert.deepStrictEqual(passed, [
+				{ transaction, populateVersion: true },
+				{ transaction, expectedVersion: cold.version },
+			]);
+			assert.strictEqual(passed[1].transaction, transaction);
+
+			// the transaction still reaches the native read: its own uncommitted write is visible
+			store.putSync(31, { name: 'uncommitted' }, { transaction });
+			assert.equal(store.getEntry(31, options)?.value?.name, 'uncommitted');
+			assert.equal(store.getEntry(31), undefined);
+		} finally {
+			RocksDatabase.prototype.getSync = originalGetSync;
+			transaction.abort();
+		}
 	});
 
 	describe('record cache exposure', function () {

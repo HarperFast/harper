@@ -555,6 +555,7 @@ export function freezeRecord(value: any): void {
 	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
 		Object.freeze(value);
 }
+const returnEntry = (entry: Entry) => entry;
 // Returns a read-only VIEW of `record` for application predicate evaluation
 // without mutating the original. Locally-loaded records are already frozen by loadLocalRecord, so
 // this is a no-op there; the source-revalidation path hands back the SAME object its deferred
@@ -7026,6 +7027,10 @@ export function makeTable(options): TableResourceClass {
 			let transformCache;
 			const source = this.source;
 			const resourceClass = this;
+			const lazy = select?.length < 4;
+			const syncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded };
+			// loadLocalRecord sets `async` on the options of an async load, so sync loads need their own
+			const asyncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded, async: true };
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
@@ -7042,13 +7047,9 @@ export function makeTable(options): TableResourceClass {
 						entry = loadLocalRecord(
 							entry.key ?? entry,
 							context,
-							{
-								transaction: readTxn,
-								lazy: select?.length < 4,
-								ensureLoaded: checkLoaded,
-							},
+							this?.isSync ? syncLoadOptions : asyncLoadOptions,
 							this?.isSync,
-							(entry: Entry) => entry
+							returnEntry
 						);
 						if ((entry as any)?.then) return (entry as any).then(transform.bind(this));
 						record = entry?.value;
@@ -7225,7 +7226,11 @@ export function makeTable(options): TableResourceClass {
 									for (const key in record) {
 										selected[key] = record[key];
 									}
-								else
+								else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
+									// a plain column: what selectAttribute would assign, without a callback per column
+									const value = record[attribute];
+									selected[attribute] = value === undefined && forceNulls ? null : value;
+								} else
 									selectAttribute(attribute, (value, attribute_name) => {
 										if (value === undefined && forceNulls) value = null;
 										selected[attribute_name] = value;
@@ -9637,41 +9642,6 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		// TODO: determine if we use lazy access properties
-		const whenPrefetched = () => {
-			if (context?.transaction?.stale) context.transaction.stale = false;
-			// if the transaction was closed, which can happen if we are iterating
-			// through query results and the iterator ends (abruptly)
-			if (options.transaction?.isDone) return withEntry(null, id);
-			if (!sync && options) {
-				options.async = true;
-				return when(primaryStore.getEntry(id, options), withLocalEntry);
-			} else {
-				return withLocalEntry(primaryStore.getEntry(id, options));
-			}
-		};
-		function withLocalEntry(entry) {
-			// skip recording reads for most system tables except hdb_analytics
-			// we want to track analytics reads in licensing, etc.
-			if (databaseName !== 'system' && (options.type === 'read' || !options.type)) {
-				harperLogger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
-				recordAction(entry?.size ?? 1, 'db-read', tableName, null);
-			}
-
-			// we need to freeze entry records to ensure the integrity of the cache;
-			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
-			// issues
-			freezeRecord(entry?.value);
-			if (options.ensureLoaded && needsResidentLoad(entry, context)) {
-				// load from other node
-				return sourceLoad(entry).then((entry) => withEntry(entry, id));
-			}
-			if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
-			if (entry && context) {
-				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-				if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
-			}
-			return withEntry(entry, id);
-		}
 		// To prefetch or not to prefetch is one of the biggest questions Harper has to make.
 		// Prefetching has important benefits as it allows any page fault to be executed asynchronously
 		// in the work threads, and it provides event turn yielding, allowing other async functions
@@ -9684,12 +9654,12 @@ export function makeTable(options): TableResourceClass {
 		// to evaluate if prefetching is a good idea.
 		// First, the caller can tell us. If the record is in our local cache, we use that as indication
 		// that we can get the value very quickly without a page fault.
-		if (sync || isRocksDB) return whenPrefetched();
+		if (sync || isRocksDB) return loadPrefetchedRecord(id, context, options, sync, withEntry);
 		// Next, we allow for non-prefetch mode where we can execute some gets without prefetching,
 		// but we will limit the number before we do another prefetch
 		if (untilNextPrefetch > 0) {
 			untilNextPrefetch--;
-			return whenPrefetched();
+			return loadPrefetchedRecord(id, context, options, sync, withEntry);
 		}
 		// Now, we are going to prefetch before loading, so need a promise:
 		return new Promise((resolve, reject) => {
@@ -9742,12 +9712,46 @@ export function makeTable(options): TableResourceClass {
 			}
 			function load() {
 				try {
-					resolve(whenPrefetched());
+					resolve(loadPrefetchedRecord(id, context, options, sync, withEntry));
 				} catch (error) {
 					reject(error);
 				}
 			}
 		});
+	}
+	function loadPrefetchedRecord(id, context, options, sync, withEntry) {
+		if (context?.transaction?.stale) context.transaction.stale = false;
+		// if the transaction was closed, which can happen if we are iterating
+		// through query results and the iterator ends (abruptly)
+		if (options.transaction?.isDone) return withEntry(null, id);
+		if (sync) return withLocalEntry(primaryStore.getEntry(id, options), id, context, options, withEntry);
+		options.async = true;
+		const entry = primaryStore.getEntry(id, options);
+		if (entry?.then) return entry.then((entry) => withLocalEntry(entry, id, context, options, withEntry));
+		return withLocalEntry(entry, id, context, options, withEntry);
+	}
+	function withLocalEntry(entry, id, context, options, withEntry) {
+		// skip recording reads for most system tables except hdb_analytics
+		// we want to track analytics reads in licensing, etc.
+		if (databaseName !== 'system' && (options.type === 'read' || !options.type)) {
+			harperLogger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
+			recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+		}
+
+		// we need to freeze entry records to ensure the integrity of the cache;
+		// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
+		// issues
+		freezeRecord(entry?.value);
+		if (options.ensureLoaded && needsResidentLoad(entry, context)) {
+			// load from other node
+			return sourceLoad(entry).then((entry) => withEntry(entry, id));
+		}
+		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
+		if (entry && context) {
+			if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
+			if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
+		}
+		return withEntry(entry, id);
 	}
 	function allowTableUpdate<Record extends object>(
 		resource: TableResource<Record>,
