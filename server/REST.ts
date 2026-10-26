@@ -4,11 +4,6 @@ import {
 	serialize,
 	serializeMessage,
 	getDeserializer,
-<<<<<<< HEAD
-=======
-	findBestSerializer,
-	isHttpPassThroughEnvelope,
->>>>>>> c3dc7dd13 (Deliver a record as a pass-through envelope only when its data is text or bytes)
 	waitForStreamStartup,
 	discardSerializedStream,
 } from '../server/serverHelpers/contentTypes.ts';
@@ -166,69 +161,6 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
-<<<<<<< HEAD
-=======
-function isDeferredRead(data): boolean {
-	return Boolean(
-		data &&
-		typeof data === 'object' &&
-		!Array.isArray(data) &&
-		!(data instanceof Uint8Array) &&
-		!(data instanceof Blob) &&
-		(data[Symbol.iterator] || data[Symbol.asyncIterator])
-	);
-}
-
-function discardReadResponse(response, sourceData) {
-	if (typeof sourceData?.onDone === 'function') sourceData.onDone();
-	discardSerializedStream(response.body);
-}
-
-function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
-	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
-	const incoming = request.headers.asObject;
-	if (!hasPreconditions(incoming)) return response;
-	const checkDate =
-		(incoming['if-match'] === undefined && incoming['if-unmodified-since'] !== undefined) ||
-		(incoming['if-none-match'] === undefined && incoming['if-modified-since'] !== undefined);
-	let result;
-	try {
-		result = evaluatePreconditions(
-			incoming,
-			method,
-			true,
-			response.headers.get('ETag'),
-			checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
-		);
-	} catch (error) {
-		discardReadResponse(response, sourceData);
-		throw error;
-	}
-	if (result) {
-		try {
-			if (sourceData !== undefined) {
-				const binary =
-					sourceData instanceof Uint8Array || sourceData instanceof Blob || isHttpPassThroughEnvelope(sourceData);
-				if (!binary) {
-					findBestSerializer(request);
-					addVaryHeader(response.headers, 'Accept');
-				}
-				addVaryHeader(response.headers, 'Accept-Encoding');
-			}
-		} finally {
-			discardReadResponse(response, sourceData);
-		}
-		if (result === 412) throw new ClientError('Request precondition failed', 412);
-		// Only foreign (possibly immutable) Response headers need a copy.
-		const headers =
-			response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
-		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
-		return { status: 304, headers, body: undefined };
-	}
-	return response;
-}
-
->>>>>>> c3dc7dd13 (Deliver a record as a pass-through envelope only when its data is text or bytes)
 async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
