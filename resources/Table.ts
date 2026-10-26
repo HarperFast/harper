@@ -6692,7 +6692,7 @@ export function makeTable(options): TableResourceClass {
 			// so the results hold a lease on each such link until they are done.
 			let relatedLeases: Map<DatabaseTransaction, ReadLease> | undefined;
 			const readTxnFor =
-				hasRelationships && hasPathCondition(conditions)
+				hasRelationships && hasJoinCondition(conditions, propertyResolvers)
 					? (relatedTable: typeof TableResource) => {
 							const link = relatedTable._txnForContext(context);
 							if (link === txn) return readTxn;
@@ -12667,13 +12667,14 @@ function releaseLeases(leases: Map<DatabaseTransaction, ReadLease> | undefined) 
 	if (leases) for (const lease of leases.values()) lease.onDone?.();
 }
 
-/** Whether any condition names a path (a relationship join or a nested property). */
-function hasPathCondition(conditions: any[]): boolean {
+function hasJoinCondition(conditions: any[], propertyResolvers: any): boolean {
 	for (const condition of conditions) {
-		if (
-			condition.conditions ? hasPathCondition(condition.conditions) : Array.isArray(condition.attribute ?? condition[0])
-		)
-			return true;
+		if (condition.conditions) {
+			if (hasJoinCondition(condition.conditions, propertyResolvers)) return true;
+			continue;
+		}
+		const attribute = condition.attribute ?? condition[0];
+		if (Array.isArray(attribute) && propertyResolvers?.[attribute[0]]?.definition) return true;
 	}
 	return false;
 }

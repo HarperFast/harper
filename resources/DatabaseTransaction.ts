@@ -1010,8 +1010,10 @@ export class DatabaseTransaction implements Transaction {
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
 	// Read references held for searches running on other links (a join into this database). While a
-	// holder keeps its own handle, this link is not idle: the search it serves is still alive.
+	// holder's own scan is active, this link is not idle: the search it serves is still progressing.
 	declare readLeases?: Set<ReadLease>;
+	// The monitor tick that last consumed this link's own range activity.
+	declare rangeActiveTick?: number;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
 	declare private activeCommitHandle?: RocksTransaction;
@@ -4284,10 +4286,13 @@ function startMonitoringTxns() {
 	) {
 		if (txn.rangeReadActive) {
 			txn.rangeReadActive = false;
+			txn.rangeActiveTick = monitorTick;
 			txn.renewReadTimeout();
 		} else if (txn.readLeases) {
-			for (const lease of txn.readLeases) {
-				if (lease.holder.transaction || lease.holder.readTxn) {
+			// Only the holder's own activity counts (either side of it in this tick's walk): two leases
+			// held in opposite directions must not keep each other alive.
+			for (const { holder } of txn.readLeases) {
+				if (holder.rangeReadActive || holder.rangeActiveTick >= monitorTick - 1) {
 					txn.renewReadTimeout();
 					break;
 				}

@@ -151,4 +151,28 @@ describe('cross-database relationship search', function () {
 		}
 		assert.ok(badgeLinks > 0, 'the resolver read must have joined the request');
 	});
+
+	it('reaps two abandoned leases held in opposite directions', async function () {
+		if (Emp.primaryStore.path?.endsWith('.mdb')) this.skip();
+		setTxnExpiration(20);
+		try {
+			const context = {};
+			let empLink, badgeLink, empLease, badgeLease;
+			await transaction(context, () => {
+				empLink = Emp._txnForContext(context);
+				badgeLink = Badge._txnForContext(context);
+				badgeLease = badgeLink.leaseReadTxn(empLink);
+				empLease = empLink.leaseReadTxn(badgeLink);
+			});
+			assert.ok(badgeLease.readTxn && empLease.readTxn, 'each lease must hold a native handle');
+			const deadline = Date.now() + 10_000;
+			while ((badgeLease.onDone || empLease.onDone) && Date.now() < deadline) await delay(10);
+			assert.strictEqual(badgeLease.onDone, null, 'an idle lease must be reaped even though its holder holds one too');
+			assert.strictEqual(empLease.onDone, null);
+			assert.strictEqual(badgeLink.readTxnsUsed, 0);
+			assert.strictEqual(empLink.readTxnsUsed, 0);
+		} finally {
+			setTxnExpiration(30000);
+		}
+	});
 });
