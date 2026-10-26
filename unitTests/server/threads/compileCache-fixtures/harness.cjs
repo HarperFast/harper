@@ -1,6 +1,6 @@
 'use strict';
 
-// A compile cache is process-wide once enabled, so each case runs in its own process instead of mocha's.
+// Enabling the compile cache cannot be undone in a thread, so each case runs in its own process instead of mocha's.
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const nodeModule = require('node:module');
 const { join } = require('node:path');
