@@ -504,7 +504,7 @@ export function confirmingOwnerNames(store: any, owners: readonly string[], coun
 	return peers;
 }
 
-export let confirmReplication;
+let confirmReplication;
 let confirmationFeasibility:
 	((databaseName: string, confirmationCount: number, residentPeerLists?: string[][]) => void) | undefined;
 /**
@@ -3495,7 +3495,7 @@ export class DatabaseTransaction implements Transaction {
 		if (hasDurableLog(transaction)) return;
 		const rootStore = this.writes[0]?.store?.rootStore;
 		const reason = this.isReplay ? undefined : databaseLiveHoldReason(rootStore);
-		if (!reason && !databaseCommitsSuspended(rootStore, this.isReplay)) return;
+		if (!reason && !databaseCommitsSuspended(rootStore, true)) return;
 		const retryable = !this.root && !this.snapshotFree;
 		if (this.transaction === transaction) this.detachOwnedTransaction();
 		abortNativeTransaction(

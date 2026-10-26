@@ -102,6 +102,12 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 			await UnauditedBlobs.put({ ...entry.value, tag: 'competing' });
 			assert.ok(eviction, 'the eviction must run inside the competing commit');
 			await eviction;
+			assert.equal(
+				getBlobHoldStateForTesting(UnauditedBlobs.primaryStore.rootStore, getFileId(entry.value.blob))
+					.pendingReclamation,
+				false,
+				'an abandoned eviction must not queue its blob for reclamation'
+			);
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 		}
@@ -142,6 +148,12 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		};
 		try {
 			await UnauditedBlobs.evict('refilled', entry.value, entry.version);
+			assert.equal(
+				getBlobHoldStateForTesting(UnauditedBlobs.primaryStore.rootStore, getFileId(entry.value.blob))
+					.pendingReclamation,
+				false,
+				'an eviction must not queue a blob referenced by a subsequent write'
+			);
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 		}

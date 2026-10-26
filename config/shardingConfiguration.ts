@@ -84,13 +84,16 @@ export function watchShardingConfiguration(watcher: RootConfigWatcher): { ready:
 export function ensureShardingConfiguration(): Promise<void> {
 	if (!ready) {
 		const shards = getConfigValue('replication_shards');
-		shardingRecoveryConfiguration = Object.freeze({
+		shardingRecoveryConfiguration ??= Object.freeze({
 			shards: Array.isArray(shards) ? Object.freeze([...shards]) : shards,
 			shard: getConfigValue('replication_shard'),
 		});
 		ready = import('./RootConfigWatcher.ts')
 			.then(({ getSharedRootConfigWatcher }) => watchShardingConfiguration(getSharedRootConfigWatcher()).ready)
-			.catch(report);
+			.catch((error) => {
+				ready = undefined;
+				report(error);
+			});
 	}
 	return ready;
 }

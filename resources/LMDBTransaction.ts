@@ -40,7 +40,6 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-export { replicationConfirmation } from './DatabaseTransaction.ts';
 
 export class LMDBTransaction extends DatabaseTransaction {
 	stagesWriteOnSave = false;
@@ -185,9 +184,15 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 	/** Preserve the synchronous empty-commit path while the outer method funnels every failure once. */
 	private performCommitAttempt(options: CommitOptions = {}): any {
-		const rootStore = this.writes.find((write) => write)?.store?.rootStore;
+		let rootStore;
+		for (const write of this.writes) {
+			if (write) {
+				rootStore = write.store?.rootStore;
+				break;
+			}
+		}
 		const reason = this.isReplay ? undefined : databaseLiveHoldReason(rootStore);
-		if (reason || databaseCommitsSuspended(rootStore, this.isReplay)) {
+		if (reason || databaseCommitsSuspended(rootStore, true)) {
 			const database = rootStore?.databaseName ?? rootStore?.path ?? 'unknown';
 			if (reason) throw new DatabaseShardingHeldError(database, reason);
 			throw new DatabaseClosingError(database);

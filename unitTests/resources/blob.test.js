@@ -582,6 +582,7 @@ describe('Blob test', () => {
 		}
 		assert.equal(Atomics.compareExchange(allocator, 0, next, collision), next);
 		deleteBlob(first);
+		assert.equal(getBlobHoldStateForTesting(store, getFileId(first)).pendingReclamation, true);
 		const second = await createBlob(randomBytes(20000));
 		await BlobTest.put({ id: 310, blob: second });
 		assert.notEqual(getFileId(first), getFileId(second));
@@ -592,6 +593,46 @@ describe('Blob test', () => {
 		await BlobTest.delete(309);
 		await deleteBlobAndWait(first);
 		setDeletionDelay(500);
+	});
+	it('reports a retryable refusal for an unrelated blob in a claimed hash slot', async () => {
+		const first = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 312, blob: first });
+		const store = BlobTest.primaryStore.rootStore;
+		const state = getBlobHoldStateForTesting(store, getFileId(first));
+		const allocator = new BigInt64Array(store.getUserSharedBuffer('blob-file-id', new ArrayBuffer(8)));
+		const next = Atomics.load(allocator, 0);
+		let collision = next;
+		while (getBlobHoldStateForTesting(store, collision.toString(16)).slot !== state.slot) {
+			collision++;
+			assert.ok(collision - next < 1000000n);
+		}
+		assert.equal(Atomics.compareExchange(allocator, 0, next, collision), next);
+		const second = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 313, blob: second });
+		assert.notEqual(getFileId(first), getFileId(second));
+		assert.equal(getBlobHoldStateForTesting(store, getFileId(second)).slot, state.slot);
+		const before = BlobTest.primaryStore.getEntry(313);
+		assert.equal(Atomics.compareExchange(state.table, state.slot, 0, -1 << 20), 0);
+		try {
+			await assert.rejects(
+				async () => BlobTest.put({ id: 313, blob: second, changed: true }),
+				(error) => {
+					assert.equal(error.statusCode, 503);
+					assert.equal(error.retryable, true);
+					assert.equal(error.code, 'BLOB_RECLAMATION_BUSY');
+					return true;
+				}
+			);
+			assert.equal(BlobTest.primaryStore.getEntry(313).version, before.version);
+		} finally {
+			Atomics.store(state.table, state.slot, 0);
+		}
+		await BlobTest.put({ id: 313, blob: second, changed: true });
+		assert.equal((await BlobTest.get(313)).changed, true);
+		await BlobTest.delete(312);
+		await BlobTest.delete(313);
+		await deleteBlobAndWait(first);
+		await deleteBlobAndWait(second);
 	});
 	for (const throughWorker of [false, true]) {
 		it(`keeps a later shared reference when delayed cleanup queues (worker=${throughWorker})`, async () => {

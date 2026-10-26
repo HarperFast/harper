@@ -646,12 +646,10 @@ function validateResidencyRecovery(): void {
 			} catch (error) {
 				if (!(error instanceof ResidencyConfigurationError) || databaseName === 'system') throw error;
 				reason = error.message;
-				if (isMainThread) {
-					const bytes = Buffer.from(reason);
-					const size = Math.min(bytes.length, state.length - 4);
-					state.set(bytes.subarray(0, size), 4);
-					Atomics.store(length, 0, size);
-				}
+				const bytes = Buffer.from(reason);
+				const size = Math.min(bytes.length, state.length - 4);
+				state.set(bytes.subarray(0, size), 4);
+				Atomics.store(length, 0, size);
 			}
 		}
 		if (reason) quarantineResidencyDatabase(databaseName, dbTables, reason);

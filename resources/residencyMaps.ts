@@ -112,17 +112,18 @@ export function recordResidencyDeclaration(database: string): void {
 }
 
 export function assertResidencyEngine(database: string, root?: object): void {
-	const roots = root
-		? [root]
-		: Object.values(databases[database] ?? {})
-				.map((Table) => Table.primaryStore?.rootStore)
-				.filter(Boolean);
-	if (!roots.length) roots.push(openDatabase({ database, table: undefined }));
-	if (roots.some((root) => !(root instanceof RocksDatabase)))
-		throw new ResidencyConfigurationError(
-			`Sharding for ${database} requires RocksDB; LMDB supports legacy residency only`,
-			503
-		);
+	if (root instanceof RocksDatabase) return;
+	if (!root) {
+		const roots = Object.values(databases[database] ?? {})
+			.map((Table) => Table.primaryStore?.rootStore)
+			.filter(Boolean);
+		if (!roots.length) roots.push(openDatabase({ database, table: undefined }));
+		if (roots.every((root) => root instanceof RocksDatabase)) return;
+	}
+	throw new ResidencyConfigurationError(
+		`Sharding for ${database} requires RocksDB; LMDB supports legacy residency only`,
+		503
+	);
 }
 
 function residencyFailure(database: string, reason: string): never {

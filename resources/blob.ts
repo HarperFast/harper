@@ -1338,7 +1338,14 @@ function blobHoldState(store: any, fileId: string): { table: Int32Array; slot: n
 
 /** Exposed for tests that need to act as a second worker against the same shared table. */
 export function getBlobHoldStateForTesting(store: any, fileId: string) {
-	return blobHoldState(store, fileId);
+	return {
+		...blobHoldState(store, fileId),
+		get pendingReclamation() {
+			for (const pending of pendingReclamation.values())
+				if (pending.fileInfo?.store === store && pending.fileInfo.fileId === fileId) return true;
+			return false;
+		},
+	};
 }
 
 /**
@@ -1441,9 +1448,11 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 	if (state) {
 		Atomics.add(state.table, state.slot + REFERENCE_GENERATION, 1);
 		if (Atomics.load(state.table, state.slot + HOLDS) < 0) {
-			throw new Error(
-				`Blob file ${storageInfo.fileId} is being reclaimed while a record is being written that references it`
-			);
+			throw Object.assign(new Error('Blob storage is being reclaimed; reload the record before retrying the write'), {
+				statusCode: 503,
+				code: 'BLOB_RECLAMATION_BUSY',
+				retryable: true,
+			});
 		}
 	}
 	if (pendingReclamation.size === 0) return;

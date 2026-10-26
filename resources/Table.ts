@@ -4292,7 +4292,7 @@ export function makeTable(options): TableResourceClass {
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			assertDerivedIndexAdmission(options, transaction);
-			const localShardingWrite = !transaction.isReplay && !isReplicationApply(transaction);
+			const localShardingWrite = residencyPolicy && !transaction.isReplay && !isReplicationApply(transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -4411,7 +4411,7 @@ export function makeTable(options): TableResourceClass {
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			assertDerivedIndexAdmission(options, transaction);
-			const localShardingWrite = !transaction.isReplay && !isReplicationApply(transaction);
+			const localShardingWrite = residencyPolicy && !transaction.isReplay && !isReplicationApply(transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -5179,7 +5179,7 @@ export function makeTable(options): TableResourceClass {
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
 			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
-			const localShardingWrite = !replaying && !isReplicationApply(transaction);
+			const localShardingWrite = residencyPolicy && !replaying && !isReplicationApply(transaction);
 			const writerReplicaEligible = Boolean(
 				residencyPolicy && writtenHere && replicaExpirationMs && hasSecondaryIndices()
 			);
@@ -6390,7 +6390,7 @@ export function makeTable(options): TableResourceClass {
 			const locking = lockConditionalWrite(this, id, condition);
 			if (locking) return locking.then(() => this._writeDelete(id, options));
 			const transaction = txnForContext(context);
-			const localShardingWrite = !transaction.isReplay && !isReplicationApply(transaction);
+			const localShardingWrite = residencyPolicy && !transaction.isReplay && !isReplicationApply(transaction);
 			this.#evaluateWriteCondition(id, condition, transaction);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
@@ -10942,10 +10942,8 @@ export function makeTable(options): TableResourceClass {
 						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
 						dropReplicaDeadline(id, existingEntry, transaction);
 						if (updatedRecord) {
-							if (existingEntry) {
-								context.previousResidency = residencyPolicy
-									? Array.from(TableResource.getRecordResidency({ ...existingEntry, key: id }))
-									: TableResource.getResidencyRecord(existingEntry.residencyId);
+							if (existingEntry && !residencyPolicy) {
+								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
 							let auditRecord: any;
 							let omitLocalRecord = false;
@@ -11816,6 +11814,7 @@ export function makeTable(options): TableResourceClass {
 				(async () => {
 					do {
 						await rest();
+						if (maintenanceClosed || disposed) return;
 						batch();
 					} while (!next.done);
 					for (const file of collectRetainedFileIds(primaryStore.getEntry(id)?.value) ?? []) retained.add(file);

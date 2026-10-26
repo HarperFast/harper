@@ -1,9 +1,6 @@
 const assert = require('node:assert');
-const { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } = require('node:fs');
-const { tmpdir } = require('node:os');
+const { readFileSync, writeFileSync, readdirSync, existsSync, statSync } = require('node:fs');
 const { join } = require('node:path');
-const { stringify } = require('yaml');
-const rewire = require('rewire');
 
 describe('Sharding configuration repair', () => {
 	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
@@ -113,25 +110,25 @@ describe('Sharding configuration repair', () => {
 	});
 
 	it('does not rewrite or back up an unchanged shard list at boot', () => {
-		const config = rewire('#js/config/configUtils');
-		const root = mkdtempSync(join(tmpdir(), 'sharding-config-'));
-		const path = join(root, 'config.yaml');
-		writeFileSync(path, stringify({ rootPath: root, replication: { shard: 0, shards: [0, 1] } }));
-		const restores = [
-			config.__set__('flatConfigObj', { rootpath: root, replication_shards: [0, 1] }),
-			config.__set__('getRootConfigFilePath', () => path),
-			config.__set__('atomicWriteFile', () => {
-				throw new Error('unexpected boot write');
-			}),
-			config.__set__('backupConfigFile', () => {
-				throw new Error('unexpected boot backup');
-			}),
-		];
+		const { updateConfigValue, initConfig, getConfigFilePath } = require('#src/config/configUtils');
+		const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
+		const path = getConfigFilePath();
+		const saved = readFileSync(path, 'utf8');
 		try {
-			config.updateConfigValue(undefined, undefined, { REPLICATION_SHARDS: '[0,1]' }, true);
+			setRootConfigEntry('replication', { ...readRootConfig().replication, shard: 0, shards: [0, 1] });
+			initConfig(true);
+			const before = readFileSync(path, 'utf8');
+			const beforeStat = statSync(path);
+			const backupDir = join(readRootConfig().rootPath, 'backup');
+			const backups = existsSync(backupDir) ? readdirSync(backupDir).sort() : [];
+			updateConfigValue(undefined, undefined, { REPLICATION_SHARDS: '[0,1]' }, true);
+			assert.equal(readFileSync(path, 'utf8'), before);
+			assert.equal(statSync(path).mtimeMs, beforeStat.mtimeMs, 'an unchanged boot value must not rewrite the file');
+			assert.equal(statSync(path).ino, beforeStat.ino, 'an unchanged boot value must not replace the file');
+			assert.deepEqual(existsSync(backupDir) ? readdirSync(backupDir).sort() : [], backups);
 		} finally {
-			for (const restore of restores.reverse()) restore();
-			rmSync(root, { recursive: true, force: true });
+			writeFileSync(path, saved);
+			initConfig(true);
 		}
 	});
 });
