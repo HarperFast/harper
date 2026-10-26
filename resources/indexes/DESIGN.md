@@ -177,8 +177,8 @@ and a `0`, because a number written as `-0` is indexed under an encoding that so
 and decodes to a wrong primary key (ordered-binary; index-led queries miss that row too). A condition
 admitting any of them stays on the predicate path. `compareKeys` ranks undefined below every scalar, so
 this declines `lt`/`le` over a number, string or boolean bound, `ge null` and any range covering 0; the
-`lt`/`le` that remain (a BigInt bound) start at `null`, not `searchByIndex`'s `true`, so indexed nulls
-are read. Normalizing `-0` in the encoder or index writer would let zero-covering ranges plan again.
+`lt`/`le` that remain (a BigInt bound) start at `null` inclusive, where `searchByIndex` starts just above it,
+so indexed nulls are read. Normalizing `-0` in the encoder or index writer would let zero-covering ranges plan again.
 
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`

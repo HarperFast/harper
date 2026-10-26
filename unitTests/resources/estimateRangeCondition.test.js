@@ -93,14 +93,19 @@ describe('estimateCondition range estimates', () => {
 		assert.strictEqual(estimate(table, { attribute: 'attr', comparator: 'gt', value: 5 }), 40);
 		assert.deepStrictEqual(table.indices.attr.calls[0], { start: 5, exclusiveStart: true });
 
-		// searchByIndex bounds lt/le at `start: true` to skip an indexNulls index's [null, id] entries
+		// searchByIndex bounds lt/le above `null` to skip an indexNulls index's [null, id] entries without skipping `false`
 		const table2 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
 		assert.strictEqual(estimate(table2, { attribute: 'attr', comparator: 'lt', value: 5 }), 40);
-		assert.deepStrictEqual(table2.indices.attr.calls[0], { start: true, end: 5 });
+		assert.deepStrictEqual(table2.indices.attr.calls[0], { start: null, exclusiveStart: true, end: 5 });
 
 		const table3 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
 		assert.strictEqual(estimate(table3, { attribute: 'attr', comparator: 'le', value: 5 }), 40);
-		assert.deepStrictEqual(table3.indices.attr.calls[0], { start: true, end: 5, inclusiveEnd: true });
+		assert.deepStrictEqual(table3.indices.attr.calls[0], {
+			start: null,
+			exclusiveStart: true,
+			end: 5,
+			inclusiveEnd: true,
+		});
 	});
 
 	it('estimates primary-key ranges against the primary store', () => {
@@ -331,7 +336,7 @@ describe('estimateCondition range estimates (real stores)', () => {
 
 	it('excludes null index entries from lt/le, as execution does', () => {
 		// `sparse` is set on 200 of 20000 rows, so the index holds 19800 [null, id] entries that
-		// searchByIndex's `start: true` skips. An unbounded lower bound counts them all and makes
+		// searchByIndex's open lower bound skips. An unbounded lower bound counts them all and makes
 		// a 200-row condition look like a 20000-row one — worse than the heuristic it replaces.
 		const est = estimateCondition(T);
 		const belowAll = est({ attribute: 'sparse', comparator: 'lt', value: SPARSE_COUNT });

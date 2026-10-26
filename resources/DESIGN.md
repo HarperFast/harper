@@ -802,13 +802,18 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 - **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
   comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
   execution truncates + filters (wider range than the estimable one). Two ways this has already
-  been got wrong: `lt`/`le` need `searchByIndex`'s `start: true` lower bound, or the estimate
-  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips (`true`
-  sorts above `null`), which on a mostly-null index is worse than the flat heuristic it
-  replaces; and `RocksIndexStore` must widen value-space bounds to
+  been got wrong: `lt`/`le` need `searchByIndex`'s null-exclusive lower bound, or the estimate
+  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips, which
+  on a mostly-null index is worse than the flat heuristic it replaces; and `RocksIndexStore` must widen value-space bounds to
   `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
   semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
   `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
+- **Open lower bounds are per store** (`openStart` in `searchByIndex`, mirrored in
+  `estimateRangeCondition`). A secondary-index scan opens at `null` exclusive: `true` sorts above
+  `false`, so opening there drops boolean `false` rows. A primary store keeps symbol-keyed metadata
+  (`Symbol.for('id_allocation')`, and `Symbol.for('structures')` under LMDB) between `null` and
+  `false`, so its scans still open at `true` or they return that metadata as rows. Both are pinned
+  by `searchBooleanFalseIndex.test.js`.
 - **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
   the filter-only convention (`contains`/`ends_with`): the negated flag always forces
   `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —
