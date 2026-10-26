@@ -148,6 +148,39 @@ Like `allowedDirectory`, this applies to imports the application module loader h
 
 Allowlisting `child_process` still yields Harper's constrained substitute under the VM loaders, not Node's unmodified module.
 
+## Native Addons on Pointer-Compression Runtimes
+
+<VersionBadge version="v5.4.0" />
+
+Harper can run on a Node.js build with V8 pointer compression enabled (built with `--experimental-enable-pointer-compression`, so that `process.config.variables.v8_enable_pointer_compression` is `1`), which uses less JavaScript heap per thread. Pointer compression changes V8's C++ ABI without changing Node.js's module version. A native addon (`.node` file) that calls V8's C++ API directly, rather than Node-API, and was built for a standard Node.js therefore loads and then crashes the whole process the first time it is used.
+
+On Harper Fabric, a cluster's plan selects its runtime: Free and Hobby tier clusters run on a pointer-compression runtime, and all other plans run a standard Node.js. No cluster setting switches the runtime. To run a Free or Hobby cluster on a standard Node.js, change the cluster to another plan, or contact Harper support. To confirm which runtime a cluster is on, read `process.config.variables.v8_enable_pointer_compression` from an application.
+
+On a pointer-compression runtime, Harper checks native addons before they load, in every thread. That covers addons loaded by applications, by their dependencies, and by [`threads.preload` and `threads.preloadRequire`](../configuration/options.md#threads) modules. Harper refuses an addon that links V8's C++ API unless it was built for pointer compression. A 64-bit ELF addon whose symbol table cannot be read is refused too, unless one of the last two rules below admits it.
+
+An addon loads when any of these holds:
+
+- It uses only [Node-API](https://nodejs.org/api/n-api.html), which is ABI-stable across the flag: it imports no V8 C++ symbols. Most current addons are Node-API.
+- node-gyp compiled it under this Node.js, for example with `npm rebuild <package> --build-from-source`, and it is loaded from inside that package's `build/` directory, such as node-gyp's usual `build/Release/`. That build's `build/config.gypi` must record `"v8_enable_pointer_compression": 1`, and the binary must be newer than it. Two cases need the marker below instead:
+  - a binary copied elsewhere after building, as node-pre-gyp does;
+  - a build whose files all share one modification time, such as a reproducible build with clamped timestamps.
+- Its package directory contains a `.pointer-compression-build` file. The marker admits every native binary in the package without inspecting it. Add this marker only when all of them were built for pointer compression.
+
+A refused addon fails to load with an `IncompatibleNativeAddonError`. The error names the file and its package, and lists the fixes:
+
+- a Node-API version of the package;
+- a build compiled for pointer compression;
+- a rebuild from source under the running Node.js;
+- a standard Node.js runtime.
+
+The error carries `code: 'ERR_DLOPEN_FAILED'`, the code Node.js uses for an addon it cannot load. Packages that treat their native accelerator as optional, such as `cbor-x` and `msgpackr`, fall back to their JavaScript implementation on any load error.
+
+The check has three limits:
+
+- It inspects Linux (ELF) binaries only. Addons in other formats are left to Node.js and are not checked.
+- Modules preloaded through `NODE_OPTIONS` run before Harper starts. Their addons are not checked. Load such modules with `threads.preload` or `threads.preloadRequire` instead.
+- On a standard Node.js build, nothing changes.
+
 ## Choosing a Mode
 
 For most applications the default is the right choice, and the settings on this page are worth changing only in response to a concrete problem.

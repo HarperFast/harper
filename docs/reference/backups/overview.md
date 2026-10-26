@@ -26,7 +26,7 @@ The long-running operations (`create_backup`, `verify_backup`, `restore_backup`)
 
 ## Online and offline
 
-Backup operations work whether or not Harper is running. Invoked from the CLI while the server is running, the operation is forwarded to the server; while the server is stopped, the command operates directly on the database and backup files. `get_backup` is the exception — it streams from a running server and has no offline form.
+Backup operations work whether or not Harper is running. Invoked from the CLI while the server is running, the operation is forwarded to the server; while the server is stopped, the command operates directly on the database and backup files. `get_backup` is the exception — it streams from a running server and has no offline form. A CLI target, set with `target=`, an environment variable or `harper login`, changes this; see [running backup operations from the CLI](./operations.md#running-backup-operations-from-the-cli).
 
 The offline path matters for restore. RocksDB is single-writer, so an in-place restore requires the database to be fully closed first. A running Harper server can close its own worker threads' handles, but it cannot close a handle held by a loaded component, nor stop the `system` database it depends on to run — those databases can only be restored with the server stopped. See ["when can a database be restored"](#when-can-a-database-be-restored) below.
 
