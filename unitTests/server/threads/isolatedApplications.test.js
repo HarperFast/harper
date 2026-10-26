@@ -222,7 +222,7 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			assert.deepStrictEqual(flipping.flipped, { package: 'x' }, 'the config it was given is left as it was');
 		});
 
-		it('counts every worker still running unless a decided rejection withdrew it', () => {
+		it('counts every worker still running unless its refusal withdrew its slot', () => {
 			const { RejectedReleaseError } = require('#src/components/releaseCertification');
 			const rejected = new RejectedReleaseError('running', 'd1', 'threw at load', true);
 			const unreadable = new RejectedReleaseError('running', 'd1', 'its certification record cannot be read');

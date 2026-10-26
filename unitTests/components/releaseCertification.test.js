@@ -189,10 +189,27 @@ describe('release certification records', () => {
 		assert.match(failClosed.get('rejected').message, /threw at load/);
 		assert.match(failClosed.get('unreadable').message, /cannot be read/);
 		assert.match(failClosed.get('undecided').message, /never decided/);
+	});
+
+	it('says only a rejected release with nothing to restore had its dedicated worker withdrawn', async () => {
+		await deployed(root, 'first', LIVE);
+		await writeCertificationRecord(
+			root,
+			pending('first', LIVE, { state: 'rejected', previous: null, wasAbsent: true, reason: 'threw at load' })
+		);
+		const restoringId = '88888888-8888-8888-8888-888888888888';
+		await deployed(root, 'restoring', restoringId);
+		await writeCertificationRecord(root, pending('restoring', restoringId, { state: 'rejected', reason: 'threw' }));
+		const unreadableId = '99999999-9999-9999-9999-999999999999';
+		await deployed(root, 'unreadable', unreadableId);
+		await fs.writeFile(certificationRecordPath(root, unreadableId), 'garbage');
+
+		const failClosed = await failClosedReleases(root, 'this-process');
+		assert.deepEqual([...failClosed.keys()].sort(), ['first', 'restoring', 'unreadable']);
 		assert.deepEqual(
-			[...failClosed].filter(([, refusal]) => refusal.decided).map(([component]) => component),
-			['rejected'],
-			'only a decided rejection is one whose decision withdrew a worker'
+			[...failClosed].filter(([, refusal]) => refusal.slotWithdrawn).map(([component]) => component),
+			['first'],
+			'a release being restored still runs its worker, and an unreadable record decided nothing'
 		);
 	});
 

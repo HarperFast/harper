@@ -186,12 +186,15 @@ export function rejectionReason(live: LiveCertification, incarnation: string): s
 }
 
 export class RejectedReleaseError extends Error {
-	/** A canary's decided rejection, not an unreadable or undecided record: deciding it withdrew any dedicated worker. */
-	decided: boolean;
-	constructor(component: string, deploymentId: string, reason: string, decided = false) {
+	/**
+	 * A rejection with no earlier release to restore, so the release stays live and failed closed, and deciding it
+	 * withdrew any dedicated worker it had. Not one being restored, nor a record that cannot be read or was never decided.
+	 */
+	slotWithdrawn: boolean;
+	constructor(component: string, deploymentId: string, reason: string, slotWithdrawn = false) {
 		super(`Not loading ${component}: its release ${deploymentId} is not certified to run on this node, ${reason}`);
 		this.name = 'RejectedReleaseError';
-		this.decided = decided;
+		this.slotWithdrawn = slotWithdrawn;
 	}
 }
 
@@ -232,8 +235,8 @@ export async function failClosedReleases(
 		if (!live || live.deploymentId !== entry.name) continue;
 		const reason = rejectionReason(live, incarnation);
 		if (!reason) continue;
-		const decided = 'record' in live && live.record.state === 'rejected';
-		failClosed.set(owner, new RejectedReleaseError(owner, entry.name, reason, decided));
+		const slotWithdrawn = 'record' in live && live.record.state === 'rejected' && !live.record.previous;
+		failClosed.set(owner, new RejectedReleaseError(owner, entry.name, reason, slotWithdrawn));
 	}
 	return failClosed;
 }
