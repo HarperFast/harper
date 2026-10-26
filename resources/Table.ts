@@ -998,8 +998,15 @@ interface TableResourceClass {
 	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean>;
 	/**
 	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
+	 * `observedExpiresAt` is the expiry of the entry the caller read (`null` when it had none); omitted, only the version is checked.
 	 */
-	evict(id: any, existingRecord: any, existingVersion: any, observedDeadline?: number): Promise<unknown>;
+	evict(
+		id: any,
+		existingRecord: any,
+		existingVersion: any,
+		observedDeadline?: number,
+		observedExpiresAt?: number | null
+	): Promise<unknown>;
 	/**
 	 * Static entry point: `Table.lock(id, options?, context?)` — creates an instance in the given,
 	 * ambient, or a fresh context and delegates to the instance lock(). This shadows Resource.static
@@ -4356,7 +4363,7 @@ export function makeTable(options): TableResourceClass {
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
-		static evict(id, existingRecord, existingVersion, observedDeadline?: number) {
+		static evict(id, existingRecord, existingVersion, observedDeadline?: number, observedExpiresAt?: number | null) {
 			if (maintenanceClosed || isReadOnlyMode()) return Promise.resolve();
 			let entry;
 			let removedRecordWithBlobs;
@@ -4376,6 +4383,13 @@ export function makeTable(options): TableResourceClass {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
+				// a replica sweep call is validated by its deadline in demoteReplica instead
+				if (
+					observedDeadline === undefined &&
+					observedExpiresAt !== undefined &&
+					reusedVersionChangedExpiry(entry, observedExpiresAt)
+				)
+					return;
 				if (observedDeadline !== undefined && !(entry?.metadataFlags & REPLICA)) return Promise.resolve();
 				if (isRocksDB && entry?.metadataFlags & REPLICA && entry.version === existingVersion) {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
@@ -9970,7 +9984,7 @@ export function makeTable(options): TableResourceClass {
 				// nulling the shared cached entry would not hide the record from LMDB's weak reference
 				if (isReadOnlyMode()) return ABSENT_ENTRY;
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
-				TableResource.evict(entry.key, entry.value, entry.version);
+				TableResource.evict(entry.key, entry.value, entry.version, undefined, entry.expiresAt);
 				entry.value = null;
 				return {
 					then(callback) {
@@ -10710,7 +10724,7 @@ export function makeTable(options): TableResourceClass {
 	// into a fresh transaction (dropping the now-changed record) and otherwise skip the batch, leaving
 	// those records for the next cleanup cycle.
 	function createEvictionBatcher() {
-		type EvictItem = { type: 'evict' | 'tombstone'; key: any; version: number };
+		type EvictItem = { type: 'evict' | 'tombstone'; key: any; version: number; expiresAt: number | undefined };
 		let pending: EvictItem[] = [];
 		const inFlight = new Set<Promise<void>>();
 
@@ -10722,10 +10736,13 @@ export function makeTable(options): TableResourceClass {
 			for (const item of items) {
 				const entry = primaryStore.getEntry(item.key, options);
 				if (!entry || entry.version !== item.version) continue; // gone or changed since the scan; leave for next cycle
+				if (reusedVersionChangedExpiry(entry, item.expiresAt)) continue;
 				if (item.type === 'tombstone') {
 					if (entry.value != null) continue; // resurrected since the scan
 				} else {
 					if (entry.value == null) continue; // already removed
+					// the scan routed it here on flags read before a same-version write could add these
+					if (entry.metadataFlags & (HAS_BLOBS | REPLICA)) continue;
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
 					updateIndices(item.key, entry.value, null, options);
 					stageDerivedIndexEviction(transaction, item.key, entry.version);
@@ -10788,8 +10805,8 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		return {
-			add(type: 'evict' | 'tombstone', key: any, version: number): Promise<void> | void {
-				pending.push({ type, key, version });
+			add(type: 'evict' | 'tombstone', key: any, version: number, expiresAt: number | undefined): Promise<void> | void {
+				pending.push({ type, key, version, expiresAt });
 				if (pending.length >= EVICTION_BATCH_SIZE) {
 					const items = pending;
 					pending = [];
@@ -10926,12 +10943,12 @@ export function makeTable(options): TableResourceClass {
 											// Blob-bearing records stay on the per-record evict() path, which reclaims their blob
 											// files only after its own commit; the batcher's removeEntry would queue them at staging.
 											if (batcher && !(action === 'evict' && metadataFlags & (HAS_BLOBS | REPLICA))) {
-												await batcher.add(action, key, version);
+												await batcher.add(action, key, version, expiresAt);
 											} else {
 												const resolution =
 													action === 'tombstone'
 														? removeEntry(primaryStore, entry, version)
-														: TableResource.evict(key, record, version);
+														: TableResource.evict(key, record, version, undefined, expiresAt);
 												if (resolution) {
 													await outstandingCleanupOperations[cleanupIndex];
 													outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
@@ -11009,7 +11026,13 @@ export function makeTable(options): TableResourceClass {
 								if (backpressure) await backpressure;
 							} else if (recordEntry.value[expiresAtName] < Date.now()) {
 								// make sure the record hasn't changed and won't change while removing
-								const eviction = TableResource.evict(id, recordEntry.value, recordEntry.version);
+								const eviction = TableResource.evict(
+									id,
+									recordEntry.value,
+									recordEntry.version,
+									undefined,
+									recordEntry.expiresAt ?? null
+								);
 								if (eviction) {
 									const backpressure = trackInFlight(eviction);
 									if (backpressure) await backpressure;
@@ -11544,6 +11567,11 @@ export function makeTable(options): TableResourceClass {
 	}
 }
 
+// A reused version names more than one stored value, so it vouches for an eviction decision only while the
+// expiry that decision read is still the entry's own.
+function reusedVersionChangedExpiry(entry: Entry, observedExpiresAt: number | null | undefined): boolean {
+	return Boolean(entry.metadataFlags & VERSION_REUSED) && (entry.expiresAt ?? null) !== (observedExpiresAt ?? null);
+}
 function attributesAsObject(attribute_permissions, type) {
 	const attrObject = attribute_permissions.attr_object || (attribute_permissions.attr_object = {});
 	let attrsForType = attrObject[type];
