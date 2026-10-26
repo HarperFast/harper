@@ -1631,12 +1631,20 @@ describe('conditional writes through a tracked record instance', () => {
 	const etagOf = (id) => versionToEtag(Tracked.primaryStore.getEntry(id).version);
 	const stored = (id) => ({ ...Tracked.primaryStore.getEntry(id).value });
 
-	it('applies synchronous tracked mutations followed by return this.save()', async () => {
+	it('applies tracked mutations followed by return this.save(), and rejects a stale condition without an unhandled rejection', async () => {
 		class SyncPatch extends Tracked {
 			patch(data) {
 				this.addTo('n', data.add);
 				this.subtractFrom('m', data.add);
 				this.name = data.name;
+				return this.save();
+			}
+		}
+		class DelayedSave extends Tracked {
+			async patch(data) {
+				this.addTo('n', data.add);
+				this.name = data.name;
+				await delay(20);
 				return this.save();
 			}
 		}
@@ -1648,24 +1656,38 @@ describe('conditional writes through a tracked record instance', () => {
 			}
 		}
 		resources.set('SyncPatch', SyncPatch, { rest: true });
+		resources.set('DelayedSave', DelayedSave, { rest: true });
 		resources.set('SyncReplace', SyncReplace, { rest: true });
-		for (const [path, method, expected] of [
-			['SyncPatch', 'PATCH', { id: 'sync-PATCH', n: 15, m: 5, name: 'after', legacy: 'kept' }],
-			['SyncReplace', 'PUT', { id: 'sync-PUT', n: 5, name: 'after' }],
-		]) {
-			const id = `sync-${method}`;
-			await Tracked.put(id, { n: 10, m: 10, name: 'before', legacy: 'kept' });
-			const original = stored(id);
-			const stale = await request(method, `/${path}/${id}`, { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
-			assert.strictEqual(stale.status, 412, await bodyOf(stale));
-			assert.deepStrictEqual(stored(id), original);
-			const matched = await request(method, `/${path}/${id}`, { add: 5, name: 'after' }, { 'if-match': etagOf(id) });
-			assert.strictEqual(matched.status, 204, await bodyOf(matched));
-			assert.deepStrictEqual(stored(id), expected);
+		const unhandled = [];
+		const onUnhandled = (reason) => {
+			if (reason?.statusCode === 412) unhandled.push(reason);
+		};
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			for (const [path, method, expected] of [
+				['SyncPatch', 'PATCH', { n: 15, m: 5, name: 'after', legacy: 'kept' }],
+				['DelayedSave', 'PATCH', { n: 15, m: 10, name: 'after', legacy: 'kept' }],
+				['SyncReplace', 'PUT', { n: 5, name: 'after' }],
+			]) {
+				const id = `sync-${path}`;
+				await Tracked.put(id, { n: 10, m: 10, name: 'before', legacy: 'kept' });
+				const original = stored(id);
+				const stale = await request(method, `/${path}/${id}`, { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
+				assert.strictEqual(stale.status, 412, await bodyOf(stale));
+				assert.deepStrictEqual(stored(id), original);
+				const matched = await request(method, `/${path}/${id}`, { add: 5, name: 'after' }, { 'if-match': etagOf(id) });
+				assert.strictEqual(matched.status, 204, await bodyOf(matched));
+				assert.deepStrictEqual(stored(id), { id, ...expected });
+			}
+			await delay(10);
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
 		}
 	});
 
-	it('keeps tracked mutations made while the precondition lock is pending and after it settles', async () => {
+	it('keeps tracked mutations made while the precondition lock is pending and after it settles', async function () {
+		this.timeout(10_000);
 		const entered = Promise.withResolvers();
 		const lockSettled = Promise.withResolvers();
 		class AcrossLock extends Tracked {
@@ -1689,10 +1711,14 @@ describe('conditional writes through a tracked record instance', () => {
 		await Tracked.put('across', { n: 10, m: 10, name: 'before', legacy: 'kept' });
 		const etag = etagOf('across');
 		const held = isLMDB ? undefined : await Tracked.lock('across', { hold: true });
-		const pending = request('PATCH', '/AcrossLock/across', { add: 5, name: 'after' }, { 'if-match': etag });
-		await entered.promise;
-		await nextTurn();
-		await held?.unlock();
+		let pending;
+		try {
+			pending = request('PATCH', '/AcrossLock/across', { add: 5, name: 'after' }, { 'if-match': etag });
+			await entered.promise;
+			await nextTurn();
+		} finally {
+			await held?.unlock();
+		}
 		const response = await pending;
 		assert.strictEqual(response.status, 204, await bodyOf(response));
 		assert.deepStrictEqual(stored('across'), { id: 'across', n: 15, m: 5, name: 'after', legacy: 'changed' });
@@ -1727,5 +1753,76 @@ describe('conditional writes through a tracked record instance', () => {
 		assert.deepStrictEqual(observed, { legacy: undefined, n: undefined });
 		assert.strictEqual(lateWrite?.statusCode, 409, 'the instance must be closed after save()');
 		assert.deepStrictEqual(stored('replace'), { id: 'replace', n: 5, name: 'after' });
+	});
+	it('keeps the policy of a record the handler locked itself while applying a conditional full replacement', async function () {
+		if (isLMDB) this.skip();
+		let observed;
+		class LockedReplace extends Tracked {
+			async put(data) {
+				await this.lock({ hold: true });
+				this.update({ name: data.name }, true);
+				observed = this.legacy;
+				this.addTo('n', data.add);
+				await this.save();
+				this.legacy = 'late';
+				await this.save();
+			}
+		}
+		resources.set('LockedReplace', LockedReplace, { rest: true });
+		await Tracked.put('locked', { n: 100, m: 1, name: 'before', legacy: 'old' });
+		const response = await request(
+			'PUT',
+			'/LockedReplace/locked',
+			{ add: 5, name: 'after' },
+			{ 'if-match': etagOf('locked') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(observed, undefined);
+		assert.deepStrictEqual(stored('locked'), { id: 'locked', n: 5, name: 'after', legacy: 'late' });
+		const held = await Tracked.lock('locked', { hold: true, timeout: 100 });
+		await held.unlock();
+	});
+
+	it('applies a tracked addTo once beside a plain write that lands before its commit, and through replayLogs', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(30000);
+		const Counter = table({
+			database: 'conditionalTrackedReplay',
+			table: 'Counter',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'm' }],
+		});
+		class TrackedCounter extends Counter {
+			patch(data) {
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		const counters = new Resources();
+		counters.set('TrackedCounter', TrackedCounter, { rest: true });
+		await Counter.put('target', { n: 10, m: 0 });
+		const etag = versionToEtag(Counter.primaryStore.getEntry('target').version);
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const commit = Transaction.prototype.commit;
+		const targetDb = Counter.primaryStore.store.db;
+		let interposed = false;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db === targetDb && !interposed) {
+				interposed = true;
+				await Counter.patch('target', { m: 1 });
+			}
+			return commit.apply(this, args);
+		};
+		let response;
+		try {
+			response = await rest(counters)('PATCH', '/TrackedCounter/target', { add: 5 }, { 'if-match': etag });
+		} finally {
+			Transaction.prototype.commit = commit;
+		}
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.ok(interposed);
+		assert.deepStrictEqual({ ...Counter.primaryStore.getEntry('target').value }, { id: 'target', n: 15, m: 1 });
+		const { replayLogs } = require('#src/resources/replayLogs');
+		await replayLogs(Counter.primaryStore.rootStore, { Counter }, true);
+		assert.deepStrictEqual({ ...Counter.primaryStore.getEntry('target').value }, { id: 'target', n: 15, m: 1 });
 	});
 });
