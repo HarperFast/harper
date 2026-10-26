@@ -1429,7 +1429,9 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 					if (joinedIterator) return joinedIterator.next();
 					scanned ??= scanRelated(
 						rightIterable,
-						(entry) => entry.value ?? when(store.getEntry(entry.key ?? entry, readOptions), entryValue),
+						(entry) =>
+							entry.value ??
+							(transaction?.isDone ? undefined : when(store.getEntry(entry.key ?? entry, readOptions), entryValue)),
 						joined,
 						addRelated,
 						scan
@@ -1437,7 +1439,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						// a scan stopped by return() leaves partial mappings, which must not be yielded
 						joinedIterator = (scan.closed ? new Map() : joined).keys()[Symbol.iterator]();
 					});
-					return scanned.then(() => joinedIterator.next());
+					return scanned.then(() => (scan.closed ? { done: true, value: undefined } : joinedIterator.next()));
 				},
 				return() {
 					scan.closed = true;
@@ -1604,7 +1606,10 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					scanned = scanRelated(
 						rightIterable,
 						// the related record is only needed for the join's additional filters
-						(id) => (joined as any).filters && when(store.getEntry(id, readOptions), entryValue),
+						(id) =>
+							(joined as any).filters && !transaction?.isDone
+								? when(store.getEntry(id, readOptions), entryValue)
+								: undefined,
 						joined,
 						(id) => ids.add(id),
 						scan
@@ -1852,9 +1857,9 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				if (filtered && !filtered[firstAttributeName]) {
 					// establish a filtering that can preserve this filter for the select() results of these sub objects
 					filtered[firstAttributeName] = {
-						fromRecord(record) {
+						fromRecord(record, sync?: boolean) {
 							// this is called when selecting the fields to include in results
-							if (loadEntries) {
+							if (loadEntries && !sync) {
 								return when(loadEntries(record, context), (loaded) => {
 									if (!resolver.toMany || !loaded) return loaded?.value;
 									const values = loaded.map((entry) => entry?.value);

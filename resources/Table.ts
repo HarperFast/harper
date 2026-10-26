@@ -6830,6 +6830,7 @@ export function makeTable(options): TableResourceClass {
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
+					let closed = false;
 					function collect(entry): Promise<unknown> | undefined {
 						ordered.push(entry);
 						let pending: Promise<void>[];
@@ -6887,6 +6888,8 @@ export function makeTable(options): TableResourceClass {
 							}
 							// need to load all the entries into ordered
 							do {
+								// a key read awaited below can settle after the consumer returned the iterator
+								if (closed) return { done: true, value: undefined };
 								iteration = await dbIterator.next();
 								if (iteration.done) {
 									dbDone = true;
@@ -6921,6 +6924,7 @@ export function makeTable(options): TableResourceClass {
 									if (collecting) await collecting;
 								}
 							} while (true);
+							if (closed) return { done: true, value: undefined };
 							if ((sort as any).isGrouped) {
 								// TODO: Return grouped results
 							}
@@ -6937,6 +6941,7 @@ export function makeTable(options): TableResourceClass {
 							return iteration;
 						},
 						return() {
+							closed = true;
 							if (results.onDone) results.onDone();
 							return dbIterator.return();
 						},
@@ -7120,24 +7125,22 @@ export function makeTable(options): TableResourceClass {
 						let value;
 						if (resolver) {
 							const filterMap = filtered?.[attribute_name];
-							let keysOnly = false;
 							if (filterMap) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
 									value = filterMap.get(key);
 									if (!value) value = [];
 								} else {
-									value = filterMap.fromRecord?.(record);
+									value = filterMap.fromRecord?.(record, this?.isSync);
 								}
-							} else if (resolver.resolveKeys) {
-								keysOnly = true;
-								value = resolver.resolveKeys(record, context);
+							} else if (resolver.loadEntries && !this?.isSync) {
+								value = resolver.loadEntries(record, context);
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
 							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) return callback(value, attribute_name);
-								if (keysOnly ? value != null : value && typeof value === 'object') {
+								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
 									// Use the target table's own read transaction; each table's readTxn is
@@ -7161,8 +7164,7 @@ export function makeTable(options): TableResourceClass {
 											undefined,
 											typeof attribute.sort === 'object' && attribute.sort
 										));
-									// a single related record may have a composite (array) key
-									if (keysOnly ? resolver.toMany : Array.isArray(value)) {
+									if (Array.isArray(value)) {
 										const results = [];
 										const iterator = targetTable
 											.transformToOrderedSelect(
@@ -7180,10 +7182,7 @@ export function makeTable(options): TableResourceClass {
 												results.push(iteration.value);
 												iteration = iterator.next();
 											}
-											callback(
-												keysOnly && resolver.relationship?.filterMissing ? results.filter(exists) : results,
-												attribute_name
-											);
+											callback(results, attribute_name);
 										};
 										const promised = nextValue(iterator.next());
 										// returned as well as collected: when this runs in a resolved value's continuation,
@@ -9021,7 +9020,6 @@ export function makeTable(options): TableResourceClass {
 								return loadRelatedEntry(keys, definition.tableClass, context);
 							};
 							attribute.resolve.toMany = Boolean(attribute.elements);
-							attribute.resolve.relationship = relationship;
 							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
 							attribute.resolve.from = relationship.from;
 						} else {
@@ -10240,7 +10238,8 @@ export function makeTable(options): TableResourceClass {
 				idFiltersApplied = null;
 				// a relationship filter's maybeAsync variant returns a Promise when it reads a related record from
 				// storage, which only an asynchronous iteration can wait on
-				const process = matchers && !this?.isSync ? processEntryMaybeAsync : processEntry;
+				// (a plain array is mapped eagerly, so nothing would wait on a Promise there either)
+				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
 					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {

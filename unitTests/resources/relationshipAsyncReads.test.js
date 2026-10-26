@@ -66,9 +66,7 @@ describe('Queries read related records asynchronously', () => {
 		await ColdParent.put({ id: 'parent-null', childId: null, childIds: null });
 	});
 
-	// Count a table's record reads by path: a sync read blocks the worker on a cold record, an async read
-	// returns a Promise when the record has to be read from storage. With simulateCold, every async read
-	// returns a Promise that settles on a later event-loop turn, as a read that misses every in-memory cache does.
+	// simulateCold: every async read settles on a later event-loop turn, as a read that misses every cache does
 	function instrumentReads(Table, simulateCold) {
 		const store = Table.primaryStore;
 		const reads = { sync: 0, async: 0, promised: 0 };
@@ -259,6 +257,16 @@ describe('Queries read related records asynchronously', () => {
 				];
 				assert.deepEqual(results, [{ id: 'parent-2' }]);
 				assert(childReads.sync > 0, 'a synchronous iteration cannot wait on a background read');
+			});
+
+			it('under synchronous iteration, a filtered many-to-many select stays synchronous', function () {
+				const results = [
+					...ColdParent.search({
+						conditions: [firstFourParents, { attribute: ['children', 'label'], value: 'label 9' }],
+						select: ['id', { name: 'children', select: ['name'] }],
+					}),
+				];
+				assert.deepEqual(results, [{ id: 'parent-1', children: [{ name: 'child 9' }] }]);
 			});
 
 			it('a leading one-to-many join', async function () {
