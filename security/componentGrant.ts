@@ -106,7 +106,7 @@ export function componentGrantError(value: unknown): string | null {
 	if (constraints.preview !== undefined && constraints.preview !== 'required') {
 		return `'${COMPONENT_GRANT_KEY}.constraints.preview' can only be 'required'`;
 	}
-	if (constraints.preview === 'required' && names.some((name) => !String(name).endsWith('-pr-*'))) {
+	if (constraints.preview === 'required' && names.some((name) => !/^.+-pr-\*$/.test(String(name)))) {
 		return `'${COMPONENT_GRANT_KEY}.names' must each be '<app>-pr-*' when previews are required`;
 	}
 	if (

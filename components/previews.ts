@@ -112,6 +112,8 @@ export async function admitPreviewActivation(
 		join(componentsRoot, `.preview-admission-${encodeURIComponent(preview.app)}`),
 		async () => {
 			await assertPreviewCapacity(component, preview.app, max, await listLocalPreviews(componentsRoot), limitName);
+			// Again, after waiting for the lock: what it refuses may have changed meanwhile.
+			admit?.(preview);
 			await activate();
 		},
 		{ purpose: `preview admission for ${preview.app}` }

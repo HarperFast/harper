@@ -320,8 +320,14 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		const roleProblem = managedRoleProblem(names, role) ?? componentGrantError(role.permission?.component_deploy);
 		if (roleProblem) problems.push(roleProblem);
 		const operations = role.permission?.operations;
-		if (!Array.isArray(operations) || CI_PREVIEW_OPERATIONS.some((operation) => !operations.includes(operation))) {
-			problems.push(`role "${names.role}" does not allow ${CI_PREVIEW_OPERATIONS.join(', ')}`);
+		if (
+			!Array.isArray(operations) ||
+			operations.length !== CI_PREVIEW_OPERATIONS.length ||
+			CI_PREVIEW_OPERATIONS.some((operation) => !operations.includes(operation))
+		) {
+			problems.push(
+				`role "${names.role}" allows ${JSON.stringify(operations ?? null)}, not ${CI_PREVIEW_OPERATIONS.join(', ')}`
+			);
 		}
 	}
 	if (!user) problems.push(`user "${names.user}" is missing`);
@@ -384,6 +390,10 @@ async function livePreviewReleases(app: string): Promise<{ releases: PreviewRele
 	const recorded = new Map<string, any>();
 	const releases: PreviewRelease[] = [];
 	const unreachable: string[] = [];
+	const answered = new Set((answer.nodes ?? []).map((node: any) => node.node));
+	for (const peer of (server as any).nodes ?? []) {
+		if (peer?.name && !answered.has(peer.name)) unreachable.push(`${peer.name}: it did not answer`);
+	}
 	for (const node of answer.nodes ?? []) {
 		if (node.error) {
 			unreachable.push(`${node.node ?? 'a node'}: ${node.error}`);
@@ -506,7 +516,9 @@ export async function disablePreviews(req: any) {
 		if (failed.length > 0) {
 			throw new ServerError(
 				`Previews of ${req.app} are revoked but not removed: ${failed.join('; ')}. The trust policies are gone and ` +
-					`${names.user} is inactive; disable previews again to retry the drops and remove the user and role.`
+					`${names.user} is inactive; disable previews again to retry the drops and remove the user and role. ` +
+					'Branched storage that a failed drop left behind is not live, so a rerun does not see it: ' +
+					'drop_component of that project on that node removes it.'
 			);
 		}
 		if (user) {

@@ -168,7 +168,15 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 		if (check.problems.length > 0) {
 			throw usageError(`${workflow} cannot be used for previews: ${check.problems.join('; ')}. Nothing was changed.`);
 		}
-		for (const item of check.unverified) notes.push(`Not verified from ${workflow}: ${item}.`);
+		const unsafe = check.unsafe ?? [];
+		if (unsafe.length > 0 && args.allow_unverified !== true) {
+			throw usageError(
+				`${workflow} may hand the preview identity to a fork or to a PR's code: setup could not verify ` +
+					`${unsafe.join('; ')}. Change the workflow, or pass allow_unverified=true once you have checked it. ` +
+					'Nothing was changed.'
+			);
+		}
+		for (const item of [...unsafe, ...check.unverified]) notes.push(`Not verified from ${workflow}: ${item}.`);
 	}
 	let writeWorkflow = false;
 	if (checkout && checkout.content === undefined) {

@@ -59,7 +59,11 @@ export async function handleListReleases(
 			continue;
 		}
 		const answer = peer?.components ? peer : (peer?.value ?? peer?.body ?? peer);
-		nodes.push({ node: peer?.node ?? answer?.node, components: answer?.components ?? [] });
+		if (!Array.isArray(answer?.components)) {
+			nodes.push({ node: peer?.node ?? answer?.node, error: 'it answered without a list of releases' });
+			continue;
+		}
+		nodes.push({ node: peer?.node ?? answer?.node, components: answer.components });
 	}
 	return { nodes };
 }

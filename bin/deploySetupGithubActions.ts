@@ -81,6 +81,8 @@ export function rawStringArg(req: any, name: string): string | undefined {
 export interface WorkflowCheck {
 	problems: string[];
 	unverified: string[];
+	/** What could hand the identity to a fork or to a PR's code, and could not be ruled out. */
+	unsafe?: string[];
 }
 
 function asList(value: unknown): unknown[] {
@@ -268,22 +270,38 @@ function checkPullRequestCheckout(name: string, job: any, problems: string[], un
  * so the job's own condition is the only gate. Only a whole `&&` term that admits same-repository pull requests counts:
  * a negation, a comparison of the test with `false`, or an `||` around it is reported as unverified.
  */
-function checkSameRepositoryCondition(name: string, job: any, problems: string[], unverified: string[]): void {
-	const condition =
-		typeof job?.if === 'string'
-			? job.if
-					.replace(/\$\{\{|\}\}/g, ' ')
-					.replace(/\s+/g, ' ')
-					.trim()
-			: '';
-	if (conjuncts(withoutEnclosingParentheses(condition))?.some((term) => SAME_REPOSITORY_TERM.test(term))) return;
-	if (/head\.repo/.test(condition)) {
-		unverified.push(`that job "${name}"'s \`if\` excludes fork pull requests`);
-		return;
-	}
-	const needs = asList(job?.needs);
-	if (needs.length > 0 && !/\b(?:always|failure|cancelled)\s*\(/.test(condition)) {
-		unverified.push(`that a job "${name}" needs (${needs.join(', ')}) excludes fork pull requests`);
+function jobCondition(job: any): string {
+	return typeof job?.if === 'string'
+		? job.if
+				.replace(/\$\{\{|\}\}/g, ' ')
+				.replace(/\s+/g, ' ')
+				.trim()
+		: '';
+}
+
+/**
+ * Whether the job runs only for same-repository pull requests: its own condition has a whole `&&` term that admits
+ * only them, or it needs a job that does and cannot run past that job being skipped.
+ */
+function excludesForks(name: string, jobs: Record<string, any>, seen = new Set<string>()): boolean {
+	if (seen.has(name)) return false;
+	seen.add(name);
+	const condition = jobCondition(jobs[name]);
+	if (conjuncts(withoutEnclosingParentheses(condition))?.some((term) => SAME_REPOSITORY_TERM.test(term))) return true;
+	if (/\b(?:always|failure|cancelled)\s*\(/.test(condition)) return false;
+	return asList(jobs[name]?.needs).some((needed) => excludesForks(String(needed), jobs, seen));
+}
+
+function checkSameRepositoryCondition(
+	name: string,
+	jobs: Record<string, any>,
+	problems: string[],
+	unsafe: string[]
+): void {
+	if (excludesForks(name, jobs)) return;
+	const condition = jobCondition(jobs[name]);
+	if (/head\.repo/.test(condition) || asList(jobs[name]?.needs).length > 0) {
+		unsafe.push(`that job "${name}" excludes fork pull requests`);
 		return;
 	}
 	problems.push(
@@ -304,8 +322,9 @@ export function checkPreviewWorkflowFile(
 ): WorkflowCheck {
 	const problems: string[] = [];
 	const unverified: string[] = [];
+	const unsafe: string[] = [];
 	const { workflow, error } = parseWorkflow(content);
-	if (error) return { problems: [error], unverified };
+	if (error) return { problems: [error], unverified, unsafe };
 	const { names, config } = triggerEvents(workflow?.on);
 	if (!names.includes('pull_request_target')) {
 		problems.push(`it has no pull_request_target trigger, so no run's token carries event_name pull_request_target`);
@@ -324,16 +343,17 @@ export function checkPreviewWorkflowFile(
 		}
 	}
 	checkEnvironmentJobs(workflow, environment, problems, unverified);
-	for (const [name, job] of Object.entries<any>(workflow?.jobs ?? {})) {
+	const jobs: Record<string, any> = workflow?.jobs ?? {};
+	for (const [name, job] of Object.entries<any>(jobs)) {
 		const environmentOfJob = environmentName(job);
 		if (environmentOfJob === cleanupEnvironment && !grantsIdToken(job, workflow) && typeof job?.uses !== 'string') {
 			problems.push(`job "${name}" runs in "${cleanupEnvironment}" without \`permissions: id-token: write\``);
 		}
 		if (!grantsIdToken(job, workflow) && typeof job?.uses !== 'string') continue;
-		checkPullRequestCheckout(name, job, problems, unverified);
-		checkSameRepositoryCondition(name, job, problems, unverified);
+		checkPullRequestCheckout(name, job, problems, unsafe);
+		checkSameRepositoryCondition(name, jobs, problems, unsafe);
 	}
-	return { problems, unverified };
+	return { problems, unverified, unsafe };
 }
 
 export interface DesiredRecords {

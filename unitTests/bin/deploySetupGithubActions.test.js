@@ -268,7 +268,6 @@ jobs:
 		});
 	});
 
-	// Each case changes one thing in the starter workflow.
 	describe('checkPreviewWorkflowFile', () => {
 		const starter = starterPreviewWorkflow({ app: 'shop', branch: 'main' });
 		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
@@ -282,7 +281,7 @@ jobs:
 		const problemsOf = (content, branch) => check(content, branch).problems.join('\n');
 
 		it('accepts the starter workflow setup writes', () => {
-			assert.deepStrictEqual(check(starter), { problems: [], unverified: [] });
+			assert.deepStrictEqual(check(starter), { problems: [], unverified: [], unsafe: [] });
 		});
 
 		it('refuses a workflow with no pull_request_target trigger', () => {
@@ -315,9 +314,17 @@ jobs:
 				deployIf,
 				`    if: github.event.action == 'opened' ||${sameRepository.slice(3)}\n`
 			);
-			assert.deepStrictEqual(check(either).unverified, ['that job "deploy"\'s `if` excludes fork pull requests']);
+			assert.deepStrictEqual(check(either).unsafe, ['that job "deploy" excludes fork pull requests']);
 			const needs = starter.replace(deployIf, '    needs: [gate]\n');
-			assert.match(check(needs).unverified.join(), /a job "deploy" needs \(gate\) excludes fork pull requests/);
+			assert.deepStrictEqual(check(needs).unsafe, ['that job "deploy" excludes fork pull requests']);
+		});
+
+		it('follows needs into a job that excludes forks, unless the job runs past it being skipped', () => {
+			const gate = `  gate:\n${deployIf}    runs-on: ubuntu-latest\n`;
+			const gated = starter.replace(deployIf, '    needs: [gate]\n').replace('jobs:\n', `jobs:\n${gate}`);
+			assert.deepStrictEqual(check(gated), { problems: [], unverified: [], unsafe: [] });
+			const always = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: always()\n');
+			assert.deepStrictEqual(check(always).unsafe, ['that job "deploy" excludes fork pull requests']);
 		});
 
 		it('cannot read a condition that names the head repository without plainly admitting only it', () => {
@@ -329,7 +336,8 @@ jobs:
 				const negated = starter.replace(deployIf, `    if: ${condition}\n`);
 				assert.deepStrictEqual(check(negated), {
 					problems: [],
-					unverified: ['that job "deploy"\'s `if` excludes fork pull requests'],
+					unverified: [],
+					unsafe: ['that job "deploy" excludes fork pull requests'],
 				});
 			}
 		});
@@ -380,7 +388,7 @@ jobs:
 			const expression = withDeployStep(
 				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ inputs.ref }}\n'
 			);
-			assert.deepStrictEqual(check(expression).unverified, [
+			assert.deepStrictEqual(check(expression).unsafe, [
 				'that job "deploy"\'s checkout ref (${{ inputs.ref }}) is not the pull request\'s head',
 			]);
 		});
@@ -397,7 +405,7 @@ jobs:
 				shaped,
 				/harper preview deploy app=shop pr="\$PR" branch="\$BRANCH" by_ref=true ref="\$SHA" domain=previews\.example\.com credential=true branchedDatabases=false/
 			);
-			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [] });
+			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });
 			// Only a PR read as closed is dropped after a deploy, so a failed read never drops an open one.
 			assert.match(shaped, /if \[ "\$\(pr \| cut -d' ' -f1\)" = closed \]; then harper preview drop app=shop/);
 		});

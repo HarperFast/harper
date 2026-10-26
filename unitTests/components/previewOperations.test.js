@@ -190,7 +190,10 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		});
 		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsnarrow', hdb_user: SU });
 		assert.strictEqual(policy.enabled, false);
-		assert.match(policy.problems.join(), /role "opsnarrow-ci-preview" does not allow deploy_component/);
+		assert.match(
+			policy.problems.join(),
+			/role "opsnarrow-ci-preview" allows \["drop_component"\], not deploy_component/
+		);
 	});
 
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
@@ -341,6 +344,20 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				peer.restore();
 			}
 			assert.deepStrictEqual(peer.sent, [], 'nothing is dropped on a guess');
+		});
+
+		it('stops when a peer does not answer at all', async () => {
+			await enablePreviews(enableRequest('opsmute'));
+			const peer = withPeer([], () => ({}));
+			server.nodes = [{ name: 'node-b' }, { name: 'node-z' }];
+			try {
+				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsmute', hdb_user: SU }), {
+					statusCode: 500,
+					message: /revoked but not removed: node-z: it did not answer/,
+				});
+			} finally {
+				peer.restore();
+			}
 		});
 
 		it('stops when a node cannot say what it holds', async () => {

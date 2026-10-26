@@ -152,6 +152,17 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		const policy = await policyOf('unsafe');
 		strictEqual(policy.enabled, false);
 		ok(policy.problems.includes('role "unsafe-ci-preview" is missing'));
+
+		// A job that only needs another, which never checks for forks either, cannot be verified safe.
+		await writeFile(
+			join(checkout, '.github', 'workflows', 'preview.yaml'),
+			'on: pull_request_target\njobs:\n  build:\n    runs-on: ubuntu-latest\n  deploy:\n    needs: [build]\n' +
+				'    environment: preview\n    permissions:\n      id-token: write\n'
+		);
+		const unverified = await setup('unsafe', [], { cwd: checkout, env: { ...adminAuth(), GITHUB_REPOSITORY: REPO } });
+		strictEqual(unverified.code, 1);
+		match(unverified.stderr, /setup could not verify that job "deploy" excludes fork pull requests/);
+		strictEqual((await policyOf('unsafe')).enabled, false);
 	});
 
 	test('creates the identity, writes the starter workflow, and reports the unset variable', async () => {
