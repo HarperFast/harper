@@ -167,7 +167,6 @@ function openLmdb(options: Parameters<typeof import('lmdb').open>[0]): RootDatab
 				reject(error);
 			}
 		}));
-		// a failed attempt must not be memoized, so a retried drop closes the environment again
 		attempt.catch(() => {
 			if (closed === attempt) closed = undefined;
 		});

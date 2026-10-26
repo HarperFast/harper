@@ -70,4 +70,20 @@ describe('LMDB environment close retry after a failed close', function () {
 		assert.strictEqual(existsSync(rootStore.path), false);
 		assert.strictEqual(databases[databaseName], undefined);
 	});
+
+	it('a strict close that failed is retried by the next drop', async function () {
+		this.timeout(30000);
+		const databaseName = 'lmdbstrictclosefailureretry';
+		const rootStore = await loadedRootStore(databaseName);
+		const attempts = failEndWritesOnce(rootStore);
+
+		await assert.rejects(closeDatabase(databaseName, { requireClosed: true }), AggregateError);
+		assert.notStrictEqual(rootStore.status, 'closed');
+		const callsAfterFailure = attempts.endWrites;
+
+		await new ResourceBridge().dropSchema({ schema: databaseName });
+		assert.ok(attempts.endWrites > callsAfterFailure, 'the retry must run lmdb close again');
+		assert.strictEqual(rootStore.status, 'closed');
+		assert.strictEqual(existsSync(rootStore.path), false);
+	});
 });
