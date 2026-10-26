@@ -451,7 +451,10 @@ function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, un
 		for (const name of Object.keys(cjsExports)) {
 			if (name in namespace) continue;
 			try {
-				names[name] = cjsExports[name];
+				const descriptor = Object.getOwnPropertyDescriptor(cjsExports, name);
+				if (descriptor && 'value' in descriptor) {
+					names[name] = descriptor.value;
+				}
 			} catch {}
 		}
 	} catch {}
@@ -930,14 +933,15 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
 					const namespace = await import(moduleSpecifier);
-					const moduleExports = { ...namespace, ...dynamicCjsExports(namespace, moduleSpecifier) };
+					const extra = dynamicCjsExports(namespace, moduleSpecifier);
+					const namespaceKeys = Object.keys(namespace);
+					const extraKeys = Object.keys(extra);
 					return {
 						imports: [],
-						exports: Object.keys(moduleExports),
+						exports: [...namespaceKeys, ...extraKeys],
 						execute(exports) {
-							for (const key of Object.keys(moduleExports)) {
-								exports[key] = moduleExports[key];
-							}
+							for (const key of namespaceKeys) exports[key] = namespace[key];
+							for (const key of extraKeys) exports[key] = extra[key];
 						},
 					};
 				}
