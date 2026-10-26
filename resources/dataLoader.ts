@@ -124,6 +124,7 @@ async function getLegacyHashes(
 	database: string | undefined,
 	tableName: string,
 	newRecord: Record<string, any>,
+	existingRecord: Record<string, any>,
 	primaryKey: string,
 	tablesRef: Tables
 ): Promise<string[]> {
@@ -134,7 +135,8 @@ async function getLegacyHashes(
 	const prefixes = isDefaultDatabase
 		? [`${tableName}:`, `${DEFAULT_DATABASE_NAME}:${tableName}:`]
 		: [`${database}:${tableName}:`];
-	const ids = primaryKey === 'id' || newRecord.id === undefined ? [newRecord.id] : [newRecord.id, undefined];
+	// the stored record keeps the `id` an earlier version loaded if the file has changed it since
+	const ids = primaryKey === 'id' ? [newRecord.id] : [...new Set([newRecord.id, existingRecord.id, undefined])];
 	const hashes: string[] = [];
 	for (const prefix of prefixes) {
 		for (const id of ids) {
@@ -342,6 +344,7 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 								database,
 								tableName,
 								newRecord,
+								existingRecord,
 								primaryKey,
 								tablesRef
 							);

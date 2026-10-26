@@ -276,6 +276,18 @@ describe('Data loader record identity', function () {
 			assert.equal(record.userNote, 'keep');
 		});
 
+		it('honors a hash stored under the id field an earlier version loaded when the file has changed it', async function () {
+			const old = { sku: 'b', id: 20, value: 1 };
+			await tables.DlIdSkuWithId.put({ ...old, userNote: 'keep' });
+			await hashTable.put({ id: 'DlIdSkuWithId:20', hash: legacyHash(old) });
+
+			await load({ table: 'DlIdSkuWithId', records: [{ sku: 'b', id: 21, value: 2 }] });
+			const record = await tables.DlIdSkuWithId.get('b');
+			assert.equal(record.id, 21);
+			assert.equal(record.value, 2);
+			assert.equal(record.userNote, 'keep');
+		});
+
 		it("does not confuse a record's primary key with another record's id field", async function () {
 			const old = [
 				{ sku: 5, id: 9, value: 1 },
