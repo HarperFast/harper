@@ -28,12 +28,15 @@ const currentIntrinsics = () => INTRINSIC_NAMES.map((name) => globalThis[name]);
 const realmIntrinsics = currentIntrinsics();
 
 /** An unrecognized mode freezes eagerly: config values are not validated, so a typo fails closed. */
-export function lockDownIntrinsics(mode: Exclude<Lockdown, 'none' | 'ses'>, whenLoaded: Promise<unknown>): void {
+export function lockDownIntrinsics(
+	mode: Exclude<Lockdown, 'none' | 'ses'>,
+	whenLoaded: Promise<unknown>
+): Promise<void> | undefined {
 	preventFunctionConstructor();
 	const lockDown = mode === 'seal' || mode === 'seal-after-load' ? sealIntrinsics : freezeIntrinsics;
 	// a rejected start is reported by the thread server and never serves, so there is nothing left to lock
-	if (mode === 'freeze-after-load' || mode === 'seal-after-load') whenLoaded.then(lockDown, () => {});
-	else lockDown();
+	if (mode === 'freeze-after-load' || mode === 'seal-after-load') return whenLoaded.then(lockDown, () => {});
+	lockDown();
 }
 
 function preventFunctionConstructor() {

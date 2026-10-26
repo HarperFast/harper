@@ -84,7 +84,9 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 				stackFiltering: 'verbose',
 			});
 		} else {
-			lockDownIntrinsics(APPLICATIONS_LOCKDOWN, whenComponentsLoaded);
+			lockDownIntrinsics(APPLICATIONS_LOCKDOWN, whenComponentsLoaded)?.catch((error) =>
+				logger.error(`applications.lockdown ${APPLICATIONS_LOCKDOWN} failed; intrinsics may be partly locked`, error)
+			);
 		}
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();

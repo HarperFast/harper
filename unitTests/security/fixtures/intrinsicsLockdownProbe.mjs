@@ -110,10 +110,15 @@ function probe(phase) {
 const originalWeakRef = WeakRef;
 globalThis.WeakRef = class ReplacedWeakRef extends WeakRef {};
 delete globalThis.FinalizationRegistry;
+if (workerData.refusingGlobal)
+	globalThis.WeakRef = new Proxy(class RefusingWeakRef {}, { preventExtensions: () => false });
 let markLoaded;
 const whenLoaded = new Promise((resolve) => (markLoaded = resolve));
-lockDownIntrinsics(workerData.mode, whenLoaded);
+const locking = lockDownIntrinsics(workerData.mode, whenLoaded);
 const duringLoad = probe('during');
 markLoaded();
-await whenLoaded;
-parentPort.postMessage({ duringLoad, afterLoad: probe('after') });
+const lockOutcome = await Promise.resolve(locking).then(
+	() => 'locked',
+	(error) => error.name
+);
+parentPort.postMessage({ duringLoad, afterLoad: probe('after'), lockOutcome });

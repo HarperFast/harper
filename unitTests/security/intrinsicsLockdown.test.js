@@ -111,8 +111,8 @@ const FROZEN = {
 	},
 };
 
-function probeLockdown(mode) {
-	const worker = new Worker(PROBE, { workerData: { mode } });
+function probeLockdown(mode, options) {
+	const worker = new Worker(PROBE, { workerData: { mode, ...options } });
 	let timer;
 	return new Promise((resolve, reject) => {
 		timer = setTimeout(() => reject(new Error(`lockdown probe for ${String(mode)} reported nothing in 30s`)), 30_000);
@@ -142,6 +142,12 @@ describe('lockDownIntrinsics', function () {
 			const result = await probeLockdown(mode);
 			assert.deepStrictEqual(result.duringLoad, duringLoad, 'during load');
 			assert.deepStrictEqual(result.afterLoad, afterLoad, 'after load');
+			assert.strictEqual(result.lockOutcome, 'locked');
 		});
 	}
+
+	it('"seal-after-load": a lock that throws rejects the promise it returns', async () => {
+		const result = await probeLockdown('seal-after-load', { refusingGlobal: true });
+		assert.strictEqual(result.lockOutcome, 'TypeError');
+	});
 });
