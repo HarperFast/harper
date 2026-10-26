@@ -10350,9 +10350,13 @@ export function makeTable(options): TableResourceClass {
 			);
 			propertyResolvers.$highlights.directReturn = true;
 			primaryKeyAttribute = undefined;
+			createdTimeProperty = undefined;
+			updatedTimeProperty = undefined;
 			hasRelationships = false;
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
+				if (attribute.assignCreatedTime || attribute.name === '__createdtime__') createdTimeProperty = attribute;
+				if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updatedTimeProperty = attribute;
 				attribute.resolve = null; // reset this
 				// Also the setter, or a reload that turns a @relationship into a @computed keeps the
 				// relationship's setter and writes a foreign key from a computed assignment.
@@ -10567,6 +10571,8 @@ export function makeTable(options): TableResourceClass {
 					propertyResolvers[attribute.name].directReturn = true;
 				}
 			}
+			this.createdTimeProperty = createdTimeProperty;
+			this.updatedTimeProperty = updatedTimeProperty;
 			assignTrackedAccessors(this, this);
 			assignTrackedAccessors(Updatable, this, true);
 			// updatedAttributes() re-runs on every schema reload, so rebuild these from scratch rather than

@@ -467,6 +467,28 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		assert.strictEqual((await readded.press).name, 'Parnassus');
 	});
 
+	it('stamps a timestamp field added on re-declaration and stops stamping a removed one', async () => {
+		const Log = defineTable(
+			'StampEvolve',
+			{ id: id.primaryKey, label: string, touchedAt: date.updatedTime },
+			{ database: EVOLVE_DB }
+		);
+		await Log.put({ id: 'l1', label: 'first' });
+		assert.ok((await Log.get('l1')).touchedAt instanceof Date);
+
+		defineTable(
+			'StampEvolve',
+			{ id: id.primaryKey, label: string, createdAt: date.indexed.createdTime },
+			{ database: EVOLVE_DB }
+		);
+		await Log.put({ id: 'l2', label: 'second' });
+		const second = await Log.get('l2');
+		assert.ok(second.createdAt instanceof Date, 'the added createdTime field is stamped');
+		assert.strictEqual(second.touchedAt, undefined, 'the removed updatedTime field is no longer written');
+		assert.strictEqual(Log.createdTimeProperty?.name, 'createdAt');
+		assert.strictEqual(Log.updatedTimeProperty, undefined);
+	});
+
 	it('still checks the target table’s read permission for a retained relationship', async () => {
 		const Secret = defineTable('SecretNote', { id: id.primaryKey, text: string }, { database: EVOLVE_DB });
 		const Open = defineTable('OpenNote', { id: id.primaryKey, text: string }, { database: EVOLVE_DB });
