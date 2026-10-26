@@ -116,11 +116,7 @@ the last read that config gets, and the thread holds the pre-truncate value inde
 empty read to `ConfigReadRetry`, the same ladder a lock takes and for the same reason — there is no
 further event to re-read on. `OptionsWatcher` applies it on both read paths, not only the
 synchronous one: the asynchronous read is far less likely to land in a truncate window, but the
-consequence there is a spurious `remove` that tears the scope down. Even with `atomicWriteFile()`,
-two complete writes landing within chokidar's 50ms `EV.CHANGE` throttle window lose the second
-event with no trailing emission, so `RootConfigWatcher.handleChange` schedules one 100ms trailing
-verify-read (re-armed per event, cleared on `close()` or when `ConfigReadRetry` takes over) and
-emits `change` only when `!isDeepStrictEqual(config, this.#config)` (`unitTests/config/rootConfigWatcher.test.js`).
+consequence there is a spurious `remove` that tears the scope down.
 
 A read that _parses_ to nothing is the same event and takes the same ladder: a truncated document,
 a lone `\n` and a file of nothing but comments all yield `null` from the parser rather than
@@ -241,6 +237,10 @@ cannot tell apart from one the file really held, and `updateLogger` reads an abs
 rotation off and an absent `console` as console off. `updateLogSettings()` therefore keeps what
 `initLogSettings()` established until a real config arrives, rather than silently turning logging
 off on the very boot that could not read its configuration.
+
+## `RootConfigWatcher` schedules a trailing verify-read (`config/RootConfigWatcher.ts`)
+
+Chokidar throttles `EV.CHANGE` events per path for 50ms (`node_modules/chokidar/index.js`) with no trailing emission, so the second of two `atomicWriteFile()` renames landing within 50ms produces no watcher event. After a successful `handleChange` read, `RootConfigWatcher` arms one 100ms (`TRAILING_VERIFY_READ_DELAY_MS`, double the 50ms throttle window) trailing verify-read (`#read(true)`), re-armed on each event and cleared on `close()`, terminal read failure, or when `ConfigReadRetry` takes over. Post-`ready` reads short-circuit when raw file text matches `#lastData` and otherwise compare the parsed object against an unmutated clone (`#lastParsedConfig`) with `isDeepStrictEqual`, so neither the trailing read nor an identical rewrite emits a duplicate `change` even when consumers (`harper_logger`) mutate `this.#config` in place (`unitTests/config/rootConfigWatcher.test.js`). Root-config `OptionsWatcher`s do not schedule a trailing read and remain exposed to the 50ms throttle window.
 
 ## `RootConfigWatcher` polls under Bun (`config/RootConfigWatcher.ts`)
 

@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const { RootConfigWatcher } = require('#js/config/RootConfigWatcher');
 const { tmpdir } = require('node:os');
 const { once } = require('node:events');
+const { isDeepStrictEqual } = require('node:util');
 const { join } = require('node:path');
 const { writeFileSync, mkdtempSync, rmSync, renameSync, chmodSync, readFileSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
@@ -150,13 +151,17 @@ describe('RootConfigWatcher', function () {
 		await delay(20);
 		configUtils.atomicWriteFile(this.configFilePath, stringify(second));
 
-		await waitFor(() => changes.length === 2, {
+		await waitFor(() => changes.at(-1)?.foo === 'second', {
 			timeout: 2000,
 			interval: 20,
-			message: () => `expected [first, second] changes, got: ${JSON.stringify(changes)}`,
+			message: () => `expected final change to be second, got: ${JSON.stringify(changes)}`,
 		});
 
-		assert.deepEqual(changes, [first, second]);
+		assert.ok(
+			isDeepStrictEqual(changes, [first, second]) || isDeepStrictEqual(changes, [second]),
+			`expected [first, second] or coalesced [second] changes, got: ${JSON.stringify(changes)}`
+		);
+		assert.deepEqual(changes.at(-1), second);
 		assert.deepEqual(configWatcher.config, second);
 		configWatcher.close();
 	});
@@ -192,9 +197,13 @@ describe('RootConfigWatcher', function () {
 		writeFileSync(this.configFilePath, stringify(initial));
 		const configWatcher = new RootConfigWatcher();
 		await configWatcher.ready;
+		configWatcher.config.mutatedByConsumer = true;
 
 		const changes = [];
-		configWatcher.on('change', (cfg) => changes.push(cfg));
+		configWatcher.on('change', (cfg) => {
+			changes.push(structuredClone(cfg));
+			cfg.mutatedByConsumer = true;
+		});
 
 		const updated = { foo: 'baz' };
 		configUtils.atomicWriteFile(this.configFilePath, stringify(updated));
@@ -203,12 +212,18 @@ describe('RootConfigWatcher', function () {
 			interval: 20,
 		});
 
-		// Wait past chokidar's 50ms throttle and the 100ms trailing verify-read window, then
-		// rewrite the same configuration and wait for the watcher to read it again.
 		await delay(200);
 		const readsBeforeDuplicateWrite = configWatcher._readCountForTests;
 		configUtils.atomicWriteFile(this.configFilePath, stringify({ foo: 'baz' }));
 		await waitFor(() => configWatcher._readCountForTests > readsBeforeDuplicateWrite, {
+			timeout: 2000,
+			interval: 20,
+		});
+		await delay(150);
+
+		const readsBeforeCommentWrite = configWatcher._readCountForTests;
+		configUtils.atomicWriteFile(this.configFilePath, `# comment\n${stringify({ foo: 'baz' })}`);
+		await waitFor(() => configWatcher._readCountForTests > readsBeforeCommentWrite, {
 			timeout: 2000,
 			interval: 20,
 		});
