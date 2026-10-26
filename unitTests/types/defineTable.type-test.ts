@@ -99,14 +99,12 @@ type _song_record = Expect<
 type _song_insert = Expect<Equal<(typeof Song)['$insert'], { title: string; albumId: string; id?: string }>>;
 type _song_query = Expect<Equal<(typeof Song)['$query'], { albumId?: string }>>;
 
-// Date flags compose in any order: every modifier keeps a DateField, so a timestamp may follow
-// `.indexed`/`.nullable`, and both timestamps chain.
+// Date flags compose in any order.
 const Event = defineTable('Event', {
 	id: id.primaryKey,
 	label: string,
 	createdAt: date.indexed.createdTime,
 	updatedAt: date.nullable.updatedTime,
-	stamped: date.createdTime.indexed.updatedTime,
 	when: date.indexed.nullable,
 });
 type _event_record = Expect<
@@ -117,16 +115,19 @@ type _event_record = Expect<
 			readonly label: string;
 			readonly createdAt: Date;
 			readonly updatedAt: Date;
-			readonly stamped: Date;
 			readonly when?: Date;
 		}
 	>
 >;
-// server-managed whatever precedes the timestamp flag, so absent from every write projection
 type _event_insert = Expect<Equal<(typeof Event)['$insert'], { label: string; id?: string; when?: Date }>>;
 type _event_upsert = Expect<Equal<(typeof Event)['$upsert'], { id: string; label: string; when?: Date }>>;
 type _event_patch = Expect<Equal<(typeof Event)['$patch'], { label?: string; when?: Date }>>;
-type _event_query = Expect<Equal<(typeof Event)['$query'], { createdAt?: Date; stamped?: Date; when?: Date }>>;
+type _event_query = Expect<Equal<(typeof Event)['$query'], { createdAt?: Date; when?: Date }>>;
+// A table keeps one created and one updated slot, so a field carrying both timestamps stands alone.
+const Stamp = defineTable('Stamp', { id: id.primaryKey, stamped: date.createdTime.indexed.updatedTime });
+type _stamp_record = Expect<Equal<(typeof Stamp)['$record'], { readonly id: string; readonly stamped: Date }>>;
+type _stamp_insert = Expect<Equal<(typeof Stamp)['$insert'], { id?: string }>>;
+type _stamp_query = Expect<Equal<(typeof Stamp)['$query'], { stamped?: Date }>>;
 
 // ── Mutual pair (Book <-> Author): relationOf/hasManyOf break the const-initializer cycle ──
 //
@@ -231,6 +232,7 @@ export {
 	Track,
 	Album,
 	Event,
+	Stamp,
 	Book,
 	Author,
 	toInsert,

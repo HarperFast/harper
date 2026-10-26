@@ -58,7 +58,7 @@ export interface Field<TS, F extends Flags = {}> {
 	readonly primaryKey: Field<TS, F & { primaryKey: true }>;
 }
 
-/** Date additionally carries the server-managed timestamp flags; every flag keeps it a DateField. */
+/** Date additionally carries the server-managed timestamp flags. */
 export interface DateField<F extends Flags = {}> extends Field<Date, F> {
 	readonly nullable: DateField<F & { nullable: true }>;
 	readonly indexed: DateField<F & { indexed: true }>;
@@ -76,9 +76,7 @@ export type RelationField<Target, Card extends 'one' | 'many'> = Field<
 	{ relation: Card }
 >;
 
-// Runtime builders — getters return FRESH fields (immutable chaining; no shared-state bug). Every
-// getter rebuilds through makeField, which owns each kind's full flag surface, so chain order
-// cannot drop a flag getter.
+// Runtime builders — getters return FRESH fields (immutable chaining; no shared-state bug).
 function makeField(kind: string, meta: Record<string, unknown> = {}): any {
 	const field = {
 		kind,

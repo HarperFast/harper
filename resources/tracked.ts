@@ -33,7 +33,7 @@ function getChanges(target) {
  */
 export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
 	const prototype = Target.prototype;
-	const descriptors = {};
+	const descriptors = Object.create(null);
 	// Read the Array form. `typeDef.properties` is now a Record<string, JsonSchemaFragment>
 	// after the schema-metadata alignment; iterating it with for...of would throw.
 	// For typeDefs that only carry the Record (e.g. a programmatic Resource that declared
@@ -225,7 +225,6 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 			Object.defineProperty(prototype, name, descriptor);
 		}
 	}
-	// A removed attribute's accessor would otherwise keep validating writes or resolving.
 	for (const name of Object.getOwnPropertyNames(prototype)) {
 		if ((Object.getOwnPropertyDescriptor(prototype, name).get as any)?.isAttribute && !(name in descriptors))
 			delete prototype[name];

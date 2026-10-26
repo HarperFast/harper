@@ -10574,8 +10574,7 @@ export function makeTable(options): TableResourceClass {
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
 			hasSurfacedComputed = false;
-			// The previous declaration's accessors close over its attribute objects, so a removed or
-			// replaced resolver would otherwise keep resolving (and shadow a now-stored field of that name).
+			// the previous declaration's accessors close over its attribute objects and would keep resolving
 			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? [])
 				delete primaryStore.encoder.structPrototype[name];
 			const resolvedAttributeNames: string[] = [];
