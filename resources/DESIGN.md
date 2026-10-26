@@ -408,7 +408,7 @@ RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them wh
 
 ## A read reference belongs to the handle acquisition it was taken on (`DatabaseTransaction.useReadTxn`/`doneReadTxn`, harper#3308)
 
-`readTxnsUsed` is never positive without a read handle, and `doneReadTxn(generation)` ignores a return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot). Enforced by `unitTests/resources/detachedReadRefs.test.js`.
+`readTxnsUsed` and `readTxnRefCount` are never positive without a read handle: `getReadTxn()` only counts references when opening or reusing a live handle, detaching the handle (`DatabaseTransaction.detachOwnedTransaction` / `LMDBTransaction.doneReadTxn`) zeroes both counters and marks `baseReadRefConsumed = true`, `disregardReadTxn()` clamps `readTxnRefCount` at zero, and `doneReadTxn(generation)` ignores a return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot). Enforced by `unitTests/resources/detachedReadRefs.test.js`.
 
 ## Replicated apply failure listeners (`resources/replicatedApplyFailure.ts`)
 
