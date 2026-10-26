@@ -145,7 +145,6 @@ export class StampedProductResource extends tables.StampedProduct {
 	}
 }
 
-// The stored StampedProduct row and its raw index entries, read beneath query hydration.
 export class StampedState extends Resource {
 	get() {
 		const { primaryStore, indices } = tables.StampedProduct;

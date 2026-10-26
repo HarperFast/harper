@@ -299,6 +299,21 @@ describe('Writer residency (harper#2257)', () => {
 		assert.deepEqual(indexed, [stored.name]);
 	});
 
+	it('removes the index entries of a row deleted after an id-based omission in the same transaction', async () => {
+		await Records.put('by-id-deleted', { id: 'by-id-deleted', name: 'before', body: 'complete' });
+		Records.setResidencyById(() => [PEER]);
+		const context = {};
+		await transaction(context, async () => {
+			await Records.put('by-id-deleted', { id: 'by-id-deleted', name: 'after', body: 'complete' }, context);
+			await Records.delete('by-id-deleted', context);
+		});
+		assert.equal(Records.primaryStore.getEntry('by-id-deleted')?.value ?? null, null);
+		const indexed = Array.from(Records.indices.name.getRange({}))
+			.filter(({ value }) => value === 'by-id-deleted')
+			.map(({ key }) => key);
+		assert.deepEqual(indexed, [], 'the deleted row left index entries behind');
+	});
+
 	it('leaves setResidencyById omission unchanged', async () => {
 		Records.setResidencyById(() => [PEER]);
 		await Records.put('by-id', { id: 'by-id', name: 'n', body: 'complete' });

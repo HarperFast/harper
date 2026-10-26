@@ -4251,7 +4251,14 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
 					// Computed indexes need the full record's inputs; keep them as committed until a full write.
-					updateIndices(id, existingRecord, partialRecord, transaction && { transaction }, true);
+					updateIndices(
+						id,
+						existingRecord,
+						partialRecord,
+						transaction && { transaction },
+						true,
+						Boolean((priorStagedOp?.stagedEntry ?? existingEntry)?.metadataFlags & INVALIDATED)
+					);
 					dropReplicaDeadline(id, existingEntry, transaction);
 					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					updateRecord(
@@ -6004,16 +6011,19 @@ export function makeTable(options): TableResourceClass {
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
-							write.stagedEntry = omitLocalRecord
-								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
-								: { value: recordToStore };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
-							// then owns their lifetime; and any record an earlier write in this transaction
-							// stored is now replaced, so mark those writes for the superseded-blob cleanup
+							// then owns their lifetime
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
-							// only the nearest staged prior needs marking: anything older was already
-							// superseded by its own staged successor earlier in this commit round
-							if (priorStagedOp) priorStagedOp.superseded = true;
+							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
+							if (recordToStore !== undefined) {
+								write.stagedEntry = omitLocalRecord
+									? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
+									: { value: recordToStore };
+								// any record an earlier write in this transaction stored is now replaced, so mark those
+								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
+								// anything older was already superseded by its own staged successor earlier in this round
+								if (priorStagedOp) priorStagedOp.superseded = true;
+							}
 						}
 					}
 				},
@@ -9608,9 +9618,9 @@ export function makeTable(options): TableResourceClass {
 		id: any,
 		existingRecord: any,
 		record: any,
-		options?: any,
-		preserveComputed = false,
-		existingIsStub = false
+		options: any,
+		preserveComputed: boolean,
+		existingIsStub: boolean
 	) {
 		let hasChanges;
 		// iterate the entries from the record
@@ -11393,7 +11403,7 @@ export function makeTable(options): TableResourceClass {
 			const preserveComputed = Boolean(current.metadataFlags & INVALIDATED);
 			const base = withoutBlobRelease(current);
 			if (hasDerivedIndexRegistration(auditStore, tableId)) reserveLocalKey(primaryStore.rootStore, transaction);
-			updateIndices(id, current.value, body, options, preserveComputed);
+			updateIndices(id, current.value, body, options, preserveComputed, preserveComputed);
 			updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
 			store.putSync(id, deadline, options);
 			const completion = commitRawTransaction(transaction);
@@ -11611,7 +11621,7 @@ export function makeTable(options): TableResourceClass {
 			(transaction as any).abort();
 			return Promise.resolve(false);
 		}
-		updateIndices(entry.key, entry.value, stub, { transaction }, true);
+		updateIndices(entry.key, entry.value, stub, { transaction }, true, false);
 		updateRecord(entry.key, stub, base, entry.version, INVALIDATED, false, writeOptions, 'invalidate', false, null);
 		return commitRawTransaction(transaction as RocksTransaction).then(releaseBlobs);
 	}
