@@ -8417,11 +8417,12 @@ export function makeTable(options): TableResourceClass {
 							);
 						} else {
 							const properties = attribute.properties;
+							let changes;
 							for (let i = 0, l = properties.length; i < l; i++) {
 								const attribute = properties[i];
 								if (attribute.relationship || attribute.computed) {
 									// a tracked sub-object holds assignments in its pending changes, not as own properties
-									const changes = typeof value.getChanges === 'function' ? value.getChanges() : undefined;
+									changes ??= (typeof value.getChanges === 'function' && value.getChanges()) || false;
 									if (Object.hasOwn(value, attribute.name) || (changes && Object.hasOwn(changes, attribute.name))) {
 										addError(
 											`${name}.${attribute.name}`,
