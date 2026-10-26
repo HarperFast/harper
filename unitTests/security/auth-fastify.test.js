@@ -274,7 +274,7 @@ describe('Test authorize function', function () {
 		serverModule.server.getUser = async () => {
 			throw new Error('user store unavailable');
 		};
-		const headerObject = { authorization: active_basic_request.headers.authorization };
+		const headerObject = { authorization: active_basic_request.headers.authorization, accept: 'application/cbor' };
 		const baseRequest = {
 			method: 'POST',
 			url: '/legacy-auth',
