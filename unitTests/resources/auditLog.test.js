@@ -1704,7 +1704,6 @@ describe('Audit log', () => {
 			'an absent node id must still search every log'
 		);
 
-		// An unnamed id's writes are filed in `local` (logForOrigin), so it reads `local`, and only its own entries.
 		const unknownNodeId = auditStore.loadLogs().length + 1000;
 		assert.equal(
 			auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId),

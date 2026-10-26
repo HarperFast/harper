@@ -1,5 +1,4 @@
-// Equal-version writes from distinct origins (harper#3516) and the out-of-order walk's head comparison
-// (harper#3521). Origin names order ties: order-a < order-b < order-c < order-d; ids 935/936 have no name.
+// harper#3516, harper#3521. Names order ties: order-a < order-b < order-c < order-d; ids 935/936 have no name.
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
