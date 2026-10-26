@@ -161,6 +161,26 @@ describe('Permissions through Resource API', () => {
 		for await (const record of await AllowedGet.get(new RequestTarget('?name=name-1'), context())) ids.push(record.id);
 		assert.deepStrictEqual(ids, ['id-1']);
 	});
+	it('only loadAsInstance=false get inspects its result for a pending search authorization', async function () {
+		let reads = 0;
+		const result = {
+			get [Symbol.for('harper.searchAuthorization')]() {
+				reads++;
+			},
+		};
+		class DefaultModeGet extends TestTable {
+			async get() {
+				return result;
+			}
+		}
+		class FalseModeGet extends DefaultModeGet {
+			static loadAsInstance = false;
+		}
+		assert.strictEqual(await DefaultModeGet.get(new RequestTarget('?name=name-1'), {}), result);
+		assert.strictEqual(reads, 0);
+		assert.strictEqual(await FalseModeGet.get(new RequestTarget('?name=name-1'), {}), result);
+		assert.strictEqual(reads, 1);
+	});
 	it('Can not write without permission', async function () {
 		let caught_error;
 		try {

@@ -127,12 +127,15 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static get = transactional(
 		function (resource: any, query: RequestTarget, request: Context, _data: any) {
 			const result = resource.get?.(query);
-			// for the new API we always apply select in the instance method
-			if (!resource.constructor.loadAsInstance) {
+			const loadAsInstance = resource.constructor.loadAsInstance;
+			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
+			if (loadAsInstance === false) {
 				return result?.then
 					? result.then((result: any) => authorizeSearchResult(result, request?.user))
 					: authorizeSearchResult(result, request?.user);
 			}
+			// for the new API we always apply select in the instance method
+			if (!loadAsInstance) return result;
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
