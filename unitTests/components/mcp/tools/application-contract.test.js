@@ -145,3 +145,81 @@ describe('mcp/tools/application — contract body strips bound path params', () 
 		assert.deepStrictEqual(captured.body, { name: 'A' }, 'body excludes the bound path param');
 	});
 });
+
+// Table projections mark nulls with OpenAPI's `nullable: true` at every depth; MCP tool schemas are
+// JSON Schema 2020-12, which ignores that key.
+describe('mcp/tools/application — contract nullability in JSON Schema 2020-12 terms', () => {
+	const nodePath = require('node:path');
+	const { projectTableFragment } = require('#src/resources/defineResource');
+	const sdkDir = nodePath.dirname(require.resolve('@modelcontextprotocol/sdk/package.json'));
+	const Ajv2020 = require(require.resolve('ajv/dist/2020', { paths: [sdkDir] })).default;
+
+	const table = {
+		attributes: [
+			{ name: 'id', type: 'String', isPrimaryKey: true },
+			{
+				name: 'meta',
+				type: 'Meta',
+				properties: [
+					{ name: 'label', type: 'String', nullable: false },
+					{ name: 'count', type: 'Int' },
+				],
+			},
+			{ name: 'tags', type: 'array', elements: { type: 'String' } },
+		],
+	};
+
+	// Ajv honors `nullable` as an OpenAPI extension; drop it so the check behaves like a strict
+	// 2020-12 validator (e.g. Python `jsonschema`) that ignores the unknown keyword.
+	function strict2020(schema) {
+		const stripped = JSON.parse(JSON.stringify(schema, (key, value) => (key === 'nullable' ? undefined : value)));
+		return new Ajv2020({ strict: false, validateFormats: false }).compile(stripped);
+	}
+
+	function hasNullableKey(schema) {
+		return JSON.stringify(schema).includes('"nullable"');
+	}
+
+	function makeTableContractResource() {
+		class Song {}
+		Song.prototype.get = function () {};
+		Song.prototype.post = function () {};
+		Song.get = async () => ({});
+		Song.post = async () => ({});
+		Song.path = '/song/:id';
+		Song.requestContract = { path: '/song/:id' };
+		Song.inputSchemas = { post: { body: projectTableFragment(table, 'insert') } };
+		Song.outputSchemas = { get: { ...projectTableFragment(table, 'record'), nullable: true } };
+		return Song;
+	}
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
+		_setRequestTargetForTest(FakeRequestTarget);
+		_setResourcesForTest(makeRegistryWithParamRoute('song/:id', makeTableContractResource()));
+		registerApplicationTools();
+	});
+	afterEach(() => {
+		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+	});
+
+	it('accepts null for a nullable nested Int and a nullable array element, and rejects it where nullable is false', () => {
+		const tool = [...toolsByName().values()].find((t) => t.name.startsWith('create_'));
+		assert.ok(!hasNullableKey(tool.inputSchema), JSON.stringify(tool.inputSchema));
+		const validate = strict2020(tool.inputSchema);
+		assert.ok(validate({ id: '1', meta: { label: 'a', count: null }, tags: [null] }), JSON.stringify(validate.errors));
+		assert.ok(!validate({ id: '1', meta: { label: null } }), 'nullable:false nested field must reject null');
+	});
+
+	it('converts nested nullability in the output schema but keeps its root an object', () => {
+		const tool = [...toolsByName().values()].find((t) => t.name.startsWith('get_'));
+		assert.ok(!hasNullableKey(tool.outputSchema), JSON.stringify(tool.outputSchema));
+		assert.strictEqual(tool.outputSchema.type, 'object');
+		assert.ok(strict2020(tool.outputSchema)({ id: '1', meta: { label: 'a', count: null }, tags: [null] }));
+	});
+});

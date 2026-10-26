@@ -35,7 +35,7 @@ const nestedTable = {
 				{ name: 'label', type: 'String', nullable: false },
 				{ name: 'count', type: 'Int' },
 				{ name: 'seenAt', type: 'Date' },
-				{ name: 'owner', type: 'Owner', relationship: { from: 'ownerId' } },
+				{ name: 'owner', type: 'Owner', nullable: false, relationship: { from: 'ownerId' } },
 			],
 		},
 		{ name: 'tags', type: 'array', elements: { type: 'String' } },
