@@ -1531,6 +1531,17 @@ describe('mcp/transport', () => {
 			assert.equal(res.status, 200);
 		});
 
+		it('honors a single-label wildcard origin in the allow-list (harper#3050)', async () => {
+			envOverrides.http_cors = true;
+			envOverrides.http_corsAccessList = ['https://*.app.example.com'];
+			const request = (origin) =>
+				handleMcpRequest(
+					makeReq({ body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }), headers: { origin } })
+				);
+			assert.equal((await request('https://pr-12.app.example.com')).status, 200);
+			assert.equal((await request('https://a.pr-12.app.example.com')).status, 403);
+		});
+
 		it('honors the "*" wildcard in the allow-list', async () => {
 			envOverrides.http_cors = true;
 			envOverrides.http_corsAccessList = ['*'];

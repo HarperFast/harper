@@ -88,6 +88,7 @@ interface CreateOptions {
 	// hdb_secret without the operator re-supplying it. Null when the deploy used no credentials or a
 	// no-custody transient token.
 	credentials?: CredentialReference[] | null;
+	preview?: Record<string, unknown> | null;
 	/** Where the deploy came from: attested by an OIDC exchange, or declared by the client (deploymentSource.ts). */
 	source?: Record<string, unknown> | null;
 	emitter?: ProgressEmitter;
@@ -167,6 +168,7 @@ export class DeploymentRecorder {
 			rollback_of: options.rollback_of ?? null,
 			activated_from: options.activated_from ?? null,
 			credentials: options.credentials ?? null,
+			preview: options.preview ?? null,
 			source: options.source ?? null,
 			error: null,
 		};

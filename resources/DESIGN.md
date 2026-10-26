@@ -41,6 +41,7 @@ User-facing syntax: [Full-text search](FULL_TEXT.md).
 - Compile `name: FullText @fullText(...)` into `fullTextIndexes` and the internal durable `fullTextFields` name set. Programmatic declarations default that name set to every index name. Keep write/projection guards independent of query-reader readiness; the name set does not distinguish earlier declarations from new ones. Never add the declaration to `attributes` or record `properties`: it has no stored, computed, or selectable value. Source fields own permissions.
 - Accept only field placement with its name supplied by the field. Reject a `name` argument, table-level declarations, and index names that collide with current stored attributes. Earlier beta declarations and indexes have no supported upgrade path.
 - Hold one reader lease for the entire search, including every native result page and highlight trace. Reload only an idle reader. Publication during an active query opens a replacement for subsequent queries and retires the old reader after its lease drains. Offset paging across different native snapshots can duplicate or skip hits; deduplication cannot recover skipped hits.
+- Native process budgets are captured before `startHTTPThreads()` loads application components, or on an earlier main-thread native load/managed spawn. Managed worker data and worker environment data carry the snapshot; standalone application workers created before capture must fail before configuring the addon. Validate the raw snapshot at activation; worker replacement cannot reconfigure a process-global addon. Non-runtime query policies still resolve live.
 - Native fulltext owns commits and reader snapshots. Harper owns audit coverage, worker epochs, readiness, and publication notifications. A stable native snapshot does not imply a global record snapshot during concurrent writes; source versions are checked when hydrating hits.
 
 Sources: [schema parser](graphql.ts), [declaration compiler and generation identity](fullTextSchema.ts), [table read/write guards](Table.ts), [reader leases and paging](indexes/fullTextQueryIndex.ts), [publication-between-pages regression](../unitTests/resources/fullTextQueryIndex.test.js).
@@ -806,13 +807,18 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 - **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
   comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
   execution truncates + filters (wider range than the estimable one). Two ways this has already
-  been got wrong: `lt`/`le` need `searchByIndex`'s `start: true` lower bound, or the estimate
-  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips (`true`
-  sorts above `null`), which on a mostly-null index is worse than the flat heuristic it
-  replaces; and `RocksIndexStore` must widen value-space bounds to
+  been got wrong: `lt`/`le` need `searchByIndex`'s null-exclusive lower bound, or the estimate
+  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips, which
+  on a mostly-null index is worse than the flat heuristic it replaces; and `RocksIndexStore` must widen value-space bounds to
   `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
   semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
   `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
+- **Open lower bounds are per store** (`openStart` in `searchByIndex`, mirrored in
+  `estimateRangeCondition`). A secondary-index scan opens at `null` exclusive: `true` sorts above
+  `false`, so opening there drops boolean `false` rows. A primary store keeps symbol-keyed metadata
+  (`Symbol.for('id_allocation')`, and `Symbol.for('structures')` under LMDB) between `null` and
+  `false`, so its scans still open at `true` or they return that metadata as rows. Both are pinned
+  by `searchBooleanFalseIndex.test.js`.
 - **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
   the filter-only convention (`contains`/`ends_with`): the negated flag always forces
   `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —
@@ -994,3 +1000,7 @@ Programmatic errors are `ReplicationConfirmationError` wrappers, not the origina
 ## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)
 
 Every audited write stamps the writing node's short id, so `getThisNodeId` sits on the write path. `getIdMappingRecord` leaves the current node name (`getThisNodeName()`, which `server.hostname` returns) at id `0` whenever it runs, remapping a previous local name to a fresh id on a rename, and no other mapping writer assigns `0`. `getThisNodeId` therefore reads and unpacks the mapping record only to confirm that, and caches the confirmation per audit store and node name; a different name (after `clearThisNodeName()`) takes the read path again, which performs the remap. The confirmation is per worker while the record is shared, and a worker that resolved a different name remaps the record under the others, so it expires after `THIS_NODE_ID_CONFIRM_MS` (monotonic time) and `invalidateNodeNames` drops it wherever the record is written. Pinned by `unitTests/resources/thisNodeId.test.js`.
+
+## Query primary-key identity is the stored encoding (`search.ts` `CandidateKeySet`)
+
+A query compares primary keys by the store's own key encoding (`writeKeyId`), never by a joined string or object identity: a composite key decodes to a fresh array per read, and `['t', 7]`, `['t', '7']` and `'t\0007'` join to the same string. The adaptive id filter and the OR union use `CandidateKeySet`; a hit in the id filter replaces the record predicate (`Table.ts` `idFiltersApplied`), so a lossy identity returns a non-matching record. The OR dedupe set is per iteration, and `searchByIndex` resolves a comparator alias once before reading the range flags. `joinFrom` and `joinTo` still key by object identity (#3394). Pinned by `unitTests/resources/searchKeyIdentity.test.js`.

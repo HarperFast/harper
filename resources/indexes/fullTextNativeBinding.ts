@@ -1,10 +1,24 @@
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
+import * as env from '../../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { getFullTextRuntimeConfiguration, FullTextWorkerInitializationError } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
+const FULLTEXT_NATIVE_ABI_VERSION = 9;
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
-const FULLTEXT_QUERY_API_VERSION = 3;
+const FULLTEXT_QUERY_API_VERSION = 4;
 const logger = loggerWithTag('fulltext-derived-index');
+
+export interface NativeFullTextRuntimeBudget {
+	maxResidentIndexes: number;
+	maxIndexingThreads: number;
+	maxSearchThreads: number;
+	maxWriterMemoryBytes: number;
+	maxQueuedBytes: number;
+	maxExpensiveSearches: number;
+}
 
 export interface NativeFullTextIndexConfiguration {
 	fields: Array<{ name: string; weight?: number }>;
@@ -43,6 +57,12 @@ export type NativeFullTextSearchRequest = {
 	exactTotal?: boolean;
 };
 
+export type NativeFullTextSearchPageRequest = Omit<NativeFullTextSearchRequest, 'offset'> & {
+	continuation?: string;
+};
+
+export type NativeFullTextSearchPageResult = NativeFullTextSearchResult & { continuation?: string };
+
 export type NativeFullTextSearchResult = {
 	total: number;
 	totalRelation: 'exact' | 'lower-bound';
@@ -69,6 +89,10 @@ export interface NativeFullTextReader {
 		request: NativeFullTextSearchRequest,
 		options?: { remainingBudgetMilliseconds?: number }
 	): Promise<NativeFullTextSearchResult>;
+	searchPage(
+		request: NativeFullTextSearchPageRequest,
+		options?: { remainingBudgetMilliseconds?: number }
+	): Promise<NativeFullTextSearchPageResult>;
 	traceMatches(
 		request: Omit<NativeFullTextSearchRequest, 'query' | 'offset' | 'limit' | 'exactTotal'> & { text: string },
 		records: Array<{ id: string; fields: Record<string, string | string[]> }>,
@@ -98,6 +122,7 @@ export type NativeFullTextRuntimeInfo = {
 		maxCandidateIds: number;
 		maxCandidateBytes: number;
 		maxSearchWindow: number;
+		maxSearchPageSize: number;
 		maxAutocompleteResults: number;
 		maxSearchResponseBytes: number;
 		maxSearchBudgetMilliseconds: number;
@@ -113,6 +138,7 @@ export type NativeFullTextQueryRuntimeInfo = Pick<
 	limits: Pick<
 		NativeFullTextRuntimeInfo['limits'],
 		| 'maxSearchWindow'
+		| 'maxSearchPageSize'
 		| 'maxAutocompleteResults'
 		| 'maxRecordIdBytes'
 		| 'maxRecordVersionBytes'
@@ -126,8 +152,10 @@ export type NativeFullTextQueryRuntimeInfo = Pick<
 };
 
 export interface NativeFullTextModule {
+	configureNativeFullTextRuntime(limits: NativeFullTextRuntimeBudget): void;
 	NativeFullTextIndex: {
-		prototype: Pick<FullTextDerivedIndexEngine, 'applyMutationBatch' | 'publish' | 'close'>;
+		prototype: Pick<FullTextDerivedIndexEngine, 'applyMutationBatch' | 'publish' | 'close'> &
+			Pick<NativeFullTextReader, 'searchPage'>;
 	};
 	runtimeInfo(): Promise<NativeFullTextRuntimeInfo>;
 	validateNativeFullTextIndexOptions(
@@ -178,7 +206,23 @@ const validatedRuntimeInfo = new WeakMap<NativeFullTextModule, NativeFullTextRun
 export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule> {
 	if (!bindingPromise) {
 		const moduleName = '@harperfast/fulltext/native';
-		bindingPromise = import(moduleName).then(validateFullTextNativeBinding);
+		bindingPromise = import(moduleName).then(async (module) => {
+			const binding = await validateFullTextNativeBinding(module);
+			if (typeof binding.configureNativeFullTextRuntime !== 'function')
+				throw new TypeError('@harperfast/fulltext/native does not support process budgets');
+			const runtime = resolveFullTextSearchLimits(getFullTextRuntimeConfiguration()).runtime;
+			binding.configureNativeFullTextRuntime(runtime);
+			try {
+				const requested = resolveFullTextSearchLimits({
+					runtime: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME),
+				}).runtime;
+				if (Object.keys(runtime).some((name) => runtime[name] !== requested[name]))
+					logger.warn?.('storage.fullText.runtime changed; restart the Harper process to apply its new budgets');
+			} catch {
+				// A diagnostic must not reject an already-configured native binding.
+			}
+			return binding;
+		});
 		bindingPromise.catch((error) => {
 			bindingPromise = undefined;
 			if (!bindingWarningLogged) {
@@ -186,7 +230,9 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 				const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 				try {
 					logger.warn?.(
-						`The @harperfast/fulltext native module is unavailable${typeof code === 'string' ? ` (${code})` : ''}`
+						error instanceof FullTextWorkerInitializationError
+							? error.message
+							: `The @harperfast/fulltext native module is unavailable${typeof code === 'string' ? ` (${code})` : ''}`
 					);
 				} catch {}
 			}
@@ -196,8 +242,13 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 }
 
 export async function validateFullTextNativeBinding(module: unknown): Promise<NativeFullTextModule> {
-	const prototype = (module as { NativeFullTextIndex?: { prototype?: Partial<FullTextDerivedIndexEngine> } })
-		?.NativeFullTextIndex?.prototype;
+	const prototype = (
+		module as {
+			NativeFullTextIndex?: {
+				prototype?: Partial<FullTextDerivedIndexEngine & Pick<NativeFullTextReader, 'searchPage'>>;
+			};
+		}
+	)?.NativeFullTextIndex?.prototype;
 	if (
 		!module ||
 		typeof module !== 'object' ||
@@ -208,6 +259,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof prototype?.applyMutationBatch !== 'function' ||
 		typeof prototype.publish !== 'function' ||
 		typeof prototype.close !== 'function' ||
+		typeof prototype.searchPage !== 'function' ||
 		!('openNativeFullTextIndex' in module) ||
 		typeof module.openNativeFullTextIndex !== 'function' ||
 		!('openNativeFullTextReader' in module) ||
@@ -229,7 +281,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
-		!Number.isSafeInteger(info.nativeAbiVersion) ||
+		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION ||
 		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
@@ -278,6 +330,8 @@ export function validateFullTextQueryRuntimeInfo(info: unknown): NativeFullTextQ
 		runtime.limits.maxCandidateBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxSearchWindow) ||
 		runtime.limits.maxSearchWindow <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxSearchPageSize) ||
+		runtime.limits.maxSearchPageSize <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxAutocompleteResults) ||
 		runtime.limits.maxAutocompleteResults <= 0 ||
 		runtime.limits.maxAutocompleteResults > runtime.limits.maxSearchWindow ||

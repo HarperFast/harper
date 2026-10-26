@@ -29,7 +29,7 @@ The supported analyzer is `english@2`. `stopWords`, `positions`, and `surfaceTer
 From an authenticated Resource handler, request table permission checks and pass its context through to `Product.search()`:
 
 ```javascript
-return Product.search(
+return tables.Product.search(
 	{
 		checkPermission: true,
 		conditions: [
@@ -88,14 +88,67 @@ Weight and highlighting changes preserve the physical index and refresh query re
 
 ## Native package and limits
 
-Harper pins `@harperfast/fulltext` to **0.5.0** and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
+Harper pins `@harperfast/fulltext` to **0.6.0** and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
 
 A format-incompatible native package upgrade causes each node to rebuild its local derived index from authoritative records. Full-text queries on that node return 503 until the index is ready. Use a rolling upgrade to keep full-text search available on other replicas while each local index rebuilds.
 
 Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
-Native queries have finite result windows and execution budgets. Reduce the requested offset/limit or narrow the query when a window is exceeded; filtering can also exhaust the window. Prefix modes use the native autocomplete window, clamped when necessary so its maximum result set fits in one native response. Highlight tracing has separate record and source-byte bounds. These are functional constraints, not catalog-scale performance guarantees.
+## Paging and work limits
 
-Harper does not configure Fulltext's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates.
+Full-text search uses Harper's usual `limit` and `offset` options. `Table.search()` returns an iterable, including when a custom Resource forwards or filters it.
 
-For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); the compiler and generation rules are in [fullTextSchema.ts](fullTextSchema.ts).
+```javascript
+return tables.Product.search(
+	{
+		checkPermission: true,
+		conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
+		offset: 20,
+		limit: 20,
+	},
+	this.getContext()
+);
+```
+
+The equivalent REST range has an inclusive start and exclusive end:
+
+```text
+GET /Product/?catalogSearch=matches=trail%20shoes&limit(20,40)
+```
+
+Each page runs a new query. Changes to records, permissions, or the index can move results between requests, so separate pages may omit or repeat records. There is no retained search or cross-request snapshot.
+
+Within one request, Harper reads native batches on the same index reader until enough eligible records have been found or the matches are exhausted. Current source versions and record filters are checked before counting records toward the offset and limit. This traversal also lets prefix and fuzzy-prefix searches return more than the initial autocomplete batch. The library's ordinary search window is not a total-result cutoff for a bounded Harper request.
+
+Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. Harper can retain up to `offset + limit` accepted records while building a bounded result, so raising the work limit can also increase memory use. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
+
+Search settings are under `storage.fullText`:
+
+| Setting                     | Default | Meaning                                                                                                           |
+| --------------------------- | ------: | ----------------------------------------------------------------------------------------------------------------- |
+| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits, including bounded prefix replay                                                              |
+| `maxResultsPerRequest`      |  10,000 | Maximum retained offset plus limit, independent of fetched-hit work                                               |
+| `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks and highlight tracing, capped by the native execution limit |
+
+The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Reader acquisition, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.
+
+Each setting has the usual configuration parameter name, such as `storage_fullText_maxRawHitsPerRequest`, for `set_configuration` and environment overrides. After changing request limits, restart HTTP workers with `restart_service` (`service: "http_workers"`) or restart Harper. Native process-budget changes require a full process restart.
+
+Native process admission settings live under `storage.fullText.runtime`:
+
+| Setting                | Default |
+| ---------------------- | ------: |
+| `maxResidentIndexes`   |     128 |
+| `maxIndexingThreads`   |     128 |
+| `maxSearchThreads`     |     256 |
+| `maxWriterMemoryBytes` |   4 GiB |
+| `maxQueuedBytes`       |   8 GiB |
+| `maxExpensiveSearches` |       8 |
+
+These limits apply together. For example, two indexing threads and 64 MiB of writer memory per index reach the default thread and memory budgets at 64 indexes. Readers share an index's runtime; they do not allocate another writer. Admission limits are not hard bounds on total resident memory or disk usage.
+
+Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails with `FullTextWorkerInitializationError` (500, non-retryable); recreate it after Harper initializes. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
+
+Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.6.0 also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those limits. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.6.0/docs/limits.md) for the full list and recovery guidance. Configuration of those query limits is tracked in [Make query term and clause limits configurable with bounded resource policy](https://github.com/HarperFast/fulltext/issues/63).
+
+For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); compiler and generation rules live in [fullTextSchema.ts](fullTextSchema.ts).

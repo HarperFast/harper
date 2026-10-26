@@ -404,6 +404,9 @@
 				"attribute": "install_fingerprint"
 			},
 			{
+				"attribute": "preview"
+			},
+			{
 				"attribute": "status"
 			},
 			{

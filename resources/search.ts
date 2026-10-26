@@ -99,15 +99,7 @@ export function executeConditions(
 			const nextResults = executeCondition(condition);
 			results = results.concat(nextResults);
 		}
-		const returnedIds = new Set();
-		const deduped = results.filter((entry) => {
-			const id = entry.key ?? entry;
-			if (returnedIds.has(id))
-				// skip duplicate ids
-				return false;
-			returnedIds.add(id);
-			return true;
-		});
+		const deduped = distinctKeys(results);
 		// Record guards must hold on the OR union too — loading each surviving record and dropping the
 		// ones the guards reject (transformToEntries loads the record to evaluate a filter). Without this
 		// a row filter would be bypassed by any OR query.
@@ -482,9 +474,39 @@ export class CandidateKeySet {
 		}
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
+	addIfAbsent(primaryKey: Id): boolean {
+		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
+			if (this.has(primaryKey)) return false;
+			this.add(primaryKey);
+			return true;
+		}
+		if (typeof primaryKey === 'bigint') {
+			const number = Number(primaryKey);
+			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
+			this.#holdsBigInt = true;
+		}
+		const identity = writeKeyId(primaryKey);
+		if (this.#encoded.has(identity)) return false;
+		this.#encoded.add(identity);
+		return true;
+	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
+}
+
+export function distinctKeys(entries: any): any {
+	if (Array.isArray(entries)) {
+		const returned = new CandidateKeySet();
+		return entries.filter((entry) => returned.addIfAbsent(entry.key ?? entry));
+	}
+	const distinct = new ExtendedIterable();
+	(distinct as any).iterate = (options) => {
+		const returned = new CandidateKeySet();
+		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
+		return entries.map((entry) => (returned.addIfAbsent(entry.key ?? entry) ? entry : SKIP)).iterate(options);
+	};
+	return distinct;
 }
 
 interface CandidateKeyScan {
@@ -556,9 +578,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// null, not searchByIndex's `true`: `true` sorts ABOVE null and false, so starting there
-			// would drop indexed rows the record predicate's compareKeys admits — an omission the
-			// post-filter cannot undo.
+			// Inclusive null, where searchByIndex starts just above it: the record predicate's compareKeys
+			// admits indexed nulls, and an omission here is one the post-filter cannot undo.
 			start = null;
 			end = value;
 			break;
@@ -603,21 +624,21 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
 	let estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. Only
-	// lt/le widen below that, and the block they add is read FIRST and can dwarf the rest of the
+	// estimateRangeCondition measures the range searchByIndex would run, which excludes the null
+	// block. Only lt/le scan from null, and that block is read FIRST and can dwarf the rest of the
 	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
 	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
 	// per-query cost this is here to avoid. The other comparators' own estimates already cover
 	// whatever they start at.
 	if (comparator === 'lt' || comparator === 'le') {
-		let belowTrue: number | undefined;
+		let nulls: number | undefined;
 		try {
-			belowTrue = index.estimateCount?.({ start: null, end: true })?.count;
+			nulls = index.estimateCount?.({ start: null, end: null, inclusiveEnd: true })?.count;
 		} catch {
 			return undefined;
 		}
-		if (!(belowTrue >= 0)) return undefined;
-		estimatedCount += belowTrue;
+		if (!(nulls >= 0)) return undefined;
+		estimatedCount += nulls;
 	}
 	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
@@ -969,25 +990,34 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
+	// A primary store keeps symbol-keyed metadata (0x02) below `false` and opens at `true`, as it always
+	// has; a secondary index starts just above its null block, which `true` would overshoot past `false`.
+	const openStart = isPrimaryKey ? true : null;
+	const openStartExclusive = !isPrimaryKey;
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
+	const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
 	if (value instanceof Date) value = value.getTime();
 	if (searchCondition.negated) {
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
 		// and exclude matching rows in the filter. Without overriding the range,
 		// the bounded index iteration would only visit *included* rows.
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 		needFullScan = true;
 	} else if (fullTextMode) {
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 	} else
-		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
+		switch (resolvedComparator) {
 			case 'lt':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				break;
 			case 'le':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				inclusiveEnd = true;
 				break;
@@ -1010,7 +1040,8 @@ export function searchByIndex(
 			case 'starts_with':
 				start = value.toString();
 				if (start.length === 0) {
-					start = true;
+					start = openStart;
+					exclusiveStart = openStartExclusive;
 					needFullScan = true;
 				} else stringPrefix = true;
 				break;
@@ -1024,8 +1055,8 @@ export function searchByIndex(
 				end = value[1];
 				if (end instanceof Date) end = end.getTime();
 				inclusiveEnd =
-					(comparator as any) === 'gele' || (comparator as any) === 'gtle' || (comparator as any) === 'between';
-				exclusiveStart = (comparator as any) === 'gtlt' || (comparator as any) === 'gtle';
+					resolvedComparator === 'gele' || resolvedComparator === 'gtle' || resolvedComparator === 'between';
+				exclusiveStart = resolvedComparator === 'gtlt' || resolvedComparator === 'gtle';
 				break;
 			case 'equals':
 			case undefined:
@@ -1038,7 +1069,8 @@ export function searchByIndex(
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
 				// `value` is expected to be an array (empty array matches no rows).
 				if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			case 'ne':
@@ -1052,7 +1084,8 @@ export function searchByIndex(
 			case 'contains':
 			case 'ends_with':
 				// we have to revert to full table scan here
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			default:
@@ -1784,12 +1817,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// if there is a single id we are looking for, we can create a new search condition that the
 								// attribute comparator could eventually use to create a recursive id set
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
-								for (const id of nextFilter.idFilter.idSet) {
-									searchCondition = {
-										attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-										value: id,
-									};
-								}
+								searchCondition = {
+									attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+									value: nextFilter.idFilter.onlyId,
+								};
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
 								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
 							} else
@@ -1996,13 +2027,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 							(id) => Table.primaryStore.getSync(id)[(recordFilter as any).to]
 						);
 					} else {
-						matchingIds = (searchResults as any).map(flattenKey);
+						matchingIds = searchResults as any;
 					}
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
-					const idSet = new Set(matchingIds);
-					recordFilter.idFilter = (id) => idSet.has(flattenKey(id));
+					const idSet = new CandidateKeySet();
+					let firstId: Id | undefined;
+					for (const id of matchingIds) {
+						if (idSet.size === 0) firstId = id;
+						idSet.add(id);
+					}
+					recordFilter.idFilter = (id) => idSet.has(id);
 					(recordFilter.idFilter as any).idSet = idSet;
+					// the set holds encoded identities; the singleton relationship lookup needs the key itself
+					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
 				}
 			}
 			return matches;
@@ -2031,12 +2069,13 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	let range;
 	switch (searchType) {
 		case 'lt':
-			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
-			// index's `[null, primaryKey]` entries are outside the executed range
-			range = { start: true, end: value };
+			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
+			range = isPrimaryKey ? { start: true, end: value } : { start: null, exclusiveStart: true, end: value };
 			break;
 		case 'le':
-			range = { start: true, end: value, inclusiveEnd: true };
+			range = isPrimaryKey
+				? { start: true, end: value, inclusiveEnd: true }
+				: { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };

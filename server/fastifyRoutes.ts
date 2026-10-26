@@ -20,9 +20,32 @@ import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.ts';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
 import { registerFastifyInstance } from './http.ts';
+import { thisThreadOwnsApplication, thisThreadsIsolatedApplication } from './threads/isolatedApplications.ts';
 
 let fastifyServer;
 const routeFolders = new Set();
+
+/**
+ * Fastify is registered as a global fallback (`server.http(built.server)` on the bare server, not the scoped one),
+ * so it never joins a routed middleware chain. A `urlPath` mount still works — it becomes the fastify route prefix,
+ * which is matched against the full external path — but a `host` mount cannot constrain it: in a shared worker these
+ * routes would stay reachable under every Host header, silently dropping the isolation the operator declared. So
+ * loading is refused there, contained to this component by the loader's per-component try/catch. An isolated
+ * application's own worker loads nothing else and is reached only through its host's route, so there is no other
+ * host for the routes to answer on.
+ */
+export function hostMountRefusal(
+	appName: string,
+	mountedHost: string | undefined,
+	owner: string | undefined = thisThreadsIsolatedApplication()
+): string | undefined {
+	if (!mountedHost || thisThreadOwnsApplication(appName, owner)) return undefined;
+	return (
+		`Application '${appName}' is mounted on host '${mountedHost}', but its fastifyRoutes cannot be constrained by ` +
+		`host: legacy fastify routes are registered as a global fallback and would remain reachable on every host. ` +
+		`Isolate the application, port them to server.http() to get host routing, or drop the host mount.`
+	);
+}
 
 /**
  * This is the entry point for the fastify route autoloader plugin. This plugin loads JS modules from provided path
@@ -40,19 +63,11 @@ const routeFolders = new Set();
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
 	const isHttps = (scope.options.getAll() as { securePort?: number }).securePort > 0;
-	// Fastify is registered as a global fallback below (`server.http(built.server)` on the bare
-	// server, not the scoped one), so it never joins a routed middleware chain. A `urlPath` mount
-	// still works — it becomes the fastify route prefix, which is matched against the full external
-	// path — but a `host` mount cannot constrain it: these routes would stay reachable under every
-	// Host header, silently dropping the isolation the operator declared. Refuse to load rather than
-	// imply isolation the fallback doesn't provide (review finding) — contained to this component by
-	// the loader's per-component try/catch, so it does not take down the rest of the application.
-	const mountedHost = scope.mount?.host ?? (scope.options.getAll() as { host?: string })?.host;
-	if (mountedHost) {
-		throw new Error(
-			`Application '${basename(scope.appName)}' is mounted on host '${mountedHost}', but its fastifyRoutes cannot be constrained by host: legacy fastify routes are registered as a global fallback and would remain reachable on every host. Port them to server.http() to get host routing, or drop the host mount.`
-		);
-	}
+	const refusal = hostMountRefusal(
+		basename(scope.appName),
+		scope.mount?.host ?? (scope.options.getAll() as { host?: string })?.host
+	);
+	if (refusal) throw new Error(refusal);
 	scope.handleEntry(async (entry) => {
 		if (entry.eventType !== 'add') {
 			scope.requestRestart();

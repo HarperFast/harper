@@ -117,6 +117,7 @@ export const RESERVED_DATABASE_NAMES = [
 	'structure_user',
 	'operations',
 	'_expandedOperations',
+	'component_deploy',
 ] as const;
 
 /** Keys that address a plain object's prototype rather than an own entry; refused as new database and table names. */
@@ -430,6 +431,7 @@ export const SERVICE_ACTIONS_ENUM = {
 	MCP: 'mcp',
 	AGENT: 'agent',
 	CHAT: 'chat',
+	PREVIEW: 'preview',
 } as const;
 
 /** describes the Geo Conversion types */
@@ -644,6 +646,9 @@ export const CONFIG_PARAMS = {
 	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE: 'deployment_payloadRetention_failedMaxAge',
 	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT: 'deployment_payloadRetention_failedMaxCount',
 	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
+	DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION: 'deployment_previews_maxPerApplication',
+	DEPLOYMENT_PREVIEWS_SWEEPINTERVAL: 'deployment_previews_sweepInterval',
+	DEPLOYMENT_PREVIEWS_STAGINGRETENTION_MAXCOUNT: 'deployment_previews_stagingRetention_maxCount',
 	DEPLOYMENT_STARTUPINSTALLTIMEOUT: 'deployment_startupInstallTimeout',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
@@ -753,6 +758,16 @@ export const CONFIG_PARAMS = {
 	REPLICATION_LOGGING_TAG: 'replication_logging_tag',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
+	STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS: 'storage_fullText_requestBudgetMilliseconds',
+	STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST: 'storage_fullText_maxRawHitsPerRequest',
+	STORAGE_FULL_TEXT_MAX_RESULTS_PER_REQUEST: 'storage_fullText_maxResultsPerRequest',
+	STORAGE_FULL_TEXT_RUNTIME: 'storage_fullText_runtime',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_RESIDENT_INDEXES: 'storage_fullText_runtime_maxResidentIndexes',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_INDEXING_THREADS: 'storage_fullText_runtime_maxIndexingThreads',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_SEARCH_THREADS: 'storage_fullText_runtime_maxSearchThreads',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_WRITER_MEMORY_BYTES: 'storage_fullText_runtime_maxWriterMemoryBytes',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_QUEUED_BYTES: 'storage_fullText_runtime_maxQueuedBytes',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_EXPENSIVE_SEARCHES: 'storage_fullText_runtime_maxExpensiveSearches',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',
