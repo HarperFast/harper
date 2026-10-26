@@ -263,6 +263,52 @@ describe('PR preview metadata (harper#3048)', () => {
 			assert.ok(!(await listLocalPreviews()).some((live) => live.component === 'shop-pr-13'));
 		});
 
+		it('discards the fork of a swept preview without anyone dropping it again, past a removal that failed (harper#3463)', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0 || process.env.HARPER_STORAGE_ENGINE === 'lmdb') {
+				return this.skip(); // forks are RocksDB-only, and root ignores the permission that makes the removal fail
+			}
+			const { existsSync, chmodSync, mkdirSync, writeFileSync } = require('node:fs');
+			const { table, resolveBranchPath } = require('#src/resources/databases');
+			const { getOrCreateBranch } = require('#src/resources/branchDatabase');
+			const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+			const { waitFor } = require('../waitFor.js');
+			table({ database: 'previewbase', table: 'Rows', attributes: [{ name: 'id', isPrimaryKey: true }] });
+			await deploy({ project: 'shop-pr-14', preview: preview(14, { expiresAt: '2000-01-01T00:00:00.000Z' }) });
+			// the fork its worker made when it loaded the preview
+			const mainWasWorker = getWorkerIndex() === 0;
+			setMainIsWorker(true);
+			try {
+				await (await getOrCreateBranch('previewbase', 'shop-pr-14')).close();
+			} finally {
+				setMainIsWorker(mainWasWorker);
+			}
+			const branchPath = resolveBranchPath('previewbase', 'shop-pr-14');
+			const forks = path.dirname(branchPath);
+			const hold = path.join(branchPath, 'hold');
+			mkdirSync(hold);
+			writeFileSync(path.join(hold, 'keep'), '');
+			chmodSync(hold, 0o555);
+			const drop = (project, ifDeploymentId) => dropComponent({ operation: 'drop_component', project, ifDeploymentId });
+			try {
+				// a shared preview: the pool may still have it loaded, so the sweep's drop leaves the fork
+				assert.deepStrictEqual(await sweepExpiredPreviews(drop, Date.now()), ['shop-pr-14']);
+				assert.ok(
+					!(await listLocalPreviews()).some((live) => live.component === 'shop-pr-14'),
+					'no sweep lists it again'
+				);
+				assert.ok(existsSync(forks), 'its fork is still on disk');
+				// what `harper preview drop` sends; nothing holds the fork now, but it cannot be removed
+				await assert.rejects(drop('shop-pr-14'), /could not be removed and was left in place/);
+			} finally {
+				for (const dir of [hold, path.join(`${branchPath}\`removing\``, 'hold')]) {
+					if (existsSync(dir)) chmodSync(dir, 0o755);
+				}
+			}
+
+			await drop('never-here');
+			await waitFor(() => !existsSync(forks), { timeout: 10000, interval: 50, message: 'the fork was left on disk' });
+		});
+
 		it('is not shown for a deploy that carried none', async () => {
 			await deploy({ project: 'shop-production' });
 			const entry = (await getComponents()).entries.find((component) => component.name === 'shop-production');

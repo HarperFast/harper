@@ -27,6 +27,7 @@ import {
 } from './databases.ts';
 import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
 import { stampDatabaseDirectory } from './auditStore.ts';
+import { pathPresent, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Private per-application forks of a database, for running several variants of an application against
@@ -774,39 +775,57 @@ export async function removeBranches(): Promise<void> {
 	for (const branchPath of [...branchesByPath.keys()]) await removeBranchAt(branchPath);
 }
 
-/** Every branch directory and removal tombstone an application owns, under every storage root a database could have. */
-function branchDirectoriesFor(appName: string): { branches: string[]; tombstones: string[]; failures: string[] } {
-	if (!appName || appName.includes('/') || appName.includes('\\') || appName === '.' || appName === '..') {
-		throw new Error(`Invalid application name for branch removal: ${JSON.stringify(appName)}`);
-	}
+/** The branch root under every storage root a database could have. */
+function branchRoots(fail: (what: string, error: unknown) => void): Set<string> {
 	getDatabases();
-	const branches: string[] = [];
-	const tombstones: string[] = [];
-	const failures: string[] = [];
-	const fail = (what: string, error: unknown) => failures.push(`${what} (${(error as Error).message})`);
 	const baseNames = new Set<string>([
 		...Object.keys(databases),
 		DEFAULT_DATABASE_NAME,
 		// a dropped base with a dedicated path has left `databases`, not its branches
 		...Object.keys(env.get(CONFIG_PARAMS.DATABASES) ?? {}),
 	]);
-	const branchRoots = new Set<string>();
+	const roots = new Set<string>();
 	for (const baseName of baseNames) {
 		try {
-			branchRoots.add(join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR));
+			roots.add(join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR));
 		} catch (error) {
 			fail(`the storage root of database '${baseName}'`, error);
 		}
 	}
-	for (const root of branchRoots) {
+	return roots;
+}
+
+/**
+ * Every branch directory and removal tombstone an application owns, under every storage root a database could have,
+ * and the `<app>` directories holding them, readable or not.
+ */
+function branchDirectoriesFor(appName: string): {
+	directories: string[];
+	branches: string[];
+	tombstones: string[];
+	failures: string[];
+} {
+	if (!appName || appName.includes('/') || appName.includes('\\') || appName === '.' || appName === '..') {
+		throw new Error(`Invalid application name for branch removal: ${JSON.stringify(appName)}`);
+	}
+	const directories: string[] = [];
+	const branches: string[] = [];
+	const tombstones: string[] = [];
+	const failures: string[] = [];
+	const fail = (what: string, error: unknown) => failures.push(`${what} (${(error as Error).message})`);
+	for (const root of branchRoots(fail)) {
 		const appDirectory = join(root, appName);
 		let entries;
 		try {
 			entries = readdirSync(appDirectory, { withFileTypes: true });
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') fail(appDirectory, error);
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				fail(appDirectory, error);
+				directories.push(appDirectory);
+			}
 			continue;
 		}
+		directories.push(appDirectory);
 		for (const entry of entries) {
 			if (!entry.isDirectory()) continue;
 			const entryPath = join(appDirectory, entry.name);
@@ -817,7 +836,62 @@ function branchDirectoriesFor(appName: string): { branches: string[]; tombstones
 			else branches.push(entryPath);
 		}
 	}
-	return { branches, tombstones, failures };
+	return { directories, branches, tombstones, failures };
+}
+
+/**
+ * In each `<app>` directory of an application's branches: a drop owes their removal. It is written, durably, before
+ * that drop changes anything, so the debt outlives an answer the drop gives before the removal, and the process; only a
+ * removal that completes, or a later drop that keeps them, clears it. A file, so `branchDirectoriesFor` never reads it
+ * as a branch.
+ */
+const REMOVAL_PENDING_MARKER = '`removal-pending`';
+
+export function recordPendingBranchRemoval(appName: string): void {
+	for (const directory of branchDirectoriesFor(appName).directories) {
+		writeFileDurably(
+			join(directory, REMOVAL_PENDING_MARKER),
+			new Date().toISOString(),
+			`${REMOVAL_PENDING_MARKER}.partial`
+		);
+	}
+}
+
+/** Forget an owed removal, then the `<app>` directories that leaves empty. */
+export async function clearPendingBranchRemoval(appName: string): Promise<void> {
+	for (const directory of branchDirectoriesFor(appName).directories) {
+		removeFileDurably(join(directory, REMOVAL_PENDING_MARKER));
+		await rmdir(directory).catch(() => {});
+	}
+}
+
+/** Whether a drop still owes the removal of this application's branches; a marker that cannot be checked throws. */
+export function hasPendingBranchRemoval(appName: string): boolean {
+	return branchDirectoriesFor(appName).directories.some((directory) =>
+		pathPresent(join(directory, REMOVAL_PENDING_MARKER))
+	);
+}
+
+/** Every application whose branches a drop on this node still owes a removal. */
+export function applicationsWithPendingBranchRemoval(): string[] {
+	const warn = (what: string, error: unknown) =>
+		logger.warn?.(`Could not look for owed branch removals in ${what}`, error);
+	const applications = new Set<string>();
+	for (const root of branchRoots(warn)) {
+		let entries;
+		try {
+			entries = readdirSync(root, { withFileTypes: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warn(root, error);
+			continue;
+		}
+		for (const entry of entries) {
+			if (entry.isDirectory() && existsSync(join(root, entry.name, REMOVAL_PENDING_MARKER))) {
+				applications.add(entry.name);
+			}
+		}
+	}
+	return [...applications];
 }
 
 /** Whether undeploying this application would leave branched database storage behind. */
@@ -833,7 +907,7 @@ export function applicationHasBranchStorage(appName: string): boolean {
  *
  * Runs on the thread that saw the worker restart through, after it completed. Own handles are closed
  * first; any reference held elsewhere refuses. Every failure is collected and thrown: an undeploy must
- * not answer "dropped" with private data still on disk.
+ * not answer "dropped" with private data still on disk. Only a removal that completes clears the owed one.
  */
 export async function removeBranchesForApplication(appName: string): Promise<void> {
 	const { branches, tombstones, failures } = branchDirectoriesFor(appName);
@@ -855,6 +929,7 @@ export async function removeBranchesForApplication(appName: string): Promise<voi
 	if (failures.length) {
 		throw new Error(`Could not remove branch storage for application '${appName}': ${failures.join('; ')}`);
 	}
+	await clearPendingBranchRemoval(appName);
 }
 
 /**

@@ -2,7 +2,7 @@ import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { parse } from 'yaml';
@@ -15,6 +15,7 @@ import {
 	type ContextWithHarper,
 } from '@harperfast/integration-testing';
 import { waitFor } from '../../unitTests/waitFor.js';
+import { waitForLogMatches } from './waitForLog.ts';
 
 async function packageFixture(directory: string, plugin = false): Promise<string> {
 	const source = join(directory, plugin ? 'plugin' : 'app');
@@ -45,7 +46,7 @@ async function packageFixture(directory: string, plugin = false): Promise<string
 			);
 			await writeFile(
 				join(dir, 'resources.js'),
-				`import { databases, Resource } from 'harper';
+				`import { databases, Resource, server } from 'harper';
 const Records = databases.data.Branched;
 const initialized = Records.put({ id: '${name}-init' });
 export class ${name} extends Resource {
@@ -59,7 +60,17 @@ export class ${name} extends Resource {
 		return { id: this.getId() };
 	}
 }
+` +
+					(dir === source
+						? `export class WorkerDrop extends Resource {
+	static loadAsInstance = false;
+	async post(target, data) {
+		const { project, ...options } = await data;
+		return server.operation({ operation: 'drop_component', project, ...options, replicated: false });
+	}
+}
 `
+						: '')
 			);
 		}
 	}
@@ -350,6 +361,63 @@ for (const isolated of [false, true]) {
 					assert.strictEqual(dropped.body.workerStopped, isolated);
 					assert.strictEqual(dropped.body.branchesRemoved, true, JSON.stringify(dropped.body));
 					assert.ok(!existsSync(branchRoot()), 'drop left the application fork behind');
+					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
+				}
+			);
+
+			test(
+				`a fork whose removal fails after the drop answered is removed by ${isolated ? 'a later drop of another component' : 'the next start'}`,
+				// root ignores the permission that makes the removal fail
+				{ timeout: 240000, skip: process.getuid?.() === 0 },
+				async () => {
+					const deployed = await operation({
+						operation: 'deploy_component',
+						project,
+						package: pkg,
+						isolated,
+						host,
+						branchedDatabases: ['data'],
+						restart: true,
+					});
+					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+					await read('/PackageProbe/seed');
+					const hold = join(branchRoot(), 'data', 'hold');
+					await mkdir(hold);
+					await writeFile(join(hold, 'keep'), '');
+					await chmod(hold, 0o555);
+					// Asked from a worker the drop then stops (the app's own) or replaces (a shared one, as a replicated peer runs
+					// it), so main answers before it removes the fork, and the removal fails after that answer.
+					const answer = await appRequest('/WorkerDrop', 'POST', { project, restart: !isolated });
+					const dropped = { status: answer.status, body: JSON.parse(answer.body) };
+					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+					assert.strictEqual(dropped.body.componentRemoved, true, JSON.stringify(dropped.body));
+					assert.strictEqual(dropped.body.branchesRemoved, null, 'answered before the fork was removed');
+					await waitForLogMatches(
+						join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log'),
+						[new RegExp(`Branched database storage of ${project} could not be removed`)],
+						120000
+					);
+					assert.ok(existsSync(branchRoot()), 'the fork is still on disk');
+					const unblock = async () => {
+						for (const dir of [hold, join(branchRoot(), 'data`removing`', 'hold')]) {
+							if (existsSync(dir)) await chmod(dir, 0o755);
+						}
+					};
+					if (isolated) {
+						await unblock();
+						const unrelated = await operation({ operation: 'drop_component', project: 'never-here' });
+						assert.strictEqual(unrelated.status, 200, JSON.stringify(unrelated.body));
+					} else {
+						// stopped first, so only the start can be what removes it
+						await killHarper(ctx);
+						await unblock();
+						await startHarper(ctx, { config });
+					}
+					await waitFor(() => !existsSync(branchRoot()), {
+						timeout: 60000,
+						interval: 250,
+						message: 'the fork was left on disk',
+					});
 					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
 				}
 			);

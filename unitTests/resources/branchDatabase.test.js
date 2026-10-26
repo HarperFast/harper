@@ -2214,6 +2214,61 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		assert.ok(exists(branchPath), 'nothing was removed');
 		await removeBranchesForApplication('cycleApp');
 	});
+
+	it('records an owed removal beside the branches, and only a removal that completes clears it (harper#3463)', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const { chmodSync, writeFileSync } = require('node:fs');
+		const { dirname, join } = require('node:path');
+		const {
+			recordPendingBranchRemoval,
+			applicationsWithPendingBranchRemoval,
+		} = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const marker = join(dirname(branchPath), '`removal-pending`');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.close();
+
+		recordPendingBranchRemoval('cycleApp');
+		assert.ok(exists(marker), 'the debt is on disk beside the branch');
+		assert.ok(applicationsWithPendingBranchRemoval().includes('cycleApp'));
+		const hold = join(branchPath, 'hold');
+		mkdirSync(hold);
+		writeFileSync(join(hold, 'keep'), '');
+		chmodSync(hold, 0o555);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /Could not remove branch storage/);
+		} finally {
+			chmodSync(join(`${branchPath}\`removing\``, 'hold'), 0o755);
+		}
+		assert.ok(exists(marker), 'a removal that failed keeps it');
+		assert.ok(applicationsWithPendingBranchRemoval().includes('cycleApp'));
+
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(
+			exists(dirname(branchPath)),
+			false,
+			'a removal that completed takes it, and the empty directory'
+		);
+		assert.ok(!applicationsWithPendingBranchRemoval().includes('cycleApp'));
+	});
+
+	it('forgets an owed removal without touching the branches it names (harper#3463)', async function () {
+		this.timeout(30000);
+		const { dirname, join } = require('node:path');
+		const { recordPendingBranchRemoval, clearPendingBranchRemoval } = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.tables.Cycle.put({ id: 'kept' });
+		await closeBranchAt(branchPath);
+		recordPendingBranchRemoval('cycleApp');
+
+		await clearPendingBranchRemoval('cycleApp');
+
+		assert.strictEqual(exists(join(dirname(branchPath), '`removal-pending`')), false);
+		const reopened = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.ok(await reopened.tables.Cycle.get('kept'), 'the branch is untouched');
+	});
 });
 
 describeUnlessLmdb('branch control paths cannot be spelled as a database name (harper#644)', () => {
