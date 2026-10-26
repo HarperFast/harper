@@ -605,20 +605,34 @@ describe('Blob test', () => {
 			const generation = Atomics.load(table, slot + 1);
 			if (throughWorker) {
 				const { Worker } = require('node:worker_threads');
+				const { RocksDatabase } = require('@harperfast/rocksdb-js');
+				const root = BlobTest.primaryStore.rootStore;
 				await new Promise((resolve, reject) => {
 					const worker = new Worker(
 						`
 						const { workerData } = require('node:worker_threads');
-						const { RocksDatabase } = require('@harperfast/rocksdb-js');
-						const db = RocksDatabase.open(workerData.path);
+						const db = workerData.rocks
+							? require('@harperfast/rocksdb-js').RocksDatabase.open(workerData.path)
+							: require('lmdb').open({ path: workerData.path });
 						const buffer = db.getUserSharedBuffer('blob-hold-table', new ArrayBuffer(4096 * 8));
 						Atomics.add(new Int32Array(buffer), workerData.index, 1);
 						db.close();
 					`,
-						{ eval: true, workerData: { path: BlobTest.primaryStore.rootStore.path, index: slot + 1 } }
+						{ eval: true, workerData: { path: root.path, rocks: root instanceof RocksDatabase, index: slot + 1 } }
 					);
-					worker.on('error', reject);
-					worker.on('exit', (code) => (code ? reject(new Error(`Worker exited ${code}`)) : resolve()));
+					const timer = setTimeout(() => {
+						void worker.terminate();
+						reject(new Error('Blob reference worker did not finish within 20 seconds'));
+					}, 20_000).unref();
+					worker.on('error', (error) => {
+						clearTimeout(timer);
+						reject(error);
+					});
+					worker.on('exit', (code) => {
+						clearTimeout(timer);
+						if (code) reject(new Error(`Worker exited ${code}`));
+						else resolve();
+					});
 				});
 			} else Atomics.add(table, slot + 1, 1);
 			release();
