@@ -256,8 +256,8 @@ Named-process probe and lock failures use `NamedProcessError`, a `ServerError` s
 ## Application lockdown seals the intrinsics by default (`security/intrinsicsLockdown.ts`)
 
 `applications.lockdown` makes prototype-pollution exploits against apps harder; it is not a sandbox. The default
-`seal-after-load` (and eager `seal`) seals 21 intrinsic constructors and their prototypes, plus `Function` and
-`Function.prototype`, once components have loaded. After that point no property can be added to or deleted
+`seal-after-load` (and eager `seal`) seals 21 intrinsic globals (constructors plus `Math`, `JSON`, `Reflect` and
+`Atomics`) and their prototypes, plus `Function` and `Function.prototype`, once components have loaded. After that point no property can be added to or deleted
 from them, which is what a polluting key (`__proto__.isAdmin`, `constructor.prototype.isAdmin`) needs.
 Overwriting an existing property is still allowed: it is mostly a denial of service, not an escalation.
 

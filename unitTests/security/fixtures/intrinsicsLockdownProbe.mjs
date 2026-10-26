@@ -123,6 +123,6 @@ const duringLoad = probe('during');
 markLoaded();
 const lockOutcome = await Promise.resolve(locking).then(
 	() => 'locked',
-	(error) => error.name
+	(error) => error?.name ?? String(error)
 );
 parentPort.postMessage({ duringLoad, afterLoad: probe('after'), lockOutcome });
