@@ -219,6 +219,8 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## dataLayer/ — backup/restore, version gate, system tables, legacy SQL
 
+- [SQL preserves sharding recovery refusals](dataLayer/DESIGN.md#sql-preserves-sharding-recovery-refusals-datalayersqlsearchts) — Keep the existing 503 and recovery reason through legacy SQL fetch/result wrappers.
+
 - [Version gate at startup: downgrades prompt, and only the minor direction is confirmable](dataLayer/DESIGN.md#version-gate-at-startup-downgrades-prompt-and-only-the-minor-direction-is-confirmable) — Data newer than the binary prompts at start; only the downgrade direction confirms, via `CONFIRM_DOWNGRADE`.
 - [Opening a source LMDB DBI for migration must thread through `compression`](dataLayer/DESIGN.md#opening-a-source-lmdb-dbi-for-migration-must-thread-through-compression) — A migration open of a source LMDB DBI must pass the persisted per-attribute `compression`, as `databases.ts` does.
 - [System table bootstrap: `systemSchema.json` + upgrade directive](dataLayer/DESIGN.md#system-table-bootstrap-systemschemajson--upgrade-directive) — A new system table needs `systemSchema.json`, `SYSTEM_TABLE_NAMES` and an upgrade directive versioned to the first release that ships the dependent code; a new attribute on an existing one needs its release's directive to run `registerSystemSchemaAttributes`.

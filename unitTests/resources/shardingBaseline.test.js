@@ -11,6 +11,9 @@ const {
 } = require('#src/resources/databaseLiveGuard');
 const env = require('#src/utility/environment/environmentManager');
 const { server } = require('#src/server/Server');
+const SQLSearch = require('#src/dataLayer/SQLSearch').default;
+const { convertSQLToAST } = require('#src/sqlTranslator/index');
+const SelectValidator = require('#src/sqlTranslator/SelectValidator').default;
 
 (process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Sharding baseline admission', function () {
 	let Records, Plain, root, baseline, configuration, priorList, priorShard, priorNodes;
@@ -93,6 +96,29 @@ const { server } = require('#src/server/Server');
 		);
 		assert.equal(context.transaction, undefined);
 	});
+
+	for (const query of [
+		'SELECT `value` FROM `baselineAdmission`.`Rows`',
+		"SELECT `value` FROM `baselineAdmission`.`Rows` WHERE id = '998'",
+		"SELECT `value` FROM `baselineAdmission`.`Rows` WHERE `value` = 'missing'",
+		"SELECT `value` FROM `baselineAdmission`.`Rows` WHERE `value` > 'a'",
+		"SELECT `value` FROM `baselineAdmission`.`Rows` WHERE `value` LIKE 'miss%'",
+		'SELECT COUNT(*) FROM `baselineAdmission`.`Rows`',
+	]) {
+		it(`preserves the baseline refusal through SQL: ${query}`, async () => {
+			const validated = new SelectValidator(convertSQLToAST(query).ast.statements[0]);
+			validated.validate();
+			const { statement, attributes } = validated;
+			baseline = 'origin history is unavailable';
+			await assert.rejects(new SQLSearch(statement, attributes).search(), (error) => {
+				assert.equal(error.statusCode, 503);
+				assert.equal(error.code, 'DATABASE_SHARDING_HELD');
+				assert.equal(error.retryable, true);
+				assert.match(error.message, /origin history is unavailable/);
+				return true;
+			});
+		});
+	}
 
 	it('rechecks the baseline before committing a write staged while serving', async () => {
 		await assert.rejects(

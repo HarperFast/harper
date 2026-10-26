@@ -347,3 +347,15 @@ because the narrowing maps are keyed by physical table, not alias. Under the def
 parenthesized predicates are handled by `sqlEngine` v2, so only queries v2 still rejects (such as
 `IIF(...)` or standalone unindexed predicates) fall back here. Enforced by
 `unitTests/dataLayer/SQLSearch.test.js` and `integrationTests/database/sql-not-predicate.test.ts`.
+
+## SQL preserves sharding recovery refusals (`dataLayer/SQLSearch.ts`)
+
+An incomplete owner may return present bodies, but it must refuse owned misses and collection
+reads until its baseline is certified. SQL fetch and result-stage wrappers preserve
+`DatabaseShardingHeldError`, including its 503 status, retryable flag, and recovery reason.
+Replacing it with a generic search error hides the operator action required to resume reads.
+`ResourceBridge.getRecords` also preserves this refusal instead of returning a message row,
+settling its transaction before rejecting `next()`. Unexpected SQL failures retain the existing
+generic response. Real baseline guards exercise
+scan, key, predicate, and aggregate query shapes in `unitTests/resources/shardingBaseline.test.js`;
+the Pro bootstrap suite checks the operations HTTP response after a lost origin is diagnosed.
