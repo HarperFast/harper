@@ -12,6 +12,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { databases } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { defineTable, types } = require('#src/resources/defineTable');
 
 const { id, string, int, date } = types;
@@ -279,5 +280,234 @@ describe('code-first ⇔ GraphQL front-end parity', () => {
 				`field "${field}" projects identically from code-first and GraphQL`
 			);
 		}
+	});
+});
+
+describe('types.date — every modifier keeps the Date builder surface', () => {
+	const DATE_FLAGS = ['nullable', 'indexed', 'primaryKey', 'createdTime', 'updatedTime'];
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('accumulates flags in any chain order, timestamps included', () => {
+		const cases = [
+			[date.indexed.createdTime, { indexed: true, assignCreatedTime: true }],
+			[date.createdTime.indexed, { indexed: true, assignCreatedTime: true }],
+			[date.nullable.updatedTime, { nullable: true, assignUpdatedTime: true }],
+			[date.updatedTime.nullable, { nullable: true, assignUpdatedTime: true }],
+			[date.primaryKey.createdTime, { primaryKey: true, assignCreatedTime: true }],
+			[date.createdTime.updatedTime, { assignCreatedTime: true, assignUpdatedTime: true }],
+			[date.updatedTime.createdTime, { assignCreatedTime: true, assignUpdatedTime: true }],
+			[date.indexed.indexed.updatedTime, { indexed: true, assignUpdatedTime: true }],
+			[
+				date.createdTime.indexed.nullable.updatedTime,
+				{ indexed: true, nullable: true, assignCreatedTime: true, assignUpdatedTime: true },
+			],
+		];
+		for (const [field, meta] of cases) {
+			assert.strictEqual(field.kind, 'Date');
+			assert.deepStrictEqual(field.meta, meta);
+			for (const flag of DATE_FLAGS) assert.ok(field[flag], `${JSON.stringify(meta)} still offers .${flag}`);
+		}
+	});
+
+	it('derives fresh fields, leaving the source of a chain unchanged', () => {
+		const indexed = date.indexed;
+		const created = indexed.createdTime;
+		const updated = indexed.updatedTime;
+		assert.deepStrictEqual(date.meta, {});
+		assert.deepStrictEqual(indexed.meta, { indexed: true });
+		assert.deepStrictEqual(created.meta, { indexed: true, assignCreatedTime: true });
+		assert.deepStrictEqual(updated.meta, { indexed: true, assignUpdatedTime: true });
+	});
+
+	it('offers the timestamp flags only on Date fields', () => {
+		for (const field of [string, id.indexed, int.nullable, types.enum(['a', 'b']).indexed, types.any]) {
+			assert.strictEqual(field.createdTime, undefined);
+			assert.strictEqual(field.updatedTime, undefined);
+		}
+	});
+
+	it('assigns and indexes timestamps declared after other modifiers', async () => {
+		const Stamped = defineTable(
+			'StampedChain',
+			{
+				id: id.primaryKey,
+				label: string,
+				createdAt: date.nullable.indexed.createdTime,
+				updatedAt: date.indexed.updatedTime,
+			},
+			{ database: DB }
+		);
+		const byName = Object.fromEntries(Stamped.attributes.map((a) => [a.name, a]));
+		assert.strictEqual(byName.createdAt.assignCreatedTime, true);
+		assert.strictEqual(byName.createdAt.indexed, true);
+		assert.strictEqual(byName.updatedAt.assignUpdatedTime, true);
+		assert.strictEqual(byName.updatedAt.indexed, true);
+		await Stamped.put({ id: 's1', label: 'first' });
+		const stored = await Stamped.get('s1');
+		assert.ok(stored.createdAt instanceof Date);
+		assert.ok(stored.updatedAt instanceof Date);
+		const found = [];
+		for await (const record of Stamped.search({
+			conditions: [{ attribute: 'updatedAt', comparator: 'greater_than_equal', value: stored.updatedAt }],
+		}))
+			found.push(record.id);
+		assert.deepStrictEqual(found, ['s1']);
+	});
+});
+
+describe('schema re-declaration retires the previous declaration’s accessors', () => {
+	const EVOLVE_DB = 'codefirst_evolution';
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('a GraphQL reload turning a relationship into a stored field keeps the stored value (typed structs)', async () => {
+		await loadGQLSchema(`
+			type RetireBook @table {
+				id: ID @primaryKey
+				title: String
+				authorId: ID @indexed
+			}
+			type RetireAuthor @table(randomAccessFields: true) {
+				id: ID @primaryKey
+				name: String
+				books: [RetireBook] @relationship(to: authorId)
+			}
+		`);
+		const { RetireBook, RetireAuthor } = databases.data;
+		assert.ok(RetireAuthor.primaryStore.encoder.randomAccessStructure);
+		await RetireBook.put({ id: 'b1', title: 'Earthsea', authorId: 'a1' });
+		await RetireAuthor.put({ id: 'a1', name: 'Ursula' });
+		assert.deepStrictEqual(
+			Array.from(await (await RetireAuthor.get('a1')).books, (book) => book.title),
+			['Earthsea']
+		);
+
+		await loadGQLSchema(`
+			type RetireAuthor @table(randomAccessFields: true) {
+				id: ID @primaryKey
+				name: String
+				books: [String]
+			}
+		`);
+		await RetireAuthor.put({ id: 'a1', name: 'Ursula', books: ['Earthsea', 'Tehanu'] });
+		assert.deepStrictEqual((await RetireAuthor.get('a1')).books, ['Earthsea', 'Tehanu']);
+		// decoded straight from the stored bytes: the value was written, not just served from the put
+		assert.deepStrictEqual(RetireAuthor.primaryStore.getSync('a1').books, ['Earthsea', 'Tehanu']);
+		assert.strictEqual(RetireAuthor.primaryStore.encoder.resolvedAttributeNames, undefined);
+	});
+
+	it('a GraphQL reload turning a @computed into a stored field reads the stored value', async () => {
+		await loadGQLSchema(`
+			type RetireComputed @table {
+				id: ID @primaryKey
+				first: String
+				last: String
+				fullName: String @computed(from: "first + ' ' + last")
+			}
+		`);
+		const { RetireComputed } = databases.data;
+		await RetireComputed.put({ id: 'p1', first: 'Ursula', last: 'Le Guin' });
+		assert.strictEqual((await RetireComputed.get('p1')).fullName, 'Ursula Le Guin');
+
+		await loadGQLSchema(`
+			type RetireComputed @table {
+				id: ID @primaryKey
+				first: String
+				last: String
+				fullName: String
+			}
+		`);
+		await RetireComputed.put({ id: 'p1', first: 'Ursula', last: 'Le Guin', fullName: 'U. K. Le Guin' });
+		assert.strictEqual((await RetireComputed.get('p1')).fullName, 'U. K. Le Guin');
+		assert.strictEqual(
+			Object.getOwnPropertyDescriptor(RetireComputed.primaryStore.encoder.structPrototype, 'fullName'),
+			undefined
+		);
+	});
+
+	it('keeps a retained relationship resolving when a sibling is removed, and restores a re-added one', async () => {
+		const Writer = defineTable('Writer', { id: id.primaryKey, name: string }, { database: EVOLVE_DB });
+		const Press = defineTable('Press', { id: id.primaryKey, name: string }, { database: EVOLVE_DB });
+		const novelShape = {
+			id: id.primaryKey,
+			title: string,
+			writerId: id.indexed.nullable,
+			pressId: id.indexed.nullable,
+			writer: types.relation(() => Writer, { from: 'writerId' }),
+		};
+		const withPress = { ...novelShape, press: types.relation(() => Press, { from: 'pressId' }) };
+		const Novel = defineTable('Novel', withPress, { database: EVOLVE_DB });
+		await Writer.put({ id: 'w1', name: 'Ursula' });
+		await Press.put({ id: 'p1', name: 'Parnassus' });
+		await Novel.put({ id: 'n1', title: 'Earthsea', writerId: 'w1', pressId: 'p1' });
+		assert.strictEqual((await (await Novel.get('n1')).press).name, 'Parnassus');
+
+		defineTable('Novel', novelShape, { database: EVOLVE_DB });
+		const withoutPress = await Novel.get('n1');
+		assert.strictEqual((await withoutPress.writer).name, 'Ursula');
+		assert.strictEqual(withoutPress.press, undefined);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(Novel.prototype, 'press'), undefined);
+		assert.ok(Object.getOwnPropertyDescriptor(Novel.prototype, 'writer')?.get?.isAttribute);
+
+		defineTable('Novel', withPress, { database: EVOLVE_DB });
+		const readded = await Novel.get('n1');
+		assert.strictEqual((await readded.writer).name, 'Ursula');
+		assert.strictEqual((await readded.press).name, 'Parnassus');
+	});
+
+	it('still checks the target table’s read permission for a retained relationship', async () => {
+		const Secret = defineTable('SecretNote', { id: id.primaryKey, text: string }, { database: EVOLVE_DB });
+		const Open = defineTable('OpenNote', { id: id.primaryKey, text: string }, { database: EVOLVE_DB });
+		const docShape = {
+			id: id.primaryKey,
+			name: string,
+			secretId: id.indexed.nullable,
+			openId: id.indexed.nullable,
+			secret: types.relation(() => Secret, { from: 'secretId' }),
+		};
+		const Doc = defineTable(
+			'GatedDoc',
+			{ ...docShape, open: types.relation(() => Open, { from: 'openId' }) },
+			{ database: EVOLVE_DB }
+		);
+		await Secret.put({ id: 's1', text: 'classified' });
+		await Open.put({ id: 'o1', text: 'public' });
+		await Doc.put({ id: 'd1', name: 'doc', secretId: 's1', openId: 'o1' });
+		const user = {
+			role: {
+				permission: {
+					[EVOLVE_DB]: {
+						tables: {
+							GatedDoc: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							SecretNote: { read: false, insert: false, update: false, delete: false, attribute_permissions: [] },
+							OpenNote: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+		};
+		const searchAs = async (query) => {
+			const target = new RequestTarget(query);
+			target.checkPermission = true;
+			const results = [];
+			for await (const result of Doc.search(target, { user })) results.push(result);
+			return results;
+		};
+		const [before] = await searchAs('?id=d1&select(name,secret,open)');
+		assert.strictEqual(before.name, 'doc');
+		assert.strictEqual(before.secret, undefined, 'no read permission on SecretNote');
+		assert.strictEqual(before.open.text, 'public');
+
+		defineTable('GatedDoc', docShape, { database: EVOLVE_DB });
+		const [after] = await searchAs('?id=d1&select(name,secret)');
+		assert.strictEqual(after.name, 'doc');
+		assert.strictEqual(after.secret, undefined, 'still no read permission on SecretNote');
 	});
 });

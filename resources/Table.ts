@@ -10350,6 +10350,7 @@ export function makeTable(options): TableResourceClass {
 			);
 			propertyResolvers.$highlights.directReturn = true;
 			primaryKeyAttribute = undefined;
+			hasRelationships = false;
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this
@@ -10573,6 +10574,10 @@ export function makeTable(options): TableResourceClass {
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
 			hasSurfacedComputed = false;
+			// The previous declaration's accessors close over its attribute objects, so a removed or
+			// replaced resolver would otherwise keep resolving (and shadow a now-stored field of that name).
+			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? [])
+				delete primaryStore.encoder.structPrototype[name];
 			const resolvedAttributeNames: string[] = [];
 			for (const attribute of attributes) {
 				const name = attribute.name;

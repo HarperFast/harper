@@ -99,6 +99,35 @@ type _song_record = Expect<
 type _song_insert = Expect<Equal<(typeof Song)['$insert'], { title: string; albumId: string; id?: string }>>;
 type _song_query = Expect<Equal<(typeof Song)['$query'], { albumId?: string }>>;
 
+// Date flags compose in any order: every modifier keeps a DateField, so a timestamp may follow
+// `.indexed`/`.nullable`, and both timestamps chain.
+const Event = defineTable('Event', {
+	id: id.primaryKey,
+	label: string,
+	createdAt: date.indexed.createdTime,
+	updatedAt: date.nullable.updatedTime,
+	stamped: date.createdTime.indexed.updatedTime,
+	when: date.indexed.nullable,
+});
+type _event_record = Expect<
+	Equal<
+		(typeof Event)['$record'],
+		{
+			readonly id: string;
+			readonly label: string;
+			readonly createdAt: Date;
+			readonly updatedAt: Date;
+			readonly stamped: Date;
+			readonly when?: Date;
+		}
+	>
+>;
+// server-managed whatever precedes the timestamp flag, so absent from every write projection
+type _event_insert = Expect<Equal<(typeof Event)['$insert'], { label: string; id?: string; when?: Date }>>;
+type _event_upsert = Expect<Equal<(typeof Event)['$upsert'], { id: string; label: string; when?: Date }>>;
+type _event_patch = Expect<Equal<(typeof Event)['$patch'], { label?: string; when?: Date }>>;
+type _event_query = Expect<Equal<(typeof Event)['$query'], { createdAt?: Date; stamped?: Date; when?: Date }>>;
+
 // ── Mutual pair (Book <-> Author): relationOf/hasManyOf break the const-initializer cycle ──
 //
 // Using plain `relation`/`hasMany` on BOTH sides of a mutual pair does NOT compile — TS's
@@ -193,12 +222,15 @@ const bad_upsert: UpsertTrack = { name: 'x', status: 'draft' };
 const bad_enum: PatchTrack = { status: 'archived' };
 // @ts-expect-error duration is not indexed, so it is not a query key
 const bad_query: TrackQuery = { duration: 50 };
+// @ts-expect-error a timestamp chained after `.indexed` is still server-managed
+const bad_event: (typeof Event)['$insert'] = { label: 'x', createdAt: new Date() };
 // @ts-expect-error relations are not writable
 const bad_album: (typeof Album)['$insert'] = { title: 'x', tracks: [] };
 
 export {
 	Track,
 	Album,
+	Event,
 	Book,
 	Author,
 	toInsert,

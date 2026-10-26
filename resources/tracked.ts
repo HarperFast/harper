@@ -225,6 +225,11 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 			Object.defineProperty(prototype, name, descriptor);
 		}
 	}
+	// A removed attribute's accessor would otherwise keep validating writes or resolving.
+	for (const name of Object.getOwnPropertyNames(prototype)) {
+		if ((Object.getOwnPropertyDescriptor(prototype, name).get as any)?.isAttribute && !(name in descriptors))
+			delete prototype[name];
+	}
 	setMethod('getProperty', function (name) {
 		const descriptor = descriptors[name];
 		if (descriptor) {

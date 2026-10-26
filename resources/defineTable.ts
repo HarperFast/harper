@@ -58,10 +58,13 @@ export interface Field<TS, F extends Flags = {}> {
 	readonly primaryKey: Field<TS, F & { primaryKey: true }>;
 }
 
-/** Date additionally carries the server-managed timestamp flags. */
+/** Date additionally carries the server-managed timestamp flags; every flag keeps it a DateField. */
 export interface DateField<F extends Flags = {}> extends Field<Date, F> {
-	readonly createdTime: Field<Date, F & { serverManaged: true }>;
-	readonly updatedTime: Field<Date, F & { serverManaged: true }>;
+	readonly nullable: DateField<F & { nullable: true }>;
+	readonly indexed: DateField<F & { indexed: true }>;
+	readonly primaryKey: DateField<F & { primaryKey: true }>;
+	readonly createdTime: DateField<F & { serverManaged: true }>;
+	readonly updatedTime: DateField<F & { serverManaged: true }>;
 }
 
 /** The read-record type of a related table handle. */
@@ -73,9 +76,11 @@ export type RelationField<Target, Card extends 'one' | 'many'> = Field<
 	{ relation: Card }
 >;
 
-// Runtime builders — getters return FRESH fields (immutable chaining; no shared-state bug).
+// Runtime builders — getters return FRESH fields (immutable chaining; no shared-state bug). Every
+// getter rebuilds through makeField, which owns each kind's full flag surface, so chain order
+// cannot drop a flag getter.
 function makeField(kind: string, meta: Record<string, unknown> = {}): any {
-	return {
+	const field = {
 		kind,
 		meta,
 		get nullable() {
@@ -88,20 +93,21 @@ function makeField(kind: string, meta: Record<string, unknown> = {}): any {
 			return makeField(kind, { ...meta, primaryKey: true });
 		},
 	};
-}
-function makeDateField(meta: Record<string, unknown> = {}): any {
-	return Object.defineProperties(makeField('Date', meta), {
-		createdTime: {
-			get: () => makeField('Date', { ...meta, assignCreatedTime: true }),
-			enumerable: true,
-			configurable: true,
-		},
-		updatedTime: {
-			get: () => makeField('Date', { ...meta, assignUpdatedTime: true }),
-			enumerable: true,
-			configurable: true,
-		},
-	});
+	if (kind === 'Date') {
+		Object.defineProperties(field, {
+			createdTime: {
+				get: () => makeField(kind, { ...meta, assignCreatedTime: true }),
+				enumerable: true,
+				configurable: true,
+			},
+			updatedTime: {
+				get: () => makeField(kind, { ...meta, assignUpdatedTime: true }),
+				enumerable: true,
+				configurable: true,
+			},
+		});
+	}
+	return field;
 }
 
 /**
@@ -116,7 +122,7 @@ export const types = {
 	float: makeField('Float') as Field<number>,
 	long: makeField('Long') as Field<number>,
 	boolean: makeField('Boolean') as Field<boolean>,
-	date: makeDateField() as DateField,
+	date: makeField('Date') as DateField,
 	bytes: makeField('Bytes') as Field<Uint8Array>,
 	any: makeField('Any') as Field<unknown>,
 	// Narrows the TS type to the literal union; stored as a String column. The narrowing is
