@@ -47,6 +47,7 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
+import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
 import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
@@ -359,6 +360,10 @@ requiredPermissions.set(
 requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
+);
+requiredPermissions.set(
+	releaseOperations.handleListReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_RELEASES)
 );
 // get_deployment_payload streams the full tarball (which can embed secrets), unlike
 // get_deployment/list_deployments (metadata only), so it ALSO enforces super_user directly in

@@ -57,7 +57,7 @@ describe('DeploymentRecorder.recordPeer', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('normalizes a single-peer success result', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -184,7 +184,7 @@ describe('DeploymentRecorder.recordPeers (bulk wrapper)', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('iterates the input array and upserts each entry', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -217,7 +217,7 @@ describe('DeploymentRecorder.getFailedPeers', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('returns an empty array when no peers were recorded', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -280,7 +280,7 @@ describe('DeploymentRecorder.seal', () => {
 			},
 		};
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('stops persisting intermediate updates once sealed, but finish() writes the terminal state', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -315,7 +315,7 @@ describe('DeploymentRecorder.dropPayload', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('nulls the payload_blob and returns the freed size, retaining size/hash metadata', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -375,7 +375,7 @@ describe('awaitDeploymentRow', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('returns the row immediately when it is already present with payload_blob', async () => {
 		const row = { deployment_id: 'd1', payload_blob: { fake: true } };
@@ -803,5 +803,199 @@ describe('readPayloadBlobWithRetry', () => {
 			attemptsAfterGracePeriod,
 			'retries must stop within a bounded window after destroy(), not continue toward the full timeout budget'
 		);
+	});
+});
+
+describe('DeploymentRecorder.finish (harper#3062)', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed?.restore());
+
+	it('ends the deploy without sending an internal event through its emitter or into event_log', async () => {
+		const emitter = new ProgressEmitter();
+		const seen = [];
+		emitter.subscribe((event) => seen.push(event.event));
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter });
+		emitter.emit('phase', { phase: 'prepare', status: 'start' });
+		emitter.emit('phase', { phase: 'success', status: 'done' });
+		await recorder.finish('success');
+
+		assert.deepStrictEqual(seen, ['phase', 'phase']);
+		const persisted = await installed.mock.get(recorder.deploymentId);
+		assert.deepStrictEqual(
+			persisted.event_log.map((entry) => entry.event),
+			['phase', 'phase']
+		);
+	});
+});
+
+describe("a rolling deploy's own terminal write (harper#3060)", () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed?.restore());
+
+	it('keeps what the activation job already recorded rather than replacing it with its in-memory row', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer({ node: 'peer-a', status: 'success' });
+		recorder.seal();
+		const activation = { activated: false, certification: null, message: null, error: 'rejected', completed_at: 5 };
+		installed.mock.rows.set(recorder.deploymentId, {
+			...recorder.row,
+			status: 'partial',
+			completed_at: 10,
+			error: { message: 'Not activated on 1 of 1 peer node(s): peer-a (rejected)', nodes: ['peer-a'] },
+			peer_results: [{ node: 'peer-a', status: 'success', error: null, activation }],
+			event_log: [{ t: 5, event: 'peer_activation', data: { node: 'peer-a', error: 'rejected' } }],
+		});
+		await recorder.finish('rolling_out');
+		const stored = installed.mock.rows.get(recorder.deploymentId);
+		assert.strictEqual(stored.status, 'partial');
+		assert.deepStrictEqual(stored.error.nodes, ['peer-a']);
+		assert.deepStrictEqual(stored.peer_results[0].activation, activation);
+		assert.ok(stored.event_log.some((entry) => entry.event === 'peer_activation'));
+	});
+
+	it("holds the row's lock across its read and write, so a job write cannot land between them", async () => {
+		const { recordPeerActivation, rolloutTiming } = require('#src/components/deploymentRecorder');
+		const writeSpacingMs = rolloutTiming.writeSpacingMs;
+		rolloutTiming.writeSpacingMs = 0;
+		try {
+			const recorder = await DeploymentRecorder.create({ project: 'p' });
+			recorder.recordPeer({ node: 'peer-a', status: 'success' });
+			recorder.seal();
+			// The job's wait for this write is over, as after its bound ran out.
+			installed.mock.rows.set(recorder.deploymentId, { ...recorder.row, status: 'rolling_out' });
+			let holder = Promise.resolve();
+			installed.mock.lock = async (_id, options) => {
+				assert.strictEqual(options.hold, true);
+				assert.strictEqual(options.scope, 'node');
+				const previous = holder;
+				let release;
+				holder = new Promise((resolve) => (release = resolve));
+				await previous;
+				return { unlock: async () => release() };
+			};
+			const get = installed.mock.get;
+			let jobWrite;
+			installed.mock.get = async (id) => {
+				const row = await get(id);
+				if (!jobWrite) {
+					// The job records a peer while the origin has read the row and not yet written it back.
+					jobWrite = recordPeerActivation(id, { node: 'peer-a', certification: 'certified' });
+					await Promise.race([jobWrite, new Promise((resolve) => setTimeout(resolve, 200))]);
+				}
+				return row;
+			};
+			await recorder.finish('rolling_out');
+			await jobWrite;
+			const stored = installed.mock.rows.get(recorder.deploymentId);
+			assert.strictEqual(stored.peer_results[0].activation?.activated, true);
+		} finally {
+			rolloutTiming.writeSpacingMs = writeSpacingMs;
+		}
+	});
+});
+
+describe('ending a rolling deploy record whose activation job was interrupted (harper#3060)', () => {
+	const { settleInterruptedRollouts } = require('#src/components/deploymentRecorder');
+	const { hostname } = require('node:os');
+	const JOB_TABLE = terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME;
+	let installed;
+	let priorJobs;
+	let jobs;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+		installed.mock.search = async function* (conditions) {
+			for (const row of installed.mock.rows.values()) {
+				if (conditions.every(({ attribute, value }) => row[attribute] === value)) yield row;
+			}
+		};
+		jobs = new Map();
+		priorJobs = databases.system[JOB_TABLE];
+		databases.system[JOB_TABLE] = { get: async (id) => jobs.get(id) };
+	});
+	afterEach(() => {
+		installed?.restore();
+		if (databases.system) databases.system[JOB_TABLE] = priorJobs;
+	});
+
+	const rollout = (id, jobStatus, peers, extra = {}) => {
+		jobs.set(`job-${id}`, { id: `job-${id}`, status: jobStatus });
+		installed.mock.rows.set(id, {
+			deployment_id: id,
+			status: 'rolling_out',
+			origin_node: hostname(),
+			restart_job_id: `job-${id}`,
+			peer_results: peers,
+			...extra,
+		});
+	};
+	const took = (node) => ({ node, activation: { activated: true } });
+
+	it('ends each record its interrupted job left, and leaves a running job and another node alone', async () => {
+		rollout('interrupted', 'ERROR', [took('a'), { node: 'b' }]);
+		rollout('finished', 'COMPLETE', [took('a'), took('b')]);
+		rollout('running', 'IN_PROGRESS', [took('a'), { node: 'b' }]);
+		rollout('elsewhere', 'ERROR', [{ node: 'b' }], { origin_node: 'another-node' });
+
+		assert.strictEqual(await settleInterruptedRollouts(), 2);
+		const rows = installed.mock.rows;
+		assert.strictEqual(rows.get('interrupted').status, 'partial');
+		assert.deepStrictEqual(rows.get('interrupted').error.nodes, ['b']);
+		assert.match(rows.get('interrupted').error.message, /job-interrupted ended without finishing this record/);
+		assert.strictEqual(rows.get('finished').status, 'success');
+		assert.strictEqual(rows.get('running').status, 'rolling_out');
+		assert.strictEqual(rows.get('elsewhere').status, 'rolling_out');
+	});
+
+	it("recovers each peer's outcome from the job's own record when its writes to the row were lost", async () => {
+		const took = (node) => ({ node, certification: 'certified' });
+		rollout('completed', 'COMPLETE', [took('a'), { node: 'b' }]);
+		jobs.get('job-completed').result = { activated: [took('a'), took('b')] };
+		rollout('unpublished', 'ERROR', [{ node: 'a' }, { node: 'b' }]);
+		jobs.get('job-unpublished').message = { error: 'disk full', activated: [took('a'), took('b')] };
+		rollout('rejected', 'ERROR', [{ node: 'a' }, { node: 'b' }]);
+		jobs.get('job-rejected').message = { error: 'rejected', activated: [took('a'), { node: 'b', error: 'rejected' }] };
+
+		assert.strictEqual(await settleInterruptedRollouts(), 3);
+		const rows = installed.mock.rows;
+		assert.strictEqual(rows.get('completed').status, 'success');
+		assert.strictEqual(rows.get('completed').peer_results[1].activation.activated, true);
+		assert.strictEqual(rows.get('unpublished').status, 'success');
+		assert.strictEqual(rows.get('rejected').status, 'partial');
+		assert.deepStrictEqual(rows.get('rejected').error.nodes, ['b']);
+	});
+});
+
+describe("the rollout row's lock on the system table (harper#3060)", () => {
+	const { recordPeerActivation, rolloutTiming } = require('#src/components/deploymentRecorder');
+	const ID = '33333333-3333-3333-3333-333333333333';
+	let table;
+	let writeSpacingMs;
+	before(async () => {
+		await testUtils.ensureSystemTables();
+		table = databases.system[DEPLOYMENT_TABLE];
+		writeSpacingMs = rolloutTiming.writeSpacingMs;
+		rolloutTiming.writeSpacingMs = 0;
+	});
+	after(async () => {
+		rolloutTiming.writeSpacingMs = writeSpacingMs;
+		await table?.delete(ID);
+	});
+
+	it("makes the job's write wait while another writer holds the row", async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // LMDB has no record locks
+		await table.put({ deployment_id: ID, project: 'p', status: 'rolling_out', peer_results: [{ node: 'peer-a' }] });
+		const holder = await table.lock(ID, { hold: true, scope: 'node' }, {});
+		const write = recordPeerActivation(ID, { node: 'peer-a', certification: 'certified' });
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.strictEqual((await table.get(ID)).peer_results[0].activation, undefined, 'written while the row was held');
+		await holder.unlock();
+		assert.strictEqual(await write, true);
+		assert.strictEqual((await table.get(ID)).peer_results[0].activation.activated, true);
 	});
 });
