@@ -31,7 +31,7 @@ async function writeFixture(parentDirectory: string): Promise<string> {
 			'const frozenAtLoad = Object.isFrozen(Array.prototype);\n' +
 			'export class PureESMProbe extends Resource {\n' +
 			'\tstatic loadAsInstance = false;\n' +
-			'\tget() { return { value: VALUE, feature: FEATURE, frozenAtLoad }; }\n' +
+			'\tget() { return { value: VALUE, feature: FEATURE, frozenAtLoad, lockedAfterLoad: !Object.isExtensible(Array.prototype) }; }\n' +
 			'}\n'
 	);
 	await writeFile(
@@ -53,7 +53,7 @@ async function writeFixture(parentDirectory: string): Promise<string> {
 	return appDirectory;
 }
 
-for (const lockdown of ['freeze-after-load', 'ses'] as const) {
+for (const lockdown of ['seal-after-load', 'freeze-after-load', 'ses'] as const) {
 	suite(`compartment loader resolves an import-only package (lockdown: ${lockdown})`, (ctx: ContextWithHarper) => {
 		let fixtureParent: string;
 
@@ -88,10 +88,16 @@ for (const lockdown of ['freeze-after-load', 'ses'] as const) {
 				}
 				status = response.status;
 				if (status === 200) {
-					const body = (await response.json()) as { value: string; feature: string; frozenAtLoad: boolean };
+					const body = (await response.json()) as {
+						value: string;
+						feature: string;
+						frozenAtLoad: boolean;
+						lockedAfterLoad: boolean;
+					};
 					strictEqual(body.value, 'loaded-in-compartment');
 					strictEqual(body.feature, 'node-alpha');
 					strictEqual(body.frozenAtLoad, lockdown === 'ses');
+					strictEqual(body.lockedAfterLoad, true);
 					return;
 				}
 				await response.body?.cancel();

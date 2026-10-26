@@ -70,8 +70,8 @@ A deploy with `restart: true` or `'rolling'` (#2315 step 2) is decided by the fi
 a normal boot, held before it binds a listener until it reports whether the deployed component loaded. That load
 is a boot load in a fresh realm, so under every lockdown mode it accepts exactly what a restarted worker would
 load and rejects what one would fail to. No load in the deploying thread could promise that: the main thread,
-where the operations API deploys, runs no application code, and a `freeze-after-load` worker's intrinsics are
-already frozen, so a dependency that extends one at load (reflect-metadata) throws there yet loads at every boot
+where the operations API deploys, runs no application code, and an after-load worker's intrinsics are
+already sealed or frozen, so a dependency that extends one at load (reflect-metadata) throws there yet loads at every boot
 (#2881). The in-process probe that tried, `validateComponentLoads`, is gone in every mode, along with what kept its
 throwaway load off the live worker: the guard that dropped its registrations and diverted its status writes, the
 transient Scope flag, and the frozen-intrinsics check. `restart: false` gets no verdict —
