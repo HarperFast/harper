@@ -12,7 +12,7 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -123,9 +123,10 @@ function assertGitSupportsConfigEnv(): void {
  *     parsing. Inherited helpers are reset to empty first, so a machine configured with
  *     `credential.helper=store` cannot write this token to ~/.git-credentials when git reports the
  *     successful authentication back to its helper chain.
- *   - GIT_ASKPASS, honored by every git version, as the fallback for git < 2.31 (where GIT_CONFIG_*
- *     is silently ignored). npm's own git wrapper sets `GIT_ASKPASS=echo`, but only when the
- *     variable is unset, so ours survives.
+ *   - GIT_ASKPASS, which git consults when `credential.helper` yields nothing (for example, when the
+ *     clone host does not match the credential) and as the fallback for git < 2.31. Overriding it
+ *     also keeps an inherited `GIT_ASKPASS` — or npm's own git wrapper, which sets `GIT_ASKPASS=echo`
+ *     when the variable is unset — from running instead.
  * GIT_TERMINAL_PROMPT=0 keeps git from falling back to a terminal prompt (which would hang a deploy
  * rather than fail it) if neither path yields a credential.
  */
@@ -190,7 +191,16 @@ export async function startGitCredentialSession(
 	});
 	server.on('error', (error) => logger.warn?.(`git credential server failed: ${error.message}`));
 
+	// Quoted so a Harper installed under a path with spaces still works when invoked by a shell.
+	// Git runs a `!`-prefixed `credential.helper` through `sh -c`, but execs `GIT_ASKPASS` directly
+	// as a single executable path (not through a shell), so `GIT_ASKPASS` points at a 0700 wrapper
+	// script in `socketDir` that delegates to `helperCommand`.
+	const quoteShellArg = (value: string) => `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
+	const helperCommand = `${quoteShellArg(process.execPath)} ${quoteShellArg(helperPath)}`;
+	const askpassPath = join(socketDir, 'askpass');
+
 	try {
+		await writeFile(askpassPath, `#!/bin/sh\nexec ${helperCommand} "$@"\n`, { mode: 0o700 });
 		await new Promise<void>((resolve, reject) => {
 			server.once('error', reject);
 			server.listen(socketPath, () => {
@@ -205,9 +215,6 @@ export async function startGitCredentialSession(
 		throw error;
 	}
 
-	// Quoted so a Harper installed under a path with spaces still works: git runs both the askpass
-	// command and a `!`-prefixed credential helper through a shell.
-	const helperCommand = `"${process.execPath}" "${helperPath}"`;
 	// Append to any GIT_CONFIG_* the operator already set rather than overwriting theirs; ours come
 	// last, which is also where git takes precedence from.
 	const inheritedCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '', 10);
@@ -215,7 +222,7 @@ export async function startGitCredentialSession(
 	const env: Record<string, string> = {
 		[GIT_CREDENTIAL_SOCKET_ENV]: socketPath,
 		GIT_TERMINAL_PROMPT: '0',
-		GIT_ASKPASS: helperCommand,
+		GIT_ASKPASS: askpassPath,
 		GIT_CONFIG_COUNT: String(base + 2),
 		// An empty value resets git's credential helper list, dropping any inherited helper.
 		[`GIT_CONFIG_KEY_${base}`]: 'credential.helper',

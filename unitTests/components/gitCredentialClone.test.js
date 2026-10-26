@@ -341,4 +341,30 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		// Same clone-and-strip-scripts path as above, so the same wording applies once the socket is gone.
 		await assert.rejects(() => extractApplication(application), /Failed to clone package/);
 	});
+
+	it('fails with a plain authentication error (not cannot exec) when the credential host does not match the clone host', async () => {
+		// When credential.helper returns no credentials for the target host, git falls back to GIT_ASKPASS.
+		// Git execs GIT_ASKPASS directly as a single executable path, so an unmatched host must fail with
+		// git's ordinary authentication error rather than an exec failure.
+		const application = new Application({
+			name: 'git-clone-unmatched-host',
+			packageIdentifier,
+			credentials: [{ host: 'github.com', token: TOKEN }],
+		});
+
+		await application.startGitCredentialSession();
+		try {
+			await assert.rejects(
+				() => extractApplication(application),
+				(error) => {
+					assert.match(error.message, /Failed to clone package/);
+					assert.doesNotMatch(error.message, /cannot exec/i);
+					assert.match(error.message, /could not read Username|Authentication failed|terminal prompts disabled/i);
+					return true;
+				}
+			);
+		} finally {
+			await application.cleanupGitCredentialSession();
+		}
+	});
 });
