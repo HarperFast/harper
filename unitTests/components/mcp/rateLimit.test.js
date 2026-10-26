@@ -264,6 +264,11 @@ describe('mcp/rateLimit', () => {
 			assert.equal(admit('a:0:b:c::1'), false, 'groups after :: still count toward the /64');
 			assert.equal(admit('2001:db8:5:6::192.0.2.1'), true);
 			assert.equal(admit('2001:db8:5:6::192.0.2.2'), false, 'a dotted tail is grouped like any other address');
+			assert.equal(admit('[2001:db8:7:8::1]'), true, 'brackets are stripped');
+			assert.equal(admit('[3001:db8:7:8::1]'), true, 'a different /64 despite brackets');
+			assert.equal(admit('2001:db8:7:8::2'), false);
+			assert.equal(admit('::ffff:0a00:0001'), true, 'hex IPv4-mapped is keyed per address');
+			assert.equal(admit('::ffff:0a00:0002'), true);
 			assert.equal(admit('::ffff:10.0.0.9'), true, 'IPv4-mapped is keyed per address');
 			assert.equal(admit('::ffff:10.0.0.8'), true);
 		});
@@ -290,9 +295,7 @@ describe('mcp/rateLimit', () => {
 			for (let i = 0; i < 40; i++) assert.equal(admit('ip'), true);
 			envOverrides.mcp_application_rateLimit_initializePerSecond = 0.1;
 			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
-			clock += 9000;
-			assert.equal(admit('ip'), false, 'old config still cached: 0.45 tokens');
-			clock += 1001;
+			clock += 10_001; // past the config cache TTL and the sweep interval
 			// A recreated bucket would start full and admit; the reconfigured one keeps ~0.5 tokens.
 			assert.equal(admit('ip'), false);
 			clock += 5000;

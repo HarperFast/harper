@@ -213,6 +213,10 @@ class TokenBucket {
 		this.burst = burst;
 		this.tokens = Math.min(this.tokens, burst);
 	}
+	isFull(): boolean {
+		this.refill();
+		return this.tokens >= this.burst;
+	}
 	/**
 	 * Refill-and-check, without consuming. Used by `tryAdmit` to peek each
 	 * bucket so denial doesn't burn a token in *another* bucket.
@@ -297,15 +301,21 @@ function pruneIdleSessions(): void {
 }
 
 // Swept from `initialize` itself, never from `tools/call`: the map holds one
-// entry per source address, which an attacker controls. A bucket idle past its
-// full-refill time is indistinguishable from a new one, so it is dropped then.
+// entry per source address, which an attacker controls. Only a full bucket is
+// dropped, since only that one is indistinguishable from a new one.
 function pruneInitializeClients(state: InitializeState, config: RateLimitConfig, t: number): void {
 	if (t - state.lastPruneAt < INITIALIZE_PRUNE_INTERVAL_MS) return;
 	state.lastPruneAt = t;
-	const idleCutoff = t - (config.initializeBurst / config.initializePerSecond) * 1000;
 	for (const [key, c] of state.clients) {
-		if (c.lastSeen < idleCutoff) state.clients.delete(key);
+		reconfigureInitializeClient(c, config);
+		if (c.rate.isFull()) state.clients.delete(key);
 	}
+}
+
+function reconfigureInitializeClient(c: ClientState & { config: RateLimitConfig }, config: RateLimitConfig): void {
+	if (c.config === config) return;
+	c.rate.reconfigure(config.initializePerSecond, config.initializeBurst);
+	c.config = config;
 }
 
 function getOrCreate(sessionId: string, profile: 'operations' | 'application'): SessionState {
@@ -446,10 +456,7 @@ export function tryAdmitInitialize(
 		state.clients.set(key, c);
 	} else {
 		c.lastSeen = t;
-		if (c.config !== config) {
-			c.rate.reconfigure(config.initializePerSecond, config.initializeBurst);
-			c.config = config;
-		}
+		reconfigureInitializeClient(c, config);
 	}
 	return c.rate.tryConsume()
 		? { allowed: true }
@@ -457,8 +464,8 @@ export function tryAdmitInitialize(
 }
 
 function initializeIdentity(identity: string): string {
-	let address = identity.split('%')[0];
-	if (!address.includes(':') || /^::ffff:[\d.]+$/i.test(address)) return identity;
+	let address = identity.replace(/^\[|\](:\d+)?$/g, '').split('%')[0];
+	if (!address.includes(':') || /^::ffff:/i.test(address)) return address;
 	const dotted = address.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
 	if (dotted) {
 		const [, prefix, a, b, c, d] = dotted;
