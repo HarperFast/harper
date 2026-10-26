@@ -19,7 +19,8 @@ add.reverse = function (record, property, action) {
 	if (typeof previousValue === 'bigint') {
 		record[property] = previousValue - BigInt(action.value);
 	} else if (!isNaN(record[property])) {
-		record[property] = previousValue - action.value;
+		// addValues keeps a number field a number under a bigint delta
+		record[property] = previousValue - Number(action.value);
 	}
 };
 // The CRDT operation registry. Exported so the storage/apply path (tracked.ts updateAndFreeze)
@@ -130,6 +131,9 @@ function holdsField(record: any, key: string) {
 	return false;
 }
 
+// Every key goes to `unknowns`: a plain set has no inverse, and an add's inverse is only exact over a
+// numeric prior (one that established the field from absent/null reverses to 0). The reversed value
+// stays as the best effort for when older history cannot settle the key.
 export function applyReverse(record, update, unknowns: Set<string>) {
 	for (const key in update) {
 		const value = update[key];
@@ -137,9 +141,8 @@ export function applyReverse(record, update, unknowns: Set<string>) {
 			const reverse = operations[value.__op__]?.reverse;
 			if (reverse) reverse(record, key, { value: value.value });
 			else throw new Error(`Unsupported operation ${value.__op__}`);
-		} else {
-			unknowns.add(key);
 		}
+		unknowns.add(key);
 	}
 }
 
@@ -170,9 +173,9 @@ export function applyForward(record, update, skipUnseededOps = false) {
  * Entries newer than `timestamp` are skipped (the cutoff may fall between entries). Returns `null`
  * if the record did not exist at `timestamp` (the nearest in-range history boundary is a delete
  * with no surviving writes, or there is no in-range history). When a prior link leads to a pruned
- * entry, returns `undefined` if `allowPartial` is false (history is incomplete for a whole-record
- * caller) or replays the surviving plain-set writes when `allowPartial` is true (for `unknowns`
- * fill on a live record).
+ * entry, returns `undefined` without `partial` (history is incomplete for a whole-record caller);
+ * with `partial` (the `unknowns` fill on a live record) it replays the surviving writes and sets
+ * `partial.truncated` when the history it read was incomplete.
  */
 function reconstructForward(
 	auditStore,
@@ -181,7 +184,7 @@ function reconstructForward(
 	recordId: any,
 	fromPosition,
 	timestamp,
-	allowPartial = false
+	partial?: { truncated: boolean }
 ) {
 	// Collect the in-range entries (at or before `timestamp`) back to a base boundary, newest-first.
 	// The boundary is a full `put` (snapshot) or a `delete` (everything older is erased); a record
@@ -194,11 +197,16 @@ function reconstructForward(
 	while (auditTime > 0) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (!auditEntry) {
-			if (allowPartial) {
+			if (partial) {
 				truncated = true;
 				break;
 			}
 			return entries.length === 0 ? null : undefined;
+		}
+		// a corrupt entry reads with no type and no previous link, which must not pass for the start of history
+		if (partial && auditEntry.type === undefined) {
+			truncated = true;
+			break;
 		}
 		if (auditEntry.type === 'delete') {
 			// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
@@ -217,6 +225,7 @@ function reconstructForward(
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
 	}
+	if (partial) partial.truncated = truncated;
 	if (entries.length === 0) return null; // record did not exist at `timestamp`
 	// Replay oldest-first. The base is the put if the chain reached one; otherwise an empty record
 	// (the first in-range write was a patch, or a delete bounds the history) onto which patches apply.
@@ -224,6 +233,8 @@ function reconstructForward(
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const auditEntry = entries[i];
 		const value = auditEntry.getValue(store);
+		// an entry whose body is unavailable (minted without one, or undecodable) leaves its fields unknown
+		if (value == null && partial) partial.truncated = truncated = true;
 		// Copy the base put: applyForward mutates `record`, and getValue may return a cached
 		// object shared with the audit entry.
 		if (auditEntry.type === 'put') record = { ...value };
@@ -334,14 +345,12 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (boundaryEntry?.type === 'delete') return null;
 	}
-	// A reversed patch that set a field to a plain value can't be undone (a plain set has no inverse),
-	// so those fields are left "unknown": their value at `timestamp` must come from older history.
-	// Reconstruct that state forward from the nearest base so CRDT ops accumulate correctly — e.g. a
-	// counter built up by `add` patches and later overwritten by a plain set. The prior code copied
-	// the nearest audit entry's raw field, which for a patch is an unresolved `{ __op__ }` object or a
-	// single delta rather than the folded value at `timestamp`. If the history needed to reconstruct a
-	// key is unavailable (pruned), the key keeps its live value (best effort, as before).
+	// The keys the reversed patches wrote are "unknown" (see applyReverse): their value at `timestamp`
+	// comes from older history, reconstructed forward from the nearest base so CRDT ops accumulate
+	// correctly. A complete reconstruction is authoritative, so a key it lacks did not exist then.
+	// Over incomplete (pruned) history, a key it cannot settle keeps its best-effort reversed value.
 	if (unknowns.size > 0 && auditTime > 0) {
+		const partial = { truncated: false };
 		const priorRecord = reconstructForward(
 			auditStore,
 			store,
@@ -349,13 +358,14 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 			recordId,
 			{ txnLogKey: auditTime, nodeId: auditNodeId },
 			timestamp,
-			true
+			partial
 		);
 		if (priorRecord) {
 			for (const key of unknowns) {
 				// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,
 				// constructor, …) must not be filled from priorRecord's prototype chain.
 				if (Object.hasOwn(priorRecord, key)) record[key] = priorRecord[key];
+				else if (!partial.truncated) delete record[key];
 			}
 		}
 	}

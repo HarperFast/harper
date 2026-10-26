@@ -1007,6 +1007,100 @@ describe('Audit log', () => {
 			['v1', 'v2', 'v3', 'v4', 'v5']
 		);
 	});
+	describe('history before a patch that first wrote a field', () => {
+		const add = (value) => ({ __op__: 'add', value });
+		const fieldsAt = (value) => ({
+			name: value.name,
+			hasExtra: Object.hasOwn(value, 'extra'),
+			hasCount: Object.hasOwn(value, 'count'),
+			count: value.count,
+			total: value.total,
+		});
+
+		it('leaves out a later plain field and a later add-established counter', async () => {
+			const id = 'absent-before-later-patch';
+			await AuditedTable.put(id, { name: 'v1' });
+			await AuditedTable.patch(id, { name: 'v2' });
+			await AuditedTable.patch(id, { extra: 'later', count: add(5) });
+			const history = await AuditedTable.getHistoryOfRecord(id);
+			assert.deepStrictEqual(
+				history.map((entry) => entry.type),
+				['put', 'patch', 'patch']
+			);
+			assert.deepStrictEqual(fieldsAt(history[1].value), {
+				name: 'v2',
+				hasExtra: false,
+				hasCount: false,
+				count: undefined,
+				total: undefined,
+			});
+			assert.strictEqual(history[2].value.extra, 'later');
+			assert.strictEqual(history[2].value.count, 5);
+			const byHash = await new ResourceBridge().readAuditLog({
+				schema: AuditedTable.databaseName,
+				table: 'AuditedTable',
+				search_type: 'hash_value',
+				search_values: [id],
+			});
+			assert.strictEqual(fieldsAt(byHash[id][1].records[0]).hasExtra, false);
+			assert.strictEqual(fieldsAt(byHash[id][1].records[0]).hasCount, false);
+			const tableWide = [];
+			for await (const entry of AuditedTable.getHistory()) if (entry.id === id) tableWide.push(entry);
+			assert.deepStrictEqual(fieldsAt(tableWide[1].value), fieldsAt(history[1].value));
+			// a later put switches this time to the forward rebuild; the snapshot must not change with it
+			await AuditedTable.put(id, { name: 'v3' });
+			const afterPut = await AuditedTable.getHistoryOfRecord(id);
+			assert.deepStrictEqual(fieldsAt(afterPut[1].value), fieldsAt(history[1].value));
+			assert.strictEqual(afterPut[1].value.id, history[1].value.id);
+		});
+
+		it('restores the null a later add established its counter from', async () => {
+			const id = 'null-before-later-add';
+			await AuditedTable.put(id, { name: 'v1', count: null });
+			await AuditedTable.patch(id, { name: 'v2' });
+			await AuditedTable.patch(id, { count: add(5) });
+			const history = await AuditedTable.getHistoryOfRecord(id);
+			assert.strictEqual(history[1].value.name, 'v2');
+			assert.strictEqual(history[1].value.count, null);
+			assert.strictEqual(history[2].value.count, 5);
+		});
+
+		it('keeps the best-effort value of a field the history cannot settle once the base put is pruned', async () => {
+			const id = 'pruned-before-later-add';
+			await AuditedTable.put(id, { name: 'v1', total: 10, count: 3 });
+			await AuditedTable.patch(id, { name: 'v2', count: null });
+			await AuditedTable.patch(id, { total: add(5), count: add(4) });
+			const auditStore = AuditedTable.primaryStore.rootStore.auditStore;
+			let baseKey;
+			for (const entry of auditStore.getRange({ start: 1 })) {
+				if (entry.tableId === AuditedTable.tableId && entry.recordId === id && entry.type === 'put')
+					baseKey = entry.txnLogKey;
+			}
+			assert(baseKey, 'the base put is in the log');
+			// stand in for audit retention having removed the base put
+			const get = auditStore.get;
+			auditStore.get = function (key, tableId, recordId, nodeId) {
+				return key === baseKey ? undefined : get.call(this, key, tableId, recordId, nodeId);
+			};
+			let history;
+			try {
+				history = await AuditedTable.getHistoryOfRecord(id);
+			} finally {
+				auditStore.get = get;
+			}
+			assert.deepStrictEqual(
+				history.map((entry) => entry.type),
+				['put', 'patch', 'patch']
+			);
+			assert.deepStrictEqual(fieldsAt(history[1].value), {
+				name: 'v2',
+				hasExtra: false,
+				hasCount: true,
+				count: null,
+				total: 10,
+			});
+		});
+	});
 	// LMDB assigns each record's own localTime via lmdb-js's native monotonic clock, independent of
 	// the application-supplied `version` (e.g. a replicated/out-of-order write's origin timestamp,
 	// which can be backdated relative to this node's clock). previousVersion must point at the prior
