@@ -270,8 +270,6 @@ suite('cache table with a computed attribute', (ctx: ContextWithHarper) => {
 		ok(!keys.includes('salePrice'), `the source value must not be stored: ${JSON.stringify(keys)}`);
 	});
 
-	// A fill stamps @createdTime/@updatedTime before it resolves and indexes the record it stores, and a
-	// refill over an invalidation stub does not run the computed resolver over the stub.
 	async function waitForStamped(id: string, ready: (state: any) => boolean) {
 		let state: any;
 		for (let attempt = 0; attempt < 100; attempt++) {

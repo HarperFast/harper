@@ -654,11 +654,13 @@ describe('Reads of residency stubs', function () {
 					{ name: 'sku', indexed: true },
 					{ name: 'name' },
 					{ name: 'upper', indexed: true, computed: true },
+					{ name: 'skuKey', indexed: true, computed: true },
 				],
 				audit: true,
 			});
-			// `name` is not indexed, so no stub carries the resolver's input
+			// `name` is not indexed, so no stub carries the resolver's input; `sku` is, so `skuKey` resolves over a stub
 			Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+			Computed.setComputedAttribute('skuKey', (record) => record.sku.toLowerCase());
 		});
 		const indexedKeys = (attribute, id) =>
 			Array.from(Computed.indices[attribute].getRange({}))
@@ -691,6 +693,7 @@ describe('Reads of residency stubs', function () {
 				assert.equal(entry.value.name, 'new');
 				assert.ok(indexedKeys('upper', id).includes('NEW'));
 				assert.deepEqual(indexedKeys('sku', id), ['B']);
+				assert.deepEqual(indexedKeys('skuKey', id), ['b']);
 			});
 
 			it(`a delete of ${where} removes it`, async () => {
@@ -698,6 +701,7 @@ describe('Reads of residency stubs', function () {
 				await overStub(id, (context) => Computed.delete(id, context));
 				assert.equal(Computed.primaryStore.getEntry(id)?.value ?? null, null);
 				assert.deepEqual(indexedKeys('sku', id), []);
+				assert.deepEqual(indexedKeys('skuKey', id), []);
 			});
 		}
 
@@ -710,6 +714,7 @@ describe('Reads of residency stubs', function () {
 			await Computed.evict('evicted', stub.value, stub.version);
 			assert.equal(Computed.primaryStore.getEntry('evicted')?.value ?? undefined, undefined);
 			assert.deepEqual(indexedKeys('sku', 'evicted'), []);
+			assert.deepEqual(indexedKeys('skuKey', 'evicted'), []);
 		});
 	});
 

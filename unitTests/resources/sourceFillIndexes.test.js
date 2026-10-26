@@ -56,10 +56,12 @@ describe('Source fills', function () {
 				{ name: 'sku', indexed: true },
 				{ name: 'name' },
 				{ name: 'upper', indexed: true, computed: true },
+				{ name: 'skuKey', indexed: true, computed: true },
 			],
 		});
-		// `name` is not indexed, so no stub carries the resolver's input
+		// `name` is not indexed, so no stub carries the resolver's input; `sku` is, so `skuKey` resolves over a stub
 		Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+		Computed.setComputedAttribute('skuKey', (record) => record.sku.toLowerCase());
 		for (const Table of [Stamped, Placed, Computed]) {
 			Table.sourcedFrom({
 				get(id) {
@@ -169,6 +171,7 @@ describe('Source fills', function () {
 			assert.equal(entry.value.name, 'new');
 			assert.ok(indexedKeys(Computed, 'upper', 'refilled').includes('NEW'));
 			assert.deepEqual(indexedKeys(Computed, 'sku', 'refilled'), ['A']);
+			assert.deepEqual(indexedKeys(Computed, 'skuKey', 'refilled'), ['a']);
 		});
 
 		it('a source miss deletes the stub', async () => {
@@ -179,6 +182,7 @@ describe('Source fills', function () {
 				message: 'the source miss did not delete the stub',
 			});
 			assert.deepEqual(indexedKeys(Computed, 'sku', 'missing'), []);
+			assert.deepEqual(indexedKeys(Computed, 'skuKey', 'missing'), []);
 		});
 	});
 });

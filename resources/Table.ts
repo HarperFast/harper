@@ -4330,7 +4330,6 @@ export function makeTable(options): TableResourceClass {
 					let newRecord = null;
 					const existingRecord = existingEntry?.value;
 					if (residency && !residency.includes(server.hostname)) {
-						// the stub keeps the indexed fields, so the record stays searchable here
 						newRecord = existingRecord ? residencyStub(existingRecord, id) : null;
 						metadata = INVALIDATED;
 					} else {
@@ -9588,10 +9587,18 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 	return TableResource;
+	function resolveOverStub(resolver: (record: any) => any, stub: any, name: string) {
+		try {
+			return resolver(stub);
+		} catch (error) {
+			logger.trace?.(`No prior value for computed index ${name} of ${tableName} over a stub`, error);
+		}
+	}
 	/**
-	 * A stub (an INVALIDATED entry's value) has no inputs for a computed resolver. `preserveComputed` leaves
-	 * computed indexes as committed; `existingIsStub` skips only the existing side, so nothing is removed
-	 * from a computed index and the new record's value is added.
+	 * A stub (an INVALIDATED entry's value) is a projection, not a record. `preserveComputed` keeps computed
+	 * indexes as committed. With `existingIsStub`, a computed index's old value is resolved over the stub
+	 * where it can be; a resolver needing a field the stub lacks throws, and its committed entry is then
+	 * left in place (harper#2370).
 	 */
 	function updateIndices(
 		id: any,
@@ -9623,7 +9630,7 @@ export function makeTable(options): TableResourceClass {
 				existingRecord &&
 				(resolver
 					? existingIsStub && primaryStore.encoder.resolvedAttributeNames?.has(key)
-						? undefined
+						? resolveOverStub(resolver, existingRecord, key)
 						: resolver(existingRecord)
 					: existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
@@ -10653,8 +10660,10 @@ export function makeTable(options): TableResourceClass {
 							// as a put would; copied, since the caller already holds updatedRecord
 							const racedCreatedTime =
 								assignCreatedTime && existingVersion == null ? currentRecord?.[createdTimeProperty.name] : undefined;
-							if (racedCreatedTime != null)
-								recordToStore = { ...updatedRecord, [createdTimeProperty.name]: racedCreatedTime };
+							if (racedCreatedTime != null) {
+								recordToStore = Object.assign(Object.create(Object.getPrototypeOf(updatedRecord)), updatedRecord);
+								recordToStore[createdTimeProperty.name] = racedCreatedTime;
+							}
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
