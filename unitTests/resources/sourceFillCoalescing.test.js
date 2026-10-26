@@ -191,6 +191,39 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(results.filter((outcome) => outcome === 'attempt 2').length, 19);
 	});
 
+	it('do not share a record whose headers a response would merge into in place', async function () {
+		respond = (id, attempt) => ({
+			id,
+			name: 'enveloped ' + attempt,
+			headers: new Headers({ 'x-origin': String(attempt) }),
+		});
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'enveloped', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
+	it('refetch for a caching waiter when a no-store leader finds an expired record absent', async function () {
+		let originHasRecord = true;
+		respond = (id) => (originHasRecord ? { id, name: 'stale ' + id } : undefined);
+		assert.equal((await CoalescingTable.get('stale-absent')).name, 'stale stale-absent');
+		await settle('stale-absent');
+		await CoalescingTable.invalidate('stale-absent');
+		originHasRecord = false;
+		sourceCalls = 0;
+		holdFirstCall('stale-absent', 1);
+		const [uncached, cached] = await Promise.all([
+			CoalescingTable.get('stale-absent', { noCacheStore: true }),
+			CoalescingTable.get('stale-absent'),
+		]);
+		assert.deepEqual([uncached ?? null, cached ?? null], [null, null]);
+		assert.equal(sourceCalls, 2);
+		await settle('stale-absent');
+		assert.equal(CoalescingTable.primaryStore.getEntry('stale-absent')?.value, undefined);
+	});
+
 	it('keep 0 and -0 apart', async function () {
 		respond = (id) => ({ id, name: Object.is(id, -0) ? 'negative zero' : 'zero' });
 		const [zero, negativeZero] = await Promise.all([

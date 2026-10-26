@@ -13,7 +13,7 @@ primaryStore.tryLock = function (key, onUnlocked) {
 async function holdFirstCall(id) {
 	if (held.has(id)) return;
 	held.add(id);
-	const deadline = Date.now() + 10_000;
+	const deadline = Date.now() + 5_000;
 	while ((parked.get(id) ?? 0) < burstWaiters) {
 		if (Date.now() > deadline)
 			throw new Error(`only ${parked.get(id) ?? 0} of ${burstWaiters} reads parked on the record lock`);

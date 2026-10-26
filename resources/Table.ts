@@ -10459,7 +10459,10 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
+					// finalizeResponse merges into a Headers-like `headers` in place, so one shared would leak
+					// one request's response headers into another's
+					if (!sourceContext.noCacheStore && typeof updatedRecord?.headers?.set !== 'function')
+						sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -10674,7 +10677,7 @@ export function makeTable(options): TableResourceClass {
 				() => {
 					if (sharedEntry && (!stagedWrite || stagedWrite.skipped === false)) {
 						fill.outcome = sharedEntry;
-						fill.unstoredRecord = !stagedWrite && sharedEntry.value != null;
+						fill.unstoredRecord = !stagedWrite && (sharedEntry.value != null || existingEntry != null);
 					}
 					releaseFill();
 					if (removedRecordWithBlobs) {

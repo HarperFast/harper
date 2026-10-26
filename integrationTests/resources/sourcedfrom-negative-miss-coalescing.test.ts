@@ -1,6 +1,4 @@
 /**
- * Concurrent REST reads of one key on a sourcedFrom table make one origin request, including when
- * the origin reports the record missing and when the client sends `Cache-Control: no-store`.
  * One worker thread: requests on different threads coalesce only through the record lock and still
  * re-fetch in turn, which this test does not cover.
  */
@@ -60,7 +58,8 @@ suite('sourcedFrom concurrent misses over REST', (ctx: ContextWithHarper) => {
 					signal: AbortSignal.timeout(30_000),
 				});
 				const body = await response.text();
-				return response.status === 200 ? JSON.parse(body).name : response.status;
+				if (response.status === 200) return JSON.parse(body).name;
+				return response.status === 404 ? 404 : `${response.status} ${body}`;
 			})
 		);
 
