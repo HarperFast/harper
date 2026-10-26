@@ -268,8 +268,7 @@ jobs:
 		});
 	});
 
-	// What a pull_request_target workflow must never do with the preview identity, each refused before setup writes
-	// anything; the starter workflow setup writes is the baseline every case changes one thing in.
+	// Each case changes one thing in the starter workflow.
 	describe('checkPreviewWorkflowFile', () => {
 		const starter = starterPreviewWorkflow({ app: 'shop', branch: 'main' });
 		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
@@ -399,6 +398,8 @@ jobs:
 				/harper preview deploy app=shop pr="\$PR" branch="\$BRANCH" by_ref=true ref="\$SHA" domain=previews\.example\.com credential=true branchedDatabases=false/
 			);
 			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [] });
+			// Only a PR read as closed is dropped after a deploy, so a failed read never drops an open one.
+			assert.match(shaped, /if \[ "\$\(pr \| cut -d' ' -f1\)" = closed \]; then harper preview drop app=shop/);
 		});
 	});
 

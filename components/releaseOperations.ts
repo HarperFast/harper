@@ -28,7 +28,8 @@ interface NodeReleases {
 }
 
 export async function handleListReleases(
-	req: ListReleasesRequest = {}
+	req: ListReleasesRequest = {},
+	{ timeoutMs }: { timeoutMs?: number } = {}
 ): Promise<NodeReleases | { nodes: NodeReleases[] }> {
 	const { project } = req;
 	if (project !== undefined && (typeof project !== 'string' || !/^[^./\\][^/\\]*$/.test(project))) {
@@ -38,7 +39,7 @@ export async function handleListReleases(
 	// that lands during the local read is never an unhandled one.
 	const whenReplicated =
 		req.replicated === true
-			? server.replication.replicateOperation({ ...req, replicated: true }).then(
+			? server.replication.replicateOperation({ ...req, replicated: true }, { timeoutMs }).then(
 					(response) => ({ response }),
 					(error) => ({ error })
 				)

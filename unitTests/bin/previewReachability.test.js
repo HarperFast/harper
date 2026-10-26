@@ -42,8 +42,16 @@ describe('preview reachability (harper#3042)', () => {
 		assert.match((await probePreview(URL, answer(502))).reason, /answered 502, not from the preview/);
 	});
 
-	it("counts the preview's own server error as an answer from the preview", async () => {
+	it("counts the preview's own server error as an answer from the preview, and says when a proxy may have answered", async () => {
 		assert.deepStrictEqual(await probePreview(URL, answer(500, 'boom')), { reachable: true, status: 500 });
+		assert.deepStrictEqual(await probePreview(URL, answer(500, '', { server: 'nginx' })), {
+			reachable: true,
+			status: 500,
+		});
+		assert.match((await probePreview(URL, answer(503, '', { server: 'nginx' }))).reason, /answered 503 from nginx/);
+		const notFound = await probePreview(URL, answer(404, '', { server: 'nginx/1.27' }));
+		assert.strictEqual(notFound.reachable, true);
+		assert.match(notFound.reason, /answered 404 from nginx\/1\.27; unless the preview has nothing at \//);
 	});
 
 	it('retries what can still change, within the window, and reports the last outcome', async () => {

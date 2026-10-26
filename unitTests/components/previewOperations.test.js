@@ -13,7 +13,7 @@ const { enablePreviews, disablePreviews, getPreviewPolicy } = require('#src/comp
 const { deployComponent, getComponents } = require('#js/components/operations');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
-const { addRole, getRoleByName } = require('#src/security/role');
+const { addRole, alterRole, getRoleByName } = require('#src/security/role');
 const { addUser, getUserWithRole } = require('#src/security/user');
 const { addOidcTrust, listOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
 const { server } = require('#js/server/Server');
@@ -24,7 +24,7 @@ const AUDIENCE = 'https://cluster.example.com:9925/';
 const enableRequest = (app, overrides = {}) => ({
 	operation: 'enable_previews',
 	app,
-	repository: 'acme/opsweb',
+	repository: `acme/${app}`,
 	repository_id: '67890',
 	branch: 'main',
 	audience: AUDIENCE,
@@ -158,7 +158,7 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			// An array the generated scalar is a member of still matches the same runs.
 			claims: {
 				repository_id: '67890',
-				workflow_ref: 'acme/opsweb/.github/workflows/rival.yaml@refs/heads/main',
+				workflow_ref: 'acme/opsoverlap/.github/workflows/rival.yaml@refs/heads/main',
 				event_name: ['pull_request_target', 'push'],
 			},
 		});
@@ -180,11 +180,24 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		await assert.rejects(enablePreviews(enableRequest('opsbranch', { branch: 'refs/heads/' })), { statusCode: 400 });
 	});
 
+	it('reports a role whose operations no longer let CI deploy', async () => {
+		await enablePreviews(enableRequest('opsnarrow'));
+		const role = await getRoleByName('opsnarrow-ci-preview');
+		await alterRole({
+			id: role.id,
+			role: role.role,
+			permission: { ...role.permission, operations: ['drop_component'] },
+		});
+		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsnarrow', hdb_user: SU });
+		assert.strictEqual(policy.enabled, false);
+		assert.match(policy.problems.join(), /role "opsnarrow-ci-preview" does not allow deploy_component/);
+	});
+
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
 		const workflow = '.github/workflows/shared.yaml';
 		const outcomes = await Promise.allSettled([
-			enablePreviews(enableRequest('opsonea', { workflow })),
-			enablePreviews(enableRequest('opsoneb', { workflow })),
+			enablePreviews(enableRequest('opsonea', { workflow, repository: 'acme/shared' })),
+			enablePreviews(enableRequest('opsoneb', { workflow, repository: 'acme/shared' })),
 		]);
 		assert.deepStrictEqual(outcomes.map((outcome) => outcome.status).sort(), ['fulfilled', 'rejected']);
 		assert.match(outcomes.find((outcome) => outcome.status === 'rejected').reason.message, /would also match the runs/);
@@ -264,7 +277,7 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const expired = { app: 'opsexp', pr: 1, expiresAt: '2000-01-01T00:00:00.000Z' };
 			const { deployment_id } = await deploy('opsexp-pr-1', expired);
 			await deploy('opsexp-pr-1');
-			const peer = withPeer([{ project: 'opsexp-pr-1', deployment_id }], () => ({ componentRemoved: true }));
+			const peer = withPeer([{ project: 'opsexp-pr-1', deployment_id }], () => ({ value: { componentRemoved: true } }));
 			let response;
 			try {
 				response = await disablePreviews({ operation: 'disable_previews', app: 'opsexp', hdb_user: SU });
@@ -314,6 +327,20 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const finished = await disablePreviews({ operation: 'disable_previews', app: 'opsshop', hdb_user: SU });
 			assert.deepStrictEqual(finished.removed.sort(), ['role opsshop-ci-preview', 'user opsshop-ci-preview']);
 			assert.strictEqual(getUserWithRole('opsshop-ci-preview'), undefined);
+		});
+
+		it('stops when a peer holds a release this node has no record of', async () => {
+			await enablePreviews(enableRequest('opsnew'));
+			const peer = withPeer([{ project: 'opsnew-pr-1', deployment_id: 'not-replicated-yet' }], () => ({}));
+			try {
+				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsnew', hdb_user: SU }), {
+					statusCode: 500,
+					message: /node-b: opsnew-pr-1 is at release not-replicated-yet, which this node has no record of yet/,
+				});
+			} finally {
+				peer.restore();
+			}
+			assert.deepStrictEqual(peer.sent, [], 'nothing is dropped on a guess');
 		});
 
 		it('stops when a node cannot say what it holds', async () => {

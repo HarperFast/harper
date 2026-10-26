@@ -1,5 +1,4 @@
-// The create-only reconcile of a CI identity (a role, its user, trust policies naming the user), shared by the CLI's
-// production setup and `enable_previews`: a record that differs stops the caller before it writes. No imports.
+// No imports: the CLI loads this too.
 
 export interface DesiredRole {
 	role: string;

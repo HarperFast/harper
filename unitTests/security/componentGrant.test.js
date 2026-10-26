@@ -72,13 +72,18 @@ describe('component grants (harper#3046)', () => {
 			['an unknown preview value', { names: ['a'], constraints: { preview: true } }, /preview' can only be 'required'/],
 			[
 				'a maxPreviews that is not a whole number',
-				{ names: ['a'], constraints: { preview: 'required', maxPreviews: 1.5 } },
+				{ names: ['a-pr-*'], constraints: { preview: 'required', maxPreviews: 1.5 } },
 				/whole number of at least 1/,
 			],
 			[
 				'a maxTtlDays that is not positive',
-				{ names: ['a'], constraints: { preview: 'required', maxTtlDays: 0 } },
+				{ names: ['a-pr-*'], constraints: { preview: 'required', maxTtlDays: 0 } },
 				/positive number of days/,
+			],
+			[
+				'a preview grant whose names are not previews',
+				{ names: ['shop-*'], constraints: { preview: 'required' } },
+				/must each be '<app>-pr-\*'/,
 			],
 			[
 				'a bound on previews the grant does not require',

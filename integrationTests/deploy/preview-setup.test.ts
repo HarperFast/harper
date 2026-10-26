@@ -3,8 +3,8 @@
  * nothing else (harper#3042).
  *
  * `gh` is kept off PATH and the repository doesn't exist, so the lookup finds nothing and `repository_id=` is used;
- * without `gh` the repository variable cannot be set, so setup exits 1 after the cluster part. The OIDC exchange is
- * covered by unitTests/security/authn/oidc/tokenExchange.test.js; here the created user signs in with a password.
+ * without `gh` the repository variable cannot be set, so setup exits 1 after the cluster part. The created user signs
+ * in with a password the test sets; the OIDC exchange is covered in unit tests.
  *
  * Run:
  *   npm run test:integration -- "integrationTests/deploy/preview-setup.test.ts"

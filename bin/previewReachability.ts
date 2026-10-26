@@ -24,7 +24,7 @@ const CERTIFICATE_ERRORS = new Set([
 
 export interface Reachability {
 	reachable: boolean;
-	/** Set when unreachable: why, and whether trying again could change it. */
+	/** Why it may not be: set when unreachable, and for an answer a proxy may have given in the preview's place. */
 	reason?: string;
 	retry?: boolean;
 	status?: number;
@@ -99,18 +99,22 @@ export async function probePreview(url: string, fetchImpl: Fetch = fetch as Fetc
 				'not route preview hosts to isolated applications (on Fabric, an nginx-mode host), or the worker is still starting.',
 		};
 	}
-	// Harper sends no Server header; a gateway error, or an error from a server that names itself a proxy, is the proxy's.
+	// Harper sends no Server header, but a proxy in front of it may replace the application's own. So only a gateway
+	// error, or a 503 a proxy names itself as sending, says the request never reached the preview.
 	const server = response.headers.get('server') ?? '';
 	const fromProxy = PROXY_SERVERS.test(server);
-	if (
-		response.status === 502 ||
-		response.status === 504 ||
-		(fromProxy && (response.status >= 500 || response.status === 404 || response.status === 421))
-	) {
+	if (response.status === 502 || response.status === 504 || (response.status === 503 && fromProxy)) {
 		return {
 			reachable: false,
-			retry: response.status >= 500,
+			retry: true,
 			reason: `${host} answered ${response.status}${server ? ` from ${server}` : ''}, not from the preview: whatever terminates TLS for it does not route it to the cluster's preview.`,
+		};
+	}
+	if (fromProxy && (response.status === 404 || response.status === 421)) {
+		return {
+			reachable: true,
+			status: response.status,
+			reason: `${host} answered ${response.status} from ${server}; unless the preview has nothing at /, that proxy does not route this host to it.`,
 		};
 	}
 	return { reachable: true, status: response.status };

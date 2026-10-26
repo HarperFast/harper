@@ -1,4 +1,3 @@
-/** `harper preview setup|teardown`: the GitHub side, around one `enable_previews` or `disable_previews` call. */
 import chalk from 'chalk';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -99,9 +98,10 @@ export function starterPreviewWorkflow({
 		'      - run: |',
 		`          pr() { gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.state + " " + .head.sha'; }`,
 		'          if [ "$(pr)" = "open $SHA" ]; then',
-		`            harper preview deploy ${deployArguments}`,
+		`            harper preview deploy ${deployArguments} || deployed=$?`,
 		'            # Closed while this deployed: its cleanup may have run first.',
-		`            if [ "$(pr | cut -d' ' -f1)" != open ]; then harper preview drop app=${app} pr="$PR"; fi`,
+		`            if [ "$(pr | cut -d' ' -f1)" = closed ]; then harper preview drop app=${app} pr="$PR"; fi`,
+		'            exit "${deployed:-0}"',
 		'          fi',
 		'  cleanup:',
 		`    if: github.event.action == 'closed' && ${sameRepository}`,

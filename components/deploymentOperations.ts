@@ -105,12 +105,6 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 const RELEASED_STATUSES = new Set(['success', 'rolling_out', 'partial']);
 const RELEASE_FIELDS = ['deployment_id', 'project', 'status', 'activated_from', 'completed_at'];
 
-/**
- * The record that made a component's live release live: the newest released deploy or activation naming the id in
- * its tree's provenance marker, found by key and by `activated_from` so a long history is never scanned. A tree without
- * one (installed before 5.3, by `add_component`, or from a `file:` link) is described by the project's newest
- * released deployment, one bounded search per released status, so no run of unreleased deploys can hide it.
- */
 /** A deployment's record by id, without its payload; undefined when this node has none. */
 export async function deploymentRecord(deploymentId: unknown): Promise<any | undefined> {
 	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
@@ -118,6 +112,12 @@ export async function deploymentRecord(deploymentId: unknown): Promise<any | und
 	return stripBlob(await table.get(deploymentId)) ?? undefined;
 }
 
+/**
+ * The record that made a component's live release live: the newest released deploy or activation naming the id in
+ * its tree's provenance marker, found by key and by `activated_from` so a long history is never scanned. A tree without
+ * one (installed before 5.3, by `add_component`, or from a `file:` link) is described by the project's newest
+ * released deployment, one bounded search per released status, so no run of unreleased deploys can hide it.
+ */
 export async function deploymentOfLiveRelease(
 	project: string,
 	liveDeploymentId: string | undefined

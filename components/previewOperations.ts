@@ -1,5 +1,3 @@
-// What these guarantee, and why they are operations: security/DESIGN.md, "PR previews are enabled by the cluster".
-
 import Joi from 'joi';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
@@ -51,6 +49,7 @@ import { getThisNodeName } from '../server/nodeName.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 const ENDED_DEPLOYMENT_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
 const PEER_DROP_TIMEOUT_MS = 5 * 60 * 1000;
+const CENSUS_TIMEOUT_MS = 60 * 1000;
 
 function requireSuperUser(req: any): void {
 	if (!req?.hdb_user?.role?.permission?.super_user) {
@@ -317,7 +316,14 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	const deploy = trust.find((policy) => policy.id === names.policy);
 	const problems: string[] = [];
 	if (!role) problems.push(`role "${names.role}" is missing`);
-	else if (managedRoleProblem(names, role)) problems.push(managedRoleProblem(names, role));
+	else {
+		const roleProblem = managedRoleProblem(names, role) ?? componentGrantError(role.permission?.component_deploy);
+		if (roleProblem) problems.push(roleProblem);
+		const operations = role.permission?.operations;
+		if (!Array.isArray(operations) || CI_PREVIEW_OPERATIONS.some((operation) => !operations.includes(operation))) {
+			problems.push(`role "${names.role}" does not allow ${CI_PREVIEW_OPERATIONS.join(', ')}`);
+		}
+	}
 	if (!user) problems.push(`user "${names.user}" is missing`);
 	else if (user.active === false) problems.push(`user "${names.user}" is inactive`);
 	else if (user.role?.role !== names.role) problems.push(`user "${names.user}" is in role "${user.role?.role}"`);
@@ -365,13 +371,17 @@ interface PreviewRelease {
 async function livePreviewReleases(app: string): Promise<{ releases: PreviewRelease[]; unreachable: string[] }> {
 	let answer: any;
 	try {
-		answer = await handleListReleases({ operation: 'list_releases', replicated: true });
+		answer = await handleListReleases(
+			{ operation: 'list_releases', replicated: true },
+			{ timeoutMs: CENSUS_TIMEOUT_MS }
+		);
 	} catch (error) {
 		if ((error as any)?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
 		answer = { nodes: [await handleListReleases({ operation: 'list_releases' })] };
 	}
 	const local = new Map((await listLocalPreviews()).map((live) => [live.component, live]));
-	const previewOf = new Map<string, any>();
+	// A release's preview metadata, from this node's provenance or its deployment row; null when neither knows it.
+	const recorded = new Map<string, any>();
 	const releases: PreviewRelease[] = [];
 	const unreachable: string[] = [];
 	for (const node of answer.nodes ?? []) {
@@ -381,15 +391,17 @@ async function livePreviewReleases(app: string): Promise<{ releases: PreviewRele
 		}
 		for (const { project, deployment_id: deploymentId } of node.components ?? []) {
 			if (!deploymentId || !isPreviewProjectOf(app, project)) continue;
-			if (!previewOf.has(deploymentId)) {
+			if (!recorded.has(deploymentId)) {
 				const known = local.get(project);
-				previewOf.set(
-					deploymentId,
-					known?.deploymentId === deploymentId ? known.preview : (await deploymentRecord(deploymentId))?.preview
-				);
+				const record = known?.deploymentId === deploymentId ? known : await deploymentRecord(deploymentId);
+				recorded.set(deploymentId, record ? (record.preview ?? undefined) : null);
 			}
-			const preview = previewOf.get(deploymentId);
-			if (preview?.app === app && isPreviewProjectOf(app, project, preview.pr)) {
+			const preview = recorded.get(deploymentId);
+			if (preview === null) {
+				unreachable.push(
+					`${node.node}: ${project} is at release ${deploymentId}, which this node has no record of yet`
+				);
+			} else if (preview?.app === app && isPreviewProjectOf(app, project, preview.pr)) {
 				releases.push({ node: node.node, project, deploymentId });
 			}
 		}
@@ -484,7 +496,8 @@ export async function disablePreviews(req: any) {
 		for (const release of releases) {
 			try {
 				const answer: any = await dropPreviewRelease(release, req.hdb_user);
-				dropped.push({ ...release, componentRemoved: answer?.componentRemoved, message: answer?.message });
+				const outcome = answer?.value ?? answer?.body ?? answer;
+				dropped.push({ ...release, componentRemoved: outcome?.componentRemoved, message: outcome?.message });
 			} catch (error) {
 				dropped.push({ ...release, error: (error as Error).message });
 				failed.push(`${release.project} on ${release.node}: ${(error as Error).message}`);

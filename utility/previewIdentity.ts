@@ -1,5 +1,4 @@
-// The names and claims of an application's PR-preview identity, which `enable_previews` writes and the CLI and Studio
-// must derive the same way. Node builtins only, like componentNames.ts, so the CLI can import it.
+// Node builtins only, like componentNames.ts: the CLI derives these names and claims too.
 
 import { posix } from 'node:path';
 import { PROJECT_NAME_PATTERN } from './componentNames.ts';
