@@ -6854,70 +6854,74 @@ export function makeTable(options): TableResourceClass {
 					}
 					return {
 						async next() {
-							let iteration: IteratorResult<any>;
-							if (sortedPositions) {
-								iteration = nextSorted();
-								if (iteration.done) {
-									if (dbDone) {
-										if (results.onDone) results.onDone();
-										return iteration;
-									}
-								} else
-									return {
-										value: await transformToRecord.call(this, iteration.value),
-									};
-							}
-							ordered = [];
-							orderedKeys = [];
-							for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
-							if (enqueuedEntryForNextGroup) collect(enqueuedEntryForNextGroup);
-							// need to load all the entries into ordered
-							do {
-								iteration = await dbIterator.next();
-								if (iteration.done) {
-									dbDone = true;
-									if (!ordered.length) {
-										if (results.onDone) results.onDone();
-										return iteration;
-									} else break;
-								} else {
-									let entry = iteration.value;
-									if (entry?.then) entry = await entry;
-									// if the index has already provided the first order of sorting, we only need to sort
-									// within each grouping
-									if (dbOrderedAttribute) {
-										const groupingValue = getAttributeValue(
-											entry,
-											dbOrderedAttribute,
-											context,
-											(sort as any).dbOrderedSort
-										);
-										if (firstEntry) {
-											firstEntry = false;
-											lastGroupingValue = groupingValue;
-										} else if (groupingValue !== lastGroupingValue) {
-											lastGroupingValue = groupingValue;
-											enqueuedEntryForNextGroup = entry;
-											break;
+							for (;;) {
+								let iteration: IteratorResult<any>;
+								if (sortedPositions) {
+									iteration = nextSorted();
+									if (iteration.done) {
+										if (dbDone) {
+											if (results.onDone) results.onDone();
+											return iteration;
 										}
+									} else {
+										const value = await transformToRecord.call(this, iteration.value);
+										if (value !== SKIP) return { value };
+										continue;
 									}
-									collect(entry);
 								}
-							} while (true);
-							if ((sort as any).isGrouped) {
-								// TODO: Return grouped results
+								ordered = [];
+								orderedKeys = [];
+								for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
+								if (enqueuedEntryForNextGroup) collect(enqueuedEntryForNextGroup);
+								// need to load all the entries into ordered
+								do {
+									iteration = await dbIterator.next();
+									if (iteration.done) {
+										dbDone = true;
+										if (!ordered.length) {
+											if (results.onDone) results.onDone();
+											return iteration;
+										} else break;
+									} else {
+										let entry = iteration.value;
+										if (entry?.then) entry = await entry;
+										// if the index has already provided the first order of sorting, we only need to sort
+										// within each grouping
+										if (dbOrderedAttribute) {
+											const groupingValue = getAttributeValue(
+												entry,
+												dbOrderedAttribute,
+												context,
+												(sort as any).dbOrderedSort
+											);
+											if (firstEntry) {
+												firstEntry = false;
+												lastGroupingValue = groupingValue;
+											} else if (groupingValue !== lastGroupingValue) {
+												lastGroupingValue = groupingValue;
+												enqueuedEntryForNextGroup = entry;
+												break;
+											}
+										}
+										collect(entry);
+									}
+								} while (true);
+								if ((sort as any).isGrouped) {
+									// TODO: Return grouped results
+								}
+								sortedPositions = [];
+								for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
+								sortedPositions.sort(comparePositions);
+								sortedIndex = 0;
+								iteration = nextSorted();
+								if (!iteration.done) {
+									const value = await transformToRecord.call(this, iteration.value);
+									if (value !== SKIP) return { value };
+									continue;
+								}
+								if (results.onDone) results.onDone();
+								return iteration;
 							}
-							sortedPositions = [];
-							for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
-							sortedPositions.sort(comparePositions);
-							sortedIndex = 0;
-							iteration = nextSorted();
-							if (!iteration.done)
-								return {
-									value: await transformToRecord.call(this, iteration.value),
-								};
-							if (results.onDone) results.onDone();
-							return iteration;
 						},
 						return() {
 							if (results.onDone) results.onDone();
