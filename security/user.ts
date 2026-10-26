@@ -102,7 +102,6 @@ import _validate from 'validate.js';
 const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
-import * as env from '../utility/environment/environmentManager.ts';
 import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
@@ -140,8 +139,6 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 };
 const passwordHashCache = new Map();
 const promiseDelete = promisify(delete_.delete_);
-const configuredHashFunction =
-	env.get(terms.CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION) ?? password.HASH_FUNCTION.SHA256;
 const { USER_TABLE_NAME, ROLE_TABLE_NAME } = terms.SYSTEM_TABLE_NAMES;
 
 async function addUser(user: User | any): Promise<string> {
@@ -165,8 +162,9 @@ async function addUser(user: User | any): Promise<string> {
 		throw new ClientError(HDB_ERROR_MSGS.DUP_ROLES_FOUND(cleanUser.role), HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-	cleanUser.hash_function = configuredHashFunction;
+	const hashFunction = password.configuredHashFunction();
+	cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+	cleanUser.hash_function = hashFunction;
 	cleanUser.role = searchRole[0].id;
 
 	const insertResponse = await insert.insert({
@@ -208,8 +206,9 @@ async function alterUser(jsonMessage) {
 	}
 
 	if (!hdbUtility.isEmpty(cleanUser.password) && !hdbUtility.isEmptyOrZeroLength(cleanUser.password.trim())) {
-		cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-		cleanUser.hash_function = configuredHashFunction;
+		const hashFunction = password.configuredHashFunction();
+		cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+		cleanUser.hash_function = hashFunction;
 	}
 
 	// the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly

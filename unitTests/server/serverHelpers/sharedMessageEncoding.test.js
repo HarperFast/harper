@@ -332,6 +332,36 @@ describe('sharedMessageEncoding – pass-through messages', function () {
 		assert.strictEqual(share({ contentType: 'text/x-custom', data: 'text' }).payload, 'text');
 	});
 
+	it('negotiates for a record whose data is not text or bytes', function () {
+		const records = [{ a: 1 }, 5, 0, [1, 2], true].map((data, id) => ({ id, contentType: 'x', data }));
+
+		for (const message of records) {
+			const encoding = share(message, subscriberRequest(COUNTED_TYPE));
+			assert.strictEqual(encoding.payload.toString(), 'counted:' + JSON.stringify(message));
+			generate({ cmd: 'publish', topic: 'a', payload: encoding.payload, qos: 1, messageId: 1, dup: false });
+		}
+
+		assert.strictEqual(countedCalls, records.length);
+	});
+
+	it('keeps a separate encoding per negotiated type for such a record', function () {
+		const message = { id: 1, contentType: 'x', data: { a: 1 } };
+
+		const counted = share(message, subscriberRequest(COUNTED_TYPE));
+		const alt = share(message, subscriberRequest(ALT_TYPE));
+
+		assert.notStrictEqual(counted, alt);
+		assert.strictEqual(counted.payload.toString(), 'counted:' + JSON.stringify(message));
+		assert.strictEqual(alt.payload.toString(), 'alt:' + JSON.stringify(message));
+	});
+
+	it('still lets a real envelope ignore an unsatisfiable Accept header once a colliding record has been seen', function () {
+		share({ id: 1, contentType: 'x', data: 5 }, subscriberRequest(COUNTED_TYPE));
+		const envelope = { contentType: 'application/octet-stream', data: Buffer.from([1]) };
+
+		assert.strictEqual(share(envelope, subscriberRequest('application/x-not-registered')).payload, envelope.data);
+	});
+
 	it('still negotiates normally for a message with a content type but no data', function () {
 		const message = { contentType: 'application/octet-stream', id: 11 };
 

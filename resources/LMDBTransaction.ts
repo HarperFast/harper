@@ -8,6 +8,7 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	registeredReplicationConfirmation,
 	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
@@ -28,11 +29,6 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-let confirmReplication;
-export function replicationConfirmation(callback) {
-	confirmReplication = callback;
-}
-
 export class LMDBTransaction extends DatabaseTransaction {
 	stagesWriteOnSave = false;
 	#context: Context;
@@ -340,15 +336,24 @@ export class LMDBTransaction extends DatabaseTransaction {
 						if (store) completions.push(store.flushed);
 					}
 					let confirmation: Promise<void>;
-					if (this.replicatedConfirmation) {
+					const confirmationCount = this.confirmationCount();
+					if (confirmationCount) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
+						const confirmReplication = registeredReplicationConfirmation();
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
-						const lastEntry = this.lastConfirmableEntry();
-						if (confirmReplication && databaseName && lastEntry)
-							confirmation = confirmReplicationAfterCommit(() =>
-								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
-							);
+						// the write has landed: a failure here is this commit's outcome, after the bookkeeping below
+						try {
+							const position = confirmReplication && databaseName ? this.confirmationPosition() : undefined;
+							if (position !== undefined)
+								confirmation = confirmReplicationAfterCommit(() =>
+									confirmReplication(databaseName, position, confirmationCount)
+								);
+						} catch (error) {
+							const refusal = Promise.reject(error);
+							refusal.catch(() => {}); // surfaces through the completions, even if bookkeeping throws first
+							completions.push(refusal);
+						}
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
 					// or whose stored record a later write to the same key replaced without an audit entry
@@ -423,6 +428,28 @@ export class LMDBTransaction extends DatabaseTransaction {
 			}
 		}
 		throw error;
+	}
+	private confirmationCount(): number | undefined {
+		if (this.replicatedConfirmation) return this.replicatedConfirmation;
+		const root = this.root;
+		if (root && root.next === this && !root.db) return root.replicatedConfirmation;
+	}
+	/**
+	 * The audit-log position (`localTime`) peers must acknowledge: the newest among the written keys. Any
+	 * entry this commit did not store predates it — a write that lost to a newer entry, or an out-of-order
+	 * patch that only appended audit — so the newest is this commit's own position whenever a write stored a
+	 * record, and otherwise the entry that superseded its writes, as on RocksDB. A concurrent later write can
+	 * only raise it. Writes that opt out (audit-only markers) and unaudited tables (no local time, nothing
+	 * appended for peers to acknowledge) are not considered.
+	 */
+	private confirmationPosition(): number | undefined {
+		let position: number | undefined;
+		for (const write of this.writes) {
+			if (!write || write.skipReplicationConfirmation) continue;
+			const localTime = write.store.getEntry(write.key)?.localTime;
+			if (localTime && !(position >= localTime)) position = localTime;
+		}
+		return position;
 	}
 	/**
 	 * Force-release the retained read snapshot without touching staged writes. The base class's

@@ -343,6 +343,11 @@ function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void
 	if (rootStore.getMonotonicTimestamp() <= floor) Atomics.store(words, WORD_STRICT, 1n);
 }
 
+/** Whether this engine can make a floor record power-loss durable before it is advertised (`syncWal`). */
+export function originFloorsDurable(rootStore: any): boolean {
+	return typeof rootStore?.syncWal === 'function';
+}
+
 export function publishOriginFloor(rootStore: RocksDatabase, floor: number): void {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	registryFor(rootStore); // every opener can retire a dead thread's bounds, floor or no floor

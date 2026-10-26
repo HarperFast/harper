@@ -176,10 +176,15 @@ this: its tag is a module-private `Symbol` that `isCredentialRejection` checks b
 The VM loader and the compartment `resolveHook` call the same module-scope `resolveModule`, so a
 dependency that resolves in one `applications.moduleLoader` mode resolves in the other. It resolves
 CommonJS-first (a dual package keeps its `require` target) and falls back to the package's `exports`
-map only for a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`, or
-`MODULE_NOT_FOUND` on Bun. A fallback resolution records the `package.json` and entry-file digests, not
-a resolution edge, because `RuntimeModuleTracker` re-resolves edges with `createRequire` and would read
-the import-only package as changed on every deploy.
+map only for an import of a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`,
+or `MODULE_NOT_FOUND` on Bun. A `require()` never falls back — the CommonJS resolver's verdict is the
+runtime's own `require` resolution. The fallback is a port of Node's `PACKAGE_EXPORTS_RESOLVE` with only
+the `node` and `import` conditions (plus `bun` on Bun) — Node's `module-sync`, `node-addons` and
+`--conditions` are not modeled — and the `resolves package exports as native Node import does` cases check
+each rule against native Node. A
+fallback resolution records the `package.json` and entry-file digests, not a resolution edge, because
+`RuntimeModuleTracker` re-resolves edges with `createRequire` and would read the import-only package as
+changed on every deploy.
 
 SES loads from the ESM shims `ses/index.js` composes, through `loadSES`, never `require('ses')`: that
 bundle is CommonJS, Bun drops function-level `'use strict'` in CommonJS, and SES's sloppy-mode self-check
@@ -221,6 +226,10 @@ There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads t
 - **A request's user is a view.** `auth.ts` hands each request `cloneUserView(user)`, whose `role` and `permission` it may replace (verifyPerms does) without touching the cached principal. The view carries the original's record provenance, so `isCurrentUser` on a request's user answers for the records that admitted it; live-subscription registration relies on that to catch a principal that changed before it registered. Provenance is an own symbol-keyed property of a user this module built, so the spread copies it with no `WeakMap` write on the request path; only a user resolved outside the module (`trackUserRecords`) is tracked in a `WeakMap`. A `deepStrictEqual` against a user literal sees that symbol, so tests compare string-keyed fields.
 
 LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.
+
+## The password hash function and token lifetimes are read when used, never at module load (`security/user.ts`, `security/tokenAuthentication.ts`, `utility/password.ts`)
+
+`harper run` on an empty root evaluates these modules (and `installer.ts`) before `install()` writes the config, and `install()` creates the admin before the startup phase (`runStartup()`) runs, so no startup hook can fix the admin's hash: `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`. Validation uses the stored value. `password.hash` defaults to the configured function; `password.validate` defaults to SHA-256 whatever is configured, because the algorithm of a stored hash is not policy and the refresh-token check validates its SHA-256 hash with that default (a config-driven default returns a Promise there, and `!Promise` accepts a superseded token). Token lifetimes are read per mint, so they need no startup hook. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
 
 ## Named component children are identified by lifetime (`security/jsLoader.ts`, `security/spawnPidFile.ts`)
 

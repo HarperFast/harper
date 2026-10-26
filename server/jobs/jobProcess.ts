@@ -87,6 +87,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		// get_job answers a refused bulk load with its structured permission report as the message.
 		const report = err?.http_resp_msg;
 		jobObj.message = report !== null && typeof report === 'object' ? report : err?.message ? err.message : err;
+		if (err?.result !== undefined) jobObj.result = err.result;
 		jobObj.end_datetime = Date.now();
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would

@@ -798,6 +798,27 @@ may still have them open, and a later drop of the now-absent application discard
 restart replaces is answered just before it, with any retention already decided and `null` for what is not done yet;
 a later failure to remove branches is only logged, and a second drop retries it (harper#3091).
 
+## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
+
+The job behind an uncertified `restart: 'rolling'` deploy (a replicated `restart_service`) restarts one
+peer at a time and polls each peer's own restart job. It ends `COMPLETE` only when every peer's job did;
+otherwise `ERROR`, naming each peer that failed or was skipped, with one `result.replicated` entry per peer
+in both outcomes (`{ node, message }` restarted, `{ node, error }` not). A certified rolling deploy runs
+`activateDeploymentOnPeers` instead, which reports through `http_resp_msg`.
+
+- A peer that answered with its own error, or whose connection never opened (`ECONNREFUSED` and similar),
+  never started a restart: it is recorded and the roll moves on.
+- Any other dispatch failure halts the roll, so two peers never restart at once: the replicator's "outcome
+  there is unknown" (a timeout, or the connection closed before the answer), any other socket error,
+  or an answer with no job id. So does a peer whose restart failed or timed out, since the release being
+  rolled out may be what failed. Every peer after it is recorded as skipped.
+- Only the write-queue back-pressure refusal is retried (after the other peers, three attempts): it is the
+  one refusal known to be transient. Errors cross replication as text plus, for a socket error, its `code`, so
+  these classifications match wording and codes.
+
+`COMPLETE` means each peer's restart job completed, not that every worker there took new code. Enforced by
+`unitTests/bin/restartEachPeer.test.js` and `replicatedRestartService.test.js` (harper#3468).
+
 ## A replicated deploy reports each node's install fingerprint, and never acts on it
 
 Every node of a replicated `deploy_component` resolves and installs the release itself, so two nodes can end
