@@ -6692,7 +6692,7 @@ export function makeTable(options): TableResourceClass {
 			// so the results hold a lease on each such link until they are done.
 			let relatedLeases: Map<DatabaseTransaction, ReadLease> | undefined;
 			const readTxnFor =
-				hasRelationships && hasCrossDatabaseJoin(conditions, TableResource)
+				readTxn && hasRelationships && hasCrossDatabaseJoin(conditions, TableResource)
 					? (relatedTable: typeof TableResource) => {
 							const link = relatedTable._txnForContext(context);
 							if (link === txn) return readTxn;
@@ -12677,7 +12677,9 @@ function hasCrossDatabaseJoin(conditions: any[], table: any): boolean {
 		if (!Array.isArray(attribute)) continue;
 		let hop = table;
 		for (let i = 0; i < attribute.length - 1; i++) {
-			const related = hop.propertyResolvers?.[attribute[i]]?.definition?.tableClass;
+			const relationship = findAttribute(hop.attributes, attribute[i]);
+			if (!relationship?.relationship) break;
+			const related = relationship.definition?.tableClass || relationship.elements?.definition?.tableClass;
 			if (!related) break;
 			if (related.primaryStore.path !== hop.primaryStore.path) return true;
 			hop = related;

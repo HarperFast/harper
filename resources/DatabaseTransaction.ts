@@ -1018,7 +1018,6 @@ export class DatabaseTransaction implements Transaction {
 	// and either side can scan for a while with the other idle.
 	declare readLeases?: Set<ReadLease>;
 	declare heldLeases?: Set<ReadLease>;
-	// The monitor tick that last consumed this link's own range activity.
 	declare rangeActiveTick?: number;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
@@ -1210,6 +1209,7 @@ export class DatabaseTransaction implements Transaction {
 
 	leaseReadTxn(holder: DatabaseTransaction, disableSnapshot?: boolean): ReadLease {
 		const readTxn = this.useReadTxn(disableSnapshot);
+		if (!readTxn) return { holder, link: this, readTxn };
 		const generation = this.readTxnGeneration;
 		const lease: ReadLease = {
 			holder,
@@ -1220,7 +1220,7 @@ export class DatabaseTransaction implements Transaction {
 				this.readLeases.delete(lease);
 				holder.heldLeases.delete(lease);
 				this.unregisterReadIterator(lease);
-				if (readTxn) this.doneReadTxn(generation);
+				this.doneReadTxn(generation);
 			},
 		};
 		(this.readLeases ??= new Set()).add(lease);
@@ -4282,12 +4282,20 @@ function consumeRangeActivity(txn: DatabaseTransaction): boolean {
 	return txn.rangeActiveTick >= monitorTick - 1;
 }
 
-// Renewal comes only from a partner's own range activity, never from its renewal: two leases held in
-// opposite directions must not keep each other alive once both searches are abandoned.
+// Every link of a search (its holder and each link it leases, an intermediate hop of a multi-hop join
+// included) is live while any of them scans. Only range activity counts, never a renewal: two leases
+// held in opposite directions must not keep each other alive once both searches are abandoned.
+function searchScanning(holder: DatabaseTransaction): boolean {
+	let scanning = consumeRangeActivity(holder);
+	for (const { link } of holder.heldLeases) if (consumeRangeActivity(link)) scanning = true;
+	return scanning;
+}
+
 function leasePartnerScanning(txn: DatabaseTransaction): boolean {
-	if (txn.readLeases) for (const { holder } of txn.readLeases) if (consumeRangeActivity(holder)) return true;
-	if (txn.heldLeases) for (const { link } of txn.heldLeases) if (consumeRangeActivity(link)) return true;
-	return false;
+	let scanning = false;
+	if (txn.readLeases) for (const { holder } of txn.readLeases) if (searchScanning(holder)) scanning = true;
+	if (txn.heldLeases && searchScanning(txn)) scanning = true;
+	return scanning;
 }
 
 function startMonitoringTxns() {
@@ -4316,7 +4324,9 @@ function startMonitoringTxns() {
 		reportBudget: LongLivedHolderReportBudget
 	) {
 		consumeRangeActivity(txn);
-		if (txn.rangeActiveTick === monitorTick || leasePartnerScanning(txn)) txn.renewReadTimeout();
+		// both run every walk, so an unwalked partner's activity is stamped this tick
+		const partnerScanning = leasePartnerScanning(txn);
+		if (txn.rangeActiveTick === monitorTick || partnerScanning) txn.renewReadTimeout();
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;

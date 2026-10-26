@@ -11,7 +11,7 @@ const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageTh
 // transaction chain, lazily, after the request commits (REST serializes after commit). The search must
 // hold that link's read handle until its results are done, and give it back on every way they end.
 describe('cross-database relationship search', function () {
-	let Emp, Badge, Vault, Staff, previousMainIsWorker;
+	let Emp, Badge, Org, Vault, Staff, previousMainIsWorker;
 	const GOLD_IDS = Array.from({ length: 10 }, (_, i) => `e${i * 2}`).sort();
 	const VAULTS = 10_000;
 
@@ -43,12 +43,22 @@ describe('cross-database relationship search', function () {
 		await Badge.put({ id: 'b1', label: 'gold' });
 		await Badge.put({ id: 'b2', label: 'silver' });
 		for (let i = 0; i < 20; i++) await Emp.put({ id: `e${i}`, badgeIds: i % 2 ? ['b2'] : ['b1', 'b2'] });
+		Org = table({
+			database: 'xdb_rel_org',
+			table: 'Org',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+			],
+		});
 		Vault = table({
 			database: 'xdb_rel_hr',
 			table: 'Vault',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name', indexed: true },
+				{ name: 'orgId', indexed: true },
+				{ name: 'org', type: 'Org', relationship: { from: 'orgId' }, definition: { tableClass: Org } },
 			],
 		});
 		Staff = table({
@@ -63,9 +73,13 @@ describe('cross-database relationship search', function () {
 		// many vault names a contains-filter rejects, each yielding an event turn, scanned before the one it
 		// matches (RocksDB only: the monitor case it feeds does not run on LMDB)
 		if (!Emp.primaryStore.path?.endsWith('.mdb')) {
-			for (let i = 0; i < VAULTS; i++) await Vault.put({ id: `v${i}`, name: `name-${String(i).padStart(5, '0')}` });
+			for (let i = 0; i < VAULTS; i++) {
+				await Vault.put({ id: `v${i}`, name: `name-${String(i).padStart(5, '0')}` });
+				await Org.put({ id: `o${i}`, name: `name-${String(i).padStart(5, '0')}` });
+			}
 		}
-		await Vault.put({ id: 'vAlpha', name: 'zz-Alpha' });
+		await Org.put({ id: 'oAlpha', name: 'zz-Alpha' });
+		await Vault.put({ id: 'vAlpha', name: 'zz-Alpha', orgId: 'oAlpha' });
 		await Staff.put({ id: 's1', vaultId: 'vAlpha' });
 	});
 
@@ -101,11 +115,13 @@ describe('cross-database relationship search', function () {
 		assert.strictEqual(badgeLink.readTxnsUsed, 0);
 	});
 
-	it('releases the related handle when the transaction closes abandoned results', async function () {
-		const { badgeLink } = await searchAfterCommit();
+	it('releases each handle when its link closes abandoned reads', async function () {
+		const { badgeLink, empLink } = await searchAfterCommit();
 		assert.strictEqual(badgeLink.readTxnsUsed, 1);
 		badgeLink.closeOwnedReadIterators();
 		assert.strictEqual(badgeLink.readTxnsUsed, 0);
+		empLink.closeOwnedReadIterators();
+		assert.strictEqual(empLink.readTxnsUsed, 0);
 	});
 
 	it('keeps streaming while a drained related link sits through monitor ticks', async function () {
@@ -248,6 +264,30 @@ describe('cross-database relationship search', function () {
 			const ids = [];
 			for await (const entry of results) ids.push(entry.id);
 			assert.deepStrictEqual(ids.sort(), GOLD_IDS);
+		} finally {
+			setTxnExpiration(30000);
+		}
+	});
+
+	it('keeps an intermediate hop of a multi-hop join while the last hop scans', async function () {
+		if (Emp.primaryStore.path?.endsWith('.mdb')) this.skip();
+		setTxnExpiration(10);
+		try {
+			const context = {};
+			const results = await transaction(context, () =>
+				Staff.search(
+					{
+						conditions: [{ attribute: ['vault', 'org', 'name'], comparator: 'contains', value: 'Alpha' }],
+						allowFullScan: true,
+					},
+					context
+				)
+			);
+			const started = performance.now();
+			const ids = [];
+			for await (const entry of results) ids.push(entry.id);
+			assert.ok(performance.now() - started > 30, 'the last hop must scan across several monitor ticks');
+			assert.deepStrictEqual(ids, ['s1']);
 		} finally {
 			setTxnExpiration(30000);
 		}
