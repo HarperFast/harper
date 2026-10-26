@@ -19,8 +19,8 @@ import {
 	databases,
 	resetDatabases,
 	closeDatabase as _closeDatabase,
-	closeDetachedDatabaseRoots,
-	restoreCloseTargets,
+	closeDetachedDatabaseRoots as _closeDetachedDatabaseRoots,
+	restoreCloseTargets as _restoreCloseTargets,
 	prepareDatabaseDrop,
 	completeDatabaseDropPreparation,
 	reloadBranchAt,
@@ -33,6 +33,8 @@ import {
 
 const cleanLmdbMap = _cleanLmdbMap;
 const closeDatabase = _closeDatabase;
+const closeDetachedDatabaseRoots = _closeDetachedDatabaseRoots;
+const restoreCloseTargets = _restoreCloseTargets;
 const blockBlobSavesForRestore = _blockBlobSavesForRestore;
 const resumeBlobSavesForRestore = _resumeBlobSavesForRestore;
 /**
