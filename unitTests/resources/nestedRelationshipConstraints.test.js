@@ -665,6 +665,24 @@ describe('nested relationship constraints', function () {
 			const row = single ? result : result[0];
 			assert.deepStrictEqual(row.metadata, { label: 'kept' });
 		});
+	it('does not resume a relationship candidate provider after the selection is returned', async function () {
+		let resolve;
+		const pending = new Promise((done) => {
+			resolve = done;
+		});
+		await transaction({}, async () => {
+			const selection = Parent._prepareRelationshipSelection(
+				{ name: 'child', limit: 1, select: ['id', 'observed'] },
+				{},
+				{ child: { fromRecord: () => pending } }
+			);
+			const result = selection({ id: 'p1', childId: 'c1' });
+			selection.return();
+			resolve(Child.primaryStore.getEntry('c1'));
+			assert.strictEqual(await result, undefined);
+			assert.deepStrictEqual(projected, []);
+		});
+	});
 	for (const nestedOnly of [false, true])
 		it(`cancels in-flight child projections when the parent iterator is returned (${nestedOnly ? 'nested-only' : 'direct'})`, async function () {
 			if (!(Child.primaryStore instanceof RocksDatabase)) return this.skip();

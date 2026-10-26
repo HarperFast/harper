@@ -6764,7 +6764,9 @@ export function makeTable(options): TableResourceClass {
 			let offsetGuard;
 			let transformReadTxn;
 			const active = new Set<() => void>();
+			let selectionStopped = false;
 			const relationshipSelection = (record, entry?, isSync = false) => {
+				if (selectionStopped) return undefined;
 				let value;
 				if (filterMap?.hasMappings) {
 					const key = resolver.from ? record[resolver.from] : flattenKey(entry?.key ?? record[primaryKey]);
@@ -6772,6 +6774,7 @@ export function makeTable(options): TableResourceClass {
 				} else if (filterMap) value = filterMap.fromRecord?.(record);
 				else value = resolver(record, context, entry, true, undefined, undefined, true);
 				return when(value, (value) => {
+					if (selectionStopped) return undefined;
 					if (value == null) return value;
 					const many =
 						Array.isArray(value) ||
@@ -6954,6 +6957,7 @@ export function makeTable(options): TableResourceClass {
 				});
 			};
 			(relationshipSelection as any).return = () => {
+				selectionStopped = true;
 				for (const close of [...active]) {
 					try {
 						close();
