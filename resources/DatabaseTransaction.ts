@@ -2144,14 +2144,18 @@ export class DatabaseTransaction implements Transaction {
 			this.detachWrite(operation);
 			throw lockNotHeldError(lockHandle);
 		}
+		const concurrentClosedWrite =
+			Boolean((transaction as RocksTransactionWithRetry | undefined)?.immediateCommit) ||
+			(!transaction && this.open !== TRANSACTION_STATE.OPEN && !this.saveCommits);
 		// Lock-write timestamp rules.
 		if (lockHandle) {
 			this.hasLeaseProtectedWrite = true;
-			if (this.open === TRANSACTION_STATE.CLOSED || this.saveCommits) {
-				// CLOSED path (second+ write per ImmediateTransaction cycle) OR the first write in
-				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
-				// signals the per-write-commit semantics):  stamp with nextHolderVersion() so that
-				// each sequential save() gets its own monotonically increasing stamp — scoped or hold.
+			if (concurrentClosedWrite || this.saveCommits) {
+				// A save that commits on its own handle — any ImmediateTransaction save, or a write reaching
+				// an explicit transaction after it closed — takes a holder version, so sequential saves get
+				// distinct, increasing stamps. A conflict-retry or open-iterator re-save also runs after
+				// commit() closed the transaction, but must keep the version its first save chose, so it never
+				// takes a first stamp here (harper#3487).
 				// The stamp stays on the operation and is consumed below rather than assigned to
 				// this.timestamp: pinning the link's clock would stamp every OTHER write staged on
 				// the same context before the commit resets it — a concurrent write in the caller's
@@ -2160,9 +2164,6 @@ export class DatabaseTransaction implements Transaction {
 				if (!operation.lockStamp) operation.lockStamp = lockHandle.holderVersionCandidate();
 			}
 		}
-		const concurrentClosedWrite =
-			Boolean((transaction as RocksTransactionWithRetry | undefined)?.immediateCommit) ||
-			(!transaction && this.open !== TRANSACTION_STATE.OPEN && !this.saveCommits);
 		let txnTime =
 			operation.lockStamp ?? this.getHandleStagedTxnTime(transaction) ?? (concurrentClosedWrite ? 0 : this.timestamp);
 		const mintedTimestamp = !txnTime;

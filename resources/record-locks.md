@@ -168,7 +168,12 @@ the lock's acquisition time, which LWW then silently drops against a newer recor
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
 clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
 were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
-thrown for the mixed-write case). After a lock-backed record change commits, its transaction timestamp
+thrown for the mixed-write case). Either way the holder's writes commit at the transaction's version:
+`save()` stamps from the handle only a save that commits on its own handle (`saveCommits`, or
+`concurrentClosedWrite` — a write that reaches the transaction after it closed), so the conflict-retry
+and open-iterator-replay re-saves that `performCommit()` runs after closing the transaction keep each
+write's first-save version ([harper#3487](https://github.com/HarperFast/harper/issues/3487); pinned by
+`recordLock.test.js`). After a lock-backed record change commits, its transaction timestamp
 advances `handle.noteHolderVersion()`, so a surviving hold's later saves advance past that version
 rather than going backwards and being dropped by LWW. A skipped or rolled-back change never advances
 the floor. Consequently, a mixed transaction can
