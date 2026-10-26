@@ -6,9 +6,6 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// A query that selects, filters on, or sorts by a relationship must read the related records through the
-// async-capable path, so a related record that is not in memory is read in the background instead of
-// blocking the worker.
 describe('Queries read related records asynchronously', () => {
 	let ColdParent, ColdChild;
 	const childCount = 20;
@@ -61,7 +58,6 @@ describe('Queries read related records asynchronously', () => {
 			await ColdParent.put({
 				id: 'parent-' + i,
 				childId: 'child-' + i,
-				// child-missing exercises filterMissing
 				childIds: ['child-' + (i + 4), 'child-missing', 'child-' + (i + 8)],
 			});
 		}
@@ -252,6 +248,17 @@ describe('Queries read related records asynchronously', () => {
 				assert.deepEqual(results, [{ id: 'parent-0' }, { id: 'parent-3' }]);
 				assert.equal(childReads.sync, 0);
 				assert(childReads.promised > 0);
+			});
+
+			it('under synchronous iteration, a relationship filter keeps its synchronous form', function () {
+				const results = [
+					...ColdParent.search({
+						conditions: [firstFourParents, { attribute: ['child', 'label'], value: 'label 2' }],
+						select: ['id'],
+					}),
+				];
+				assert.deepEqual(results, [{ id: 'parent-2' }]);
+				assert(childReads.sync > 0, 'a synchronous iteration cannot wait on a background read');
 			});
 
 			it('a leading one-to-many join', async function () {

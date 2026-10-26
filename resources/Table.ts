@@ -6897,7 +6897,6 @@ export function makeTable(options): TableResourceClass {
 								} else {
 									let entry = iteration.value;
 									if (entry?.then) entry = await entry;
-									// an id that transformToEntries loaded asynchronously and found missing
 									if (entry === SKIP) continue;
 									// if the index has already provided the first order of sorting, we only need to sort
 									// within each grouping
@@ -8940,7 +8939,8 @@ export function makeTable(options): TableResourceClass {
 								const id = object[relationship.from ? relationship.from : primaryKey];
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
-							attribute.resolve.resolveKeys = (object, context) => searchRelated(object, context).asArray;
+							attribute.resolve.resolveKeys = (object, context) =>
+								txnForContext(context).getReadTxn()?.isDone ? [] : searchRelated(object, context).asArray;
 							attribute.resolve.loadEntries = (object, context) => {
 								const keys = attribute.resolve.resolveKeys(object, context);
 								const relatedTable = attribute.elements.definition.tableClass;
@@ -10205,14 +10205,12 @@ export function makeTable(options): TableResourceClass {
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
-		// a relationship filter's maybeAsync variant returns a Promise when it reads a related record from storage
 		const matchers = filters?.some((filter) => filter.maybeAsync)
 			? filters.map((filter) => filter.maybeAsync ?? filter)
 			: undefined;
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
 			if (!record) return SKIP;
-			if (matchers) return applyFilters(record, entry, id, idFiltersApplied, 0);
 			// apply the record-level filters
 			for (let i = 0; i < filtersLength; i++) {
 				if (idFiltersApplied?.includes(i)) continue; // already applied
@@ -10220,6 +10218,11 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (id !== undefined) entry.key = id;
 			return entry;
+		}
+		function processEntryMaybeAsync(entry: Entry, id?) {
+			const record = entry?.value;
+			if (!record) return SKIP;
+			return applyFilters(record, entry, id, idFiltersApplied, 0);
 		}
 		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
 			for (let i = start; i < filtersLength; i++) {
@@ -10233,10 +10236,13 @@ export function makeTable(options): TableResourceClass {
 			return entry;
 		}
 		if (filtersLength > 0 || !ids.hasEntries) {
-			let results = ids.map((idOrEntry) => {
+			let results = ids.map(function (this: any, idOrEntry) {
 				idFiltersApplied = null;
+				// a relationship filter's maybeAsync variant returns a Promise when it reads a related record from
+				// storage, which only an asynchronous iteration can wait on
+				const process = matchers && !this?.isSync ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
-					return filtersLength > 0 ? processEntry(idOrEntry) : idOrEntry; // already an entry
+					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {
 					return SKIP;
 				}
@@ -10250,7 +10256,7 @@ export function makeTable(options): TableResourceClass {
 						idFiltersApplied.push(i);
 					}
 				}
-				return loadLocalRecord(idOrEntry, context, loadOptions, false, processEntry);
+				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
 			});
 			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);
 			results.hasEntries = true;

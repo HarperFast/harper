@@ -1474,14 +1474,17 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 	return results;
 }
 const entryValue = (entry) => entry?.value;
-// A join's related search under async iteration: a cold related read waits on its Promise instead of blocking
+function ignoreReturnFailure() {}
 async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean }) {
 	const iterator = rightIterable[Symbol.asyncIterator]();
 	let done = false;
 	try {
 		while (!scan.closed) {
 			let iteration = iterator.next();
-			if (iteration.then) iteration = await iteration;
+			if (iteration.then) {
+				iteration = await iteration;
+				if (scan.closed) return;
+			}
 			if (iteration.done) {
 				done = true;
 				return;
@@ -1505,7 +1508,7 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: { close
 			add(entry, record);
 		}
 	} finally {
-		if (!done) iterator.return?.();
+		if (!done) iterator.return?.()?.catch?.(ignoreReturnFailure);
 	}
 }
 function someRelatedMatch(entries, match, start: number) {
@@ -1609,7 +1612,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						idIterator = (scan.closed ? new Set() : ids)[Symbol.iterator]();
 					});
 				}
-				return scanned.then(nextJoined);
+				return scanned.then(() => (scan.closed ? { done: true, value: undefined } : nextJoined()));
 			};
 		} else {
 			iterator.next = () => {
