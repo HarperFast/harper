@@ -132,8 +132,9 @@ function holdsField(record: any, key: string) {
 }
 
 // A plain set has no inverse, so its key is left to older history (`unknowns`). An add reverses
-// exactly only in integer arithmetic (a float or an unsafe integer can carry a rounding residue), so
-// only such an add's key waits in `reversedAdds` for getRecordAtTime to judge its final value.
+// exactly in safe-integer arithmetic, except one that established its field from absent or null,
+// which reverses to 0; such keys wait in `reversedAdds` for getRecordAtTime to keep only a nonzero
+// result (a coerced numeric string or boolean comes back as its number).
 export function applyReverse(record, update, unknowns: Set<string>, reversedAdds: Set<string>) {
 	for (const key in update) {
 		const value = update[key];
@@ -376,15 +377,10 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (boundaryEntry?.type === 'delete') return null;
 	}
-	// An add that established its field from absent or null reverses to 0, so only a nonzero integer
-	// result shows the add folded into a numeric value (a numeric string or boolean comes back as its
-	// number). Trusting that spares a counter the walk back to its base below.
 	for (const key of reversedAdds) {
 		const value = record[key];
 		if (!isExactInteger(value) || value === 0 || value === 0n) unknowns.add(key);
 	}
-	// Unknown keys take their value at `timestamp` from a forward rebuild, so CRDT ops accumulate
-	// correctly; a key a complete rebuild lacks did not exist then.
 	if (unknowns.size > 0 && auditTime > 0) {
 		const partial = { truncated: branched };
 		const priorRecord = reconstructForward(
@@ -401,7 +397,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,
 				// constructor, …) must not be filled from priorRecord's prototype chain.
 				if (Object.hasOwn(priorRecord, key)) record[key] = priorRecord[key];
-				else if (!partial.truncated) delete record[key];
+				else if (!partial.truncated) delete record[key]; // complete history: it did not exist then
 			}
 		}
 	}

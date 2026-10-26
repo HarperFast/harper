@@ -580,7 +580,6 @@ describe('crdt getRecordAtTime', () => {
 				{ version: 20, type: 'patch', value: { count: add(5e15) }, previousVersion: 10 },
 				{ version: 30, type: 'patch', value: { count: add(5e15) }, previousVersion: 20 },
 			]);
-			// 3 + 5e15 + 5e15 rounds to 10000000000000004, so reversing gives 5000000000000004
 			const current = currentEntry({ id: 'N', count: 3 + 5e15 + 5e15 }, 30);
 			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'N'), { id: 'N', count: 5000000000000003 });
 		});
@@ -601,7 +600,6 @@ describe('crdt getRecordAtTime', () => {
 				},
 			]);
 			const current = currentEntry({ id: 'O', v: 2, extra: 'y' }, 50);
-			// the single-link rebuild (50 -> 30 -> 10) never visits the merged write
 			assert.deepStrictEqual(getRecordAtTime(current, 40, store, 1, 'O'), { id: 'O', v: 2, extra: 'y' });
 			// before the merge there is no branch to miss
 			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'O'), { id: 'O', v: 2 });
