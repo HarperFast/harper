@@ -239,7 +239,9 @@ export class RootConfigWatcher extends EventEmitter {
 	// drain and exit mid-boot.
 	#schedule(): boolean {
 		this.#clearTrailingRead();
-		return this.#readRetry.schedule(() => this.#read(false), !this.#readyEmitted);
+		return this.#readRetry.schedule(() => {
+			if (this.#read(false)) this.#scheduleTrailingRead();
+		}, !this.#readyEmitted);
 	}
 
 	#read(waitForLock: boolean): boolean {
@@ -275,8 +277,6 @@ export class RootConfigWatcher extends EventEmitter {
 			this.#stageBootFallback();
 			return false;
 		}
-		// Consumers such as `harper_logger` mutate the emitted `#config` object in place, so compare
-		// raw file text before parsing and keep an unmutated clone for semantic comparison below.
 		if (this.#readyEmitted && data === this.#lastData) {
 			this.#readRetry.reset();
 			return true;
@@ -310,6 +310,8 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#configLoaded = true;
 		this.#readyStaged = true;
 		this.#lastData = data;
+		// Consumers such as `harper_logger` mutate the emitted `#config` object in place, so keep
+		// an unmutated clone for semantic comparison.
 		if (!this.#readyEmitted) {
 			this.#lastParsedConfig = structuredClone(config);
 			this.#config = config;

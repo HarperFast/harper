@@ -92,9 +92,7 @@ describe('root config read handle lifetime', () => {
 		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
 		await once(watcher, 'change');
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		// The count is not pinned: the armed re-read and chokidar's own event for the same write
-		// race. What must hold is that no emit carries the half-written snapshot.
-		assert.ok(changes.length > 0);
+		assert.strictEqual(changes.length, 1);
 		for (const config of changes) assert.deepStrictEqual(config, { 'test-component': { enabled: false } });
 		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: false } });
 	});

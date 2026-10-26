@@ -2,7 +2,6 @@ const assert = require('node:assert');
 const { RootConfigWatcher } = require('#js/config/RootConfigWatcher');
 const { tmpdir } = require('node:os');
 const { once } = require('node:events');
-const { isDeepStrictEqual } = require('node:util');
 const { join } = require('node:path');
 const { writeFileSync, mkdtempSync, rmSync, renameSync, chmodSync, readFileSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
@@ -136,9 +135,9 @@ describe('RootConfigWatcher', function () {
 		configWatcher.close();
 	});
 
-	it('reads the final state when two atomic writes land 20ms apart', async () => {
+	it('reads the final state when two atomic writes land 20ms apart', async function () {
 		const initial = { foo: 'bar' };
-		writeFileSync(this.configFilePath, stringify(initial));
+		writeFileSync(suite.configFilePath, stringify(initial));
 		const configWatcher = new RootConfigWatcher();
 		await configWatcher.ready;
 
@@ -147,21 +146,24 @@ describe('RootConfigWatcher', function () {
 
 		const first = { foo: 'first' };
 		const second = { foo: 'second' };
-		configUtils.atomicWriteFile(this.configFilePath, stringify(first));
+		const firstChange = once(configWatcher, 'change');
+		configUtils.atomicWriteFile(suite.configFilePath, stringify(first));
+		await firstChange;
+		const firstAt = performance.now();
 		await delay(20);
-		configUtils.atomicWriteFile(this.configFilePath, stringify(second));
+		if (performance.now() - firstAt >= 45) {
+			configWatcher.close();
+			return this.skip();
+		}
+		configUtils.atomicWriteFile(suite.configFilePath, stringify(second));
 
-		await waitFor(() => changes.at(-1)?.foo === 'second', {
+		await waitFor(() => changes.length === 2, {
 			timeout: 2000,
 			interval: 20,
-			message: () => `expected final change to be second, got: ${JSON.stringify(changes)}`,
+			message: () => `expected [first, second] changes, got: ${JSON.stringify(changes)}`,
 		});
 
-		assert.ok(
-			isDeepStrictEqual(changes, [first, second]) || isDeepStrictEqual(changes, [second]),
-			`expected [first, second] or coalesced [second] changes, got: ${JSON.stringify(changes)}`
-		);
-		assert.deepEqual(changes.at(-1), second);
+		assert.deepEqual(changes, [first, second]);
 		assert.deepEqual(configWatcher.config, second);
 		configWatcher.close();
 	});
