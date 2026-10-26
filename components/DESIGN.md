@@ -881,17 +881,8 @@ skipped only when it resolves to `PACKAGE_ROOT` (harper#3207), because a nested 
 as a component is that package's dependency, and the target does not reinstall a shipped `node_modules`.
 `scanPackageDirectory()` finds them in its async walk, so `tar-fs`'s synchronous `ignore` does no I/O and the size
 estimate leaves out exactly what the packer does. A scan is not a snapshot: a link created or replaced between the scan
-and the pack is classified by the tree the scan saw.
-
-`harperdb` is the same link under the legacy name, with one difference: the loader only repairs a `node_modules/harperdb`
-that already exists, and `installApplication` skips installing when `node_modules` does. An archive that merely omits the
-link therefore loses it on the target. So a `harperdb` link that resolves to `PACKAGE_ROOT`, at the root or under a loaded
-package, is install-owned too (harper#2577), but is replaced by an empty directory entry (mode 0755) that the loader turns
-back into the link. A real `harperdb` directory, or a link elsewhere, is the component's own and ships as it is. The entry is
-injected after the walk (`finalize: false` plus `finish`), not by rewriting the link's header in `map`: `tar-fs` sets
-`linkname` after `map` runs, which would put the install's absolute path into the archive under `skip_symlinks`. The name is
-joined with `/` because a direct `pack.entry` skips `tar-fs`'s separator conversion. Only an archive extracted into a fresh
-directory is covered; extracting a directory entry over a live install link would follow it.
+and the pack is classified by the tree the scan saw. A `harperdb` link to `PACKAGE_ROOT` cannot be omitted: the loader only repairs an existing one, and `installApplication` skips installing when `node_modules` exists (harper#2577).
+It ships as an empty 0755 directory the loader relinks, injected after the walk (`finalize: false` plus `finish`; a `map` rewrite keeps the absolute `linkname`) with a `/`-joined name; a directory entry over a live link would follow it.
 
 ## Deploy watcher generations preserve logical entry events
 
