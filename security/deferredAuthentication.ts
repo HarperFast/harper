@@ -89,6 +89,11 @@ export function settleDeferredCredentialRejection(
 
 const CHALLENGE = Symbol('harper.authenticationChallenge');
 
+function carryChallenge<E>(error: E, challenge: string): E {
+	Object.defineProperty(error, CHALLENGE, { value: challenge, enumerable: false, configurable: true });
+	return error;
+}
+
 /**
  * The error a Fastify route owner passes to `next` to settle a deferred rejection. It carries the
  * deferred strategy's challenge, which the presented `Authorization` header can misstate (an mTLS
@@ -97,15 +102,14 @@ const CHALLENGE = Symbol('harper.authenticationChallenge');
 export function deferredCredentialRejectionError(request: any): ClientError | undefined {
 	const deferred = getDeferredCredentialRejection(request);
 	if (!deferred) return undefined;
-	const error = credentialRejectionError(deferred.message, deferred.status);
-	error[CHALLENGE] = authenticationChallenge(deferred.strategy, true);
-	return error;
+	return carryChallenge(
+		credentialRejectionError(deferred.message, deferred.status),
+		authenticationChallenge(deferred.strategy, true)
+	);
 }
 
-/** Marks a token-validation error as proof the presented Bearer token itself was rejected. */
 export function bearerTokenRejection<E>(error: E): E {
-	if (isCredentialRejection(error)) error[CHALLENGE] = authenticationChallenge('Bearer', true);
-	return error;
+	return isCredentialRejection(error) ? carryChallenge(error, authenticationChallenge('Bearer', true)) : error;
 }
 
 // Only an error that recorded what was rejected claims `invalid_token`: a tagged rejection of something

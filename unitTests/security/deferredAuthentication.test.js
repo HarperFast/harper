@@ -275,7 +275,6 @@ describe('deferredAuthentication', () => {
 				authenticationChallengeForError(bearerTokenRejection(credentialRejectionError('invalid token', 401)), 'Bearer'),
 				'Bearer realm="Harper", error="invalid_token"'
 			);
-			// a tagged rejection of a body password says nothing about the presented token
 			assert.strictEqual(
 				authenticationChallengeForError(credentialRejectionError('Login failed', 401), 'Bearer'),
 				'Bearer realm="Harper"'

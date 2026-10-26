@@ -340,7 +340,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 			assert.strictEqual(response.status, 401);
 			assert.strictEqual(body.error, 'Login failed');
 			assert.deepStrictEqual(trace, [], 'a refresh-validation fault must not reach the catch-all');
-			// a verification fault says nothing about the token, so it is not called invalid
 			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Bearer realm="Harper"');
 		} finally {
 			tokenAuthentication.validateRefreshToken = async () => {
