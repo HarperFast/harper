@@ -1,5 +1,5 @@
 /**
- * `applications.moduleLoader: compartment` with the default `allowedDirectory: app` refuses plain files
+ * `applications.moduleLoader: compartment` with `allowedDirectory: app` refuses plain files
  * outside the component (relative, absolute, symlink) without affecting sibling components, and a
  * CommonJS dependency with dynamically assigned `module.exports` names supports named imports.
  *
@@ -8,10 +8,11 @@
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
+import { waitForLogMatches } from './waitForLog.ts';
 
 const SECRET = 'leaked-from-outside-the-component';
 const ESCAPING_APPS = ['escape-relative', 'escape-absolute', 'escape-symlink'];
@@ -97,18 +98,26 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 			"module.exports = {};\nfor (const name of ['alpha', 'beta']) module.exports[name] = `${name}!`;\n"
 		);
 
-		await startHarper(ctx, { config: { applications: { moduleLoader: 'compartment' }, threads: { count: 1 } } });
+		await startHarper(ctx, {
+			config: { applications: { moduleLoader: 'compartment', allowedDirectory: 'app' }, threads: { count: 1 } },
+		});
 
 		const deadline = Date.now() + 30_000;
+		let statuses = new Map<string, string>();
 		while (Date.now() < deadline) {
-			const statuses = await componentStatuses(ctx);
+			statuses = await componentStatuses(ctx);
 			if (ALL_APPS.every((app) => ['error', 'healthy'].includes(statuses.get(`${app}.jsResource`) ?? ''))) break;
 			await delay(250);
+		}
+		for (const app of ALL_APPS) {
+			const state = statuses.get(`${app}.jsResource`);
+			ok(state === 'error' || state === 'healthy', `${app}.jsResource did not settle: ${state}`);
 		}
 	});
 
 	after(async () => {
 		await teardownHarper(ctx);
+		if (ctx.harper?.dataRootDir) await rm(ctx.harper.dataRootDir, { recursive: true, force: true });
 	});
 
 	test('a component importing inside its own directory loads and serves', async () => {
@@ -142,8 +151,9 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 
 	test('the instance log names the allowed-path refusal for each escape', async () => {
 		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
-		const instanceLog = await readFile(join(logDirectory, 'hdb.log'), 'utf8');
-		const refusals = instanceLog.split('\n').filter((line) => /outside of allowed path/.test(line));
-		ok(refusals.length >= ESCAPING_APPS.length, `expected a refusal per escaping component, got ${refusals.length}`);
+		await waitForLogMatches(
+			join(logDirectory, 'hdb.log'),
+			ESCAPING_APPS.map((app) => new RegExp(`outside of allowed path [^\\n]*[\\\\/]${app}\\b`))
+		);
 	});
 });
