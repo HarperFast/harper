@@ -146,8 +146,6 @@ describe('mcp/tools/application — contract body strips bound path params', () 
 	});
 });
 
-// Table projections mark nulls with OpenAPI's `nullable: true` at every depth; MCP tool schemas are
-// JSON Schema 2020-12, which ignores that key.
 describe('mcp/tools/application — contract nullability in JSON Schema 2020-12 terms', () => {
 	const nodePath = require('node:path');
 	const { projectTableFragment } = require('#src/resources/defineResource');
@@ -184,19 +182,34 @@ describe('mcp/tools/application — contract nullability in JSON Schema 2020-12 
 		class Song {}
 		Song.prototype.get = function () {};
 		Song.prototype.post = function () {};
-		Song.get = async () => ({});
 		Song.post = async () => ({});
 		Song.path = '/song/:id';
 		Song.requestContract = { path: '/song/:id' };
-		Song.inputSchemas = { post: { body: projectTableFragment(table, 'insert') } };
+		Song.get = async (target) => {
+			boundQuery = target.bound;
+			return {};
+		};
+		Song.inputSchemas = {
+			get: { query: { type: 'object', properties: { limit: { type: 'integer', nullable: true } } } },
+			post: { body: projectTableFragment(table, 'insert') },
+		};
 		Song.outputSchemas = { get: { ...projectTableFragment(table, 'record'), nullable: true } };
 		return Song;
 	}
 
+	let boundQuery;
+	class QueryTarget {
+		bound = {};
+		set(name, value) {
+			this.bound[name] = value;
+		}
+	}
+
 	beforeEach(() => {
+		boundQuery = undefined;
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
-		_setRequestTargetForTest(FakeRequestTarget);
+		_setRequestTargetForTest(QueryTarget);
 		_setResourcesForTest(makeRegistryWithParamRoute('song/:id', makeTableContractResource()));
 		registerApplicationTools();
 	});
@@ -221,5 +234,14 @@ describe('mcp/tools/application — contract nullability in JSON Schema 2020-12 
 		assert.ok(!hasNullableKey(tool.outputSchema), JSON.stringify(tool.outputSchema));
 		assert.strictEqual(tool.outputSchema.type, 'object');
 		assert.ok(strict2020(tool.outputSchema)({ id: '1', meta: { label: 'a', count: null }, tags: [null] }));
+	});
+
+	it('advertises a nullable query param with a null type and binds a null argument as omitted', async () => {
+		const tool = [...toolsByName().values()].find((t) => t.name.startsWith('get_'));
+		assert.deepStrictEqual(tool.inputSchema.properties.limit.type, ['integer', 'null']);
+		await getTool(tool.name).handler({ id: '1', limit: null }, { user: SUPER });
+		assert.deepStrictEqual(boundQuery, {});
+		await getTool(tool.name).handler({ id: '1', limit: 5 }, { user: SUPER });
+		assert.deepStrictEqual(boundQuery, { limit: '5' });
 	});
 });

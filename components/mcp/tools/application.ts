@@ -303,7 +303,8 @@ function applyContractInputs(
 	if (queryProps && typeof setter === 'function') {
 		for (const key of Object.keys(queryProps)) {
 			const val = a[key];
-			if (val === undefined) continue;
+			// a URL cannot carry null, so a null for a `.nullable` query param means omitted
+			if (val == null) continue;
 			if (Array.isArray(val) && typeof appender === 'function') {
 				for (const el of val) appender.call(target, key, String(el));
 			} else {
