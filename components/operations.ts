@@ -838,22 +838,18 @@ async function deployComponent(req?: any) {
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
-				if (descriptor) {
-					// A package artifact publishes its own root-config entry, and a payload artifact that set routing
-					// owns those keys, so the recorded intent is what will be in force. Any other payload artifact owns
-					// no `isolated` key, so the effective configuration is the only authority there — a saved `false`
-					// must not admit past an isolation the operator set between the stage and this call.
-					nowIsolated = descriptor.rootConfig || descriptor.routing ? descriptor.isolated : wasIsolated;
-					const published = descriptor.rootConfig ?? descriptor.routing;
-					assertGrantConstraints(
-						published
-							? { isolated: nowIsolated, host: published.host, branchedDatabases: published.branchedDatabases }
-							: currentRouting(nowIsolated)
-					);
-				} else {
-					// the release already live, certified again: it publishes nothing, so only its isolation is admitted
-					nowIsolated = wasIsolated;
-				}
+				// A package artifact publishes its own root-config entry, and a payload artifact that set routing owns
+				// those keys, so the recorded intent is what will be in force. Any other payload artifact owns no
+				// `isolated` key, so the effective configuration is the only authority there — a saved `false` must
+				// not admit past an isolation the operator set between the stage and this call. With no descriptor, the
+				// release is already live and certified again, and publishes nothing either.
+				nowIsolated = descriptor?.rootConfig || descriptor?.routing ? descriptor.isolated : wasIsolated;
+				const published = descriptor?.rootConfig ?? descriptor?.routing;
+				assertGrantConstraints(
+					published
+						? { isolated: nowIsolated, host: published.host, branchedDatabases: published.branchedDatabases }
+						: currentRouting(nowIsolated)
+				);
 				await assertIsolationAdmission(nowIsolated);
 			},
 			beforePrepare: async () => {
