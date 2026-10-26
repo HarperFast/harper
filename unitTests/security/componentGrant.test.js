@@ -172,6 +172,21 @@ describe('component grants (harper#3046)', () => {
 			);
 		});
 
+		it('reads the grant only for the operations it covers', () => {
+			let reads = 0;
+			const counted = {
+				get names() {
+					reads++;
+					return previewGrant.names;
+				},
+				constraints: previewGrant.constraints,
+			};
+			verify('add_component', operations.addComponent, { project: 'shop-pr-12' }, previewUser(counted));
+			assert.strictEqual(reads, 0, 'an operation outside the grant never reads it');
+			verify('drop_component', operations.dropComponent, { project: 'shop-pr-12' }, previewUser(counted));
+			assert.ok(reads > 0, 'a covered operation does');
+		});
+
 		it('reaches nothing else that is restricted to super users', () => {
 			assert.ok(verify('get_component_file', operations.getComponentFile, { project: 'shop-pr-12', file: 'x' }));
 			assert.ok(verify('add_component', operations.addComponent, { project: 'shop-pr-12' }));

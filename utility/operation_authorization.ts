@@ -884,12 +884,10 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
 	// regardless; get_backup is kept out of reach by registering it without an api_name, which gate 1
 	// can never match.
-	const componentGrant = componentGrantOf(requestJson.hdb_user);
-	if (componentGrant) {
-		const apiName = requiredPermissions.get(op)?.api_name;
-		if (COMPONENT_GRANT_OPERATIONS.has(apiName)) {
-			return componentGrantDenial(componentGrant, apiName, requestJson, permsResponse);
-		}
+	const apiName = requiredPermissions.get(op)?.api_name;
+	if (COMPONENT_GRANT_OPERATIONS.has(apiName)) {
+		const componentGrant = componentGrantOf(requestJson.hdb_user);
+		if (componentGrant) return componentGrantDenial(componentGrant, apiName, requestJson, permsResponse);
 	}
 
 	if (allowedOperationsList !== undefined && requiredPermissions.get(op)?.requires_su) {
