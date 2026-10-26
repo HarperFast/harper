@@ -33,7 +33,6 @@ const SEED: Record<string, any>[] = [
 const ALL_IDS = SEED.map((row) => row.id).sort();
 const ALPHA_IDS = ['r1', 'r_a1_b5', 'r_a1_babsent', 'r_a1_bnull'];
 
-// Each entry lists spellings that must return the same rows.
 const CASES: { wheres: string[]; expected: string[] }[] = [
 	{ wheres: [`c = 'alpha' AND b <= 1`, `b <= 1 AND c = 'alpha'`], expected: ['r1'] },
 	{ wheres: [`c = 'alpha' AND b < 3`, `b < 3 AND c = 'alpha'`], expected: ['r1'] },
@@ -140,14 +139,28 @@ for (const sqlEngine of ['auto', 'new']) {
 				}
 			}
 
-			// REST shares Table.search: a non-driving lt/le or `ne null` excludes null and omitted values, while REST
-			// `==null` still matches only an explicit null.
+			// IS NULL is filter-only, so alone it has no index to drive the scan: `auto` answers it on legacy, `new` rejects it.
+			test('SELECT WHERE b IS NULL with no other condition', async () => {
+				await reseed(client);
+				const response = await client
+					.req()
+					.send({ operation: 'sql', sql: `SELECT id FROM ${SCHEMA}.${TABLE} WHERE b IS NULL` })
+					.timeout(60_000);
+				if (sqlEngine === 'new') {
+					strictEqual(response.status, 400);
+					strictEqual(response.body.error.includes('has no usable index condition'), true, response.body.error);
+				} else {
+					strictEqual(response.status, 200);
+					deepStrictEqual(sortedIds(response.body), ['r_a1_babsent', 'r_a1_bnull']);
+				}
+			});
+
+			// REST shares Table.search
 			for (const [query, expected] of [
 				['c=alpha&b=lt=3', ['r1']],
 				['b=lt=3&c=alpha', ['r1']],
 				['c=alpha&b=le=1', ['r1']],
 				['c=alpha&b=ne=null', ['r1', 'r_a1_b5']],
-				['c=alpha&b==null', ['r_a1_bnull']],
 			] as const) {
 				test(`REST GET /${TABLE}/?${query}`, async () => {
 					await reseed(client);
