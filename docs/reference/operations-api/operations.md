@@ -1165,7 +1165,7 @@ A release whose canary throws while loading the component, exits, or does not re
 - **A restart that stops before the canary decides restores the previous release.** The decision is reported with `status: "interrupted"`. If the process dies first, the next start rejects the undecided release and restores the one it replaced before it loads anything.
 - **It checks what a worker loads when it starts.** The release is on disk before the canary starts. Workers that have not been replaced yet keep running the previous release and do not react to the new files until the rollout ends, but one that first imports one of the component's modules while the canary is held gets the new release's copy of it.
 
-With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself. A node whose canary rejects the release keeps the previous one, or fails closed if it had none. Nothing is rolled back on the others, and the job fails naming each node that did not activate it. A node running a version before v5.4.0 activates the release without a canary.
+With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself. A node whose canary rejects the release keeps the previous one, or fails closed if it had none. Nothing is rolled back on the others, and the job fails naming each node that did not activate it; from v5.4.0 the deployment record ends `partial` too, as below. A node running a version before v5.4.0 activates the release without a canary.
 
 The deploy responds once it has started the job, and its [record](#get_deployment) follows the job:
 
@@ -1463,10 +1463,10 @@ The deployment must be in a terminal status (`success`, `failed`, `staged`, or `
 
 Lists, per component, the release live on a node's disk and the releases it keeps, which [`deploy_component`](#deploy_component) with `deployment_id` can make live again. [`list_deployments`](#list_deployments) lists the records the receiving node wrote; this lists what is on disk, and a node's answer describes only that node: [retention](../configuration/options.md#deployment) prunes per node, a node that joined later never had older releases, and a release made live before v5.3.0, or deployed from a `file:` directory, is not kept.
 
-| Parameter    | Type    | Description                                   |
-| ------------ | ------- | --------------------------------------------- |
-| `project`    | string  | Only this component. Omit to list every one   |
-| `replicated` | boolean | `true` also returns every other node's answer |
+| Parameter    | Type    | Description                                                                         |
+| ------------ | ------- | ----------------------------------------------------------------------------------- |
+| `project`    | string  | Only this component. Omit to list every component with a live release or a kept one |
+| `replicated` | boolean | `true` also returns every other node's answer                                       |
 
 ```json
 {
