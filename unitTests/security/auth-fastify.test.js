@@ -286,7 +286,7 @@ describe('Test authorize function', function () {
 			assert.strictEqual(user, undefined);
 			assert.strictEqual(err?.message, 'Login failed');
 			assert.strictEqual(isCredentialRejection(err), false);
-			assert.strictEqual(authenticationChallengeForError(err, 'Basic'), 'Basic realm="Harper"');
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Bearer realm="Harper"');
 			done();
 		});
 	});
