@@ -91,8 +91,9 @@ async function removeOrphanTempFiles(versionDirectory: string, now: number): Pro
 	for (const name of await readdir(versionDirectory)) {
 		if (!NODE_PERSIST_TEMP_FILE.test(name)) continue;
 		const path = join(versionDirectory, name);
-		const stats = await lstat(path);
-		if (stats.isFile() && now - stats.mtimeMs > ORPHAN_TEMP_FILE_AGE_MS) await rm(path, { force: true });
+		// gone already: its process renamed it into place since the readdir
+		const stats = await lstat(path).catch(() => undefined);
+		if (stats?.isFile() && now - stats.mtimeMs > ORPHAN_TEMP_FILE_AGE_MS) await rm(path, { force: true });
 	}
 }
 

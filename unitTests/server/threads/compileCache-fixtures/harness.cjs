@@ -54,7 +54,6 @@ async function workerReport(options) {
 
 async function main() {
 	if (scenario === 'file-slot') {
-		// the subdirectory Node names for this thread, taken by a regular file
 		const tag = cachedDataVersionTag().toString(16).padStart(8, '0');
 		const uid = process.getuid ? `-${process.getuid()}` : '';
 		const cache = join(rootPath, 'cache', 'compile');
