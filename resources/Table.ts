@@ -5398,8 +5398,7 @@ export function makeTable(options): TableResourceClass {
 							let oldestRetainedAuditTimeResolved = false;
 							dedupVersionCouldBeRetained = (version: number): boolean => {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
-								// An unnamed origin's entries are filed in `local` under minted keys, so none sits at its
-								// received key, and an exact-start miss there scans to the end of `local`.
+								// an unnamed origin's entries sit in `local` under minted keys, never at its received key
 								if (options?.nodeId && auditStore.isLocalOrigin(options.nodeId)) return false;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
@@ -5610,8 +5609,6 @@ export function makeTable(options): TableResourceClass {
 									auditedVersion = auditRecord.version;
 									if (auditedVersion >= txnTime) {
 										if (auditedVersion === txnTime) {
-											// Walk control flow only: `precedesExisting` stays this write against the head, which the
-											// stale-put skip, the head slot and the record's node read after the walk.
 											let precedesAudited = precedesExistingVersion(
 												txnTime,
 												{ version: auditedVersion, localTime: localTime, key: id, nodeId: auditRecord.nodeId },

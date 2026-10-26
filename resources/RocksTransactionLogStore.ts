@@ -219,7 +219,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 				throw new Error('recordId must be provided');
 			}
 			// this a request for a transaction log entry by a timestamp
-			// An origin with no log of its own shares `local` (logForOrigin), so only its own entries are its.
 			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
 			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
 				if (entry.txnLogKey !== key) return; // no longer in this transaction
