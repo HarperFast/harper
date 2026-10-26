@@ -559,9 +559,10 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	const attributeType = findAttribute(table.attributes, attributeName)?.type;
 	const numericType =
 		attributeType === 'Int' || attributeType === 'Long' || attributeType === 'Float' || attributeType === 'BigInt';
-	// On an untyped attribute an lt/le set could omit a nested-array element the predicate admits but the index
-	// never holds, or hold a BigInt that shares a Number's index key but fails the predicate.
-	if ((comparator === 'lt' || comparator === 'le') && !numericType) return undefined;
+	// An untyped attribute can hold nested arrays, whose elements the predicate matches but no index holds, and
+	// BigInts, which share a Number's index key but not its order, so a range set over one can omit or over-admit.
+	if (comparator !== 'equals' && !numericType && attributeType !== 'String' && attributeType !== 'Date')
+		return undefined;
 	const predicateExact =
 		comparator !== 'equals' || value === null || typeof value === 'string' || typeof value === 'boolean' || numericType;
 	let start;
@@ -570,7 +571,6 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// just above the null block, like searchByIndex
 			start = null;
 			exclusiveStart = true;
 			end = value;
@@ -1789,8 +1789,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
 			break;
 		}
-		// A range admits only what searchByIndex's range for it holds: no index has an entry for an omitted
-		// (undefined) value, and lt/le ranges start above null.
+		// no index holds an entry for an omitted (undefined) value
 		case 'gt':
 			baseFilter = attributeComparator(
 				attribute,
@@ -1816,7 +1815,6 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			);
 			break;
 		case 'ne':
-			// `ne null` is the range above null, so an omitted value fails it too
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => compareKeys(recordValue ?? null, value) !== 0,

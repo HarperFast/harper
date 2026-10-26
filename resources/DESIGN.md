@@ -813,7 +813,7 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 - **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following the filter-only
   convention (`contains`/`ends_with`): the negated flag always forces `needFullScan`, so `estimated_count` here is
   execution-cost ordering, not result cardinality — a narrow negated range must never become the driving condition.
-- **A non-driving filter excludes what its condition's index range excludes** (`filterByType`, harper#3212). No index
+- **Non-driving filters drop null and omitted values the way index ranges do** (`filterByType`, harper#3212). No index
   holds an omitted value and `lt`/`le` ranges start above `null`, so range filters and `ne null` reject omitted values
   and `lt`/`le` reject null. SQL `IS NULL` counts omitted as NULL, so it is pushed as filter-only `ne null, negated`.
 - `estimatedEntryCount` reads `estimate-num-keys` (O(1)) rather than iterating; it skews high on

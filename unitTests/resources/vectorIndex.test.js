@@ -3649,7 +3649,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
-	it('leaves lt/le on an untyped attribute to the predicate, which nested arrays and BigInts can defeat', async () => {
+	it('leaves a range on an untyped attribute to the predicate, which nested arrays and BigInts can defeat', async () => {
 		const M = table({
 			table: 'HNSWAllowUntypedRange',
 			database: 'test',
@@ -3670,7 +3670,13 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			const original = customIndex.search;
 			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
 			try {
-				for (const comparator of ['lt', 'le']) {
+				for (const [comparator, value, expected] of [
+					['lt', -1, [2, 4]],
+					['le', -1, [2, 4]],
+					['between', [null, -1], [2, 4]],
+					// the zero probe does not decline this one
+					['gt', 1],
+				]) {
 					let candidateKeys;
 					customIndex.search = function (condition, context, options) {
 						candidateKeys = options.candidateKeys;
@@ -3681,7 +3687,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 							{
 								conditions: [
 									{ attribute: 'vector', comparator: 'sort', ...sort },
-									{ attribute: 'rank', comparator, value: -1 },
+									{ attribute: 'rank', comparator, value },
 								],
 								sort,
 								enforceExecutionOrder: true,
@@ -3692,11 +3698,12 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 						)
 					);
 					assert.strictEqual(candidateKeys, undefined, `${comparator}: no allow-set`);
-					assert.deepStrictEqual(
-						results.map((record) => record.id),
-						[2, 4],
-						comparator
-					);
+					if (expected)
+						assert.deepStrictEqual(
+							results.map((record) => record.id),
+							expected,
+							comparator
+						);
 				}
 			} finally {
 				customIndex.search = original;
