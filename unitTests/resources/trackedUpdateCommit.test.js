@@ -553,6 +553,15 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				.sort((a, b) => a - b);
 			assert.deepEqual(deltas, [8, 100]);
 		});
+		it('composes with an undeclared property assigned on the instance', async () => {
+			await QA1955Table.put('add-own', { title: 't' });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('add-own', ctx);
+				rec.dynamicCount = 100;
+				rec.addTo('dynamicCount', 7);
+			});
+			assert.equal((await QA1955Table.get('add-own')).dynamicCount, 107);
+		});
 	});
 
 	describe('Held lock', () => {

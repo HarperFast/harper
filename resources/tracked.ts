@@ -597,8 +597,13 @@ export function collapseChanges(target, changes) {
  * sum.
  */
 export function addToChanges(target, property: string, value: number | bigint) {
+	if (Object.hasOwn(target, property)) {
+		// an undeclared property assigned on a Table instance is an own property, which overrides its changes
+		target[property] = crdtOperations.addValues(target[property], value);
+		return;
+	}
 	const changes = target.getChanges();
-	if (changes && property in changes) {
+	if (changes && Object.hasOwn(changes, property)) {
 		const prior = changes[property];
 		if (prior?.__op__ === 'add') target.set(property, new Addition(crdtOperations.addValues(prior.value, value)));
 		else target.set(property, crdtOperations.addValues(prior, value));
