@@ -267,10 +267,12 @@ describe('mcp/rateLimit', () => {
 			assert.equal(admit('[2001:db8:7:8::1]'), true, 'brackets are stripped');
 			assert.equal(admit('[3001:db8:7:8::1]'), true, 'a different /64 despite brackets');
 			assert.equal(admit('2001:db8:7:8::2'), false);
-			assert.equal(admit('::ffff:0a00:0001'), true, 'hex IPv4-mapped is keyed per address');
+			assert.equal(admit('::ffff:0a00:0001'), true, 'IPv4-mapped is keyed per IPv4 address');
 			assert.equal(admit('::ffff:0a00:0002'), true);
-			assert.equal(admit('::ffff:10.0.0.9'), true, 'IPv4-mapped is keyed per address');
-			assert.equal(admit('::ffff:10.0.0.8'), true);
+			assert.equal(admit('0:0:0:0:0:ffff:10.0.0.3'), true, 'uncompressed mapped form');
+			assert.equal(admit('0:0:0:0:0:ffff:10.0.0.4'), true);
+			assert.equal(admit('::FFFF:10.0.0.3'), false, 'same client in another spelling');
+			assert.equal(admit('10.0.0.4'), false, 'same client as plain IPv4');
 		});
 
 		it('an explicit 0 rate disables it, including quoted', () => {

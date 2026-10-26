@@ -464,22 +464,36 @@ export function tryAdmitInitialize(
 }
 
 function initializeIdentity(identity: string): string {
-	let address = identity.replace(/^\[|\](:\d+)?$/g, '').split('%')[0];
-	if (!address.includes(':') || /^::ffff:/i.test(address)) return address;
+	const address = identity
+		.replace(/^\[|\](:\d+)?$/g, '')
+		.split('%')[0]
+		.toLowerCase();
+	if (!address.includes(':')) return address;
+	const groups = expandIpv6(address);
+	if (!groups) return address;
+	if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+		return `${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
+	}
+	return `${groups
+		.slice(0, 4)
+		.map((group) => group.toString(16))
+		.join(':')}::/64`;
+}
+
+function expandIpv6(address: string): number[] | undefined {
 	const dotted = address.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
 	if (dotted) {
 		const [, prefix, a, b, c, d] = dotted;
 		address = `${prefix}${((+a << 8) | +b).toString(16)}:${((+c << 8) | +d).toString(16)}`;
 	}
-	const [head, tail] = address.split('::');
+	const [head, tail, extra] = address.split('::');
+	if (extra !== undefined) return undefined;
 	const headGroups = head ? head.split(':') : [];
 	const tailGroups = tail ? tail.split(':') : [];
-	const groups =
-		tail === undefined
-			? headGroups
-			: [...headGroups, ...Array(Math.max(0, 8 - headGroups.length - tailGroups.length)).fill('0'), ...tailGroups];
-	return `${groups
-		.slice(0, 4)
-		.map((group) => parseInt(group || '0', 16).toString(16))
-		.join(':')}::/64`;
+	const fill = tail === undefined ? 0 : 8 - headGroups.length - tailGroups.length;
+	if (fill < 0) return undefined;
+	const groups = [...headGroups, ...Array(fill).fill('0'), ...tailGroups].map((group) =>
+		/^[0-9a-f]{1,4}$/.test(group) ? parseInt(group, 16) : NaN
+	);
+	return groups.length === 8 && groups.every((group) => group >= 0) ? groups : undefined;
 }
