@@ -533,7 +533,7 @@ export function hasChanges(target) {
 		if (changes && !source) return true;
 		const ownKeys = Object.keys(target);
 		for (const key in changes) {
-			if (ownKeys.length > 0 && hasOwnProperty.call(target, key)) continue; // the own property decides, below
+			if (ownKeys.length > 0 && hasOwnProperty.call(target, key)) continue;
 			const value = changes[key];
 			if (value && typeof value === 'object') {
 				const sourceValue = source[key];
@@ -598,7 +598,7 @@ export function collapseChanges(target, changes) {
 		keyCount++;
 	}
 	// with no record to compare against, any update (even an empty one) writes, as hasChanges decides
-	if (keyCount === 0) return source ? undefined : changes;
+	if (keyCount === 0) return source ? undefined : patch;
 	return patch;
 }
 const OMITTED = {};
@@ -617,7 +617,9 @@ export function addToChanges(target, property: string, value: number | bigint) {
 	const changes = target.getChanges();
 	if (changes && Object.hasOwn(changes, property)) {
 		const prior = changes[property];
-		if (prior?.__op__ === 'add') target.set(property, new Addition(crdtOperations.addValues(prior.value, value)));
+		// a cached tracked wrapper is a read, not a prior value
+		if (prior?.getRecord) target.set(property, new Addition(value));
+		else if (prior?.__op__ === 'add') target.set(property, new Addition(crdtOperations.addValues(prior.value, value)));
 		else target.set(property, crdtOperations.addValues(prior, value));
 	} else target.set(property, new Addition(value));
 }

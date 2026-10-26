@@ -539,7 +539,6 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				const rec = await QA1955Table.update('add-concurrent', ctx);
 				rec.addTo('countInt', 5);
 				rec.addTo('countInt', 3);
-				// a write from another transaction lands before this one commits
 				await transaction({}, async (other) => {
 					const concurrent = await QA1955Table.update('add-concurrent', other);
 					concurrent.addTo('countInt', 100);
@@ -573,6 +572,17 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			const saved = await QA1955Table.get('add-own-reset');
 			assert.strictEqual(saved.dynamicCount, 20);
 			assert.strictEqual(saved.title, 'changed');
+		});
+		it('an own property overrides a pending addTo on a record that does not exist yet', async () => {
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('add-own-new', ctx);
+				rec.addTo('dynamicCount', 5);
+				rec.dynamicCount = undefined;
+				rec.title = 'created';
+			});
+			const saved = await QA1955Table.get('add-own-new');
+			assert.strictEqual(saved.title, 'created');
+			assert.strictEqual(saved.dynamicCount, undefined);
 		});
 	});
 
