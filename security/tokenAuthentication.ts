@@ -18,6 +18,8 @@ import { findAndValidateUser, type User } from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import {
 	WORKLOAD_IDENTITY_CLAIM,
+	DEPLOY_SOURCE_CLAIM,
+	attachDeploySourceToUser,
 	attachWorkloadIdentityToUser,
 	isWorkloadIdentityPrincipal,
 	markTokenAsWorkloadIdentity,
@@ -370,13 +372,15 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
  */
 export async function createOperationToken(
 	user: { username: string; super_user: boolean; operations?: string[] },
-	expiresIn: StringValue
+	expiresIn: StringValue,
+	deploySource?: Record<string, unknown>
 ): Promise<string> {
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const payload: { username: string; super_user: boolean; operations?: string[] } = {
 		username: user.username,
 		super_user: user.super_user,
 	};
+	if (deploySource) payload[DEPLOY_SOURCE_CLAIM] = deploySource;
 	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
 	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
 	// what keeps this from failing open.
@@ -463,6 +467,7 @@ async function validateToken(token: string, tokenType: string, deferInvalidToken
 		// Provenance rides the same lift: the claim is signed, so a caller cannot strip it to look
 		// like a password-minted principal at createTokens.
 		attachWorkloadIdentityToUser(user, tokenVerified[WORKLOAD_IDENTITY_CLAIM]);
+		attachDeploySourceToUser(user, tokenVerified[DEPLOY_SOURCE_CLAIM]);
 
 		return user;
 	} catch (err) {

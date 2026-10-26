@@ -4,30 +4,30 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
-const insert = require('#src/dataLayer/insert');
+const { default: harperBridge } = require('#src/dataLayer/harperBridge/harperBridge');
 const { alterRole } = require('#src/security/role');
 const { ClientError } = require('#src/utility/errors/hdbError');
 
 const PERMISSION = { super_user: false };
 
 describe('security/role alterRole() error status', () => {
-	let originalUpdate;
+	let originalUpdateRecords;
 
 	before(async () => {
 		await testUtils.ensureSystemTables();
 	});
 
 	beforeEach(() => {
-		originalUpdate = insert.update;
+		originalUpdateRecords = harperBridge.updateRecords;
 	});
 
 	afterEach(() => {
-		insert.update = originalUpdate;
+		harperBridge.updateRecords = originalUpdateRecords;
 	});
 
 	async function alterRejection(updateError) {
 		let calls = 0;
-		insert.update = async () => {
+		harperBridge.updateRecords = async () => {
 			calls++;
 			throw updateError;
 		};

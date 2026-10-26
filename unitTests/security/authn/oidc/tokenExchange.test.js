@@ -214,6 +214,29 @@ describe('exchangeOidcToken', () => {
 		assert.strictEqual(user.username, 'ci-deploy');
 	});
 
+	it("signs the policy and the run's verified claims into the token, for a deploy to record as attested (harper#3061)", async () => {
+		await addPolicy();
+		const result = await exchangeOidcToken({
+			operation: 'exchange_oidc_token',
+			token: identityToken({ sha: 'a'.repeat(40), run_attempt: '2' }),
+		});
+		const expected = {
+			via: 'oidc',
+			policy: 'my-app-prod',
+			repository: 'HarperFast/my-app',
+			sha: 'a'.repeat(40),
+			ref: 'refs/heads/main',
+			workflow_ref: WORKFLOW_REF,
+			run_id: '99',
+			run_attempt: '2',
+			actor: 'octocat',
+			environment: 'production',
+		};
+		assert.deepStrictEqual(decodeJWT(result.operation_token).deploy_source, expected);
+		const user = await validateOperationToken(result.operation_token);
+		assert.deepStrictEqual(user.deploySource, expected);
+	});
+
 	// A stored row that add_oidc_trust would reject (repository pinned, but no workflow/ref gate) — as
 	// could arrive via replication from an older node or a restored backup — must be ignored at
 	// exchange, not honored. Seeded directly into the store to bypass add_oidc_trust's validation.

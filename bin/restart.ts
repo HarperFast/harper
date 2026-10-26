@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import { rmSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getThisNodeName } from '../server/nodeName.ts';
+import { REPLICATION_NOT_IMPLEMENTED } from '../server/Server.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
 
@@ -159,16 +160,34 @@ async function activateDeploymentOnPeers(activation: any) {
 			true
 		);
 	}
+	const { finishRollout, abandonRollout } = await import('../components/deploymentRecorder.ts');
 	const thisNode = getThisNodeName();
-	const otherNodes = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
-	const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
 	const results = [];
-	if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results);
-	// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
-	for (const name of nodes ?? []) {
-		if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
-			results.push({ node: name, error: 'it is no longer one of the nodes in this cluster' });
+	let ending = false;
+	try {
+		const otherNodes = otherKnownNodes(thisNode);
+		const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
+		const unrecorded = [];
+		if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results, unrecorded);
+		// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
+		for (const name of nodes ?? []) {
+			if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
+				const result = { node: name, error: 'it is no longer one of the nodes in this cluster' };
+				results.push(result);
+				unrecorded.push(result);
+			}
 		}
+		ending = true;
+		await finishRollout(deploymentRow, results, unrecorded);
+	} catch (error) {
+		// The job's own record keeps every outcome, for the boot-time settlement to recover when the row could not take it.
+		if (error && typeof error === 'object') error.http_resp_msg ??= { error: error.message, activated: results };
+		// Only a job that failed before visiting every peer: the outcomes it holds are no reason to call one it did `partial`.
+		if (!ending)
+			await abandonRollout(deploymentRow, error?.message ?? String(error)).catch((abandonError) =>
+				hdbLogger.warn(`Failed to end the record of deployment ${deploymentId}:`, abandonError)
+			);
+		throw error;
 	}
 	const failed = results.filter((result) => result.error);
 	if (failed.length > 0) {
@@ -183,10 +202,27 @@ async function activateDeploymentOnPeers(activation: any) {
 	return { activated: results };
 }
 
-async function activateEachPeer(peers: any[], { project, deploymentId, deploymentRow }, results: any[]) {
+/** The cluster's other nodes. A job thread starts with an empty `server.nodes`; subscribing to node updates fills it. */
+function otherKnownNodes(thisNode: string): any[] {
+	try {
+		(global as any).server.replication.monitorNodeCAs();
+	} catch (error) {
+		// Harper core alone has no replication, so no peers; any other failure leaves the list unknown, not empty.
+		if (error?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
+	}
+	return ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
+}
+
+/** Records each peer's outcome on the deployment row as it lands, except the last, which `unrecorded` hands on. */
+async function activateEachPeer(
+	peers: any[],
+	{ project, deploymentId, deploymentRow },
+	results: any[],
+	unrecorded: any[]
+) {
 	const replication = (global as any).server.replication;
-	replication.monitorNodeCAs();
 	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.ts');
+	const { recordPeerActivation } = await import('../components/deploymentRecorder.ts');
 	const timeoutMs = peerDeployAnswerTimeoutMs({ restart: true });
 	for (const node of peers) {
 		try {
@@ -207,6 +243,9 @@ async function activateEachPeer(peers: any[], { project, deploymentId, deploymen
 		} catch (error) {
 			results.push({ node: node.name, error: error?.message ?? String(error) });
 		}
+		const result = results[results.length - 1];
+		if (node === peers[peers.length - 1] || !(await recordPeerActivation(deploymentRow, result)))
+			unrecorded.push(result);
 	}
 }
 

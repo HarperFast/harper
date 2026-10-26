@@ -42,7 +42,9 @@ import {
 	readDeploymentPreview,
 	readDeploymentProvenance,
 	retireComponentDirectory,
+	liveDeploymentIdOf,
 } from './Application.ts';
+import { deploymentOfLiveRelease } from './deploymentOperations.ts';
 const prepareApplication = _prepareApplication;
 import { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } from './componentPreparationLock.ts';
 import { DEPLOYMENT_PROVENANCE_FILE } from './deploymentProvenance.ts';
@@ -56,6 +58,9 @@ import {
 	withRootConfigPublicationLock,
 } from './rootConfigPublication.ts';
 import { server } from '../server/Server.ts';
+import { deploymentSource } from './deploymentSource.ts';
+import { missingEntryPointsWarning } from './declaredEntryPoints.ts';
+import { sweepFailedPayloads } from './payloadRetention.ts';
 import {
 	DeploymentRecorder,
 	awaitDeploymentRow,
@@ -663,6 +668,7 @@ async function deployComponent(req?: any) {
 				// Reference form only — the rollback source for re-resolving the credential.
 				credentials: credentialReferences.length ? credentialReferences : null,
 				preview: req.preview ?? null,
+				source: deploymentSource(req.hdb_user?.deploySource, req.source),
 				emitter,
 				// Reuse the same `deployment_timeout` knob operators already have for the
 				// peer-side row/blob waits to size the origin's payload-ingest write
@@ -670,6 +676,8 @@ async function deployComponent(req?: any) {
 				ingestTimeoutMs: req.deployment_timeout,
 			});
 	if (recorder) req._deploymentId = recorder.deploymentId;
+	// Recorded once, on the row; peers have no use for what the client declared about itself.
+	delete req.source;
 
 	const emit = (event, data) => emitter?.emit(event, data);
 
@@ -686,6 +694,7 @@ async function deployComponent(req?: any) {
 	const installCapture = createInstallCapture();
 	let stagedOnOrigin = false;
 	let releaseRequester;
+	let entryPointWarning;
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -875,7 +884,9 @@ async function deployComponent(req?: any) {
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 				declaredRootConfig = applicationConfig;
 			},
-			validateCandidate: async () => {
+			validateCandidate: async (candidateDirPath) => {
+				entryPointWarning = await missingEntryPointsWarning(req.project, candidateDirPath);
+				if (entryPointWarning) emit('warning', { message: entryPointWarning });
 				emit('phase', { phase: 'prepare', status: 'done' });
 			},
 			fingerprintInstall: !isActivation,
@@ -1010,6 +1021,7 @@ async function deployComponent(req?: any) {
 			});
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.restartJobId = jobResponse.job_id;
+			if (recorder) recorder.row.restart_job_id = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, activating it on each other node in turn`;
 		} else if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
@@ -1037,6 +1049,7 @@ async function deployComponent(req?: any) {
 			emit('phase', { phase: 'restart', status: 'done' });
 
 			response.restartJobId = jobResponse.job_id;
+			if (recorder) recorder.row.restart_job_id = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else {
 			// Deployed without restarting: for a component that had no directory before this
@@ -1135,13 +1148,16 @@ async function deployComponent(req?: any) {
 				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
 			}
 			emit('phase', { phase: mode === 'stage' ? 'staged' : 'success', status: 'done' });
-			await recorder.finish(mode === 'stage' ? 'staged' : 'success');
+			// The activation job ends a rolling deploy's record once each other node has taken the release, or not.
+			await recorder.finish(mode === 'stage' ? 'staged' : rollingActivation ? 'rolling_out' : 'success');
+			if (rollingActivation) response.status = 'rolling_out';
 			if (mode === 'stage') {
 				response.message =
 					`Staged: ${application.name}. Deploy it with deploy_component ` + `deployment_id=${recorder.deploymentId}`;
 			}
 		}
 		if (installDrift) response.message = `${response.message} ${installDrift}`;
+		if (entryPointWarning) response.message = `${response.message} ${entryPointWarning}`;
 		if (mode !== 'stage') response.certification = certificationOutcome;
 		return response;
 	} catch (err) {
@@ -1188,6 +1204,8 @@ async function deployComponent(req?: any) {
 			} catch (finishErr) {
 				log.warn('Failed to record deployment failure row', finishErr);
 			}
+			// After the finish, so the failure just recorded counts as the project's newest and is kept.
+			if (!stagedOnOrigin) void sweepFailedPayloads({ project: req.project });
 		}
 		throw outErr;
 	} finally {
@@ -1501,11 +1519,20 @@ async function getComponents(req) {
 	}
 
 	for (const component of results.entries) {
+		const liveDeploymentId = await liveDeploymentIdOf(componentsRoot, component.name).catch(() => undefined);
+		if (liveDeploymentId) component.deployment_id = liveDeploymentId;
+		const deployment = await deploymentOfLiveRelease(component.name, liveDeploymentId).catch((error) => {
+			log.debug(`Failed to read the deployment record of ${component.name} for get_components: ${error?.message}`);
+			return undefined;
+		});
+		if (deployment?.completed_at != null) component.deployed_at = deployment.completed_at;
 		try {
-			component.status = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
+			const { loadedAt, ...status } = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
 				component.name,
 				consolidatedStatuses
 			);
+			component.status = status;
+			if (loadedAt !== undefined) component.restarted_at = loadedAt;
 		} catch (error) {
 			log.debug(`Failed to get aggregated status for component ${component.name}: ${error.message}`);
 			component.status = {

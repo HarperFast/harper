@@ -34,6 +34,8 @@ export interface ComponentStatusSummary {
 	error?: Error | string;
 	/** Worker index for cross-thread tracking */
 	workerIndex?: number;
+	/** When this thread last finished loading the component */
+	loadedAt?: Date;
 	/** How the status was set */
 	source?: ComponentStatusSource;
 	/** Reports at this thread's current level; resets to 1 when the level changes. */
@@ -75,6 +77,8 @@ export interface AggregatedComponentStatus {
 	latestMessage?: string;
 	/** Error from the highest-priority, most recent non-healthy thread */
 	error?: Error | string;
+	/** The most recent time any thread finished loading the component (ms since epoch) */
+	loadedAt?: number;
 	/** Last known source in thread collection order, independent of the message/error owner. */
 	source?: ComponentStatusSource;
 	/** Sum of current per-thread counters at every level, including healthy; not a lifetime count. */
@@ -104,4 +108,6 @@ export interface ComponentApplicationStatus {
 	details?: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }>;
 	/** Last checked time information */
 	lastChecked: { workers: Record<number, number> };
+	/** The most recent time any thread finished loading the component or a sub-component (ms since epoch) */
+	loadedAt?: number;
 }
