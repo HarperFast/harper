@@ -12667,7 +12667,6 @@ function releaseLeases(leases: Map<DatabaseTransaction, ReadLease> | undefined) 
 	if (leases) for (const lease of leases.values()) lease.onDone?.();
 }
 
-/** Whether a condition's relationship path steps from one database into another. */
 function hasCrossDatabaseJoin(conditions: any[], table: any): boolean {
 	for (const condition of conditions) {
 		if (condition.conditions) {

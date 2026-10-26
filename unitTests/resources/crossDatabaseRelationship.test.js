@@ -10,8 +10,9 @@ const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageTh
 // transaction chain, lazily, after the request commits (REST serializes after commit). The search must
 // hold that link's read handle until its results are done, and give it back on every way they end.
 describe('cross-database relationship search', function () {
-	let Emp, Badge, previousMainIsWorker;
+	let Emp, Badge, Vault, Staff, previousMainIsWorker;
 	const GOLD_IDS = Array.from({ length: 10 }, (_, i) => `e${i * 2}`).sort();
+	const VAULTS = 10_000;
 
 	before(async function () {
 		setupTestDBPath();
@@ -41,6 +42,30 @@ describe('cross-database relationship search', function () {
 		await Badge.put({ id: 'b1', label: 'gold' });
 		await Badge.put({ id: 'b2', label: 'silver' });
 		for (let i = 0; i < 20; i++) await Emp.put({ id: `e${i}`, badgeIds: i % 2 ? ['b2'] : ['b1', 'b2'] });
+		Vault = table({
+			database: 'xdb_rel_hr',
+			table: 'Vault',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+			],
+		});
+		Staff = table({
+			database: 'xdb_rel_data',
+			table: 'Staff',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vaultId', indexed: true },
+				{ name: 'vault', type: 'Vault', relationship: { from: 'vaultId' }, definition: { tableClass: Vault } },
+			],
+		});
+		// many vault names a contains-filter rejects, each yielding an event turn, scanned before the one it
+		// matches (RocksDB only: the monitor case it feeds does not run on LMDB)
+		if (!Emp.primaryStore.path?.endsWith('.mdb')) {
+			for (let i = 0; i < VAULTS; i++) await Vault.put({ id: `v${i}`, name: `name-${String(i).padStart(5, '0')}` });
+		}
+		await Vault.put({ id: 'vAlpha', name: 'zz-Alpha' });
+		await Staff.put({ id: 's1', vaultId: 'vAlpha' });
 	});
 
 	after(function () {
@@ -174,6 +199,52 @@ describe('cross-database relationship search', function () {
 			assert.strictEqual(empLease.onDone, null);
 			assert.strictEqual(badgeLink.readTxnsUsed, 0);
 			assert.strictEqual(empLink.readTxnsUsed, 0);
+		} finally {
+			setTxnExpiration(30000);
+		}
+	});
+
+	it('keeps the source handle while a filtered related scan yields across monitor ticks', async function () {
+		if (Emp.primaryStore.path?.endsWith('.mdb')) this.skip();
+		setTxnExpiration(10);
+		try {
+			const context = {};
+			const results = await transaction(context, () =>
+				Staff.search(
+					{
+						conditions: [{ attribute: ['vault', 'name'], comparator: 'contains', value: 'Alpha' }],
+						allowFullScan: true,
+					},
+					context
+				)
+			);
+			const started = performance.now();
+			const ids = [];
+			for await (const entry of results) ids.push(entry.id);
+			assert.ok(performance.now() - started > 30, 'the related scan must span several monitor ticks');
+			assert.deepStrictEqual(ids, ['s1']);
+		} finally {
+			setTxnExpiration(30000);
+		}
+	});
+
+	it('keeps a related lease for a holder the monitor does not walk', async function () {
+		if (Emp.primaryStore.path?.endsWith('.mdb')) this.skip();
+		const trackedTxns = setTxnExpiration(20);
+		try {
+			const { results, badgeLink, empLink } = await searchAfterCommit();
+			// as for a link whose handle save() adopted: never walked, so only its lease partner can consume its flag
+			trackedTxns.delete(empLink);
+			const deadline = Date.now() + 10_000;
+			for (let ticks = 0; ticks < 5 && Date.now() < deadline;) {
+				empLink.rangeReadActive = true;
+				while (empLink.rangeReadActive && Date.now() < deadline) await delay(5);
+				ticks++;
+			}
+			assert.strictEqual(badgeLink.readTxnsUsed, 1, 'a scanning holder keeps its lease even when untracked');
+			const ids = [];
+			for await (const entry of results) ids.push(entry.id);
+			assert.deepStrictEqual(ids.sort(), GOLD_IDS);
 		} finally {
 			setTxnExpiration(30000);
 		}

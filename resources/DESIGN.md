@@ -891,18 +891,20 @@ per call. A search join (`?vault.name==x`) scans the related index lazily, after
 the request, so `Table.search` takes a lease on each related link
 (`DatabaseTransaction.leaseReadTxn`, through its `readTxnFor` callback) and releases the leases with
 its own handle (`onDone`, the counting drain, the error path). A lease is registered on its own
-link, never as the outer results: abandoned-read cleanup on that link releases only that link. The
-RocksDB monitor renews a leased link while the lease holder's own range activity was recorded in the
-current or previous tick: the related scan is often idle while the source scans (a drained join map,
-an inner scan whose rows are filtered or sorted). The reverse is not needed, since each related step
-and the source step after it run in one synchronous `next()`. Only recorded activity counts, never a
-renewal, or two leases held in opposite directions would keep each other alive. LMDB needs none of
-this: a lease holds its own reference on a reference-counted snapshot. A same-database related table
-reuses the caller's transaction; a join reached without `readTxnFor` reads another database's latest
-committed state rather than a foreign handle. A related read after the request committed takes a
-handle-free transaction, so a projection resolved then sees the latest state, not the join's
-snapshot (harper#3603). Each database is read at its own snapshot; a cross-database read is not one
-consistent snapshot.
+link, never as the outer results: abandoned-read cleanup on that link releases only that link. A
+search spans its holder link and its leased links, and either side can scan for several monitor
+ticks with the other idle: a drained join map or an inner scan whose rows are filtered or sorted on
+the holder side, a filtered related index scan that yields an event turn per rejected entry on the
+other. So the RocksDB monitor renews a link while a lease partner showed its own range activity in
+the current or previous tick. It consumes a partner's range flag into that tick stamp itself, since
+a link whose handle `save()` adopted is never walked and its flag would never clear. Only range
+activity stamps a link, never a renewal, or two leases held in opposite directions would keep each
+other alive. LMDB needs none of this: a lease holds its own reference on a reference-counted
+snapshot. A same-database related table reuses the caller's transaction; a join reached without
+`readTxnFor` reads another database's latest committed state rather than a foreign handle. A related
+read after the request committed takes a handle-free transaction, so a projection resolved then sees
+the latest state, not the join's snapshot (harper#3603). Each database is read at its own snapshot;
+a cross-database read is not one consistent snapshot.
 
 ## `enc:v1:` env values decrypt through a registered decryptor, and skip non-fatally without one (`resources/loadEnv.ts`, `resources/secretDecryptor.ts`, `utility/envFile.ts`)
 

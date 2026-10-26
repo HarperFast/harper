@@ -639,7 +639,11 @@ type MaybePromise<T> = T | Promise<T>;
 export type OwnedReadIterator = { onDone?: (() => void) | null };
 
 /** A read reference on one database's link, held for a search whose own handle is on `holder`. */
-export type ReadLease = OwnedReadIterator & { holder: DatabaseTransaction; readTxn: ReadTransaction };
+export type ReadLease = OwnedReadIterator & {
+	holder: DatabaseTransaction;
+	link: DatabaseTransaction;
+	readTxn: ReadTransaction;
+};
 
 export type CommitOptions = {
 	doneWriting?: boolean;
@@ -1009,9 +1013,11 @@ export class DatabaseTransaction implements Transaction {
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
-	// Read references held for searches running on other links (a join into this database). While a
-	// holder's own scan is active, this link is not idle: the search it serves is still progressing.
+	// Read references held for searches running on other links (a join into this database), and the
+	// leases this link's searches hold on other links. A search spans its holder and its leased links,
+	// and either side can scan for a while with the other idle.
 	declare readLeases?: Set<ReadLease>;
+	declare heldLeases?: Set<ReadLease>;
 	// The monitor tick that last consumed this link's own range activity.
 	declare rangeActiveTick?: number;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
@@ -1207,15 +1213,18 @@ export class DatabaseTransaction implements Transaction {
 		const generation = this.readTxnGeneration;
 		const lease: ReadLease = {
 			holder,
+			link: this,
 			readTxn,
 			onDone: () => {
 				lease.onDone = null;
 				this.readLeases.delete(lease);
+				holder.heldLeases.delete(lease);
 				this.unregisterReadIterator(lease);
 				if (readTxn) this.doneReadTxn(generation);
 			},
 		};
 		(this.readLeases ??= new Set()).add(lease);
+		(holder.heldLeases ??= new Set()).add(lease);
 		this.registerReadIterator(lease);
 		return lease;
 	}
@@ -4259,6 +4268,28 @@ export function deferForCommitInFlight(
 	return true;
 }
 
+/**
+ * Record a link's range activity as this tick's stamp. Usually the link's own walk does it; a lease
+ * partner's walk does it too, for a link the monitor never walks (a handle adopted by save()) whose flag
+ * would otherwise never clear.
+ */
+function consumeRangeActivity(txn: DatabaseTransaction): boolean {
+	if (txn.rangeReadActive) {
+		txn.rangeReadActive = false;
+		txn.rangeActiveTick = monitorTick;
+	}
+	// this tick or the last, whichever side of the partner this tick's walk is on
+	return txn.rangeActiveTick >= monitorTick - 1;
+}
+
+// Renewal comes only from a partner's own range activity, never from its renewal: two leases held in
+// opposite directions must not keep each other alive once both searches are abandoned.
+function leasePartnerScanning(txn: DatabaseTransaction): boolean {
+	if (txn.readLeases) for (const { holder } of txn.readLeases) if (consumeRangeActivity(holder)) return true;
+	if (txn.heldLeases) for (const { link } of txn.heldLeases) if (consumeRangeActivity(link)) return true;
+	return false;
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		monitorTick++;
@@ -4284,21 +4315,8 @@ function startMonitoringTxns() {
 		reportNow: number,
 		reportBudget: LongLivedHolderReportBudget
 	) {
-		if (txn.rangeReadActive) {
-			txn.rangeReadActive = false;
-			txn.rangeActiveTick = monitorTick;
-			txn.renewReadTimeout();
-		} else if (txn.readLeases) {
-			// Only the holder's own activity, as this monitor recorded it (this tick or the last, whichever
-			// side of the holder the walk is): never a renewal, or two leases held in opposite directions
-			// would keep each other alive, and never the raw flag, which an untracked link never clears.
-			for (const { holder } of txn.readLeases) {
-				if (holder.rangeActiveTick >= monitorTick - 1) {
-					txn.renewReadTimeout();
-					break;
-				}
-			}
-		}
+		consumeRangeActivity(txn);
+		if (txn.rangeActiveTick === monitorTick || leasePartnerScanning(txn)) txn.renewReadTimeout();
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;
