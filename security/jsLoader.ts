@@ -441,10 +441,10 @@ function normalizeImportedModule(importedModule: any): any {
 function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, unknown> {
 	if (!moduleUrl.startsWith('file:')) return {};
 	const path = fileURLToPath(moduleUrl);
-	let cjsModule = require.cache[path];
+	let cjsModule = nativeRequire.cache[path];
 	if (!cjsModule) {
 		try {
-			cjsModule = require.cache[realpathSync(path)];
+			cjsModule = nativeRequire.cache[realpathSync(path)];
 		} catch {}
 	}
 	const cjsExports = cjsModule?.exports;
