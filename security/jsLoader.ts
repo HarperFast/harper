@@ -504,6 +504,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url, scope);
 				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
+				// a module that threw stays cached errored; Node rejects with its error when given the vm.Module, Bun does not
+				if (dynamicModule.status === 'errored') throw dynamicModule.error;
 				// Bun resolves import() to the vm.Module itself when this hook returns a promise of one
 				return process.versions.bun ? dynamicModule.namespace : dynamicModule;
 			},
@@ -848,7 +850,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			(importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)),
 			(error) => {
 				// a require() of the file while the import was pending may have loaded it natively anyway
-				if (reservesRoute && !require.cache[fileURLToPath(url)]) nativeModules.delete(url);
+				if (reservesRoute && !nativeRequire.cache[fileURLToPath(url)]) nativeModules.delete(url);
 				throw error;
 			}
 		);

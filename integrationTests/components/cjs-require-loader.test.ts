@@ -50,7 +50,10 @@ async function writeFixture(parentDirectory: string): Promise<string> {
 		"interface Shape { value: string }\nconst shape: Shape = { value: 'stripped' };\nmodule.exports = shape;\n"
 	);
 	await writeFile(join(appDirectory, 'imports-failing.mjs'), "import './failing.mjs';\n");
-	await writeFile(join(appDirectory, 'failing.mjs'), "throw new Error('failing.mjs threw');\n");
+	await writeFile(
+		join(appDirectory, 'failing.mjs'),
+		"export const reached = true;\nthrow new Error('failing.mjs threw');\n"
+	);
 	await writeFile(
 		join(appDirectory, 'sibling.mjs'),
 		"import { fileURLToPath } from 'node:url';\nexport const filename = fileURLToPath(import.meta.url);\n"

@@ -855,6 +855,23 @@ for (const mode of ['vm-current-context', 'vm']) {
 			expect(loadedModules.has(loadedUrl(join(probeRoot, 'index.js')))).to.equal(false);
 		});
 
+		it('rejects import() of an ESM module that already threw as a dependency', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'failing.mjs'),
+				"export const reached = true;\nthrow new Error('failing threw');\n"
+			);
+			writeFileSync(join(runtimeRoot, 'imports-failing.mjs'), "import './failing.mjs';\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				'exports.load = async () => {\n' +
+					"\tawait import('./imports-failing.mjs').catch(() => {});\n" +
+					"\treturn import('./failing.mjs').then((namespace) => namespace.reached, (error) => error.message);\n" +
+					'};\n'
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(await result.load()).to.equal('failing threw');
+		});
+
 		it('imports a CommonJS module that exports null', async () => {
 			writeFileSync(join(runtimeRoot, 'nothing.cjs'), 'module.exports = null;\n');
 			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { default as nothing } from './nothing.cjs';\n");
