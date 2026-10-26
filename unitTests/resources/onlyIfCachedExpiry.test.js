@@ -1,5 +1,5 @@
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -69,15 +69,15 @@ describe('an expired record that has not been evicted yet', () => {
 		function assertStillStored() {
 			const entry = Table.primaryStore.getEntry('expired');
 			assert.ok(entry?.value, 'an only-if-cached read must not evict');
-			assert.equal(entry.version, expiredVersion);
-			assert.equal(Table.indices.name.getValuesCount('seed'), 2);
+			assert.strictEqual(entry.version, expiredVersion);
+			assert.strictEqual(Table.indices.name.getValuesCount('seed'), 2);
 		}
 
 		it('only-if-cached get and getResource answer 504, as they do once the record is evicted', async function () {
 			await assert.rejects(async () => Table.get('expired', { onlyIfCached: true }), notCached);
 			await assert.rejects(async () => Table.getResource('expired', { onlyIfCached: true }), notCached);
 			await assert.rejects(async () => Table.get('never-written', { onlyIfCached: true }), notCached);
-			assert.equal((await Table.get('live', { onlyIfCached: true })).name, 'seed');
+			assert.strictEqual((await Table.get('live', { onlyIfCached: true })).name, 'seed');
 			assertStillStored();
 		});
 
@@ -86,18 +86,18 @@ describe('an expired record that has not been evicted yet', () => {
 				static loadAsInstance = false;
 			}
 			await assert.rejects(async () => ValueTable.get('expired', { onlyIfCached: true }), notCached);
-			assert.equal((await ValueTable.get('live', { onlyIfCached: true })).name, 'seed');
+			assert.strictEqual((await ValueTable.get('live', { onlyIfCached: true })).name, 'seed');
 			assertStillStored();
 		});
 
 		it('only-if-cached search omits it, by index and by scan', async function () {
 			const byIndex = { conditions: [{ attribute: 'name', value: 'seed' }] };
-			assert.deepEqual(await searchIds(Table, byIndex, { onlyIfCached: true }), ['live']);
-			assert.deepEqual(await searchIds(Table, { select: ['id', 'name'] }, { onlyIfCached: true }), ['live']);
-			assert.deepEqual(await searchIds(Table, {}, { onlyIfCached: true }), ['live']);
+			assert.deepStrictEqual(await searchIds(Table, byIndex, { onlyIfCached: true }), ['live']);
+			assert.deepStrictEqual(await searchIds(Table, { select: ['id', 'name'] }, { onlyIfCached: true }), ['live']);
+			assert.deepStrictEqual(await searchIds(Table, {}, { onlyIfCached: true }), ['live']);
 			// the SQL UPDATE/DELETE row finder still sees it
 			const withExpired = { ...byIndex, includeExpired: true };
-			assert.deepEqual(await searchIds(Table, withExpired, { onlyIfCached: true }), ['expired', 'live']);
+			assert.deepStrictEqual(await searchIds(Table, withExpired, { onlyIfCached: true }), ['expired', 'live']);
 			assertStillStored();
 		});
 
@@ -105,7 +105,7 @@ describe('an expired record that has not been evicted yet', () => {
 			const children = {};
 			const select = ['id', { name: 'child', select: ['id', 'name'] }];
 			for await (const parent of Parent.search({ select }, { onlyIfCached: true })) children[parent.id] = parent.child;
-			assert.deepEqual(children['of-live'], { id: 'live', name: 'seed' });
+			assert.deepStrictEqual(children['of-live'], { id: 'live', name: 'seed' });
 			assert.ok(children['of-expired'] == null, JSON.stringify(children['of-expired']));
 			assertStillStored();
 		});
@@ -121,14 +121,14 @@ describe('an expired record that has not been evicted yet', () => {
 			const liveEntry = Table.primaryStore.getEntry('live');
 			const context = { onlyIfCached: true };
 			await assert.rejects(async () => Table.get('expired', context), notCached);
-			assert.equal(context.lastModified, undefined);
-			assert.equal(context.lastRefreshed, undefined);
+			assert.strictEqual(context.lastModified, undefined);
+			assert.strictEqual(context.lastRefreshed, undefined);
 			// the expired record was written after the live one, so it must not raise a shared context's lastModified
 			const shared = { onlyIfCached: true };
 			await Table.get('live', shared);
 			await assert.rejects(async () => Table.get('expired', shared), notCached);
-			assert.equal(shared.lastModified, liveEntry.version);
-			assert.equal(shared.lastRefreshed, liveEntry.localTime);
+			assert.strictEqual(shared.lastModified, liveEntry.version);
+			assert.strictEqual(shared.lastRefreshed, liveEntry.localTime);
 			assertStillStored();
 		});
 
@@ -137,12 +137,12 @@ describe('an expired record that has not been evicted yet', () => {
 			const context = {};
 			await Table.get('live', context);
 			assert.ok((await Table.get('expired', context)) == null);
-			assert.equal(context.lastModified, liveVersion);
+			assert.strictEqual(context.lastModified, liveVersion);
 			const fresh = {};
 			await seed(Table, 'expired-2', PAST());
 			assert.ok((await Table.get('expired-2', fresh)) == null);
-			assert.equal(fresh.lastModified, undefined);
-			assert.equal(fresh.lastRefreshed, undefined);
+			assert.strictEqual(fresh.lastModified, undefined);
+			assert.strictEqual(fresh.lastRefreshed, undefined);
 		});
 
 		it('a write over it does not report its version as the context lastModified', async function () {
@@ -152,7 +152,7 @@ describe('an expired record that has not been evicted yet', () => {
 				const context = {};
 				if (write === 'delete') await Table.delete(id, context);
 				else await Table[write](id, { id, name: write }, context);
-				assert.notEqual(context.lastModified, version, write);
+				assert.notStrictEqual(context.lastModified, version, write);
 			}
 		});
 	});
@@ -175,13 +175,13 @@ describe('an expired record that has not been evicted yet', () => {
 		it('only-if-cached get serves the stale record without asking the source', async function () {
 			sourceRequests = 0;
 			const context = { onlyIfCached: true };
-			assert.equal((await Table.get('stale', context)).name, 'seed');
-			assert.equal(context.lastModified, Table.primaryStore.getEntry('stale').version);
+			assert.strictEqual((await Table.get('stale', context)).name, 'seed');
+			assert.strictEqual(context.lastModified, Table.primaryStore.getEntry('stale').version);
 			class ValueTable extends Table {
 				static loadAsInstance = false;
 			}
-			assert.equal((await ValueTable.get('stale', { onlyIfCached: true })).name, 'seed');
-			assert.equal(sourceRequests, 0);
+			assert.strictEqual((await ValueTable.get('stale', { onlyIfCached: true })).name, 'seed');
+			assert.strictEqual(sourceRequests, 0);
 		});
 	});
 });

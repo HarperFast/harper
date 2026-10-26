@@ -9760,9 +9760,14 @@ export function makeTable(options): TableResourceClass {
 			return sourceLoad(entry).then((entry) => withEntry(entry, id));
 		}
 		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
-		if (entry && context && !isHiddenExpiry(entry.expiresAt)) {
-			if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-			if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
+		if (entry && context) {
+			const newerVersion = entry.version > (context.lastModified || 0);
+			const firstRefresh = entry.localTime && !context.lastRefreshed;
+			// last: it may read the clock, and after a search's first row nothing is stamped
+			if ((newerVersion || firstRefresh) && !isHiddenExpiry(entry.expiresAt)) {
+				if (newerVersion) context.lastModified = entry.version;
+				if (firstRefresh) context.lastRefreshed = entry.localTime;
+			}
 		}
 		return withEntry(entry, id);
 	}
@@ -9921,9 +9926,8 @@ export function makeTable(options): TableResourceClass {
 		// target may be a primitive id on instance-API calls, which can't hold the flag
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 	}
-	/** A record past its expiry on a table with no source is gone, even before eviction removes it. */
 	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
-		// the clock is read last: withLocalEntry calls this on every read
+		// the clock is read last: most records have no expiry
 		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
 	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
