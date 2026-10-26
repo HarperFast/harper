@@ -379,9 +379,13 @@ const { transaction } = require('#src/resources/transaction');
 		const worker = new Worker(
 			`
 			const { parentPort, workerData } = require('node:worker_threads');
-			require(workerData.testUtils).setupTestDBPath();
+			parentPort.postMessage({ type: 'slot-worker-stage', stage: 'loading inherited configuration' });
+			const env = require('#src/utility/environment/environmentManager');
+			env.initSync();
+			parentPort.postMessage({ type: 'slot-worker-stage', stage: 'loading database modules' });
 			const { getDatabases } = require('#src/resources/databases');
 			const { activeResidencySlots, validateResidencyMapWrite } = require('#src/resources/residencyMaps');
+			parentPort.postMessage({ type: 'slot-worker-stage', stage: 'scanning database catalogs' });
 			getDatabases();
 			const { onMessageByType } = require('#src/server/threads/manageThreads');
 			onMessageByType('slot-catalog-check', () => {});
@@ -397,7 +401,7 @@ const { transaction } = require('#src/resources/transaction');
 			{
 				eval: true,
 				workerData: {
-					testUtils: require.resolve('../testUtils'),
+					configOverrides: env.getConfigOverrides(),
 					noServerStart: true,
 					addPorts: [],
 					workerIndex: 9,
@@ -407,7 +411,11 @@ const { transaction } = require('#src/resources/transaction');
 		);
 		const waitForMessage = (type) =>
 			new Promise((resolve, reject) => {
-				const timer = setTimeout(() => finish(new Error(`Worker did not send ${type}`)), 5000);
+				let stage = 'starting worker';
+				const timer = setTimeout(
+					() => finish(new Error(`Worker did not send ${type}; last stage: ${stage}`)),
+					type.endsWith('-ready') ? 15_000 : 5000
+				);
 				const exited = (code) => finish(new Error(`Catalog worker exited before ${type}: ${code}`));
 				function finish(error, message) {
 					clearTimeout(timer);
@@ -418,6 +426,7 @@ const { transaction } = require('#src/resources/transaction');
 					else resolve(message);
 				}
 				const listener = (message) => {
+					if (message.type === 'slot-worker-stage') stage = message.stage;
 					if (message.type !== type) return;
 					finish(null, message);
 				};
@@ -450,8 +459,12 @@ const { transaction } = require('#src/resources/transaction');
 			const worker = new Worker(
 				`
 			const { parentPort, workerData } = require('node:worker_threads');
-			require(workerData.testUtils).setupTestDBPath();
+			parentPort.postMessage({ type: 'slot-worker-stage', stage: 'loading inherited configuration' });
+			const env = require('#src/utility/environment/environmentManager');
+			env.initSync();
+			parentPort.postMessage({ type: 'slot-worker-stage', stage: 'loading database modules' });
 			const { getDatabases, table } = require('#src/resources/databases');
+			parentPort.postMessage({ type: 'slot-worker-stage', stage: 'scanning database catalogs' });
 			getDatabases();
 			const { onMessageByType } = require('#src/server/threads/manageThreads');
 			onMessageByType('slot-redeclare-check', () => {});
@@ -470,7 +483,7 @@ const { transaction } = require('#src/resources/transaction');
 				{
 					eval: true,
 					workerData: {
-						testUtils: require.resolve('../testUtils'),
+						configOverrides: env.getConfigOverrides(),
 						noServerStart: true,
 						addPorts: [],
 						workerIndex: 9,
@@ -480,7 +493,11 @@ const { transaction } = require('#src/resources/transaction');
 			);
 			const waitForMessage = (type) =>
 				new Promise((resolve, reject) => {
-					const timer = setTimeout(() => finish(new Error(`Worker did not send ${type}`)), 5000);
+					let stage = 'starting worker';
+					const timer = setTimeout(
+						() => finish(new Error(`Worker did not send ${type}; last stage: ${stage}`)),
+						type.endsWith('-ready') ? 15_000 : 5000
+					);
 					const exited = (code) => finish(new Error(`Catalog worker exited before ${type}: ${code}`));
 					function finish(error, message) {
 						clearTimeout(timer);
@@ -491,6 +508,7 @@ const { transaction } = require('#src/resources/transaction');
 						else resolve(message);
 					}
 					const listener = (message) => {
+						if (message.type === 'slot-worker-stage') stage = message.stage;
 						if (message.type !== type) return;
 						finish(null, message);
 					};
