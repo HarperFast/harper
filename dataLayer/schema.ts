@@ -310,8 +310,7 @@ export async function dropAttribute(dropAttributeObject: any) {
 	}
 
 	if (
-		dropAttributeObject.attribute ===
-		global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table].primary_key
+		dropAttributeObject.attribute === getDatabases()[dropAttributeObject.schema][dropAttributeObject.table].primaryKey
 	) {
 		throw handleHDBError(
 			new Error(),

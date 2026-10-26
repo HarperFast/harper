@@ -8653,6 +8653,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static async removeAttributes(names: string[]) {
 			TableResource.assertSchemaMutable('remove attributes');
+			if (names.includes(primaryKey)) throw new ClientError('You cannot drop a hash attribute', 400);
 			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
