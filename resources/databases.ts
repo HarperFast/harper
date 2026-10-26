@@ -1104,7 +1104,6 @@ export function getTables(): Tables {
 	return tables || {};
 }
 
-/**
 // Register getter in the shared registry so common_utils.ts can access databases
 // without importing this module directly (which would create a circular dep).
 setDatabasesGetter(() => getDatabases());

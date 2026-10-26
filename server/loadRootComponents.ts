@@ -1,7 +1,5 @@
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import * as jobOwnershipRuntimeModule from './jobs/jobOwnership.ts';
-import * as restoreIntentRuntimeModule from '../dataLayer/restoreIntent.ts';
-import * as backupImportRuntimeModule from '../dataLayer/backupImport.ts';
 import { isMainThread, workerData } from 'node:worker_threads';
 import { getTables } from '../resources/databases.ts';
 import {
@@ -59,7 +57,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// operations API without the components that hold the database.
 	if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 		try {
-			if (restoreIntentRuntimeModule.terminalRestoreExists()) {
+			if (loadRuntimeModule('dataLayer/restoreIntent').terminalRestoreExists()) {
 				process.env.HARPER_SAFE_MODE = 'restore-terminal';
 			}
 		} catch (error) {
@@ -112,11 +110,11 @@ async function loadRootComponents(isWorkerThread: any = false) {
 		// component, worker or plugin could hold the database they replace.
 		let restoreOwnedJobs;
 		try {
-			restoreOwnedJobs = await restoreIntentRuntimeModule.recoverRestoresAtStartup();
+			restoreOwnedJobs = await loadRuntimeModule('dataLayer/restoreIntent').recoverRestoresAtStartup();
 		} catch (error) {
 			console.error(errorForLog(error));
 		}
-		backupImportRuntimeModule.sweepImportStagingAtStartup();
+		loadRuntimeModule('dataLayer/backupImport').sweepImportStagingAtStartup();
 		jobOwnershipRuntimeModule
 			.reconcileInterruptedJobsOnce(restoreOwnedJobs)
 			.catch((error) => console.error(errorForLog(error)));

@@ -13,7 +13,7 @@ const {
 	statSync,
 	writeFileSync,
 } = require('node:fs');
-const { dirname, join, relative, resolve } = require('node:path');
+const { dirname, join, relative } = require('node:path');
 const { tmpdir } = require('node:os');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { writeUnsupportedTableFormat: sharedWriteUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
