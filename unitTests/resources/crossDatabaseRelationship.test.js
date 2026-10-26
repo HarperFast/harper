@@ -3,6 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -109,6 +110,7 @@ describe('cross-database relationship search', function () {
 
 	it('keeps streaming while a drained related link sits through monitor ticks', async function () {
 		setTxnExpiration(20);
+		setLMDBTxnExpiration(20);
 		try {
 			const { results, badgeLink, empLink } = await searchAfterCommit();
 			const ids = [];
@@ -126,6 +128,7 @@ describe('cross-database relationship search', function () {
 			assert.strictEqual(badgeLink.readTxnsUsed, 0);
 		} finally {
 			setTxnExpiration(30000);
+			setLMDBTxnExpiration(30000);
 		}
 	});
 
