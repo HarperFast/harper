@@ -328,14 +328,15 @@ async function dispatchInitialize(
 	messageId: JsonRpcId
 ): Promise<NormResponse> {
 	const clientIdentity = resolveClientIdentity(request.headers, request.clientIp, request.profile);
-	if (!tryAdmitInitialize(request.profile, clientIdentity)) {
+	const admission = tryAdmitInitialize(request.profile, clientIdentity);
+	if (admission.allowed === false) {
 		const limited = jsonRpcErrorResponse(
 			429,
 			messageId,
 			ERROR_CODES.INVALID_REQUEST,
 			'MCP initialize rate limit reached; back off and try again'
 		);
-		limited.headers['Retry-After'] = '1';
+		limited.headers['Retry-After'] = String(admission.retryAfterSeconds);
 		return limited;
 	}
 	const params = 'params' in message ? (message.params as { protocolVersion?: unknown } | undefined) : undefined;

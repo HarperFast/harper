@@ -125,14 +125,19 @@ export function configFor(profile: 'operations' | 'application'): RateLimitConfi
 function buildConfig(profile: 'operations' | 'application'): RateLimitConfig {
 	const keys = CONFIG_KEYS[profile];
 	const defaults = DEFAULTS[profile];
-	const read = (key: string, fallback: number): number => {
+	// The config validator accepts quoted numbers but leaves them strings in the loaded config.
+	const readNumber = (key: string): number | undefined => {
 		const v = env.get(key);
-		return typeof v === 'number' && v > 0 ? v : fallback;
+		const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+		return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
 	};
-	// 0 must be honored here: it is how the default-on limit is turned off.
+	const read = (key: string, fallback: number): number => {
+		const v = readNumber(key);
+		return v > 0 ? v : fallback;
+	};
 	const readAllowingZero = (key: string, fallback: number): number => {
-		const v = env.get(key);
-		return typeof v === 'number' && v >= 0 ? v : fallback;
+		const v = readNumber(key);
+		return v >= 0 ? v : fallback;
 	};
 	const identityHeader = env.get(keys.identityHeader);
 	const perClientPerSecond = read(keys.perClientPerSecond, defaults.perClientPerSecond);
@@ -149,7 +154,7 @@ function buildConfig(profile: 'operations' | 'application'): RateLimitConfig {
 		// (consume requires a whole token and refill caps at burst).
 		perClientBurst: read(keys.perClientBurst, perClientPerSecond > 0 ? Math.max(1, perClientPerSecond) : 0),
 		initializePerSecond,
-		initializeBurst: read(keys.initializeBurst, defaults.initializeBurst),
+		initializeBurst: Math.max(1, read(keys.initializeBurst, defaults.initializeBurst)),
 		...(typeof identityHeader === 'string' && identityHeader ? { identityHeader: identityHeader.toLowerCase() } : {}),
 	};
 }
@@ -405,16 +410,24 @@ export function tryAdmit(
 }
 
 /**
- * Admit an `initialize` (session creation) from `clientIdentity`. Absent
- * identity or a 0 rate admits — the same skip rule as the per-client
- * `tools/call` bucket.
+ * Admit an `initialize` (session creation) from `clientIdentity`; on denial,
+ * the seconds until a token is available. A request with no identity (e.g. a
+ * Unix-socket ingress with no `identityHeader`) shares one bucket per profile
+ * rather than going unthrottled. IPv6 addresses share a bucket per /64, the
+ * block a single client is typically assigned.
  */
-export function tryAdmitInitialize(profile: 'operations' | 'application', clientIdentity: string | undefined): boolean {
+export function tryAdmitInitialize(
+	profile: 'operations' | 'application',
+	clientIdentity: string | undefined
+): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
 	const config = configFor(profile);
-	if (!clientIdentity || config.initializePerSecond <= 0) return true;
+	if (config.initializePerSecond <= 0) {
+		initializeClients.clear();
+		return { allowed: true };
+	}
 	const t = now();
 	pruneInitializeClients(t);
-	const key = `${profile}\n${clientIdentity}`;
+	const key = `${profile}\n${clientIdentity ? initializeIdentity(clientIdentity) : ''}`;
 	let c = initializeClients.get(key);
 	if (!c) {
 		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst), lastSeen: t, config };
@@ -426,5 +439,23 @@ export function tryAdmitInitialize(profile: 'operations' | 'application', client
 			c.config = config;
 		}
 	}
-	return c.rate.tryConsume();
+	return c.rate.tryConsume()
+		? { allowed: true }
+		: { allowed: false, retryAfterSeconds: Math.ceil(1 / config.initializePerSecond) };
+}
+
+function initializeIdentity(identity: string): string {
+	const address = identity.split('%')[0];
+	if (!address.includes(':') || address.includes('.')) return identity;
+	const [head, tail] = address.split('::');
+	const headGroups = head ? head.split(':') : [];
+	const tailGroups = tail ? tail.split(':') : [];
+	const groups =
+		tail === undefined
+			? headGroups
+			: [...headGroups, ...Array(Math.max(0, 8 - headGroups.length - tailGroups.length)).fill('0'), ...tailGroups];
+	return `${groups
+		.slice(0, 4)
+		.map((group) => parseInt(group || '0', 16).toString(16))
+		.join(':')}::/64`;
 }

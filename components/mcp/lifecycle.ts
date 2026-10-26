@@ -8,6 +8,7 @@
  * can decide whether to connect on the older version or disconnect.
  */
 import { createSession, saveSession, type McpSessionRecord } from './session.ts';
+import { GATED_CLIENT_CAPABILITIES } from './serverRequests.ts';
 import { packageJson } from '../../utility/packageUtils.js';
 
 export const PROTOCOL_VERSION_PREFERRED = '2025-06-18';
@@ -99,17 +100,13 @@ export async function handleInitialize(
 }
 
 /**
- * Client capabilities Harper acts on: the gates for server→client requests in
- * `serverRequests.ts`, which test presence only. Everything else the client
- * declares is dropped rather than persisted, so the session row's size does not
- * depend on what an (often anonymous) client sends.
+ * Keep only presence of the capabilities Harper gates on, so the persisted
+ * session row's size does not depend on what an (often anonymous) client sends.
  */
-const STORED_CLIENT_CAPABILITIES = ['sampling', 'elicitation', 'roots'] as const;
-
 function pickClientCapabilities(capabilities: unknown): Record<string, unknown> | undefined {
 	if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return undefined;
 	let picked: Record<string, unknown> | undefined;
-	for (const name of STORED_CLIENT_CAPABILITIES) {
+	for (const name of GATED_CLIENT_CAPABILITIES) {
 		if ((capabilities as Record<string, unknown>)[name]) (picked ??= {})[name] = {};
 	}
 	return picked;

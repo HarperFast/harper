@@ -229,61 +229,89 @@ describe('mcp/rateLimit', () => {
 		});
 	});
 	describe('tryAdmitInitialize (session-creation throttle)', () => {
+		const admit = (identity, profile = 'application') => tryAdmitInitialize(profile, identity).allowed;
+
 		it('is on by default: admits the burst per client identity, then denies', () => {
-			for (let i = 0; i < 50; i++) assert.equal(tryAdmitInitialize('application', '10.0.0.1'), true, `admit ${i}`);
-			assert.equal(tryAdmitInitialize('application', '10.0.0.1'), false, 'burst exhausted');
-			assert.equal(tryAdmitInitialize('application', '10.0.0.2'), true, 'other identities unaffected');
-			assert.equal(tryAdmitInitialize('operations', '10.0.0.1'), true, 'profiles are separate');
+			for (let i = 0; i < 50; i++) assert.equal(admit('10.0.0.1'), true, `admit ${i}`);
+			assert.deepEqual(tryAdmitInitialize('application', '10.0.0.1'), { allowed: false, retryAfterSeconds: 1 });
+			assert.equal(admit('10.0.0.2'), true, 'other identities unaffected');
+			assert.equal(admit('10.0.0.1', 'operations'), true, 'profiles are separate');
 		});
 
-		it('refills at initializePerSecond', () => {
-			envOverrides.mcp_application_rateLimit_initializePerSecond = 2;
+		it('refills at initializePerSecond and reports the wait for one token', () => {
+			envOverrides.mcp_application_rateLimit_initializePerSecond = 0.25;
 			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
-			assert.equal(tryAdmitInitialize('application', 'ip'), true);
-			assert.equal(tryAdmitInitialize('application', 'ip'), false);
-			clock += 500;
-			assert.equal(tryAdmitInitialize('application', 'ip'), true, 'one token after 1/rate seconds');
+			assert.equal(admit('ip'), true);
+			assert.deepEqual(tryAdmitInitialize('application', 'ip'), { allowed: false, retryAfterSeconds: 4 });
+			clock += 4000;
+			assert.equal(admit('ip'), true);
 		});
 
-		it('an explicit 0 rate disables it, and no identity skips it', () => {
+		it('requests with no identity share one bucket instead of going unthrottled', () => {
 			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
-			assert.equal(tryAdmitInitialize('application', undefined), true);
-			assert.equal(tryAdmitInitialize('application', undefined), true);
-			_resetForTest();
+			assert.equal(admit(undefined), true);
+			assert.equal(admit(undefined), false);
+			assert.equal(admit('10.0.0.1'), true);
+		});
+
+		it('IPv6 addresses in one /64 share a bucket', () => {
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			assert.equal(admit('2001:db8:1:2::1'), true);
+			assert.equal(admit('2001:db8:1:2:ffff::9'), false, 'same /64, compressed differently');
+			assert.equal(admit('2001:0db8:0001:0002:0:0:0:7'), false, 'same /64, uncompressed');
+			assert.equal(admit('2001:db8:1:3::1'), true, 'next /64');
+			assert.equal(admit('a::b:c:d:e:f:1'), true);
+			assert.equal(admit('a:0:b:c::1'), false, 'groups after :: still count toward the /64');
+			assert.equal(admit('::ffff:10.0.0.9'), true, 'IPv4-mapped is keyed per address');
+			assert.equal(admit('::ffff:10.0.0.8'), true);
+		});
+
+		it('an explicit 0 rate disables it, including quoted', () => {
 			envOverrides.mcp_application_rateLimit_initializePerSecond = 0;
-			for (let i = 0; i < 5; i++) assert.equal(tryAdmitInitialize('application', 'ip'), true);
+			for (let i = 0; i < 60; i++) assert.equal(admit('ip'), true);
+			_resetForTest();
+			envOverrides.mcp_application_rateLimit_initializePerSecond = '0';
+			for (let i = 0; i < 60; i++) assert.equal(admit('ip'), true);
 		});
 
-		it('applies a lowered limit to an identity that already has a bucket, without refunding spent tokens', () => {
+		it('reads quoted numbers, and floors the burst at one token', () => {
+			envOverrides.mcp_application_rateLimit_initializePerSecond = '0.5';
+			envOverrides.mcp_application_rateLimit_initializeBurst = '0.5';
+			const cfg = configFor('application');
+			assert.equal(cfg.initializePerSecond, 0.5);
+			assert.equal(cfg.initializeBurst, 1);
+		});
+
+		it('applies a lowered limit to a live bucket without refunding spent tokens', () => {
 			envOverrides.mcp_application_rateLimit_initializePerSecond = 2;
-			envOverrides.mcp_application_rateLimit_initializeBurst = 4;
-			for (let i = 0; i < 3; i++) assert.equal(tryAdmitInitialize('application', 'ip'), true);
+			envOverrides.mcp_application_rateLimit_initializeBurst = 40;
+			for (let i = 0; i < 40; i++) assert.equal(admit('ip'), true);
 			envOverrides.mcp_application_rateLimit_initializePerSecond = 0.1;
 			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
-			clock += 10_001; // past the config cache TTL
-			assert.equal(tryAdmitInitialize('application', 'ip'), true, 'the one remaining token, capped at the new burst');
+			clock += 10_001; // past the config cache TTL, well inside the old 20 s refill window
+			assert.equal(admit('ip'), true, 'refilled tokens are capped at the new burst of 1');
 			clock += 500;
-			assert.equal(tryAdmitInitialize('application', 'ip'), false, 'refills at the new 0.1/s, not the old 2/s');
+			assert.equal(admit('ip'), false, 'refills at the new 0.1/s, not the old 2/s');
 		});
 
-		it('sweeps idle initialize buckets from initialize itself, not from tools/call', () => {
+		it('sweeps idle buckets from initialize itself, not from tools/call', () => {
 			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
-			assert.equal(tryAdmitInitialize('application', 'a'), true);
-			assert.equal(tryAdmitInitialize('application', 'a'), false);
+			assert.equal(admit('a'), true);
+			assert.equal(admit('a'), false);
 			clock += 61 * 60 * 1000;
-			tryAdmit('s1', 't', 'application').release(); // runs the tools/call sweep
+			tryAdmit('s1', 't', 'application').release();
 			clock -= 61 * 60 * 1000;
-			assert.equal(tryAdmitInitialize('application', 'a'), false, 'tools/call sweep left the bucket alone');
+			assert.equal(admit('a'), false, 'the tools/call sweep leaves initialize buckets alone');
 			clock += 11_000;
-			tryAdmitInitialize('application', 'b'); // sweeps: 'a' has been idle past its refill time
-			assert.equal(tryAdmitInitialize('application', 'a'), true);
+			admit('b');
+			assert.equal(admit('a'), true, 'swept once idle past its refill time');
 		});
 
 		it('does not share tokens with the per-client tools/call bucket', () => {
 			envOverrides.mcp_application_rateLimit_perClientPerSecond = 1;
 			envOverrides.mcp_application_rateLimit_perClientBurst = 1;
 			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
-			assert.equal(tryAdmitInitialize('application', 'ip'), true);
+			assert.equal(admit('ip'), true);
 			const call = tryAdmit('s1', 't', 'application', 'ip');
 			assert.equal(call.allowed, true, 'tools/call bucket still full');
 			call.release();

@@ -91,6 +91,7 @@ describe('mcp/transport', () => {
 
 	beforeEach(() => {
 		envOverrides = {};
+		_resetRateLimitForTest();
 		transport_mod.__set__('env', envStub);
 		_setSessionTableForTest(makeFakeTable());
 		_resetRegistryForTest();
@@ -141,7 +142,6 @@ describe('mcp/transport', () => {
 		});
 
 		it('throttles session creation per client identity with 429, creating no session, until the bucket refills', async () => {
-			_resetRateLimitForTest();
 			let clock = 1_000_000;
 			_setRateLimitClockForTest(() => clock);
 			try {
