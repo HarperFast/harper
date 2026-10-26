@@ -7,11 +7,7 @@ const { Resource } = require('#src/resources/Resource');
 const { Resources } = require('#src/resources/Resources');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { handleApplication } = require('#src/server/REST');
-const { replicationConfirmation: rocksReplicationConfirmation } = require('#src/resources/DatabaseTransaction');
-const { replicationConfirmation: lmdbReplicationConfirmation } = require('#src/resources/LMDBTransaction');
-
-const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-const setReplicationConfirmation = isLMDB ? lmdbReplicationConfirmation : rocksReplicationConfirmation;
+const { replicationConfirmation: setReplicationConfirmation } = require('#src/resources/DatabaseTransaction');
 
 let mountCounter = 0;
 function mountRest(resources) {
@@ -172,9 +168,7 @@ describe('X-Replicate-To is honored only for a super user (harper#2898)', () => 
 		);
 		assert.strictEqual(response.status, 200);
 		assert.strictEqual((await Accounts.get('admin')).name, 'created');
-		// LMDB: transaction.ts sets the count on the generic root transaction, and the LMDB child the
-		// write lands in does not inherit it, so the hook is never called.
-		if (!isLMDB) assert.deepStrictEqual(confirmations, [1]);
+		assert.deepStrictEqual(confirmations, [1]);
 	});
 
 	it('trusts directives application code sets on a context, while table permissions still apply', async () => {
