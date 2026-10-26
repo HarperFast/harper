@@ -12178,7 +12178,7 @@ export function makeTable(options): TableResourceClass {
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
-				let updatedRecord, assignCreatedTime, sourceVersion;
+				let updatedRecord, createdTimeToAssign, sourceVersion;
 				let reusedCachedRecord = false;
 				let hasChanges, invalidated;
 				try {
@@ -12299,7 +12299,9 @@ export function makeTable(options): TableResourceClass {
 						assertLocalShardWrite(
 							residencyOwners(databaseName, calculateResidencySlot(id, updatedRecord), residencyPolicy.slots)
 						);
-					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;
+					// the attribute, not a flag: a reload can rebind createdTimeProperty before the commit below runs
+					createdTimeToAssign =
+						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
 					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null
@@ -12315,12 +12317,12 @@ export function makeTable(options): TableResourceClass {
 										? new Date(resolvedVersion).toISOString()
 										: resolvedVersion;
 						}
-						if (assignCreatedTime) {
-							updatedRecord[createdTimeProperty.name] =
-								existingRecord?.[createdTimeProperty.name] ??
-								(createdTimeProperty.type === 'Date'
+						if (createdTimeToAssign) {
+							updatedRecord[createdTimeToAssign.name] =
+								existingRecord?.[createdTimeToAssign.name] ??
+								(createdTimeToAssign.type === 'Date'
 									? new Date(resolvedVersion)
-									: createdTimeProperty.type === 'String'
+									: createdTimeToAssign.type === 'String'
 										? new Date(resolvedVersion).toISOString()
 										: resolvedVersion);
 						}
@@ -12433,10 +12435,10 @@ export function makeTable(options): TableResourceClass {
 							// a first fill replacing a record that landed during the source call keeps its created time,
 							// as a put would; copied, since the caller already holds updatedRecord
 							const racedCreatedTime =
-								assignCreatedTime && existingVersion == null ? currentRecord?.[createdTimeProperty.name] : undefined;
+								createdTimeToAssign && existingVersion == null ? currentRecord?.[createdTimeToAssign.name] : undefined;
 							if (racedCreatedTime != null) {
 								recordToStore = Object.setPrototypeOf({ ...updatedRecord }, Object.getPrototypeOf(updatedRecord));
-								recordToStore[createdTimeProperty.name] = racedCreatedTime;
+								recordToStore[createdTimeToAssign.name] = racedCreatedTime;
 								const fillEntry = entryMap.get(updatedRecord);
 								if (fillEntry) entryMap.set(recordToStore, fillEntry);
 							}
