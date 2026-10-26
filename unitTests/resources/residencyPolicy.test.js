@@ -24,14 +24,15 @@ describe('Residency policy and map identity', () => {
 		['', '1b', 504136826],
 		['key1', '6b657931', 927623783],
 		[0, '10000000', 1314514469],
-		[-0, '18000000', 3485195949],
+		// Stored numeric attributes normalize -0 to 0, so their placement hashes must agree.
+		[-0, '18000000', 1314514469],
 		[1, '13ff0000', 922627199],
 		[-12.5, '0bfd6ffffffffffff0', 3001718541],
 		[1n, '13ff0000', 922627199],
 		[['tenant', 42], '74656e616e7400140450000000000000', 1488516549],
 		[Buffer.from([0, 255, 17]), '00ff11', 59726755],
 	]) {
-		it(`pins ordered-binary and FNV-1a bytes ${hex}`, () => {
+		it(`pins ordered-binary bytes ${hex} and the canonical FNV-1a hash`, () => {
 			const buffer = Buffer.alloc(8192);
 			const end = writeKey(id, buffer, 0);
 			assert.equal(buffer.subarray(0, end).toString('hex'), hex);
