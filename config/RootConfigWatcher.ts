@@ -16,6 +16,9 @@ import { errorForLog, loggerWithTag } from '../utility/logging/harper_logger.ts'
 import { ConfigReadRetry } from './configReadRetry.ts';
 import { ArmGate } from './watcherArming.ts';
 
+// config/DESIGN.md: `RootConfigWatcher` schedules a trailing verify-read
+const TRAILING_VERIFY_READ_DELAY_MS = 100;
+
 function isMissingFile(error: unknown): boolean {
 	return !!error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
@@ -37,9 +40,6 @@ let sharedWatcher: RootConfigWatcher | undefined;
 export function getSharedRootConfigWatcher(): RootConfigWatcher {
 	return (sharedWatcher ??= new RootConfigWatcher());
 }
-
-// config/DESIGN.md: `RootConfigWatcher` schedules a trailing verify-read
-const TRAILING_VERIFY_READ_DELAY_MS = 100;
 
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
