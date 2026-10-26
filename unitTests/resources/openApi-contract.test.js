@@ -128,8 +128,6 @@ describe('openApi — request-contract emission at a static path (resources Map,
 	});
 });
 
-// A contract compiled by `defineResource` (not hand-built metadata) advertises the same body-presence
-// decision its validator enforces: a non-optional body is `requestBody.required`, an `.optional` one is not.
 describe('openApi — request-body presence compiled from a real contract', () => {
 	const { defineResource, t } = require('#src/resources/defineResource');
 	const handler = async () => {};

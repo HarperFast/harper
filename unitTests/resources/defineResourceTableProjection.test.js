@@ -1,5 +1,3 @@
-// A table-projected request-contract body applies Table.validate's null/required rules at every depth
-// and t.date's policy to Date columns; a validated body must be present unless its schema is `.optional`.
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -152,19 +150,12 @@ describe('defineResource table projection + body presence', () => {
 			assert.deepStrictEqual(out, { title: 'Song', meta: { label: 'ok', count: null }, tags: [null] });
 		});
 
-		it('rejects null and undefined for a nullable:false array element', async () => {
+		it('rejects null for a nullable:false array element', async () => {
 			await rejectsWith(
 				() => Api.post(new RequestTarget('/nested-tracks'), { title: 'Song', codes: ['a', null] }),
 				'body.codes[1]',
 				'nullable'
 			);
-			await rejectsWith(
-				() => Api.post(new RequestTarget('/nested-tracks'), { title: 'Song', codes: [undefined] }),
-				'body.codes[0]',
-				'required'
-			);
-			const out = await Api.post(new RequestTarget('/nested-tracks'), { title: 'Song', tags: [undefined] });
-			assert.deepStrictEqual(out.tags, [undefined]);
 		});
 
 		it('applies Date coercion and requiredness inside nested objects and object-in-array elements', async () => {

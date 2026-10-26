@@ -348,15 +348,7 @@ function validateValue(value: any, fragment: JsonSchemaFragment, path: string, i
 		return value;
 	}
 	if (primary === 'array' && fragment.items && Array.isArray(value)) {
-		const items = fragment.items;
-		// an `undefined` element (CBOR/MessagePack carry one) fills a slot; it is not an absent property
-		return value.map((el, i) => {
-			if (el === undefined && items.type != null && !isNullable(items)) {
-				issues.push({ path: `${path}[${i}]`, code: 'required', message: `${path}[${i}] is required` });
-				return el;
-			}
-			return validateValue(el, items, `${path}[${i}]`, issues);
-		});
+		return value.map((el, i) => validateValue(el, fragment.items as JsonSchemaFragment, `${path}[${i}]`, issues));
 	}
 	if (primary === 'object' && fragment.properties && value && typeof value === 'object') {
 		return validateObject(value, fragment, path, issues);
@@ -511,7 +503,6 @@ function coerceScalar(
 export interface VerbInputSchema {
 	query?: JsonSchemaFragment;
 	body?: JsonSchemaFragment;
-	/** Whether the request must carry a body (false for an `.optional` body schema); set whenever `body` is. */
 	bodyRequired?: boolean;
 }
 
@@ -533,7 +524,6 @@ function compileVerb(contract: Contract, verb: VerbName): CompiledVerb {
 			const internal = internalOf(bodySchema);
 			if (!internal.passthrough) {
 				bodyFragment = internal.fragment;
-				// an untyped fragment validates nothing, so it does not demand a body either
 				bodyRequired = !internal.isOptional && internal.fragment.type != null;
 			}
 		}

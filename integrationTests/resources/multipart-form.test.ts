@@ -284,8 +284,8 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 	}
 
 	test('enforces request-contract body presence on a request with no body framing', async () => {
-		// fetch and node:http both send Content-Length: 0 for a bodyless request, and an empty JSON body
-		// deserializes to null; only a request with neither Content-Length nor Transfer-Encoding has no body.
+		// fetch and node:http frame a bodyless request with Content-Length: 0, which REST deserializes per
+		// Content-Type; only a request with neither Content-Length nor Transfer-Encoding has no body.
 		const unframed = async (path: string) => {
 			const { hostname, port } = new URL(ctx.harper.httpURL);
 			const socket = connect(Number(port), hostname);
