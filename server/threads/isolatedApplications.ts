@@ -145,10 +145,10 @@ export function isolatedApplicationAdmissionRefusal(
 export async function failedClosedApplications(): Promise<Map<string, Error>> {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 	const failedClosed: Map<string, Error> = await failClosedReleases(componentsRoot, processIncarnation);
-	for (const [name, { deploymentId }] of failedClosedInMemory()) {
+	for (const [name, { deploymentId, reason }] of failedClosedInMemory()) {
 		if (failedClosed.has(name)) continue;
 		if ((await liveDeploymentId(componentsRoot, name).catch(() => undefined)) !== deploymentId) continue;
-		failedClosed.set(name, new Error(`its live release ${deploymentId} was refused`));
+		failedClosed.set(name, new RejectedReleaseError(name, deploymentId, reason ?? 'its canary refused it', true));
 	}
 	return failedClosed;
 }
