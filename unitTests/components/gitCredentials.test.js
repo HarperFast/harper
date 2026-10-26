@@ -110,7 +110,12 @@ describe('git credential session', () => {
 		);
 		const askpass = session.env.GIT_ASKPASS;
 		assert.strictEqual(typeof askpass, 'string');
-		assert.doesNotMatch(askpass, /[\s"']/, 'GIT_ASKPASS must be a single path with no spaces or quotes');
+		assert.strictEqual(path.dirname(askpass), path.dirname(session.env[GIT_CREDENTIAL_SOCKET_ENV]));
+		if (!/\s/.test(os.tmpdir())) {
+			assert.doesNotMatch(askpass, /[\s"']/, 'GIT_ASKPASS must be a single path with no spaces or quotes');
+		} else {
+			assert.doesNotMatch(askpass, /["']/, 'GIT_ASKPASS must not contain quotes');
+		}
 		await fs.access(askpass, fs.constants.X_OK);
 
 		// Git execs GIT_ASKPASS directly (not through a shell) with the prompt as argv[1].
@@ -134,16 +139,19 @@ describe('git credential session', () => {
 		assert.strictEqual(unmatched.code, 0);
 		assert.strictEqual(unmatched.stdout, '');
 
-		// Even when Harper itself lives under a path with spaces, GIT_ASKPASS stays a single
-		// unquoted path and its wrapper quotes the helper path for /bin/sh.
+		// Even when Harper itself lives under a path with spaces or shell metacharacters,
+		// GIT_ASKPASS points at the wrapper in socketDir and quotes the helper path for /bin/sh.
 		const spacedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-helper-space-'));
-		const spacedDir = path.join(spacedRoot, 'path with space');
+		const spacedDir = path.join(spacedRoot, 'path with space & $var');
 		const spacedHelper = path.join(spacedDir, 'gitCredentialHelper.js');
 		await fs.mkdir(spacedDir);
 		await fs.copyFile(GIT_CREDENTIAL_HELPER_PATH, spacedHelper);
 		const spacedSession = await startGitCredentialSession([{ host: 'github.com', token: 'ghp_spaced' }], spacedHelper);
 		try {
-			assert.doesNotMatch(spacedSession.env.GIT_ASKPASS, /[\s"']/);
+			assert.strictEqual(
+				path.dirname(spacedSession.env.GIT_ASKPASS),
+				path.dirname(spacedSession.env[GIT_CREDENTIAL_SOCKET_ENV])
+			);
 			await fs.access(spacedSession.env.GIT_ASKPASS, fs.constants.X_OK);
 			const spacedPassword = await new Promise((resolve, reject) => {
 				execFile(

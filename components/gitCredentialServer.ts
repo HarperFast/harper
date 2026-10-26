@@ -12,7 +12,7 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -123,10 +123,12 @@ function assertGitSupportsConfigEnv(): void {
  *     parsing. Inherited helpers are reset to empty first, so a machine configured with
  *     `credential.helper=store` cannot write this token to ~/.git-credentials when git reports the
  *     successful authentication back to its helper chain.
- *   - GIT_ASKPASS, which git consults when `credential.helper` yields nothing (for example, when the
- *     clone host does not match the credential) and as the fallback for git < 2.31. Overriding it
- *     also keeps an inherited `GIT_ASKPASS` — or npm's own git wrapper, which sets `GIT_ASKPASS=echo`
- *     when the variable is unset — from running instead.
+ *   - GIT_ASKPASS, which git consults when `credential.helper` answers nothing (for example, when
+ *     the clone host does not match the credential, or on an explicit default port like `:443` that
+ *     `new URL()` strips on the askpass prompt). Pointing it at our wrapper also keeps an inherited
+ *     `GIT_ASKPASS` — or npm's own git wrapper, which sets `GIT_ASKPASS=echo` when the variable is
+ *     unset — from running instead. Note that git executes the wrapper from `os.tmpdir()`, which
+ *     requires that mount not to be `noexec`.
  * GIT_TERMINAL_PROMPT=0 keeps git from falling back to a terminal prompt (which would hang a deploy
  * rather than fail it) if neither path yields a credential.
  */
@@ -191,16 +193,15 @@ export async function startGitCredentialSession(
 	});
 	server.on('error', (error) => logger.warn?.(`git credential server failed: ${error.message}`));
 
-	// Quoted so a Harper installed under a path with spaces still works when invoked by a shell.
 	// Git runs a `!`-prefixed `credential.helper` through `sh -c`, but execs `GIT_ASKPASS` directly
-	// as a single executable path (not through a shell), so `GIT_ASKPASS` points at a 0700 wrapper
-	// script in `socketDir` that delegates to `helperCommand`.
+	// as argv[0] without a shell — a multi-word `"node" "helper.js"` string fails with `cannot exec`.
 	const quoteShellArg = (value: string) => `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
 	const helperCommand = `${quoteShellArg(process.execPath)} ${quoteShellArg(helperPath)}`;
 	const askpassPath = join(socketDir, 'askpass');
 
 	try {
 		await writeFile(askpassPath, `#!/bin/sh\nexec ${helperCommand} "$@"\n`, { mode: 0o700 });
+		await chmod(askpassPath, 0o700);
 		await new Promise<void>((resolve, reject) => {
 			server.once('error', reject);
 			server.listen(socketPath, () => {
@@ -209,7 +210,7 @@ export async function startGitCredentialSession(
 			});
 		});
 	} catch (error) {
-		// listen() failed, so no session is returned and nothing will call close() — take the temp dir
+		// Setup failed before a session was returned, so nothing will call close() — take the temp dir
 		// with us rather than leaving a 0700 directory behind on every failed deploy.
 		await rm(socketDir, { recursive: true, force: true }).catch(() => {});
 		throw error;

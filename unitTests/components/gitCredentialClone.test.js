@@ -343,9 +343,6 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 	});
 
 	it('fails with a plain authentication error (not cannot exec) when the credential host does not match the clone host', async () => {
-		// When credential.helper returns no credentials for the target host, git falls back to GIT_ASKPASS.
-		// Git execs GIT_ASKPASS directly as a single executable path, so an unmatched host must fail with
-		// git's ordinary authentication error rather than an exec failure.
 		const application = new Application({
 			name: 'git-clone-unmatched-host',
 			packageIdentifier,
