@@ -537,6 +537,17 @@ describe('crdt getRecordAtTime', () => {
 			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'F'), { v: 1 });
 		});
 
+		it('omits it when only an invalidate after a delete precedes the newer patch', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'L', extra: 'old' }, previousVersion: 0 },
+				{ version: 20, type: 'delete', value: null, previousVersion: 10 },
+				{ version: 30, type: 'invalidate', value: null, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { extra: 'later', count: add(3) }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ id: 'L', extra: 'later', count: 3 }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'L'), { id: 'L' });
+		});
+
 		it('keeps the reversed value of a key the surviving history cannot settle when the base was pruned', () => {
 			const store = makeStore([
 				// version 10 (put { id: 'G', v: 1, score: 1, count: 3 }) was pruned by audit retention

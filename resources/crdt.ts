@@ -383,22 +383,22 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	}
 	if (unknowns.size > 0 && auditTime > 0) {
 		const partial = { truncated: branched };
-		const priorRecord = reconstructForward(
-			auditStore,
-			store,
-			tableId,
-			recordId,
-			{ txnLogKey: auditTime, nodeId: auditNodeId },
-			timestamp,
-			partial
-		);
-		if (priorRecord) {
-			for (const key of unknowns) {
-				// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,
-				// constructor, …) must not be filled from priorRecord's prototype chain.
-				if (Object.hasOwn(priorRecord, key)) record[key] = priorRecord[key];
-				else if (!partial.truncated) delete record[key]; // complete history: it did not exist then
-			}
+		// null: no state-bearing write survives at or before `timestamp` (e.g. an invalidate after a delete)
+		const priorRecord =
+			reconstructForward(
+				auditStore,
+				store,
+				tableId,
+				recordId,
+				{ txnLogKey: auditTime, nodeId: auditNodeId },
+				timestamp,
+				partial
+			) ?? {};
+		for (const key of unknowns) {
+			// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,
+			// constructor, …) must not be filled from priorRecord's prototype chain.
+			if (Object.hasOwn(priorRecord, key)) record[key] = priorRecord[key];
+			else if (!partial.truncated) delete record[key]; // complete history: it did not exist then
 		}
 	}
 	// finally return the record in the state it was at the requested timestamp
