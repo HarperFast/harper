@@ -164,7 +164,7 @@ A full-text index is derived from committed table changes. Each condition accept
 | `maxIndexLagMilliseconds`  | `3000`  | Maximum accepted upper bound on index lag. Set to `0` to require current coverage. |
 | `waitForIndexMilliseconds` | `0`     | How long to wait for acceptable coverage, from `0` through `30000`.                |
 
-For read-after-write behavior, require current coverage and allow a bounded wait:
+To wait for committed changes already received by this node to reach its local index, require current coverage and allow a bounded wait. These controls do not wait for a write to arrive from another replica; a query routed to a different node can run before that node receives the write:
 
 ```javascript
 for await (const product of Product.search({

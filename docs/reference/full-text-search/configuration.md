@@ -163,7 +163,7 @@ Changing source weights or highlighting settings changes query behavior without 
 }
 ```
 
-The table response includes entries shaped like this:
+Metadata respects the caller's attribute permissions: unreadable source fields are omitted, and an index with no readable source fields is omitted entirely. An omitted entry does not by itself mean that the index is unconfigured. With access to its source fields, the table response includes entries shaped like this:
 
 ```json
 {
