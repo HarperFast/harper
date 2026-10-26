@@ -6826,6 +6826,7 @@ export function makeTable(options): TableResourceClass {
 							? entries[Symbol.asyncIterator]()
 							: entries[Symbol.iterator]();
 					let dbDone: boolean;
+					let closed = false;
 					const dbOrderedAttribute = (sort as any).dbOrderedAttribute;
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
@@ -6855,6 +6856,7 @@ export function makeTable(options): TableResourceClass {
 					return {
 						async next() {
 							for (;;) {
+								if (closed) return { done: true, value: undefined };
 								let iteration: IteratorResult<any>;
 								if (sortedPositions) {
 									iteration = nextSorted();
@@ -6876,6 +6878,7 @@ export function makeTable(options): TableResourceClass {
 								// need to load all the entries into ordered
 								do {
 									iteration = await dbIterator.next();
+									if (closed) return { done: true, value: undefined };
 									if (iteration.done) {
 										dbDone = true;
 										if (!ordered.length) {
@@ -6885,6 +6888,7 @@ export function makeTable(options): TableResourceClass {
 									} else {
 										let entry = iteration.value;
 										if (entry?.then) entry = await entry;
+										if (closed) return { done: true, value: undefined };
 										// if the index has already provided the first order of sorting, we only need to sort
 										// within each grouping
 										if (dbOrderedAttribute) {
@@ -6924,10 +6928,12 @@ export function makeTable(options): TableResourceClass {
 							}
 						},
 						return() {
+							closed = true;
 							if (results.onDone) results.onDone();
 							return dbIterator.return();
 						},
 						throw() {
+							closed = true;
 							if (results.onDone) results.onDone();
 							return dbIterator.throw();
 						},
@@ -10085,6 +10091,7 @@ export function makeTable(options): TableResourceClass {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
+		if (record == null) return;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			let resolvers = propertyResolvers;

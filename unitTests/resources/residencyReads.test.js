@@ -230,6 +230,103 @@ describe('Reads of residency stubs', function () {
 		);
 	});
 
+	it('skips a null cache invalidation before local-only sorting', async () => {
+		const Rows = table({
+			database: 'test',
+			table: 'NullCacheLocalSort',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'body' }],
+		});
+		let loads = 0;
+		Rows.sourcedFrom({
+			get(id) {
+				loads++;
+				return { id, body: 'loaded' };
+			},
+		});
+		await Rows.put('stub', { id: 'stub', body: 'old' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Rows.getResource('stub', context, { ensureLoaded: false });
+			resource._writeInvalidate('stub');
+		});
+		const snapshot = () => {
+			const { value, metadataFlags, version } = Rows.primaryStore.getEntry('stub');
+			return { value, metadataFlags, version };
+		};
+		const before = snapshot();
+		assert.ok(before.metadataFlags & INVALIDATED);
+		assert.equal(before.value, null);
+		const local = { id: 'local', body: 'complete' };
+		await Rows.put('local', local);
+		const rows = [];
+		for await (const row of Rows.search(
+			{ allowFullScan: true, conditions: [], sort: { attribute: 'body' }, limit: 1 },
+			{ replicateFrom: false }
+		))
+			rows.push({ ...row });
+		assert.deepStrictEqual(rows, [local]);
+		assert.deepStrictEqual(snapshot(), before);
+		assert.equal(loads, 0);
+		const ordinary = await Rows.search({ allowFullScan: true, conditions: [], sort: { attribute: 'body' } }).asArray;
+		assert.equal(ordinary.find((row) => row.id === 'stub').body, 'loaded');
+		assert.equal(ordinary.find((row) => row.id === 'local').body, 'complete');
+		assert.equal(loads, 1);
+	});
+
+	for (const leadingRow of [false, true]) {
+		it(`stops sorted materialization after closure (${leadingRow ? 'subsequent' : 'first'} row)`, async () => {
+			const Rows = table({
+				database: 'test',
+				table: `ClosedSortedRead${leadingRow}`,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+			});
+			let resolveLoad, reportStarted;
+			const load = new Promise((resolve) => {
+				resolveLoad = resolve;
+			});
+			const started = new Promise((resolve) => {
+				reportStarted = resolve;
+			});
+			const loads = [];
+			Rows.sourcedFrom({
+				get(id) {
+					loads.push(id);
+					if (id === 'a') {
+						reportStarted();
+						return load;
+					}
+				},
+			});
+			for (const id of ['a', 'b']) {
+				await Rows.put(id, { id, name: 'indexed', body: 'old' });
+				const context = {};
+				await transaction(context, async () => {
+					const resource = await Rows.getResource(id, context, { ensureLoaded: false });
+					resource._writeInvalidate(id, { id, name: 'indexed' });
+				});
+			}
+			if (leadingRow) await Rows.put('local', { id: 'local', name: 'indexed', body: 'complete' });
+			const target = {
+				conditions: [{ attribute: 'name', value: 'indexed' }],
+				sort: { attribute: 'body', descending: true },
+			};
+			assert.ok(Rows.search({ ...target, explain: true }).postOrdering);
+			const iterator = Rows.search(target)[Symbol.asyncIterator]();
+			if (leadingRow) assert.equal((await iterator.next()).value.id, 'local');
+			const pending = iterator.next();
+			await started;
+			try {
+				await iterator.return();
+			} finally {
+				resolveLoad();
+			}
+			assert.equal((await pending).done, true);
+			assert.deepStrictEqual(loads, ['a']);
+		});
+	}
+
 	it('propagates the original source error from a single-record read', async () => {
 		await assert.rejects(Records.get('record'), (error) => error === unavailable);
 		assert.deepEqual(calls, ['record']);
