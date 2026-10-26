@@ -530,6 +530,20 @@ export function hasChanges(target) {
 	return false;
 }
 
+/**
+ * Add a numeric delta to a property of a tracked object, composing with whatever this transaction
+ * already set for it: a pending addition folds into a single addition, an assigned value becomes the
+ * sum.
+ */
+export function addToChanges(target, property: string, value: number | bigint) {
+	const changes = target.getChanges();
+	if (changes && property in changes) {
+		const prior = changes[property];
+		if (prior?.__op__ === 'add') target.set(property, new Addition(crdtOperations.addValues(prior.value, value)));
+		else target.set(property, crdtOperations.addValues(prior, value));
+	} else target.set(property, new Addition(value));
+}
+
 const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
 const TRACKED_ARRAY_RECORD = Symbol('tracked-array-record');
 const TRACKED_WRITABLE_OWNER = Symbol('tracked-writable-owner');
