@@ -219,6 +219,7 @@ describe('Test hdbChildIpcHandler module', () => {
 		it('Test componentStatusRequestHandler reports isMainThread: true when threads.count is 0 (setMainIsWorker)', async () => {
 			sandbox.resetHistory();
 			const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+			const wasMainWorker = getWorkerIndex() === 0;
 			setMainIsWorker(true);
 			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
 
@@ -234,7 +235,7 @@ describe('Test hdbChildIpcHandler module', () => {
 				expect(responseMessage.message.isMainThread).to.equal(true);
 				expect(responseMessage.message.workerIndex).to.equal(undefined);
 			} finally {
-				setMainIsWorker(false);
+				setMainIsWorker(wasMainWorker);
 				sendToThreadStub.restore();
 			}
 		});

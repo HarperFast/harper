@@ -273,8 +273,7 @@ async function componentStatusRequestHandler(event?: any) {
 			status.error !== undefined ? { ...status, error: internal.serializeStatusError(status.error) } : status,
 		]);
 
-		// Get worker index for worker threads; on the main thread getWorkerIndex() returns 0
-		// when threads.count is 0 (setMainIsWorker(true)), so use isMainThread from worker_threads.
+		// Main reports as main even when it acts as worker 0 (setMainIsWorker).
 		const workerIndex = isMainThread ? undefined : getWorkerIndex();
 
 		// Send response directly back to the originating thread. validateEvent already

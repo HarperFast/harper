@@ -220,17 +220,8 @@ export class CrossThreadStatusCollector {
 			// Clean up response checker
 			this.responseCheckers.delete(requestId);
 
-			// Aggregate responses from all threads
-			const aggregatedStatuses = new Map<string, ComponentStatusSummary>();
-
-			// Add local thread's component status
-			const localStatuses = registry.getAllStatuses();
-			const localWorkerIndex = isMainThread ? undefined : getWorkerIndex();
-			const localThreadLabel = isMainThread ? 'main' : `worker-${localWorkerIndex}`;
-
-			for (const [name, status] of localStatuses) {
-				this.setThreadStatus(aggregatedStatuses, name, localThreadLabel, status, localWorkerIndex);
-			}
+			// Aggregate responses from all threads, starting with the local thread's status
+			const aggregatedStatuses = this.getLocalStatusOnly(registry);
 
 			// Add responses from other threads
 			for (const response of collectedResponses) {
@@ -282,11 +273,14 @@ export class CrossThreadStatusCollector {
 	/**
 	 * Get status from local thread only (fallback when cross-thread collection fails)
 	 */
-	private getLocalStatusOnly(registry: ComponentStatusRegistry): Map<string, ComponentStatusSummary> {
+	private getLocalStatusOnly(
+		registry: ComponentStatusRegistry,
+		onMainThread: boolean = isMainThread
+	): Map<string, ComponentStatusSummary> {
 		const localStatuses = registry.getAllStatuses();
 		const fallbackStatuses = new Map<string, ComponentStatusSummary>();
-		const localWorkerIndex = isMainThread ? undefined : getWorkerIndex();
-		const localThreadLabel = isMainThread ? 'main' : `worker-${localWorkerIndex}`;
+		const localWorkerIndex = onMainThread ? undefined : getWorkerIndex();
+		const localThreadLabel = onMainThread ? 'main' : `worker-${localWorkerIndex}`;
 
 		for (const [name, status] of localStatuses) {
 			this.setThreadStatus(fallbackStatuses, name, localThreadLabel, status, localWorkerIndex);
@@ -322,7 +316,6 @@ export class StatusAggregator {
 		const componentGroups = new Map<string, Array<[string, ComponentStatusSummary]>>();
 
 		for (const [nameWithThread, status] of allStatuses) {
-			// Extract component name without thread suffix (e.g., "@scope/app@worker-1" -> "@scope/app")
 			const { componentName } = parseStatusKey(nameWithThread);
 
 			let group = componentGroups.get(componentName);

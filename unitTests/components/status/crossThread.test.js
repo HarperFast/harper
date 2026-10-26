@@ -146,6 +146,7 @@ describe('CrossThread Module', function () {
 		it('labels main-thread statuses as main when threads.count is 0 (setMainIsWorker)', async function () {
 			registry.setStatus('zeroWorkerComp', 'healthy', 'Main thread in zero-worker mode');
 			getWorkerIndexStub.restore();
+			const wasMainWorker = manageThreadsModule.getWorkerIndex() === 0;
 			manageThreadsModule.setMainIsWorker(true);
 
 			try {
@@ -161,15 +162,20 @@ describe('CrossThread Module', function () {
 				assert.ok(aggregated.lastChecked.main > 0);
 				assert.deepEqual(aggregated.lastChecked.workers, {});
 
-				// Also verify the ITC-failure fallback path (getLocalStatusOnly)
 				sendItcEventStub.rejects(new Error('ITC failure'));
 				const fallback = await collector.collect(registry);
 				assert.equal(fallback.size, 1);
 				assert.equal(fallback.has('zeroWorkerComp@worker-0'), false);
 				assert.ok(fallback.has('zeroWorkerComp@main'));
 				assert.equal(fallback.get('zeroWorkerComp@main').workerIndex, undefined);
+
+				sinon.stub(manageThreadsModule, 'getWorkerIndex').returns(2);
+				const workerLocal = collector['getLocalStatusOnly'](registry, false);
+				assert.equal(workerLocal.size, 1);
+				assert.ok(workerLocal.has('zeroWorkerComp@worker-2'));
+				assert.equal(workerLocal.get('zeroWorkerComp@worker-2').workerIndex, 2);
 			} finally {
-				manageThreadsModule.setMainIsWorker(false);
+				manageThreadsModule.setMainIsWorker(wasMainWorker);
 			}
 		});
 
