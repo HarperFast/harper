@@ -9763,7 +9763,7 @@ export function makeTable(options): TableResourceClass {
 		if (entry && context) {
 			const newerVersion = entry.version > (context.lastModified || 0);
 			const firstRefresh = entry.localTime && !context.lastRefreshed;
-			// last: it may read the clock, and after a search's first row nothing is stamped
+			// last, because it may read the clock
 			if ((newerVersion || firstRefresh) && !isHiddenExpiry(entry.expiresAt)) {
 				if (newerVersion) context.lastModified = entry.version;
 				if (firstRefresh) context.lastRefreshed = entry.localTime;
