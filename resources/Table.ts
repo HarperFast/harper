@@ -555,7 +555,7 @@ export function freezeRecord(value: any): void {
 	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
 		Object.freeze(value);
 }
-const returnEntry = (entry: Entry) => entry;
+const identityEntry = (entry: Entry) => entry;
 // Returns a read-only VIEW of `record` for application predicate evaluation
 // without mutating the original. Locally-loaded records are already frozen by loadLocalRecord, so
 // this is a no-op there; the source-revalidation path hands back the SAME object its deferred
@@ -7049,7 +7049,7 @@ export function makeTable(options): TableResourceClass {
 							context,
 							this?.isSync ? syncLoadOptions : asyncLoadOptions,
 							this?.isSync,
-							returnEntry
+							identityEntry
 						);
 						if ((entry as any)?.then) return (entry as any).then(transform.bind(this));
 						record = entry?.value;
@@ -7227,7 +7227,6 @@ export function makeTable(options): TableResourceClass {
 										selected[key] = record[key];
 									}
 								else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
-									// a plain column: what selectAttribute would assign, without a callback per column
 									const value = record[attribute];
 									selected[attribute] = value === undefined && forceNulls ? null : value;
 								} else

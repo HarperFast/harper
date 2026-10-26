@@ -239,9 +239,12 @@ describe('PrimaryRocksDatabase', function () {
 			]);
 			assert.strictEqual(passed[1].transaction, transaction);
 
-			// the transaction still reaches the native read: its own uncommitted write is visible
 			store.putSync(31, { name: 'uncommitted' }, { transaction });
-			assert.equal(store.getEntry(31, options)?.value?.name, 'uncommitted');
+			assert.equal(
+				store.getEntry(31, options)?.value?.name,
+				'uncommitted',
+				'the read sees its transaction’s own uncommitted write'
+			);
 			assert.equal(store.getEntry(31), undefined);
 		} finally {
 			RocksDatabase.prototype.getSync = originalGetSync;

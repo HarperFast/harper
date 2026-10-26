@@ -153,9 +153,8 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
 		// native layer seeds the VT slot in the same call.
-		// Only the keys rocksdb-js reads are copied, never the caller's whole options object: HNSW
-		// passes a DatabaseTransaction here, and spreading its own properties per read dominated
-		// the cost of a cached hit.
+		// Copy only the keys rocksdb-js reads, not the caller's options: HNSW passes a whole
+		// DatabaseTransaction here.
 		let getOptions: any;
 		if (expectedVersion != null) {
 			getOptions = { transaction: options?.transaction, expectedVersion };

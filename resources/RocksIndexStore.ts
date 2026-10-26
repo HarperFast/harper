@@ -54,9 +54,11 @@ export class RocksIndexStore extends RocksDatabase {
 	 * @param options
 	 */
 	getRange(options: StoreIteratorOptions): Iterable<any> {
-		return trackReadRange(options.transaction, () =>
-			super.getRange({ ...translateIndexBounds(options), values: false })
-		).map((entry) => {
+		return trackReadRange(options.transaction, () => {
+			const rangeOptions = translateIndexBounds(options);
+			rangeOptions.values = false;
+			return super.getRange(rangeOptions);
+		}).map((entry) => {
 			// each iteration yields a fresh entry object, so it can be rewritten in place
 			const key = entry.key;
 			entry.key = key[0];
