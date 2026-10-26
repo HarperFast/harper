@@ -236,9 +236,9 @@ const PR_HEAD_SHELL_CHECKOUT =
 	/\bgh\s+pr\s+checkout\b|\bgit\b[^\n]*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b[^\n]*(?:head\.sha|head\.ref|head_ref|refs\/pull\/|pull\/)/;
 
 /** How a job holding an identity token could end up running the PR's own code, as far as its steps show. */
-function checkPullRequestCheckout(name: string, job: any, problems: string[], unverified: string[]): void {
+function checkPullRequestCheckout(name: string, job: any, problems: string[], unsafe: string[]): void {
 	if (typeof job?.uses === 'string') {
-		unverified.push(`that the reusable workflow job "${name}" calls never checks out the pull request's head`);
+		unsafe.push(`that the reusable workflow job "${name}" calls never checks out the pull request's head`);
 		return;
 	}
 	for (const step of asList(job?.steps) as any[]) {
@@ -252,7 +252,7 @@ function checkPullRequestCheckout(name: string, job: any, problems: string[], un
 							`PR's code would run with the preview identity`
 					);
 				} else if (isExpression(value)) {
-					unverified.push(`that job "${name}"'s checkout ${field} (${value}) is not the pull request's head`);
+					unsafe.push(`that job "${name}"'s checkout ${field} (${value}) is not the pull request's head`);
 				}
 			}
 		}
@@ -265,11 +265,6 @@ function checkPullRequestCheckout(name: string, job: any, problems: string[], un
 	}
 }
 
-/**
- * Fork PRs run `pull_request_target` with the base repository's identity, and no token claim names the head repository,
- * so the job's own condition is the only gate. Only a whole `&&` term that admits same-repository pull requests counts:
- * a negation, a comparison of the test with `false`, or an `||` around it is reported as unverified.
- */
 function jobCondition(job: any): string {
 	return typeof job?.if === 'string'
 		? job.if
@@ -280,15 +275,17 @@ function jobCondition(job: any): string {
 }
 
 /**
- * Whether the job runs only for same-repository pull requests: its own condition has a whole `&&` term that admits
- * only them, or it needs a job that does and cannot run past that job being skipped.
+ * Fork PRs run `pull_request_target` with the base repository's identity, and no token claim names the head repository,
+ * so a job's condition is the only gate. Only a whole `&&` term that admits same-repository pull requests counts, or a
+ * needed job with one when the condition has no status function: any of them, `success()` included, lets a job run
+ * past a needed job being skipped.
  */
 function excludesForks(name: string, jobs: Record<string, any>, seen = new Set<string>()): boolean {
 	if (seen.has(name)) return false;
 	seen.add(name);
 	const condition = jobCondition(jobs[name]);
 	if (conjuncts(withoutEnclosingParentheses(condition))?.some((term) => SAME_REPOSITORY_TERM.test(term))) return true;
-	if (/\b(?:always|failure|cancelled)\s*\(/.test(condition)) return false;
+	if (/\b(?:always|failure|cancelled|success)\s*\(/.test(condition)) return false;
 	return asList(jobs[name]?.needs).some((needed) => excludesForks(String(needed), jobs, seen));
 }
 

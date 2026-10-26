@@ -325,6 +325,11 @@ jobs:
 			assert.deepStrictEqual(check(gated), { problems: [], unverified: [], unsafe: [] });
 			const always = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: always()\n');
 			assert.deepStrictEqual(check(always).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const labeled = gated.replace(
+				'    needs: [gate]\n',
+				"    needs: [gate]\n    if: success() || github.event.action == 'labeled'\n"
+			);
+			assert.deepStrictEqual(check(labeled).unsafe, ['that job "deploy" excludes fork pull requests']);
 		});
 
 		it('cannot read a condition that names the head repository without plainly admitting only it', () => {

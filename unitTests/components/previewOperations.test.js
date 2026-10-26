@@ -194,6 +194,16 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			policy.problems.join(),
 			/role "opsnarrow-ci-preview" allows \["drop_component"\], not deploy_component/
 		);
+		const { isolated: _isolated, ...unisolated } = role.permission.component_deploy.constraints;
+		await alterRole({
+			id: role.id,
+			role: role.role,
+			permission: { ...role.permission, component_deploy: { names: ['opsnarrow-pr-*'], constraints: unisolated } },
+		});
+		const stripped = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsnarrow', hdb_user: SU });
+		assert.ok(
+			stripped.problems.includes('role "opsnarrow-ci-preview" no longer requires isolated previews under a host suffix')
+		);
 	});
 
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {

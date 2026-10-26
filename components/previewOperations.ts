@@ -207,7 +207,6 @@ function rivalPolicies(names: PreviewNames, policies: any[], wanted: DesiredPoli
 	});
 }
 
-/** Why `role` is not one `enable_previews` wrote for these names, if it is not. */
 function managedRoleProblem(names: PreviewNames, role: any): string | undefined {
 	const permission = role?.permission ?? {};
 	const grant = permission.component_deploy;
@@ -317,8 +316,12 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	const problems: string[] = [];
 	if (!role) problems.push(`role "${names.role}" is missing`);
 	else {
-		const roleProblem = managedRoleProblem(names, role) ?? componentGrantError(role.permission?.component_deploy);
+		const grant = role.permission?.component_deploy;
+		const roleProblem = managedRoleProblem(names, role) ?? componentGrantError(grant);
 		if (roleProblem) problems.push(roleProblem);
+		else if (grant.constraints?.isolated !== true || !grant.constraints?.hostSuffix) {
+			problems.push(`role "${names.role}" no longer requires isolated previews under a host suffix`);
+		}
 		const operations = role.permission?.operations;
 		if (
 			!Array.isArray(operations) ||
@@ -450,7 +453,6 @@ async function previewsInProgress(app: string): Promise<string[]> {
 	return [...projects].sort();
 }
 
-/** Why a record named like this application's preview identity is not one `enable_previews` wrote, if it is not. */
 function foreignRecords(names: PreviewNames, role: any, users: any[], policies: any[]): string[] {
 	const problems: string[] = [];
 	const roleProblem = role && managedRoleProblem(names, role);
@@ -517,8 +519,8 @@ export async function disablePreviews(req: any) {
 			throw new ServerError(
 				`Previews of ${req.app} are revoked but not removed: ${failed.join('; ')}. The trust policies are gone and ` +
 					`${names.user} is inactive; disable previews again to retry the drops and remove the user and role. ` +
-					'Branched storage that a failed drop left behind is not live, so a rerun does not see it: ' +
-					'drop_component of that project on that node removes it.'
+					'What a failed drop left behind, branched storage or a running worker, is no longer a live release, so a ' +
+					'rerun does not see it: drop_component of that project on that node removes it.'
 			);
 		}
 		if (user) {
