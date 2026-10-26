@@ -11031,7 +11031,7 @@ export function makeTable(options): TableResourceClass {
 									recordEntry.value,
 									recordEntry.version,
 									undefined,
-									fieldExpiresAtMs(recordEntry.value)
+									recordEntry.expiresAt ?? null
 								);
 								if (eviction) {
 									const backpressure = trackInFlight(eviction);
