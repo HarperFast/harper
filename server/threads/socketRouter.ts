@@ -179,9 +179,8 @@ const isolatedSlots = new Map<string, IsolatedSlot>();
 const poolSlots: IsolatedSlot[] = [];
 
 /**
- * The isolated applications that get a dedicated worker (`admittedIsolatedApplications`); everything refused is
- * refused loudly and loaded nowhere -- never downgraded to the pool. A reconcile of one application reports nothing
- * about the others, whose workers it leaves as they are.
+ * Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool. A reconcile of one
+ * application reports nothing about the others, whose workers it leaves as they are.
  */
 function admitIsolatedWorkers(
 	running: string[],

@@ -79,11 +79,10 @@ export function isolatedApplicationCapacityRefusal(
 }
 
 /**
- * The isolated applications that get a dedicated worker, and why each other present one does not. Ones already running
- * keep their place; the rest are admitted in config order, the order boot admits them, so a restart keeps the same
- * applications, up to `threads.maxIsolated`. One whose live release fails closed, or whose worker nothing could reach,
- * is refused and holds no place. Undefined `failedClosed` means it could not be read: running ones keep running and no
- * new one is admitted.
+ * Ones already running keep their place; the rest are admitted in config order, the order boot admits them, so a
+ * restart keeps the same applications, up to `threads.maxIsolated`. One whose live release fails closed, or whose
+ * worker nothing could reach, is refused and holds no place. Undefined `failedClosed` means it could not be read:
+ * running ones keep running and no new one is admitted.
  */
 export function admittedIsolatedApplications(
 	running: Iterable<string>,

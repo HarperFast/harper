@@ -304,7 +304,6 @@ describe('activating a release for certification', () => {
 			['arm', 'commit']
 		);
 
-		// already being certified: nothing new to admit
 		await activate(recordingCertification(root), async (descriptor) => admissions.push(descriptor));
 		assert.equal(admissions.length, 2);
 	});
