@@ -60,6 +60,10 @@ import {
 	convertToComparableKeys,
 	ownDataProperty,
 	readSelectedProperty,
+	defaultGetResource,
+	registerPrimitiveIdGet,
+	LoadingResource,
+	NOT_HANDLED,
 } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import { assertNestedQueryOptions, hasNestedQueryOptions } from './Resource.ts';
@@ -1616,6 +1620,8 @@ function projectPlainValue(transformCache: Map<any, (value: any) => any>, attrib
 	}
 	return transform(value);
 }
+const sameEntry = (entry: Entry | undefined) => entry;
+
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -3058,67 +3064,27 @@ export function makeTable(options): TableResourceClass {
 			checkValidId(id);
 			try {
 				if (this.getRecord?.()) return this; // already loaded, don't reload, current version may have modifications
-				if (typeof id === 'object' && id && !Array.isArray(id)) {
-					throw new Error(`Invalid id ${JSON.stringify(id)}`);
-				}
-				// RocksDB's async get already returns in-memory reads synchronously; a cached record does not
-				// mean its block is still resident, so the hint would only turn a storage miss into a blocking read
-				const sync = target?.sync || (!isRocksDB && primaryStore.cache?.get?.(id));
-				const txn = txnForContext(request);
-				const readTxn = txn.getReadTxn();
-				if (readTxn?.isDone) {
-					throw new Error('You can not read from a transaction that has already been committed/aborted');
-				}
-				const readsCommitBase =
-					isRocksDB &&
-					COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
-					!resourceOptions?.ensureLoaded &&
-					readTxn &&
-					!(readTxn as any).snapshotDisabled;
-				return loadLocalRecord(
-					id,
+				return loadRecord(
+					id as Id,
 					request,
-					{
-						transaction: readTxn,
-						ensureLoaded: resourceOptions?.ensureLoaded,
-						uncachedRead: readsCommitBase || undefined,
-					},
-					sync,
-					(entry) => {
+					resourceOptions,
+					target,
+					this,
+					(entry, baseReadTxn) => {
 						if (entry) {
 							TableResource._updateResource(this, entry);
 						} else {
 							this.#entryLoaded = true;
 							this.#record = null;
 						}
-						if (readsCommitBase) {
-							this.#baseReadTxn = readTxn;
+						if (baseReadTxn) {
+							this.#baseReadTxn = baseReadTxn;
 							this.#baseReadEntry = entry;
 						}
-						if (request.onlyIfCached) {
-							// don't go into the loading from source condition, but HTTP spec says to
-							// return 504 (rather than 404) if there is no content and the cache-control header
-							// dictates not to go to source
-							if (!this.doesExist() || isHiddenExpiry(entry?.expiresAt))
-								throw new ServerError('Entry is not cached', 504);
-							if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
-						} else if (resourceOptions?.ensureLoaded) {
-							const loadingFromSource = ensureLoadedFromSource(
-								(this.constructor as any).source,
-								id,
-								entry,
-								request,
-								this,
-								target
-							);
-							if (loadingFromSource) {
-								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-								return when(loadingFromSource as Promise<Entry>, (entry) => {
-									TableResource._updateResource(this, entry);
-									return this;
-								});
-							} else if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
-						}
+						return this;
+					},
+					(entry) => {
+						TableResource._updateResource(this, entry);
 						return this;
 					}
 				);
@@ -10844,6 +10810,47 @@ export function makeTable(options): TableResourceClass {
 		AssertTrue<ExactlyEqual<InstanceType<TableResourceClass>, TableResourceInstance<object>>>,
 		AssertTrue<ExactlyEqual<TableResourceClass['prototype'], TableResourceInstance>>,
 	];
+	const tablePrototype = TableResource.prototype;
+	// every extension point the general get dispatch would call, as defined, before application code can replace one
+	const tableGetResource = TableResource.getResource;
+	const updateResource = TableResource._updateResource;
+	const { get: tableGet, _loadRecord: tableLoadRecord, getRecord: tableGetRecord } = tablePrototype;
+	registerPrimitiveIdGet(TableResource, (id, context: any, resourceOptions) => {
+		if (
+			hasSourceGet ||
+			TableResource.loadAsInstance === false ||
+			(TableResource as any).getReturnMutable ||
+			TableResource.getResource !== tableGetResource ||
+			Resource.getResource !== defaultGetResource ||
+			TableResource._updateResource !== updateResource ||
+			tablePrototype.get !== tableGet ||
+			tablePrototype._loadRecord !== tableLoadRecord ||
+			tablePrototype.getRecord !== tableGetRecord ||
+			!isJoinableScope(context.transaction) ||
+			context.authorize ||
+			context.onlyIfCached ||
+			context.isCollection ||
+			context[WRITE_CONDITION] ||
+			// the general path calls it again on the resolved context (getResource, the Resource constructor)
+			context.getContext != null ||
+			databaseDropPrepared(tableRootPath) ||
+			databaseCommitsSuspended(tableRootStore)
+		)
+			return NOT_HANDLED;
+		checkValidId(id);
+		const entry = loadRecord(id, context, resourceOptions, undefined, undefined, sameEntry, sameEntry);
+		if ((entry as any)?.then) {
+			// authorization and the instance get run after an asynchronous load on the general path, so they do here
+			return new LoadingResource(
+				(entry as Promise<Entry>).then((entry) => {
+					const resource = new TableResource(id, context);
+					updateResource(resource, entry);
+					return resource;
+				})
+			);
+		}
+		return (entry as Entry)?.value ?? null;
+	});
 	const defaultGetResidency = TableResource.getResidency;
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {
@@ -11024,6 +11031,75 @@ export function makeTable(options): TableResourceClass {
 	}
 	function isSearchTarget(target: RequestTargetOrId): target is RequestTarget {
 		return typeof target === 'object' && target && (target as RequestTarget).isCollection;
+	}
+	/**
+	 * The record load behind both `_loadRecord` and the primitive-id `get`: read the local entry through the
+	 * request's transaction, then resolve it from residency or source when `ensureLoaded`. `installLocal`
+	 * receives the local entry before any source load starts (stale-while-revalidate reads the instance),
+	 * `installLoaded` the entry a source load produced; the load resolves to what the last one returned.
+	 * The caller has run checkValidId.
+	 */
+	function loadRecord<T>(
+		id: Id,
+		request: Context,
+		resourceOptions: any,
+		target: RequestTarget | undefined,
+		resource: TableResource | undefined,
+		installLocal: (entry: Entry | undefined, baseReadTxn?: any) => T,
+		installLoaded: (entry: Entry | undefined) => T
+	): MaybePromise<T> {
+		if (typeof id === 'object' && id && !Array.isArray(id)) {
+			throw new Error(`Invalid id ${JSON.stringify(id)}`);
+		}
+		// RocksDB's async get already returns in-memory reads synchronously; a cached record does not
+		// mean its block is still resident, so the hint would only turn a storage miss into a blocking read
+		const sync = target?.sync || (!isRocksDB && primaryStore.cache?.get?.(id));
+		const txn = txnForContext(request);
+		const readTxn = txn.getReadTxn();
+		if (readTxn?.isDone) {
+			throw new Error('You can not read from a transaction that has already been committed/aborted');
+		}
+		const readsCommitBase =
+			isRocksDB &&
+			COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
+			!resourceOptions?.ensureLoaded &&
+			readTxn &&
+			!(readTxn as any).snapshotDisabled;
+		return loadLocalRecord(
+			id,
+			request,
+			{
+				transaction: readTxn,
+				ensureLoaded: resourceOptions?.ensureLoaded,
+				uncachedRead: readsCommitBase || undefined,
+			},
+			sync,
+			(entry) => {
+				const installed = installLocal(entry, readsCommitBase ? readTxn : undefined);
+				if (request.onlyIfCached) {
+					// don't go into the loading from source condition, but HTTP spec says to
+					// return 504 (rather than 404) if there is no content and the cache-control header
+					// dictates not to go to source
+					if (!resource.doesExist() || isHiddenExpiry(entry?.expiresAt))
+						throw new ServerError('Entry is not cached', 504);
+					if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
+				} else if (resourceOptions?.ensureLoaded) {
+					const loadingFromSource = ensureLoadedFromSource(
+						((resource ? resource.constructor : TableResource) as any).source,
+						id,
+						entry,
+						request,
+						resource,
+						target
+					);
+					if (loadingFromSource) {
+						txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+						return when(loadingFromSource as Promise<Entry>, installLoaded);
+					} else if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
+				}
+				return installed;
+			}
+		);
 	}
 	function loadLocalRecord(id, context, options, sync, withEntry) {
 		if (
