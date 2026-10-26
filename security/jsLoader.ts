@@ -433,11 +433,6 @@ function normalizeImportedModule(importedModule: any): any {
 	return importedModule;
 }
 
-/**
- * The names a CommonJS module assigns to `module.exports` at runtime that the namespace from a native
- * `import()` lacks. Node 22 gives such a namespace no `'module.exports'` key, so the module is identified
- * by its `require.cache` entry instead.
- */
 function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, unknown> {
 	if (!moduleUrl.startsWith('file:')) return {};
 	const path = fileURLToPath(moduleUrl);
@@ -450,14 +445,16 @@ function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, un
 	const cjsExports = cjsModule?.exports;
 	if (!cjsExports || cjsExports !== namespace.default) return {};
 	if (typeof cjsExports !== 'object' && typeof cjsExports !== 'function') return {};
-	if (Array.isArray(cjsExports) || ArrayBuffer.isView(cjsExports)) return {};
 	const names: Record<string, unknown> = Object.create(null);
-	for (const name of Object.keys(cjsExports)) {
-		if (name in namespace) continue;
-		try {
-			names[name] = cjsExports[name];
-		} catch {}
-	}
+	try {
+		if (Array.isArray(cjsExports) || ArrayBuffer.isView(cjsExports)) return names;
+		for (const name of Object.keys(cjsExports)) {
+			if (name in namespace) continue;
+			try {
+				names[name] = cjsExports[name];
+			} catch {}
+		}
+	} catch {}
 	return names;
 }
 
