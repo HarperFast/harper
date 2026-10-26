@@ -119,6 +119,10 @@ Deletes have a separate tail-latency cost: connectivity repair can synchronously
 and up to 256 nodes from a severed island. Those reinserts use the current auto-scaled efC, so the
 per-insert build multiplier can land hundreds of times within one delete.
 
+## A JS HNSW update or removal starts from the stored node (`resources/indexes/HierarchicalNavigableSmallWorld.ts` `index()`)
+
+`existingVector` is a hint, not the source of truth: whenever the key already has a node, `index()` loads it and unlinks the old edges from it. A caller cannot always know the old vector — `runIndexing` re-feeding after a crash, or a delete over a residency stub whose computed vector cannot be resolved (`updateIndices`' `existingIsStub`, `resources/Table.ts`) — and a removal from `oldNode = {}` deleted the node but left every neighbour's edge to it. Enforced by `unitTests/resources/residencyReads.test.js` ("evicting a stub whose computed vector cannot be resolved…").
+
 ## An approximate index returns at most `ef` rows, so `limit` has to reach it
 
 Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not from the query. A
