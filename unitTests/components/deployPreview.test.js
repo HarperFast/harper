@@ -11,7 +11,12 @@ testUtils.preTestPrep();
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const validator = require('#js/components/operationsValidation');
-const { deployComponent, dropComponent, getComponents } = require('#js/components/operations');
+const {
+	deployComponent,
+	dropComponent,
+	getComponents,
+	retryPendingBranchRemovals,
+} = require('#js/components/operations');
 const { handleListDeployments, handleGetDeployment } = require('#src/components/deploymentOperations');
 const { stagingRetentionMaxCountOf } = require('#src/components/Application');
 const {
@@ -296,6 +301,8 @@ describe('PR preview metadata (harper#3048)', () => {
 				);
 				assert.ok(existsSync(forks), 'its fork is still on disk');
 				assert.ok(existsSync(path.join(forks, '`removal-pending`')), "the sweep's drop recorded the removal it owes");
+				await retryPendingBranchRemovals?.();
+				assert.ok(existsSync(forks), 'a pass cannot remove it either');
 			} finally {
 				for (const dir of [hold, path.join(`${branchPath}\`removing\``, 'hold')]) {
 					if (existsSync(dir)) chmodSync(dir, 0o755);

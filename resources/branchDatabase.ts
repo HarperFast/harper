@@ -862,7 +862,11 @@ export function recordPendingBranchRemoval(appName: string): void {
 }
 
 export async function clearPendingBranchRemoval(appName: string): Promise<void> {
-	for (const directory of branchDirectoriesFor(appName).directories) {
+	const { directories, failures } = branchDirectoriesFor(appName);
+	if (failures.length) {
+		throw new Error(`Could not clear the owed removal of branch storage for '${appName}': ${failures.join('; ')}`);
+	}
+	for (const directory of directories) {
 		removeFileDurably(join(directory, REMOVAL_PENDING_MARKER));
 		await rmdir(directory).catch(() => {});
 	}

@@ -1887,13 +1887,22 @@ async function dropApplication(request, requester?: any, answerEarly?: any) {
 				const restartsPool = present && req.restart === true && (!isolated || poolMayHold);
 				const keep = req.keepBranches === true;
 				let branched = applicationHasBranchStorage(project);
-				if (branched && keep) await clearPendingBranchRemoval(project);
+				if (keep) await clearPendingBranchRemoval(project);
 				else if (branched) recordPendingBranchRemoval(project);
 				if (present) await removeApplication(project, componentPath);
 				// a worker still loading it can have created one since
 				if (!branched && applicationHasBranchStorage(project)) {
 					branched = true;
-					if (!keep) recordPendingBranchRemoval(project);
+					if (!keep) {
+						try {
+							recordPendingBranchRemoval(project);
+						} catch (error) {
+							throw new Error(
+								`Dropped ${project}, but could not record the removal its branched database storage is owed: ` +
+									`${error.message}. Drop it again to retry.`
+							);
+						}
+					}
 				}
 				let retained;
 				if (branched && keep) retained = 'keepBranches';
