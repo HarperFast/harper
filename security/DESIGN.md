@@ -226,18 +226,19 @@ Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoad
 return and ahead of branch selection, so the `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
 branches cannot load a module it has not approved, and a branch added later inherits it. Each branch used to
 make its own call and the plain-file branch made none, so compartment mode loaded any file a relative,
-absolute or symlinked specifier reached while VM mode (`createModule`) refused it. This applies the existing
-prefix test only; it is not a containment boundary (#1929 and #2970 track that test's prefix and realpath
-gaps), and files a natively loaded dependency loads itself are outside it. Enforced by the
+absolute or symlinked specifier reached while VM mode's ESM loader (`createModule`) refused it. This applies
+the existing prefix test only; it is not a containment boundary (#1929 and #2970 track that test's prefix and
+realpath gaps), and files a natively loaded dependency loads itself are outside it. Enforced by the
 `compartment importHook` block in `unitTests/security/jsLoader/jsLoader.test.js` and
 `integrationTests/components/compartment-allowed-directory.test.ts`.
 
 ## The compartment adds a CommonJS dependency's dynamic names to its native namespace (`security/jsLoader.ts`)
 
 A bare or `node_modules` import in the compartment `importHook` is a native `import()`. For a CommonJS
-module, `dynamicCjsExports` copies the `module.exports` names the namespace lacks (those Node's static
-analysis cannot see) and every namespace key and the native `default` stay as they were. The module is found
-through its `require.cache` entry because Node 22 gives a CommonJS namespace no `'module.exports'` key.
+module, `dynamicCjsExports` reads the enumerable `module.exports` names the namespace lacks once at import
+(evaluating accessors then, as VM mode's spread does, and skipping any accessor or Proxy trap that throws),
+while every namespace key and the native `default` stay as they were. The module is found through its
+`require.cache` entry because Node 22 gives a CommonJS namespace no `'module.exports'` key.
 `normalizeImportedModule` is not used here: it is a no-op on Node 22, and where the key exists it rebuilds
 the exports from enumerable properties, dropping names such as `Object.defineProperty(exports, ...)` and
 replacing a transpiled module's `default`. The VM loaders still use it. Enforced by the `CommonJS
