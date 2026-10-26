@@ -75,6 +75,10 @@ const SECTIONS: Section[] = [
 					['run <path>', 'Run the application in the specified path'],
 					['dev <path>', 'Run the application in dev mode with debugging, foreground logging, no auth'],
 					['deploy', 'Deploy the application locally or remotely with target=<remote url>'],
+					[
+						'preview deploy|drop|list',
+						'Deploy, drop or list PR previews: an isolated, branched copy of app=<component> per pr=<n>',
+					],
 				],
 			},
 		],

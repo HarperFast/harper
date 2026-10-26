@@ -719,6 +719,9 @@ matching Node's upgrade-then-authorize order). No core component registers custo
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
 
+While an isolated application's mirror is down the proxy falls back to the pool, so a shared worker answers that
+application's root-config host with 503 rather than another application's routes (`server/isolatedHostGuard.ts`).
+
 ## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.ts`)
 
 libuv unlinks a pipe server's bound path when the handle closes (`uv__pipe_close` → `unlink`), with

@@ -10,6 +10,7 @@ import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getActiveDeployment } from './deploymentRecorder.ts';
 import { logger } from '../utility/logging/logger.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
+import { componentGrantOf, grantCoversComponent } from '../security/componentGrant.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 
@@ -21,6 +22,7 @@ const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back', 'staged', 'partial']);
 
 interface ListRequest {
+	hdb_user?: unknown;
 	project?: string;
 	status?: string;
 	/** The commit a deploy's `source` names. */
@@ -32,6 +34,7 @@ interface ListRequest {
 }
 
 interface GetRequest {
+	hdb_user?: unknown;
 	deployment_id: string;
 	// Set by serverHandlers.js when the client asks for `Accept: text/event-stream`.
 	progress?: ProgressEmitter;
@@ -80,8 +83,10 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 		conditions.push({ attribute: 'started_at', value: req.since, comparator: 'greater_than_equal' });
 	if (req.until != null) conditions.push({ attribute: 'started_at', value: req.until, comparator: 'less_than_equal' });
 
+	const componentGrant = componentGrantOf(req.hdb_user);
 	const collected: any[] = [];
 	for await (const row of table.search(conditions)) {
+		if (componentGrant && !grantCoversComponent(componentGrant, row.project)) continue;
 		if (req.sha != null && row?.source?.sha !== req.sha) continue;
 		collected.push(stripBlob(row));
 	}
@@ -158,6 +163,13 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	const row = await table.get(req.deployment_id);
 	if (!row) {
 		throw new ClientError(`No deployment found with id '${req.deployment_id}'`);
+	}
+	const componentGrant = componentGrantOf(req.hdb_user);
+	if (componentGrant && !grantCoversComponent(componentGrant, row.project)) {
+		throw new ClientError(
+			`Deployment '${req.deployment_id}' is of a component this role's component grant does not cover`,
+			HTTP_STATUS_CODES.FORBIDDEN
+		);
 	}
 
 	// SSE content-negotiated branch — when serverHandlers.js detects

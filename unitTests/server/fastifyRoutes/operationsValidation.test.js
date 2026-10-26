@@ -482,10 +482,9 @@ describe('Test operationsValidation module', () => {
 			expect(result).to.be.undefined;
 		});
 
-		it('rejects urlPath without package', () => {
+		it('accepts urlPath on a payload deploy (harper#3043)', () => {
 			const result = validator.deployComponentValidator({ project: 'my-app', urlPath: '/api' });
-			expect(result).to.be.ok;
-			expect(result.message).to.include('urlPath');
+			expect(result).to.be.undefined;
 		});
 
 		it('rejects urlPath containing ..', () => {
@@ -522,10 +521,9 @@ describe('Test operationsValidation module', () => {
 			expect(result).to.be.undefined;
 		});
 
-		it('rejects host without package', () => {
+		it('accepts host on a payload deploy (harper#3043)', () => {
 			const result = validator.deployComponentValidator({ project: 'my-app', host: 'api.example.com' });
-			expect(result).to.be.ok;
-			expect(result.message).to.include('host');
+			expect(result).to.be.undefined;
 		});
 
 		it('rejects a host carrying a port or path — it would never match the router host compare', () => {
