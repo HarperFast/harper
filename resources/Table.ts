@@ -5398,6 +5398,9 @@ export function makeTable(options): TableResourceClass {
 							let oldestRetainedAuditTimeResolved = false;
 							dedupVersionCouldBeRetained = (version: number): boolean => {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
+								// An unnamed origin's entries are filed in `local` under minted keys, so none sits at its
+								// received key, and an exact-start miss there scans to the end of `local`.
+								if (options?.nodeId && auditStore.isLocalOrigin(options.nodeId)) return false;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
 									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
@@ -5484,7 +5487,8 @@ export function makeTable(options): TableResourceClass {
 							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
-							const headIdentity = `${nodeId}:${localTime}`;
+							const headNodeId = nodeId;
+							const headLogKey = localTime;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
@@ -5633,8 +5637,7 @@ export function makeTable(options): TableResourceClass {
 													write.skipped = true;
 													return;
 												}
-												// A same-origin tie with the head is resolved only by the head's own entry.
-												if (precedesExisting === 0 && auditIdentity === headIdentity)
+												if (precedesExisting === 0 && (nodeId ?? 0) === headNodeId && localTime === headLogKey)
 													precedesExisting = precedesAudited;
 											}
 											if (precedesAudited > 0) {

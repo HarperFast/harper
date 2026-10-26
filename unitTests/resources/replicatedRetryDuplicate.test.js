@@ -181,6 +181,20 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		assert.equal((await state.T.get('counter')).count, 2);
 	});
 
+	it('treats an equal-version re-delivery from one unmapped origin as one write', async function () {
+		if (isLMDB) return this.skip();
+		const version = Date.now() + 86400000;
+		const state = await fixture('UnmappedRedelivery', version);
+		const { write } = await conflict(
+			state,
+			{ count: { __op__: 'add', value: 1 } },
+			{ version, originId: 35 },
+			{ version, originId: 35 }
+		);
+		assert.equal(write.skipped, true, 'an equal version from the same unmapped origin is a re-delivery');
+		assert.equal((await state.T.get('counter')).count, 1);
+	});
+
 	it('does not mistake its own staged counter for committed state when another key conflicts', async function () {
 		if (isLMDB) return this.skip();
 		const version = Date.now() + 86400000;
