@@ -9609,11 +9609,8 @@ export function makeTable(options): TableResourceClass {
 			logger.trace?.(`No prior value for computed index ${name} of ${tableName} over a stub`, error);
 		}
 	}
-	/**
-	 * A stub (an INVALIDATED entry's value) is a projection, not a record. `preserveComputed` keeps computed
-	 * indexes as committed; `existingIsStub` treats a computed index's old value resolved over the stub as a
-	 * guess (resources/DESIGN.md, residency stubs).
-	 */
+	// For preserveComputed and existingIsStub (an INVALIDATED base is a projection, not a record) see
+	// resources/DESIGN.md, residency stubs.
 	function updateIndices(
 		id: any,
 		existingRecord: any,
@@ -10551,8 +10548,7 @@ export function makeTable(options): TableResourceClass {
 						isRocksDB && updatedRecord && existingVersion != null
 							? Math.max(sourceVersion, existingVersion)
 							: sourceVersion;
-					// Stamped before the caller, the model hooks or a noCacheStore read see the record. A write that
-					// is not skipped commits at exactly resolvedVersion.
+					// before resolve(): a write that is not skipped commits at exactly resolvedVersion
 					if (updatedRecord) {
 						if (updatedTimeProperty) {
 							updatedRecord[updatedTimeProperty.name] =
