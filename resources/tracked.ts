@@ -453,7 +453,7 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
  * @param target
  * @returns
  */
-export function updateAndFreeze(target, changes = target.getChanges?.()) {
+export function updateAndFreeze(target, changes = target.getChanges?.(), mergeOwnProperties = true) {
 	let mergedUpdatedObject: any;
 	if (!target) return changes;
 	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
@@ -494,7 +494,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 		mergedUpdatedObject[key] = value;
 	}
 	// now copy any properties on the instances itself to the merged updated object
-	if (!Array.isArray(target) && target.getRecord) {
+	if (mergeOwnProperties && !Array.isArray(target) && target.getRecord) {
 		for (const key in target) {
 			if (hasOwnProperty.call(target, key)) {
 				if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord() };
@@ -546,6 +546,49 @@ export function hasChanges(target) {
 }
 function sameValue(a, b) {
 	return a === b || (a !== a && b !== b); // NaN
+}
+
+/**
+ * The incremental update a tracked instance commits: its changes with every tracked sub-object/array
+ * that was only read (unchanged since it was taken from the record) removed, the changed ones
+ * collapsed to plain data, and its own properties that differ from the record added. CRDT
+ * operations pass through. Returns undefined when nothing changed on an existing record, and the changes object itself
+ * (not a copy) when it needs no normalization. Never mutates `changes`, which is the instance's live
+ * tracked state (or the caller's update object).
+ */
+export function collapseChanges(target, changes) {
+	// a non-object root (an array, binary data) is not a patch; leave it for the write's root validation
+	if (changes != null && (typeof changes !== 'object' || Array.isArray(changes) || ArrayBuffer.isView(changes)))
+		return changes;
+	const source = target.getRecord?.();
+	let collapsed;
+	let hasKeys = false;
+	for (const key in changes) {
+		const value = changes[key];
+		if (value?.getRecord) {
+			// copy-on-write: the first normalized key copies everything seen so far
+			if (!collapsed) {
+				collapsed = Object.create(null);
+				for (const priorKey in changes) {
+					if (priorKey === key) break;
+					collapsed[priorKey] = changes[priorKey];
+				}
+			}
+			if (source && value.getRecord() === source[key] && !hasChanges(value)) continue;
+			collapsed[key] = collapseData(value);
+		} else if (collapsed) collapsed[key] = value;
+		hasKeys = true;
+	}
+	for (const key of Object.keys(target)) {
+		const value = target[key];
+		if (sameValue(value, source?.[key])) continue;
+		if (!collapsed) collapsed = Object.assign(Object.create(null), changes);
+		collapsed[key] = value && typeof value === 'object' && value.getRecord ? collapseData(value) : value;
+		hasKeys = true;
+	}
+	// with no record to compare against, any update (even an empty one) writes, as hasChanges decides
+	if (!hasKeys) return source ? undefined : changes;
+	return collapsed ?? changes;
 }
 
 /**

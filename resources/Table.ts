@@ -187,6 +187,7 @@ import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
 	addToChanges,
 	assignTrackedAccessors,
+	collapseChanges,
 	updateAndFreeze,
 	hasChanges,
 	GenericTrackedObject,
@@ -4303,7 +4304,8 @@ export function makeTable(options): TableResourceClass {
 					throw lockNotHeldError(saveHandle);
 				}
 				const changes = this.#changes;
-				if (changes && Object.keys(changes).length > 0) {
+				// own properties are changes too (an undeclared property assigned on a non-sealed table)
+				if ((changes && Object.keys(changes).length > 0) || Object.keys(this).length > 0) {
 					this.#savingOperation = null;
 					return when(this._writeUpdate(this.getId(), changes, false), () => {
 						const op = this.#savingOperation;
@@ -5507,6 +5509,10 @@ export function makeTable(options): TableResourceClass {
 				}
 				return;
 			}
+			// This write commits the instance's own tracked changes; validate derives the committed patch from them
+			// (collapseChanges), each time it runs, so a correction after a failed validation is picked up.
+			const tracksInstance = !fullUpdate && (recordUpdate === undefined || recordUpdate === this.#changes);
+			let instanceChanges = tracksInstance ? recordUpdate : undefined;
 			let captureChanges;
 			if (recordUpdate === undefined) {
 				let captured = false;
@@ -5514,6 +5520,7 @@ export function makeTable(options): TableResourceClass {
 					if (!captured) {
 						captured = true;
 						recordUpdate = this.#changes;
+						if (tracksInstance) instanceChanges = recordUpdate;
 					}
 				};
 			}
@@ -5569,8 +5576,9 @@ export function makeTable(options): TableResourceClass {
 				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
+					if (tracksInstance) recordUpdate = collapseChanges(this, instanceChanges);
 					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
-					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
+					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
 							// A record must be a plain object. Reject primitive, string/number, bare-binary,
@@ -6574,7 +6582,9 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(existingRecord, incrementalUpdateToApply ?? recordUpdate);
 						else {
 							this.#record = existingRecord;
-							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate);
+							// collapseChanges already took this instance's own properties into the patch; merging them again
+							// would overwrite a newer base's values for the ones it left out as unchanged
+							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
 					this.#record = recordToStore;
