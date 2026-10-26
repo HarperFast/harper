@@ -2445,7 +2445,6 @@ function addCondition(query, attribute, comparator, comparatorChosen, value, val
 	if (attribute === '' && !comparatorChosen) return recordError('a chained condition needs a FIQL comparator');
 	const condition = buildCondition(attribute, comparator, value, valueDecoder);
 	if (attribute === '') {
-		// a chained leg (`&=`/`|=`) on the preceding condition's attribute
 		const lastCondition = query.conditions[query.conditions.length - 1];
 		if (lastCondition?.attribute == null) return recordError('a chained condition must follow a comparison');
 		lastCondition.chainedConditions = lastCondition.chainedConditions || [];
