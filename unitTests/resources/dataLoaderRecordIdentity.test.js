@@ -321,6 +321,17 @@ describe('Data loader record identity', function () {
 			assert.equal((await tables.DlIdLooseId.get('c')).value, 1);
 		});
 
+		it('does not read the shared slot for a record that has an id field', async function () {
+			// a default-database table named `data` keyed its record `DlIdLooseId:undefined` this way; a real slot
+			// entry hashes a record without an id
+			const row = { sku: 'x', id: 'DlIdLooseId:undefined', value: 1 };
+			await tables.DlIdLooseId.put(row);
+			await hashTable.put({ id: 'data:DlIdLooseId:undefined', hash: legacyHash(row) });
+
+			await load({ table: 'DlIdLooseId', records: [{ ...row, value: 2 }] });
+			assert.equal((await tables.DlIdLooseId.get('x')).value, 1);
+		});
+
 		it("does not confuse a record's primary key with another record's id field", async function () {
 			const old = [
 				{ sku: 5, id: 9, value: 1 },

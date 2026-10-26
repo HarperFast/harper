@@ -123,9 +123,7 @@ async function getLegacyHashes(
 	trackingTable: any,
 	database: string | undefined,
 	tableName: string,
-	newRecord: Record<string, any>,
-	existingRecord: Record<string, any>,
-	primaryKey: string,
+	existingRecordSubset: Record<string, any>,
 	tablesRef: Tables
 ): Promise<string[]> {
 	const isDefaultDatabase = !database || database === DEFAULT_DATABASE_NAME;
@@ -138,27 +136,20 @@ async function getLegacyHashes(
 	)
 		.filter((prefix) => prefix === tableName || !tablesRef?.[prefix])
 		.map((prefix) => prefix + ':');
-	// The `id` an earlier version keyed by is the one it stored, which is in the hashed fields when the file has an
-	// `id` field too
-	const ids =
-		primaryKey === 'id'
-			? [newRecord.id]
-			: newRecord.id !== undefined && existingRecord.id !== undefined
-				? [existingRecord.id, undefined]
-				: [undefined];
+	// The `id` an earlier version keyed by is the stored one, so it is among the compared fields: any other reading
+	// of the same key has a different `id`. A record compared without one used the shared slot
+	const id = 'id' in existingRecordSubset ? existingRecordSubset.id : undefined;
 	const hashes: string[] = [];
 	for (const prefix of prefixes) {
-		for (const id of ids) {
-			let hashRecord;
-			try {
-				hashRecord = await trackingTable.get(prefix + id);
-			} catch (error) {
-				// an unreadable entry is no evidence (a key over the size limit was never writable either)
-				dataLoaderLogger.debug?.(`Skipping unreadable earlier hash for ${tableName}: ${error.message}`);
-				continue;
-			}
-			if (hashRecord) hashes.push(hashRecord.hash);
+		let hashRecord;
+		try {
+			hashRecord = await trackingTable.get(prefix + id);
+		} catch (error) {
+			// an unreadable entry is no evidence (a key over the size limit was never writable either)
+			dataLoaderLogger.debug?.(`Skipping unreadable earlier hash for ${tableName}: ${error.message}`);
+			continue;
 		}
+		if (hashRecord) hashes.push(hashRecord.hash);
 	}
 	return hashes;
 }
@@ -361,14 +352,13 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 								trackingTable,
 								database,
 								tableName,
-								newRecord,
-								existingRecord,
-								primaryKey,
+								existingRecordSubset,
 								tablesRef
 							);
 							loadedByDataLoader =
-								legacyHashes.includes(existingRecordHash) ||
-								(legacyHashes.length > 0 && legacyHashes.includes(computeLegacyRecordHash(existingRecordSubset)));
+								legacyHashes.length > 0 &&
+								(legacyHashes.includes(existingRecordHash) ||
+									legacyHashes.includes(computeLegacyRecordHash(existingRecordSubset)));
 						}
 
 						if (!loadedByDataLoader) {
