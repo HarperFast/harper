@@ -687,8 +687,12 @@ mirror as `server.udsMirror` (Node) / `server.udsMirrorUwsConfig` (HARPER_UWS_UD
 `onWebSocket()` uses those to attach the `'upgrade'` dispatch and uWS `wsHandler`. Two lessons paid
 for in production (WS handshakes died with a zero-byte close on the mirrors while SSE worked):
 
-- A Node HTTP server with **no** `'upgrade'` listener destroys upgrade sockets with no response and
-  no log — a silent per-server default that makes a missing listener look like a network problem.
+- An HTTP server with **no** `'upgrade'` listener destroys WebSocket upgrade sockets with no
+  response and no log, which makes a missing listener look like a network problem. Plain Node would
+  hand such a request to the `'request'` listener instead; Harper's
+  `IncomingMessage.prototype.upgrade` override (no-op setter, `http.ts`) defeats that fallback on
+  every thread that loads `server/http.ts`, including for servers an application creates there.
+  Pinned in `unitTests/server/serverGlobalCallerImpact.test.js`.
 - `enableProxyProtocol()`'s data interception must hand the socket **back to the original
   listeners** once the PROXY header decision is made (it re-attaches them and removes its wrapper).
   A permanent wrapper breaks protocol handoffs: Node's upgrade path removes its parser's `'data'`
