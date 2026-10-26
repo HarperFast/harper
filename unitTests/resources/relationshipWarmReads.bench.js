@@ -25,8 +25,8 @@ describe('warm relationship query cost', function () {
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'group', indexed: true },
-				{ name: 'childId' },
-				{ name: 'score' },
+				{ name: 'childId', indexed: true },
+				{ name: 'score', indexed: true },
 				{ name: 'childIds', elements: { type: 'ID' } },
 				childAttribute,
 				childrenAttribute,
@@ -35,12 +35,21 @@ describe('warm relationship query cost', function () {
 		WarmChild = table({
 			table: 'WarmChild',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'name' },
+				{
+					name: 'parents',
+					relationship: { to: 'childId' },
+					elements: { type: 'WarmParent', definition: { tableClass: WarmParent } },
+				},
+			],
 		});
 		childAttribute.definition.tableClass = WarmChild;
 		childrenAttribute.elements.definition.tableClass = WarmChild;
 		for (let i = 0; i < PARENTS; i++) {
-			await WarmChild.put({ id: 'c' + i, name: 'child ' + (i % 97) });
+			await WarmChild.put({ id: 'c' + i, group: 'g', name: 'child ' + (i % 97) });
 			await WarmParent.put({
 				id: 'p' + i,
 				group: 'g',
@@ -51,10 +60,10 @@ describe('warm relationship query cost', function () {
 		}
 	});
 
-	async function time(name, query) {
+	async function time(name, Table, query) {
 		const run = async () => {
 			let count = 0;
-			for await (const _record of WarmParent.search(query())) count++;
+			for await (const _record of Table.search(query())) count++;
 			return count;
 		};
 		for (let i = 0; i < 5; i++) await run();
@@ -73,29 +82,43 @@ describe('warm relationship query cost', function () {
 
 	it('measures', async function () {
 		const lead = { attribute: 'group', value: 'g' };
-		await time('select child', () => ({ conditions: [lead], select: ['id', { name: 'child', select: ['name'] }] }));
-		await time('filter child.name', () => ({
+		await time('select child', WarmParent, () => ({
+			conditions: [lead],
+			select: ['id', { name: 'child', select: ['name'] }],
+		}));
+		await time('filter child.name', WarmParent, () => ({
 			conditions: [lead, { attribute: ['child', 'name'], value: 'child 5' }],
 			select: ['id'],
 		}));
-		await time('sort child.name', () => ({
+		await time('sort child.name', WarmParent, () => ({
 			conditions: [lead],
 			sort: { attribute: ['child', 'name'] },
 			select: ['id'],
 		}));
-		await time('select children', () => ({
+		await time('select children', WarmParent, () => ({
 			conditions: [lead],
 			select: ['id', { name: 'children', select: ['name'] }],
 		}));
-		await time('filter children.name', () => ({
+		await time('filter children.name', WarmParent, () => ({
 			conditions: [lead, { attribute: ['children', 'name'], value: 'child 5' }],
 			select: ['id'],
 		}));
-		await time('sort children.name', () => ({
+		await time('sort children.name', WarmParent, () => ({
 			conditions: [lead],
 			sort: { attribute: ['children', 'name'] },
 			select: ['id'],
 		}));
-		await time('plain filter score', () => ({ conditions: [lead, { attribute: 'score', value: 5 }], select: ['id'] }));
+		await time('select parents (one-to-many)', WarmChild, () => ({
+			conditions: [lead],
+			select: ['id', { name: 'parents', select: ['id'] }],
+		}));
+		await time('leading join parents.score', WarmChild, () => ({
+			conditions: [{ attribute: ['parents', 'score'], value: 5 }],
+			select: ['id'],
+		}));
+		await time('plain filter score', WarmParent, () => ({
+			conditions: [lead, { attribute: 'score', value: 5 }],
+			select: ['id'],
+		}));
 	});
 });

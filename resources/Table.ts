@@ -6834,18 +6834,24 @@ export function makeTable(options): TableResourceClass {
 					function collect(entry): Promise<unknown> | undefined {
 						ordered.push(entry);
 						let pending: Promise<void>[];
-						for (let i = 0; i < clauseCount; i++) {
-							const clause = clauses[i];
-							const keys = orderedKeys[i];
-							const value = getAttributeValue(entry, clause.attribute, context, clause);
-							if (value?.then) {
-								const position = keys.push(undefined) - 1;
-								(pending ??= []).push(
-									value.then((value) => {
-										keys[position] = convertToComparableKeys(value);
-									})
-								);
-							} else keys.push(convertToComparableKeys(value));
+						try {
+							for (let i = 0; i < clauseCount; i++) {
+								const clause = clauses[i];
+								const keys = orderedKeys[i];
+								const value = getAttributeValue(entry, clause.attribute, context, clause);
+								if (value?.then) {
+									const position = keys.push(undefined) - 1;
+									(pending ??= []).push(
+										value.then((value) => {
+											keys[position] = convertToComparableKeys(value);
+										})
+									);
+								} else keys.push(convertToComparableKeys(value));
+							}
+						} catch (error) {
+							// observe the keys still pending, so their rejections are not reported as unhandled
+							if (pending) Promise.all(pending).catch(() => {});
+							throw error;
 						}
 						if (pending) return Promise.all(pending);
 					}
@@ -6899,7 +6905,10 @@ export function makeTable(options): TableResourceClass {
 									} else break;
 								} else {
 									let entry = iteration.value;
-									if (entry?.then) entry = await entry;
+									if (entry?.then) {
+										entry = await entry;
+										if (closed) return { done: true, value: undefined };
+									}
 									if (entry === SKIP) continue;
 									// if the index has already provided the first order of sorting, we only need to sort
 									// within each grouping
@@ -6910,7 +6919,10 @@ export function makeTable(options): TableResourceClass {
 											context,
 											(sort as any).dbOrderedSort
 										);
-										if (groupingValue?.then) groupingValue = await groupingValue;
+										if (groupingValue?.then) {
+											groupingValue = await groupingValue;
+											if (closed) return { done: true, value: undefined };
+										}
 										if (firstEntry) {
 											firstEntry = false;
 											lastGroupingValue = groupingValue;
@@ -10127,12 +10139,18 @@ export function makeTable(options): TableResourceClass {
 		// as in loadLocalRecord: the query ended, so read nothing more through its finished transaction
 		if (options.transaction?.isDone) return settleRelatedEntries([], filterMissing);
 		let pending = false;
-		const entries = keys.map((key) => {
-			if (key && key.key !== undefined) return key;
-			const entry = relatedTable.primaryStore.getEntry(key, options);
-			if (entry?.then) pending = true;
-			return entry;
-		});
+		const entries = [];
+		try {
+			for (const key of keys) {
+				const entry = key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options);
+				if (entry?.then) pending = true;
+				entries.push(entry);
+			}
+		} catch (error) {
+			// observe the reads still pending, so their rejections are not reported as unhandled
+			if (pending) Promise.all(entries).catch(() => {});
+			throw error;
+		}
 		if (pending) return Promise.all(entries).then((entries) => settleRelatedEntries(entries, filterMissing));
 		return settleRelatedEntries(entries, filterMissing);
 	}
@@ -10236,9 +10254,7 @@ export function makeTable(options): TableResourceClass {
 		if (filtersLength > 0 || !ids.hasEntries) {
 			let results = ids.map(function (this: any, idOrEntry) {
 				idFiltersApplied = null;
-				// a relationship filter's maybeAsync variant returns a Promise when it reads a related record from
-				// storage, which only an asynchronous iteration can wait on
-				// (a plain array is mapped eagerly, so nothing would wait on a Promise there either)
+				// only an asynchronous iteration can wait on a maybeAsync filter's Promise; a plain array maps eagerly
 				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
 					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry

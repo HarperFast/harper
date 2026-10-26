@@ -66,7 +66,6 @@ describe('Queries read related records asynchronously', () => {
 		await ColdParent.put({ id: 'parent-null', childId: null, childIds: null });
 	});
 
-	// simulateCold: every async read settles on a later event-loop turn, as a read that misses every cache does
 	function instrumentReads(Table, simulateCold) {
 		const store = Table.primaryStore;
 		const reads = { sync: 0, async: 0, promised: 0 };

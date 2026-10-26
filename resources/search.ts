@@ -1420,7 +1420,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 		let joinedIterator;
 		(joined as any).hasMappings = true;
 		if (options?.async) {
-			const scan = { closed: false };
+			const scan = { closed: false, transaction };
 			let scanned: Promise<void>;
 			const readOptions = { transaction, async: true };
 			return {
@@ -1477,15 +1477,29 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 }
 const entryValue = (entry) => entry?.value;
 function ignoreReturnFailure() {}
-async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean }) {
+// Array map whose callback may return Promises: when a later call throws, the earlier pending Promises are
+// observed, so their rejections are not reported as unhandled for a query that has already failed
+function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
+	const results = [];
+	try {
+		for (const item of items) results.push(map(item));
+	} catch (error) {
+		Promise.all(results).catch(ignoreReturnFailure);
+		throw error;
+	}
+	return results;
+}
+// a request torn down mid-scan finishes the read transaction (onDone) without returning the join iterator
+const scanStopped = (scan) => scan.closed || scan.transaction?.isDone;
+async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean; transaction: any }) {
 	const iterator = rightIterable[Symbol.asyncIterator]();
 	let done = false;
 	try {
-		while (!scan.closed) {
+		while (!scanStopped(scan)) {
 			let iteration = iterator.next();
 			if (iteration.then) {
 				iteration = await iteration;
-				if (scan.closed) return;
+				if (scanStopped(scan)) return;
 			}
 			if (iteration.done) {
 				done = true;
@@ -1495,7 +1509,7 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: { close
 			let record = readRecord(entry);
 			if (record?.then) {
 				record = await record;
-				if (scan.closed) return;
+				if (scanStopped(scan)) return;
 			}
 			const filters = (joined as any).filters;
 			if (filters) {
@@ -1503,7 +1517,7 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: { close
 				let matches = matchesFilters(filters, record, undefined, false);
 				if (matches?.then) {
 					matches = await matches;
-					if (scan.closed) return;
+					if (scanStopped(scan)) return;
 				}
 				if (!matches) continue;
 			}
@@ -1523,10 +1537,6 @@ function someRelatedMatch(entries, match, start: number) {
 	}
 	return false;
 }
-/**
- * Whether a record matches any (`any`) or all of the filters, through each filter's maybeAsync variant (see
- * filterByType), so the result is a Promise only once a filter has to read a related record from storage
- */
 function matchesFilters(filters, record, entry, any: boolean, start = 0) {
 	for (let i = start; i < filters.length; i++) {
 		const filter = filters[i];
@@ -1584,7 +1594,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 				joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
 			}
 		};
-		const scan = { closed: false };
+		const scan = { closed: false, transaction };
 		const iterator: any = {
 			return() {
 				scan.closed = true;
@@ -1605,7 +1615,6 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					defineFromRecord();
 					scanned = scanRelated(
 						rightIterable,
-						// the related record is only needed for the join's additional filters
 						(id) =>
 							(joined as any).filters && !transaction?.isDone
 								? when(store.getEntry(id, readOptions), entryValue)
@@ -1863,7 +1872,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								return when(loadEntries(record, context), (loaded) => {
 									if (!resolver.toMany || !loaded) return loaded?.value;
 									const values = loaded.map((entry) => entry?.value);
-									const matches = values.map((value) => value != null && nextMatch(value));
+									const matches = mapSettlingOnThrow(values, (value) => value != null && nextMatch(value));
 									const matchingIds = (matches) =>
 										values.filter((_value, i) => matches[i]).map((value) => value[relatedTable.primaryKey]);
 									return matches.some((matches) => matches?.then)
