@@ -258,11 +258,13 @@ describe('Table.get by a primitive id', function () {
 				[Records, '_updateResource', 1],
 				[Records.prototype, '_loadRecord', 1],
 				[Records.prototype, 'getRecord'],
+				// read by onlyIfCached only, so not called here
+				[Records.prototype, 'doesExist', 0],
 			]) {
 				const hook = owner[name];
 				let called = 0;
 				owner[name] = function (...args) {
-					called++;
+					if (this === Records || this?.constructor === Records) called++;
 					return hook.apply(this, args);
 				};
 				try {
@@ -272,7 +274,7 @@ describe('Table.get by a primitive id', function () {
 				} finally {
 					owner[name] = hook;
 				}
-				if (calls) assert.strictEqual(called, calls, name);
+				if (calls !== undefined) assert.strictEqual(called, calls, name);
 				else assert.ok(called > 0, `${name} ran`);
 			}
 		});

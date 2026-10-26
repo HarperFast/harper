@@ -10816,7 +10816,12 @@ export function makeTable(options): TableResourceClass {
 	// see resources/DESIGN.md before adding a hook
 	const tableGetResource = TableResource.getResource;
 	const updateResource = TableResource._updateResource;
-	const { get: tableGet, _loadRecord: tableLoadRecord, getRecord: tableGetRecord } = tablePrototype;
+	const {
+		get: tableGet,
+		_loadRecord: tableLoadRecord,
+		getRecord: tableGetRecord,
+		doesExist: tableDoesExist,
+	} = tablePrototype;
 	registerPrimitiveIdGet(TableResource, (id, context: any, resourceOptions) => {
 		if (
 			hasSourceGet ||
@@ -10828,6 +10833,7 @@ export function makeTable(options): TableResourceClass {
 			tablePrototype.get !== tableGet ||
 			tablePrototype._loadRecord !== tableLoadRecord ||
 			tablePrototype.getRecord !== tableGetRecord ||
+			tablePrototype.doesExist !== tableDoesExist ||
 			context.authorize ||
 			context.onlyIfCached ||
 			context.isCollection ||

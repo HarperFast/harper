@@ -135,10 +135,7 @@ export function recordAction(value: Value, metric: string, path?: string, method
 	recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
 }
 
-/**
- * recordAction for a fixed metric, path, method and type, with the action key built once. A hot path
- * otherwise pays to concatenate the key and hash the fresh string on every call.
- */
+/** recordAction with the key built once, for a hot path that would otherwise concatenate and hash it per call */
 export function actionRecorder(metric: string, path?: string, method?: string, type?: string): (value: Value) => void {
 	const key = actionKey(metric, path, method, type);
 	return (value) => {

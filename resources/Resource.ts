@@ -645,10 +645,8 @@ export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resou
 export const defaultGetResource = Resource.getResource;
 
 /**
- * @internal Serves a static `get(id)` with a string or number id, inside a joinable transaction, without a
- * RequestTarget or resource instance; registered per exact class, so subclasses never match. Returns the
- * record value, NOT_HANDLED, or a LoadingResource. It must not consume its arguments: on NOT_HANDLED the
- * general dispatch continues with the context resolved for it.
+ * @internal Registered per exact class, so subclasses never match. On NOT_HANDLED the general dispatch
+ * continues with the context resolved for the getter, so a getter must not consume its arguments.
  */
 type PrimitiveIdGet = (id: string | number, context: Context, resourceOptions: any) => any;
 const primitiveIdGets = new WeakMap<object, PrimitiveIdGet>();
@@ -662,7 +660,7 @@ export function registerPrimitiveIdGet(resourceClass: object, get: PrimitiveIdGe
 export function primitiveIdGetFor(resourceClass: object): PrimitiveIdGet | undefined {
 	return primitiveIdGets.get(resourceClass);
 }
-/** @internal An asynchronous primitive-id read: the general dispatch continues from the instance it loads. */
+/** @internal */
 export class LoadingResource {
 	loaded: Promise<ResourceInterface>;
 	constructor(loaded: Promise<ResourceInterface>) {
