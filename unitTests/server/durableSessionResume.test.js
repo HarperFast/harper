@@ -13,6 +13,7 @@ const mqttPacket = require('mqtt-packet');
 const { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
+const commonUtility = require('#src/utility/lmdb/commonUtility');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
@@ -2245,6 +2246,71 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			second.session.disconnect(true);
 		});
 	}
+
+	it('resumes with only the newer version when the JS clock trails the log keys', async function () {
+		// LMDB topics start at the JS clock
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('a', { value: 'a1' });
+		const clientId = `trailing-clock-${name}`;
+		const first = await connect(clientId);
+		const realClock = commonUtility.getNextMonotonicTime;
+		commonUtility.getNextMonotonicTime = () => realClock() - 1000;
+		// the source lane loads an ES module namespace, which ignores the assignment
+		if (commonUtility.getNextMonotonicTime === realClock) this.skip();
+		try {
+			await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		} finally {
+			commonUtility.getNextMonotonicTime = realClock;
+		}
+		await waitFor(() => first.received.length === 1);
+		await ackAll(first.session, first.received);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('a', { value: 'a2' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['a2', 'marker'], `${topic} replays no older version`);
+		second.session.disconnect(true);
+	});
+
+	it('holds the position below a first live delivery that committed below the start until it is acknowledged', async () => {
+		const { name } = topicTable();
+		const topic = `${name}/#`;
+		const { session } = await connect(`below-start-${name}`);
+		await session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		const state = session.topics.get(topic);
+		const key = state.entry.startTime - 1;
+		const messageId = session.needsAcknowledge({ topic, localTime: key, value: 'registering' }, 1);
+		assert.ok(session.nextPosition(state) < key, 'a resume would send the unacknowledged delivery again');
+		session.acknowledge(messageId);
+		const start = state.entry.startTime;
+		session.needsAcknowledge({ topic, localTime: start + 1, value: 'live' }, 1);
+		assert.ok(!(session.nextPosition(state) < start), 'a later delivery does not hold the position below the start');
+		session.disconnect(true);
+	});
+
+	it('resumes with a write that was in flight when the topic was subscribed', async function () {
+		if (!isRocksDB) this.skip(); // LMDB topics start at the JS clock
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const commitInFlight = await heldTransaction(T, 'inflight');
+		const clientId = `in-flight-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await commitInFlight();
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => delivery(second.received, 'inflight'), { message: 'the in-flight write was not replayed' });
+		second.session.disconnect(true);
+	});
 
 	it('keeps the position when a reload re-snapshot is acknowledged', async function () {
 		if (isRocksDB) this.skip(); // durable subscribers are closed at the marker instead

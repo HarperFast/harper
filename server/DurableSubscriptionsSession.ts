@@ -997,7 +997,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			return;
 		}
 		if (!state || !(state.entry.qos > 0)) {
-			const startTime = subscription.registeredThrough ?? getNextMonotonicTime();
+			const startTime = subscription.registeredThrough ?? subscription.localResumeStart ?? getNextMonotonicTime();
 			const databaseGeneration =
 				subscription.registeredThrough === undefined ? undefined : subscription.databaseGeneration;
 			state = newTopicState({ qos: subscription.qos, topic: subscription.topic, startTime, databaseGeneration });
@@ -1156,8 +1156,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (state && !update.fromScan && typeof update.localTime === 'number') {
 			const key = update.localTime;
 			if (key !== state.deliveredKey) {
-				// a transaction can commit after one with a higher key, so it arrives below the last delivered key
-				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
+				// a transaction can commit after one with a higher key, so it arrives below the last delivered key;
+				// one that committed while the subscription registered can arrive below the start
+				const previous =
+					state.deliveredKey === undefined || state.deliveredKey < state.entry.startTime
+						? state.entry.startTime
+						: state.deliveredKey;
+				state.keyBefore = key < previous ? positionBefore(key) : previous;
 				state.deliveredKey = key;
 			}
 			if (qos === 2) this.inFlightChanged = true;
@@ -1404,7 +1409,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		if (boundary === undefined || !certified) return boundary;
 		const progress = subscription.progress();
-		if (progress === undefined) return;
+		// nothing certifies an advance yet, but holding below an unacknowledged delivery needs no certificate
+		if (progress === undefined) return boundary < state.entry.startTime ? boundary : undefined;
 		return boundary < progress ? boundary : progress;
 	}
 	/** `fresh`: false reuses the checkpoints a `received` computed for this pass. */
@@ -1431,7 +1437,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.entry.checkpoint === undefined) this.pruneReceipts(state, next);
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
-				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
+				state.subscription.progress?.() === undefined ? undefined : state.subscription.databaseGeneration;
 			changed = true;
 		}
 		for (const state of this.topics.values()) {
