@@ -771,6 +771,42 @@ describe('Reads of residency stubs', function () {
 			assert.deepEqual(dangling, [], 'a graph node was removed without its neighbors being cleaned up');
 		});
 
+		it('a write over a stub indexes every new value of a computed array, including ones the guess shares', async () => {
+			const Tagged = table({
+				database: 'test',
+				table: 'ResidencyComputedTags',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'tags', type: 'Array' },
+					{ name: 'labels', type: 'Array', indexed: true, computed: true },
+				],
+				audit: true,
+			});
+			Tagged.setComputedAttribute('labels', (record) => record.tags ?? ['shared']);
+			await Tagged.put('tagged', { id: 'tagged', tags: ['old'] });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Tagged.getResource('tagged', context, { ensureLoaded: false });
+				resource._writeInvalidate('tagged');
+			});
+			await Tagged.put('tagged', { id: 'tagged', tags: ['shared', 'new'] });
+			const labels = Array.from(Tagged.indices.labels.getRange({}))
+				.filter(({ value }) => value === 'tagged')
+				.map(({ key }) => key);
+			assert.ok(
+				labels.includes('shared') && labels.includes('new'),
+				`a new computed value is missing from the index: ${JSON.stringify(labels)}`
+			);
+		});
+
+		it('a write over a stub still fails when the new record cannot be resolved', async () => {
+			const id = 'unresolvable';
+			await Computed.put(id, { id, sku: 'A', name: 'old' });
+			const context = {};
+			await transaction(context, () => invalidate(id, context));
+			await assert.rejects(async () => Computed.put(id, { id, sku: 'B' }), TypeError);
+		});
+
 		it('evicting a stub removes it', async () => {
 			await Computed.put('evicted', { id: 'evicted', sku: 'A', name: 'old' });
 			const context = {};

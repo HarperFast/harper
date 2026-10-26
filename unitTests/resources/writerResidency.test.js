@@ -287,6 +287,18 @@ describe('Writer residency (harper#2257)', () => {
 		assert.ok(!entry.residencyId);
 	});
 
+	it('leaves a stored row and its index entries together when setResidencyById omits a write to it', async () => {
+		await Records.put('by-id-kept', { id: 'by-id-kept', name: 'before', body: 'complete' });
+		Records.setResidencyById(() => [PEER]);
+		await Records.put('by-id-kept', { id: 'by-id-kept', name: 'after', body: 'complete' });
+		// the omission writes no row (harper#3566), so the stored row and its index entry must still agree
+		const stored = Records.primaryStore.getEntry('by-id-kept').value;
+		const indexed = Array.from(Records.indices.name.getRange({}))
+			.filter(({ value }) => value === 'by-id-kept')
+			.map(({ key }) => key);
+		assert.deepEqual(indexed, [stored.name]);
+	});
+
 	it('leaves setResidencyById omission unchanged', async () => {
 		Records.setResidencyById(() => [PEER]);
 		await Records.put('by-id', { id: 'by-id', name: 'n', body: 'complete' });

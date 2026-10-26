@@ -5911,14 +5911,16 @@ export function makeTable(options): TableResourceClass {
 							}
 						})()
 					);
-					updateIndices(
-						id,
-						existingRecord,
-						recordToStore,
-						transaction && { transaction },
-						omitLocalRecord,
-						Boolean(baseEntry?.metadataFlags & INVALIDATED)
-					);
+					// an id-based omission writes no row (the stored one, if any, stays), so its indexes stay too
+					if (!omitLocalRecord || recordToStore !== undefined)
+						updateIndices(
+							id,
+							existingRecord,
+							recordToStore,
+							transaction && { transaction },
+							omitLocalRecord,
+							Boolean(baseEntry?.metadataFlags & INVALIDATED)
+						);
 					dropReplicaDeadline(id, existingEntry, transaction);
 
 					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
@@ -9656,7 +9658,7 @@ export function makeTable(options): TableResourceClass {
 				valuesToAdd = valuesToAdd
 					? valuesToAdd.filter((value) => {
 							if (setToRemove.has(value)) {
-								// if the value is retained, we don't need to remove or add it, so remove it from the set
+								// a retained value is not removed, and not re-added unless the old value was a guess over a stub
 								setToRemove.delete(value);
 								return overStub;
 							} else {
@@ -10684,14 +10686,16 @@ export function makeTable(options): TableResourceClass {
 								residencyId = getResidencyId(residency);
 							}
 						}
-						updateIndices(
-							id,
-							currentRecord,
-							recordToStore,
-							transaction && { transaction },
-							omitLocalRecord,
-							Boolean(existingEntry?.metadataFlags & INVALIDATED)
-						);
+						// an id-based omission writes no row (the stored one, if any, stays), so its indexes stay too
+						if (!omitLocalRecord || recordToStore !== undefined)
+							updateIndices(
+								id,
+								currentRecord,
+								recordToStore,
+								transaction && { transaction },
+								omitLocalRecord,
+								Boolean(existingEntry?.metadataFlags & INVALIDATED)
+							);
 						dropReplicaDeadline(id, existingEntry, transaction);
 						if (updatedRecord) {
 							logger.trace?.(

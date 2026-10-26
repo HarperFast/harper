@@ -137,6 +137,18 @@ describe('Source fills', function () {
 			assert.deepEqual(indexedKeys(Placed, 'name', 'by-id'), []);
 		});
 
+		it('a revalidation this node is not resident for by id leaves the stored row and its index entries together', async () => {
+			await Placed.put('kept', { id: 'kept', name: 'Kept', body: 'complete' });
+			await Placed.invalidate('kept');
+			Placed.setResidencyById(() => [PEER]);
+			await Placed.get('kept');
+			await waitFor(() => !Placed.primaryStore.hasLock('kept'));
+			assert.deepEqual(calls, ['kept'], 'premise: the fill reached the source');
+			// the omission writes no row (harper#3566), so the stored stub and its index entry must still agree
+			assert.equal(Placed.primaryStore.getEntry('kept').value.name, 'Kept');
+			assert.deepEqual(indexedKeys(Placed, 'name', 'kept'), ['Kept']);
+		});
+
 		it('a fill this node is not resident for keeps the key on its stub, so an index-only select is local', async () => {
 			Placed.setResidency(() => [PEER]);
 			names.set('stubbed', 'stub name');
