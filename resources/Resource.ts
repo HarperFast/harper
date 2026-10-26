@@ -641,25 +641,28 @@ _assignPackageExport('Resource', Resource);
  */
 export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
 
-/** Captured at load, before application code can replace it. */
+/** @internal Captured at load, before application code can replace it. */
 export const defaultGetResource = Resource.getResource;
 
 /**
- * Serves a static `get(id)` with a string or number id, inside a joinable transaction, without a
+ * @internal Serves a static `get(id)` with a string or number id, inside a joinable transaction, without a
  * RequestTarget or resource instance; registered per exact class, so subclasses never match. Returns the
  * record value, NOT_HANDLED, or a LoadingResource. It must not consume its arguments: on NOT_HANDLED the
  * general dispatch continues with the context resolved for it.
  */
 type PrimitiveIdGet = (id: string | number, context: Context, resourceOptions: any) => any;
 const primitiveIdGets = new WeakMap<object, PrimitiveIdGet>();
+/** @internal */
 export const NOT_HANDLED = Symbol('not-handled');
+/** @internal */
 export function registerPrimitiveIdGet(resourceClass: object, get: PrimitiveIdGet): void {
 	primitiveIdGets.set(resourceClass, get);
 }
+/** @internal */
 export function primitiveIdGetFor(resourceClass: object): PrimitiveIdGet | undefined {
 	return primitiveIdGets.get(resourceClass);
 }
-/** An asynchronous primitive-id read: the general dispatch continues from the instance it loads. */
+/** @internal An asynchronous primitive-id read: the general dispatch continues from the instance it loads. */
 export class LoadingResource {
 	loaded: Promise<ResourceInterface>;
 	constructor(loaded: Promise<ResourceInterface>) {
@@ -743,7 +746,8 @@ function transactional(
 	const hasContent = options.hasContent;
 	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
 	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
-	const isGet = options.method === 'get';
+	// the primitive-id getter resolves the second argument as a context, which only a body-less get may do
+	const isGet = options.method === 'get' && hasContent === false;
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
@@ -757,7 +761,6 @@ function transactional(
 		if (isGet && !context && (typeof idOrQuery === 'string' || typeof idOrQuery === 'number')) {
 			const getPrimitiveId = primitiveIdGets.get(this);
 			if (getPrimitiveId) {
-				// resolved once: the general path below continues with this context
 				context = dataOrContext
 					? (dataOrContext as any).getContext?.() || dataOrContext
 					: (contextStorage.getStore() ?? {});

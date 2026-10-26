@@ -10843,7 +10843,7 @@ export function makeTable(options): TableResourceClass {
 			return new LoadingResource(
 				(entry as Promise<Entry>).then((entry) => {
 					const resource = new TableResource(id, context);
-					updateResource(resource, entry);
+					TableResource._updateResource(resource, entry);
 					return resource;
 				})
 			);

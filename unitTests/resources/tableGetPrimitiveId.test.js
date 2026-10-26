@@ -1,6 +1,5 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
@@ -63,7 +62,6 @@ describe('Table.get by a primitive id', function () {
 		return transaction(async (txn) => callback(txn.getContext()));
 	}
 
-	/** Counts calls to the table's registered getter and what it returned, delegating to the original. */
 	function countPrimitiveGets(TableClass) {
 		const original = primitiveIdGetFor(TableClass);
 		const calls = [];
@@ -159,7 +157,6 @@ describe('Table.get by a primitive id', function () {
 
 		it('records the same db-read analytics as the instance dispatch', async () => {
 			const wasEnabled = checkAnalyticsEnabled();
-			// also discards a flush timer another test left armed
 			setAnalyticsEnabled(true);
 			try {
 				const reads = [];
@@ -171,7 +168,7 @@ describe('Table.get by a primitive id', function () {
 					await waitFor(() => reads.length >= count, { timeout: 10_000, message: 'no analytics report was flushed' });
 					assert.strictEqual(reads.length, count);
 				};
-				// the open report may also hold the earlier tests' reads
+				// flushes whatever earlier tests left in the open report
 				await inTransaction(() => Records.get('a'));
 				await waitForReport(1);
 				await inTransaction(async () => {
@@ -445,7 +442,7 @@ describe('Table.get by a primitive id', function () {
 				await assert.rejects(
 					inTransaction(async (context) => {
 						const reading = Resident.get(route);
-						for (let attempt = 0; attempt < 100 && !release; attempt++) await delay(5);
+						await waitFor(() => release);
 						context.user = {
 							role: { permission: { test: { tables: { PrimitiveIdGetResident: { read: false } } } } },
 						};
