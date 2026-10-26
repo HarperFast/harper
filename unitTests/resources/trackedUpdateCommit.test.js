@@ -588,10 +588,11 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				rec.update({ title: 'full' }, true);
 				rec.dynamicCount = 100;
 				rec.addTo('dynamicCount', 7);
+				rec.addTo('dynamicCount', 1);
 			});
 			const saved = await QA1955Table.get('add-own-full');
 			assert.strictEqual(saved.title, 'full');
-			assert.strictEqual(saved.dynamicCount, 107);
+			assert.strictEqual(saved.dynamicCount, 108);
 		});
 	});
 

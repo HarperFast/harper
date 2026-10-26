@@ -4403,12 +4403,15 @@ export function makeTable(options): TableResourceClass {
 		addTo(property: any, value: any) {
 			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
-				if (this.#savingOperation?.fullUpdate)
-					(this as any).set(
-						property,
-						addValues(Object.hasOwn(this, property) ? this[property] : this.getProperty(property), value)
-					);
-				else {
+				if (this.#savingOperation?.fullUpdate) {
+					let base: any;
+					if (Object.hasOwn(this, property)) {
+						// a full update stores its changes, not own properties, so the own value moves into them
+						base = this[property];
+						delete this[property];
+					} else base = this.getProperty(property);
+					(this as any).set(property, addValues(base, value));
+				} else {
 					if (!this.#savingOperation) (this as any).update();
 					addToChanges(this, property, value);
 				}
