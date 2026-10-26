@@ -22,8 +22,10 @@ const { uwsServeConfigs } = require('#src/server/http'); // loading it installs 
 const { SERVERS, portServer } = require('#src/server/serverRegistry');
 
 // threadServer never binds these; the tests listen the registered objects on loopback themselves, and teardown
-// restores the registries so a later listenOnPorts() test does not start them.
-let nextPort = 19470;
+// restores the registries so a later listenOnPorts() test does not start them. server/http.ts keeps the server it
+// made for each port for the life of the process, and teardown cannot reach that cache, so these ports must not be
+// ones another unit test file passes to server.http/httpServer (static.test.js starts at 19470).
+let nextPort = 19670;
 const STAMPS = ['udsMirror', 'udsMirrorUwsConfig', 'appliedCiphers', 'verifiesClientCerts', 'mtlsRequired'];
 const UPGRADE_REQUEST =
 	'GET /impact HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n' +
