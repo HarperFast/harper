@@ -1,6 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
+const { Readable } = require('node:stream');
 const { setupTestDBPath } = require('../testUtils');
 const { table, __setReadOnlyModeForTest } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -209,6 +210,24 @@ describe('Concurrent source misses on one key', function () {
 		respond = (id, attempt) => ({ id, name: 'streamed ' + attempt, headers: {}, body: new ReadableStream() });
 		const results = outcomes(
 			await concurrentGets(CoalescingTable, 'streamed', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
+	it('do not share a record whose data is a one-shot passthrough stream', async function () {
+		respond = (id, attempt) =>
+			attempt % 2
+				? { id, name: 'piped ' + attempt, contentType: 'text/plain', data: Readable.from(['x']) }
+				: {
+						id,
+						name: 'piped ' + attempt,
+						headers: {},
+						data: { contentType: 'text/plain', data: Readable.from(['x']) },
+					};
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'piped', { noCacheStore: true }),
 			(record) => record?.name
 		);
 		assert.equal(sourceCalls, 20);

@@ -10460,13 +10460,15 @@ export function makeTable(options): TableResourceClass {
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
 					// A response writes into a record it cannot copy, merges into a Headers-like `headers` in place and
-					// reads a stream `body` once, so only a copyable record without them is handed to several requests
+					// reads a stream `body` or passthrough `data` once, so only a copyable record without them is handed to several requests
 					if (
 						!sourceContext.noCacheStore &&
 						(updatedRecord == null ||
 							(entryMap.has(updatedRecord) &&
 								updatedRecord.body === undefined &&
-								typeof updatedRecord.headers?.set !== 'function'))
+								typeof updatedRecord.headers?.set !== 'function' &&
+								typeof updatedRecord.contentType !== 'string' &&
+								typeof updatedRecord.data?.contentType !== 'string'))
 					)
 						sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
