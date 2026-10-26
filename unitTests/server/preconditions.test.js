@@ -1809,6 +1809,44 @@ describe('conditional writes through a tracked record instance', () => {
 		assert.deepStrictEqual(stored('unloaded'), { id: 'unloaded', n: 15, name: 'before' });
 	});
 
+	it('stages deferred writes in program order, before a write made after one of them settles', async () => {
+		class Sequenced extends Tracked {
+			async patch() {
+				const first = this.update(this.getId(), { n: 1 });
+				this.update(this.getId(), { name: 'second' });
+				this.update(this.getId(), { m: 3 });
+				await first;
+				this.update(this.getId(), { m: 4 });
+				return this.save();
+			}
+		}
+		resources.set('Sequenced', Sequenced, { rest: true });
+		await Tracked.put('sequenced', { n: 0, m: 0 });
+		const response = await request('PATCH', '/Sequenced/sequenced', {}, { 'if-match': etagOf('sequenced') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(stored('sequenced'), { id: 'sequenced', n: 1, name: 'second', m: 4 });
+	});
+
+	it('applies a conditional DELETE through a tracked handler', async () => {
+		let deleted;
+		class TrackedDelete extends Tracked {
+			async delete(target) {
+				deleted = await super.delete(target);
+			}
+		}
+		resources.set('TrackedDelete', TrackedDelete, { rest: true });
+		await Tracked.put('tracked-delete', { n: 1 });
+		const stale = await request('DELETE', '/TrackedDelete/tracked-delete', undefined, { 'if-match': '"stale"' });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		assert.strictEqual(stored('tracked-delete').n, 1);
+		const matched = await request('DELETE', '/TrackedDelete/tracked-delete', undefined, {
+			'if-match': etagOf('tracked-delete'),
+		});
+		assert.ok(matched.status >= 200 && matched.status < 300, await bodyOf(matched));
+		assert.strictEqual(deleted, true);
+		assert.strictEqual(await Tracked.get('tracked-delete'), null);
+	});
+
 	it('keeps a full replacement on the instance and closes it on save()', async () => {
 		let observed, lateWrite;
 		class AwaitedReplace extends Tracked {

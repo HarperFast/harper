@@ -5475,8 +5475,8 @@ export function makeTable(options): TableResourceClass {
 				const prior = this.#savingOperation;
 				const wait = new ConditionLockWait(fullUpdate);
 				this.#savingOperation = wait;
-				const ready = prior instanceof ConditionLockWait ? prior.staged : lockConditionalWrite(this, id, condition);
-				wait.staged = ready.then(() => {
+				// every deferred write reacts to the one lock promise, so they stage in program order
+				const staging = lockConditionalWrite(this, id, condition).then(() => {
 					const pending = this.#savingOperation;
 					const staged = this._writeUpdate(id, recordUpdate, fullUpdate, options);
 					// the slot keeps the most recently started write, as it would on the unlocked path
@@ -5484,6 +5484,8 @@ export function makeTable(options): TableResourceClass {
 					else if (this.#savingOperation === wait) this.#savingOperation = null;
 					return staged;
 				});
+				// save() waits on the newest wait only, so it carries the failure of one it displaced
+				wait.staged = prior instanceof ConditionLockWait ? Promise.all([prior.staged, staging]) : staging;
 				// update() and addTo() callers may discard this; save() (or REST's 501 when nothing saves) reports it
 				wait.staged.catch(noop);
 				return wait.staged;
