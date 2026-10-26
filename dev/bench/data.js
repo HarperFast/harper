@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793000375885,
+  "lastUpdate": 1793000378869,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -19482,6 +19482,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 145.98,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0c94b150b6713061695e097c9d5173a67d035a02",
+          "message": "Make read-only servers treat expired records as absent instead of evicting them (#3495)\n\n* Skip TTL eviction and expiry cleanup in read-only mode\n\nTTL expiry writes through raw store handles, so it bypassed the read-only\nadmission guard. On a read-only node, reading an expired record threw\n(ERR_NOT_SUPPORTED on RocksDB, TypeError on LMDB) and both cleanup timers\nkept erroring. On LMDB the read also nulled the shared cached entry, which\ndid not hide the record from search.\n\nTableResource.evict, scheduleCleanup and runRecordExpirationEviction now\nreturn immediately in read-only mode, and a read of an expired record on a\ntable with no source resolves to an absent entry without evicting or\ntouching the cached entry. Writable behavior is unchanged.\n\nRefs #474\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-readonly-ttl-eviction-guard\n\n* Share one frozen absent-entry result and harden the read-only TTL tests\n\nThe read-only branch of the expired-record read allocated a thenable per\ncall. It now resolves a module-level frozen one. The unit tests capture the\nsweep interval only around the synchronous resume and close maintenance on\nteardown, and the integration seed expires after the restart so the\nwritable sweep cannot remove it first.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-readonly-ttl-eviction-guard\n\n* Correct the read-only TTL fixture comment about the expiresAt sweep\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-readonly-ttl-eviction-guard\n\n---------\n\nCo-authored-by: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-26T03:46:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/0c94b150b6713061695e097c9d5173a67d035a02"
+        },
+        "date": 1793000378135,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.27,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 21.62,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 14.82,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 27.8,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 14.93,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 34.14,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 14.22,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 21.01,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 134.51,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 49.07,
             "unit": "ms"
           }
         ]
