@@ -1,4 +1,3 @@
-// Runs in a fresh Worker: lockdown is per-realm and irreversible, so each mode needs its own intrinsics.
 import { parentPort, workerData } from 'node:worker_threads';
 import { runInThisContext } from 'node:vm';
 import { lockDownIntrinsics } from '#src/security/intrinsicsLockdown';
@@ -106,6 +105,8 @@ function probe(phase) {
 	};
 }
 
+// a global a component replaces while it loads is the one that gets locked
+globalThis.WeakRef = class ReplacedWeakRef extends WeakRef {};
 let markLoaded;
 const whenLoaded = new Promise((resolve) => (markLoaded = resolve));
 lockDownIntrinsics(workerData.mode, whenLoaded);

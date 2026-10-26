@@ -4,7 +4,7 @@
  * and irreversible. Operations: building a short string from a holey array (msgpackr's string path), msgpackr
  * `unpack` of a small record, and two controls that never store into array holes.
  *
- * Usage (after npm run build from the repo root; on Kris's box wrap in ~/dev/scripts/bench-run):
+ * Usage (after npm run build from the repo root):
  *   node benchmarks/lockdown/run.mts
  *   node benchmarks/lockdown/run.mts --modes=none,seal-after-load,freeze-after-load --iterations=200000 --rounds=5
  *
@@ -56,7 +56,10 @@ async function measure(mode: string): Promise<BenchResult> {
 		const deadline = Date.now() + 60_000;
 		while (Date.now() < deadline) {
 			try {
-				const response = await fetch(url, { headers: { Authorization: authorization } });
+				const response = await fetch(url, {
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(120_000),
+				});
 				if (response.status === 200) return (await response.json()) as BenchResult;
 				await response.body?.cancel();
 			} catch {}
@@ -76,6 +79,7 @@ for (const mode of modes) {
 }
 
 const baseline = results.get('none');
+if (!baseline) console.error('no `none` run in --modes, so no ratios');
 const operations = Object.keys(results.values().next().value.nanoseconds);
 console.log(`node ${process.version}; best of ${values.rounds} rounds x ${values.iterations} iterations, ns/op`);
 console.log(['mode'.padEnd(20), 'sealed', 'frozen', ...operations.map((name) => name.padStart(16))].join(' '));

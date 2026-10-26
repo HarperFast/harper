@@ -90,8 +90,6 @@ const SEALED = {
 		'Math.PI': READ_ONLY_PI,
 	},
 };
-// what freeze mode did before seal modes existed: Function.prototype is left extensible, and only the accessor-wrapped
-// methods can be shadowed
 const FROZEN = {
 	...UNLOCKED,
 	strictAdd: each(TARGETS, (target) => (target === 'Function.prototype' ? 'added' : 'TypeError')),

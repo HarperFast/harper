@@ -1,6 +1,7 @@
 export type Lockdown = 'none' | 'freeze' | 'freeze-after-load' | 'seal' | 'seal-after-load' | 'ses';
 
-const LOCKED_INTRINSICS = [
+// read when locking, not at import: a global a component replaced while loading is the one that gets locked
+const lockedIntrinsics = () => [
 	Object,
 	Array,
 	Promise,
@@ -24,14 +25,12 @@ const LOCKED_INTRINSICS = [
 	FinalizationRegistry,
 ];
 
-/**
- * Applies a non-SES `applications.lockdown` mode to this realm's intrinsics. Values are matched exactly: anything
- * but the two seal modes freezes, and only the two after-load modes wait for `whenLoaded`.
- */
-export function lockDownIntrinsics(mode: Lockdown, whenLoaded: Promise<unknown>): void {
+/** An unrecognized mode freezes eagerly: config values are not validated, so a typo fails closed. */
+export function lockDownIntrinsics(mode: Exclude<Lockdown, 'none' | 'ses'>, whenLoaded: Promise<unknown>): void {
 	preventFunctionConstructor();
 	const lockDown = mode === 'seal' || mode === 'seal-after-load' ? sealIntrinsics : freezeIntrinsics;
-	if (mode === 'freeze-after-load' || mode === 'seal-after-load') whenLoaded.then(lockDown);
+	// a rejected start is reported by the thread server and never serves, so there is nothing left to lock
+	if (mode === 'freeze-after-load' || mode === 'seal-after-load') whenLoaded.then(lockDown, () => {});
 	else lockDown();
 }
 
@@ -39,13 +38,10 @@ function preventFunctionConstructor() {
 	Function.prototype.constructor = function () {}; // prevent this from being used to eval data in a parent context
 }
 
-/**
- * Sealing blocks the property additions prototype-pollution gadgets rely on, while existing properties stay
- * writable: instances can shadow inherited methods without accessors, and V8 keeps its fast path for stores into
- * array holes, which a read-only prototype elements kind disables process-wide.
- */
+// Properties must stay writable: a read-only prototype elements kind costs every store into an array hole its V8
+// fast path, process-wide (security/DESIGN.md).
 function sealIntrinsics() {
-	for (const intrinsic of LOCKED_INTRINSICS) {
+	for (const intrinsic of lockedIntrinsics()) {
 		Object.seal(intrinsic);
 		Object.seal((intrinsic as any).prototype);
 	}
@@ -63,7 +59,7 @@ function freezeIntrinsics() {
 	for (const name of ['get', 'set', 'has', 'delete', 'clear', 'forEach', 'entries', 'keys', 'values']) {
 		overridableProperty(Map.prototype, name);
 	}
-	for (const intrinsic of LOCKED_INTRINSICS) {
+	for (const intrinsic of lockedIntrinsics()) {
 		Object.freeze(intrinsic);
 		Object.freeze((intrinsic as any).prototype);
 	}

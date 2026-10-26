@@ -1,11 +1,8 @@
 /**
- * `applications.lockdown` as an application sees it: what a component may change on the shared intrinsics while it
- * loads, and what an attacker-controlled key can still add once the worker serves requests. The default config is
- * left unspecified, so the first suite covers whatever `static/defaultConfig.yaml` ships.
+ * The first suite leaves `applications.lockdown` unset, so it covers whatever `static/defaultConfig.yaml` ships.
  *
  * Run: npm run test:integration -- "integrationTests/components/intrinsics-lockdown.test.ts"
- */
-import { suite, test, before, after } from 'node:test';
+ */ import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -196,7 +193,6 @@ lockdownSuite('freeze-after-load', (probe) => {
 	deepStrictEqual(probe.afterLoad, {
 		objectPrototype: 'TypeError',
 		arrayPrototype: 'TypeError',
-		// freeze modes have never locked Function.prototype
 		functionPrototype: true,
 		reflectSet: false,
 	});
@@ -214,5 +210,7 @@ lockdownSuite('none', (probe) => {
 		reflectSet: true,
 	});
 	strictEqual(probe.visibleOnPlainObject, true);
+	strictEqual(probe.shadowedToString, true);
 	deepStrictEqual(probe.sealed, [false, false, false]);
+	deepStrictEqual(probe.frozen, [false, false, false]);
 });
