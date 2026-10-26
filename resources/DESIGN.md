@@ -784,11 +784,11 @@ table-scoped instead of widening to a database purge.
 
 `useLog` is get-or-create, so only a string log name may reach it ([harper#2778](https://github.com/HarperFast/harper/issues/2778)). A node id with no log reads where `put()` files that id's entries: an id with no node name (`isLocalOrigin`) reads `local`, and a named id whose log does not exist yet reads nothing. In `local`, `getSync` returns only an entry whose `nodeId` is the requested one, because `local` also holds every local write ([harper#3516](https://github.com/HarperFast/harper/issues/3516)). An id used while it had no name and later minted for one loses keyed access to its earlier entries in `local`; falling back to `local` after every named-log miss would add a second scan to every first delivery of an out-of-order write. Pinned by `auditLog.test.js` "a numeric log id with no log reads where put files it, without creating one".
 
-## Equal versions order by origin (`precedesExistingVersion`)
+## Equal versions order by origin, and the out-of-order walk never rewrites the head comparison (`precedesExistingVersion`, `Table._writeUpdate`)
 
 At an equal version, `precedesExistingVersion` returns 0 only for the same origin id, because callers read 0 as a re-delivery. Distinct ids are strictly ordered: by node name when both have one; a named origin ranks above one with no name; and two unnamed origins are ordered by local id. Ids are minted per database, so two nodes can order the same two unnamed origins differently. That still beats dropping one write (the old `undefined === undefined` tie) or keeping whichever arrived first (the old -1 both ways) ([harper#3516](https://github.com/HarperFast/harper/issues/3516)).
 
-Pinned by `equalVersionOriginOrder.test.js`.
+`precedesExisting` compares the write with the record's head. After the walk, three steps read it: the stale-put skip, the head slot in `additionalAuditRefs`, and `recordNodeId`. The walk orders each visited entry in a local `precedesAudited`. Only the head's own entry, in a same-origin tie, may resolve a 0 head comparison. Before this, a walk that reached an older entry at the write's own version from a lower-named origin turned -1 into +1. An older put then revalidated a newer invalidation, and an older patch stamped its own origin on the newer head ([harper#3521](https://github.com/HarperFast/harper/issues/3521)). Pinned by `equalVersionOriginOrder.test.js`.
 
 ## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
 
