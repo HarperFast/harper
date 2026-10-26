@@ -285,13 +285,16 @@ describe('networkAccess', () => {
 				await assert.rejects(as('203.0.113.9', body({ hdb_client_address: '10.0.0.1' })), { statusCode: 409 });
 			});
 
-			it('does not check when clearing the list', async () => {
-				await as('1.1.1.1', su('set_network_access', { scope: 'operations', allow: [] }));
+			it('does not check or warn when clearing the list', async () => {
+				const result = await as('1.1.1.1', su('set_network_access', { scope: 'operations', allow: [] }));
+				assert.strictEqual(result.warning, undefined);
 			});
 
-			it('warns when this node publishes no socket metadata', async () => {
-				const result = await as(undefined, body());
-				assert.match(result.warning, /tls\.unixDomainSockets/);
+			it('warns that peers through the proxy must be listed, alongside the no-metadata warning', async () => {
+				for (const result of [await as(undefined, body()), await as('203.0.113.9', body({ force: true }))]) {
+					assert.match(result.warning, /tls\.unixDomainSockets/);
+					assert.match(result.warning, /replication peers/);
+				}
 			});
 		});
 

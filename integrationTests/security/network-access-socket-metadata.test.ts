@@ -119,6 +119,7 @@ suite('Operations allowlist in UDS mirror metadata (#3358)', { skip: skipSuite }
 				{ cwd: home, env: { ...env, HOME: home, USERPROFILE: home }, timeout: 30_000 }
 			);
 			match(stdout, /10\.0\.0\.0\/8/);
+			match(stdout, /replication peers/);
 			deepStrictEqual(
 				(await sendOperation(ctx.harper, { operation: 'get_network_access', scope: 'operations' })).allow,
 				['10.0.0.0/8']
@@ -134,6 +135,7 @@ suite('Operations allowlist in UDS mirror metadata (#3358)', { skip: skipSuite }
 			force: true,
 		});
 		deepStrictEqual(result.allow, ['10.0.0.0/8', '2001:db8::/32', '192.0.2.7/32']);
+		match(result.warning, /replication peers/);
 
 		const expected = 'allowedSources:\n  - "10.0.0.0/8"\n  - "2001:db8::/32"\n  - "192.0.2.7/32"\n';
 		const mirrors = await waitFor(
@@ -151,8 +153,6 @@ suite('Operations allowlist in UDS mirror metadata (#3358)', { skip: skipSuite }
 		strictEqual(stored.updatedBy, ctx.harper.admin.username);
 	});
 
-	// Persistence only: the unrestricted window the writer's readiness gate closes is far shorter than any
-	// poll, so that gate is proven in unitTests/server/udsMirror.test.js.
 	test('a restarted node publishes the persisted list', async () => {
 		await killHarper(ctx);
 		await start();
