@@ -10125,7 +10125,7 @@ export function makeTable(options): TableResourceClass {
 		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
 		let pending = false;
 		const entries = keys.map((key) => {
-			if (key && key.key !== undefined) return key; // already an entry
+			if (key && key.key !== undefined) return key;
 			const entry = relatedTable.primaryStore.getEntry(key, options);
 			if (entry?.then) pending = true;
 			return entry;
@@ -10159,7 +10159,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		const resolver = propertyResolvers[attribute_name];
 		if (resolver?.loadEntries)
-			return getPathValue(record, [attribute_name], 0, propertyResolvers, entry, context, sort);
+			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
 		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
 	}
 	function relatedValue(resolver, loaded) {
@@ -10201,13 +10201,22 @@ export function makeTable(options): TableResourceClass {
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
+		// a relationship filter's maybeAsync variant returns a Promise when it reads a related record from storage
+		const matchers = filters?.some((filter) => filter.maybeAsync)
+			? filters.map((filter) => filter.maybeAsync ?? filter)
+			: undefined;
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
 			if (!record) return SKIP;
-			return applyFilters(record, entry, id, idFiltersApplied, 0);
+			if (matchers) return applyFilters(record, entry, id, idFiltersApplied, 0);
+			// apply the record-level filters
+			for (let i = 0; i < filtersLength; i++) {
+				if (idFiltersApplied?.includes(i)) continue; // already applied
+				if (!filters[i](record, entry)) return SKIP; // didn't match filters
+			}
+			if (id !== undefined) entry.key = id;
+			return entry;
 		}
-		// a relationship filter's maybeAsync variant returns a Promise when it reads a related record from storage
-		const matchers = filters?.map((filter) => filter.maybeAsync ?? filter);
 		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
 			for (let i = start; i < filtersLength; i++) {
 				if (applied?.includes(i)) continue; // already applied

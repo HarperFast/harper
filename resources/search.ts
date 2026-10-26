@@ -1433,7 +1433,8 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						addRelated,
 						scan
 					).then(() => {
-						joinedIterator = joined.keys()[Symbol.iterator]();
+						// a scan stopped by return() leaves partial mappings, which must not be yielded
+						joinedIterator = (scan.closed ? new Map() : joined).keys()[Symbol.iterator]();
 					});
 					return scanned.then(() => joinedIterator.next());
 				},
@@ -1504,10 +1505,6 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: { close
 		if (!done) iterator.return?.();
 	}
 }
-/**
- * Whether a record matches any (`any`) or all of the filters, through each filter's maybeAsync variant (see
- * filterByType), so the result is a Promise only once a filter has to read a related record from storage
- */
 function someRelatedMatch(entries, match, start: number) {
 	for (let i = start; i < entries.length; i++) {
 		const value = entries[i]?.value;
@@ -1518,6 +1515,10 @@ function someRelatedMatch(entries, match, start: number) {
 	}
 	return false;
 }
+/**
+ * Whether a record matches any (`any`) or all of the filters, through each filter's maybeAsync variant (see
+ * filterByType), so the result is a Promise only once a filter has to read a related record from storage
+ */
 function matchesFilters(filters, record, entry, any: boolean, start = 0) {
 	for (let i = start; i < filters.length; i++) {
 		const filter = filters[i];
@@ -1600,7 +1601,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						(id) => ids.add(id),
 						scan
 					).then(() => {
-						idIterator = ids[Symbol.iterator]();
+						idIterator = (scan.closed ? new Set() : ids)[Symbol.iterator]();
 					});
 				}
 				return scanned.then(nextJoined);
