@@ -1,6 +1,7 @@
 /**
  * A dependency whose package exports carry only an `import` condition loads under
- * `applications.moduleLoader: compartment`, on Node and on Bun, with and without SES lockdown.
+ * `applications.moduleLoader: compartment`, on Node and on Bun, with and without SES lockdown;
+ * a `*` subpath pattern resolves through its conditions in the package's key order.
  *
  * Run: npm run test:integration -- "integrationTests/components/compartment-pure-esm-dependency.test.ts"
  */
@@ -26,10 +27,11 @@ async function writeFixture(parentDirectory: string): Promise<string> {
 		join(appDirectory, 'resources.js'),
 		"import { Resource } from 'harper';\n" +
 			"import { VALUE } from 'pure-esm-probe';\n" +
+			"import { FEATURE } from 'pure-esm-probe/features/alpha';\n" +
 			'const frozenAtLoad = Object.isFrozen(Array.prototype);\n' +
 			'export class PureESMProbe extends Resource {\n' +
 			'\tstatic loadAsInstance = false;\n' +
-			'\tget() { return { value: VALUE, frozenAtLoad }; }\n' +
+			'\tget() { return { value: VALUE, feature: FEATURE, frozenAtLoad }; }\n' +
 			'}\n'
 	);
 	await writeFile(
@@ -38,10 +40,16 @@ async function writeFixture(parentDirectory: string): Promise<string> {
 			name: 'pure-esm-probe',
 			version: '1.0.0',
 			type: 'module',
-			exports: { '.': { import: './index.js' } },
+			exports: {
+				'.': { import: './index.js' },
+				'./features/*': { node: { import: './features/*.node.js' }, import: './features/*.js' },
+			},
 		})
 	);
 	await writeFile(join(dependencyDirectory, 'index.js'), "export const VALUE = 'loaded-in-compartment';\n");
+	await mkdir(join(dependencyDirectory, 'features'));
+	await writeFile(join(dependencyDirectory, 'features', 'alpha.node.js'), "export const FEATURE = 'node-alpha';\n");
+	await writeFile(join(dependencyDirectory, 'features', 'alpha.js'), "export const FEATURE = 'generic-alpha';\n");
 	return appDirectory;
 }
 
@@ -80,8 +88,9 @@ for (const lockdown of ['freeze-after-load', 'ses'] as const) {
 				}
 				status = response.status;
 				if (status === 200) {
-					const body = (await response.json()) as { value: string; frozenAtLoad: boolean };
+					const body = (await response.json()) as { value: string; feature: string; frozenAtLoad: boolean };
 					strictEqual(body.value, 'loaded-in-compartment');
+					strictEqual(body.feature, 'node-alpha');
 					strictEqual(body.frozenAtLoad, lockdown === 'ses');
 					return;
 				}
