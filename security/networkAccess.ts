@@ -210,17 +210,24 @@ export async function setNetworkAccess(req: any) {
 		return { message: `Removed the '${scope}' network access restriction`, scope, allow };
 	}
 	await table.put(scope, { scope, allow, updatedBy: req.hdb_user?.username ?? null, updatedAt: Date.now() });
-	const result: Record<string, unknown> = { message: `Set the '${scope}' network access allowlist`, scope, allow };
+	// The list replicates to nodes whose replication topology this node cannot see, so the peer advisory is
+	// unconditional.
+	const warnings = [
+		'If replication peers or Studio reach the operations API through the proxy (replication uses this port ' +
+			'unless it has its own), their source addresses must be in this list: an excluded peer cannot reconnect, ' +
+			'and a later correction may not reach it, needing the local CLI on that node.',
+	];
 	// mirrors exist only for secure listeners
 	if (
 		!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) ||
 		!env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)
 	) {
-		result.warning =
+		warnings.unshift(
 			'This node publishes no operations API socket metadata (it needs tls.unixDomainSockets and ' +
-			'operationsApi.network.securePort), so nothing here enforces the list; it is stored and replicated to nodes that do.';
+				'operationsApi.network.securePort), so nothing here enforces the list; it is stored and replicated to nodes that do.'
+		);
 	}
-	return result;
+	return { message: `Set the '${scope}' network access allowlist`, scope, allow, warning: warnings.join(' ') };
 }
 
 function viewOf(scope: string, row: any) {
