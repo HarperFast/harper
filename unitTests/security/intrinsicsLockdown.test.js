@@ -99,7 +99,6 @@ const FROZEN = {
 	pollutedVisible: false,
 	shadow: each(SHADOWS, (shadow) => (shadow === 'array.push' || shadow === 'date.toJSON' ? 'TypeError' : true)),
 	unsealed: [],
-	originalOfReplacedSealed: true,
 	functionSealed: true,
 	frozen: { 'Object.prototype': true, 'Array.prototype': true, 'Function.prototype': false },
 	descriptors: {

@@ -268,7 +268,10 @@ decode). Accessors block V8 from inlining the built-ins. Sealing keeps propertie
 shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
 accessors.
 
-The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible.
+The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible. When a component
+replaces one of these globals while it loads, sealing locks both the replacement and the realm's original, which
+literals and async functions keep using. Freezing locks only the current global, because freezing the original
+would skip its overridable accessors.
 
 `lockDownIntrinsics` matches mode names exactly: any other value, including a typo or a non-string, freezes
 eagerly (fails closed).

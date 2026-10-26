@@ -23,13 +23,8 @@ const currentIntrinsics = () => [
 	WeakRef,
 	FinalizationRegistry,
 ];
-// A component may replace one of these globals while it loads. Lock the replacement, and the realm's original too:
-// literals and async functions keep using it.
+// A component may replace one of these globals while it loads; literals and async functions keep using the original.
 const realmIntrinsics = currentIntrinsics();
-function lockedIntrinsics() {
-	const current = currentIntrinsics();
-	return current.concat(realmIntrinsics.filter((intrinsic, index) => intrinsic !== current[index]));
-}
 
 /** An unrecognized mode freezes eagerly: config values are not validated, so a typo fails closed. */
 export function lockDownIntrinsics(mode: Exclude<Lockdown, 'none' | 'ses'>, whenLoaded: Promise<unknown>): void {
@@ -47,7 +42,7 @@ function preventFunctionConstructor() {
 // Properties must stay writable: a read-only prototype elements kind costs every store into an array hole its V8
 // fast path, process-wide (security/DESIGN.md).
 function sealIntrinsics() {
-	for (const intrinsic of lockedIntrinsics()) {
+	for (const intrinsic of currentIntrinsics().concat(realmIntrinsics)) {
 		Object.seal(intrinsic);
 		Object.seal((intrinsic as any).prototype);
 	}
@@ -65,7 +60,8 @@ function freezeIntrinsics() {
 	for (const name of ['get', 'set', 'has', 'delete', 'clear', 'forEach', 'entries', 'keys', 'values']) {
 		overridableProperty(Map.prototype, name);
 	}
-	for (const intrinsic of lockedIntrinsics()) {
+	// current globals only: freezing a replaced original would skip the overridable accessors above
+	for (const intrinsic of currentIntrinsics()) {
 		Object.freeze(intrinsic);
 		Object.freeze((intrinsic as any).prototype);
 	}
