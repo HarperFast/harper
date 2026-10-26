@@ -382,7 +382,6 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 						} else {
 							// Hash matches - content hasn't changed, skip update
 							skippedRecords++;
-							// first load since an earlier version stored this record's hash
 							if (storedHash === undefined) await storeHash(trackingTable, hashKey, newRecordHash);
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
