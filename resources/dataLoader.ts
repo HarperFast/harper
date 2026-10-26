@@ -114,9 +114,10 @@ function getHashKey(database: string | undefined, tableName: string, recordId: a
 /**
  * Hashes stored by earlier versions, which keyed `table:id` (`database:table:id` when the file named a
  * database) by the record's `id` field whatever the primary key, so a custom-key record without one shared
- * `table:undefined` with its whole table. Such a key names the record's table only when no name contains
- * `:` and, for a named database, when the default database has no same-named table that those versions
- * would have written the file's records to instead.
+ * `table:undefined` with its whole table. Their hashes cover the primary key, so a matching one belongs to
+ * this record unless another table wrote the same key: refused when a name contains `:`, when a default-database
+ * table is named like the key's prefix, and, for a named database, when the default database has a same-named
+ * table that those versions would have written the file's records to instead.
  */
 async function getLegacyHashes(
 	trackingTable: any,
@@ -137,22 +138,23 @@ async function getLegacyHashes(
 	)
 		.filter((prefix) => prefix === tableName || !tablesRef?.[prefix])
 		.map((prefix) => prefix + ':');
-	// Every id but the shared slot's is one the file's `id` field holds, so the content check covers it. The stored
-	// record keeps the `id` an earlier version loaded if the file has changed it since
+	// The `id` an earlier version keyed by is the one it stored, which is in the hashed fields when the file has an
+	// `id` field too
 	const ids =
 		primaryKey === 'id'
 			? [newRecord.id]
-			: newRecord.id === undefined
-				? [undefined]
-				: [...new Set([newRecord.id, existingRecord.id, undefined])];
+			: newRecord.id !== undefined && existingRecord.id !== undefined
+				? [existingRecord.id, undefined]
+				: [undefined];
 	const hashes: string[] = [];
 	for (const prefix of prefixes) {
 		for (const id of ids) {
 			let hashRecord;
 			try {
 				hashRecord = await trackingTable.get(prefix + id);
-			} catch {
+			} catch (error) {
 				// an unreadable entry is no evidence (a key over the size limit was never writable either)
+				dataLoaderLogger.debug?.(`Skipping unreadable earlier hash for ${tableName}: ${error.message}`);
 				continue;
 			}
 			if (hashRecord) hashes.push(hashRecord.hash);

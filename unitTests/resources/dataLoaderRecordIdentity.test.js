@@ -82,6 +82,10 @@ describe('Data loader record identity', function () {
 			sku: String @primaryKey
 			value: Int
 		}
+		type DlIdLooseId @table {
+			sku: String @primaryKey
+			value: Int
+		}
 		type DlIdShadow @table {
 			sku: Int @primaryKey
 			id: Int
@@ -306,6 +310,15 @@ describe('Data loader record identity', function () {
 			assert.equal(record.id, 21);
 			assert.equal(record.value, 2);
 			assert.equal(record.userNote, 'keep');
+		});
+
+		it("does not borrow the key another table wrote through the file's id field", async function () {
+			// `DlIdLooseId:old:1` is what a default-database table `DlIdLooseId:old` wrote for its record 1
+			await tables.DlIdLooseId.put({ sku: 'c', id: 1, value: 1 });
+			await hashTable.put({ id: 'DlIdLooseId:old:1', hash: legacyHash({ sku: 'c', id: 1, value: 1 }) });
+
+			await load({ table: 'DlIdLooseId', records: [{ sku: 'c', id: 'old:1', value: 2 }] });
+			assert.equal((await tables.DlIdLooseId.get('c')).value, 1);
 		});
 
 		it("does not confuse a record's primary key with another record's id field", async function () {
