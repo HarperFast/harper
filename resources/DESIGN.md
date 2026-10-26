@@ -865,7 +865,7 @@ comparator never reads the store: sort keys are resolved once per row before the
 between load and compare cannot turn every comparison into a store read (harper#2675). The ordering
 owns its working set; the cache cannot know about it.
 
-`transformToOrderedSelect` consumes SKIP before pagination or counts. Stubs still incur sort work before exclusion; `getAttributeValue` treats missing record fields as absent keys while preserving entry-metadata resolvers. Closing the iterator stops further materialization and delivery, including a pending source load resolving to either SKIP or a record.
+`transformToOrderedSelect` consumes SKIP before pagination or counts. Top-level `Table.search` enables its local-only invalidation filter before grouping or sort-key resolution, so computed resolvers never receive these incomplete entries and an interleaved stub cannot split an indexed group. Nested callers leave that filter disabled. The materializer still checks flags after lazy primary loading. `getAttributeValue` treats missing record fields as absent keys while preserving entry-metadata resolvers for ordinary reads. Closing the iterator stops further materialization and delivery, including a pending source load resolving to either SKIP or a record; source rejections retain their existing behavior.
 
 ## Each hop of a multi-store commit cascade starts with a full idle window (`DatabaseTransaction`)
 

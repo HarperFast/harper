@@ -274,6 +274,62 @@ describe('Reads of residency stubs', function () {
 		assert.equal(loads, 1);
 	});
 
+	for (const partial of [false, true]) {
+		it(`skips ${partial ? 'partial' : 'null'} invalidations before computed sort resolution`, async () => {
+			const Rows = table({
+				database: 'test',
+				table: `InvalidatedComputedSort${partial}`,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					...(partial ? [{ name: 'name', indexed: true }] : []),
+					{ name: 'body' },
+					{ name: 'bodyLength', computed: { from: 'body' } },
+				],
+			});
+			const resolved = [];
+			Rows.setComputedAttribute('bodyLength', (body) => {
+				resolved.push(body);
+				return body.length;
+			});
+			let loads = 0;
+			Rows.sourcedFrom({
+				get() {
+					loads++;
+					throw new Error('local-only read loaded its source');
+				},
+			});
+			await Rows.put('b', { id: 'b', name: 'group', body: 'old' });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Rows.getResource('b', context, { ensureLoaded: false });
+				resource._writeInvalidate('b', partial ? { id: 'b', name: 'group' } : undefined);
+			});
+			assert.ok(Rows.primaryStore.getEntry('b').metadataFlags & INVALIDATED);
+			const snapshot = () => {
+				const { value, metadataFlags, version } = Rows.primaryStore.getEntry('b');
+				return { value, metadataFlags, version };
+			};
+			const before = snapshot();
+			await Rows.put('a', { id: 'a', name: 'group', body: 'zzz' });
+			await Rows.put('c', { id: 'c', name: 'group', body: 'a' });
+			resolved.length = 0;
+			const sort = { attribute: 'bodyLength' };
+			const target = { allowFullScan: true, conditions: [], sort: partial ? { attribute: 'name', next: sort } : sort };
+			assert.ok(Rows.search({ ...target, explain: true }).postOrdering);
+			if (partial) assert.ok(Rows.search({ ...target, explain: true }).postOrdering.dbOrderedAttribute);
+			const rows = [];
+			for await (const row of Rows.search(target, { replicateFrom: false })) rows.push(row);
+			assert.deepStrictEqual(
+				rows.map((row) => row.id),
+				['c', 'a']
+			);
+			assert.deepStrictEqual(resolved, ['zzz', 'a']);
+			assert.deepStrictEqual(snapshot(), before);
+			assert.equal(loads, 0);
+		});
+	}
+
 	it('preserves metadata sort keys for null cache invalidations', async () => {
 		const Rows = table({
 			database: 'test',

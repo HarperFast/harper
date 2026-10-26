@@ -1020,7 +1020,8 @@ interface TableResourceClass {
 		sort: Sort,
 		context: Context,
 		readTxn: any,
-		transformToRecord: Function
+		transformToRecord: Function,
+		canSkip?: boolean
 	): any;
 	/**
 	 * This is responsible for select()ing the attributes/properties from returned entries
@@ -6657,7 +6658,8 @@ export function makeTable(options): TableResourceClass {
 					postOrdering,
 					context,
 					readTxn,
-					transformToRecord
+					transformToRecord,
+					true
 				);
 				const offset = target.offset || 0;
 				const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
@@ -6804,10 +6806,12 @@ export function makeTable(options): TableResourceClass {
 			sort: Sort,
 			context: Context,
 			readTxn: any,
-			transformToRecord: Function
+			transformToRecord: Function,
+			canSkip = false
 		) {
 			let results = new ExtendedIterable();
 			if (sort) {
+				const skipInvalidated = canSkip && context?.replicateFrom === false;
 				// there might be some situations where we don't need to transform to entries for sorting, not sure
 				entries = transformToEntries(entries, select, context, readTxn, null);
 				// Sort keys are resolved as entries are collected, so comparison never dereferences a record: a
@@ -6890,6 +6894,7 @@ export function makeTable(options): TableResourceClass {
 										let entry = iteration.value;
 										if (entry?.then) entry = await entry;
 										if (closed) return { done: true, value: undefined };
+										if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
 										// if the index has already provided the first order of sorting, we only need to sort
 										// within each grouping
 										if (dbOrderedAttribute) {
