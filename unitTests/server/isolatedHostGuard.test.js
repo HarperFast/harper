@@ -42,14 +42,18 @@ describe('shared workers and an isolated application host (harper#3052)', () => 
 			'guard-pr-1': { isolated: true, host: 'PR-1.app.example.com.' },
 			'guard-pr-2': { isolated: true, host: 'pr-2.app.example.com' },
 			'guard-ipv6': { isolated: true, host: '2001:db8::1' },
+			'guard-bracketed': { isolated: true, host: '[2001:DB8::2]' },
 			'guard-shared': { host: 'shared.example.com' },
 			'guard-hostless': { isolated: true },
 		};
 		const hosts = isolatedApplicationHosts(config);
-		assert.deepStrictEqual([...hosts], ['pr-1.app.example.com', 'pr-2.app.example.com', '2001:db8::1']);
-		assert.strictEqual(
-			isolatedApplicationUnavailable(request('[2001:db8::1]:9926'), false, undefined, hosts)?.status,
-			503
-		);
+		assert.deepStrictEqual([...hosts], ['pr-1.app.example.com', 'pr-2.app.example.com', '2001:db8::1', '2001:db8::2']);
+		for (const authority of ['[2001:db8::1]:9926', '[2001:db8::2]:9926', '[2001:db8::2]']) {
+			assert.strictEqual(
+				isolatedApplicationUnavailable(request(authority), false, undefined, hosts)?.status,
+				503,
+				authority
+			);
+		}
 	});
 });

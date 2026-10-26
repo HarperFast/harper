@@ -3,23 +3,36 @@ import { getConfigObj } from '../config/configUtils.ts';
 import { existingSharedRootConfigWatcher } from '../config/RootConfigWatcher.ts';
 import { isolatedApplicationNames, thisThreadsIsolatedApplication } from './threads/isolatedApplications.ts';
 import { hostnameFromHeader, requestAuthority } from './middlewareChain.ts';
+import { normalizeMountHost } from '../components/scopeMount.ts';
 
 const RETRY_AFTER_SECONDS = '5';
 
 let isolatedHosts: Set<string> | undefined;
 
 /**
- * The hosts the root config gives isolated applications, lowercased as the router compares them. From the config
- * alone, not the components on disk: a package installed after a worker's first request changes no config to signal
- * it. A configured host carries no port, and may be a bare IPv6 literal, so it is not parsed as a Host header.
+ * The hosts the root config gives isolated applications, in the form the router compares: normalized as the
+ * application's own mount is, so a bracketed IPv6 literal matches the unbracketed host a request carries. From the
+ * config alone, not the components on disk: a package installed after a worker's first request changes no config to
+ * signal it.
  */
 export function isolatedApplicationHosts(config: Record<string, any> | undefined = getConfigObj()): Set<string> {
 	const hosts = new Set<string>();
 	for (const application of isolatedApplicationNames(config)) {
 		const host = config?.[application]?.host;
-		if (typeof host === 'string' && host) hosts.add(host.toLowerCase().replace(/\.$/, ''));
+		if (typeof host === 'string' && host) hosts.add(guardedHost(host));
 	}
 	return hosts;
+}
+
+/** A host the mount grammar refuses still reserves its lowercased form: refusing to guard it would serve the pool. */
+function guardedHost(host: string): string {
+	let normalized: string;
+	try {
+		normalized = normalizeMountHost(host) ?? host.toLowerCase();
+	} catch {
+		normalized = host.toLowerCase();
+	}
+	return normalized.replace(/\.$/, '');
 }
 
 /**
