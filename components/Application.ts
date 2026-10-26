@@ -5390,7 +5390,6 @@ async function recertifyLiveRelease(
 			409
 		);
 	}
-	// Armed again, a refused isolated release is started by a reconcile that must have room for it.
 	await admitIsolation?.();
 	const predecessor = { previous: live.record.previous, wasAbsent: live.record.wasAbsent };
 	if (await beginCertification(application, deploymentId, certification, predecessor)) await certification.commit();

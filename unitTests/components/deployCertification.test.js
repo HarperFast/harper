@@ -304,7 +304,7 @@ describe('activating a release for certification', () => {
 			['arm', 'commit']
 		);
 
-		// A retry of a release already being certified joins it; there is nothing new to admit.
+		// already being certified: nothing new to admit
 		await activate(recordingCertification(root), async (descriptor) => admissions.push(descriptor));
 		assert.equal(admissions.length, 2);
 	});

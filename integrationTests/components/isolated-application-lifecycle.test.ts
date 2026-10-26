@@ -82,7 +82,6 @@ async function writeDropper(dir: string) {
 	);
 }
 
-/** The helpers a suite drives one Harper instance with; `prepare` gives it a fresh data root and package directory. */
 function lifecycleHarness(ctx: ContextWithHarper) {
 	let packageDir: string;
 

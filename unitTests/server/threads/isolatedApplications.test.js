@@ -122,10 +122,7 @@ describe('isolated applications (harper#642 tier 2)', () => {
 		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 		const refused = (reason) => new Error(reason);
 		const isolated = (...names) => Object.fromEntries(names.map((name) => [name, { package: 'x', isolated: true }]));
-		/**
-		 * Runs `check` where every dedicated worker would be reachable (a secure port, UDS mirrors, a socket directory
-		 * short enough for any name) and `threads.maxIsolated` is `max`. Synchronous, so nothing else sees the settings.
-		 */
+		// synchronous, so no other code sees these settings
 		function reachable(check, max = 1) {
 			const settings = [
 				[CONFIG_PARAMS.HTTP_SECUREPORT, 9927],
@@ -225,12 +222,19 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			assert.deepStrictEqual(flipping.flipped, { package: 'x' }, 'the config it was given is left as it was');
 		});
 
-		it('counts a worker still running for an application no longer isolated, unless its release failed closed', () => {
-			assert.match(String(refusal('new', ['stale'], new Map(), {}, [])), /threads\.maxIsolated/);
+		it('counts every worker still running unless a decided rejection withdrew it', () => {
+			const { RejectedReleaseError } = require('#src/components/releaseCertification');
+			const rejected = new RejectedReleaseError('running', 'd1', 'threw at load', true);
+			const unreadable = new RejectedReleaseError('running', 'd1', 'its certification record cannot be read');
+			assert.match(String(refusal('new', ['stale'], new Map(), {}, [])), /threads\.maxIsolated/, 'no longer isolated');
 			assert.strictEqual(
-				refusal('new', ['stale'], new Map([['stale', refused('refused')]]), {}, []),
-				undefined,
-				'its refusal withdraws its worker'
+				refusal('new', ['running'], new Map([['running', rejected]]), isolated('running'), ['running']),
+				undefined
+			);
+			assert.match(
+				String(refusal('new', ['running'], new Map([['running', unreadable]]), isolated('running'), ['running'])),
+				/threads\.maxIsolated/,
+				'a record that cannot be read refuses the release but stops no worker'
 			);
 		});
 

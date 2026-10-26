@@ -189,6 +189,11 @@ describe('release certification records', () => {
 		assert.match(failClosed.get('rejected').message, /threw at load/);
 		assert.match(failClosed.get('unreadable').message, /cannot be read/);
 		assert.match(failClosed.get('undecided').message, /never decided/);
+		assert.deepEqual(
+			[...failClosed].filter(([, refusal]) => refusal.decided).map(([component]) => component),
+			['rejected'],
+			'only a decided rejection is one whose decision withdrew a worker'
+		);
 	});
 
 	it('fails closed a refused live release whose owner file cannot be read', async () => {

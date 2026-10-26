@@ -11,7 +11,7 @@
  */
 import { isMainThread, workerData } from 'node:worker_threads';
 import { failedClosedInMemory, getWorkerIndex, processIncarnation } from './manageThreads.ts';
-import { failClosedReleases, liveDeploymentId } from '../../components/releaseCertification.ts';
+import { failClosedReleases, liveDeploymentId, RejectedReleaseError } from '../../components/releaseCertification.ts';
 import { getConfigObj, getConfigPath } from '../../config/configUtils.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -115,7 +115,8 @@ export function admittedIsolatedApplications(
  * Why deploying `candidate` isolated would leave it without a dedicated worker. It is placed where the reconcile after
  * the deploy finds it: at its own root-config entry, or where a new one enumerates. Its own refused release does not
  * count, since the deploy replaces it. A reconcile scoped to it stops no other worker, so those still running count
- * against `threads.maxIsolated` too, except failed-closed ones, whose refusal already withdrew or is withdrawing them.
+ * against `threads.maxIsolated` too, except one whose canary's rejection is on record: that decision withdraws its
+ * worker. Any other refusal, such as a record that cannot be read, stops no running worker, so it still counts.
  */
 export function isolatedApplicationAdmissionRefusal(
 	candidate: string,
@@ -133,7 +134,7 @@ export function isolatedApplicationAdmissionRefusal(
 		admittedIsolatedApplications(running, othersFailedClosed, names).refused.get(candidate) ??
 		isolatedApplicationCapacityRefusal(
 			candidate,
-			running.filter((name) => !othersFailedClosed.has(name))
+			running.filter((name) => !(othersFailedClosed.get(name) as RejectedReleaseError | undefined)?.decided)
 		)
 	);
 }

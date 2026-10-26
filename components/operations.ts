@@ -601,8 +601,7 @@ async function deployComponent(req?: any) {
 		try {
 			failedClosed = await failedClosedApplications();
 		} catch (error) {
-			throw handleHDBError(
-				error,
+			throw new ServerError(
 				`Cannot deploy '${req.project}' as an isolated application: which releases may load could not be read: ${error.message}`,
 				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 			);
