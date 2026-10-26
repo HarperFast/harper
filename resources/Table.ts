@@ -257,7 +257,7 @@ import {
 	entryMap,
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
-import { recordAction, recordActionBinary } from './analytics/write.ts';
+import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
 import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
@@ -1963,6 +1963,7 @@ export function makeTable(options): TableResourceClass {
 		return { key, descriptor };
 	}
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
+	const recordDbRead = actionRecorder('db-read', tableName, null);
 	function conditionForWrite(context, id: Id) {
 		const condition = context?.[WRITE_CONDITION];
 		const matches =
@@ -11155,8 +11156,8 @@ export function makeTable(options): TableResourceClass {
 		// skip recording reads for most system tables except hdb_analytics
 		// we want to track analytics reads in licensing, etc.
 		if (databaseName !== 'system' && (options.type === 'read' || !options.type)) {
-			harperLogger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
-			recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+			logger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
+			recordDbRead(entry?.size ?? 1);
 		}
 
 		// we need to freeze entry records to ensure the integrity of the cache;
