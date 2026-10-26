@@ -894,7 +894,8 @@ are refcounted and still close one by one (shared-store cases in `databaseAliasI
 counts as closed: lmdb (through 3.5.8) resolves `close()` early while a read is in flight on an environment that
 never wrote, so a drop unlinked an open `.mdb`. `openLmdb` gives each root one close completion, resolved by lmdb's
 close callback; a close finding `closing` awaits it, and a drop removes the file after it even when an earlier close
-finished. Remove the wrapper once lmdb returns its deferred close (`lmdbCloseCompletion.test.js`).
+finished. A close attempt that rejects is not memoized: the next close (a retried drop) runs lmdb's close again.
+Remove the wrapper once lmdb returns its deferred close (`lmdbCloseCompletion.test.js`).
 
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 

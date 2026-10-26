@@ -159,13 +159,19 @@ function openLmdb(options: Parameters<typeof import('lmdb').open>[0]): RootDatab
 	const close = environment.close as (callback: () => void) => Promise<void> | undefined;
 	let closed: Promise<void> | undefined;
 	environment.close = function () {
-		return (closed ??= new Promise<void>((resolve, reject) => {
+		if (closed) return closed;
+		const attempt = (closed = new Promise<void>((resolve, reject) => {
 			try {
 				close.call(this, resolve)?.catch(reject);
 			} catch (error) {
 				reject(error);
 			}
 		}));
+		// a failed attempt must not be memoized, so a retried drop closes the environment again
+		attempt.catch(() => {
+			if (closed === attempt) closed = undefined;
+		});
+		return attempt;
 	};
 	return environment;
 }
