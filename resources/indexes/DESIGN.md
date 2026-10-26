@@ -182,10 +182,10 @@ records an index cannot supply: one lacking the attribute, a null one when the i
 and a `0`, because a number written as `-0` is indexed under an encoding that sorts past every number
 and decodes to a wrong primary key (ordered-binary; index-led queries miss that row too). A condition
 admitting any of them stays on the predicate path; that declines `ge null` and any range covering 0.
-`lt`/`le` reject null and omitted values and start just above the null block, as `searchByIndex` does. A
-BigInt shares its index key with the equal Number, so an equality or `lt`/`le` set is exact only on a
-declared numeric type; elsewhere it gates the predicate. Normalizing `-0` in the encoder or index writer
-would let zero-covering ranges plan again.
+`lt`/`le` reject null and omitted values and start just above the null block, as `searchByIndex` does, and
+plan only on a declared numeric type: elsewhere they admit nested-array elements the index never holds. A
+BigInt shares its index key with the equal Number, so an untyped equality set gates the predicate.
+Normalizing `-0` in the encoder or index writer would let zero-covering ranges plan again.
 
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
