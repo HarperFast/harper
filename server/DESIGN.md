@@ -311,22 +311,16 @@ have received, and can never reach an application catch-all. Only a URL that rea
 The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
 header, no credential rename, and no pre-auth stripping shim.
 
-**Every 401 Harper renders for an authentication decision is challenged; one an application raised
-under a deferred credential is not re-decorated.** `credentialRejectionResponse()` builds both the in-place and the settled 401 with a
-negotiated `Content-Type` and, on the application port, `WWW-Authenticate` from `authenticationChallenge()`:
-`Bearer realm="Harper"` for a Bearer credential (`error="invalid_token"` only when the token itself was
-rejected, not when verifying it faulted), `Basic realm="Harper"` otherwise. A Bearer credential never gets
-a Basic challenge because browsers raise a credential dialog for Basic, even on `fetch`. The operations API
-gets no challenge. `security/auth.ts` post-processes only a 401 from `nextHandler` when nothing was
-deferred — a challenge by the presented scheme, or a 302 at `resources.loginPath` for a browser. It skips a settled 401
-(already challenged; a redirect would loop, since `static.ts` settles the login page itself) and a 401 an
-application catch-all raised for its own scheme under a deferred credential (a WooCommerce or Bearer
-challenge), which is that application's to make. The legacy Fastify server (`fastifyRoutes.ts`) challenges any 401 its error handler
-renders unless the reply already set one: a settled rejection's error carries the deferred strategy's
-challenge (an mTLS rejection never evaluated a Bearer header beside it), and the `authorize()` Bearer
-branch marks a token it rejected (`bearerTokenRejection()`); anything else is challenged by the
-presented `Authorization` scheme without `invalid_token`. The #1565 identity floor
-still applies either way — it is stamped in `applyResponseHeaders`, not in the challenge.
+**Every authentication 401 Harper renders is challenged; an application's own 401 under a deferred
+credential is not re-decorated.** `credentialRejectionResponse()` builds the in-place and settled 401s:
+a negotiated `Content-Type` and, off the operations API, `authenticationChallenge()` — `Bearer realm="Harper"`
+for a Bearer credential (browsers raise a dialog for Basic), with `error="invalid_token"` only when the token
+itself was rejected, else `Basic realm="Harper"`. `security/auth.ts` challenges or login-redirects a downstream
+401 only when nothing was deferred: a settled 401 is already challenged and a redirect would loop (`static.ts`
+settles the login page), and an application catch-all's 401 is its own. The legacy Fastify error handler
+(`fastifyRoutes.ts`) adds a missing challenge from the one the error carries (a settled rejection's deferred
+strategy, or a token `bearerTokenRejection()` marked), else from the presented scheme without `invalid_token`.
+The #1565 identity floor is stamped in `applyResponseHeaders` either way.
 
 **The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a
 deferred credential is credential-dependent (#1565), so `authentication` stamps
