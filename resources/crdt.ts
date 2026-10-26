@@ -131,18 +131,22 @@ function holdsField(record: any, key: string) {
 	return false;
 }
 
-// Every key goes to `unknowns`: a plain set has no inverse, and an add's inverse is only exact over a
-// numeric prior (one that established the field from absent/null reverses to 0). The reversed value
-// stays as the best effort for when older history cannot settle the key.
-export function applyReverse(record, update, unknowns: Set<string>) {
+// A plain set has no inverse, so its key is left to older history (`unknowns`). An integer add is
+// judged once every newer patch is reversed (`reversedAdds`); a fractional one can leave a float
+// residue, so its key is unknown outright.
+export function applyReverse(record, update, unknowns: Set<string>, reversedAdds: Set<string>) {
 	for (const key in update) {
 		const value = update[key];
 		if (value?.__op__) {
 			const reverse = operations[value.__op__]?.reverse;
 			if (reverse) reverse(record, key, { value: value.value });
 			else throw new Error(`Unsupported operation ${value.__op__}`);
+			if (value.__op__ === 'add' && (typeof value.value === 'bigint' || Number.isInteger(value.value)))
+				reversedAdds.add(key);
+			else unknowns.add(key);
+		} else {
+			unknowns.add(key);
 		}
-		unknowns.add(key);
 	}
 }
 
@@ -233,8 +237,13 @@ function reconstructForward(
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const auditEntry = entries[i];
 		const value = auditEntry.getValue(store);
-		// an entry whose body is unavailable (minted without one, or undecodable) leaves its fields unknown
-		if (value == null && partial) partial.truncated = truncated = true;
+		if (value == null && partial) {
+			// an entry with no readable body (minted without one, or undecodable) hides what it wrote, so
+			// nothing before it can settle a key either: restart as after a pruned link
+			partial.truncated = truncated = true;
+			record = {};
+			continue;
+		}
 		// Copy the base put: applyForward mutates `record`, and getValue may return a cached
 		// object shared with the audit entry.
 		if (auditEntry.type === 'put') record = { ...value };
@@ -308,6 +317,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	let auditNodeId = initialPosition.nodeId;
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
+	const reversedAdds = new Set<string>();
 	let replaced = false;
 	while (auditTime > timestamp) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
@@ -318,7 +328,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				replaced = true;
 				break;
 			case 'patch':
-				if (!replaced) applyReverse(record, auditEntry.getValue(store), unknowns);
+				if (!replaced) applyReverse(record, auditEntry.getValue(store), unknowns, reversedAdds);
 				break;
 		}
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
@@ -345,10 +355,15 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (boundaryEntry?.type === 'delete') return null;
 	}
-	// The keys the reversed patches wrote are "unknown" (see applyReverse): their value at `timestamp`
-	// comes from older history, reconstructed forward from the nearest base so CRDT ops accumulate
-	// correctly. A complete reconstruction is authoritative, so a key it lacks did not exist then.
-	// Over incomplete (pruned) history, a key it cannot settle keeps its best-effort reversed value.
+	// An add that established its field from absent or null reverses to 0, so only a nonzero integer
+	// result shows the add folded into a numeric value (a numeric string or boolean comes back as its
+	// number). Trusting that spares a counter the walk back to its base below.
+	for (const key of reversedAdds) {
+		const value = record[key];
+		if (!(typeof value === 'bigint' ? value !== 0n : Number.isSafeInteger(value) && value !== 0)) unknowns.add(key);
+	}
+	// Unknown keys take their value at `timestamp` from a forward rebuild, so CRDT ops accumulate
+	// correctly; a key a complete rebuild lacks did not exist then.
 	if (unknowns.size > 0 && auditTime > 0) {
 		const partial = { truncated: false };
 		const priorRecord = reconstructForward(

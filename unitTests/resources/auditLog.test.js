@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, tables } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
 const { open } = require('lmdb');
 const {
 	setAuditRetention,
@@ -1054,6 +1055,22 @@ describe('Audit log', () => {
 			assert.strictEqual(afterPut[1].value.id, history[1].value.id);
 		});
 
+		it('keeps the fields a random-access struct record held then', async () => {
+			await loadGQLSchema(`type AuditedStructHistory @table(randomAccessFields: true, audit: true) {
+				id: ID @primaryKey
+				name: String
+				count: Int
+				extra: String
+			}`);
+			const StructTable = tables.AuditedStructHistory;
+			assert.strictEqual(StructTable.primaryStore.encoder.randomAccessStructure, true);
+			await StructTable.put('s', { name: 'v1', count: 1 });
+			await StructTable.patch('s', { name: 'v2' });
+			await StructTable.patch('s', { extra: 'later', count: 7 });
+			const history = await StructTable.getHistoryOfRecord('s');
+			assert.deepStrictEqual({ ...history[1].value }, { id: 's', name: 'v2', count: 1 });
+		});
+
 		it('restores the null a later add established its counter from', async () => {
 			const id = 'null-before-later-add';
 			await AuditedTable.put(id, { name: 'v1', count: null });
@@ -1069,7 +1086,7 @@ describe('Audit log', () => {
 			const id = 'pruned-before-later-add';
 			await AuditedTable.put(id, { name: 'v1', total: 10, count: 3 });
 			await AuditedTable.patch(id, { name: 'v2', count: null });
-			await AuditedTable.patch(id, { total: add(5), count: add(4) });
+			await AuditedTable.patch(id, { total: add(2.5), count: add(4) });
 			const auditStore = AuditedTable.primaryStore.rootStore.auditStore;
 			let baseKey;
 			for (const entry of auditStore.getRange({ start: 1 })) {

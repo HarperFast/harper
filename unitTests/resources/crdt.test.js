@@ -539,20 +539,56 @@ describe('crdt getRecordAtTime', () => {
 
 		it('keeps the reversed value of a key the surviving history cannot settle when the base was pruned', () => {
 			const store = makeStore([
-				// version 10 (put { id: 'G', v: 1, total: 10, count: 3 }) was pruned by audit retention
+				// version 10 (put { id: 'G', v: 1, score: 1, count: 3 }) was pruned by audit retention
 				{ version: 20, type: 'patch', value: { v: 2, count: null }, previousVersion: 10 },
-				{ version: 30, type: 'patch', value: { total: add(5), count: add(4), extra: 'later' }, previousVersion: 20 },
+				{ version: 30, type: 'patch', value: { score: add(2.5), count: add(4), extra: 'later' }, previousVersion: 20 },
 			]);
-			const current = currentEntry({ id: 'G', v: 2, total: 15, count: 4, extra: 'later' }, 30);
-			// `count` is settled by the surviving null set; `total` and `extra` are not, so they keep the
-			// best-effort reversed and live values rather than being dropped
+			const current = currentEntry({ id: 'G', v: 2, score: 3.5, count: 4, extra: 'later' }, 30);
 			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'G'), {
 				id: 'G',
 				v: 2,
-				total: 10,
+				score: 1,
 				count: null,
 				extra: 'later',
 			});
+		});
+
+		it('does not settle a key from writes older than an entry with no readable body', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'K', label: 'a' }, previousVersion: 0 },
+				// wrote { label: 'b' }; its body is no longer readable
+				{ version: 20, type: 'patch', value: undefined, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { label: 'c' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'K', label: 'c' }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'K'), { id: 'K', label: 'c' });
+		});
+
+		it('settles a counter with a fractional delta from history rather than its float residue', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'L', total: 0.1 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { total: add(0.2) }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'L', v: 2, total: 0.1 + 0.2 }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'L'), { id: 'L', v: 2, total: 0.1 });
+		});
+
+		it('trusts a nonzero integer counter reversal without reading older history', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'M', count: 3 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { count: add(2) }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(4), big: add(1n) }, previousVersion: 20 },
+			]);
+			const read = [];
+			const get = store.rootStore.auditStore.get;
+			store.rootStore.auditStore.get = (version, ...rest) => {
+				read.push(version);
+				return get(version, ...rest);
+			};
+			const current = currentEntry({ id: 'M', count: 9, big: 5n }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'M'), { id: 'M', count: 5, big: 4n });
+			assert.deepStrictEqual(read, [30, 20]);
 		});
 
 		it('treats an older entry with no readable body as incomplete history', () => {
