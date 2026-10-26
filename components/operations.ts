@@ -2008,6 +2008,9 @@ async function runBranchRemovalPasses(): Promise<void> {
 			}, branchRemovalRetryDelayMs).unref();
 			branchRemovalRetryDelayMs = Math.min(branchRemovalRetryDelayMs * 2, BRANCH_REMOVAL_RETRY_MAX_MS);
 		}
+	} catch (error) {
+		// every caller discards this promise
+		log.error('Could not schedule a retry of the branched database removals drops left owed', error);
 	} finally {
 		// in the same turn as the last check of the request flag, so no request lands on a finished pass
 		branchRemovalPassRunning = false;
