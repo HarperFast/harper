@@ -46,6 +46,17 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // before `transactionSync` commits, masking CAS conflicts on retry.
 const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
+// For a structure save that did not commit. The structures it carried are already live in memory
+// (a typed id is in structon's transition trie before the save), and structon's reload keeps local
+// typed structures when the durable dictionary has none or only classic ones, so a re-pack would
+// reuse an id nobody persisted. Drop both dictionaries: the next encode reloads from durable
+// (`uninitialized`), and a decode reloads on a missing id.
+function discardUncommittedStructures(encoder: any): void {
+	encoder.clearSharedData();
+	if (encoder.structures) encoder.structures.uninitialized = true;
+	encoder.lastTypedStructuresLength = 0;
+}
+
 // Analytics counter incremented whenever a record cannot be decoded because its shared structure is
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
 // monitoring; the store name is passed as the metric path.
@@ -524,15 +535,6 @@ export class RecordEncoder extends StructonEncoder {
 					? [Symbol.for('structures'), this.name]
 					: targetStore.store.sharedStructuresKey;
 				const encodedStructures = asBinary(structuresEncoder.encode(structures));
-				const resetUncommittedStructures = () => {
-					if (this.structures) {
-						this.structures.length = (this as any).lastNamedStructuresLength || 0;
-						(this.structures as any).sharedLength = this.structures.length;
-						delete (this.structures as any).transitions;
-						(this.structures as any).uninitialized = true;
-					}
-				};
-				let incompatible = false;
 				let committed: boolean | undefined;
 				try {
 					committed = targetStore.transactionSync(
@@ -546,12 +548,8 @@ export class RecordEncoder extends StructonEncoder {
 								}
 							}
 							if (typeof isCompatible == 'function') {
-								if (!isCompatible(existingStructures)) {
-									incompatible = true;
-									return false;
-								}
+								if (!isCompatible(existingStructures)) return false;
 							} else if (existingStructures && existingStructures.length !== isCompatible) {
-								incompatible = true;
 								return false;
 							}
 							txn.putSync(sharedStructuresKey, encodedStructures);
@@ -560,7 +558,7 @@ export class RecordEncoder extends StructonEncoder {
 						{ retryOnBusy: true }
 					);
 				} catch (error) {
-					resetUncommittedStructures();
+					discardUncommittedStructures(this);
 					throw error;
 				}
 				// Only record the structure update once the txn has actually committed. Setting it
@@ -571,16 +569,24 @@ export class RecordEncoder extends StructonEncoder {
 					this.checkStructureCapacity();
 					return true;
 				}
-				if (!incompatible) {
-					resetUncommittedStructures();
-				}
+				discardUncommittedStructures(this);
 				return false;
-			} else {
-				const result = superSaveStructures.call(this, structures, isCompatible);
-				this.structureUpdate = structures;
-				if (result !== false) this.checkStructureCapacity();
-				return result;
 			}
+			// lmdb-js's saver returns `undefined` on commit and `false` on a compatibility conflict.
+			let result: boolean | undefined;
+			try {
+				result = superSaveStructures.call(this, structures, isCompatible);
+			} catch (error) {
+				discardUncommittedStructures(this);
+				throw error;
+			}
+			if (result === false) {
+				discardUncommittedStructures(this);
+				return false;
+			}
+			this.structureUpdate = structures;
+			this.checkStructureCapacity();
+			return result;
 		};
 		this.getStructures = function (): any {
 			const targetStore = this.isRocksDB ? this.rootStore : this.rocksStore;
