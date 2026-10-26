@@ -90,8 +90,6 @@ const throwInSave = () => {
 	throw new Error('injected structure-save failure');
 };
 
-// Replaces the next structure saves with `faults`, in order. Returns a restore function that also
-// asserts every fault was reached.
 function failSaves(handle, ...faults) {
 	const store = handle.saveStore;
 	const original = store.transactionSync;
@@ -157,9 +155,8 @@ describe('RecordEncoder discards structures from a structure save that did not c
 				handles.push(handle);
 				return handle;
 			};
-			// Reopen from disk, as a restarted process or a cold worker would.
-			const reopen = (...open) => {
-				for (const handle of open) {
+			const reopen = (...toClose) => {
+				for (const handle of toClose) {
 					handle.close();
 					handles.splice(handles.indexOf(handle), 1);
 				}

@@ -46,11 +46,8 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // before `transactionSync` commits, masking CAS conflicts on retry.
 const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
-// For a structure save that did not commit. The structures it carried are already live in memory
-// (a typed id is in structon's transition trie before the save), and structon's reload keeps local
-// typed structures when the durable dictionary has none or only classic ones, so a re-pack would
-// reuse an id nobody persisted. Drop both dictionaries: the next encode reloads from durable
-// (`uninitialized`), and a decode reloads on a missing id.
+// Rolling back only the new entries is not enough: structon's reload keeps local typed structures
+// when the durable dictionary is empty or classic-only (see resources/DESIGN.md).
 function discardUncommittedStructures(encoder: any): void {
 	encoder.clearSharedData();
 	if (encoder.structures) encoder.structures.uninitialized = true;
