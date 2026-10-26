@@ -37,11 +37,11 @@ passport.deserializeUser(function (user, done) {
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
 
 export function authorize(req: any, res: any, next: any) {
+	const settledRejection = deferredCredentialRejectionError(req.raw?.baseRequest);
+	if (settledRejection) return next(settledRejection);
 	if (req.raw?.user != undefined) {
 		return next(null, req.raw.user);
 	}
-	const settledRejection = deferredCredentialRejectionError(req.raw?.baseRequest);
-	if (settledRejection) return next(settledRejection);
 	// On Bun, Harper's auth middleware passes pre-authenticated users via this internal header.
 	// bunDelegateToNodeServer strips it from real network requests before injecting into Fastify,
 	// so it is only safe to trust under Bun — on Node.js the raw socket path delivers headers
@@ -91,8 +91,6 @@ export function authorize(req: any, res: any, next: any) {
 				req.raw.user = request.user;
 				return next(null, req.raw.user);
 			} else {
-				const rejection = deferredCredentialRejectionError(request);
-				if (rejection) return next(rejection);
 				req.raw.user = null; // don't fall in this branch again
 				return authorize(req, res, next);
 			}
