@@ -44,7 +44,7 @@ function preventFunctionConstructor() {
 function sealIntrinsics() {
 	for (const intrinsic of currentIntrinsics().concat(realmIntrinsics)) {
 		Object.seal(intrinsic);
-		Object.seal((intrinsic as any).prototype);
+		Object.seal((intrinsic as any)?.prototype);
 	}
 	Object.seal(Function);
 	Object.seal(Function.prototype);
@@ -63,7 +63,7 @@ function freezeIntrinsics() {
 	// current globals only: freezing a replaced original would skip the overridable accessors above
 	for (const intrinsic of currentIntrinsics()) {
 		Object.freeze(intrinsic);
-		Object.freeze((intrinsic as any).prototype);
+		Object.freeze((intrinsic as any)?.prototype);
 	}
 	Object.freeze(Function);
 }

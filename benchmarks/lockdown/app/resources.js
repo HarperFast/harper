@@ -12,7 +12,6 @@ const productRecord = pack({
 const prefilled = Array.from({ length: 17 }, (_, index) => 97 + index);
 
 const OPERATIONS = {
-	// what msgpackr does to build a short string: fill a holey array, then apply it
 	holeyFillApply() {
 		const codes = new Array(17);
 		for (let index = 0; index < 17; index++) codes[index] = 97 + index;

@@ -26,6 +26,7 @@ analytics:
   aggregatePeriod: 60
   replicate: false
 applications:
+  # Releases without the seal modes freeze eagerly on this value; set freeze-after-load before downgrading.
   lockdown: seal-after-load
   moduleLoader: vm-current-context
   dependencyLoader: auto
