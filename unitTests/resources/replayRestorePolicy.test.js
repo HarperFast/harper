@@ -8,7 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { closeDatabase, closeRestoredGeneration, openRestoredGeneration, table } = require('#src/resources/databases');
 const { replayLogs } = require('#src/resources/replayLogs');
 const auditStore = require('#src/resources/auditStore');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 

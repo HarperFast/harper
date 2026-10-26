@@ -14,7 +14,7 @@ const {
 	requiredStoreNames,
 	table,
 } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 

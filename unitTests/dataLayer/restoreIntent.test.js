@@ -22,7 +22,7 @@ const {
 } = require('#src/resources/databases');
 const { createBlob, getBlobPathsForDatabaseName } = require('#src/resources/blob');
 const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	backupDirForDatabase,
 	createBackup,

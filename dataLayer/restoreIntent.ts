@@ -6,6 +6,7 @@
  * the database stays blocked, and the next restart (or `resume`) retries until the attempt limit
  * moves the intent to `terminal`, which starts that boot in safe mode. See dataLayer/DESIGN.md.
  */
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -117,7 +118,7 @@ function claimTarget(databaseName: string, databaseDir: string): RestoreLock {
 
 function requestDrainedRestart(): void {
 	// required lazily: bin/restart pulls in the thread fabric, which a CLI or test caller may not have
-	const { restart } = require('../bin/restart');
+	const { restart } = loadRuntimeModule('bin/restart');
 	restart({ operation: 'restart', drain: true }).catch((error: unknown) =>
 		logger.error('Could not restart Harper for the pending restore', error)
 	);

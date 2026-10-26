@@ -1,3 +1,4 @@
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash } from 'node:crypto';
 import {
 	createReadStream,
@@ -80,7 +81,7 @@ async function fetchFromS3(
 	ledger: DiskLedger
 ): Promise<void> {
 	if (!s3.credentials) throw new ClientError(`'s3' needs credentials: { secret: '<name>' }`);
-	const { getFileStreamFromS3 } = require('../utility/AWS/AWSConnector.js');
+	const { getFileStreamFromS3 } = loadRuntimeModule('utility/AWS/AWSConnector');
 	const body = await withTimeout<NodeJS.ReadableStream>(
 		FETCH_IDLE_TIMEOUT_MS,
 		`S3 did not answer for ${s3.bucket}/${s3.key}`,

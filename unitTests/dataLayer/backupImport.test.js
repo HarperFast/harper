@@ -26,7 +26,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { closeDatabase, getDatabases, table } = require('#src/resources/databases');
 const { createBlob, getBlobPathsForDatabaseName, getFilePathForBlob } = require('#src/resources/blob');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	backupDirForDatabase,
 	createBackupStream,
@@ -620,7 +620,7 @@ describeUnlessLmdb('import_backup', function () {
 			}
 
 			it('meters an S3 pull into the ledger as it lands', async function () {
-				const aws = require('#js/utility/AWS/AWSConnector');
+				const aws = require('#src/utility/AWS/AWSConnector');
 				replace(aws, 'getFileStreamFromS3', async () =>
 					Readable.from([Buffer.from('not '), Buffer.from('an archive')])
 				);
@@ -756,7 +756,7 @@ describeUnlessLmdb('import_backup', function () {
 					{
 						eval: true,
 						workerData: {
-							aws: require.resolve('#js/utility/AWS/AWSConnector'),
+							aws: require.resolve('#src/utility/AWS/AWSConnector'),
 							importChildCommands: require.resolve('#src/dataLayer/importChildCommands'),
 							args: {
 								databaseName: IMPORTED,
@@ -799,7 +799,7 @@ describeUnlessLmdb('import_backup', function () {
 		it('keeps a presigned URL out of the job row, and hands it whole to the job worker', async function () {
 			const { Worker } = require('node:worker_threads');
 			const { JOB_TRANSIENT_ENV } = require('#src/server/jobs/jobRunner');
-			const manageThreads = require('#js/server/threads/manageThreads');
+			const manageThreads = require('#src/server/threads/manageThreads');
 			const signed = 'https://backups.example.com/exports/db.tar.gz?X-Amz-Signature=sekrit-token';
 			// no job worker is started from this thread: what runJob would start it with is recorded, and the
 			// real job worker is then run below with exactly that
@@ -1071,7 +1071,7 @@ describeUnlessLmdb('import_backup', function () {
 	});
 
 	describe('staging sweeps', function () {
-		const manageThreads = require('#js/server/threads/manageThreads');
+		const manageThreads = require('#src/server/threads/manageThreads');
 		const DB = 'importsweep';
 
 		function area(name, owner) {

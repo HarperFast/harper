@@ -1,3 +1,4 @@
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -126,7 +127,7 @@ function killGroup(child: ChildProcess): void {
 function registerChildGroup(child: ChildProcess): (() => void) | undefined {
 	if (process.platform === 'win32' || !child.pid) return undefined;
 	try {
-		const manageThreads = require('../server/threads/manageThreads.js');
+		const manageThreads = loadRuntimeModule('server/threads/manageThreads');
 		const generation = manageThreads.registerProcessGroup?.(child.pid);
 		if (generation === undefined) return undefined;
 		return () => manageThreads.unregisterProcessGroup?.(child.pid, generation);

@@ -12,6 +12,7 @@
  * thread. Staging lives at `<backupsRoot>/<db>/.staging/<importId>/`; Harper creates `.import` and
  * `.staging` but only ever removes `<importId>` entries, since either may be a mount point.
  */
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -168,7 +169,7 @@ async function spoolUpload(databaseName: string, payload: Readable, declaredSize
 }
 
 function processInstance(): string | undefined {
-	return require('../server/threads/manageThreads.js').processIncarnation;
+	return loadRuntimeModule('server/threads/manageThreads').processIncarnation;
 }
 
 /** The operation: spools an upload if there is one, then queues the import job. */
@@ -223,7 +224,7 @@ async function resolveImportSecret(name: string): Promise<string> {
 
 if (isMainThread) {
 	try {
-		const { onMessageByType, onThreadExit } = require('../server/threads/manageThreads.js');
+		const { onMessageByType, onThreadExit } = loadRuntimeModule('server/threads/manageThreads');
 		onThreadExit((exitedThreadId: number) => {
 			try {
 				sweepExitedThreadStaging(exitedThreadId);
