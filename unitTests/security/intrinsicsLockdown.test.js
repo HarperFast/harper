@@ -153,4 +153,12 @@ describe('lockDownIntrinsics', function () {
 		assert.strictEqual(result.afterLoad.strictAdd['Object.prototype'], 'TypeError');
 		assert.strictEqual(result.afterLoad.strictAdd['Function.prototype'], 'TypeError');
 	});
+
+	it('"seal-after-load": a global whose getter throws rejects the lock, after the originals are sealed', async () => {
+		const result = await probeLockdown('seal-after-load', { throwingGetter: true });
+		assert.strictEqual(result.lockOutcome, 'RangeError');
+		assert.strictEqual(result.afterLoad.originalOfReplacedSealed, true);
+		assert.strictEqual(result.afterLoad.strictAdd['Object.prototype'], 'TypeError');
+		assert.strictEqual(result.afterLoad.strictAdd['Function.prototype'], 'TypeError');
+	});
 });

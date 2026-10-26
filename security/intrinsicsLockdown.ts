@@ -47,9 +47,15 @@ function preventFunctionConstructor() {
 
 // seal only, never read-only: security/DESIGN.md has the V8 cost
 function sealIntrinsics() {
-	for (const intrinsic of new Set([...realmIntrinsics, globalThis.Function, ...currentIntrinsics()])) {
+	const sealWithPrototype = (intrinsic) => {
 		seal(intrinsic);
-		seal((intrinsic as any)?.prototype);
+		seal(intrinsic?.prototype);
+	};
+	// originals first: a getter a component put on one of these globals may throw
+	realmIntrinsics.forEach(sealWithPrototype);
+	const sealed = new Set(realmIntrinsics);
+	for (const intrinsic of [globalThis.Function, ...currentIntrinsics()]) {
+		if (!sealed.has(intrinsic)) sealWithPrototype(intrinsic);
 	}
 }
 

@@ -82,7 +82,12 @@ function probe(phase) {
 		pollutedVisible,
 		shadow,
 		unsealed: LOCKED_NAMES.filter((name) => {
-			const intrinsic = globalThis[name];
+			let intrinsic;
+			try {
+				intrinsic = globalThis[name];
+			} catch {
+				return false;
+			}
 			if (intrinsic === undefined) return false;
 			return (
 				!Object.isSealed(intrinsic) || (intrinsic.prototype !== undefined && !Object.isSealed(intrinsic.prototype))
@@ -111,6 +116,13 @@ function probe(phase) {
 const originalWeakRef = WeakRef;
 globalThis.WeakRef = class ReplacedWeakRef extends WeakRef {};
 delete globalThis.FinalizationRegistry;
+if (workerData.throwingGetter)
+	Object.defineProperty(globalThis, 'Atomics', {
+		configurable: true,
+		get() {
+			throw new RangeError('component getter');
+		},
+	});
 if (workerData.refusingGlobals) {
 	const refusing = { preventExtensions: () => false };
 	globalThis.Function = new Proxy(function RefusingFunction() {}, refusing);
