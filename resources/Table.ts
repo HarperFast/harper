@@ -9591,8 +9591,8 @@ export function makeTable(options): TableResourceClass {
 		try {
 			return resolver(stub);
 		} catch (error) {
-			// a replication worker runs no application resolver at all; that refusal must surface
-			if (isDedicatedPoolWorker()) throw error;
+			// a replication worker's refusal to maintain an index whose resolver is application code must surface
+			if (isDedicatedPoolWorker() && !TableResource.userResolvers[name]) throw error;
 			logger.trace?.(`No prior value for computed index ${name} of ${tableName} over a stub`, error);
 		}
 	}
