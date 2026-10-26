@@ -14,9 +14,12 @@ const {
 } = require('node:fs');
 const { basename, dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
+const { tryFileLock, fileLockRelease } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	beginRestore,
+	claimRestore,
+	markRestoreDestructive,
+	restoreLockHeldExclusively,
 	beginDatabaseDrop,
 	completeRestore,
 	completeDatabaseDrop,
@@ -316,6 +319,55 @@ describe('restoreMarker', function () {
 			} finally {
 				completeRestore(lock);
 			}
+		});
+	});
+
+	describe('claimRestore', function () {
+		const openOrBlocked = () =>
+			withRestoreExclusion(
+				dbPath,
+				() => 'opened',
+				(state) => state
+			);
+
+		it('holds every open off with the lock alone, publishing no marker before the destructive step', function () {
+			const lock = claimRestore(dbPath);
+			try {
+				assert.strictEqual(lock.preexisting, false);
+				assert.ok(!existsSync(restoringMarkerPath(dbPath)));
+				assert.strictEqual(restoreLockHeldExclusively(dbPath), true);
+				assert.strictEqual(openOrBlocked(), 'in-progress');
+			} finally {
+				completeRestore(lock);
+			}
+			assert.strictEqual(restoreLockHeldExclusively(dbPath), false);
+		});
+
+		it('leaves the database loadable when a claim ends before its destructive step', function () {
+			abandonRestore(claimRestore(dbPath));
+			assert.strictEqual(checkRestoreState(dbPath), 'clear');
+			assert.strictEqual(openOrBlocked(), 'opened');
+		});
+
+		it('blocks the database once the destructive step is marked', function () {
+			const lock = claimRestore(dbPath);
+			markRestoreDestructive(lock);
+			abandonRestore(lock);
+			assert.strictEqual(checkRestoreState(dbPath), 'incomplete');
+			assert.strictEqual(openOrBlocked(), 'incomplete');
+		});
+
+		it('keeps the marker of an interrupted restore from the moment it claims', function () {
+			abandonRestore(beginRestore(dbPath));
+			const before = readFileSync(restoringMarkerPath(dbPath));
+			const lock = claimRestore(dbPath);
+			try {
+				assert.strictEqual(lock.preexisting, true);
+				assert.deepStrictEqual(readFileSync(restoringMarkerPath(dbPath)), before);
+			} finally {
+				abandonRestore(lock);
+			}
+			assert.strictEqual(checkRestoreState(dbPath), 'incomplete');
 		});
 	});
 

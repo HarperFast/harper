@@ -8,7 +8,15 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Runtime health checks (`status/healthChecks.ts`)
+
+`startHTTPThreads()` starts main-thread health polling after listeners and workers are ready, including zero-worker mode. Importing status exports starts no OS polling. Startup reads the registered `status.healthChecks` keys; edits require restart, and re-entry is idempotent. Defaults stay in code so an upgraded config does not gain a synthetic `status` component. Poll cycles have deadlines and keep at most one pending reader per metric; a permanently wedged reader remains a warning until restart, avoiding unbounded outstanding native work. Stop suppresses late results. Disk uses the configured storage path with `getStorageSpaceStats()` quota scoping. Constrained memory uses cgroup-v2 working set (usage minus inactive file cache), with labelled process-RSS fallback; unconstrained hosts keep `systeminformation.mem().available` semantics. CPU uses per-cgroup `cpu.stat` usage deltas across polling cycles divided by `cpu.max` quota/period, capped by that group’s effective CPU set or online host capacity. Each ancestor constraint uses its own usage counter; the highest utilization wins. CPU-set-only groups use their effective CPU count; process affinity is never applied to an ancestor counter. The first sample and changed/reset accounting use a short priming interval; missing cgroup accounting falls back to labelled host CPU. `cgroupCPU.test.js` covers filesystem accounting and reader lifecycle; `healthChecks.test.js` covers fixtures, lifecycle and deadlines; `logBridge.test.js` covers expiry renewal and cancellation.
+
+The log bridge redacts complete URL credentials before its 500-character summary cap. Summaries never coerce objects or invoke Proxy traps, and native errors from other VM contexts retain their public error class. A report replaces message and error together, even at the same severity. Expiry uses a monotonic deadline and bounded timer chunks; each callback owns its map entry and registry timestamp, so an old timer cannot clear a newer report. Invalid durations remain persistent. Unrestricted worker exceptions, corrupt-record and transaction-timeout diagnostics stay in the ordinary log: their status producers report only the problem key, excluding raw bytes, decoder messages that can contain decoded data, request targets that can contain private paths or query values, and exception messages produced by arbitrary application code. The operations-handler tests verify this privacy boundary and that the diagnostic log remains available.
+
 ## A deploy builds off to the side, is certified, and only then goes live
+
+The main thread reserves `operationsApi` and `agent` in `TRUSTED_RESOURCE_PLUGINS` at module evaluation using core-owned runtime URLs. Cold `deployComponent` calls therefore enforce the protected-name guard before startup imports the real modules. The startup hook replaces only its unchanged default URLs, preserving explicit plugin overrides. `unitTests/server/threads/typestrip-runtime.test.mjs` checks the cold deployment refusal in both runtimes.
 
 `deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, certifies
 _that_ tree, and only then activates it; a deploy that restarts workers is then decided by its canary
@@ -77,8 +85,10 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    refuses a second release of a component in flight (409) and answers `unavailable` when no running worker
    places it; an isolation flip, which moves the release to a worker no restart has started, is not armed
    either, and neither is a tree that is a link to its source (`file:` of a directory), which has no bytes of
-   its own to restore. Those deploys proceed uncertified, as before. While armed, every HTTP start that places
-   the release is held back.
+   its own to restore. Those deploys proceed uncertified, as before. A new isolated application's first release
+   is armed although no worker places it yet, wherever the isolated reconciler runs: its rollout's reconcile
+   starts the dedicated worker held, and that worker is its canary (`eligible(wasAbsent)`, `armCertification`).
+   While armed, every HTTP start that places the release is held back.
 2. **Record, then swap.** `.deploy-staging/<id>/.certification.json` is written `pending`, naming the
    predecessor the swap displaces (`previous`, which step 5 keeps under its own id) and the process
    incarnation. A pending or certified record of this incarnation fences every other preparation of the
@@ -159,7 +169,13 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    still the live one (`onlyIfLive`), and the record is removed once it is. With no predecessor (a first
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
    refuses it (`failClosedReleases`), boot does not reinstall it, and only a deploy, an activation or a drop moves
-   on. A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
+   on. An isolated application left that way gets no dedicated worker, which would load nothing and publish a
+   mirror to it: the gate starts no copy of its stopped canary (`leavesNothingToLoad`); before the decision is read,
+   main queues a withdrawal of its slot that stops any worker still in it, which the rollout's close waits for while the
+   release stays registered, so a fixed redeploy neither arms nor reconciles before it (not awaited by the decision
+   itself, since the worker it stops can be the requester, whose deploy answers only once it reads the decision); and the
+   reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`; refusals that cannot be read start no
+   new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
    the component it is live for, so an unreadable sidecar never lets a refused release load; retention pins its
    predecessor the same way, and pins everything when a record can be attributed to no one. When even the record
    write fails, main refuses it in memory, bound to that deployment id so a later release
@@ -582,6 +598,11 @@ deploymentId }` — at the top of every candidate it extracts, after the install
   replicated deploy of an id this node already holds — only a hand-crafted `_deploymentId` produces one — is refused
   by the claim. A record whose release is neither live nor kept answers 404, where a missing tree used to answer 409.
 
+**`list_releases` reports what a node holds** (`components/releaseOperations.ts`, #3059): the live marker's id and every
+dormant build retention counts (`keptReleasesOf`), with `at` (`.complete`'s mtime), tree size and `state`: `kept` when
+`.complete` holds `kept`, as `refreshCompletedAt` writes when an activation displaces it (recovery checks the file set,
+not that content), else `staged`. Sizing makes it its own operation.
+
 **A record is stale only when nothing refers to it.** "Not live" is not enough: a crash after the commit and
 before the re-home leaves the displaced release's record and its tree in `.deploy-aside`, and a boot scan can
 reach the record before the journal that will re-home into it — the record would be deleted and its only tree
@@ -705,28 +726,73 @@ short, so the serialization the lock buys is bounded by the timeout rather than 
 
 ## An origin waits for a peer's deploy answer only as long as the peer may take
 
-The origin of a replicated `deploy_component` hands `server.replication.replicateOperation` a `timeoutMs`
-from `peerDeployAnswerTimeoutMs(req)` (`components/operations.js`). It is the sum of what the peer is
-allowed for that request: its payload wait (`deployment_timeout`, counted twice when credential references
-must also replicate in), two full preparation budgets (`componentPreparationBudgetMs`: every extraction
-command and both install commands at their allowances), a margin for the swap and the canary's decision, and the
-restart ceiling when the peer restarts before answering. It is clamped to the longest delay a timer holds.
-One budget is the peer's own preparation. The other is the preparation lock's wait: a peer already preparing
-the same component for another deploy holds this one at the lock for a budget before the lock re-checks the
-holder.
+The origin of a replicated `deploy_component` hands `server.replication.replicateOperation` a `timeoutMs` from
+`peerDeployAnswerTimeoutMs(req)` (`components/operations.js`). It is the sum of what the peer is allowed for that
+request: its payload wait (`deployment_timeout`, counted twice when credential references must also replicate in), two
+full preparation budgets (`componentPreparationBudgetMs`: every extraction command and both install commands at their
+allowances), a margin for the swap and the canary's decision, and the restart ceiling when the peer restarts before
+answering. It is clamped to the longest delay a timer holds. One budget is the peer's own preparation. The other is the
+preparation lock's wait: a peer already preparing the same component for another deploy holds this one at the lock for a
+budget before the lock re-checks the holder.
 
-It must never undercut a healthy peer. A shorter bound turns a slow success into a reported failure, and a
-two-command install (a custom package manager falling back to npm) is exactly such a success. So the
-default is hours, and its job is only that the origin eventually settles, rather than holding the
-operation, the deployment row and its own restart for as long as a wedged peer stays wedged. Two things are
-not budgeted. The lock keeps waiting while its holder is alive, so queueing behind a preparation that
-outlasts the lock's wait, or behind several, can run past the deadline. So can plugin `timeout`s a component
-configures beyond that margin, which live in the payload the origin does not parse. Covering the
-first would take a deadline that follows the peer's progress rather than a sum of its allowances. The
-deadline is not cancellation: a peer past it may still finish, so the failure the replicator records says
-the outcome there is unknown.
-It stays a `failed` peer result, because `getFailedPeers()` counts only that status, and a new one would
-read as success.
+It must never undercut a healthy peer. A shorter bound turns a slow success into a reported failure, and a two-command
+install (a custom package manager falling back to npm) is exactly such a success. So the default is hours, and its job
+is only that the origin eventually settles, rather than holding the operation, the deployment row and its own restart
+for as long as a wedged peer stays wedged. Two things are not budgeted. The lock keeps waiting while its holder is
+alive, so queueing behind a preparation that outlasts the lock's wait, or behind several, can run past the deadline. So
+can plugin `timeout`s a component configures beyond that margin, which live in the payload the origin does not parse.
+Covering the first would take a deadline that follows the peer's progress rather than a sum of its allowances. The
+deadline is not cancellation: a peer past it may still finish, so the failure the replicator records says the outcome
+there is unknown. It stays a `failed` peer result, because `getFailedPeers()` counts only that status, and a new one
+would read as success.
+
+## A restart covers exactly the workers that loaded a component or will load it
+
+A deploy of an application that is shared after it restarts the pool; one that is isolated after it names the
+application (`restartScope` in `deployComponent`), so a new or still-isolated application's deploys leave every
+other worker alone. A tree on disk does not say what the pool loaded: a shared application dropped without a restart
+is still loaded there, and one deployed without a restart never was. So main adds the pool to a named restart, when
+the restart takes its turn, only if a pool worker may hold that application (`poolMayHold` in
+`server/threads/manageThreads.js`, from what each worker's loader reported), which is also how an isolation flip
+restarts the pool. A named restart reconciles only that application's dedicated worker, never another one a
+`restart: false` deploy left pending; a pool restart reconciles every one, as before (harper#3045).
+
+## `drop_component`: main owns the whole-component drop
+
+A whole-component drop runs on the main thread under the component's lock (`dropApplication` in
+`operations.js`); a worker that receives one, as a replicated peer does, hands it over and waits, holding no lock,
+for its own node's drop and its peers' (`startBy` is the deadline after which main refuses to begin it). A component
+that has no directory and no root-config entry is not on this node: nothing is removed and nothing restarts, whatever
+`restart` says, but a dedicated worker a failed earlier drop left running is still stopped. An isolated application's
+worker is stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
+mirrors, once the peers have answered; the pool restarts only when asked and only when it may hold the application.
+Branched databases go last, once nothing holds them, unless `keepBranches` keeps them; they also stay while the pool
+may still have them open, and a later drop of the now-absent application discards them. `keepBranches` is refused with
+`restart: true`: a peer on an earlier version ignores it, and its restart path removes the branches. Each node answers
+`{ node, componentRemoved, workerStopped, branchesRemoved }`, and the origin returns its peers' in `replicated`
+(`dropPeerResults`), where `null` is a peer that did not say and `error` a peer that failed. A worker the coming stop or
+restart replaces is answered just before it, with any retention already decided and `null` for what is not done yet;
+a later failure to remove branches is only logged, and a second drop retries it (harper#3091).
+
+## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
+
+The job behind an uncertified `restart: 'rolling'` deploy (a replicated `restart_service`) restarts one peer at a time
+and polls each peer's own restart job. It ends `COMPLETE` only when every peer's job did; otherwise `ERROR`, naming each
+peer that failed or was skipped, with one `result.replicated` entry per peer in both outcomes (`{ node, message }`
+restarted, `{ node, error }` not). A certified rolling deploy runs `activateDeploymentOnPeers` instead, which reports
+through the deployment record (below) and `http_resp_msg`.
+
+- A peer that answered with its own error, or whose connection never opened (`ECONNREFUSED` and similar),
+  never started a restart: it is recorded and the roll moves on.
+- Any other dispatch failure halts the roll, so two peers never restart at once: the replicator's "outcome
+  there is unknown" (a timeout, or the connection closed before the answer), any other socket error,
+  or an answer with no job id. So does a peer whose restart failed or timed out, since the release being
+  rolled out may be what failed. Every peer after it is recorded as skipped.
+- Only the write-queue back-pressure refusal is retried (after the other peers, three attempts): it is the one refusal
+  known to be transient. Errors cross replication as text plus, for a socket error, its `code`, so these classifications
+  match wording and codes.
+- `COMPLETE` means each peer's restart job completed, not that every worker there took new code. Enforced by
+  `unitTests/bin/restartEachPeer.test.js` and `replicatedRestartService.test.js` (harper#3468).
 
 ## A replicated deploy reports each node's install fingerprint, and never acts on it
 
@@ -754,11 +820,9 @@ So each node records what it installed, and the origin reports a difference with
     compared differs. Otherwise it is `null` when any evidence is missing, unreadable or `unidentified`, as
     from an older Harper or a failed peer, and `true` only when everything compared matches.
   - Only lockfile names this node recognizes are compared.
-- **Where it shows:**
-  - one `warning` event, which the CLI prints;
-  - a sentence on the final message, added after staging replaces the message;
-  - the per-peer fields in `peer_results`, which `normalizePeerResult` keeps only once a comparison ran;
-  - the origin's own fingerprint, in the row's `install_fingerprint`.
+- **Where it shows:** one `warning` event, which the CLI prints; a sentence on the final message, added after staging
+  replaces the message; the per-peer fields in `peer_results`, which `normalizePeerResult` keeps only once a comparison
+  ran; the origin's own fingerprint, in the row's `install_fingerprint`.
 - **It never changes the outcome.** Drift alone keeps success. A real peer failure still fails the deploy,
   after the warning has fired.
 
@@ -767,96 +831,119 @@ dependencies and leave the same lockfile, or none. Lockfiles written against dif
 differ while the code matches. This prevents nothing, and a restart can still re-resolve a package component
 (`installConfiguredApplication`) with no report.
 
+## The deployment record (`system.hdb_deployment`)
+
+`DeploymentRecorder` (`components/deploymentRecorder.ts`) owns one row per deploy on its receiving node and logs each
+`ProgressEmitter` event in `event_log`. Nothing internal travels through that emitter, which every subscriber sees
+(#3062): a `get_deployment` tail ends on the promise `finish()` settles after its terminal write.
+
+- **A rolling deploy's record follows its activation job** (#3060). The origin finishes a certified rolling deploy
+  `rolling_out` with `restart_job_id`. The job, on that node, loads the node list itself (a job thread starts with an
+  empty `server.nodes`), records each peer's outcome as `activation` on its `peer_results` entry, and ends the row
+  `success`, or `partial` with `error.nodes`. It first waits, ten minutes at most, for the origin's `rolling_out` write,
+  which would otherwise erase its own; an origin that writes last keeps the stored outcomes (`keepRolloutProgress`).
+  Each read-merge-write holds the row's node-scoped lock (`withRolloutRowLock`; none on LMDB), as a conflict retry
+  replays a put, not its merge. Writes land `rolloutTiming.writeSpacingMs` apart: a burst to one row can commit out of
+  order on a loaded peer (#1170). The final write carries any peer whose own write failed, retries, then fails the job
+  with every outcome in its record, from which boot ends a row a restart cut short (`settleInterruptedRollouts`); a job
+  that throws ends it `partial` (`abandonRollout`). `harper deploy restart=rolling` follows the row, not `hdb_job`,
+  which does not replicate (`bin/deployRollout.ts`, #3058); a 401/403 ends its wait, as does its deadline mid-read.
+- **A deployment records where it came from.** `source` (#3061) is `via: 'oidc'` when the exchange signed the policy
+  and the run's verified claims into the operation token (security/DESIGN.md), else `via: 'declared'`, the client's word
+  (`bin/deploySource.ts`); `deploymentSource` keeps known fields, capped, and never passes a declared one as attested.
+- **Failed deploys keep their payloads only so long.** `sweepFailedPayloads` (`components/payloadRetention.ts`, #2681)
+  drops a project's `failed` payloads beyond `failedMaxCount` or older than `failedMaxAge`, never its newest; rows rank
+  across the cluster, but each node drops only those it wrote (`origin_node`).
+- **`get_components` says when the live release was deployed and when it last loaded.** `deployed_at` (#564) is the
+  `completed_at` of the released row whose `deployment_id` or `activated_from` is the live marker's id, else of a
+  `failed` row naming it (swapped here, failed on a peer); `restarted_at` is `ComponentStatus.loadedAt`.
+
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
-Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
-tar-fs's own walker calls `fs.stat` (not `lstat`) on every discovered entry when dereferencing; a
-dangling symlink's target throws `ENOENT`, and tar-fs's `statAll` loop treats _any_ `ENOENT` from
-a walk-discovered (not explicitly-requested) entry as end-of-stream — it calls `pack.finalize()`
-immediately, silently dropping every entry still queued (BFS order) after the link. No error is
-ever emitted, so `packStream.on('error', ...)` never fires and `deploy_component` reports success
-on a truncated archive. `scanPackageDirectory()` now pre-walks the tree once (async) to build a
-skip-set of dangling symlinks, which `streamPackagedDirectory`'s `tar.pack({ ignore })` consults via
-a synchronous `Set.has()` — **`ignore` is called synchronously by tar-fs with no Promise support**,
-so any fix here has to resolve the dangling set _before_ constructing `tar.pack`, not from inside
-the callback (an earlier draft used `lstatSync`/`statSync` per entry there, which would have added
-blocking I/O to a path that also runs inline on the Harper server's event loop via the
-`package_component` operation). The scan recurses into _valid_ symlinked directories the same way
-tar-fs's dereferenced walk does (readdir through the link), since a dangling symlink nested inside
-one is just as capable of tripping the same early-finalize — skipping recursion into symlinked
-dirs there would silently reintroduce the bug for that case. Circular directory symlinks are not
-guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existing tar-fs limitation
-this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
-declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
-other future cause would still report success silently; that's a deferred, separate fix.
+With `dereference: true`, tar-fs `stat`s every walked entry, and its `statAll` loop treats an `ENOENT` from a
+walk-discovered entry as end-of-stream: `pack.finalize()` silently drops everything still queued, and the deploy
+reported success. `scanPackageDirectory()` pre-walks the tree for dangling symlinks, recursing through valid symlinked
+directories as tar-fs does, and `tar.pack({ ignore })` checks that set with `Set.has()`, since tar-fs calls `ignore`
+synchronously on a path that also runs on the server's event loop. Circular directory symlinks stay unguarded, as in
+tar-fs itself.
+
+**A deploy warns when an entry point its config declares did not arrive** (`components/declaredEntryPoints.ts`, #1719).
+Before the swap (`validateCandidate`), it names each `jsResource`/`graphqlSchema` `files` pattern in the component's
+own config (not `DEFAULT_CONFIG`'s optional files) that matches nothing in the built candidate under the loader's
+`only:` filters. It warns rather than fails: deleting an application's only resource file by redeploying is tested.
+
+## The packer never ships the loader's links to the install (`components/packageComponent.ts`)
+
+The loader links the running install into `node_modules/harper` of every component it loads that is not the root,
+including each `package:` sub-component under an application's `node_modules`, replacing anything else there.
+Followed, each link packs the whole install. The application's own link is skipped by name (harper#2487); a nested one is
+skipped only when it resolves to `PACKAGE_ROOT` (harper#3207), because a nested real `harper` under a package nothing loads
+as a component is that package's dependency, and the target does not reinstall a shipped `node_modules`.
+`scanPackageDirectory()` finds them in its async walk, so `tar-fs`'s synchronous `ignore` does no I/O and the size
+estimate leaves out exactly what the packer does. A scan is not a snapshot: a link created or replaced between the scan
+and the pack is classified by the tree the scan saw. `harperdb` is different: the loader only repairs a link that
+already exists, so omitting one loses it on the target (harper#2577).
 
 ## Deploy watcher generations preserve logical entry events
 
-Component deploys pause each scope's `EntryHandler` while the component directory is replaced. A
-new chokidar instance then performs a cold-style initial scan, which reports every surviving path
-as `add`/`addDir` and cannot report paths that disappeared. Exposing those raw scan events changed
-the public `scope.handleEntry()` contract in #1806: consumers could no longer distinguish an
-unchanged file from a changed one, and deletions vanished entirely.
+Component deploys pause each scope's `EntryHandler` while the component directory is replaced. A new chokidar instance
+then performs a cold-style initial scan, which reports every surviving path as `add`/`addDir` and cannot report paths
+that disappeared. Exposing those raw scan events changed the public `scope.handleEntry()` contract in #1806: consumers
+could no longer distinguish an unchanged file from a changed one, and deletions vanished entirely.
 
-`EntryHandler` therefore owns the deploy boundary. It retains a compact snapshot of matching paths
-(entry kind, URL path, and a SHA-256 content digest for files), assigns each watcher a monotonically
-increasing generation, and compares the resumed generation's scan with the pre-pause snapshot. The
-comparison emits only logical `add`, `change`, `unlink`, `addDir`, and `unlinkDir` events; unchanged
-entries remain silent. File contents are still read once for the event payload and are not retained
-in the snapshot. Reads and readiness are generation-scoped, and a per-path sequence prevents a slow
-read from an obsolete event from overwriting a newer state. Missing paths are synthesized as unlink
+`EntryHandler` therefore owns the deploy boundary. It retains a compact snapshot of matching paths (entry kind, URL
+path, and a SHA-256 content digest for files), assigns each watcher a monotonically increasing generation, and compares
+the resumed generation's scan with the pre-pause snapshot. The comparison emits only logical `add`, `change`, `unlink`,
+`addDir`, and `unlinkDir` events; unchanged entries remain silent. File contents are still read once for the event
+payload and are not retained in the snapshot. Reads and readiness are generation-scoped, and a per-path sequence
+prevents a slow read from an obsolete event from overwriting a newer state. Missing paths are synthesized as unlink
 events only after the resumed scan and all of its reads complete.
 
-Every watcher recreation uses the same comparison. The first generation compares against an empty
-snapshot and therefore retains its cold-load `add` behavior; deploy resume, configuration updates,
-and polling recovery compare against the last completed generation. This keeps file identity intact
-when watcher recovery could otherwise replay stale modules as new and ensures an update racing a
-deploy scan cannot discard its removals. New component deploys still use `Application#isNewComponent`
-to mark a restart as required for #674; other existing-component redeploys request a restart only when
-their logical entry, loaded runtime, or configuration changes require one.
+Every watcher recreation uses the same comparison. The first generation compares against an empty snapshot and therefore
+retains its cold-load `add` behavior; deploy resume, configuration updates, and polling recovery compare against the
+last completed generation. This keeps file identity intact when watcher recovery could otherwise replay stale modules as
+new and ensures an update racing a deploy scan cannot discard its removals. New component deploys still use
+`Application#isNewComponent` to mark a restart as required for #674; other existing-component redeploys request a
+restart only when their logical entry, loaded runtime, or configuration changes require one.
 
 ## Restart-free deploys require proof of runtime equivalence
 
-`EntryHandler` intentionally observes only the files a component declares in its `files` option. It
-cannot prove that the JavaScript runtime is unchanged: a watched `resources.js` can import an
-unwatched `lib/db.js`, and installed dependencies live under the watcher's ignored `node_modules`
-tree. Conversely, hashing the entire extracted tree treats unused source and generated caches as
-runtime changes and collapses restart-free deploys back into unconditional restarts.
+`EntryHandler` intentionally observes only the files a component declares in its `files` option. It cannot prove that
+the JavaScript runtime is unchanged: a watched `resources.js` can import an unwatched `lib/db.js`, and installed
+dependencies live under the watcher's ignored `node_modules` tree. Conversely, hashing the entire extracted tree treats
+unused source and generated caches as runtime changes and collapses restart-free deploys back into unconditional
+restarts.
 
-Runtime equivalence is therefore layered. A deploy can remain restart-free only when all three
-layers it uses are proven equivalent:
+Runtime equivalence is therefore layered. A deploy can remain restart-free only when all three layers it uses are proven
+equivalent:
 
 - `EntryHandler` compares consumer-visible watched entries.
-- `ApplicationScope` records the file URL and load-time digest of every application-local module
-  that Harper's VM or compartment loader reads, including application-local package imports and
-  package self-references, together with every application-local resolution edge. After a deploy,
-  those exact logical paths are re-read and each edge is resolved again against the replacement tree
-  after evicting Node's matching resolution-cache entry. Adding a higher-priority `foo.js` ahead of a
-  previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
-  byte-identical. For import-only package exports that Node's CommonJS resolver cannot resolve, the
-  package manifest itself is recorded as a runtime input so an exports-map retarget is also observable.
-- The deploy pipeline compares dependency metadata at the same preparation stage: the previous
-  installed tree before extraction versus the replacement tree after installation.
+- `ApplicationScope` records the file URL and load-time digest of every application-local module that Harper's VM or
+  compartment loader reads, including application-local package imports and package self-references, together with every
+  application-local resolution edge. After a deploy, those exact logical paths are re-read and each edge is resolved
+  again against the replacement tree after evicting Node's matching resolution-cache entry. Adding a higher-priority
+  `foo.js` ahead of a previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
+  byte-identical. For import-only package exports that Node's CommonJS resolver cannot resolve, the package manifest
+  itself is recorded as a runtime input so an exports-map retarget is also observable.
+- The deploy pipeline compares dependency metadata at the same preparation stage: the previous installed tree before
+  extraction versus the replacement tree after installation.
 
-Loader or installer paths that Harper cannot observe are conservative. Full native module loading,
-custom install commands, enabled install scripts, payloads that already contain `node_modules`, and
-installs without deterministic lock evidence mark the runtime opaque; an existing component using an
-opaque path requires a restart on redeploy. `harper deploy` omits `node_modules` by default; callers of
-`package_component` that want restart-free comparison must likewise set `skip_node_modules: true`.
-Npm dependencies delegated from the default VM loader to Node's native loader are instead covered
-by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
-make nearly every application opaque. Explicit `dependencyLoader: native` remains authoritative;
-an application-local import delegated by that setting marks the runtime opaque. `package.json` is compared as parsed JSON so formatting and
-unrelated key order are irrelevant — except inside `exports`/`imports`, where key order is itself a
-first-match condition priority Node resolves by, so it is preserved rather than sorted, recursively
-through nested condition maps (`components/canonicalizePackageJSON.ts`) — while lockfiles remain
-exact installed-tree evidence. A module first
-loaded while a deploy is in flight also invalidates the old runtime rather than letting a mixed
-generation appear equivalent. This is deliberately proof-oriented: an unused new local file need
-not restart a fully observed runtime, but a changed or missing imported helper, changed resolution
-input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
-remain consumer-directed: the static plugin applies asset changes incrementally, while executable
-consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
+Loader or installer paths that Harper cannot observe are conservative. Full native module loading, custom install
+commands, enabled install scripts, payloads that already contain `node_modules`, and installs without deterministic lock
+evidence mark the runtime opaque; an existing component using an opaque path requires a restart on redeploy.
+`harper deploy` omits `node_modules` by default; callers of `package_component` that want restart-free comparison must
+likewise set `skip_node_modules: true`. Npm dependencies delegated from the default VM loader to Node's native loader
+are instead covered by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
+make nearly every application opaque. Explicit `dependencyLoader: native` remains authoritative; an application-local
+import delegated by that setting marks the runtime opaque. `package.json` is compared as parsed JSON so formatting and
+unrelated key order are irrelevant — except inside `exports`/`imports`, where key order is itself a first-match
+condition priority Node resolves by, so it is preserved rather than sorted, recursively through nested condition maps
+(`components/canonicalizePackageJSON.ts`) — while lockfiles remain exact installed-tree evidence. A module first loaded
+while a deploy is in flight also invalidates the old runtime rather than letting a mixed generation appear equivalent.
+This is deliberately proof-oriented: an unused new local file need not restart a fully observed runtime, but a changed
+or missing imported helper, changed resolution input, changed dependency evidence, or any genuinely opaque runtime does.
+Entry changes themselves remain consumer-directed: the static plugin applies asset changes incrementally, while
+executable consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
 
 ## Secret custody starts before boot-time installs
 
@@ -868,49 +955,45 @@ Enforced by `integrationTests/components/boot-install-secret-custody.test.ts`.
 
 ## Startup waits for component preparation only up to `deployment.startupInstallTimeout`
 
-Listeners open and workers start only after `installApplications()` returns, so any component preparation it
-waits on gates the whole node. It waits at most `deployment.startupInstallTimeout` (default 10 minutes, `0` =
-unbounded) (`waitForStartupPreparations`). Everything per component that can block — the lock-file read, the
-credential lookup, the build — runs inside the tracked preparation, so the deadline bounds it; enumeration
-itself only validates config.
+Listeners open and workers start only after `installApplications()` returns, so any component preparation it waits on
+gates the whole node. It waits at most `deployment.startupInstallTimeout` (default 10 minutes, `0` = unbounded)
+(`waitForStartupPreparations`). Everything per component that can block — the lock-file read, the credential lookup, the
+build — runs inside the tracked preparation, so the deadline bounds it; enumeration itself only validates config.
 
-A preparation still running at the deadline is left behind, not cancelled: it keeps its component preparation
-lock, so no second writer touches that component. A later `installApplications()` (every worker restart runs
-one) rejoins it rather than starting another (`trackStartupPreparation`, keyed by component and configuration)
-and does not wait for it again, since the node already runs without it.
+A preparation still running at the deadline is left behind, not cancelled: it keeps its component preparation lock, so
+no second writer touches that component. A later `installApplications()` (every worker restart runs one) rejoins it
+rather than starting another (`trackStartupPreparation`, keyed by component and configuration) and does not wait for it
+again, since the node already runs without it.
 
-Startup then loads the installed tree: the previous version, or nothing for a new component. On the installing
-thread that needs `deployLifecycle.releaseLoads()` for the preparation's own deploy id, because a Scope created
-while its component's deploy is in flight would otherwise wait for that deploy and pause its watchers — in
-single-thread mode that is the node's only serving thread, and startup would block on the very preparation it
-stopped waiting for. Workers started after the broadcast never saw the deploy, so they already load the
-installed tree. `deploy:start`/`deploy:end` bracket the periods in which an unreleased deploy is in flight
-(`loadsAwaitDeploy`), so a release ends a pause and a later overlapping deploy still starts one.
+Startup then loads the installed tree: the previous version, or nothing for a new component. On the installing thread
+that needs `deployLifecycle.releaseLoads()` for the preparation's own deploy id, because a Scope created while its
+component's deploy is in flight would otherwise wait for that deploy and pause its watchers — in single-thread mode that
+is the node's only serving thread, and startup would block on the very preparation it stopped waiting for. Workers
+started after the broadcast never saw the deploy, so they already load the installed tree. `deploy:start`/`deploy:end`
+bracket the periods in which an unreleased deploy is in flight (`loadsAwaitDeploy`), so a release ends a pause and a
+later overlapping deploy still starts one.
 
-When a left-behind preparation succeeds it requests a restart unconditionally: some running generation
-predates its swap, and the package-metadata comparison `requestRestartAfterDeploy` uses cannot tell whether
-that generation ever loaded a working version. Because a preparation outlives the call that started it, each
-`harper-application-lock.json` transition is a read-modify-write in one per-path queue
-(`updateApplicationLock`), and a reinstall clears its entry under the component preparation lock
-(`recordApplicationPreparation`), after any earlier preparation's success write (harper#2072). Enforced by
-`unitTests/components/installApplicationsLock.test.js` and
+When a left-behind preparation succeeds it requests a restart unconditionally: some running generation predates its
+swap, and the package-metadata comparison `requestRestartAfterDeploy` uses cannot tell whether that generation ever
+loaded a working version. Because a preparation outlives the call that started it, each `harper-application-lock.json`
+transition is a read-modify-write in one per-path queue (`updateApplicationLock`), and a reinstall clears its entry
+under the component preparation lock (`recordApplicationPreparation`), after any earlier preparation's success write
+(harper#2072). Enforced by `unitTests/components/installApplicationsLock.test.js` and
 `integrationTests/deploy/startup-install-timeout.test.ts`.
 
 ## Package applications prepare branches before importing modules
 
-`loadComponent` receives `branchedDatabases` only for an application's own load, including root-config
-packages with a caller-created scope; nested components inherit that scope's prepared branches.
-`integrationTests/components/branched-database-package.test.ts` pins import-time and HTTP writes,
-canary refusal, restart persistence and drop cleanup for shared and isolated workers (#3071).
-Root packages returning a plugin module are refused when branched: their callbacks receive the shared
-root scope, which cannot carry the package's private databases.
-This refusal occurs at the callback handoff, after import, and leaves any prepared fork on disk.
+`loadComponent` receives `branchedDatabases` only for an application's own load, including root-config packages with a
+caller-created scope; nested components inherit that scope's prepared branches.
+`integrationTests/components/branched-database-package.test.ts` pins import-time and HTTP writes, canary refusal,
+restart persistence and drop cleanup for shared and isolated workers (#3071). Root packages returning a plugin module
+are refused when branched: their callbacks receive the shared root scope, which cannot carry the package's private
+databases. This refusal occurs at the callback handoff, after import, and leaves any prepared fork on disk.
 
-On upgrade, a package's first fork snapshots the base, including its earlier writes; that history
-cannot be separated automatically. Missing databases and unsupported engines or loader modes fail
-the application load instead of falling back to the base.
+On upgrade, a package's first fork snapshots the base, including its earlier writes; that history cannot be separated
+automatically. Missing databases and unsupported engines or loader modes fail the application load instead of falling
+back to the base.
 
-A first fork runs inside the serial root load, so later root entries wait for its checkpoint.
-Canary startup deadlines also apply to this first fork.
-A fork prepared before a later load failure remains durable and is adopted on retry, as for
-directory applications; only an explicit drop removes it.
+A first fork runs inside the serial root load, so later root entries wait for its checkpoint. Canary startup deadlines
+also apply to this first fork. A fork prepared before a later load failure remains durable and is adopted on retry, as
+for directory applications; only an explicit drop removes it.

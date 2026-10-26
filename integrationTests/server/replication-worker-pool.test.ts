@@ -30,6 +30,10 @@ const ofType = (list: ThreadInfo[], name: string) =>
 		.sort();
 
 async function newDataRoot(ctx: ContextWithHarper) {
+	if (ctx.harper) {
+		await killHarper(ctx).catch(() => undefined);
+		await teardownHarper(ctx).catch(() => undefined);
+	}
 	const dataRootDir = await mkdtemp(
 		join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 	);
@@ -107,6 +111,56 @@ suite('a replication worker pool (replication.threads)', { skip: UNSUPPORTED_HER
 });
 
 suite(
+	'a replication worker pool by default (replication.threads omitted)',
+	{ skip: UNSUPPORTED_HERE },
+	(ctx: ContextWithHarper) => {
+		after(async () => {
+			await killHarper(ctx).catch(() => undefined);
+			await teardownHarper(ctx);
+		});
+
+		test('starts floor(threads.count / 2) replication workers when a dedicated replication port is configured', async () => {
+			await newDataRoot(ctx);
+			await startHarper(ctx, {
+				config: {
+					threads: { count: 4 },
+					replication: { securePort: 19934 },
+				},
+			});
+			const list = await threads(ctx);
+			strictEqual(ofType(list, 'http').length, 4, JSON.stringify(list));
+			strictEqual(ofType(list, 'replication').length, 2, JSON.stringify(list));
+		});
+
+		test('starts no replication workers when threads.count is 1 and replication.threads is omitted', async () => {
+			await newDataRoot(ctx);
+			await startHarper(ctx, {
+				config: {
+					threads: { count: 1 },
+					replication: { securePort: 19935 },
+				},
+			});
+			const list = await threads(ctx);
+			strictEqual(ofType(list, 'http').length, 1, JSON.stringify(list));
+			strictEqual(ofType(list, 'replication').length, 0, JSON.stringify(list));
+		});
+
+		test('starts no replication workers when replication.threads is explicitly 0 with threads.count 4', async () => {
+			await newDataRoot(ctx);
+			await startHarper(ctx, {
+				config: {
+					threads: { count: 4 },
+					replication: { threads: 0, securePort: 19936 },
+				},
+			});
+			const list = await threads(ctx);
+			strictEqual(ofType(list, 'http').length, 4, JSON.stringify(list));
+			strictEqual(ofType(list, 'replication').length, 0, JSON.stringify(list));
+		});
+	}
+);
+
+suite(
 	'a replication pool without a replication port of its own',
 	{ skip: UNSUPPORTED_HERE },
 	(ctx: ContextWithHarper) => {
@@ -115,13 +169,32 @@ suite(
 			await teardownHarper(ctx);
 		});
 
-		test('refuses to start', async () => {
+		test('refuses to start when replication.threads is explicitly configured', async () => {
 			await newDataRoot(ctx);
 			await rejects(
 				startHarper(ctx, { config: { replication: { threads: 1, port: null, securePort: null } } }),
 				(error: Error) =>
 					error instanceof HarperStartupError &&
 					error.message.includes('replication.threads requires replication.port or replication.securePort')
+			);
+		});
+
+		test('falls back to 0 replication workers with a warning when replication.threads is defaulted', async () => {
+			const dataRootDir = await newDataRoot(ctx);
+			await startHarper(ctx, {
+				config: {
+					threads: { count: 4 },
+					replication: { port: null, securePort: null },
+				},
+			});
+			const list = await threads(ctx);
+			strictEqual(ofType(list, 'http').length, 4, JSON.stringify(list));
+			strictEqual(ofType(list, 'replication').length, 0, JSON.stringify(list));
+			const logDir = ctx.harper.logDir ?? join(dataRootDir, 'log');
+			const logContent = await readFile(join(logDir, 'hdb.log'), 'utf8');
+			ok(
+				logContent.includes('falling back to replication.threads: 0'),
+				`expected fallback warning in hdb.log, got:\n${logContent}`
 			);
 		});
 	}

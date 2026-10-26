@@ -6,7 +6,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('Subscription registration boundary', () => {
 	const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];

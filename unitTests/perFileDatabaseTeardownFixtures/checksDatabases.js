@@ -6,7 +6,7 @@
 const assert = require('node:assert');
 const { existsSync } = require('node:fs');
 const path = require('node:path');
-const { registryStatus } = require('@harperfast/rocksdb-js');
+const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { databases, resetDatabases, resolveDatabaseStorageRoot } = require('#src/resources/databases');
 
 const isRocks = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
@@ -19,7 +19,7 @@ function assertGone(name) {
 	assert.strictEqual(name in databases, false, `${name} is still registered`);
 	assert.strictEqual(existsSync(rootOf(name)), false, rootOf(name));
 	assert.strictEqual(
-		registryStatus().some((entry) => entry.refCount > 0 && path.resolve(entry.path) === rootOf(name)),
+		getRegistryStatus().some((entry) => entry.refCount > 0 && path.resolve(entry.path) === rootOf(name)),
 		false,
 		`${name} is still open natively`
 	);

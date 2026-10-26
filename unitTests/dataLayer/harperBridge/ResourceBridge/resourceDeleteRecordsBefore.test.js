@@ -14,7 +14,7 @@ const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
 let test_data = require('../../../testData');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
 const SearchObject = require('#src/dataLayer/SearchObject');
 const harper_bridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const { createTable, createSchema, createRecords, searchByValue, dropTable } = harper_bridge;

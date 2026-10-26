@@ -193,7 +193,7 @@ describe('estimateCondition range estimates', () => {
 
 describe('RocksIndexStore.estimateCount composite bound translation', () => {
 	const { RocksIndexStore } = require('#src/resources/RocksIndexStore');
-	const { RocksDatabase } = require('@harperfast/rocksdb-js');
+	const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 	// Both methods must translate bounds identically or the planner estimates a range execution
 	// never iterates.
@@ -246,7 +246,7 @@ describe('RocksIndexStore.estimateCount composite bound translation', () => {
 describe('estimateCondition range estimates (real stores)', () => {
 	const { setupTestDBPath } = require('../testUtils');
 	const { table } = require('#src/resources/databases');
-	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	const N = 20000;
 	const SPARSE_COUNT = 200;
 	let T;

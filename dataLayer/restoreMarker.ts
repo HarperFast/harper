@@ -34,9 +34,11 @@ import logger from '../utility/logging/harper_logger.ts';
  *   Known limitation: the lock is owned by the process, so if the restore job's worker *thread*
  *   dies without the process exiting, the lock stays held (restores 409) until Harper restarts.
  * - `<meta-dir>/<key>.restoring` — the completion marker. Published (temp → fsync → rename → parent
- *   fsync) after the lock is acquired and before the destructive restore begins; deleted only after
- *   the restore completes successfully, while still holding the lock. Its *existence* means "a
- *   restore started and has not finished successfully". Its first line records the database
+ *   fsync) under the lock, immediately before the destructive restore begins (`markRestoreDestructive`);
+ *   deleted only after the restore completes successfully, while still holding the lock. Its
+ *   *existence* means "a restore began destroying this directory and has not finished successfully".
+ *   Before it, a claimed restore is held off every open by the lock alone, so a crash while claimed
+ *   (verifying, closing) leaves nothing that blocks the intact database once the lock is released. Its first line records the database
  *   directory name as a fallback so the startup scan can map a marker whose database directory is
  *   missing without decoding the hashed key.
  *
@@ -136,20 +138,25 @@ export type RestoreLock = {
  *
  * The marker is checked FIRST and the lock is only probed when the marker exists, so a rescan does
  * no lock work for the (persistent) lock file of a long-ago-restored database. Marker-first is
- * safe: `beginRestore` writes (and fsyncs) the marker immediately after taking the lock and
- * before any destructive step, so a database without a marker has nothing to protect yet.
+ * safe: the marker is published (and fsynced) before any destructive step, so a database without a
+ * marker has nothing to protect yet — and a claimed restore that has not reached that step still
+ * holds the lock exclusively, which every open (`withRestoreExclusion`) contends with.
  */
 export function checkRestoreState(dbPath: string): RestoreState {
 	if (!pathPresent(restoringMarkerPath(dbPath))) return 'clear';
+	return restoreLockHeldExclusively(dbPath) ? 'in-progress' : 'incomplete';
+}
+
+/** Whether a restore or a drop holds this database's lock, which a marker-less claim is held by alone. */
+export function restoreLockHeldExclusively(dbPath: string): boolean {
 	const lockPath = restoreLockPath(dbPath);
-	if (pathPresent(lockPath)) {
-		// Shared, so it coexists with every other reader. An exclusive probe answers "is a restore
-		// holding this?" by conflicting with all of them, reading a healthy database as 'in-progress'.
-		const token = tryFileLock(lockPath, true);
-		if (token === 0) return 'in-progress';
-		fileLockRelease(token);
-	}
-	return 'incomplete';
+	if (!pathPresent(lockPath)) return false;
+	// Shared, so it coexists with every other reader. An exclusive probe answers "is a restore
+	// holding this?" by conflicting with all of them, reading a healthy database as held.
+	const token = tryFileLock(lockPath, true);
+	if (token === 0) return true;
+	fileLockRelease(token);
+	return false;
 }
 
 /** Codes a databases root Harper cannot write to produces; anything else is not a root to degrade for. */
@@ -280,21 +287,21 @@ function publishRestoringMarker(dbPath: string): void {
 }
 
 /**
- * Acquire the per-database restore lock and ensure the restoring marker is in place. Call before any
- * destructive step. Returns the lock (with `preexisting` set when a marker was already present, so
- * a failed recovery attempt knows not to clear it). Throws (statusCode 409) if another restore
- * already holds the lock.
- * `beforePublishMarker` runs synchronously under the lock, after admission but before publication,
- * so a caller can durably claim its source before a crash can leave a restoring marker behind. It
- * receives `preexisting` — the marker reading taken under this lock — so a caller can tell an
- * interrupted restore of this same target from a directory that was never ours.
+ * Acquire the per-database restore lock without publishing a marker for a fresh claim; publish it
+ * with `markRestoreDestructive` immediately before the first destructive step. Returns the lock
+ * (with `preexisting` set when a marker was already present, so a failed recovery attempt knows not
+ * to clear it). Throws (statusCode 409) if another restore already holds the lock.
+ * `beforePublishMarker` runs synchronously under the lock, after admission, so a caller can durably
+ * claim its source before a crash can leave a restoring marker behind. It receives `preexisting` —
+ * the marker reading taken under this lock — so a caller can tell an interrupted restore of this
+ * same target from a directory that was never ours.
  *
  * An intact marker is left exactly as it is. A recovery attempt runs over a directory an earlier
  * restore may have half-purged, so the marker it finds is the only thing keeping that directory
  * from loading as healthy; rewriting it buys nothing (the content it would write is the content
  * already there) and risks everything.
  */
-export function beginRestore(dbPath: string, beforePublishMarker?: (preexisting: boolean) => void): RestoreLock {
+export function claimRestore(dbPath: string, beforePublishMarker?: (preexisting: boolean) => void): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
 	// Sampled while holding the lock, not before it: a restore that waited out an earlier one would
@@ -308,11 +315,30 @@ export function beginRestore(dbPath: string, beforePublishMarker?: (preexisting:
 			throw error;
 		}
 		beforePublishMarker?.(lock.preexisting);
-		if (!lock.preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
-		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
-		// have been interrupted between the rename and this flush, which would leave the directory
-		// entry — the thing the startup scan reads — still only in the page cache.
-		else fsyncDirectory(restoreMetaDir(dbPath));
+		if (lock.preexisting) {
+			if (!markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
+			// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
+			// have been interrupted between the rename and this flush, which would leave the directory
+			// entry — the thing the startup scan reads — still only in the page cache.
+			else fsyncDirectory(restoreMetaDir(dbPath));
+		}
+	} catch (error) {
+		fileLockRelease(lock.token);
+		throw error;
+	}
+	return lock;
+}
+
+/** Publish the marker before the first destructive step of a claimed restore; a no-op over an intact one. */
+export function markRestoreDestructive(lock: RestoreLock): void {
+	if (!markerIsIntact(restoringMarkerPath(lock.dbPath), lock.dbPath)) publishRestoringMarker(lock.dbPath);
+}
+
+/** `claimRestore` and `markRestoreDestructive` together, for a caller with nothing to do between them. */
+export function beginRestore(dbPath: string, beforePublishMarker?: (preexisting: boolean) => void): RestoreLock {
+	const lock = claimRestore(dbPath, beforePublishMarker);
+	try {
+		markRestoreDestructive(lock);
 	} catch (error) {
 		fileLockRelease(lock.token);
 		throw error;
@@ -322,10 +348,12 @@ export function beginRestore(dbPath: string, beforePublishMarker?: (preexisting:
 
 /**
  * Mark the restore successful: delete the marker (while still holding the lock), then release
- * the lock.
+ * the lock. A claim that never reached its destructive step has no marker to delete.
  */
 export function clearRestoringMarker(lock: RestoreLock): void {
-	unlinkSync(restoringMarkerPath(lock.dbPath));
+	const markerPath = restoringMarkerPath(lock.dbPath);
+	if (!pathPresent(markerPath)) return;
+	unlinkSync(markerPath);
 	// fsync the metadata directory so the marker's *removal* is durable — symmetric with the
 	// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
 	// directory entry and misclassify a fully-restored database as incomplete.

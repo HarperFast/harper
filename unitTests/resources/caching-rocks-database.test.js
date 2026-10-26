@@ -3,9 +3,10 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+const { transaction } = require('#src/resources/transaction');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -213,5 +214,74 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(advanced.value.count, 2, 'the merged count survives the in-order write');
 		store.getEntry(11);
 		assert(store.verifyVersion(11, advanced.version), 'vouching resumes for a version of its own');
+	});
+
+	describe('record cache exposure', function () {
+		let syncGets;
+		let originalGetSync;
+		beforeEach(function () {
+			syncGets = 0;
+			originalGetSync = RocksDatabase.prototype.getSync;
+			RocksDatabase.prototype.getSync = function (...args) {
+				if (this === TestTable.primaryStore) syncGets++;
+				return originalGetSync.apply(this, args);
+			};
+		});
+		afterEach(function () {
+			RocksDatabase.prototype.getSync = originalGetSync;
+		});
+
+		async function warm(id, name) {
+			await TestTable.put(id, { name });
+			await TestTable.get(id);
+			await TestTable.get(id);
+		}
+
+		it('primaryStore.cache is the record cache of a caching table', async function () {
+			const cache = TestTable.primaryStore.cache;
+			assert(cache, 'a cache:true table exposes its record cache');
+			await warm(20, 'twenty');
+			assert(cache.get(20), 'a read record is in the exposed cache');
+		});
+
+		it('a warm Table.get completes synchronously from the cache, without getSync', async function () {
+			await warm(21, 'twenty-one');
+			const cachedValue = TestTable.primaryStore.cache.getValue(21);
+			syncGets = 0;
+			await transaction({}, (txn) => {
+				const result = TestTable.get({ id: 21, syncAllowed: true, ensureLoaded: true }, { transaction: txn });
+				assert.equal(typeof result?.then, 'undefined', 'a warm hit is not a promise');
+				assert.equal(result, cachedValue, 'served from the record cache');
+			});
+			assert.equal(syncGets, 0, 'a cached record must not route RocksDB reads to a blocking getSync');
+		});
+
+		it('a VT hit returns the cached entry without a promise, even when async is requested', async function () {
+			await warm(22, 'twenty-two');
+			const store = TestTable.primaryStore;
+			const entry = store.getEntry(22, { async: true });
+			assert.equal(typeof entry?.then, 'undefined');
+			assert.equal(entry.value, store.cache.getValue(22), 'served from the record cache');
+		});
+
+		it('a save invalidates the cached value', async function () {
+			await warm(23, 'twenty-three');
+			const store = TestTable.primaryStore;
+			assert(store.cache.get(23));
+			await TestTable.put(23, { name: 'twenty-three updated' });
+			assert.equal(store.cache.get(23), undefined, 'the write dropped the cached value');
+			assert.equal((await TestTable.get(23)).name, 'twenty-three updated');
+		});
+
+		it('primaryStore.cache.clear() drops cached values, so the next read decodes from the store', async function () {
+			await warm(24, 'twenty-four');
+			const store = TestTable.primaryStore;
+			const cachedValue = store.cache.getValue(24);
+			store.cache.clear();
+			assert.equal(store.cache.get(24), undefined);
+			const record = await TestTable.get(24);
+			assert.notEqual(record, cachedValue, 'the record was decoded again, not served from the cache');
+			assert.equal(record.name, 'twenty-four');
+		});
 	});
 });

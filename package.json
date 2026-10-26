@@ -1,5 +1,6 @@
 {
 	"name": "harper",
+	"productName": "Harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
 	"version": "5.3.1",
 	"license": "Apache-2.0",
@@ -70,8 +71,11 @@
 		"test:integration:bun": "HARPER_RUNTIME=bun harper-integration-test-run",
 		"test:unit": "mocha",
 		"test:unit:main": "mocha \"unitTests/**/*test.*js\" --exclude \"unitTests/apiTests/**/*\" --exclude \"unitTests/dataLayer/harperBridge/**/*\" --exclude \"unitTests/resources/**/*\"",
+		"test:unit:main:core": "npm run test:unit:main -- --exclude \"unitTests/components/**/*\" --exclude \"unitTests/server/**/*\"",
+		"test:unit:main:components": "mocha \"unitTests/components/**/*test.*js\"",
+		"test:unit:main:server": "mocha \"unitTests/server/**/*test.*js\"",
 		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
-		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
+		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb mocha unitTests/server/preconditions.test.js unitTests/server/durableSessionResume.test.js && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
 		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:resources:core": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
@@ -87,10 +91,31 @@
 		"test:unit:server": "mocha \"unitTests/server/**/*.js\"",
 		"test:unit:config": "mocha \"unitTests/config/**/*.js\"",
 		"test:unit:windows": "node unitTests/windowsGate.mjs",
-		"test:unit:typestrip": "env NODE_OPTIONS=\"--conditions=typestrip\" npm run test:unit",
-		"test:unit:typestrip:all": "npm run test:unit:typestrip unitTests"
+		"test:unit:typestrip": "node unitTests/runTypeStripTests.mts --source-only",
+		"test:unit:typestrip:all": "node unitTests/runTypeStripTests.mts \"unitTests/**/*test.*js\"",
+		"test:unit:typestrip:resources": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
+		"test:unit:typestrip:main": "node unitTests/runTypeStripTests.mts",
+		"test:unit:typestrip:resources:core": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:typestrip:resources:indexes": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
+		"test:types:unit": "tsc --project unitTests/tsconfig.harness.json"
 	},
 	"imports": {
+		"#src/*.js": {
+			"typestrip": "./*.js",
+			"default": "./dist/*.js"
+		},
+		"#src/globals": {
+			"typestrip": "./globals.js",
+			"default": "./dist/globals.js"
+		},
+		"#src/utility/packageUtils": {
+			"typestrip": "./utility/packageUtils.js",
+			"default": "./dist/utility/packageUtils.js"
+		},
+		"#src/utility/terms/certificates": {
+			"typestrip": "./utility/terms/certificates.js",
+			"default": "./dist/utility/terms/certificates.js"
+		},
 		"#src/*": {
 			"import": {
 				"typestrip": "./*.ts",
@@ -102,14 +127,8 @@
 			}
 		},
 		"#js/*": {
-			"import": {
-				"typestrip": "./*.js",
-				"default": "./dist/*.js"
-			},
-			"require": {
-				"typestrip": "./*.js",
-				"default": "./dist/*.js"
-			}
+			"typestrip": null,
+			"default": "./dist/*.js"
 		}
 	},
 	"engines": {
@@ -134,7 +153,7 @@
 	},
 	"devDependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1146.0",
+		"@aws-sdk/lib-storage": "3.1149.0",
 		"@harperfast/code-guidelines": "^0.1.2",
 		"@harperfast/integration-testing": "^1.0.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
@@ -183,7 +202,7 @@
 		"@fastify/compress": "^9.0.0",
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^10.0.0",
-		"@harperfast/extended-iterable": "1.0.3",
+		"@harperfast/extended-iterable": "1.0.5",
 		"@harperfast/rocksdb-js": "2.12.0",
 		"@harperfast/skills": "^1.10.8",
 		"@inquirer/confirm": "^6.3.2",
@@ -199,14 +218,14 @@
 		"@turf/distance": "6.5.0",
 		"@turf/helpers": "6.5.0",
 		"@turf/length": "6.5.0",
-		"alasql": "4.19.1",
+		"alasql": "4.20.0",
 		"amaro": "^1.1.8",
 		"argon2": "0.45.1",
 		"asn1js": "3.0.10",
 		"busboy": "^1.6.0",
 		"cbor-x": "1.6.6",
 		"chalk": "4.1.2",
-		"chokidar": "^4.0.3",
+		"chokidar": "^5.0.0",
 		"cli-progress": "3.12.0",
 		"clone": "2.1.2",
 		"dotenv": "^16.4.7",

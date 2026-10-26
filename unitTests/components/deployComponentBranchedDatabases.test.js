@@ -9,8 +9,8 @@ const path = require('node:path');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const validator = require('#js/components/operationsValidation');
-const { deployComponent } = require('#js/components/operations');
+const validator = require('#src/components/operationsValidation');
+const { deployComponent } = require('#src/components/operations');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
 const { preserveRootConfig, rootConfigEntry } = require('../rootConfigFixture.js');

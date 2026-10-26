@@ -3,6 +3,7 @@ import { contextStorage } from '../transaction.ts';
 import {
 	defineBackend,
 	getBackend,
+	getBackendPricing,
 	getBackendSource,
 	ModelBackendNotFoundError,
 	registerBackend as registerBackendImpl,
@@ -27,7 +28,7 @@ import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelC
 import { recordAction } from '../analytics/write.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
-import { assignFiniteTokenCount, ChoiceScoringUnsupportedError } from './backendHelpers.ts';
+import { assignFiniteTokenCount, ChoiceScoringUnsupportedError, isTokenCount } from './backendHelpers.ts';
 import {
 	DecisionContractError,
 	DecisionInputError,
@@ -71,6 +72,7 @@ import type {
 	GenerateResult,
 	ModelBackend,
 	ModelKind,
+	ModelPricing,
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
@@ -102,13 +104,13 @@ type MetricEmitter = (value: number, metric: string, path?: string) => void;
 export class Models implements ModelsContract {
 	#analyticsWriter: ModelCallAnalyticsWriter;
 	#emit: MetricEmitter;
-	#decisionStore: DecisionStore;
+	#decisionStore: DecisionStore | undefined;
 
 	constructor(
 		analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter(),
 		// DI'd for unit tests; production wires up the module-scope `recordAction`.
 		metricEmitter: MetricEmitter = recordAction,
-		decisionStore: DecisionStore = getDecisionStore()
+		decisionStore?: DecisionStore
 	) {
 		this.#analyticsWriter = analyticsWriter;
 		this.#emit = metricEmitter;
@@ -230,7 +232,7 @@ export class Models implements ModelsContract {
 		let firstError: unknown = undefined;
 		let hasError = false;
 		for (const backend of resolved.candidates) {
-			let completed: GenerateResult | undefined;
+			let completed: { output: GenerateResult; usage?: TokenUsage } | undefined;
 			// Don't spend a backend call on an already-cancelled request — between
 			// candidates the caller may have aborted (and at entry it may already be).
 			signal?.throwIfAborted();
@@ -240,11 +242,9 @@ export class Models implements ModelsContract {
 				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.generate!(input, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
+				if (!result.output) throw new ServerError(`Model backend '${backend.name}' completed without output`);
 				this.#record(backend, 'generate', opts.model, accounting, opts, result, attemptStart);
-				// Propagate usage onto the returned GenerateResult so callers (notably the
-				// `toolMode: 'auto'` loop's budget tracker) can read cumulative tokens without
-				// re-querying analytics. Pure pass-through — backend usage is the source of truth.
-				completed = result.usage ? { ...result.output, usage: result.usage } : result.output;
+				completed = { output: result.output, usage: result.usage };
 			} catch (err) {
 				this.#recordFailure(backend, 'generate', opts.model, accounting, opts, attemptStart, err);
 				if (!hasError) {
@@ -255,7 +255,7 @@ export class Models implements ModelsContract {
 			}
 			if (completed) {
 				reportServed(opts, backend);
-				return completed;
+				return finalizeGenerateResult(completed.output, completed.usage, getBackendPricing(backend));
 			}
 		}
 		throw firstError;
@@ -350,7 +350,7 @@ export class Models implements ModelsContract {
 		if (opts.persist !== undefined && typeof opts.persist !== 'boolean')
 			throw new DecisionInputError('persist must be a boolean');
 		const persist = opts.persist === true;
-		if (persist) this.#decisionStore.assertWritable('Decisions');
+		if (persist) (this.#decisionStore ??= getDecisionStore()).assertWritable('Decisions');
 		// the call and its record share one snapshot of the schema and options; nothing the caller mutates afterwards reaches either
 		const call = snapshotSchema(schema);
 		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
@@ -530,7 +530,7 @@ export class Models implements ModelsContract {
 
 	async getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
 		checkDecisionId(id);
-		return (await this.#decisionStore.get(id, resolveCallContext().accounting.tenantId)) as
+		return (await (this.#decisionStore ??= getDecisionStore()).get(id, resolveCallContext().accounting.tenantId)) as
 			DecisionRecord<T> | undefined;
 	}
 
@@ -550,7 +550,7 @@ export class Models implements ModelsContract {
 
 	async recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
 		checkDecisionId(id);
-		return (await this.#decisionStore.recordOutcome(
+		return (await (this.#decisionStore ??= getDecisionStore()).recordOutcome(
 			id,
 			outcome,
 			resolveCallContext().accounting.tenantId
@@ -602,7 +602,7 @@ export class Models implements ModelsContract {
 			row.calibration = calibration.applied.snapshot;
 		}
 		try {
-			await this.#decisionStore.persist(row);
+			await (this.#decisionStore ??= getDecisionStore()).persist(row);
 		} catch (err) {
 			// the fault stays on `cause`: its message can name a data path and this error can reach an HTTP body
 			const error = new DecisionPersistenceError('Decision could not be recorded');
@@ -679,6 +679,28 @@ function usageFromError(err: unknown): TokenUsage | undefined {
 	for (const key of ['promptTokens', 'completionTokens', 'embeddingTokens'] as const)
 		assignFiniteTokenCount(usage, key, (reported as Record<string, unknown>)[key]);
 	return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+/** Runs after the candidate try/catch, so an accounting fault cannot turn a billed success into a fallback call. */
+function finalizeGenerateResult(
+	output: GenerateResult,
+	usage: TokenUsage | undefined,
+	pricing: ModelPricing | undefined
+): GenerateResult {
+	const { usage: _backendUsage, costUsd: _backendCost, ...result } = output;
+	const generateResult: GenerateResult = result;
+	if (usage) generateResult.usage = usage;
+	const costUsd = callCostUsd(usage, pricing);
+	if (costUsd !== undefined) generateResult.costUsd = costUsd;
+	return generateResult;
+}
+
+/** Cost from both token counts; a missing or invalid count leaves the call unpriced rather than under-priced. */
+function callCostUsd(usage: TokenUsage | undefined, pricing: ModelPricing | undefined): number | undefined {
+	if (!pricing || !isTokenCount(usage?.promptTokens) || !isTokenCount(usage?.completionTokens)) return undefined;
+	const costUsd =
+		(usage.promptTokens * pricing.inputPerMtok + usage.completionTokens * pricing.outputPerMtok) / 1_000_000;
+	return Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : undefined;
 }
 
 function buildRecord(

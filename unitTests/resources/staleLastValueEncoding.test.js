@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const RecordEncoderMod = require('#src/resources/RecordEncoder');
 const { RecordEncoder, recordUpdater, setNextEncoding, clearNextEncoding } = RecordEncoderMod;
-const { Encoder } = require('msgpackr');
+const { Encoder } = require('../packageBindings.mts').packageBindings('msgpackr');
 
 function sharedStore() {
 	let buf;

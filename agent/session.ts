@@ -12,7 +12,8 @@
 import { randomUUID } from 'node:crypto';
 import { table } from '../resources/databases.ts';
 import { SYSTEM_SCHEMA_NAME, SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
-import type { AgentMessage, AgentRunStatus, AgentSessionRow, ApprovalRequest } from './types.ts';
+import type { ToolCall } from '../resources/models/types.ts';
+import type { AgentCallUsage, AgentMessage, AgentRunStatus, AgentSessionRow, ApprovalRequest } from './types.ts';
 
 let cachedTable: any;
 
@@ -28,6 +29,7 @@ export const AGENT_SESSION_ATTRIBUTES = [
 	{ name: 'createdAt', type: 'number', indexed: true },
 	{ name: 'updatedAt', type: 'number', indexed: true },
 	{ name: 'lastError', type: 'string' },
+	{ name: 'rejectedCalls' },
 ];
 
 export function getAgentSessionTable(): any {
@@ -166,31 +168,221 @@ export function shrinkNewestToolResults(
 	});
 }
 
+/**
+ * Every status the loop writes after `running` goes through here, in one write with its closing messages
+ * and any open approvals answered under the lock: an ending never leaves a tool call without the response
+ * a provider requires before the next call, and a cancel that landed first keeps its `aborted` status.
+ */
+export function endRun(
+	sessionId: string,
+	end: {
+		append?: AgentMessage[];
+		answerOpenApprovals?: (approval: ApprovalRequest) => string;
+		rejectedCall?: AgentCallUsage;
+		/** Answers each tool call of the last assistant turn that is still without a response. */
+		answerUnansweredCalls?: (toolName: string) => string;
+		/** Leave the status alone when no approval is still unresolved under the lock. */
+		pauseWhileApprovalsOpen?: boolean;
+		status: AgentRunStatus;
+		lastError?: string;
+	}
+): Promise<AgentSessionRow> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		if (end.append) session.messages.push(...end.append);
+		if (end.rejectedCall) (session.rejectedCalls ??= []).push(end.rejectedCall);
+		const now = Date.now();
+		if (end.answerOpenApprovals) closeOpenApprovals(session, end.answerOpenApprovals, now);
+		if (end.answerUnansweredCalls) answerUnansweredCalls(session, end.answerUnansweredCalls, now);
+		const nothingToPauseFor = end.pauseWhileApprovalsOpen && !session.pendingApprovals.some((a) => !a.resolved);
+		if (session.status !== 'aborted' && !nothingToPauseFor) {
+			session.status = end.status;
+			session.lastError = end.lastError;
+		}
+		session.updatedAt = now;
+		await getAgentSessionTable().put(session);
+		return session;
+	});
+}
+
+/**
+ * Cancel a session and answer every open approval in the same write, so the cancel is acknowledged only
+ * once no approved action is left to run on a later prompt, and no tool call is left without a response.
+ * Decided under the lock: a session a run already finished is left as it is. Returns whether it cancelled.
+ */
+export function cancelSession(sessionId: string): Promise<boolean> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		if (session.status === 'completed' || session.status === 'aborted' || session.status === 'error') return false;
+		const now = Date.now();
+		closeOpenApprovals(session, (approval) => cancelledObservation(approval.toolName), now);
+		session.status = 'aborted';
+		session.lastError = 'Cancelled by operator';
+		session.updatedAt = now;
+		await getAgentSessionTable().put(session);
+		return true;
+	});
+}
+
+/**
+ * Inserted right after the turn's existing responses, so the transcript stays sendable even when a prompt
+ * was appended after the turn. Returns whether it answered anything.
+ */
+function answerUnansweredCalls(session: AgentSessionRow, answer: (toolName: string) => string, now: number): boolean {
+	const unanswered = unansweredCalls(session);
+	if (!unanswered) return false;
+	session.messages.splice(
+		unanswered.at,
+		0,
+		...unanswered.calls.map((call) => ({
+			role: 'tool' as const,
+			content: answer(call.name),
+			toolCallId: call.id,
+			createdAt: now,
+		}))
+	);
+	return true;
+}
+
+/** Decided on the row read under the lock, so an approval another writer already claimed is never answered twice. */
+function closeOpenApprovals(
+	session: AgentSessionRow,
+	answer: (approval: ApprovalRequest) => string,
+	now: number
+): void {
+	for (const approval of session.pendingApprovals) {
+		if (approval.consumed) continue;
+		session.messages.splice(responseIndex(session, approval.toolCallId), 0, {
+			role: 'tool',
+			content: answer(approval),
+			toolCallId: approval.toolCallId,
+			createdAt: now,
+		});
+		approval.approved ??= false;
+		approval.resolvedAt ??= now;
+		approval.resolved = true;
+		approval.consumed = true;
+	}
+}
+
+/**
+ * Runs are serialized per session, so a tool call of the latest turn still without a response belongs to
+ * a run that died before writing it: an approval claimed but never given its result, or an inline call.
+ * Each is answered `interrupted`. Nothing is run again.
+ */
+export async function answerInterruptedCalls(sessionId: string): Promise<void> {
+	const current = await getSession(sessionId);
+	if (!current || !unansweredCalls(current)) return;
+	await withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		const now = Date.now();
+		const interrupted = (toolName: string) =>
+			JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: toolName });
+		if (!answerUnansweredCalls(session, interrupted, now)) return;
+		session.updatedAt = now;
+		await getAgentSessionTable().put(session);
+	});
+}
+
+/**
+ * Matched on the latest turn only, as a provider may reuse a tool-call id. A call still waiting on its
+ * approval is left for the drain or `closeOpenApprovals` to answer.
+ */
+function unansweredCalls(session: AgentSessionRow): { calls: ToolCall[]; at: number } | undefined {
+	let turn = session.messages.length - 1;
+	while (turn >= 0 && session.messages[turn].role !== 'assistant') turn--;
+	if (turn < 0) return undefined;
+	const answered = new Set(session.messages.slice(turn + 1).map((message) => message.toolCallId));
+	const awaitingApproval = new Set(session.pendingApprovals.filter((a) => !a.consumed).map((a) => a.toolCallId));
+	const calls = (session.messages[turn].toolCalls ?? []).filter(
+		(call) => !answered.has(call.id) && !awaitingApproval.has(call.id)
+	);
+	if (calls.length === 0) return undefined;
+	return { calls, at: endOfResponses(session, turn) };
+}
+
+/**
+ * Where a response to `toolCallId` goes: after the responses that already follow the latest turn calling
+ * it, so a prompt appended after that turn stays after its responses, as a provider requires.
+ */
+function responseIndex(session: AgentSessionRow, toolCallId: string): number {
+	let turn = session.messages.length - 1;
+	while (turn >= 0 && !session.messages[turn].toolCalls?.some((call) => call.id === toolCallId)) turn--;
+	return turn < 0 ? session.messages.length : endOfResponses(session, turn);
+}
+
+function endOfResponses(session: AgentSessionRow, turn: number): number {
+	let at = turn + 1;
+	while (at < session.messages.length && session.messages[at].role === 'tool') at++;
+	return at;
+}
+
+/** An approval's result, which a prompt appended while it waited must not precede. */
+export function answerToolCall(sessionId: string, toolCallId: string, content: string): Promise<AgentSessionRow> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		const now = Date.now();
+		session.messages.splice(responseIndex(session, toolCallId), 0, {
+			role: 'tool',
+			content,
+			toolCallId,
+			createdAt: now,
+		});
+		session.updatedAt = now;
+		await getAgentSessionTable().put(session);
+		return session;
+	});
+}
+
+/**
+ * Park a gated tool call for the operator. On a session a cancel already marked `aborted`, the call is
+ * answered `cancelled_by_operator` instead, so the cancel is not undone and the call is not left open.
+ */
 export function addPendingApproval(
 	sessionId: string,
 	approval: Omit<ApprovalRequest, 'id' | 'createdAt'>
-): Promise<ApprovalRequest> {
+): Promise<ApprovalRequest | undefined> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
-		const entry: ApprovalRequest = { ...approval, id: randomUUID(), createdAt: Date.now() };
-		session.pendingApprovals.push(entry);
-		session.status = 'awaiting_approval';
-		session.updatedAt = Date.now();
+		const now = Date.now();
+		let entry: ApprovalRequest | undefined;
+		if (session.status === 'aborted') {
+			session.messages.push({
+				role: 'tool',
+				content: cancelledObservation(approval.toolName),
+				toolCallId: approval.toolCallId,
+				createdAt: now,
+			});
+		} else {
+			entry = { ...approval, id: randomUUID(), createdAt: now };
+			session.pendingApprovals.push(entry);
+			session.status = 'awaiting_approval';
+		}
+		session.updatedAt = now;
 		await getAgentSessionTable().put(session);
 		return entry;
 	});
 }
 
-export function markApprovalConsumed(sessionId: string, approvalId: string): Promise<void> {
+export function cancelledObservation(toolName: string): string {
+	return JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: toolName });
+}
+
+/**
+ * Claim a resolved approval before its action runs; only the first claim wins. A cancel or budget stop
+ * therefore closes only approvals whose action has not started, and no tool call gets two responses.
+ * The cost is at-most-once: a crash between the claim and the result write leaves that call unanswered
+ * rather than running an operator-approved action twice.
+ */
+export function claimApproval(sessionId: string, approvalId: string): Promise<boolean> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
 		const entry = session.pendingApprovals.find((a) => a.id === approvalId);
-		if (!entry) throw new Error(`No pending approval ${approvalId} on session ${sessionId}`);
-		if (!entry.resolved) throw new Error(`Approval ${approvalId} not yet resolved`);
-		if (entry.consumed) return;
+		if (!entry?.resolved || entry.consumed) return false;
 		entry.consumed = true;
 		session.updatedAt = Date.now();
 		await getAgentSessionTable().put(session);
+		return true;
 	});
 }
 

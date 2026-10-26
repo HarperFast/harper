@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const path = require('node:path');
-const { startWorker, registerWorkerDataProvider } = require('#js/server/threads/manageThreads');
+const { startWorker, registerWorkerDataProvider } = require('#src/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'workerData-fixture.cjs');
 // Providers registered here filter on this worker name so they can never leak values into

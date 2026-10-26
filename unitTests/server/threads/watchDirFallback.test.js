@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const chokidar = require('chokidar');
 
-const { watchDir } = require('#src/server/threads/manageThreads');
+const { watchDir } = require('#js/server/threads/manageThreads');
 const { _resetForTests: resetWatcherFallbackWarning } = require('#src/utility/watcherFallback');
 
 describe('watchDir watcher fallback', () => {

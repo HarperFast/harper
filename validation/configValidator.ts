@@ -1,12 +1,12 @@
 'use strict';
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import Joi from 'joi';
-import * as os from 'os';
+import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
-import { totalmem } from 'os';
-import * as path from 'path';
+import { totalmem } from 'node:os';
+import * as path from 'node:path';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
@@ -206,6 +206,18 @@ const generativeDecisionEntrySchema = Joi.object({
 const unknownBackendEntrySchema = Joi.object({
 	backend: string.required(),
 }).unknown(true);
+// USD per million tokens. Only generative calls are priced, so every other kind refuses the field
+// rather than accepting a price nothing reads.
+const pricingSchema = Joi.object({
+	inputPerMtok: number.min(0).required(),
+	outputPerMtok: number.min(0).required(),
+}).unknown(false);
+const withPricingFor = (kind, schema) =>
+	schema.keys({ pricing: kind === 'generative' ? pricingSchema.optional() : Joi.forbidden() });
+const inputPrefixesSchema = Joi.object({
+	document: string.allow('').optional(),
+	query: string.allow('').optional(),
+}).unknown(false);
 // A built-in that cannot serve the kind it is listed under fails here, with the kind named, rather
 // than passing as a module specifier and failing at boot.
 function rejectWrongKind(kind) {
@@ -216,20 +228,28 @@ const wrongKindEntrySchema = (kind) =>
 const providerEntrySchema = (kind) =>
 	Joi.alternatives().conditional('.backend', {
 		switch: [
-			{ is: 'ollama', then: ollamaEntrySchema },
-			{ is: 'openai', then: openaiEntrySchema },
-			{ is: 'anthropic', then: anthropicEntrySchema },
-			{ is: 'bedrock', then: bedrockEntrySchema },
+			{ is: 'ollama', then: withPricingFor(kind, ollamaEntrySchema) },
+			{
+				is: 'openai',
+				then: withPricingFor(
+					kind,
+					openaiEntrySchema.keys({
+						inputPrefixes: kind === 'embedding' ? inputPrefixesSchema.optional() : Joi.forbidden(),
+					})
+				),
+			},
+			{ is: 'anthropic', then: withPricingFor(kind, anthropicEntrySchema) },
+			{ is: 'bedrock', then: withPricingFor(kind, bedrockEntrySchema) },
 			{ is: 'generative', then: wrongKindEntrySchema(kind) },
 		],
-		otherwise: unknownBackendEntrySchema,
+		otherwise: withPricingFor(kind, unknownBackendEntrySchema),
 	});
 const decisionEntrySchema = Joi.alternatives().conditional('.backend', {
 	switch: [
 		{ is: 'generative', then: generativeDecisionEntrySchema },
 		{ is: Joi.valid('ollama', 'openai', 'anthropic', 'bedrock'), then: wrongKindEntrySchema('decision') },
 	],
-	otherwise: unknownBackendEntrySchema,
+	otherwise: withPricingFor('decision', unknownBackendEntrySchema),
 });
 const modelsSchema = Joi.object({
 	embedding: Joi.object().pattern(Joi.string(), providerEntrySchema('embedding')).optional(),
@@ -278,6 +298,13 @@ export function validateModelsBlock(models) {
 
 let hdbRoot;
 let skipFsVal = false;
+
+const healthThresholds = (warningDefault: number, errorDefault: number) =>
+	Joi.object({ warning: number.min(0).max(100).optional(), error: number.min(0).max(100).optional() })
+		.unknown(false)
+		.custom((value, helpers) =>
+			(value.warning ?? warningDefault) <= (value.error ?? errorDefault) ? value : helpers.error('any.invalid')
+		);
 
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
@@ -484,6 +511,22 @@ export function configValidator(configJson, skipFsValidation = false) {
 				.pattern(string, Joi.alternatives([string, number, boolean]))
 				.optional(),
 		}).required(),
+		status: Joi.object({
+			healthChecks: Joi.object({
+				enabled: boolean.optional(),
+				intervalSeconds: number.min(1).max(2147483).optional(),
+				thresholds: Joi.object({
+					disk: healthThresholds(80, 95),
+					memory: healthThresholds(80, 95),
+					cpu: healthThresholds(85, 95),
+				})
+					.unknown(false)
+					.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
+		}).optional(),
 		threads: Joi.alternatives(
 			threadsConstraints.optional(),
 			Joi.object({

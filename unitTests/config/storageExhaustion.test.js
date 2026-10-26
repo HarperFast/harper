@@ -359,10 +359,13 @@ describe('log writes that cannot land (#847)', function () {
 		// The recursion this guards against runs through console: installStdioGuard routes console
 		// output back into the file logger. Make any console use fatal, so a fallback that reaches
 		// for it fails the test outright rather than depending on the guard being wired here.
-		console.log = console.error = () => { throw new Error('fallback used console'); };
-		const logger = createLogger({ path: '/dev/full', level: 'error' });
-		for (let i = 0; i < 3; i++) logger.error('line ' + i + ' cannot be written');
-		process.stdout.write('CHILD-SURVIVED\\n');
+		// Drain module-loader warnings before installing the fatal-console oracle.
+		setImmediate(() => {
+			console.log = console.error = () => { throw new Error('fallback used console'); };
+			const logger = createLogger({ path: '/dev/full', level: 'error' });
+			for (let i = 0; i < 3; i++) logger.error('line ' + i + ' cannot be written');
+			process.stdout.write('CHILD-SURVIVED\\n');
+		});
 	`;
 
 	it('falls back to stdio instead of throwing or recursing', function () {

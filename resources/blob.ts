@@ -11,7 +11,7 @@
  *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
  */
 
-import { addExtension, pack, Packr } from 'msgpackr';
+import { addExtension, Packr } from 'msgpackr';
 import {
 	readFile,
 	rename,
@@ -48,10 +48,11 @@ import {
 import type { ReadStream, StatsFs } from 'node:fs';
 import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
-import { ensureDirSync } from 'fs-extra';
+import _typestrip_fs_extra from 'fs-extra';
+const { ensureDirSync } = _typestrip_fs_extra;
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
-import { join, dirname } from 'path';
+import { join, dirname } from 'node:path';
 import { logger } from '../utility/logging/logger.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import type { RootDatabase } from 'lmdb';
@@ -156,6 +157,7 @@ export function isBlobReceiveInFlight(fileId: string | null | undefined, store: 
 }
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
+const blobNameHasSetter = Boolean(Object.getOwnPropertyDescriptor(Blob.prototype, 'name')?.set);
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
@@ -3318,6 +3320,11 @@ export function collectRetainedFileIds(record: any): Set<string> | undefined {
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
+// Extension 11's `pack()` runs inside an outer Packr.pack() call — including msgpackr's
+// module-level `pack()` singleton used by the public `application/x-msgpack` serializer.
+// Calling that singleton here would re-enter `defaultPackr.pack()` and reset its closure
+// `start` offset to 0, prepending stale shared-buffer bytes to the outer frame.
+const blobPackr = new Packr({ useRecords: false });
 
 addExtension({
 	Class: Blob,
@@ -3325,6 +3332,14 @@ addExtension({
 	unpack: function (buffer) {
 		const blobInfo = copyingUnpacker.unpack(buffer);
 		const blob = new FileBackedBlob();
+		// Bun's inherited name setter would hide this stored property from the next encoding.
+		if (blobNameHasSetter && blobInfo[0] && Object.hasOwn(blobInfo[0], 'name'))
+			Object.defineProperty(blob, 'name', {
+				value: blobInfo[0].name,
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
 		Object.assign(blob, blobInfo[0]); // copy any properties
 		if (typeof blobInfo[1] !== 'object') {
 			// this is a reference, not followed by any buffer
@@ -3371,7 +3386,7 @@ addExtension({
 				(storageInfo.contentBuffer?.length < FILE_STORAGE_THRESHOLD || blob.saveInRecord)
 			) {
 				options.size = storageInfo.contentBuffer.length;
-				return pack([options, storageInfo.contentBuffer]);
+				return blobPackr.pack([options, storageInfo.contentBuffer]);
 			}
 		}
 		if (encodeForStorageForRecordId !== undefined) {
@@ -3389,12 +3404,12 @@ addExtension({
 			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
 			// write that supersedes, not a file already awaiting reclamation from a previous one.
 			cancelBlobReclamation(storageInfo);
-			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+			return blobPackr.pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
 			if (currentBlobCallback) {
 				currentBlobCallback(blob);
-				return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+				return blobPackr.pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 			}
 			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 			// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
@@ -3419,7 +3434,7 @@ addExtension({
 					// so the receiver holds the gap and retries rather than replicating the stub (harper-pro#481/#429).
 					if (type !== PENDING_TYPE && size === buffer.length - HEADER_SIZE && sizeMatchesDescriptor) {
 						// the file is there and complete, we can return the encoding
-						return Buffer.concat([pack([options]), buffer]);
+						return Buffer.concat([blobPackr.pack([options]), buffer]);
 					}
 				}
 				// declare it as being fulfilled

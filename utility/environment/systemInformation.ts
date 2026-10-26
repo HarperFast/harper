@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../packageUtils.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Systeminformation } from 'systeminformation';
@@ -5,16 +6,19 @@ import logger from '../logging/harper_logger.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 import { getQuotaStatus } from '../../server/storageReclamation.ts';
 import { lmdbGetTableSize } from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize.ts';
-import { getThreadInfo } from '../../server/threads/manageThreads.js';
+import { getThreadInfo } from '../../server/threads/manageThreads.ts';
 import * as env from './environmentManager.ts';
+import { PRODUCT_NAME } from '../packageUtils.js';
 import { getDatabases, type Table } from '../../resources/databases.ts';
 import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts';
-import { RocksDatabase, StatsHistogramData } from '@harperfast/rocksdb-js';
+import { RocksDatabase, type StatsHistogramData } from '@harperfast/rocksdb-js';
 
-const loadSi = () => require('systeminformation') as typeof import('systeminformation');
-
-env.initSync();
-
+const loadSi = () => loadNativePackage('systeminformation') as typeof import('systeminformation');
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 //this will hold the system_information which is static to improve performance
 let systemInformationCache = undefined;
 
@@ -233,7 +237,7 @@ async function getHdbPid(): Promise<number | null> {
 	} catch (err) {
 		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
 			logger.warn(
-				`Unable to locate 'hdb.pid' file, try stopping and starting Harper. This could be because Harper is not running.`
+				`Unable to locate 'hdb.pid' file, try stopping and starting ${PRODUCT_NAME}. This could be because ${PRODUCT_NAME} is not running.`
 			);
 		} else {
 			throw err;
@@ -703,7 +707,7 @@ const attributeMap: Record<string, () => Promise<any> | any> = {
 	harperdb_processes: getHDBProcessInfo,
 	table_size: getTableSize,
 	metrics: getMetrics,
-	threads: getThreadInfo,
+	threads: (...args) => getThreadInfo(...args),
 };
 
 /**

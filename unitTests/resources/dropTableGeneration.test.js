@@ -20,8 +20,8 @@ const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
 const { logger } = require('#src/utility/logging/logger');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { schemaHandler } = require('#js/server/itc/serverHandlers');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { schemaHandler } = require('#src/server/itc/serverHandlers');
 
 const TEST_DB = 'test';
 const IS_LMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';

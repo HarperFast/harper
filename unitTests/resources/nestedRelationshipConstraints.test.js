@@ -165,6 +165,66 @@ describe('nested relationship constraints', function () {
 		return rows;
 	}
 	const ids = (rows, name = 'children') => rows.map((row) => row[name].map((child) => child?.id));
+	for (const count of ['exact', 'estimated'])
+		it(`releases counted nested selections (${count})`, async function () {
+			const context = {};
+			const links = [];
+			await transaction(context, async (txn) => {
+				await Parent.get('p1', context);
+				for (let link = txn; link; link = link.next) links.push([link, link.readTxnsUsed]);
+				const rows = await Parent.search(
+					{
+						count,
+						limit: 1,
+						sort: { attribute: 'id' },
+						select: ['id', { name: 'children', limit: 1, select: ['id', 'observed'] }],
+					},
+					context
+				);
+				assert.deepStrictEqual(
+					rows.map((row) => ({ ...row })),
+					[{ id: 'p1', children: [{ id: 'c1', observed: 10 }] }]
+				);
+				if (count === 'exact') assert.strictEqual(rows.recordCount, 2);
+				else assert(rows.recordCount >= 2);
+				assert.strictEqual(rows.recordCountExact, count === 'exact');
+				for (const [link, references] of links) {
+					assert.strictEqual(link.closeOwnedReadIterators(), 0);
+					assert.strictEqual(link.readTxnsUsed, references);
+				}
+			});
+			for (const [link] of links) assert.strictEqual(link.readTxnsUsed, 0);
+		});
+	it('releases a counted nested selection when projection fails', async function () {
+		const context = {};
+		Child.setComputedAttribute('observed', () => {
+			throw new Error('counted projection failure');
+		});
+		try {
+			await transaction(context, async (txn) => {
+				await Parent.get('p1', context);
+				const links = [];
+				for (let link = txn; link; link = link.next) links.push([link, link.readTxnsUsed]);
+				await assert.rejects(
+					() =>
+						Parent.search(
+							{ count: 'exact', limit: 1, select: ['id', { name: 'children', limit: 1, select: ['observed'] }] },
+							context
+						),
+					/counted projection failure/
+				);
+				for (const [link, references] of links) {
+					assert.strictEqual(link.closeOwnedReadIterators(), 0);
+					assert.strictEqual(link.readTxnsUsed, references);
+				}
+			});
+		} finally {
+			Child.setComputedAttribute('observed', (record) => {
+				projected.push(record.id);
+				return record.score;
+			});
+		}
+	});
 	it('retains unfiltered relationship contents', async function () {
 		assert.deepStrictEqual(ids(await get('/Parent/?select(id,children{id,state,score})')), [
 			['c1', 'c2', 'c3', 'c4'],

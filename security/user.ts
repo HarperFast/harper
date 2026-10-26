@@ -35,6 +35,7 @@ export interface User {
 	active?: boolean;
 	username: string;
 	role?: UserRole;
+	authExpiresAt?: number;
 	__updatedtime__?: number;
 	__createdtime__?: number;
 	[other: string]: unknown;
@@ -94,11 +95,12 @@ import * as delete_ from '../dataLayer/delete.ts';
 import * as validation from '../validation/user_validation.ts';
 import * as search from '../dataLayer/search.ts';
 import * as hdbUtility from '../utility/common_utils.ts';
-import * as validate from 'validate.js';
+import _validate from 'validate.js';
+// validate.js is a CJS module; in ESM (typestrip) the default export IS the library object.
+const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
-import { promisify } from 'util';
-import * as env from '../utility/environment/environmentManager.ts';
-import systemSchema from '../json/systemSchema.json';
+import { promisify } from 'node:util';
+import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
 import cloneDeep from 'lodash/cloneDeep.js';
@@ -119,13 +121,13 @@ import { contextStorage } from '../resources/transaction.ts';
 import { deliveryCertified } from '../resources/transactionBroadcast.ts';
 import { writeKey } from 'ordered-binary';
 
-server.getUser = (username: string, password?: string | null): Promise<User> => {
+function getUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password, password != null);
-};
+}
 
-server.authenticateUser = (username: string, password?: string | null): Promise<User> => {
+function authenticateUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password);
-};
+}
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -135,8 +137,6 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 };
 const passwordHashCache = new Map();
 const promiseDelete = promisify(delete_.delete_);
-const configuredHashFunction =
-	env.get(terms.CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION) ?? password.HASH_FUNCTION.SHA256;
 const { USER_TABLE_NAME, ROLE_TABLE_NAME } = terms.SYSTEM_TABLE_NAMES;
 
 async function addUser(user: User | any): Promise<string> {
@@ -160,8 +160,9 @@ async function addUser(user: User | any): Promise<string> {
 		throw new ClientError(HDB_ERROR_MSGS.DUP_ROLES_FOUND(cleanUser.role), HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-	cleanUser.hash_function = configuredHashFunction;
+	const hashFunction = password.configuredHashFunction();
+	cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+	cleanUser.hash_function = hashFunction;
 	cleanUser.role = searchRole[0].id;
 
 	const insertResponse = await insert.insert({
@@ -203,8 +204,9 @@ async function alterUser(jsonMessage) {
 	}
 
 	if (!hdbUtility.isEmpty(cleanUser.password) && !hdbUtility.isEmptyOrZeroLength(cleanUser.password.trim())) {
-		cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-		cleanUser.hash_function = configuredHashFunction;
+		const hashFunction = password.configuredHashFunction();
+		cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+		cleanUser.hash_function = hashFunction;
 	}
 
 	// the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly
@@ -544,10 +546,13 @@ function userRecordVersions(username: string): UserProvenance {
 
 /**
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
- * before it was resolved; a write in between then shows as a change.
+ * before it was resolved; a write in between then shows as a change. Returns whether `user` was
+ * resolved outside this module.
  */
-function trackUserRecords(user: User, versions: UserProvenance): void {
-	if (user && typeof user === 'object' && !(user as any)[PROVENANCE]) trackedProvenance.set(user, versions);
+function trackUserRecords(user: User, versions: UserProvenance): boolean {
+	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return false;
+	trackedProvenance.set(user, versions);
+	return true;
 }
 
 /**
@@ -813,7 +818,7 @@ export function _userChangeSubscription(tableName: string): any {
 }
 
 let invalidateCallbacks = [];
-(server as any).invalidateUser = function (user: User | any) {
+function invalidateUserImpl(user: User | any) {
 	for (let callback of invalidateCallbacks) {
 		try {
 			callback(user);
@@ -821,8 +826,13 @@ let invalidateCallbacks = [];
 			harperLogger.error('Error invalidating user', error);
 		}
 	}
-};
+}
 
-server.onInvalidatedUser = function (callback) {
+function onInvalidatedUserImpl(callback) {
 	invalidateCallbacks.push(callback);
-};
+}
+
+server.getUser = getUserImpl;
+server.authenticateUser = authenticateUserImpl;
+server.onInvalidatedUser = onInvalidatedUserImpl;
+(server as any).invalidateUser = invalidateUserImpl;

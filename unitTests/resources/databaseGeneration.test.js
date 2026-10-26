@@ -12,7 +12,7 @@ const {
 	stampDatabaseDirectory,
 } = require('#src/resources/auditStore');
 const { DatabaseClosingError, DatabaseGenerationChangedError } = require('#src/utility/errors/hdbError');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -411,5 +411,82 @@ describe('Database generation on LMDB', () => {
 		await reopened.put('A', { value: 1 });
 		await waitFor(() => current.some((event) => event.value?.value === 1));
 		resubscribed.end();
+	});
+});
+
+describe('Commit notification racing a database close', () => {
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	// `close` leaves the store closing or closed with the subscription still registered (it ends at reopen) and
+	// returns that status; the notify pass a late commit notification schedules must then read nothing.
+	async function notifyAfter(name, close) {
+		const T = tableInOwnDatabase(name);
+		await T.put('A', { value: 0 });
+		const auditStore = T.auditStore;
+		let notifyCommitted;
+		const { on, getRange } = auditStore;
+		auditStore.on = function (event, callback) {
+			if (event === 'committed') notifyCommitted = callback;
+			return on.call(this, event, callback);
+		};
+		const subscription = await T.subscribe({ id: 'A', listener: () => {} });
+		const { subscriptionLogRange } = auditStore;
+		const reads = [];
+		// LMDB's pass reads through getRange; RocksDB's through the subscription's log range
+		auditStore.getRange = function (...args) {
+			reads.push(auditStore.rootStore.status);
+			return getRange.apply(this, args);
+		};
+		if (subscriptionLogRange) {
+			auditStore.subscriptionLogRange = {
+				[Symbol.iterator]() {
+					reads.push(auditStore.rootStore.status);
+					return subscriptionLogRange[Symbol.iterator]();
+				},
+			};
+		}
+		try {
+			assert.ok(notifyCommitted, 'precondition: the subscription listens for commits');
+			const expectedStatus = await close(T);
+			assert.strictEqual(subscription.closed, false, 'precondition: the subscription is still registered');
+			notifyCommitted();
+			// queued behind the notify pass, so (a store never reopens) its status was this one at the pass
+			const statusAtPass = await new Promise((resolve) => setImmediate(() => resolve(auditStore.rootStore.status)));
+			assert.strictEqual(statusAtPass, expectedStatus, 'precondition: the store status the pass saw');
+			// a read would have armed LMDB's read-txn reset timer; let it fire
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			assert.deepStrictEqual(reads, [], `no notify read on a ${expectedStatus} store`);
+		} finally {
+			auditStore.on = on;
+			auditStore.getRange = getRange;
+			auditStore.subscriptionLogRange = subscriptionLogRange;
+			subscription.end();
+		}
+	}
+
+	it('skips the notify pass for a commit notification that arrives after the store closed', async function () {
+		this.timeout(30000);
+		await notifyAfter('CloseRaceClosed', async () => {
+			assert.ok(await closeDatabase('generation_CloseRaceClosed'));
+			return 'closed';
+		});
+	});
+
+	it('skips the notify pass for a commit notification that arrives while the store is closing', async function () {
+		if (isRocksDB) return this.skip(); // a RocksDB store has no closing state
+		this.timeout(30000);
+		let closing;
+		await notifyAfter('CloseRaceClosing', async (T) => {
+			const rootStore = T.primaryStore.rootStore;
+			T.primaryStore.prefetch(['A']);
+			closing = rootStore.close();
+			assert.strictEqual(rootStore.status, 'closing', 'precondition: the close is waiting on the read');
+			return 'closing';
+		});
+		await closing;
+		assert.ok(await closeDatabase('generation_CloseRaceClosing'));
 	});
 });

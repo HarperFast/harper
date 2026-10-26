@@ -10,7 +10,7 @@ const {
 } = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration, LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const {
@@ -22,7 +22,7 @@ const {
 const { setTimeout: delay } = require('node:timers/promises');
 const { PassThrough } = require('node:stream');
 const { getEventListeners } = require('node:events');
-const { RocksDatabase, registryStatus, constants } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, getRegistryStatus, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { RETRY_NOW_VALUE } = constants;
 const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -448,22 +448,30 @@ describe('Write txn timeout', () => {
 		setExpiration(20);
 		try {
 			const context = { sourceApply: true };
+			let ownReport;
 			await transaction(context, async () => {
 				await IndexedResource.put(402, { t: 8 }, context);
-				await waitFor(
-					() =>
-						warnings.some(([message]) => String(message).includes('Harper transaction has held RocksDB transaction')),
-					2000
-				);
+				const link = databaseTxns(context)[0];
+				const nativeId = link.transaction.id;
+				const databasePath = link.db.rootStore.path;
+				// The monitor also names other holders on this thread, often a tick before this one, so only this
+				// handle's native id on this database may end the wait; each decoy matches one half of that key.
+				const foreign = (id, path) =>
+					`Harper transaction has held RocksDB transaction ${id} for 1s on thread 0, database test.IndexedTxnTable/ (${path}), holding 0 staged write(s), state: over-limit.`;
+				logger.warn(foreign(nativeId + 1, databasePath));
+				logger.warn(foreign(nativeId, `${databasePath}-other`));
+				const isOwnReport = ([message]) =>
+					String(message).includes(`RocksDB transaction ${nativeId} `) && String(message).includes(`(${databasePath})`);
+				ownReport = await waitFor(() => warnings.find(isOwnReport), {
+					timeout: 2000,
+					message: () =>
+						`no report named RocksDB transaction ${nativeId} on ${databasePath}; captured: ${JSON.stringify(
+							warnings.map(([message]) => String(message))
+						)}`,
+				});
 			});
-			const reported = warnings.filter(([message]) =>
-				String(message).includes('Harper transaction has held RocksDB transaction')
-			);
-			assert.ok(reported.length > 0, 'the un-reaped source-apply holder must be named');
-			const indexedTableReport = reported.find(([message]) => /IndexedTxnTable/.test(String(message)));
-			assert.ok(indexedTableReport, 'the report for this transaction must name IndexedTxnTable');
-			assert.match(indexedTableReport[0], /state: [^,]*source-apply/);
-			assert.match(indexedTableReport[0], /transaction \d+/, 'the native id is the join key with the registry sweep');
+			assert.match(ownReport[0], /IndexedTxnTable/, 'the report for this transaction must name IndexedTxnTable');
+			assert.match(ownReport[0], /state: [^,]*source-apply/);
 			// Attribution must not have changed the exemption it is reporting on.
 			assert.strictEqual((await IndexedResource.get(402))?.t, 8, 'source-apply write should still be preserved');
 		} finally {
@@ -598,7 +606,7 @@ describe('Write txn timeout', () => {
 			if (isLMDB) this.skip();
 			const store = IndexedResource.primaryStore;
 			const rootStore = store.rootStore;
-			const liveTxns = () => registryStatus().reduce((total, db) => total + db.transactions, 0);
+			const liveTxns = () => getRegistryStatus().reduce((total, db) => total + db.transactions, 0);
 			const snapshots = () => rootStore.getDBIntProperty('rocksdb.num-snapshots');
 
 			const baselineTxns = liveTxns();

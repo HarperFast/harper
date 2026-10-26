@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { hostname } = require('node:os');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { INVALIDATED } = require('#src/resources/Table');
 const { logger } = require('#src/utility/logging/logger');
@@ -250,5 +250,126 @@ describe('Writer residency (harper#2257)', () => {
 		assert.equal(Records.primaryStore.getEntry('by-id')?.value, undefined, 'the writer keeps no copy');
 		await Records.patch('by-id', { note: 'added' });
 		assert.equal(Records.primaryStore.getEntry('by-id')?.value, undefined, 'nor after a patch');
+	});
+
+	describe('when replication worker pool is active', () => {
+		const { setActiveWorkerPools } = require('#src/server/threads/workerPools');
+		const harperLogger = require('#js/utility/logging/harper_logger');
+
+		function capturingErrors(run) {
+			const errors = [];
+			const originalError = harperLogger.error;
+			harperLogger.error = (...args) => {
+				errors.push(args.map(String).join(' '));
+			};
+			try {
+				run();
+			} finally {
+				harperLogger.error = originalError;
+			}
+			return errors;
+		}
+
+		afterEach(() => {
+			setActiveWorkerPools([]);
+		});
+
+		it('does not log when the replication pool is not active', () => {
+			setActiveWorkerPools([]);
+			const FreshTable = table({
+				table: 'WriterResidencyNoPool',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const errors = capturingErrors(() => {
+				FreshTable.setResidency(() => [PEER]);
+			});
+			FreshTable.setResidency(undefined);
+			assert.strictEqual(errors.length, 0);
+		});
+
+		it('logs an error once per table on setResidency / setResidencyById and ignores clearing', () => {
+			setActiveWorkerPools(['replication']);
+			const PoolTable = table({
+				table: 'WriterResidencyPoolActive',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const fn = () => [PEER];
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					PoolTable.setResidency(undefined);
+					PoolTable.setResidencyById(undefined);
+				}),
+				[]
+			);
+			const firstErrors = capturingErrors(() => {
+				PoolTable.setResidency(fn);
+			});
+			assert.strictEqual(firstErrors.length, 1);
+			assert.match(firstErrors[0], /WriterResidencyPoolActive/);
+			assert.match(firstErrors[0], /setResidency/);
+			assert.match(firstErrors[0], /default residency placement/);
+			assert.match(firstErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
+
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					PoolTable.setResidency(fn);
+					PoolTable.setResidencyById(fn);
+				}),
+				[]
+			);
+			PoolTable.setResidency(undefined);
+			PoolTable.setResidencyById(undefined);
+
+			const SecondPoolTable = table({
+				table: 'WriterResidencyPoolActiveById',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const byIdErrors = capturingErrors(() => {
+				SecondPoolTable.setResidencyById(fn);
+			});
+			assert.strictEqual(byIdErrors.length, 1);
+			assert.match(byIdErrors[0], /WriterResidencyPoolActiveById/);
+			assert.match(byIdErrors[0], /setResidencyById/);
+			assert.match(byIdErrors[0], /invalidation entries \(residency partials\)/);
+			assert.match(byIdErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
+			SecondPoolTable.setResidencyById(undefined);
+		});
+
+		it('logs an error once per table when setComputedAttribute registers an indexed JS resolver', () => {
+			setActiveWorkerPools(['replication']);
+			const ComputedPoolTable = table({
+				table: 'ComputedIndexPoolActive',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'unindexedScore', computed: true },
+					{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
+					{ name: 'indexedScore', computed: true, indexed: { type: 'value' } },
+				],
+			});
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					ComputedPoolTable.setComputedAttribute('unindexedScore', (rec) => rec.id);
+				}),
+				[]
+			);
+			const errors = capturingErrors(() => {
+				ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+			});
+			assert.strictEqual(errors.length, 1);
+			assert.match(errors[0], /ComputedIndexPoolActive/);
+			assert.match(errors[0], /setComputedAttribute \(e\.g\. 'indexedScore'\)/);
+			assert.match(errors[0], /unresolvedComputedIndexes\(\)/);
+			assert.match(errors[0], /replication\.threads: 0 in harper-config\.yaml/);
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+				}),
+				[]
+			);
+		});
 	});
 });

@@ -13,6 +13,8 @@ const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
 const { materializePerPidRoot } = require('./perPidRoot.js');
+const lifecycle = require('#src/utility/lifecycle');
+const { types } = require('node:util');
 
 let envMgrInitSyncStub;
 
@@ -63,9 +65,11 @@ function preTestPrep(testConfigObj) {
 	if (envMgrInitSyncStub) {
 		envMgrInitSyncStub.restore();
 	}
-	envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
-		env.initTestEnvironment(testConfigObj);
-	});
+	if (!types.isModuleNamespaceObject(env)) {
+		envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
+			env.initTestEnvironment(testConfigObj);
+		});
+	}
 	process.on('unhandledRejection', (reason) => {
 		// Ignore @datadog/pprof errors - the module has no native build for Electron test environment
 		if (reason?.message?.includes('No native build was found for runtime=electron')) {
@@ -89,6 +93,12 @@ function preTestPrep(testConfigObj) {
 	// Try to change to bin
 	changeProcessToBinDir();
 	env.initTestEnvironment(testConfigObj);
+
+	// Drain startup hooks so modules that defer side effects via `onStartup(...)`
+	// (server-singleton wiring, listener registration, config-derived constants)
+	// see a wired-up state. Production calls this from `bin/harper.ts`; tests
+	// that go through this helper get the same effect. Idempotent.
+	void lifecycle.runStartup();
 }
 
 /**
@@ -196,12 +206,12 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  *
  * It deliberately does NOT remove the per-PID root. Removing the root removes the files of every
  * database the process has open, not just the tables passed in — `system`, `dev`, and whatever
- * else the suite touched, each still held dozens of handles deep (`registryStatus()` reports
+ * else the suite touched, each still held dozens of handles deep (`getRegistryStatus()` reports
  * refCounts in the tens after this runs). Those stores go on writing into unlinked files and then
  * fail their flush whenever they finally close, which rocksdb-js reports as "Failed to flush
  * database during close": an uncaught throw out of the exit listener, attributed to no test.
  * Dropping the tables is what the callers actually want; the root itself is removed at process
- * exit, after the databases have closed (see the afterAll hook in mocha.init.js).
+ * exit, after the databases have closed (see completion handling in mocha.init.js).
  *
  * @param envs
  * @returns {Promise<void>}
@@ -711,7 +721,38 @@ async function seedUsers(users = []) {
 	await new Promise((resolve) => setImmediate(resolve));
 }
 
+/**
+ * A catalog (`__dbis__`) wrapper is opened once per root and reused, and its own `put` is a snapshot of
+ * `putSync` taken at open, so a test patching the prototype's `putSync` must route `put` through it.
+ */
+function routePutThroughPutSync(instance) {
+	if (!Object.hasOwn(instance, 'put')) return () => {};
+	const ownPut = instance.put;
+	instance.put = function (...args) {
+		return this.putSync(...args);
+	};
+	return () => {
+		instance.put = ownPut;
+	};
+}
+
+/**
+ * Install `replacement` as `instance[name]`; the returned restore puts the instance back exactly as it was. A reused
+ * wrapper must not keep an own copy of a prototype method, which would shadow later prototype patches.
+ */
+function stubMethod(instance, name, replacement) {
+	const hadOwn = Object.prototype.hasOwnProperty.call(instance, name);
+	const saved = instance[name];
+	instance[name] = replacement;
+	return function restore() {
+		if (hadOwn) instance[name] = saved;
+		else delete instance[name];
+	};
+}
+
 module.exports = {
+	stubMethod,
+	routePutThroughPutSync,
 	changeProcessToBinDir,
 	deepClone,
 	mochaAsyncWrapper,

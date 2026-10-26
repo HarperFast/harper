@@ -8,6 +8,12 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Core runtime and product paths (`packageUtils.js`)
+
+Core-owned files resolve from their runtime module tree, including lazy plugin URLs and the shared compiler-emitted `systemSchema.js` JSON asset. Package metadata, public relative-worker paths and compiled product startup keep their package owner. `packageUtils.test.js` and `typestrip-runtime.test.mjs` enforce these boundaries with standalone/embedded builds, real workers and one product CLI invocation.
+
+`loadNativePackage(name)` retains ordinary `require(name)` resolution, including its missing-module error. A trusted entry filename as its second argument loads that file beside the installed package's exported manifest. HTTP uses this boundary lazily on Bun to bypass the builtin `ws` substitution; a missing installed package fails startup instead of falling back to that substitution.
+
 ## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
 
 libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with
@@ -17,7 +23,7 @@ and libuv **aborts the process** rather than failing the watch — there is no J
 `isWatcherExhaustionError`/polling recovery never runs (harper#2234).
 
 The trap is that libuv only stores that directory for **file** targets, which reads as a narrow
-surface until you follow chokidar: v4 opens a per-file `fs.watch` for every file it discovers inside
+surface until you follow chokidar: it opens a per-file `fs.watch` for every file it discovers inside
 a watched tree, so one directory watch arms hundreds of file watches.
 
 So `canonicalizeWatchPath` runs on every path before it reaches `fs.watch` (directly or through
@@ -81,3 +87,11 @@ For the estimate to bound work, the walk must see exactly what `util.inspect` wi
 The walk masks the value of a data property or Map entry whose key (a symbol by its description) matches `CREDENTIAL_KEY_PATTERN`, the one list shared with the MCP audit log (`components/mcp/audit.ts`) — a new credential key shape goes there. It is a substring match, so `author` is masked too. Masking is structural: a custom inspect hook that returns a secret as a primitive renders it. `HdbError`'s report flattening (`messageText`) runs before `inspectForLog` and is not masked, because its values are validation reasons, often listed under a field named `password`.
 
 Tests: the `inspectForLog` block in `unitTests/utility/logging/harper_logger.test.js`.
+
+## Local messages name the product through `PRODUCT_NAME` (`utility/packageUtils.js`)
+
+Startup, install, restart, stop, upgrade and status messages about the local instance interpolate `PRODUCT_NAME`, the `productName` of the package.json `findPackageJson()` resolves — Harper's own, or Harper Pro's root manifest when core runs compiled under its `dist/core` (Harper Pro ships no other package.json on that path; its `unitTests/bin/productName.test.mjs` asserts both). Distributions brand these messages by declaring `productName`, never by rewriting core sources: Harper Pro's former build-time `s/Harper/Harper Pro/` stopped matching when `bin/` moved to TypeScript, and over the `.ts` sources it would also have put a space into the unquoted deploy multipart boundary. Messages about a remote target or Fabric, and identifiers such as that boundary, keep the literal "Harper".
+
+## Logger status dispatch uses the active runtime facade
+
+`logging/harper_logger.ts` routes `status()` through the runtime's existing public object: CommonJS `module.exports` or the native ESM default facade. Read the CJS object inside each call, after export assignment, so replaced log methods remain observable; source execution must not evaluate an unguarded `module`. Keep new status methods and the existing startup aliases on both facades. The logger completes initialization before status dispatch; `initLogSettings()` does not call `status()`. Enforced by the fresh-process source/compiled checks in `typestrip-runtime.test.mjs`.

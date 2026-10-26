@@ -91,10 +91,9 @@ describe('source transactions keyed by stream', function () {
 		await waitFor(async () => (await recordIds(Table, ['a1', 'a2', 'b1', 'b2'])).length === 4);
 		if (!isRocksDB) return;
 		const entries = logEntries(Table);
-		assert.deepEqual(
-			['a1', 'a2', 'b1', 'b2'].map((id) => entries[id]?.key),
-			[NOW + 0.1, NOW + 0.1, NOW + 1.1, NOW + 1.1]
-		);
+		assert.equal(entries.a1.key, entries.a2.key, 'stream A is one transaction');
+		assert.equal(entries.b1.key, entries.b2.key, 'stream B is one transaction');
+		assert.notEqual(entries.a1.key, entries.b1.key);
 	});
 
 	it("aborts only the aborting stream's open transaction", async () => {

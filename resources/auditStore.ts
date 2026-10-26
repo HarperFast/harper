@@ -1,11 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { readKey, writeKey } from 'ordered-binary';
-import { initSync, get as envGet } from '../utility/environment/environmentManager.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.js';
+import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
+import {
+	LAST_TIMESTAMP_PLACEHOLDER,
+	HAS_STRUCTURE_UPDATE,
+	PENDING_LOCAL_TIME,
+	RECEIVED_IDENTITY_REF,
+} from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
@@ -20,6 +25,7 @@ import {
 	forgetOriginFloorRegistry,
 	isValidFloor,
 	publishOriginFloor,
+	originFloorsDurable,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
 
@@ -40,7 +46,6 @@ import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
  * username
  * remaining bytes (optional, not included for deletes/invalidation): the record itself, using the same encoding as its primary store
  */
-initSync();
 
 export type AuditRecord = {
 	version: number; // the record's own version: LWW ordering, @updatedTime, ETag
@@ -456,8 +461,9 @@ export function openAuditStore(rootStore) {
 		scheduleAuditCleanup();
 		if (isRocksAuditStore && !isReadOnlyMode()) {
 			let floorErrorLoggedAt = 0;
+			let floorSyncing = false;
 			const certify = () => {
-				if (storeClosing()) return;
+				if (storeClosing() || floorSyncing) return;
 				try {
 					const floor = certifyOriginFloor(rootStore);
 					if (floor === null) {
@@ -467,7 +473,27 @@ export function openAuditStore(rootStore) {
 					}
 					if (floor === undefined) return;
 					persistOriginClosedFloor(auditStore, floor);
-					publishOriginFloor(rootStore, floor);
+					// Readers consume only the published value, so a floor is advertised only once its record is
+					// on disk: a restart after power loss then still seeds the ratchet above it.
+					const sync = originFloorsDurable(rootStore) ? rootStore.syncWal() : undefined;
+					if (!sync) {
+						publishOriginFloor(rootStore, floor);
+						return;
+					}
+					floorSyncing = true;
+					sync.then(
+						() => {
+							floorSyncing = false;
+							if (!storeClosing()) publishOriginFloor(rootStore, floor);
+						},
+						(error: unknown) => {
+							floorSyncing = false;
+							if (Date.now() - floorErrorLoggedAt > 60_000) {
+								floorErrorLoggedAt = Date.now();
+								warnContained('Error syncing the origin-closed floor', error);
+							}
+						}
+					);
 				} catch (error) {
 					// The last persisted floor stays advertised; a stuck floor is reported through its lag.
 					if (Date.now() - floorErrorLoggedAt > 60_000) {
@@ -484,9 +510,11 @@ export function openAuditStore(rootStore) {
 		for (const time of auditStore.getKeys({ reverse: true, limit: 1 })) {
 			if (time > Date.now()) {
 				timestampErrored = true;
-				harperLogger.error(
-					'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
-				);
+				harperLogger
+					.status({ problem: 'system.time-reversal' })
+					.error(
+						'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
+					);
 			}
 		}
 	}
@@ -1560,7 +1588,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				for (let i = 0; i < count; i++) {
 					const refVersion = decoder.readFloat64();
 					const refNodeId = decoder.readInt();
-					previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
+					// a build that predates the kind bit copies a record's identity refs here as they read
+					if (refNodeId < RECEIVED_IDENTITY_REF)
+						previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
 				}
 			}
 		}
@@ -1647,7 +1677,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				}
 				if (action & HAS_PARTIAL_RECORD && auditTime) {
 					const recordId = this.recordId;
-					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId);
+					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {

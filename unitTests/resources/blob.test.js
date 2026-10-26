@@ -6,7 +6,7 @@ const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { setAuditRetention } = require('#src/resources/auditStore');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
 	blobFileMissingOrIncomplete,
@@ -58,7 +58,7 @@ const {
 	rmSync,
 } = require('fs');
 const { dirname, join } = require('path');
-const { pack } = require('msgpackr');
+const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');
@@ -619,6 +619,58 @@ describe('Blob test', () => {
 
 		await BlobTest.delete(306);
 		setDeletionDelay(500); // restore the default
+	});
+	it('a stale bytes()/text() handle still 404s once reclaimed, same as before this fix (#2134)', async () => {
+		// bytes()/text() never take the explicit hold — only stream() and the replication-send path
+		// (openStoredBlobBody) do. A Blob handle resolved before supersession, read after full
+		// reclamation, gets the plain ENOENT/404 a pre-fix reader would have gotten at the old 500ms
+		// mark: the larger default window narrows this race, it does not structurally close it the
+		// way an in-progress stream() read is (see the in-progress-stream test above).
+		setAuditRetention(10);
+		setDeletionDelay(50); // short window
+		try {
+			const payload = randomBytes(20000);
+			await BlobTest.put({ id: 307, blob: await createBlob(payload) });
+			const reader = await BlobTest.get(307);
+			const filePath = getFilePathForBlob(reader.blob);
+			const fileId = getFileId(reader.blob);
+			const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, fileId);
+			assert.equal(Atomics.load(table, slot), 0, 'resolving the record must not itself take a hold');
+
+			await BlobTest.put({ id: 307, blob: await createBlob(randomBytes(20000)) }); // supersedes
+			await waitFor(() => !existsSync(filePath));
+
+			await assert.rejects(reader.blob.bytes(), (error) => {
+				assert.equal(error.statusCode, 404);
+				assert.equal(error.code, 'ENOENT');
+				return true;
+			});
+		} finally {
+			await BlobTest.delete(307).catch(() => {});
+			setDeletionDelay(500); // restore the default
+		}
+	});
+	it('an invalid storage.blobRetention falls back to the 2000ms default, not 0 (#2134)', async () => {
+		// getReclamationDelay() coerces the configured value with Number(); a non-numeric or negative
+		// override logs a warning (once per process) and falls back to DEFAULT_RECLAMATION_DELAY rather
+		// than collapsing to an unprotected 0ms window.
+		setAuditRetention(10);
+		setDeletionDelay(undefined); // exercise the configured value, not a test override
+		env.setProperty(CONFIG_PARAMS.STORAGE_BLOBRETENTION, 'not-a-number');
+		try {
+			await BlobTest.put({ id: 308, blob: await createBlob(randomBytes(20000)) });
+			const filePath = getFilePathForBlob((await BlobTest.get(308)).blob);
+			await BlobTest.put({ id: 308, blob: await createBlob(randomBytes(20000)) }); // supersedes
+			// The 2000ms deadline starts at supersession (above), not here, so leave the same ~800ms
+			// margin the sibling retention test uses rather than racing the boundary on a loaded runner.
+			await delay(800);
+			assert(existsSync(filePath), 'an invalid storage.blobRetention must fall back to the default window, not 0');
+			await waitFor(() => !existsSync(filePath), { timeout: 6000 });
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBRETENTION, undefined);
+			setDeletionDelay(500); // restore the default
+			await BlobTest.delete(308).catch(() => {});
+		}
 	});
 	it('blob unlink is gated on the removal committing (#1364)', async () => {
 		// removeEntry must only unlink the old blobs once the record removal commits. An

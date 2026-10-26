@@ -14,7 +14,7 @@ import {
 	claimDatabaseDropPreparations,
 	releaseDatabaseDropPreparations,
 } from '../../resources/databaseDropPreparation.ts';
-import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
+import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.ts';
 import SearchObject from '../SearchObject.ts';
 import {
 	OPERATIONS_ENUM,
@@ -24,7 +24,7 @@ import {
 	REPLICATED_FROM,
 } from '../../utility/hdbTerms.ts';
 import * as signalling from '../../utility/signalling.ts';
-import { SchemaEventMsg } from '../../server/threads/itc.js';
+import { SchemaEventMsg } from '../../server/threads/itc.ts';
 import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
 import type {
@@ -41,7 +41,7 @@ import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
-import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
+import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.ts';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';
@@ -356,7 +356,7 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async deleteRecords(deleteObj) {
-		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getDatabases()[deleteObj.schema][deleteObj.table];
 		const context: Context = { user: deleteObj.hdb_user };
 		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
 		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
@@ -392,7 +392,7 @@ export class ResourceBridge extends BridgeMethods {
 	 * @returns {undefined}
 	 */
 	async deleteRecordsBefore(deleteObj) {
-		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getDatabases()[deleteObj.schema][deleteObj.table];
 		if (!Table.createdTimeProperty) {
 			throw new ClientError(
 				`Table must have a '__createdtime__' attribute or @createdTime timestamp defined to perform this operation`

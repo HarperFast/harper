@@ -2,7 +2,7 @@ import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '
 import { isReservedForLocalAppend } from './originClosedFloor.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { exportIdMapping, getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
-import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
+import { Decoder, readAuditEntry, ENTRY_DATAVIEW, type AuditRecord, createAuditEntry } from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
 import {
 	createCorruptFrameReporter,
@@ -173,6 +173,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 		}
 		log.addEntry(entryBinary, options.transaction.id);
+		options.transaction.hasStagedLog = true;
 	}
 
 	isLocalOrigin(nodeId: number | undefined, relayed = false): boolean {

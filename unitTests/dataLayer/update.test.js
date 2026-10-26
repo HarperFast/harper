@@ -6,7 +6,7 @@ const { expect } = chai;
 const alasql = require('alasql');
 const rewire = require('rewire');
 const sql = require('#src/sqlTranslator/index');
-const update = rewire('#src/dataLayer/update');
+const update = rewire('#js/dataLayer/update');
 const insert = require('#src/dataLayer/insert');
 const testUtils = require('../testUtils.js');
 
@@ -22,7 +22,7 @@ describe('Test update module', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#src/dataLayer/update');
+		rewire('#js/dataLayer/update');
 	});
 
 	describe('Tests update function', () => {

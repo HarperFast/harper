@@ -7,8 +7,8 @@ const assert = require('node:assert');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const path = require('path');
-const env_mgr = require('#src/utility/environment/environmentManager');
-const keys = rewire('#src/security/keys');
+const env_mgr = require('#js/utility/environment/environmentManager');
+const keys = rewire('#js/security/keys');
 const { generateSerialNumber } = require('#src/security/keys');
 const config_utils = require('#src/config/configUtils');
 const mkcert = require('mkcert');
@@ -277,6 +277,63 @@ describe('Test keys module', () => {
 		keys.updateConfigCert('public/cert.pem', 'private/cert.pem', 'certificate/authority.pem');
 		const call = update_config_value_stub.getCalls().find((c) => c.args[0] === 'tls' || c.args[2]?.tls_privateKey);
 		expect(call).to.exist;
+	});
+
+	it('Test updateConfigCert skips tls_* writes when configured tls is an array', () => {
+		config_utils.getConfigFromFile.restore();
+		sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+			if (key === 'tls') {
+				return [
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+				];
+			}
+			if (key === 'rootPath') return root_path;
+			return undefined;
+		});
+		update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+		keys.updateConfigCert();
+		expect(update_config_value_stub.calledOnce).to.be.true;
+		const newCertsArg = update_config_value_stub.firstCall.args[2];
+		expect(Object.keys(newCertsArg).filter((k) => k.startsWith('tls_'))).to.deep.equal([]);
+	});
+
+	it('Test updateConfigCert skips flat tls_* and operationsApi_tls_* writes and logs a warning when sections are arrays', () => {
+		config_utils.getConfigFromFile.restore();
+		sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+			if (key === 'tls' || key === 'operationsApi_tls') {
+				return [
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+				];
+			}
+			if (key === 'rootPath') return root_path;
+			return undefined;
+		});
+		const warnStub = sandbox.stub();
+		const restoreLogger = keys.__set__('logger', { warn: warnStub });
+		const savedTlsCert = process.env.TLS_CERTIFICATE;
+		const savedOpsTlsCert = process.env.OPERATIONSAPI_TLS_CERTIFICATE;
+		process.env.TLS_CERTIFICATE = test_cert_path;
+		process.env.OPERATIONSAPI_TLS_CERTIFICATE = test_cert_path;
+		try {
+			update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+			keys.updateConfigCert();
+			expect(update_config_value_stub.calledOnce).to.be.true;
+			const newCertsArg = update_config_value_stub.firstCall.args[2];
+			expect(
+				Object.keys(newCertsArg).filter((k) => k.startsWith('tls_') || k.startsWith('operationsApi_tls_'))
+			).to.deep.equal([]);
+			expect(warnStub.calledTwice).to.be.true;
+			expect(warnStub.firstCall.args[0]).to.include('tls_certificate');
+			expect(warnStub.secondCall.args[0]).to.include('operationsApi_tls_certificate');
+		} finally {
+			restoreLogger();
+			if (savedTlsCert === undefined) delete process.env.TLS_CERTIFICATE;
+			else process.env.TLS_CERTIFICATE = savedTlsCert;
+			if (savedOpsTlsCert === undefined) delete process.env.OPERATIONSAPI_TLS_CERTIFICATE;
+			else process.env.OPERATIONSAPI_TLS_CERTIFICATE = savedOpsTlsCert;
+		}
 	});
 
 	it('hostnamesFromCert returns the correct hostnames', async () => {
@@ -1463,6 +1520,121 @@ describe('Test keys module', () => {
 			const record = await certTable.get(certCn);
 			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
 		});
+
+		describe('ciphers and uses follow config while the certificate file is unchanged', () => {
+			const AES128 = 'TLS_AES_128_GCM_SHA256';
+			const AES256 = 'TLS_AES_256_GCM_SHA384';
+			let certCn;
+			let metadataCertPath;
+			let nextCertificate = 0;
+
+			beforeEach(() => {
+				// Reload callbacks retain their config, so earlier watches must not share this case's file or record.
+				certCn = `${actual_cert.name}-metadata-${++nextCertificate}`;
+				metadataCertPath = path.join(test_dir, `metadata-${nextCertificate}.pem`);
+				fs.copyFileSync(test_cert_path, metadataCertPath);
+			});
+
+			afterEach(async () => {
+				if (metadataCertPath) fs.removeSync(metadataCertPath);
+				if (certCn) await certTable.delete(certCn);
+			});
+			const stubTlsConfig = (config) => {
+				sandbox.restore();
+				sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+					if (key === 'tls') return config;
+					if (key === 'rootPath') return root_path;
+					return undefined;
+				});
+			};
+			const entry = (extra) => ({
+				name: certCn,
+				certificate: metadataCertPath,
+				privateKey: test_private_key_path,
+				...extra,
+			});
+			const loadFromNewerFile = async (extra) => {
+				await certTable.put({ ...originalRecord, name: certCn, file_timestamp: Date.now() - 24 * 60 * 60 * 1000 });
+				fs.utimesSync(metadataCertPath, new Date(), new Date());
+				stubTlsConfig(entry(extra));
+				await reloadCertificates();
+			};
+			const reloadWith = async (config) => {
+				stubTlsConfig(config);
+				await reloadCertificates();
+				return certTable.get(certCn);
+			};
+
+			it('updates ciphers and uses on the record when config changes and the file does not', async () => {
+				await loadFromNewerFile({ ciphers: AES128, uses: ['https'] });
+				let record = await certTable.get(certCn);
+				expect(record.ciphers).to.equal(AES128);
+				expect(record.uses).to.deep.equal(['https']);
+				const { file_timestamp, certificate } = record;
+
+				record = await reloadWith(entry({ ciphers: AES256, uses: ['https', 'operations-api'] }));
+				expect(record.ciphers).to.equal(AES256);
+				expect(record.uses).to.deep.equal(['https', 'operations-api']);
+				expect(record.file_timestamp, 'the unchanged file keeps its timestamp').to.equal(file_timestamp);
+				expect(record.certificate).to.equal(certificate);
+				expect(keys.resolveEffectiveTlsCiphers([], [record], 'https', false)).to.equal(AES256);
+			});
+
+			it('clears ciphers on the record when config no longer sets them', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				expect((await certTable.get(certCn)).ciphers).to.equal(AES128);
+
+				expect((await reloadWith(entry({}))).ciphers).to.not.be.ok;
+			});
+
+			it('keeps ciphers an operator set through setCertTable across a reload', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				await keys.setCertTable({ ...(await certTable.get(certCn)), name: certCn, ciphers: 'DEFAULT@SECLEVEL=0' });
+
+				const record = await reloadWith(entry({ ciphers: AES256 }));
+				expect(record.ciphers).to.equal('DEFAULT@SECLEVEL=0');
+				expect(record.file_timestamp, 'the API write keeps file_timestamp, so it is not the ownership signal').to.be.ok;
+			});
+
+			it('keeps following config after a setCertTable write that sets neither field', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				const { certificate } = await certTable.get(certCn);
+				await keys.setCertTable({ name: certCn, certificate });
+
+				const record = await reloadWith(entry({ ciphers: AES256 }));
+				expect(record.ciphers).to.equal(AES256);
+			});
+
+			it('adopts a record from before the ownership marker only when it already matches config', async () => {
+				const { from_config: _marker, ...legacy } = originalRecord;
+				const seedLegacy = (ciphers) =>
+					certTable.put({
+						...legacy,
+						name: certCn,
+						ciphers,
+						uses: ['https'],
+						file_timestamp: Date.now() + 24 * 60 * 60 * 1000,
+					});
+				fs.utimesSync(metadataCertPath, new Date(), new Date());
+
+				await seedLegacy('DEFAULT@SECLEVEL=0');
+				let record = await reloadWith(entry({ ciphers: AES256, uses: ['https'] }));
+				expect(record.ciphers, 'a differing unmarked record may be an operator edit').to.equal('DEFAULT@SECLEVEL=0');
+
+				await seedLegacy(AES128);
+				record = await reloadWith(entry({ ciphers: AES128, uses: ['https'] }));
+				expect(record.from_config).to.equal(true);
+				record = await reloadWith(entry({ ciphers: AES256, uses: ['https'] }));
+				expect(record.ciphers).to.equal(AES256);
+			});
+
+			it('lets the first config entry for a shared certificate file own the record', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+
+				const record = await reloadWith([entry({ ciphers: AES256 }), entry({ ciphers: 'HIGH' })]);
+				expect(record.ciphers).to.equal(AES256);
+			});
+		});
 	});
 
 	describe('loadAndWatch periodic re-read safety net (#586)', () => {
@@ -1525,7 +1697,7 @@ describe('Test keys module', () => {
 		});
 
 		it("chokidar's 'change' event reloads even when it emits no stats (alwaysStat off)", () => {
-			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
+			// chokidar defaults alwaysStat:false, so the 'change' handler is called with undefined
 			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
 			let changeHandler;
 			chokidar.default.watch = () =>
@@ -1753,7 +1925,7 @@ describe('Test keys module', () => {
 		const watchTimers = keys.__get__('certificateWatchTimers');
 		const watchPollers = keys.__get__('certificateWatchPollers');
 		const chokidar = require('chokidar');
-		const realChokidarWatch = chokidar.watch;
+		const realChokidarWatch = chokidar.default.watch;
 		let watchPath;
 
 		const bumpMtime = () => {
@@ -1762,7 +1934,7 @@ describe('Test keys module', () => {
 		};
 
 		beforeEach(() => {
-			chokidar.watch = () => ({
+			chokidar.default.watch = () => ({
 				on: function () {
 					return this;
 				},
@@ -1773,7 +1945,7 @@ describe('Test keys module', () => {
 		});
 
 		afterEach(() => {
-			chokidar.watch = realChokidarWatch;
+			chokidar.default.watch = realChokidarWatch;
 			const timer = watchTimers.get(watchPath);
 			if (timer) clearInterval(timer);
 			watchTimers.delete(watchPath);
@@ -1970,5 +2142,235 @@ describe('Test keys module', () => {
 			const records = [{ name: 'plain', uses: ['server'] }, null];
 			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
 		});
+	});
+
+	describe('self-signed review and renewal without a configured tls.privateKey', () => {
+		const realKeys = require('#src/security/keys');
+		const { X509Certificate, createPrivateKey, generateKeyPairSync } = require('node:crypto');
+		const nodeName = `renew-test-${process.pid}.harper.local`;
+		const keysDir = path.join(test_dir, 'keys');
+		const envProps = ['tls', 'tls_privateKey', 'node_hostname', 'rootPath'];
+		let savedEnv;
+		let savedBasePath;
+		let certTable;
+
+		before(() => {
+			certTable = require('#src/resources/databases').databases.system.hdb_certificate;
+			savedEnv = envProps.map((name) => [name, env_mgr.get(name)]);
+			savedBasePath = env_mgr.getHdbBasePath();
+			env_mgr.setHdbBasePath(test_dir);
+			env_mgr.setProperty('node_hostname', nodeName);
+			env_mgr.setProperty('rootPath', test_dir);
+			fs.ensureDirSync(keysDir);
+		});
+
+		after(async () => {
+			for (const [name, value] of savedEnv) env_mgr.setProperty(name, value);
+			env_mgr.setHdbBasePath(savedBasePath);
+			for (const row of await selfSignedRows()) await certTable.delete(row.name);
+		});
+
+		async function selfSignedRows() {
+			const rows = [];
+			for await (const row of certTable.search([{ attribute: 'is_self_signed', value: true }])) rows.push({ ...row });
+			return rows;
+		}
+
+		async function startWithoutSelfSigned(tlsConfig) {
+			env_mgr.setProperty('tls', tlsConfig);
+			env_mgr.setProperty('tls_privateKey', Array.isArray(tlsConfig) ? undefined : tlsConfig.privateKey);
+			for (const row of await selfSignedRows()) await certTable.delete(row.name);
+			fs.removeSync(path.join(keysDir, 'privateKey.pem'));
+		}
+
+		function assertUsablePair(rows) {
+			assert.strictEqual(rows.length, 2, JSON.stringify(rows.map((row) => row.name)));
+			const ca = rows.find((row) => row.is_authority);
+			const leaf = rows.find((row) => !row.is_authority);
+			assert.strictEqual(leaf.name, nodeName);
+			const caCert = new X509Certificate(ca.certificate);
+			const leafCert = new X509Certificate(leaf.certificate);
+			assert.ok(leafCert.checkIssued(caCert) && leafCert.verify(caCert.publicKey), 'leaf must be signed by the CA');
+			const key = createPrivateKey(fs.readFileSync(path.join(keysDir, ca.private_key_name)));
+			assert.ok(caCert.checkPrivateKey(key), `${ca.private_key_name} must hold the CA key`);
+			assert.strictEqual(leaf.private_key_name, ca.private_key_name);
+			return { ca, leaf };
+		}
+
+		it('generates a key and pair for an array tls whose entries name no privateKey', async () => {
+			await startWithoutSelfSigned([{ certificateAuthority: test_ca_path }]);
+			await realKeys.reviewSelfSignedCert();
+			const { ca } = assertUsablePair(await selfSignedRows());
+			assert.strictEqual(ca.private_key_name, 'privateKey.pem');
+		}).timeout(30000);
+
+		it('generates a key and pair for an object tls with privateKey unset', async () => {
+			await startWithoutSelfSigned({ certificateAuthority: test_ca_path, privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			assertUsablePair(await selfSignedRows());
+		}).timeout(30000);
+
+		it('never writes the generated key over an unusable configured key', async () => {
+			const edKeyPath = path.join(test_dir, 'ed25519-key.pem');
+			const edKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' });
+			fs.writeFileSync(edKeyPath, edKey);
+			await startWithoutSelfSigned({ privateKey: edKeyPath });
+			await realKeys.reviewSelfSignedCert();
+			const { ca } = assertUsablePair(await selfSignedRows());
+			assert.strictEqual(ca.private_key_name, 'privateKey.pem');
+			assert.strictEqual(fs.readFileSync(edKeyPath, 'utf8'), edKey);
+		}).timeout(30000);
+
+		it('renewal replaces the pair and retires stale self-signed rows', async () => {
+			await startWithoutSelfSigned({ privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			const before = assertUsablePair(await selfSignedRows());
+			await certTable.put({ ...before.ca, name: 'Harper-Certificate-Authority-stale' });
+			await realKeys.renewSelfSigned();
+			const after = assertUsablePair(await selfSignedRows());
+			assert.notStrictEqual(after.ca.certificate, before.ca.certificate);
+			assert.notStrictEqual(after.leaf.certificate, before.leaf.certificate);
+			assert.notStrictEqual(after.ca.private_key_name, before.ca.private_key_name, 'the old key file is not replaced');
+		}).timeout(60000);
+
+		it('a failed renewal leaves the previous pair in place', async () => {
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			await realKeys.reviewSelfSignedCert();
+			const before = await selfSignedRows();
+			assertUsablePair(before);
+			env_mgr.setProperty('tls_privateKey', null);
+			env_mgr.setHdbBasePath(path.join(test_dir, 'missing'));
+			try {
+				await assert.rejects(realKeys.renewSelfSigned());
+			} finally {
+				env_mgr.setHdbBasePath(test_dir);
+			}
+			assert.deepStrictEqual(
+				(await selfSignedRows()).map((row) => row.certificate).sort(),
+				before.map((row) => row.certificate).sort()
+			);
+		}).timeout(60000);
+
+		it('a renewal that fails while publishing rolls back and removes its generated key', async () => {
+			await startWithoutSelfSigned({ privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			const before = await selfSignedRows();
+			assertUsablePair(before);
+			const keyFiles = fs.readdirSync(keysDir).sort();
+			const hadOwnPatch = Object.prototype.hasOwnProperty.call(certTable, 'patch');
+			const patch = certTable.patch;
+			let patches = 0;
+			// the CA name repeats (node.hostname is set), so the first patch replaces the CA row in place
+			certTable.patch = function (...args) {
+				if (++patches === 2) throw new Error('injected leaf write failure');
+				return patch.apply(this, args);
+			};
+			try {
+				await assert.rejects(realKeys.renewSelfSigned(), /injected leaf write failure/);
+			} finally {
+				if (hadOwnPatch) certTable.patch = patch;
+				else delete certTable.patch;
+			}
+			assert.strictEqual(patches, 2);
+			assert.deepStrictEqual(
+				(await selfSignedRows()).map((row) => row.certificate).sort(),
+				before.map((row) => row.certificate).sort()
+			);
+			assert.deepStrictEqual(fs.readdirSync(keysDir).sort(), keyFiles);
+		}).timeout(60000);
+
+		it('keeps an unusable external row named after the node and names the self-signed leaf apart', async () => {
+			// named after this node but not covering its hostname, so selection does not find it
+			const external = await mkcert.createCert({
+				domains: ['elsewhere.harper.local'],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			const externalRow = {
+				name: nodeName,
+				uses: ['replication'],
+				certificate: external.cert,
+				private_key_name: 'external-key.pem',
+				is_authority: false,
+				is_self_signed: false,
+			};
+			await certTable.put(externalRow);
+			try {
+				await realKeys.reviewSelfSignedCert();
+				const pair = await selfSignedRows();
+				assert.deepStrictEqual(pair.map((row) => row.name).sort(), [
+					`Harper-Certificate-Authority-${nodeName}`,
+					`${nodeName}-self-signed`,
+				]);
+				await realKeys.renewSelfSigned();
+				const renewed = await selfSignedRows();
+				assert.deepStrictEqual(renewed.map((row) => row.name).sort(), pair.map((row) => row.name).sort());
+				assert.notDeepStrictEqual(
+					renewed.map((row) => row.certificate).sort(),
+					pair.map((row) => row.certificate).sort()
+				);
+				const current = await certTable.get(nodeName);
+				assert.strictEqual(current.certificate, external.cert);
+				assert.strictEqual(current.is_self_signed, false);
+			} finally {
+				await certTable.delete(nodeName);
+			}
+		}).timeout(60000);
+
+		it('a non-self-signed row under the CA name skips the CA and its leaf at boot, and fails renewal', async () => {
+			const caName = `Harper-Certificate-Authority-${nodeName}`;
+			await startWithoutSelfSigned({ privateKey: null });
+			await certTable.put({
+				name: caName,
+				uses: [],
+				certificate: test_ca,
+				private_key_name: 'missing-key.pem',
+				is_authority: true,
+				is_self_signed: false,
+			});
+			const keyFiles = fs.readdirSync(keysDir).sort();
+			try {
+				await realKeys.reviewSelfSignedCert();
+				assert.deepStrictEqual(await selfSignedRows(), []);
+				assert.deepStrictEqual(fs.readdirSync(keysDir).sort(), keyFiles, 'the unused generated key is removed');
+				await assert.rejects(realKeys.renewSelfSigned(), { statusCode: 409 });
+				assert.strictEqual((await certTable.get(caName)).certificate, test_ca);
+			} finally {
+				await certTable.delete(caName);
+			}
+		}).timeout(60000);
+
+		it('renewal keeps an external certificate for this node instead of a self-signed one', async () => {
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			await realKeys.reviewSelfSignedCert();
+			const external = await mkcert.createCert({
+				domains: [nodeName],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			fs.writeFileSync(path.join(keysDir, 'external-key.pem'), external.key);
+			const externalName = `external-${nodeName}`;
+			await certTable.put({
+				name: externalName,
+				uses: ['https'],
+				certificate: external.cert,
+				private_key_name: 'external-key.pem',
+				is_authority: false,
+				is_self_signed: false,
+			});
+			try {
+				await realKeys.renewSelfSigned();
+				const rows = await selfSignedRows();
+				assert.deepStrictEqual(
+					rows.map((row) => row.is_authority),
+					[true],
+					'only the self-signed CA is renewed; the external certificate serves replication'
+				);
+				assert.ok(await certTable.get(externalName));
+			} finally {
+				await certTable.delete(externalName);
+			}
+		}).timeout(60000);
 	});
 });

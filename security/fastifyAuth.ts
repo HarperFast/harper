@@ -4,11 +4,12 @@ import * as validation from '../validation/check_permissions.ts';
 import passport from 'passport';
 import { Strategy as LocalStrategy } from 'passport-local';
 import { BasicStrategy } from 'passport-http';
-import * as util from 'util';
+import * as util from 'node:util';
 import * as userFunctions from './user.ts';
 const cbFindValidateUsers = util.callbackify(userFunctions.findAndValidateUser);
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import * as tokenAuthentication from './tokenAuthentication.ts';
+import * as _tokenAuthentication from './tokenAuthentication.ts';
+const tokenAuthentication = _tokenAuthentication;
 import { AccessViolation } from '../utility/errors/hdbError.ts';
 import { authentication } from './auth.ts';
 
