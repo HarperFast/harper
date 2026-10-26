@@ -179,10 +179,9 @@ describe('defineResource table projection + body presence', () => {
 			);
 		});
 
-		it('drops relationship sub-attributes and leaves the source attributes untouched', () => {
+		it('skips relationship sub-attributes when building nested required and leaves the source untouched', () => {
 			const before = JSON.stringify(nestedTable);
 			const fragment = projectTableFragment(nestedTable, 'record');
-			assert.ok(!('owner' in fragment.properties.meta.properties));
 			assert.deepStrictEqual(fragment.properties.meta.required, ['label']);
 			assert.strictEqual(JSON.stringify(nestedTable), before);
 		});
@@ -240,7 +239,7 @@ describe('defineResource table projection + body presence', () => {
 			});
 		});
 
-		it('treats a null body (an empty JSON request) as present: .optional rejects it, .optional.nullable accepts it', async () => {
+		it('treats a null body as present: .optional rejects it, .optional.nullable accepts it', async () => {
 			const Api = defineResource(
 				{
 					path: '/nullbody',

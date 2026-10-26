@@ -161,10 +161,7 @@ function applyTableAttributeRules(attr: any, fragment: JsonSchemaFragment): Json
 	if (attr.properties && fragment.properties) {
 		const required: string[] = [];
 		for (const sub of attr.properties) {
-			if (!isProjectedAttribute(sub)) {
-				delete fragment.properties[sub.name];
-				continue;
-			}
+			if (!isProjectedAttribute(sub)) continue;
 			applyTableAttributeRules(sub, fragment.properties[sub.name]);
 			if (sub.nullable === false) required.push(sub.name);
 		}
