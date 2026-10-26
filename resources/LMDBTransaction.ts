@@ -11,7 +11,7 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
-	confirmReplication,
+	registeredReplicationConfirmation,
 	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
@@ -382,16 +382,18 @@ export class LMDBTransaction extends DatabaseTransaction {
 					if (this.confirmationCount) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
+						const confirmReplication = registeredReplicationConfirmation();
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
 						if (confirmReplication && databaseName)
 							confirmation = confirmReplicationAfterCommit(() => {
-								const target = this.confirmationTarget(committedLogPosition ?? this.lastConfirmableEntry()?.localTime);
-								if (target)
+								const target = this.confirmationTarget(committedLogPosition);
+								const position = this.confirmationPosition(committedLogPosition);
+								if (position !== undefined)
 									return confirmReplication(
 										databaseName,
-										target.version,
+										position,
 										this.confirmationCount,
-										target.residentPeerLists,
+										target?.residentPeerLists,
 										!this.requestedConfirmationCount
 									);
 							});
@@ -469,6 +471,28 @@ export class LMDBTransaction extends DatabaseTransaction {
 			}
 		}
 		throw error;
+	}
+	/**
+	 * The audit-log position (`localTime`) peers must acknowledge: the newest among the written keys. Any
+	 * entry this commit did not store predates it — a write that lost to a newer entry, or an out-of-order
+	 * patch that only appended audit — so the newest is this commit's own position whenever a write stored a
+	 * record, and otherwise the entry that superseded its writes, as on RocksDB. A concurrent later write can
+	 * only raise it. Writes that opt out (audit-only markers) and unaudited tables (no local time, nothing
+	 * appended for peers to acknowledge) are not considered.
+	 */
+	private confirmationPosition(committedLogPosition?: number): number | undefined {
+		let position: number | undefined;
+		for (const write of this.writes) {
+			if (!write || write.skipReplicationConfirmation) continue;
+			// A placed write may omit the primary row or leave its older value in place.
+			// The captured audit position still covers that write and the rest of its batch.
+			const localTime =
+				write.saved && write.residencyId && committedLogPosition !== undefined
+					? committedLogPosition
+					: write.store.getEntry(write.key)?.localTime;
+			if (localTime && !(position >= localTime)) position = localTime;
+		}
+		return position;
 	}
 	/**
 	 * Force-release the retained read snapshot without touching staged writes. The base class's
