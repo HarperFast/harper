@@ -128,8 +128,7 @@ export class RangeScanItem extends Resource {
 	}
 }
 
-// StampedProduct's source answers with the name stored in StampedSourceData (a table, so every
-// worker thread sees a change), else 'first'.
+// a table rather than module state: every worker thread loads this file
 class StampedOrigin extends Resource {
 	async get() {
 		const id = this.getId();
