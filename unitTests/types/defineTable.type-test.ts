@@ -99,7 +99,6 @@ type _song_record = Expect<
 type _song_insert = Expect<Equal<(typeof Song)['$insert'], { title: string; albumId: string; id?: string }>>;
 type _song_query = Expect<Equal<(typeof Song)['$query'], { albumId?: string }>>;
 
-// Date flags compose in any order.
 const Event = defineTable('Event', {
 	id: id.primaryKey,
 	label: string,
