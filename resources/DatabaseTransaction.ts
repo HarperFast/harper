@@ -1185,9 +1185,9 @@ export class DatabaseTransaction implements Transaction {
 
 	disregardReadTxn(): void {
 		// Never release a handle carrying staged writes: commit() skips re-staging a write it has marked
-		// saved, so aborting the handle here drops it. The count is clamped because every getReadTxn()
-		// increments it but only this releases, so an unpaired call would drive it negative and cancel
-		// out a later handle's references.
+		// saved, so aborting the handle here drops it. The count is clamped because a getReadTxn() on a
+		// closed or snapshot-free transaction takes no reference while its caller still disregards on a
+		// miss, so an unpaired call would otherwise drive it negative and cancel a reader's reference.
 		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
 			if (this.writes.length > 0) return;
 			this.doneReadTxn();
