@@ -190,7 +190,15 @@ describe('mcp/tools/application — contract nullability in JSON Schema 2020-12 
 			return {};
 		};
 		Song.inputSchemas = {
-			get: { query: { type: 'object', properties: { limit: { type: 'integer', nullable: true } } } },
+			get: {
+				query: {
+					type: 'object',
+					properties: {
+						limit: { type: 'integer', nullable: true },
+						ids: { type: 'array', items: { type: 'integer', nullable: true } },
+					},
+				},
+			},
 			post: { body: projectTableFragment(table, 'insert') },
 		};
 		Song.outputSchemas = { get: { ...projectTableFragment(table, 'record'), nullable: true } };
@@ -236,9 +244,10 @@ describe('mcp/tools/application — contract nullability in JSON Schema 2020-12 
 		assert.ok(strict2020(tool.outputSchema)({ id: '1', meta: { label: 'a', count: null }, tags: [null] }));
 	});
 
-	it('advertises a nullable query param with a null type and binds a null argument as omitted', async () => {
+	it('advertises no null for a nullable query param, and binds a stray null as omitted', async () => {
 		const tool = [...toolsByName().values()].find((t) => t.name.startsWith('get_'));
-		assert.deepStrictEqual(tool.inputSchema.properties.limit.type, ['integer', 'null']);
+		assert.deepStrictEqual(tool.inputSchema.properties.limit, { type: 'integer' });
+		assert.deepStrictEqual(tool.inputSchema.properties.ids, { type: 'array', items: { type: 'integer' } });
 		await getTool(tool.name).handler({ id: '1', limit: null }, { user: SUPER });
 		assert.deepStrictEqual(boundQuery, {});
 		await getTool(tool.name).handler({ id: '1', limit: 5 }, { user: SUPER });
