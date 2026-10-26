@@ -217,7 +217,6 @@ export async function setNetworkAccess(req: any) {
 			'unless it has its own), their source addresses must be in this list: an excluded peer cannot reconnect, ' +
 			'and a later correction may not reach it, needing the local CLI on that node.',
 	];
-	// mirrors exist only for secure listeners
 	if (
 		!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) ||
 		!env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)
