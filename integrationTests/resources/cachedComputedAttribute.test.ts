@@ -5,7 +5,7 @@
  * no setter, and every read, query, invalidate and delete of the record threw. Affects 5.2.0-5.2.6.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -268,5 +268,69 @@ suite('cache table with a computed attribute', (ctx: ContextWithHarper) => {
 		const keys = ((await stored.json()) as any).keys as string[];
 		ok(keys?.includes('price'), `expected stored fields: ${JSON.stringify(keys)}`);
 		ok(!keys.includes('salePrice'), `the source value must not be stored: ${JSON.stringify(keys)}`);
+	});
+
+	// A fill stamps @createdTime/@updatedTime before it resolves and indexes the record it stores, and a
+	// refill over an invalidation stub does not run the computed resolver over the stub.
+	async function waitForStamped(id: string, ready: (state: any) => boolean) {
+		let state: any;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			state = await (await request(`/StampedState/${id}`)).json();
+			if (ready(state)) return state;
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+		throw new Error(`${id} never reached the expected stored state: ${JSON.stringify(state)}`);
+	}
+
+	test('a source fill responds with and indexes the timestamps it stores', async () => {
+		const fill = await request('/StampedProduct/stamped-1');
+		strictEqual(fill.status, 200);
+		const body = (await fill.json()) as any;
+		strictEqual(typeof body.createdAt, 'number', `the fill response has no createdAt: ${JSON.stringify(body)}`);
+		strictEqual(typeof body.updatedAt, 'number', `the fill response has no updatedAt: ${JSON.stringify(body)}`);
+
+		const state = await waitForStamped('stamped-1', (state) => state.stored);
+		strictEqual(body.createdAt, state.createdAt);
+		strictEqual(body.updatedAt, state.updatedAt);
+		deepStrictEqual(state.index.createdAt, [state.createdAt]);
+		deepStrictEqual(state.index.updatedAt, [state.updatedAt]);
+	});
+
+	test('a refill over an invalidation stub keeps one entry per timestamp index and indexes the new computed value', async () => {
+		strictEqual((await request('/StampedProduct/stamped-2')).status, 200);
+		const first = await waitForStamped('stamped-2', (state) => state.stored);
+
+		const renamed = await request('/StampedSourceData/stamped-2', {
+			method: 'PUT',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ name: 'second' }),
+		});
+		ok(renamed.status < 300, `renaming the source record failed: ${renamed.status} ${await renamed.text()}`);
+		const invalidated = await request('/StampedProductResource/stamped-2', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: '{}',
+		});
+		ok(invalidated.status < 300, `invalidation failed: ${invalidated.status} ${await invalidated.text()}`);
+		await waitForStamped('stamped-2', (state) => state.stub);
+
+		const refill = await request('/StampedProduct/stamped-2');
+		strictEqual(refill.status, 200);
+		strictEqual(((await refill.json()) as any).name, 'second');
+
+		const state = await waitForStamped('stamped-2', (state) => state.stored && !state.stub);
+		strictEqual(state.createdAt, first.createdAt, 'a refill keeps the created time');
+		ok(state.updatedAt > first.updatedAt);
+		deepStrictEqual(state.index.createdAt, [state.createdAt]);
+		deepStrictEqual(state.index.updatedAt, [state.updatedAt]);
+		ok(state.index.upper.includes('SECOND'), `the refilled computed value is not indexed: ${JSON.stringify(state)}`);
+
+		const query = await request('/StampedProduct/?upper=SECOND');
+		strictEqual(query.status, 200);
+		const rows = (await query.json()) as any[];
+		ok(
+			rows.some((row) => row.id === 'stamped-2'),
+			`the refilled record is missing from the computed index query: ${JSON.stringify(rows).slice(0, 400)}`
+		);
 	});
 });

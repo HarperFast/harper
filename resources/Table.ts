@@ -4330,11 +4330,8 @@ export function makeTable(options): TableResourceClass {
 					let newRecord = null;
 					const existingRecord = existingEntry?.value;
 					if (residency && !residency.includes(server.hostname)) {
-						for (const name in indices) {
-							if (!newRecord) newRecord = {};
-							// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-							newRecord[name] = existingRecord[name];
-						}
+						// the stub keeps the indexed fields, so the record stays searchable here
+						newRecord = existingRecord ? residencyStub(existingRecord, id) : null;
 						metadata = INVALIDATED;
 					} else {
 						newRecord = existingRecord;
@@ -4434,7 +4431,7 @@ export function makeTable(options): TableResourceClass {
 					// Capture both promises so a real write failure on either resolves through evict()'s catch
 					// below rather than escaping as an unhandled rejection from the fire-and-forget callers.
 					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
-						updateIndices(id, entry.value, null);
+						updateIndices(id, entry.value, null, undefined, false, Boolean(entry.metadataFlags & INVALIDATED));
 					});
 					const removal = removeEntry(primaryStore, entry, existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
@@ -4442,7 +4439,7 @@ export function makeTable(options): TableResourceClass {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
 						reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
 					// the entry read in this transaction, not the caller's copy: a resequenced write can reuse its version
-					updateIndices(id, entry.value, null, options);
+					updateIndices(id, entry.value, null, options, false, Boolean(entry.metadataFlags & INVALIDATED));
 					stageDerivedIndexEviction(transaction as RocksTransaction, id, existingVersion);
 					// not removeEntry: it queues blob reclamation at staging, and this commit can still conflict
 					primaryStore.removeSync(id, options);
@@ -5882,7 +5879,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (omitLocalRecord) {
 						auditRecordToStore ??= recordToStore;
-						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore);
+						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore, id);
 					}
 					if (expiresAt == undefined) {
 						// A schema @expiresAt attribute makes the record field authoritative over the table
@@ -5914,7 +5911,14 @@ export function makeTable(options): TableResourceClass {
 							}
 						})()
 					);
-					updateIndices(id, existingRecord, recordToStore, transaction && { transaction }, omitLocalRecord);
+					updateIndices(
+						id,
+						existingRecord,
+						recordToStore,
+						transaction && { transaction },
+						omitLocalRecord,
+						Boolean(baseEntry?.metadataFlags & INVALIDATED)
+					);
 					dropReplicaDeadline(id, existingEntry, transaction);
 
 					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
@@ -6171,7 +6175,14 @@ export function makeTable(options): TableResourceClass {
 						write.skipped = true;
 						return;
 					}
-					updateIndices(id, existingRecord, null, transaction && { transaction });
+					updateIndices(
+						id,
+						existingRecord,
+						null,
+						transaction && { transaction },
+						false,
+						Boolean((priorStaged ?? existingEntry)?.metadataFlags & INVALIDATED)
+					);
 					dropReplicaDeadline(id, existingEntry, transaction);
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -9577,7 +9588,19 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 	return TableResource;
-	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
+	/**
+	 * A stub (an INVALIDATED entry's value) has no inputs for a computed resolver. `preserveComputed` leaves
+	 * computed indexes as committed; `existingIsStub` skips only the existing side, so nothing is removed
+	 * from a computed index and the new record's value is added.
+	 */
+	function updateIndices(
+		id: any,
+		existingRecord: any,
+		record: any,
+		options?: any,
+		preserveComputed = false,
+		existingIsStub = false
+	) {
 		let hasChanges;
 		// iterate the entries from the record
 		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
@@ -9596,7 +9619,13 @@ export function makeTable(options): TableResourceClass {
 			// that is present but whose attribute is null is a different case (record is a truthy object) and
 			// still indexes under null. See harper#1894 (F-149).
 			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
-			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
+			const existingValue =
+				existingRecord &&
+				(resolver
+					? existingIsStub && primaryStore.encoder.resolvedAttributeNames?.has(key)
+						? undefined
+						: resolver(existingRecord)
+					: existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
 				continue;
 			}
@@ -10499,6 +10528,27 @@ export function makeTable(options): TableResourceClass {
 						isRocksDB && updatedRecord && existingVersion != null
 							? Math.max(sourceVersion, existingVersion)
 							: sourceVersion;
+					// Stamped before the caller, the model hooks or a noCacheStore read see the record. A write that
+					// is not skipped commits at exactly resolvedVersion.
+					if (updatedRecord) {
+						if (updatedTimeProperty) {
+							updatedRecord[updatedTimeProperty.name] =
+								updatedTimeProperty.type === 'Date'
+									? new Date(resolvedVersion)
+									: updatedTimeProperty.type === 'String'
+										? new Date(resolvedVersion).toISOString()
+										: resolvedVersion;
+						}
+						if (assignCreatedTime) {
+							updatedRecord[createdTimeProperty.name] =
+								existingRecord?.[createdTimeProperty.name] ??
+								(createdTimeProperty.type === 'Date'
+									? new Date(resolvedVersion)
+									: createdTimeProperty.type === 'String'
+										? new Date(resolvedVersion).toISOString()
+										: resolvedVersion);
+						}
+					}
 					const resolvedEntry: Entry = {
 						key: id,
 						version: resolvedVersion,
@@ -10511,9 +10561,7 @@ export function makeTable(options): TableResourceClass {
 						residencyId: 0,
 					} as any;
 					// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
-					// are available on the immediately-resolved entry. We mutate the prototype
-					// in-place rather than copying so that the commit callback (which adds
-					// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
+					// are available on the immediately-resolved entry.
 					if (updatedRecord && updatedRecord.constructor === Object) {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
@@ -10595,46 +10643,42 @@ export function makeTable(options): TableResourceClass {
 						const recordVersion =
 							isRocksDB && racedVersion != null ? Math.max(sourceVersion, racedVersion) : sourceVersion;
 						const txnLogKey = isRocksDB ? transaction?.getTimestamp?.() : recordVersion;
-						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
-						dropReplicaDeadline(id, existingEntry, transaction);
+						// never reassign updatedRecord: a retried commit starts again from the source's answer
+						let recordToStore = updatedRecord;
+						let auditRecord: any;
+						let omitLocalRecord = false;
+						let residencyId: number;
 						if (updatedRecord) {
+							// a first fill replacing a record that landed during the source call keeps its created time,
+							// as a put would; copied, since the caller already holds updatedRecord
+							const racedCreatedTime =
+								assignCreatedTime && existingVersion == null ? currentRecord?.[createdTimeProperty.name] : undefined;
+							if (racedCreatedTime != null)
+								recordToStore = { ...updatedRecord, [createdTimeProperty.name]: racedCreatedTime };
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
-							let auditRecord: any;
-							let omitLocalRecord = false;
-							let residencyId: number;
-							if (updatedTimeProperty) {
-								updatedRecord[updatedTimeProperty.name] =
-									updatedTimeProperty.type === 'Date'
-										? new Date(recordVersion)
-										: updatedTimeProperty.type === 'String'
-											? new Date(recordVersion).toISOString()
-											: recordVersion;
-							}
-							if (assignCreatedTime) {
-								const existingCreatedTime = currentRecord?.[createdTimeProperty.name];
-								if (existingCreatedTime != null) {
-									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
-								} else {
-									updatedRecord[createdTimeProperty.name] =
-										createdTimeProperty.type === 'Date'
-											? new Date(recordVersion)
-											: createdTimeProperty.type === 'String'
-												? new Date(recordVersion).toISOString()
-												: recordVersion;
-								}
-							}
-							const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
+							const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 							if (residency) {
 								if (!residency.includes(server.hostname)) {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
-									auditRecord = updatedRecord;
+									auditRecord = recordToStore;
 									omitLocalRecord = true;
-									updatedRecord = TableResource.getResidencyById ? undefined : residencyStub(auditRecord);
+									recordToStore = TableResource.getResidencyById ? undefined : residencyStub(auditRecord, id);
 								}
 								residencyId = getResidencyId(residency);
 							}
+						}
+						updateIndices(
+							id,
+							currentRecord,
+							recordToStore,
+							transaction && { transaction },
+							omitLocalRecord,
+							Boolean(existingEntry?.metadataFlags & INVALIDATED)
+						);
+						dropReplicaDeadline(id, existingEntry, transaction);
+						if (updatedRecord) {
 							logger.trace?.(
 								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
@@ -10642,7 +10686,7 @@ export function makeTable(options): TableResourceClass {
 							const writeAudit = (audit && (hasChanges || omitLocalRecord)) || null;
 							updateRecord(
 								id,
-								updatedRecord,
+								recordToStore,
 								existingEntry,
 								recordVersion,
 								omitLocalRecord ? INVALIDATED : 0,
@@ -10798,7 +10842,7 @@ export function makeTable(options): TableResourceClass {
 				} else {
 					if (entry.value == null) continue; // already removed
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
-					updateIndices(item.key, entry.value, null, options);
+					updateIndices(item.key, entry.value, null, options, false, Boolean(entry.metadataFlags & INVALIDATED));
 					stageDerivedIndexEviction(transaction, item.key, entry.version);
 				}
 				removeEntry(primaryStore, entry, options);
@@ -11114,14 +11158,14 @@ export function makeTable(options): TableResourceClass {
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
 		);
 	}
-	function residencyStub(record: any) {
-		let stub = null;
+	function residencyStub(record: any, id: Id) {
+		const stub = primaryKey ? { [primaryKey]: id } : {};
 		for (const name in indices) {
-			stub ??= {};
+			// reading a computed name would run its resolver; a stub keeps no computed values
+			if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
 			stub[name] = record[name];
 		}
 		if (createdTimeProperty && record[createdTimeProperty.name] != null) {
-			stub ??= {};
 			stub[createdTimeProperty.name] = record[createdTimeProperty.name];
 		}
 		return stub;
@@ -11528,8 +11572,7 @@ export function makeTable(options): TableResourceClass {
 	 * have committed.
 	 */
 	function demoteReplica(entry: Entry, transaction: any, observedDeadline?: number): Promise<unknown> {
-		const stub = residencyStub(entry.value) ?? {};
-		if (primaryKey) stub[primaryKey] = entry.key;
+		const stub = residencyStub(entry.value, entry.key);
 		const base = withoutBlobRelease(entry);
 		const store = openReplicaDeadlines();
 		const writeOptions = {

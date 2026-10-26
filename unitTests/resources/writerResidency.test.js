@@ -139,6 +139,49 @@ describe('Writer residency (harper#2257)', () => {
 		assert.deepEqual(residencyOf(entry), [PEER]);
 	});
 
+	it('keeps the primary key on a received stub, so an index-only select returns it', async () => {
+		Records.setResidency(() => [PEER]);
+		await applyFrame([{ id: 'keyed-stub', record: { id: 'keyed-stub', name: 'keyed', body: 'complete' } }]);
+		assert.ok(Records.primaryStore.getEntry('keyed-stub').metadataFlags & INVALIDATED, 'premise: a stub');
+		const found = [];
+		for await (const record of Records.search({
+			conditions: [{ attribute: 'name', value: 'keyed' }],
+			select: ['id', 'name'],
+		}))
+			found.push(record);
+		assert.deepEqual(found, [{ id: 'keyed-stub', name: 'keyed' }]);
+	});
+
+	it('stores a key-only stub, never a null value, on a table with no secondary index', async () => {
+		const Unindexed = table({
+			table: 'WriterResidencyUnindexed',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'body' }],
+			audit: true,
+		});
+		Unindexed.setResidency(() => [PEER]);
+		try {
+			const context = { source: {}, sourceApply: true, timestamp: originClock() };
+			await transaction(context, async () => {
+				const resource = await Unindexed.getResource('unindexed', context);
+				resource._writeUpdate('unindexed', { id: 'unindexed', body: 'complete' }, true, {
+					isNotification: true,
+					nodeId: 1,
+					version: context.timestamp,
+				});
+			});
+			for (const step of ['received', 'patched']) {
+				if (step === 'patched') await Unindexed.patch('unindexed', { body: 'patched' });
+				const entry = Unindexed.primaryStore.getEntry('unindexed');
+				assert.ok(entry.metadataFlags & INVALIDATED, `${step}: premise: a stub`);
+				assert.equal(entry.value?.id, 'unindexed', `${step}: the stub must be stored as its key, not null`);
+				assert.equal(entry.value.body, undefined);
+			}
+		} finally {
+			Unindexed.setResidency(undefined);
+		}
+	});
+
 	it('stores a stub for a source write that carries no node id', async () => {
 		Records.setResidency(() => [PEER]);
 		await applyFrame([

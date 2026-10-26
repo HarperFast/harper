@@ -127,3 +127,41 @@ export class RangeScanItem extends Resource {
 		return entry?.value ? { catId: entry.value.catId, ownKeys: Object.keys(entry.value) } : null;
 	}
 }
+
+// StampedProduct's source answers with the name stored in StampedSourceData (a table, so every
+// worker thread sees a change), else 'first'.
+class StampedOrigin extends Resource {
+	async get() {
+		const id = this.getId();
+		return { id, name: (await tables.StampedSourceData.get(id))?.name ?? 'first' };
+	}
+}
+tables.StampedProduct.sourcedFrom(StampedOrigin);
+
+export class StampedProductResource extends tables.StampedProduct {
+	static async post(target) {
+		await this.invalidate(target);
+		return { status: 'invalidated' };
+	}
+}
+
+// The stored StampedProduct row and its raw index entries, read beneath query hydration.
+export class StampedState extends Resource {
+	get() {
+		const { primaryStore, indices } = tables.StampedProduct;
+		const id = this.getId();
+		const entry = primaryStore.getEntry(id);
+		const indexed = (attribute) =>
+			Array.from(indices[attribute].getRange({}))
+				.filter(({ value }) => value === id)
+				.map(({ key }) => key);
+		return {
+			stored: entry?.value != null,
+			// INVALIDATED (resources/Table.ts)
+			stub: Boolean(entry?.metadataFlags & 1),
+			createdAt: entry?.value?.createdAt ?? null,
+			updatedAt: entry?.value?.updatedAt ?? null,
+			index: { createdAt: indexed('createdAt'), updatedAt: indexed('updatedAt'), upper: indexed('upper') },
+		};
+	}
+}

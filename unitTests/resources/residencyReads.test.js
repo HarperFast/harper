@@ -488,6 +488,20 @@ describe('Reads of residency stubs', function () {
 		assert.deepEqual(calls, []);
 	});
 
+	it('keeps the primary key on a patched stub, so an index-only select stays local', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Records.getResource('record', context, { ensureLoaded: false });
+			resource._writeUpdate('record', { name: 'patched' }, false);
+			resource.save();
+		});
+		assert.ok(Records.primaryStore.getEntry('record').metadataFlags & INVALIDATED, 'premise: the patch keeps the stub');
+		assert.deepEqual(await query(['id', 'name'], [{ attribute: 'name', value: 'patched' }]), [
+			{ id: 'record', name: 'patched' },
+		]);
+		assert.deepEqual(calls, []);
+	});
+
 	it('replaces indexed values when an existing stub is invalidated again', async () => {
 		const context = {};
 		await transaction(context, async () => {
@@ -627,6 +641,76 @@ describe('Reads of residency stubs', function () {
 		}))
 			records.push(record);
 		assert.deepEqual(records, [{ id: 'computed' }]);
+	});
+
+	describe('writes over a stub on a table with a computed index', () => {
+		let Computed;
+		before(() => {
+			Computed = table({
+				database: 'test',
+				table: 'ResidencyComputedWrites',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'sku', indexed: true },
+					{ name: 'name' },
+					{ name: 'upper', indexed: true, computed: true },
+				],
+				audit: true,
+			});
+			// `name` is not indexed, so no stub carries the resolver's input
+			Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+		});
+		const indexedKeys = (attribute, id) =>
+			Array.from(Computed.indices[attribute].getRange({}))
+				.filter(({ value }) => value === id)
+				.map(({ key }) => key);
+		async function invalidate(id, context) {
+			const resource = await Computed.getResource(id, context, { ensureLoaded: false });
+			resource._writeInvalidate(id);
+		}
+
+		for (const staged of [false, true]) {
+			const where = staged ? 'a stub staged earlier in the transaction' : 'a committed stub';
+			async function overStub(id, write) {
+				await Computed.put(id, { id, sku: 'A', name: 'old' });
+				const context = {};
+				await transaction(context, async () => {
+					await invalidate(id, context);
+					if (staged) await write(context);
+				});
+				if (staged) return;
+				assert.ok(Computed.primaryStore.getEntry(id).metadataFlags & INVALIDATED, 'premise: a stub');
+				await write({});
+			}
+
+			it(`a put over ${where} indexes the new computed value`, async () => {
+				const id = `put-${staged ? 'staged' : 'committed'}`;
+				await overStub(id, (context) => Computed.put(id, { id, sku: 'B', name: 'new' }, context));
+				const entry = Computed.primaryStore.getEntry(id);
+				assert.ok(!(entry.metadataFlags & INVALIDATED));
+				assert.equal(entry.value.name, 'new');
+				assert.ok(indexedKeys('upper', id).includes('NEW'));
+				assert.deepEqual(indexedKeys('sku', id), ['B']);
+			});
+
+			it(`a delete of ${where} removes it`, async () => {
+				const id = `delete-${staged ? 'staged' : 'committed'}`;
+				await overStub(id, (context) => Computed.delete(id, context));
+				assert.equal(Computed.primaryStore.getEntry(id)?.value ?? null, null);
+				assert.deepEqual(indexedKeys('sku', id), []);
+			});
+		}
+
+		it('evicting a stub removes it', async () => {
+			await Computed.put('evicted', { id: 'evicted', sku: 'A', name: 'old' });
+			const context = {};
+			await transaction(context, () => invalidate('evicted', context));
+			const stub = Computed.primaryStore.getEntry('evicted');
+			assert.ok(stub.metadataFlags & INVALIDATED, 'premise: a stub');
+			await Computed.evict('evicted', stub.value, stub.version);
+			assert.equal(Computed.primaryStore.getEntry('evicted')?.value ?? undefined, undefined);
+			assert.deepEqual(indexedKeys('sku', 'evicted'), []);
+		});
 	});
 
 	it('loads resolver inputs when an indexed query selects a computed index', async () => {
