@@ -162,6 +162,12 @@ unit switch does not shift the estimate on its own. The ef term remains the conf
 not the runtime auto-scaled value, so the planner increasingly underestimates vector traversal cost
 as an automatically scaled graph grows.
 
+## A non-driving filter admits only what its condition's index scan returns (`search.ts` `filterByType`, harper#3212)
+
+`Table.search` filters every condition but the leading one with `filterByType`, so it must match `searchByIndex`: no index
+holds an omitted value and `lt`/`le` ranges start above `null`, so those reject both and `ne null` rejects omitted values.
+SQL `IS NULL` (omitted counts as NULL) is pushed as filter-only `{ ne, null, negated: true }`, never an index driver.
+
 ## A filtered vector search may admit from an index key set only if the set holds every predicate match
 
 `search.ts → planCandidateKeys` turns companion AND conditions a secondary index answers (equality,
@@ -175,10 +181,11 @@ never omit: an omission is unrecoverable and makes results depend on whether the
 records an index cannot supply: one lacking the attribute, a null one when the index holds no nulls,
 and a `0`, because a number written as `-0` is indexed under an encoding that sorts past every number
 and decodes to a wrong primary key (ordered-binary; index-led queries miss that row too). A condition
-admitting any of them stays on the predicate path. `compareKeys` ranks undefined below every scalar, so
-this declines `lt`/`le` over a number, string or boolean bound, `ge null` and any range covering 0; the
-`lt`/`le` that remain (a BigInt bound) start at `null` inclusive, where `searchByIndex` starts just above it,
-so indexed nulls are read. Normalizing `-0` in the encoder or index writer would let zero-covering ranges plan again.
+admitting any of them stays on the predicate path; that declines `ge null` and any range covering 0.
+`lt`/`le` reject null and omitted values and start just above the null block, as `searchByIndex` does. A
+BigInt shares its index key with the equal Number, so an equality or `lt`/`le` set is exact only on a
+declared numeric type; elsewhere it gates the predicate. Normalizing `-0` in the encoder or index writer
+would let zero-covering ranges plan again.
 
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`

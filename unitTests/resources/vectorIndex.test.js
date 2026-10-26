@@ -3525,10 +3525,10 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		const customIndex = A.indices.vector.customIndex;
 		for (const [condition, planned] of [
 			// Satisfied by id 0, which has no rank, so no index range can supply every match.
-			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
-			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
 			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
 			// Satisfied by a rank of 0, which a record written as -0 holds and its index entry cannot supply.
+			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
+			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
 			[{ attribute: 'rank', comparator: 'equals', value: 0 }, false],
 			[{ attribute: 'rank', comparator: 'between', value: [-0, 60] }, false],
 			// -0 encodes above every number, so an unnormalized lower bound would scan an empty range.
@@ -3599,9 +3599,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
-	it('counts the null block a lt/le range reads, so a mostly-null column is not mis-estimated', async () => {
-		// A BigInt bound, because it is the one lt/le a missing value cannot satisfy: compareKeys has no
-		// type order for bigint and ranks undefined above it, while null still sorts below.
+	it('skips the null block a lt/le range cannot match, so null ranks neither fill the allow-set nor the limit', async () => {
 		const N = table({
 			table: 'HNSWAllowNulls',
 			database: 'test',
@@ -3612,8 +3610,6 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			],
 		});
 		try {
-			// 200 of 300 rows have a null rank. The range starts at null and reads that block first, so
-			// an estimate that leaves out the null block would size the budget at 50 and overrun it on entry 51.
 			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : BigInt(i), vector: [i, 0] });
 			const customIndex = N.indices.vector.customIndex;
 			const original = customIndex.search;
@@ -3623,8 +3619,9 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				return original.call(this, condition, context, options);
 			};
 			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			let results;
 			try {
-				await fromAsync(
+				results = await fromAsync(
 					N.search(
 						{
 							conditions: [
@@ -3642,10 +3639,67 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			} finally {
 				customIndex.search = original;
 			}
-			assert.strictEqual(plan.keys.size, 250, 'the 200 nulls plus ranks 200-249');
+			assert.strictEqual(plan.keys.size, 50, 'ranks 200-249, and none of the 200 nulls');
 			assert.strictEqual(plan.complete, true);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				[200]
+			);
 		} finally {
 			N.dropTable();
+		}
+	});
+
+	it('keeps the predicate on a lt/le allow-set over an untyped attribute that can mix BigInt and Number', async () => {
+		const M = table({
+			table: 'HNSWAllowMixedNumeric',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// -2n has the same index key as -2, but `-2n < -1` is false to the record predicate
+			await M.put(1, { rank: -2n, vector: [0, 0] });
+			await M.put(2, { rank: 5, vector: [0.5, 0] });
+			await M.put(3, { rank: -2, vector: [1, 0] });
+			const customIndex = M.indices.vector.customIndex;
+			const original = customIndex.search;
+			let plan;
+			customIndex.search = function (condition, context, options) {
+				plan = options.candidateKeys && options.candidateKeys.collect(100_000);
+				return original.call(this, condition, context, options);
+			};
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			let results;
+			try {
+				results = await fromAsync(
+					M.search(
+						{
+							conditions: [
+								{ attribute: 'vector', comparator: 'sort', ...sort },
+								{ attribute: 'rank', comparator: 'lt', value: -1 },
+							],
+							sort,
+							enforceExecutionOrder: true,
+							select: ['id'],
+							limit: 1,
+						},
+						{}
+					)
+				);
+			} finally {
+				customIndex.search = original;
+			}
+			assert.strictEqual(plan.complete, false);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				[3]
+			);
+		} finally {
+			M.dropTable();
 		}
 	});
 

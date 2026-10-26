@@ -550,36 +550,37 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	// The scan has to hold every key the record predicate admits, or results would depend on whether
 	// the plan was built. The index cannot supply a record lacking the attribute, a null one unless it
 	// indexes nulls, or one written as -0: ordered-binary encodes -0 past every number, and that entry's
-	// primary key decodes wrong. compareKeys ranks undefined below every scalar, so `rank < 100` admits
-	// a record with no rank at all; a condition admitting any of these is left to the predicate.
+	// primary key decodes wrong. A condition admitting any of these is left to the predicate.
 	const predicate = filterByType(condition, table, undefined, null);
 	if (predicate({}) || predicate({ [attributeName]: 0 }) || (!index.indexNulls && predicate({ [attributeName]: null })))
 		return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
 	const attributeType = findAttribute(table.attributes, attributeName)?.type;
+	const numericType =
+		attributeType === 'Int' || attributeType === 'Long' || attributeType === 'Float' || attributeType === 'BigInt';
+	// ordered-binary encodes a BigInt as the Number of the same value, which the record predicate never matches
+	// or orders as equal, so where both can be stored an equality or lt/le range holds keys the predicate rejects.
 	const predicateExact =
-		comparator !== 'equals' ||
-		value === null ||
-		typeof value === 'string' ||
-		typeof value === 'boolean' ||
-		attributeType === 'Int' ||
-		attributeType === 'Long' ||
-		attributeType === 'Float' ||
-		attributeType === 'BigInt';
+		comparator === 'equals'
+			? value === null || typeof value === 'string' || typeof value === 'boolean' || numericType
+			: comparator === 'lt' || comparator === 'le'
+				? numericType
+				: true;
 	let start;
 	let end;
 	let inclusiveEnd = false;
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// Inclusive null, where searchByIndex starts just above it: the record predicate's compareKeys
-			// admits indexed nulls, and an omission here is one the post-filter cannot undo.
+			// Just above the null block, like searchByIndex: the record predicate rejects null and admits `false`.
 			start = null;
+			exclusiveStart = true;
 			end = value;
 			break;
 		case 'le':
 			start = null;
+			exclusiveStart = true;
 			end = value;
 			inclusiveEnd = true;
 			break;
@@ -617,24 +618,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	)
 		return undefined;
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
-	let estimatedCount = condition.estimated_count;
+	const estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which excludes the null
-	// block. Only lt/le scan from null, and that block is read FIRST and can dwarf the rest of the
-	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
-	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
-	// per-query cost this is here to avoid. The other comparators' own estimates already cover
-	// whatever they start at.
-	if (comparator === 'lt' || comparator === 'le') {
-		let nulls: number | undefined;
-		try {
-			nulls = index.estimateCount?.({ start: null, end: null, inclusiveEnd: true })?.count;
-		} catch {
-			return undefined;
-		}
-		if (!(nulls >= 0)) return undefined;
-		estimatedCount += nulls;
-	}
 	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
 		index,
@@ -1812,14 +1797,27 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'ge':
 			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) >= 0);
 			break;
+		// Match searchByIndex: an lt/le range starts above null, and no index holds an entry for an omitted
+		// (undefined) value, so `ne null` must exclude it too.
 		case 'lt':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) < 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) < 0
+			);
 			break;
 		case 'le':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) <= 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) <= 0
+			);
 			break;
 		case 'ne':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) !== 0, false, true);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+				false,
+				true
+			);
 			break;
 		case 'sort':
 			return () => true;
