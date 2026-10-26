@@ -319,20 +319,21 @@ for (const isolated of [false, true]) {
 						});
 					}
 					// A replacement that has not reported what it loaded yet may still hold it (on Bun, one starts only after its
-					// predecessor exits), so the fork goes once every one has; a drop of the absent app restarts nothing meanwhile.
+					// predecessor exits), so the fork goes once every one has, removed by a drop or by the retry an earlier drop
+					// recorded (harper#3463); a drop of the absent app restarts nothing meanwhile.
 					let before: number[] = [];
 					let dropped: { status: number; body: any } = { status: 0, body: undefined };
 					await waitFor(
 						async () => {
 							before = await httpThreadIds();
 							dropped = await operation({ operation: 'drop_component', project, restart: true });
-							return dropped.status !== 200 || dropped.body.branchesRemoved !== false;
+							return dropped.status !== 200 || dropped.body.branchesRemoved !== false || !existsSync(branchRoot());
 						},
 						{ timeout: 60000, interval: 500, message: 'the fork was never discarded' }
 					);
 					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
 					assert.strictEqual(dropped.body.componentRemoved, false, 'it was not on this node any more');
-					assert.strictEqual(dropped.body.branchesRemoved, true, JSON.stringify(dropped.body));
+					assert.notStrictEqual(dropped.body.branchesRemoved, null, JSON.stringify(dropped.body));
 					assert.ok(!existsSync(branchRoot()), 'the fork is gone');
 					assert.deepStrictEqual(await httpThreadIds(), before, 'no worker was restarted');
 					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
