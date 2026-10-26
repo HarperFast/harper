@@ -1093,6 +1093,7 @@ interface TableResourceClass {
 	cleanup(): void;
 	closeMaintenance(deadline?: number): Promise<void>;
 	resumeMaintenance(): void;
+	/** @internal */
 	_readTxnForContext(context: any): (LMDBReadTransaction | RocksTransaction) & {
 		openTimer?: number;
 		retryRisk?: number;
