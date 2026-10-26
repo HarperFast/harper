@@ -769,7 +769,6 @@ const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
-// A tracked record's #savingOperation while its write waits on the HTTP precondition lock
 class ConditionLockWait {
 	fullUpdate: boolean;
 	staged: Promise<unknown>;
@@ -2008,7 +2007,8 @@ export function makeTable(options): TableResourceClass {
 		// read (once) by the #reloadLocked this lock() runs, to tell it apart from an application lock
 		condition.acquiring = resource;
 		const acquisition = resource.lock(id, { hold: true });
-		acquisition.catch(() => (condition.acquiring = undefined));
+		const settled = () => (condition.acquiring = undefined);
+		acquisition.then(settled, settled);
 		return (condition.locking = acquisition.then((locked) => {
 			if (condition.finished)
 				return locked.unlock().then(() => {
@@ -4283,7 +4283,6 @@ export function makeTable(options): TableResourceClass {
 		}
 		#whenStaged(staging: any) {
 			const updated = when(staging, () => this);
-			// discardable like a synchronous update() (addTo() discards it); save() reports the failure
 			const saving = this.#savingOperation;
 			if (saving instanceof ConditionLockWait && staging === saving.staged) (updated as Promise<this>).catch(noop);
 			return updated;
@@ -5301,9 +5300,7 @@ export function makeTable(options): TableResourceClass {
 			const callerRecord = this.#record;
 			TableResource._updateResource(this, entryForReload);
 			if (forCondition) {
-				// A precondition lock only refreshes the entry its predicate is checked against: a pending
-				// tracked write keeps the record it was made against (a full replacement's cleared one too),
-				// and the record does not become lock-writable.
+				// the precondition's own lock: refresh only what its predicate reads
 				if (callerRecord !== undefined && this.#savingOperation instanceof ConditionLockWait)
 					this.#record = callerRecord;
 				return this;
@@ -5475,14 +5472,19 @@ export function makeTable(options): TableResourceClass {
 			const condition = conditionForWrite(context, id);
 			if (awaitsConditionLock(condition)) {
 				// Installed before lock(): a record that already holds the key reloads synchronously.
+				const prior = this.#savingOperation;
 				const wait = new ConditionLockWait(fullUpdate);
 				this.#savingOperation = wait;
-				wait.staged = lockConditionalWrite(this, id, condition).then(() => {
+				const ready = prior instanceof ConditionLockWait ? prior.staged : lockConditionalWrite(this, id, condition);
+				wait.staged = ready.then(() => {
+					const pending = this.#savingOperation;
 					const staged = this._writeUpdate(id, recordUpdate, fullUpdate, options);
-					if (this.#savingOperation === wait) this.#savingOperation = null;
+					// the slot keeps the most recently started write, as it would on the unlocked path
+					if (pending !== wait) this.#savingOperation = pending;
+					else if (this.#savingOperation === wait) this.#savingOperation = null;
 					return staged;
 				});
-				// a failure reaches the caller through save(), or as REST's 501 when nothing saves
+				// update() and addTo() callers may discard this; save() (or REST's 501 when nothing saves) reports it
 				wait.staged.catch(noop);
 				return wait.staged;
 			}
