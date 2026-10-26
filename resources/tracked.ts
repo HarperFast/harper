@@ -617,8 +617,9 @@ export function addToChanges(target, property: string, value: number | bigint) {
 	const changes = target.getChanges();
 	if (changes && Object.hasOwn(changes, property)) {
 		const prior = changes[property];
-		// a cached tracked wrapper is a read, not a prior value
-		if (prior?.getRecord) target.set(property, new Addition(value));
+		// a tracked wrapper that was only read is not a prior value
+		if (prior?.getRecord && prior.getRecord() === target.getRecord?.()?.[property] && !hasChanges(prior))
+			target.set(property, new Addition(value));
 		else if (prior?.__op__ === 'add') target.set(property, new Addition(crdtOperations.addValues(prior.value, value)));
 		else target.set(property, crdtOperations.addValues(prior, value));
 	} else target.set(property, new Addition(value));

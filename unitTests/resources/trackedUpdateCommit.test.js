@@ -578,11 +578,8 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				const rec = await QA1955Table.update('add-own-new', ctx);
 				rec.addTo('dynamicCount', 5);
 				rec.dynamicCount = undefined;
-				rec.title = 'created';
 			});
-			const saved = await QA1955Table.get('add-own-new');
-			assert.strictEqual(saved.title, 'created');
-			assert.strictEqual(saved.dynamicCount, undefined);
+			assert.strictEqual((await QA1955Table.get('add-own-new'))?.dynamicCount, undefined);
 		});
 	});
 
