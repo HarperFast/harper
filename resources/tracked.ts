@@ -198,7 +198,8 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					const sourceValue = this.getRecord()?.[name];
 					if (sourceValue && typeof sourceValue === 'object') {
 						const updatedValue = trackObject(sourceValue, attribute, this);
-						if (updatedValue) {
+						// a Date, Bytes or Blob comes back untracked; caching it would make the read a change
+						if (updatedValue !== sourceValue) {
 							if (!changes) {
 								this._setChanges((changes = Object.create(null)));
 							}
@@ -298,7 +299,7 @@ function getProxiedProperty(target, name, receiver) {
 		const sourceValue = receiver.getRecord?.()?.[name];
 		if (sourceValue && typeof sourceValue === 'object') {
 			const updatedValue = trackObject(sourceValue, undefined, receiver);
-			if (updatedValue) {
+			if (updatedValue !== sourceValue) {
 				if (!changes) {
 					changes = Object.create(null);
 					receiver._setChanges(changes);
@@ -439,6 +440,9 @@ export function collapseData(target) {
 }
 function collapseArray(target: any) {
 	if (target.getRecord && !hasChanges(target)) return target.getRecord();
+	return materializeArray(target);
+}
+function materializeArray(target) {
 	const collapsed = new Array(target.length);
 	for (let i = 0, l = target.length; i < l; i++) {
 		const element = target[i];
@@ -527,7 +531,9 @@ export function hasChanges(target) {
 	} else {
 		const changes = target.getChanges?.();
 		if (changes && !source) return true;
+		const ownKeys = Object.keys(target);
 		for (const key in changes) {
+			if (ownKeys.length > 0 && hasOwnProperty.call(target, key)) continue; // the own property decides, below
 			const value = changes[key];
 			if (value && typeof value === 'object') {
 				const sourceValue = source[key];
@@ -538,7 +544,7 @@ export function hasChanges(target) {
 			} else return true;
 		}
 		// own properties are merged into the stored record by updateAndFreeze/collapseData
-		for (const key of Object.keys(target)) {
+		for (const key of ownKeys) {
 			if (!sameValue(target[key], source?.[key])) return true;
 		}
 	}
@@ -552,44 +558,50 @@ function sameValue(a, b) {
  * The incremental update a tracked instance commits: its changes with every tracked sub-object/array
  * that was only read (unchanged since it was taken from the record) removed, the changed ones
  * collapsed to plain data, and its own properties that differ from the record added. CRDT
- * operations pass through. Returns undefined when nothing changed on an existing record, and the changes object itself
- * (not a copy) when it needs no normalization. Never mutates `changes`, which is the instance's live
- * tracked state (or the caller's update object).
+ * operations pass through, and an own property overrides a change to the same key. Returns undefined
+ * when nothing changed on an existing record, and `changes` itself (not a copy) when it needs no
+ * normalization. Does not mutate `changes`, which is the instance's live tracked state (or the
+ * caller's update object).
  */
 export function collapseChanges(target, changes) {
 	// a non-object root (an array, binary data) is not a patch; leave it for the write's root validation
 	if (changes != null && (typeof changes !== 'object' || Array.isArray(changes) || ArrayBuffer.isView(changes)))
 		return changes;
 	const source = target.getRecord?.();
-	let collapsed;
-	let hasKeys = false;
+	const ownKeys = Object.keys(target);
+	let patch = changes;
+	let keyCount = 0;
 	for (const key in changes) {
 		const value = changes[key];
-		if (value?.getRecord) {
-			// copy-on-write: the first normalized key copies everything seen so far
-			if (!collapsed) {
-				collapsed = Object.create(null);
-				for (const priorKey in changes) {
-					if (priorKey === key) break;
-					collapsed[priorKey] = changes[priorKey];
-				}
+		let committed = value;
+		if (ownKeys.length > 0 && hasOwnProperty.call(target, key)) committed = OMITTED;
+		else if (value?.getRecord) {
+			if (source && value.getRecord() === source[key] && !hasChanges(value)) committed = OMITTED;
+			else committed = value.constructor === Array ? materializeArray(value) : collapseData(value);
+		}
+		if (committed !== value && patch === changes) {
+			patch = Object.create(null);
+			for (const priorKey in changes) {
+				if (priorKey === key) break;
+				patch[priorKey] = changes[priorKey];
 			}
-			if (source && value.getRecord() === source[key] && !hasChanges(value)) continue;
-			collapsed[key] = collapseData(value);
-		} else if (collapsed) collapsed[key] = value;
-		hasKeys = true;
+		}
+		if (committed === OMITTED) continue;
+		if (patch !== changes) patch[key] = committed;
+		keyCount++;
 	}
-	for (const key of Object.keys(target)) {
+	for (const key of ownKeys) {
 		const value = target[key];
 		if (sameValue(value, source?.[key])) continue;
-		if (!collapsed) collapsed = Object.assign(Object.create(null), changes);
-		collapsed[key] = value && typeof value === 'object' && value.getRecord ? collapseData(value) : value;
-		hasKeys = true;
+		if (patch === changes) patch = Object.assign(Object.create(null), changes);
+		patch[key] = value?.getRecord ? collapseData(value) : value;
+		keyCount++;
 	}
 	// with no record to compare against, any update (even an empty one) writes, as hasChanges decides
-	if (!hasKeys) return source ? undefined : changes;
-	return collapsed ?? changes;
+	if (keyCount === 0) return source ? undefined : changes;
+	return patch;
 }
+const OMITTED = {};
 
 /**
  * Add a numeric delta to a property of a tracked object, composing with whatever this transaction

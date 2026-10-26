@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { collapseData, hasChanges } = require('#src/resources/tracked');
@@ -73,14 +73,14 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			});
 
 			const saved = await QA1955Table.get('ctrl-1');
-			assert.equal(saved.title, 'updated');
-			assert.equal(saved.subObject.name, 'changed');
-			assert.equal(saved.subObject.keep, 'stay');
-			assert.equal(saved.subObject.count, 1);
-			assert.deepEqual(Array.from(saved.tags), ['alpha', 'beta', 'gamma']);
-			assert.equal(saved.count, 15);
-			assert.equal(saved.countInt, 3);
-			assert.equal(saved.countBigInt, 60n);
+			assert.strictEqual(saved.title, 'updated');
+			assert.strictEqual(saved.subObject.name, 'changed');
+			assert.strictEqual(saved.subObject.keep, 'stay');
+			assert.strictEqual(saved.subObject.count, 1);
+			assert.deepStrictEqual(Array.from(saved.tags), ['alpha', 'beta', 'gamma']);
+			assert.strictEqual(saved.count, 15);
+			assert.strictEqual(saved.countInt, 3);
+			assert.strictEqual(saved.countBigInt, 60n);
 		});
 	});
 
@@ -186,13 +186,13 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			);
 
 			const reconciled = await QA1955Table.get('arm2-b');
-			assert.equal(patchedPayloads.length, 1);
-			assert.deepEqual(patchedPayloads[0].subObject, {
+			assert.strictEqual(patchedPayloads.length, 1);
+			assert.deepStrictEqual(patchedPayloads[0].subObject, {
 				name: 'mutated',
 				keep: 'preserved',
 				count: 1,
 			});
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				{ ...atT2.subObject },
 				{
 					name: 'mutated-at-t2',
@@ -200,7 +200,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 					count: 1,
 				}
 			);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				{ ...reconciled.subObject },
 				{
 					name: 'mutated-at-t2',
@@ -232,8 +232,8 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				if (ctx2.getContext) ctx2.getContext().timestamp = t2;
 				const observedSubName = rec.subObject.name;
 				const observedTag = rec.tags[0];
-				assert.equal(observedSubName, 'init');
-				assert.equal(observedTag, 'a');
+				assert.strictEqual(observedSubName, 'init');
+				assert.strictEqual(observedTag, 'a');
 				rec.title = 'title-at-t2';
 			});
 
@@ -247,8 +247,8 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			);
 
 			const finalRec = await QA1955Table.get('arm2-readonly');
-			assert.equal(finalRec.title, 'title-at-t2');
-			assert.deepEqual(
+			assert.strictEqual(finalRec.title, 'title-at-t2');
+			assert.deepStrictEqual(
 				{ ...finalRec.subObject },
 				{
 					name: 'patched-at-t1',
@@ -256,7 +256,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 					count: 2,
 				}
 			);
-			assert.deepEqual(Array.from(finalRec.tags), ['x', 'y']);
+			assert.deepStrictEqual(Array.from(finalRec.tags), ['x', 'y']);
 		});
 	});
 
@@ -274,13 +274,13 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				const rec = await QA1955Table.update('arm3-a', ctx);
 				const firstTag = rec.tags[0];
 				const subName = rec.subObject.name;
-				assert.equal(firstTag, 'a');
-				assert.equal(subName, 'sub1');
-				assert.equal(hasChanges(rec), false);
+				assert.strictEqual(firstTag, 'a');
+				assert.strictEqual(subName, 'sub1');
+				assert.strictEqual(hasChanges(rec), false);
 			});
 
 			const vAfter = (await QA1955Table.primaryStore.getEntry('arm3-a')).version;
-			assert.equal(vAfter, vBefore);
+			assert.strictEqual(vAfter, vBefore);
 		});
 
 		it('Test 3b: direct assignment of unindexed property on non-sealed table marks hasChanges(record) === true and persists on commit', async () => {
@@ -292,13 +292,13 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			await transaction(async (ctx) => {
 				const rec = await QA1955Table.update('arm3-b', ctx);
 				rec.extraDynamicProp = 'saved-extra';
-				assert.equal(hasChanges(rec), true);
+				assert.strictEqual(hasChanges(rec), true);
 			});
 
 			const afterDynamic = await QA1955Table.get('arm3-b');
-			assert.equal(afterDynamic.extraDynamicProp, 'saved-extra');
-			assert.equal(afterDynamic.title, 'v1');
-			assert.equal(afterDynamic.countLong, 10);
+			assert.strictEqual(afterDynamic.extraDynamicProp, 'saved-extra');
+			assert.strictEqual(afterDynamic.title, 'v1');
+			assert.strictEqual(afterDynamic.countLong, 10);
 		});
 
 		it('Test 3c: array in-place mutation and array-of-objects element mutation produce full updated arrays in collapseData', async () => {
@@ -314,27 +314,27 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			await transaction(async (ctx) => {
 				const rec = await QA1955Table.update('arm3-c', ctx);
 				const firstTag = rec.tags[0];
-				assert.equal(firstTag, 'a');
+				assert.strictEqual(firstTag, 'a');
 
 				const c1 = collapseData(rec);
-				assert.equal(Array.isArray(c1.tags), true);
-				assert.deepEqual(c1.tags, ['a', 'b', 'c']);
+				assert.strictEqual(Array.isArray(c1.tags), true);
+				assert.deepStrictEqual(c1.tags, ['a', 'b', 'c']);
 
 				rec.tags.pop();
 				rec.items[0].qty = 99;
 				const c2 = collapseData(rec);
-				assert.equal(Array.isArray(c2.tags), true);
-				assert.deepEqual(c2.tags, ['a', 'b']);
-				assert.equal(Array.isArray(c2.items), true);
-				assert.deepEqual(c2.items, [
+				assert.strictEqual(Array.isArray(c2.tags), true);
+				assert.deepStrictEqual(c2.tags, ['a', 'b']);
+				assert.strictEqual(Array.isArray(c2.items), true);
+				assert.deepStrictEqual(c2.items, [
 					{ label: 'item1', qty: 99 },
 					{ label: 'item2', qty: 2 },
 				]);
 
 				rec.tags.length = 0;
 				const c3 = collapseData(rec);
-				assert.equal(Array.isArray(c3.tags), true);
-				assert.deepEqual(c3.tags, []);
+				assert.strictEqual(Array.isArray(c3.tags), true);
+				assert.deepStrictEqual(c3.tags, []);
 			});
 		});
 	});
@@ -346,11 +346,11 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			await transaction(async (ctx) => {
 				const rec = await QA1955Table.update('arm4-a', ctx);
 				rec.subtractFrom('countBigInt', 35n);
-				assert.equal(rec.countBigInt, 65n);
+				assert.strictEqual(rec.countBigInt, 65n);
 			});
 
 			const after = await QA1955Table.get('arm4-a');
-			assert.equal(after.countBigInt, 65n);
+			assert.strictEqual(after.countBigInt, 65n);
 		});
 
 		it('Test 4b: multiple addTo and subtractFrom calls and prior direct property assignments within the same transaction compose additively', async () => {
@@ -372,15 +372,15 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				rec.addTo('countBigInt', 10n);
 				rec.subtractFrom('countBigInt', 4n);
 
-				assert.equal(rec.count, 16);
-				assert.equal(rec.countInt, 107);
-				assert.equal(rec.countBigInt, 56n);
+				assert.strictEqual(rec.count, 16);
+				assert.strictEqual(rec.countInt, 107);
+				assert.strictEqual(rec.countBigInt, 56n);
 			});
 
 			const after = await QA1955Table.get('arm4-b');
-			assert.equal(after.count, 16);
-			assert.equal(after.countInt, 107);
-			assert.equal(after.countBigInt, 56n);
+			assert.strictEqual(after.count, 16);
+			assert.strictEqual(after.countInt, 107);
+			assert.strictEqual(after.countBigInt, 56n);
 		});
 
 		it('Test 4c: calling record.update({...}) followed by addTo/subtractFrom in the same transaction preserves BigInt arithmetic and composes deltas', async () => {
@@ -395,13 +395,13 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				rec.addTo('countBigInt', 25n);
 				rec.subtractFrom('countBigInt', 5n);
 				rec.addTo('count', 4);
-				assert.equal(rec.countBigInt, 120n);
-				assert.equal(rec.count, 24);
+				assert.strictEqual(rec.countBigInt, 120n);
+				assert.strictEqual(rec.count, 24);
 			});
 
 			const after = await QA1955Table.get('arm4-c');
-			assert.equal(after.countBigInt, 120n);
-			assert.equal(after.count, 24);
+			assert.strictEqual(after.countBigInt, 120n);
+			assert.strictEqual(after.count, 24);
 		});
 	});
 
@@ -458,13 +458,13 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			const historyBefore = (await SourcedTable.getHistoryOfRecord('ro')).length;
 			await transaction(async (ctx) => {
 				const rec = await SourcedTable.update('ro', ctx);
-				assert.equal(rec.subObject.name, 'n');
-				assert.equal(rec.tags[1], 'b');
+				assert.strictEqual(rec.subObject.name, 'n');
+				assert.strictEqual(rec.tags[1], 'b');
 				assert.ok(Number.isNaN(rec.values[0]));
-				assert.equal(hasChanges(rec), false);
+				assert.strictEqual(hasChanges(rec), false);
 			});
-			assert.equal(patched.length, 0);
-			assert.equal((await SourcedTable.getHistoryOfRecord('ro')).length, historyBefore);
+			assert.strictEqual(patched.length, 0);
+			assert.strictEqual((await SourcedTable.getHistoryOfRecord('ro')).length, historyBefore);
 		});
 
 		it('source.patch and the audit entry carry the same plain patch: changed arrays and sub-objects, not the ones only read', async () => {
@@ -476,26 +476,26 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			});
 			await transaction(async (ctx) => {
 				const rec = await SourcedTable.update('mixed', ctx);
-				assert.equal(rec.subObject.name, 'n'); // read only
+				assert.strictEqual(rec.subObject.name, 'n');
 				rec.tags.pop();
 				rec.values[1].v = 20;
 			});
-			assert.equal(patched.length, 1);
+			assert.strictEqual(patched.length, 1);
 			const sent = patched[0].data;
-			assert.deepEqual(Object.keys(sent).sort(), ['tags', 'values']);
+			assert.deepStrictEqual(Object.keys(sent).sort(), ['tags', 'values']);
 			assert.ok(Array.isArray(sent.tags) && !sent.tags.getRecord);
-			assert.deepEqual([...sent.tags], ['a', 'b']);
+			assert.deepStrictEqual([...sent.tags], ['a', 'b']);
 			assert.ok(Array.isArray(sent.values) && !sent.values[1].getRecord);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				sent.values.map((value) => ({ ...value })),
 				[{ v: 1 }, { v: 20 }]
 			);
 			const audited = auditedPatches('mixed').at(-1);
-			assert.deepEqual(Object.keys(audited).sort(), ['tags', 'values']);
-			assert.deepEqual([...audited.tags], ['a', 'b']);
+			assert.deepStrictEqual(Object.keys(audited).sort(), ['tags', 'values']);
+			assert.deepStrictEqual([...audited.tags], ['a', 'b']);
 			const saved = await SourcedTable.get('mixed');
-			assert.deepEqual({ ...saved.subObject }, { name: 'n', count: 1 });
-			assert.deepEqual([...saved.tags], ['a', 'b']);
+			assert.deepStrictEqual({ ...saved.subObject }, { name: 'n', count: 1 });
+			assert.deepStrictEqual([...saved.tags], ['a', 'b']);
 		});
 
 		it('emptying a tracked array with length = 0 commits an empty array', async () => {
@@ -504,8 +504,8 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				const rec = await SourcedTable.update('empty', ctx);
 				rec.tags.length = 0;
 			});
-			assert.deepEqual([...patched[0].data.tags], []);
-			assert.deepEqual([...(await SourcedTable.get('empty')).tags], []);
+			assert.deepStrictEqual([...patched[0].data.tags], []);
+			assert.deepStrictEqual([...(await SourcedTable.get('empty')).tags], []);
 		});
 
 		it('an own dynamic property alone writes, and appears in the audit entry and source.patch', async () => {
@@ -514,10 +514,10 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				const rec = await SourcedTable.update('own', ctx);
 				rec.extra = 'dynamic';
 			});
-			assert.equal((await SourcedTable.get('own')).extra, 'dynamic');
-			assert.equal(patched[0].data.extra, 'dynamic');
+			assert.strictEqual((await SourcedTable.get('own')).extra, 'dynamic');
+			assert.strictEqual(patched[0].data.extra, 'dynamic');
 			const audited = auditedPatches('own').at(-1);
-			assert.equal(audited.extra, 'dynamic');
+			assert.strictEqual(audited.extra, 'dynamic');
 		});
 	});
 
@@ -530,7 +530,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				rec.countInt = 50;
 				rec.addTo('countInt', 1);
 			});
-			assert.equal((await QA1955Table.get('add-then-assign')).countInt, 51);
+			assert.strictEqual((await QA1955Table.get('add-then-assign')).countInt, 51);
 		});
 
 		it('composed deltas stay a single delta that commutes with a concurrent write', async () => {
@@ -545,13 +545,13 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 					concurrent.addTo('countInt', 100);
 				});
 			});
-			assert.equal((await QA1955Table.get('add-concurrent')).countInt, 128);
+			assert.strictEqual((await QA1955Table.get('add-concurrent')).countInt, 128);
 			const deltas = [...QA1955Table.auditStore.getRange({ start: 1 })]
 				.filter((entry) => entry.tableId === QA1955Table.tableId && entry.recordId === 'add-concurrent')
 				.map((entry) => entry.getValue(QA1955Table.primaryStore)?.countInt?.value)
 				.filter((value) => value !== undefined)
 				.sort((a, b) => a - b);
-			assert.deepEqual(deltas, [8, 100]);
+			assert.deepStrictEqual(deltas, [8, 100]);
 		});
 		it('composes with an undeclared property assigned on the instance', async () => {
 			await QA1955Table.put('add-own', { title: 't' });
@@ -560,7 +560,44 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				rec.dynamicCount = 100;
 				rec.addTo('dynamicCount', 7);
 			});
-			assert.equal((await QA1955Table.get('add-own')).dynamicCount, 107);
+			assert.strictEqual((await QA1955Table.get('add-own')).dynamicCount, 107);
+		});
+		it('an own property set back to the stored value overrides a pending addTo', async () => {
+			await QA1955Table.put('add-own-reset', { title: 't', dynamicCount: 20 });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('add-own-reset', ctx);
+				rec.addTo('dynamicCount', 5);
+				rec.dynamicCount = 20;
+				rec.title = 'changed';
+			});
+			const saved = await QA1955Table.get('add-own-reset');
+			assert.strictEqual(saved.dynamicCount, 20);
+			assert.strictEqual(saved.title, 'changed');
+		});
+	});
+
+	describe('Reading untracked object values', () => {
+		it('reading a Date or Bytes field is not a change', async () => {
+			const DatedTable = table({
+				table: 'TrackedDated',
+				database: 'test_qa1955',
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+					{ name: 'when', type: 'Date' },
+					{ name: 'bytes', type: 'Bytes' },
+				],
+			});
+			await DatedTable.put('dated', { title: 't', when: new Date(1000), bytes: Buffer.from([1, 2]) });
+			const versionBefore = DatedTable.primaryStore.getEntry('dated').version;
+			await transaction(async (ctx) => {
+				const rec = await DatedTable.update('dated', ctx);
+				assert.strictEqual(rec.when.getTime(), 1000);
+				assert.strictEqual(rec.bytes[0], 1);
+				assert.strictEqual(hasChanges(rec), false);
+			});
+			assert.strictEqual(DatedTable.primaryStore.getEntry('dated').version, versionBefore);
 		});
 	});
 
@@ -572,7 +609,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			held.extraHeld = 'kept';
 			await held.save();
 			await held.unlock();
-			assert.equal((await QA1955Table.get('held-own')).extraHeld, 'kept');
+			assert.strictEqual((await QA1955Table.get('held-own')).extraHeld, 'kept');
 		});
 	});
 });

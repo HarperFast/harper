@@ -4304,7 +4304,6 @@ export function makeTable(options): TableResourceClass {
 					throw lockNotHeldError(saveHandle);
 				}
 				const changes = this.#changes;
-				// own properties are changes too (an undeclared property assigned on a non-sealed table)
 				if ((changes && Object.keys(changes).length > 0) || Object.keys(this).length > 0) {
 					this.#savingOperation = null;
 					return when(this._writeUpdate(this.getId(), changes, false), () => {
@@ -5509,8 +5508,8 @@ export function makeTable(options): TableResourceClass {
 				}
 				return;
 			}
-			// This write commits the instance's own tracked changes; validate derives the committed patch from them
-			// (collapseChanges), each time it runs, so a correction after a failed validation is picked up.
+			// validate derives the committed patch from these each time it runs, so a correction after a failed
+			// validation is picked up
 			const tracksInstance = !fullUpdate && (recordUpdate === undefined || recordUpdate === this.#changes);
 			let instanceChanges = tracksInstance ? recordUpdate : undefined;
 			let captureChanges;
