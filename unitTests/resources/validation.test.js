@@ -323,6 +323,8 @@ describe('Validation of patch operations, coercion write-back and object sub-typ
 		assert.strictEqual((await CoercionTest.get('computed-2')).sharedLabel, 'top-level');
 		await CoercionTest.put('computed-3', Object.assign(Object.create(null), { sub: { fromNum: 2 } }));
 		assert.strictEqual((await CoercionTest.get('computed-3')).sub.fromNum, 2n);
+		await CoercionTest.put('computed-4', { sub: { fromNum: 3, getChanges: 'data' } });
+		assert.strictEqual((await CoercionTest.get('computed-4')).sub.getChanges, 'data');
 		await assert.rejects(
 			transaction(async (txn) => {
 				const record = await CoercionTest.update('computed-3', {}, txn);
