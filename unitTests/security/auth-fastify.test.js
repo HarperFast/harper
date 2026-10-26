@@ -20,6 +20,7 @@ function setTokenTimeout(param, value) {
 const serverModule = require('#src/server/Server');
 const {
 	credentialRejectionError,
+	authenticationChallengeForError,
 	deferCredentialRejection,
 	isCredentialRejection,
 } = require('#src/security/deferredAuthentication');
@@ -225,7 +226,7 @@ describe('Test authorize function', function () {
 		// a request passport would accept, carrying a rejection the middleware already recorded; the base
 		// request has no headers, so re-running authentication() on it would fail differently
 		const baseRequest = {};
-		deferCredentialRejection(baseRequest, credentialRejectionError('Account blocked', 401), 'Basic');
+		deferCredentialRejection(baseRequest, credentialRejectionError('Account blocked', 401), 'mTLS');
 		const request = { ...active_basic_request, raw: { baseRequest } };
 
 		auth.authorize(request, null, function (err, user) {
@@ -233,6 +234,7 @@ describe('Test authorize function', function () {
 			assert.strictEqual(err.message, 'Account blocked');
 			assert.strictEqual(err.statusCode, 401);
 			assert.strictEqual(isCredentialRejection(err), true);
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Basic realm="Harper"');
 			done();
 		});
 	});
@@ -257,6 +259,7 @@ describe('Test authorize function', function () {
 			serverModule.server.getUser = originalGetUser;
 			assert.strictEqual(user, undefined);
 			assert.strictEqual(err?.message, 'Account blocked', 'passport must not accept a credential getUser refused');
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Basic realm="Harper"');
 			done();
 		});
 	});

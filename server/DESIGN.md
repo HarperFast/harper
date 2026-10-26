@@ -356,9 +356,9 @@ declining to call `nextHandler` is precisely the moment ownership is settled. A 
 it serves an unrecognized credential as anonymous — the MCP application mount did exactly that, and
 returned 200 for an `initialize` the base revision answered with 401.
 
-Settlement goes through `settleDeferredCredentialRejection()`, which returns the response descriptor
-`security/auth.ts` used to return in line: status 401 and `serializeMessage({error: message}, request)`
-in the request's negotiated content type. That matters because an owner's own error mapping is not
+Settlement goes through `settleDeferredCredentialRejection()`, which returns the descriptor an in-place
+rejection gets (`credentialRejectionResponse()`): status 401, `serializeMessage({error: message}, request)`
+in the negotiated content type, and the challenge described below. That matters because an owner's own error mapping is not
 that contract — REST renders a thrown error as an RFC 9457 Problem Details document and GraphQL as
 `{errors:[{message}]}` — and a rejected credential never reached either before deferral existed.
 `assertNoDeferredCredentialRejection()` is the throwing form, for a WebSocket upgrade that has no
