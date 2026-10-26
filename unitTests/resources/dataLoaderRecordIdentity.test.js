@@ -103,6 +103,10 @@ describe('Data loader record identity', function () {
 			id: Float @primaryKey
 			value: Int
 		}
+		type DlIdLegacyInfinity @table {
+			rate: Float @primaryKey
+			value: Int
+		}
 		type DlIdLongKey @table {
 			id: String @primaryKey
 			value: Int
@@ -419,6 +423,16 @@ describe('Data loader record identity', function () {
 
 			await load({ table: 'DlIdLongLegacy', records: [{ id, value: 2 }] });
 			assert.equal((await tables.DlIdLongLegacy.get(id)).value, 2);
+		});
+
+		it('does not take an earlier hash of Infinity as evidence for -Infinity', async function () {
+			// earlier hashes went through JSON, where both keys are null
+			await tables.DlIdLegacyInfinity.put({ rate: Infinity, value: 1 });
+			await tables.DlIdLegacyInfinity.put({ rate: -Infinity, value: 1 });
+			await hashTable.put({ id: 'DlIdLegacyInfinity:undefined', hash: legacyHash({ rate: Infinity, value: 1 }) });
+
+			await loadYaml('DlIdLegacyInfinity', 'table: DlIdLegacyInfinity\nrecords:\n  - { rate: -.inf, value: 2 }\n');
+			assert.equal((await tables.DlIdLegacyInfinity.get(-Infinity)).value, 1);
 		});
 
 		it('does not treat the hash of a record keyed "undefined" as evidence for other records', async function () {

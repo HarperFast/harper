@@ -112,46 +112,62 @@ function getHashKey(database: string | undefined, tableName: string, recordId: a
 }
 
 /**
- * Hashes stored by earlier versions, which keyed `table:id` (`database:table:id` when the file named a
- * database) by the record's `id` field whatever the primary key, so a custom-key record without one shared
- * `table:undefined` with its whole table. Their hashes cover the primary key, so a matching one belongs to
- * this record unless another table wrote the same key: refused when a name contains `:`, when a default-database
+ * Reads the hashes earlier versions stored for a file's records. They keyed `table:id` (`database:table:id` when the
+ * file named a database) by the record's `id` field whatever the primary key, so a custom-key record without one
+ * shared `table:undefined` with its whole table. Their hashes cover the primary key, so a matching one belongs to
+ * the record unless another table wrote the same key: refused when a name contains `:`, when a default-database
  * table is named like the key's prefix, and, for a named database, when the default database has a same-named
  * table that those versions would have written the file's records to instead.
  */
-async function getLegacyHashes(
+function legacyHashReader(
 	trackingTable: any,
 	database: string | undefined,
 	tableName: string,
-	existingRecordSubset: Record<string, any>,
 	tablesRef: Tables
-): Promise<string[]> {
+): (recordId: any, existingRecordSubset: Record<string, any>) => Promise<string[]> {
 	const isDefaultDatabase = !database || database === DEFAULT_DATABASE_NAME;
-	if (tableName.includes(':') || (!isDefaultDatabase && (database.includes(':') || tablesRef?.[tableName]))) {
-		return [];
-	}
+	const unambiguous =
+		!tableName.includes(':') && (isDefaultDatabase || !(database.includes(':') || tablesRef?.[tableName]));
 	// a default-database table named `data:table` or `database:table` wrote keys of the same form
 	const prefixes = (
-		isDefaultDatabase ? [tableName, `${DEFAULT_DATABASE_NAME}:${tableName}`] : [`${database}:${tableName}`]
+		!unambiguous
+			? []
+			: isDefaultDatabase
+				? [tableName, `${DEFAULT_DATABASE_NAME}:${tableName}`]
+				: [`${database}:${tableName}`]
 	)
 		.filter((prefix) => prefix === tableName || !tablesRef?.[prefix])
 		.map((prefix) => prefix + ':');
-	// The `id` an earlier version keyed by is the stored one, so it is among the compared fields: any other reading
-	// of the same key has a different `id`. A record compared without one used the shared slot
-	const id = 'id' in existingRecordSubset ? existingRecordSubset.id : undefined;
-	const hashes: string[] = [];
-	for (const prefix of prefixes) {
-		let hashRecord;
-		try {
-			hashRecord = await trackingTable.get(prefix + id);
-		} catch (error) {
-			// an unreadable entry is no evidence (a key over the size limit was never writable either)
-			dataLoaderLogger.debug?.(`Skipping unreadable earlier hash for ${tableName}: ${error.message}`);
-			continue;
+	// promises, so the records of one file share each read of their table's `undefined` slot
+	const entries = new Map<string, Promise<any>>();
+	return async (recordId, existingRecordSubset) => {
+		// those hashes went through JSON, which conflates some keys (Infinity and -Infinity both become null)
+		if (prefixes.length === 0 || !toBufferKey(JSON.parse(JSON.stringify(recordId))).equals(toBufferKey(recordId))) {
+			return [];
 		}
-		if (hashRecord) hashes.push(hashRecord.hash);
-	}
-	return hashes;
+		// The `id` an earlier version keyed by is the stored one, so it is among the compared fields: any other
+		// reading of the same key has a different `id`. A record compared without one used the shared slot
+		const id = 'id' in existingRecordSubset ? existingRecordSubset.id : undefined;
+		const hashes: string[] = [];
+		for (const prefix of prefixes) {
+			const key = prefix + id;
+			let entry = entries.get(key);
+			if (!entry) {
+				entry = Promise.resolve().then(() => trackingTable.get(key));
+				entries.set(key, entry);
+			}
+			let hashRecord;
+			try {
+				hashRecord = await entry;
+			} catch (error) {
+				// an unreadable entry is no evidence (a key over the size limit was never writable either)
+				dataLoaderLogger.debug?.(`Skipping unreadable earlier hash for ${tableName}: ${error.message}`);
+				continue;
+			}
+			if (hashRecord) hashes.push(hashRecord.hash);
+		}
+		return hashes;
+	};
 }
 
 /**
@@ -293,6 +309,7 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 
 		const primaryKey = tableRef.primaryKey ?? 'id';
 		const trackingTable = getHashTrackingTable(databasesRef);
+		const getLegacyHashes = legacyHashReader(trackingTable, database, tableName, tablesRef);
 
 		// Process records with timestamp comparison
 		// Count metrics
@@ -324,9 +341,9 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 
 						if (!existingRecord) {
 							// If the record doesn't exist yet, insert it
-							newRecords++;
-							// before the put, which stamps @createdTime/@updatedTime fields into the record it is given
+							// (hashed before the put, which stamps @createdTime/@updatedTime fields into the record it is given)
 							const newRecordHash = computeRecordHash(newRecord);
+							newRecords++;
 							const result = await tableRef.put(newRecord);
 							// A record without a primary key value can't be looked up again, so there is nothing to track
 							if (hashKey) await storeHash(trackingTable, hashKey, newRecordHash);
@@ -348,13 +365,7 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 						if (storedHash !== undefined) {
 							loadedByDataLoader = storedHash === existingRecordHash;
 						} else {
-							const legacyHashes = await getLegacyHashes(
-								trackingTable,
-								database,
-								tableName,
-								existingRecordSubset,
-								tablesRef
-							);
+							const legacyHashes = await getLegacyHashes(recordId, existingRecordSubset);
 							loadedByDataLoader =
 								legacyHashes.length > 0 &&
 								(legacyHashes.includes(existingRecordHash) ||
@@ -362,9 +373,7 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 						}
 
 						if (!loadedByDataLoader) {
-							// No matching hash means this record wasn't loaded by the data loader
-							// (created via operations API or other means), or its data file fields
-							// were modified externally since. Don't overwrite user-created or user-modified records
+							// Created or modified outside the data loader (operations API etc.)
 							skippedRecords++;
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
