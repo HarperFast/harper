@@ -35,6 +35,7 @@ export function _restoreGetConfigObj(): void {
 }
 
 interface McpProfileConfig {
+	enabled?: boolean;
 	mountPath?: string;
 }
 
@@ -75,7 +76,7 @@ const DEFAULT_MOUNT_PATH = '/mcp';
  */
 export function registerMcpProfile({ profile, host, config, routeOptions }: RegisterMcpProfileArgs): void {
 	const profileConfig = config?.mcp?.[profile];
-	if (!profileConfig) {
+	if (!profileConfig || profileConfig.enabled === false) {
 		harperLogger.trace(`MCP ${profile} profile not configured, skipping registration`);
 		return;
 	}
@@ -122,7 +123,7 @@ interface ScopeLike {
 export function handleApplication(scope: ScopeLike): void {
 	if (applicationStarted) return;
 	const config = getConfigObj() as FullConfig | undefined;
-	if (!config?.mcp?.application) {
+	if (!config?.mcp?.application || config.mcp.application.enabled === false) {
 		harperLogger.trace('MCP application profile not configured, skipping registration');
 		return;
 	}
