@@ -11080,7 +11080,8 @@ export function makeTable(options): TableResourceClass {
 					// don't go into the loading from source condition, but HTTP spec says to
 					// return 504 (rather than 404) if there is no content and the cache-control header
 					// dictates not to go to source
-					if (!resource.doesExist() || isHiddenExpiry(entry?.expiresAt))
+					// a primitive-id get has no instance (onlyIfCached was set while it read); a fresh one would hold entry.value
+					if (!(resource ? resource.doesExist() : entry?.value) || isHiddenExpiry(entry?.expiresAt))
 						throw new ServerError('Entry is not cached', 504);
 					if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 				} else if (resourceOptions?.ensureLoaded) {
