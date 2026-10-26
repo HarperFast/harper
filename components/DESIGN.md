@@ -409,14 +409,9 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 - `unset-package` — a payload build removes `package`, `install` and `credentials` and keeps the rest
   (`isolated`, `urlPath`, `host`, `branchedDatabases`), removing the entry if nothing remains. "No package"
   is an opinion: left in place, a cold install resolves the old package over the payload release that is
-  live. This is a behaviour change operators can see. A payload deploy that sets any of those four routing
-  keys (harper#3043) owns all four: `deploy_component` records each as requested, else as the entry has it
-  now, else `null`, in the artifact descriptor's `routing` and the effect, and the activation writes them and
-  removes the `null` ones. Owning all four, rather than only the ones it named, is what lets a canary restore of
-  the release it replaced put that release's routing back, as a package release's whole entry does. A payload
-  deploy that sets none owns none, so isolation an operator set on the entry by hand survives it and its
-  restore. A predecessor that owns none restores none, so a rejected release's routing outlives the restore
-  there, as it does after a package release replaces a payload one.
+  live. This is a behaviour change operators can see. A payload deploy that sets any of those four (harper#3043) owns
+  all four, each as requested, else as the entry has it, else `null` in the descriptor's `routing`, so a canary restore
+  puts the replaced release's routing back; one that sets none owns none and leaves hand-set isolation alone.
 - `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
   clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
   writer.
@@ -540,27 +535,12 @@ hygiene: it never fails a component closed and never replaces a deploy's own err
 best-effort under filesystem failure and is not a storage quota — journaled, unsettled and unowned
 directories are preserved by design and can still fill a volume.
 
-A preview's release keeps `deployment.previews.stagingRetention.maxCount` (default 1) instead (harper#3049,
-`stagingRetentionMaxCountOf`), read from the displaced release's own provenance, so `keptPredecessorOf` before the swap
-and `retainDisplacedRelease` after it cannot disagree; nothing they read may change with the activation's root-config
-effect, which publishes between them. A preview's payload is reclaimed after a successful deploy whatever its size.
+### PR previews record what they came from, and expire (`components/previews.ts`)
 
-### PR previews record what they came from, and expire
-
-A deploy's optional `preview` metadata (`app`, `pr`, `repository`, `branch`, `sha`, and a required `expiresAt`; harper#3048) is
-written into the candidate's `.harper-deployment.json` beside its id, so it belongs to the release: a staged build's
-activation and a canary restore bring back the metadata that build was deployed with, and a peer writes the same
-from the replicated request. It is also kept on the `hdb_deployment` row. `get_components` reads it from each live
-tree, `list_deployments` from the rows.
-
-- **The sweep is a scheduler internal job** (`components/previews.ts`), registered on the application primary worker
-  at root load and again after each deploy, but only once the node holds a preview: a cluster that runs no previews
-  never joins the scheduler's leader election for it. The leader drops each expired preview with a replicated
-  `drop_component` naming the release it listed (`ifDeploymentId`); each node compares that with its own live release
-  under the component lock, so a redeploy that went live first is kept.
-- **The cap counts the origin's live previews of the same `app`** (`deployment.previews.maxPerApplication`, unset
-  means none) where a release goes live: `admitPreviewActivation` holds one lock per app across the count and the swap,
-  for a deploy and a staged build's activation alike, and names the oldest. A redeploy of a live preview never counts.
+A deploy's `preview` metadata (harper#3048; `expiresAt` required) rides its release's provenance and deployment row.
+The leader's sweep, joined once a node holds a preview, drops an expired one with `drop_component` `ifDeploymentId`,
+checked under the component lock on every node; `admitPreviewActivation` holds the per-app cap across count and swap.
+A preview keeps one dormant build (harper#3049, from the displaced release's provenance) and reclaims its payload.
 
 ### A deployment id keeps naming its release after the swap
 
