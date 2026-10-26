@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../../utility/packageUtils.js';
 import { closeSync, fsyncSync, openSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
@@ -123,7 +124,7 @@ let bindingWarningLogged = false;
 function getHnswPackage(warn = true): HnswPlanePackage | null {
 	if (binding === undefined) {
 		try {
-			binding = require('@harperfast/hnsw') as HnswPlanePackage;
+			binding = loadNativePackage('@harperfast/hnsw') as HnswPlanePackage;
 		} catch (error) {
 			binding = null;
 			bindingLoadError = error as Error;

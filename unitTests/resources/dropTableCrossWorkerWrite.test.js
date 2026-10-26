@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { startWorker, onMessageByType, setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { startWorker, onMessageByType, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const WORKER_FIXTURE = path.join(__dirname, 'dropTableCrossWorkerWrite-worker.js');
 const MESSAGE_TYPE = 'drop-table-cross-worker-test';

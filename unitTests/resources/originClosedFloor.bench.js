@@ -10,9 +10,9 @@
 require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { Transaction } = require('@harperfast/rocksdb-js');
-const floor = require('#src/resources/originClosedFloor');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+const floor = require('#js/resources/originClosedFloor');
 const { persistOriginClosedFloor } = require('#src/resources/auditStore');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';

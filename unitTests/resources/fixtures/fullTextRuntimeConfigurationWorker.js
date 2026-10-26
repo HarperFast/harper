@@ -1,7 +1,7 @@
 'use strict';
 const { parentPort, threadId, workerData } = require('node:worker_threads');
 workerData.noServerStart = true;
-const { onMessageByType } = require('#js/server/threads/manageThreads');
+const { onMessageByType } = require('#src/server/threads/manageThreads');
 onMessageByType('full-text-runtime-test-command', async (event) => {
 	try {
 		if (event.message.operation === 'runtime-configuration') {

@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { Resource } = require('#src/resources/Resource');
 const { handleApplication } = require('#src/server/mqtt');
+const { server } = require('#src/server/Server');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
@@ -39,10 +40,14 @@ function mqttListener() {
 	const mqtt = { sessions: new Set(), events: new EventEmitter() };
 	const server = { ws: (fn) => ((listener = fn), []), socket: () => ({}), mqtt };
 	handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
-	return (user) => {
-		const socket = { sends: [], handlers: {}, closes: 0, _socket: { remoteAddress: '127.0.0.1' } };
+	const open = (user) => {
+		const socket = { sends: [], handlers: {}, closes: 0, terminations: 0, _socket: { remoteAddress: '127.0.0.1' } };
 		socket.close = () => socket.closes++;
-		socket.terminate = () => {};
+		// a terminated ws emits 'close' straight away, without waiting on the peer
+		socket.terminate = () => {
+			socket.terminations++;
+			setImmediate(() => socket.handlers.close?.());
+		};
 		socket.send = (message) => socket.sends.push(message);
 		socket.on = (event, handler) => (socket.handlers[event] = handler);
 		const headers = { 'sec-websocket-protocol': 'mqtt' };
@@ -54,11 +59,21 @@ function mqttListener() {
 		);
 		return { socket, sessions: mqtt.sessions };
 	};
+	open.mqtt = mqtt;
+	return open;
 }
 
 async function connect(
 	open,
-	{ user = anonymous, protocolVersion = 5, properties, clientId = `not-authorized-${++sequence}`, clean = true } = {}
+	{
+		user = anonymous,
+		protocolVersion = 5,
+		properties,
+		clientId = `not-authorized-${++sequence}`,
+		clean = true,
+		username,
+		password,
+	} = {}
 ) {
 	const { socket, sessions } = open(user);
 	const registeredBefore = new Set(sessions);
@@ -77,6 +92,8 @@ async function connect(
 		clientId,
 		clean,
 		properties,
+		username,
+		password,
 	});
 	await waitFor(() => parse().find((packet) => packet.cmd === 'connack'), { message: 'no CONNACK' });
 	// the listener's registry is shared by every client of this suite, so a client is told apart by identity
@@ -87,6 +104,7 @@ async function connect(
 		sessions,
 		session,
 		parse,
+		connack: parse().find((packet) => packet.cmd === 'connack'),
 		async request(packet, answer) {
 			const id = ++messageId;
 			write({ messageId: id, ...packet });
@@ -304,41 +322,75 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		});
 	});
 
-	describe('a delivery that reaches a disconnected session', () => {
-		/** A subscription the test feeds by hand, so an update can arrive after the client has left. */
-		function handFedTopic() {
-			const name = `HandFed${++sequence}`;
-			const feed = { nexts: 0, returned: 0, deliver: undefined };
-			class HandFed extends Resource {
-				static subscribe() {
-					const iterator = {
-						next: () => {
-							feed.nexts++;
-							return new Promise((resolve) => (feed.deliver = (update) => resolve({ value: update, done: false })));
-						},
-						return: () => {
-							feed.returned++;
-							return Promise.resolve({ done: true });
+	/** A subscription the test feeds by hand, so it controls when, and after what, each update arrives. */
+	function handFedTopic() {
+		const name = `HandFed${++sequence}`;
+		const feed = { nexts: 0, returned: 0, deliver: undefined };
+		class HandFed extends Resource {
+			static subscribe() {
+				const iterator = {
+					next: () => {
+						feed.nexts++;
+						return new Promise((resolve) => (feed.deliver = (update) => resolve({ value: update, done: false })));
+					},
+					return: () => {
+						feed.returned++;
+						return Promise.resolve({ done: true });
+					},
+				};
+				return { [Symbol.asyncIterator]: () => iterator, end() {} };
+			}
+		}
+		Resources.resources.set(name, HandFed, { mqtt: true });
+		return { name, feed };
+	}
+
+	async function subscribed(user = superUser, protocolVersion = 5) {
+		const { name, feed } = handFedTopic();
+		const client = await connect(open, { user, protocolVersion });
+		assert.ok(client.sessions.has(client.session), 'the CONNECT did not register a session');
+		await client.subscribe(`${name}/#`);
+		await waitFor(() => feed.deliver, { message: 'the session never read its subscription' });
+		return { name, feed, client };
+	}
+
+	const publishesSent = (client) => client.parse().filter((packet) => packet.cmd === 'publish');
+
+	describe('a delivery to a connected session', () => {
+		for (const protocolVersion of [4, 5]) {
+			it(`sends a plain Uint8Array view as a valid PUBLISH (protocol ${protocolVersion})`, async () => {
+				const { name, feed, client } = await subscribed(superUser, protocolVersion);
+				// as decoded from the transaction log on a worker other than the publisher's
+				const view = new Uint8Array([0xee, 104, 105, 0xee]).subarray(1, 3);
+				feed.deliver({ type: 'message', id: 'k', value: { contentType: 'application/octet-stream', data: view } });
+				await waitFor(() => publishesSent(client).length === 1, { message: 'no PUBLISH was sent' });
+				const [publish] = publishesSent(client);
+				assert.strictEqual(publish.topic, `${name}/k`);
+				assert.strictEqual(publish.payload.toString(), 'hi');
+				assert.strictEqual(client.socket.terminations, 0);
+			});
+
+			it(`closes the connection when a message cannot be serialized (protocol ${protocolVersion})`, async () => {
+				const { feed, client } = await subscribed(superUser, protocolVersion);
+				const error = captureLog('error');
+				try {
+					const value = {
+						toJSON() {
+							throw new Error('unserializable');
 						},
 					};
-					return { [Symbol.asyncIterator]: () => iterator, end() {} };
+					feed.deliver({ type: 'message', id: 'k', value });
+					await waitFor(() => !client.sessions.has(client.session), { message: 'the session was left registered' });
+					assert.strictEqual(client.socket.terminations, 1, 'the connection was left open');
+					assert.ok(error.lines.some((line) => line[0]?.message === 'unserializable'));
+				} finally {
+					error.restore();
 				}
-			}
-			Resources.resources.set(name, HandFed, { mqtt: true });
-			return { name, feed };
+			});
 		}
+	});
 
-		async function subscribed(user = superUser) {
-			const { name, feed } = handFedTopic();
-			const client = await connect(open, { user });
-			assert.ok(client.sessions.has(client.session), 'the CONNECT did not register a session');
-			await client.subscribe(`${name}/#`);
-			await waitFor(() => feed.deliver, { message: 'the session never read its subscription' });
-			return { name, feed, client };
-		}
-
-		const publishesSent = (client) => client.parse().filter((packet) => packet.cmd === 'publish');
-
+	describe('a delivery that reaches a disconnected session', () => {
 		it('stops delivering and names the topic at debug level, not as an error', async () => {
 			const { name, feed, client } = await subscribed();
 			const debug = captureLog('debug');
@@ -377,10 +429,119 @@ describe('mqtt.ts reason codes for a refused request', () => {
 					message: 'the send failure was not logged',
 				});
 				await waitFor(() => feed.returned === 1, { message: 'the delivery loop did not stop' });
-				assert.strictEqual(client.sessions.has(client.session), false, 'the session was left registered');
+				await waitFor(() => !client.sessions.has(client.session), { message: 'the session was left registered' });
+				assert.strictEqual(client.socket.terminations, 1, 'the connection was left open');
 			} finally {
 				error.restore();
 			}
+		});
+	});
+
+	describe('CONNACK', () => {
+		const BAD_CREDENTIALS = 0x86;
+		const BAD_CREDENTIALS_311 = 4;
+		const NOT_AUTHORIZED_311 = 5;
+		const SERVER_UNAVAILABLE_311 = 3;
+		const versions = [
+			{ name: 'v5', protocolVersion: 5, badCredentials: BAD_CREDENTIALS, notAuthorized: NOT_AUTHORIZED, other: 0x80 },
+			{
+				name: 'v3.1.1',
+				protocolVersion: 4,
+				badCredentials: BAD_CREDENTIALS_311,
+				notAuthorized: NOT_AUTHORIZED_311,
+				other: SERVER_UNAVAILABLE_311,
+			},
+		];
+		const codeOf = (connack, protocolVersion) => (protocolVersion === 5 ? connack.reasonCode : connack.returnCode);
+		let originalGetUser;
+		before(() => {
+			originalGetUser = server.getUser;
+			server.getUser = async () => {
+				throw new Error('wrong password');
+			};
+		});
+		after(() => {
+			server.getUser = originalGetUser;
+			delete open.mqtt.authorizeClient;
+			delete open.mqtt.requireAuthentication;
+		});
+		afterEach(() => {
+			delete open.mqtt.authorizeClient;
+			delete open.mqtt.requireAuthentication;
+		});
+		const refuseWith = (error) => {
+			open.mqtt.authorizeClient = () => {
+				throw error;
+			};
+		};
+
+		for (const { name, protocolVersion, badCredentials, notAuthorized, other } of versions) {
+			describe(name, () => {
+				it('refuses a wrong password with the bad-credentials code', async () => {
+					const { connack } = await connect(open, { protocolVersion, username: 'someone', password: 'wrong' });
+					assert.strictEqual(codeOf(connack, protocolVersion), badCredentials);
+				});
+
+				it('refuses an anonymous client when authentication is required with the bad-credentials code', async () => {
+					open.mqtt.requireAuthentication = true;
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), badCredentials);
+				});
+
+				it('reports an authorizeClient refusal carrying an HTTP 403 statusCode as Not authorized', async () => {
+					refuseWith(Object.assign(new Error('denied'), { statusCode: 403 }));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
+				});
+
+				it('maps a numeric HTTP status in error.code instead of passing it through', async () => {
+					refuseWith(Object.assign(new Error('denied'), { code: 403 }));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
+				});
+
+				it('reports a bare authorizeClient error as Not authorized', async () => {
+					refuseWith(new Error('nope'));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
+				});
+
+				it('sends no code outside the refusal range for an unrelated numeric error.code', async () => {
+					refuseWith(Object.assign(new Error('nope'), { code: 500 }));
+					const { connack } = await connect(open, { protocolVersion });
+					assert.strictEqual(codeOf(connack, protocolVersion), notAuthorized);
+				});
+
+				it('reports a failure after authorizeClient as a generic refusal', async () => {
+					// the registry is a shared Set, so the throwing stub shadows `add` on it only for this connect
+					open.mqtt.sessions.add = () => {
+						throw new Error('session store unavailable');
+					};
+					try {
+						const { connack } = await connect(open, { protocolVersion });
+						assert.strictEqual(codeOf(connack, protocolVersion), other);
+					} finally {
+						delete open.mqtt.sessions.add;
+					}
+				});
+			});
+		}
+
+		it('passes on a v5 refusal code the error names, and not to a 3.1.1 client', async () => {
+			refuseWith(Object.assign(new Error('banned'), { code: 0x8a }));
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, 0x8a);
+			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, NOT_AUTHORIZED_311);
+		});
+
+		it('does not send a v5 reason code that is not allowed in a CONNACK', async () => {
+			refuseWith(Object.assign(new Error('bad'), { code: 0x8e }));
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, NOT_AUTHORIZED);
+		});
+
+		it('passes on a 3.1.1 refusal code the error names, and not to a v5 client', async () => {
+			refuseWith(Object.assign(new Error('unavailable'), { code: 3 }));
+			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, 3);
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, NOT_AUTHORIZED);
 		});
 	});
 });

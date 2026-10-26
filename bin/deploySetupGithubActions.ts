@@ -15,10 +15,10 @@ import { cliOperations, resolveGitRepo } from './cliOperations.ts';
 import { normalizeTarget } from './cliCredentials.ts';
 
 export const GITHUB_ACTIONS_ISSUER = 'https://token.actions.githubusercontent.com';
-// `get_job` lets the workflow wait for the rollout. `registration_info` (which returns only Harper's
-// version) is the CLI's check before a deploy: refused, the deploy still works, but the cluster logs a
-// denial on every run.
-export const CI_DEPLOY_OPERATIONS = ['deploy_component', 'get_job', 'registration_info'];
+// `get_deployment` is how `harper deploy restart=rolling` waits for the other nodes; `get_job` is kept for workflows
+// that still poll the activation job themselves. `registration_info` (which returns only Harper's version) is the
+// CLI's check before a deploy: refused, the deploy still works, but the cluster logs a denial on every run.
+export const CI_DEPLOY_OPERATIONS = ['deploy_component', 'get_deployment', 'get_job', 'registration_info'];
 const DEFAULT_WORKFLOW = '.github/workflows/deploy.yaml';
 const DEFAULT_BRANCH = 'main';
 const DEFAULT_ENVIRONMENT = 'production';

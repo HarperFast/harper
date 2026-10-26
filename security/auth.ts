@@ -1,7 +1,14 @@
 import { cloneUserView, getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
-import { server } from '../server/Server.ts';
+import { server, getBearerValidators, type BearerValidatorEntry } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
+import {
+	validateOperationToken,
+	validateRefreshToken,
+	validateLoginToken,
+	warnDeferredTokenRejection,
+	decodeJWT,
+} from './tokenAuthentication.ts';
+import { runBearerValidators, principalFromClaim } from './bearerValidators.ts';
 import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -21,46 +28,71 @@ import {
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-const authLogger = forComponent('authentication');
-const { debug } = authLogger;
-const authEventLog = authLogger.withTag('auth-event');
-env.initSync();
+import { onStartup } from '../utility/lifecycle.ts';
+let authLogger = forComponent('authentication');
+let { debug } = authLogger;
+let authEventLog = authLogger.withTag('auth-event');
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
+// Config-derived state is populated during startup, after the environment is
+// initialized and the module graph is fully linked. Reading config here at
+// module-load would either TDZ inside an ESM cycle or pick up stale defaults.
+let appsCorsAccesslist: any;
+let appsCors: any;
+let operationsCorsAccesslist: any;
+let operationsCors: any;
+let _sessionTable: Table | undefined;
+let ENABLE_SESSIONS: boolean = true;
+let AUTHORIZE_LOCAL: any = envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ?? envFlag(process.env.DEV_MODE);
+let LOG_AUTH_SUCCESSFUL: boolean = false;
+let LOG_AUTH_FAILED: boolean = false;
 
-const appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
-const appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
-const operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
-const operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
-
-const _sessionTable = table<Table>({
-	table: 'hdb_session',
-	database: 'system',
-	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
-});
 function getSessionTable() {
 	return _sessionTable;
 }
-const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
-// env-var strings need boolean parsing: a raw 'false'/'0' string is truthy, which would turn
-// AUTHENTICATION_AUTHORIZELOCAL=false into an *enabled* auth bypass
 function envFlag(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
 	const normalized = value.trim().toLowerCase();
 	return normalized !== 'false' && normalized !== '0' && normalized !== '';
 }
-// check the environment for a flag to bypass authentication (for testing) since it doesn't necessarily get set on child threads
-let AUTHORIZE_LOCAL =
-	envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
-	env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
-	envFlag(process.env.DEV_MODE);
-const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
-const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
 let authorizationCache = new Map();
-server.onInvalidatedUser(() => {
-	// TODO: Eventually we probably want to be able to invalidate individual users
-	authorizationCache = new Map();
+const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
+let invalidationGeneration = 0;
+
+onStartup(() => {
+	authLogger = forComponent('authentication');
+	({ debug } = authLogger);
+	authEventLog = authLogger.withTag('auth-event');
+	appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
+	appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
+	operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
+	operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+	ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
+	AUTHORIZE_LOCAL =
+		envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
+		env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
+		envFlag(process.env.DEV_MODE);
+	LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
+	LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
+	_sessionTable = table<Table>({
+		table: 'hdb_session',
+		database: 'system',
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
+	});
+	server.onInvalidatedUser(() => {
+		// TODO: Eventually we probably want to be able to invalidate individual users
+		invalidationGeneration++;
+		authorizationCache = new Map();
+	});
+	setInterval(() => {
+		authorizationCache = new Map();
+	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
 let bypassUser: any;
 export function bypassAuth() {
@@ -231,9 +263,14 @@ export async function authentication(request, nextHandler) {
 			// mechanism for scoped tokens, so it has to be exact, not cache-TTL-fuzzy.
 			if (
 				cachedUser &&
-				((cachedUser.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) || !isCurrentUser(cachedUser))
+				((cachedUser.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) ||
+					!isCurrentUser(cachedUser) ||
+					(cachedUser._bearerValidator && validatorClaims.get(cachedUser)?.active === false))
 			) {
 				authorizationCache.delete(authorization);
+				cachedUser = undefined;
+			}
+			if (request.isOperationsServer && (cachedUser as any)?._bearerValidator) {
 				cachedUser = undefined;
 			}
 			if (cachedUser?.role) {
@@ -250,6 +287,9 @@ export async function authentication(request, nextHandler) {
 				const credentials = authorization.slice(spaceIndex + 1);
 				let username, password;
 				let credentialDeferred = false;
+				let skipAuthorizationCache = false;
+				let validatorEntry: BearerValidatorEntry | undefined;
+				const invalidationGen = invalidationGeneration;
 				try {
 					switch (strategy) {
 						case 'Basic':
@@ -262,38 +302,66 @@ export async function authentication(request, nextHandler) {
 								// read first: a component's server.getUser principal carries no record versions itself
 								const versions = userRecordVersions(username);
 								newUser = await server.getUser(username, password, request);
-								trackUserRecords(newUser, versions);
+								// cache a copy of a component's user: a memoizing server.getUser hands it to later lookups, which re-track it
+								if (trackUserRecords(newUser, versions) && newUser.role) newUser = cloneUserView(newUser);
 							} else newUser = null;
 							break;
-						case 'Bearer':
+						case 'Bearer': {
+							const decoded = decodeJWT(credentials);
+							const hasActiveValidators = !request.isOperationsServer && getBearerValidators().length > 0;
 							try {
-								newUser = await validateOperationToken(credentials);
+								newUser = await validateOperationToken(credentials, hasActiveValidators);
 								// Capture the token's expiry so a live subscription opened with this bearer
 								// token can be revoked once it expires (#1414).
-								const decoded = decodeJWT(credentials);
 								if (newUser && decoded?.exp) newUser.authExpiresAt = decoded.exp;
 							} catch (error) {
 								if (error.message === 'invalid token') {
 									// see if they provided a refresh token; we can allow that and pass it on to operations API
-									try {
-										await validateRefreshToken(credentials);
-										return applyResponseHeaders({
-											// we explicitly declare we don't want to handle this because the operations
-											// API has its own logic for handling this
-											status: -1,
-										});
-									} catch (refreshError) {
-										// Preserve refresh-validation faults; only a tagged rejection permits falling
-										// back to the original operation-token rejection.
-										if (!isCredentialRejection(refreshError)) throw refreshError;
+									// (refresh tokens have `sub === 'refresh'`, so any other well-formed JWT skips the second verify)
+									let deferredRefreshError: any;
+									if (decoded === null || (decoded as any)?.sub === 'refresh') {
+										try {
+											await validateRefreshToken(credentials, hasActiveValidators);
+											return applyResponseHeaders({
+												// we explicitly declare we don't want to handle this because the operations
+												// API has its own logic for handling this
+												status: -1,
+											});
+										} catch (refreshError) {
+											deferredRefreshError = refreshError;
+											// Preserve refresh-validation faults; only a tagged rejection permits falling
+											// back to the original operation-token rejection.
+											if (!isCredentialRejection(refreshError)) {
+												warnDeferredTokenRejection(error);
+												throw refreshError;
+											}
+											if (refreshError.message !== 'invalid token') {
+												warnDeferredTokenRejection(error);
+												warnDeferredTokenRejection(refreshError);
+												throw error;
+											}
+										}
+									}
+
+									const claim = hasActiveValidators ? await runBearerValidators(credentials, request) : undefined;
+									if (claim) username = claim.result.username;
+									const principal = claim && (await principalFromClaim(claim, decoded, request));
+									if (!principal || !claim.entry.active) {
+										warnDeferredTokenRejection(error);
+										warnDeferredTokenRejection(deferredRefreshError);
 										throw error;
 									}
+									newUser = principal.user;
+									if (principal.cacheable) validatorEntry = claim.entry;
+									else skipAuthorizationCache = true;
+								} else {
+									// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
+									// through to caching an undefined user (which would read as anonymous).
+									throw error;
 								}
-								// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
-								// through to caching an undefined user (which would read as anonymous).
-								throw error;
 							}
 							break;
+						}
 						default:
 							throw credentialRejectionError(
 								AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
@@ -315,7 +383,10 @@ export async function authentication(request, nextHandler) {
 				}
 
 				if (!credentialDeferred) {
-					authorizationCache.set(authorization, newUser);
+					if (!skipAuthorizationCache && invalidationGen === invalidationGeneration) {
+						authorizationCache.set(authorization, newUser);
+						if (validatorEntry) validatorClaims.set(newUser, validatorEntry);
+					}
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
 						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 					// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
@@ -484,9 +555,6 @@ export async function authentication(request, nextHandler) {
 		return response;
 	}
 }
-setInterval(() => {
-	authorizationCache = new Map();
-}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 let started = false;
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	if (started) return;

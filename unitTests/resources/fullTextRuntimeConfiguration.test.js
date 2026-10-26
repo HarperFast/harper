@@ -3,7 +3,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { once } = require('node:events');
 
-const { startWorker, onMessageByType } = require('#js/server/threads/manageThreads');
+const { startWorker, onMessageByType } = require('#src/server/threads/manageThreads');
 const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 onMessageByType('full-text-runtime-test-response', () => {});
 function response(worker, action, timeout = 60000) {

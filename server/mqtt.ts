@@ -1,6 +1,7 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
-import { parser as makeParser, generate } from 'mqtt-packet';
+import _mqtt_packet from 'mqtt-packet';
+const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
@@ -16,9 +17,10 @@ import { get } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.ts';
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
 import {
@@ -33,6 +35,9 @@ const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+onStartup(() => {
+	AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+});
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
 }
@@ -208,6 +213,25 @@ const REASON_STRING_LIMIT = 256; // bytes
 const ACK_PACKET_OVERHEAD = 16;
 /** `AccessViolation` is 401 for a request with no user and 403 for a user lacking permission; an MQTT client sees both as "Not authorized". */
 const isNotAuthorized = (error: any) => error?.statusCode === 401 || error?.statusCode === 403;
+/** mqtt-packet writes `reasonCode` to a v5 client and `returnCode` to a 3.1/3.1.1 client, so a refusal carries both. */
+const CONNACK_REFUSALS = {
+	badCredentials: { reasonCode: 0x86, returnCode: 4 },
+	notAuthorized: { reasonCode: 0x87, returnCode: 5 },
+	unspecified: { reasonCode: 0x80, returnCode: 3 }, // 3.1.1 has no generic refusal; "server unavailable" is closest
+};
+const V5_CONNACK_REFUSAL_CODES = new Set([
+	0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8c, 0x90, 0x95, 0x97, 0x99, 0x9a, 0x9b, 0x9c,
+	0x9d, 0x9f,
+]);
+/** The code goes into one byte: an HTTP status written raw would wrap into an unrelated code. */
+function connackRefusalFor(error: any, protocolVersion: number | undefined, fallback = CONNACK_REFUSALS.unspecified) {
+	const { code } = error ?? {};
+	const allowed =
+		protocolVersion === 5 ? V5_CONNACK_REFUSAL_CODES.has(code) : Number.isInteger(code) && code >= 1 && code <= 5;
+	if (allowed) return { reasonCode: code, returnCode: code };
+	if (isNotAuthorized(error) || code === 401 || code === 403) return CONNACK_REFUSALS.notAuthorized;
+	return fallback;
+}
 /** Only failures this layer maps to a code of their own are safe to describe: any other carries an internal message. */
 const hasClientSafeMessage = (error: any) => isNotAuthorized(error) || error?.statusCode === 404;
 /** REASON_STRING_LIMIT counts encoded bytes, and a character must not be cut in half. */
@@ -329,6 +353,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 	}
 	let disconnected;
+	// set by a failed delivery, so sibling subscriptions stop writing before the aborted socket's 'close' arrives
+	let aborted = false;
 	numberOfConnections++;
 	const connection = {
 		protocolVersion: () => mqttOptions.protocolVersion,
@@ -452,8 +478,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							return generateAndSendPacket({
 								// Send a connection acknowledgment with indication of auth failure
 								cmd: 'connack',
-								reasonCode: 0x04, // bad username or password, v3.1.1
-								returnCode: 0x86, // bad username or password, v5
+								...CONNACK_REFUSALS.badCredentials,
 							});
 						}
 					}
@@ -463,13 +488,27 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
-							reasonCode: 0x04, // bad username or password, v3.1.1
-							returnCode: 0x86, // bad username or password, v5
+							...CONNACK_REFUSALS.badCredentials,
 						});
 					}
+					const refuseConnect = (error, fallback?) => {
+						mqttLog.error?.(error);
+						emitEvent('auth-failed', packet, socket, error);
+						recordActionBinary(false, 'connection', 'mqtt', 'connect');
+						return generateAndSendPacket({
+							// Send a connection acknowledgment with indication of auth failure
+							cmd: 'connack',
+							...connackRefusalFor(error, packet.protocolVersion, fallback),
+						});
+					};
 					try {
 						// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used) or is this sufficient?
-						mqttSettings.authorizeClient?.(packet, user);
+						try {
+							mqttSettings.authorizeClient?.(packet, user);
+						} catch (error) {
+							// a hook refuses by throwing, and a bare Error is a denial, not a server fault
+							return refuseConnect(error, CONNACK_REFUSALS.notAuthorized);
+						}
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
 						if (packet.will) {
@@ -539,15 +578,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							releaseClaim?.();
 						}
 					} catch (error) {
-						mqttLog.error?.(error);
-						emitEvent('auth-failed', packet, socket, error);
-						recordActionBinary(false, 'connection', 'mqtt', 'connect');
-						return generateAndSendPacket({
-							// Send a connection acknowledgment with indication of auth failure
-							cmd: 'connack',
-							reasonCode: error.code || 0x05,
-							returnCode: error.code || 0x80, // generic error
-						});
+						return refuseConnect(error);
 					}
 					emitEvent('connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
@@ -561,9 +592,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					});
 					const listener = async (topic, message, messageId, subscription, version, dup) => {
 						try {
-							if (disconnected) {
-								// a delivery already past the subscription when the client left; the disconnect has ended the session
-								mqttLog.debug?.(`Session ${session?.sessionId} disconnected while trying to send message to ${topic}`);
+							if (disconnected || aborted) {
+								// a delivery already past the subscription when the client left or a failed delivery aborted
+								// the connection; onClose ends the session
+								mqttLog.debug?.(
+									`Session ${session?.sessionId} ${aborted ? 'aborted' : 'disconnected'} while trying to send message to ${topic}`
+								);
 								return false;
 							}
 							const slashIndex = topic.indexOf('/', 1);
@@ -573,11 +607,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							// payload is encoded once per (message, content type) and reused across all of them.
 							const encoding = getSharedMessageEncoding(message, request, version);
 							const encoded = encoding.payload;
+							let payload: Buffer | string;
 							// only pay for a microtask when the serialization is genuinely still pending
-							const payload =
-								typeof (encoded as any)?.then === 'function'
-									? await resolveSharedPayload(encoding, message, request, version)
-									: (encoded as Buffer | string);
+							if (typeof (encoded as any)?.then === 'function') {
+								payload = await resolveSharedPayload(encoding, message, request, version);
+								if (disconnected || aborted) return false;
+							} else payload = encoded as Buffer | string;
 							if (qos > 0) {
 								// mqtt-packet requires a numeric message identifier once qos is non-zero
 								const packetData: any = {
@@ -614,9 +649,11 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							return !rawSocket.closed;
 						} catch (error) {
 							mqttLog.error?.(error);
-							session?.disconnect(false);
-							mqttSettings.sessions.delete(session);
-							releaseClientSession(session);
+							// Ending only the session would leave the client connected and receiving nothing. An abort,
+							// unlike a graceful end, closes without waiting on the peer, and onClose ends the session.
+							aborted = true;
+							if (socket.destroy) socket.destroy();
+							else socket.terminate();
 							return false;
 						}
 					};

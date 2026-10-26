@@ -9,7 +9,7 @@ const { table } = require('#src/resources/databases');
 const { fullTextDerivedIndexReadiness, setFullTextNativeBindingForTests } = require('#src/resources/derivedIndexes');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
 const { parseQuery } = require('#src/resources/search');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
 const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');

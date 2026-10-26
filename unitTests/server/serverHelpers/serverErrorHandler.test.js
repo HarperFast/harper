@@ -9,10 +9,10 @@ const {
 	HdbError,
 	withoutReplicationUnconfirmed,
 } = require('#src/utility/errors/hdbError');
-const { serverErrorHandler, handlePostRequest } = require('#js/server/serverHelpers/serverHandlers');
+const { serverErrorHandler, handlePostRequest } = require('#src/server/serverHelpers/serverHandlers');
 const { setupTestDBPath } = require('../../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { replicationConfirmation } = require('#src/resources/DatabaseTransaction');
 
 describe('serverErrorHandler', function () {

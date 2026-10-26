@@ -8,11 +8,12 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	registeredReplicationConfirmation,
 	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
 	type CommitResolution,
-} from './DatabaseTransaction';
+} from './DatabaseTransaction.ts';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { ServerError, withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -28,11 +29,6 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-let confirmReplication;
-export function replicationConfirmation(callback) {
-	confirmReplication = callback;
-}
-
 export class LMDBTransaction extends DatabaseTransaction {
 	stagesWriteOnSave = false;
 	#context: Context;
@@ -73,6 +69,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
+		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 		trackedTxns.add(this as any);
@@ -92,8 +89,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 		return this.readTxn;
 	}
 
-	doneReadTxn() {
-		if (!this.readTxn) return;
+	doneReadTxn(generation = this.readTxnGeneration) {
+		if (!this.readTxn || generation !== this.readTxnGeneration) return;
 		if (this.readTxn instanceof RocksTransaction) {
 			// TODO: Implement this for RocksDB
 		} else {
@@ -268,7 +265,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		const nextCondition = () => {
 			const write = this.writes[writeIndex++];
 			if (write) {
-				if (write.key) {
+				if (write.key != null) {
 					if (retries > 0 || !write.entry) {
 						// if the first optimistic attempt failed, we need to try again with the very latest version
 						write.entry = write.store.getEntry(write.key);
@@ -339,15 +336,24 @@ export class LMDBTransaction extends DatabaseTransaction {
 						if (store) completions.push(store.flushed);
 					}
 					let confirmation: Promise<void>;
-					if (this.replicatedConfirmation) {
+					const confirmationCount = this.confirmationCount();
+					if (confirmationCount) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
+						const confirmReplication = registeredReplicationConfirmation();
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
-						const lastEntry = this.lastConfirmableEntry();
-						if (confirmReplication && databaseName && lastEntry)
-							confirmation = confirmReplicationAfterCommit(() =>
-								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
-							);
+						// the write has landed: a failure here is this commit's outcome, after the bookkeeping below
+						try {
+							const position = confirmReplication && databaseName ? this.confirmationPosition() : undefined;
+							if (position !== undefined)
+								confirmation = confirmReplicationAfterCommit(() =>
+									confirmReplication(databaseName, position, confirmationCount)
+								);
+						} catch (error) {
+							const refusal = Promise.reject(error);
+							refusal.catch(() => {}); // surfaces through the completions, even if bookkeeping throws first
+							completions.push(refusal);
+						}
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
 					// or whose stored record a later write to the same key replaced without an audit entry
@@ -423,6 +429,28 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		throw error;
 	}
+	private confirmationCount(): number | undefined {
+		if (this.replicatedConfirmation) return this.replicatedConfirmation;
+		const root = this.root;
+		if (root && root.next === this && !root.db) return root.replicatedConfirmation;
+	}
+	/**
+	 * The audit-log position (`localTime`) peers must acknowledge: the newest among the written keys. Any
+	 * entry this commit did not store predates it — a write that lost to a newer entry, or an out-of-order
+	 * patch that only appended audit — so the newest is this commit's own position whenever a write stored a
+	 * record, and otherwise the entry that superseded its writes, as on RocksDB. A concurrent later write can
+	 * only raise it. Writes that opt out (audit-only markers) and unaudited tables (no local time, nothing
+	 * appended for peers to acknowledge) are not considered.
+	 */
+	private confirmationPosition(): number | undefined {
+		let position: number | undefined;
+		for (const write of this.writes) {
+			if (!write || write.skipReplicationConfirmation) continue;
+			const localTime = write.store.getEntry(write.key)?.localTime;
+			if (localTime && !(position >= localTime)) position = localTime;
+		}
+		return position;
+	}
 	/**
 	 * Force-release the retained read snapshot without touching staged writes. The base class's
 	 * version acts on `this.transaction`; LMDB's snapshot lives on `this.readTxn`, so the monitor
@@ -454,7 +482,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.baseReadRefConsumed = true;
 				}
 			} else {
-				while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+				while (this.readTxn && this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 			}
 			this.open = TRANSACTION_STATE.CLOSED;
 			this.drainCompletions();

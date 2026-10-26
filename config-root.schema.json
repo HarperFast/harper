@@ -13,6 +13,91 @@
 			"type": "string",
 			"description": "Path to the folder containing local component files. Default: <ROOTPATH>/components"
 		},
+		"status": {
+			"type": "object",
+			"description": "Runtime status monitoring. Health-check changes take effect on restart.",
+			"properties": {
+				"healthChecks": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"enabled": {
+							"type": "boolean",
+							"default": true
+						},
+						"intervalSeconds": {
+							"type": "number",
+							"minimum": 1,
+							"maximum": 2147483,
+							"default": 60
+						},
+						"thresholds": {
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"disk": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 80
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								},
+								"memory": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 80
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								},
+								"cpu": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 85
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"http": {
 			"type": "object",
 			"description": "HTTP server configuration for the main component server.",

@@ -37,6 +37,8 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 
    **Version the directive to the first release that ships the dependent code, not a later one.** Directives only run when `current_version < directive_version <= upgrade_version` (`directivesController.getVersionsForUpgrade`). The `hdb_deployment` directive was originally mis-tagged `5.2.0` while the deployment-recorder code shipped in `5.1.0`, so on every `5.0.x -> 5.1.x` upgrade the directive was filtered out (`5.2.0 > 5.1.x`) and the table never got created — breaking replicated `deploy_component` on peer nodes for the entire existing customer base. Caveat: `utility/common_utils.ts:compareVersions` strips trailing `.0` and therefore sorts a pre-release (`5.1.0-beta.1`) _above_ its GA (`5.1.0`), so an install already on a `5.1.0-beta.x` data version will not pick up a `5.1.0` directive when upgrading to GA; those pre-release installs need the table created by other means.
 
+**Adding an attribute to an existing system table** takes only the `systemSchema.json` entry, as long as the directive for the release that ships it runs `registerSystemSchemaAttributes` (`upgrade/systemSchemaAttributes.ts`). A fresh install creates each table from the schema, but an upgraded install keeps the catalog its table was created with, so before 5.4.0 every attribute added to `hdb_deployment` after 5.1.0 (`activated_from`, `install_fingerprint`) was missing there (#2659). The function compares every system table this node has with its schema entry and adds what the catalog lacks, indexed the way a fresh install indexes the legacy `{ "attribute": … }` form. It never removes or changes an attribute, so each release's directive can list it again; 5.4.0's is the first. An attribute whose table declares its own shape on every boot (`hdb_oidc_token_use`, the certificate verification tables) belongs in that declaration instead. `mount_hdb` and the directives hand `table()` a copy of each schema attribute list, because `table()` keeps the array it is given as the table's live attribute list: without the copy, dropping an attribute from a fresh install's table also dropped it from the in-process schema.
+
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 Set `audit = true` on the directive's `CreateTableObject` (for upgrades): a fresh install audits every system table — `utility/mount_hdb.ts:createTables()` sets `createTable.audit = true` regardless of the schema entry — so a directive that leaves it off makes upgraded nodes diverge from fresh ones.
@@ -125,7 +127,7 @@ Several non-obvious mechanics keep that safe:
   every eligible recipient acknowledges or its port closes, and aborts the restore with a retryable
   409 if that does not happen within 30s, because proceeding past an unconfirmed blob-save barrier
   would re-open the race the barrier exists to close. A destructive purge still
-  verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
+  verifies closure independently: `restoreBackup` polls rocksdb-js `getRegistryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 if
   handles remain — before the marker on a fresh claim, so nothing is left to clean up, while a
   recovery keeps the marker it found.
@@ -158,7 +160,7 @@ Several non-obvious mechanics keep that safe:
 - **Online restore is impossible for a database a component holds open — and that failure is
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a
-  loaded component holds its own handle on the target database, `registryStatus()` stays non-zero,
+  loaded component holds its own handle on the target database, `getRegistryStatus()` stays non-zero,
   Harper can neither identify nor force-close that handle, and an in-place purge would corrupt a live
   instance.
   `verifyDatabaseClosed` therefore waits only a short grace period (`DATABASE_CLOSE_WAIT_MS`, for a
@@ -169,14 +171,17 @@ Several non-obvious mechanics keep that safe:
   component. `system`, which Harper itself never stops while running, never reaches this check:
   `validateRestoreBackup` refuses it up front with a 400 naming the offline command. The CLI exposes each backup operation under its operation name only (`create_backup`,
   `restore_backup`, …) — no hyphenated alias — and `bin/backup.ts` routes it to a reachable server
-  or, when the local server is stopped, to the equivalent offline function.
+  or, when the local server is stopped, to the equivalent offline function. A saved loopback
+  `last_target` does not prove the endpoint is this install, so with one saved, `restore_backup`,
+  `delete_backup` and `purge_backups` refuse rather than fall back (harper#2032); only
+  `create_backup`, `list_backups` and `verify_backup` do.
 - **Job workers must release their RocksDB handles on exit, or the closure check can never pass.**
   rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
   closing leaks its handles (the refCount never drops); the only alternative, `shutdown()`, tears
   down rocksdb for the _entire_ process. A job worker (`server/jobs/jobProcess.ts`) opens the whole
   database graph via `getDatabases()` and exits when the job finishes — and `create_backup` is
   itself a job, so before any `restore_backup` there is always at least one exited job worker that
-  touched the database. Without cleanup those leaked handles keep `registryStatus()` non-zero and
+  touched the database. Without cleanup those leaked handles keep `getRegistryStatus()` non-zero and
   would fail the closure check even when no component holds the database. `jobProcess` therefore
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an

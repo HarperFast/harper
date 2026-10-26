@@ -6,8 +6,8 @@ export class PublicNotice extends tables.PublicNotice {
 	}
 }
 
-export const REJECTED_SESSION_USER = 'expired-staff';
-export const FAULTING_SESSION_USER = 'faulting-staff';
+const REJECTED_SESSION_USER = 'expired-staff';
+const FAULTING_SESSION_USER = 'faulting-staff';
 
 const coreGetUser = server.getUser;
 server.getUser = async function (username, password, request) {

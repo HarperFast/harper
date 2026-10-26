@@ -2,7 +2,12 @@ import { parentPort } from 'node:worker_threads';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { CONFIG_PARAMS, ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
-import { bootVerdictOf, trackBootOutcomes, type BootVerdictOutcome } from '../../components/componentLoader.ts';
+import {
+	applicationsPlacedOnThisThread,
+	bootVerdictOf,
+	trackBootOutcomes,
+	type BootVerdictOutcome,
+} from '../../components/componentLoader.ts';
 import { liveDeploymentId } from '../../components/releaseCertification.ts';
 
 export type HeldStartRequest = { component: string; deploymentId: string };
@@ -38,7 +43,8 @@ export async function beginHeldStart(requests: HeldStartRequest[]): Promise<Map<
  */
 export async function awaitAdmission(
 	requests: HeldStartRequest[],
-	loaded: Map<string, string | undefined>
+	loaded: Map<string, string | undefined>,
+	onReported?: () => void
 ): Promise<void> {
 	while (requests.some(({ component }) => bootVerdictOf(component).outcome === 'pending')) {
 		await delay(DEFERRED_LOAD_POLL_MS);
@@ -62,6 +68,11 @@ export async function awaitAdmission(
 			resolve();
 		};
 		parentPort.on('message', onMessage);
-		parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, components });
+		parentPort.postMessage({
+			type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
+			components,
+			applications: applicationsPlacedOnThisThread(),
+		});
+		onReported?.();
 	});
 }

@@ -6,7 +6,7 @@ const fs = require('fs-extra');
 const os = require('node:os');
 const { Readable } = require('node:stream');
 const { decode: decodeCbor } = require('cbor-x');
-const { saveCredentials } = require('#src/bin/cliCredentials');
+const { saveCredentials } = require('#js/bin/cliCredentials');
 const cliOperationsModule = require('#src/bin/cliOperations');
 const commonUtilsModule = require('#src/utility/common_utils');
 const tokenAuthModule = require('#src/security/tokenAuthentication');
@@ -644,6 +644,145 @@ describe('cliOperations', () => {
 			const deploy = calls[1];
 			assert.strictEqual(deploy.options.headers.Accept, 'text/event-stream');
 			assert.strictEqual(result.success, true);
+		});
+	});
+
+	describe('following a rolling deploy until every node has taken it (harper#3058)', () => {
+		const target = 'https://example.com:9925/';
+		const ID = '22222222-2222-2222-2222-222222222222';
+		let originalExit;
+		let originalConsoleError;
+		let originalConsoleLog;
+		let errorLines;
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+			originalExit = process.exit;
+			process.exit = (code) => {
+				throw new ProcessExitSignal(code);
+			};
+			errorLines = [];
+			originalConsoleError = console.error;
+			console.error = (...args) => errorLines.push(args.join(' '));
+			originalConsoleLog = console.log;
+			console.log = () => {};
+		});
+
+		afterEach(() => {
+			if (originalExit) process.exit = originalExit;
+			if (originalConsoleError) console.error = originalConsoleError;
+			if (originalConsoleLog) console.log = originalConsoleLog;
+		});
+
+		const sseDoneResponse = (result) =>
+			Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
+				statusCode: 200,
+				headers: { 'content-type': 'text/event-stream' },
+			});
+
+		function cluster(records) {
+			const calls = [];
+			let read = 0;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				if (req.operation === 'registration_info')
+					return { statusCode: 200, body: JSON.stringify({ version: '5.4.0' }) };
+				if (req.operation === 'get_deployment') {
+					return { statusCode: 200, body: JSON.stringify(records[Math.min(read++, records.length - 1)]) };
+				}
+				return sseDoneResponse({ message: 'activating', status: 'rolling_out', deployment_id: ID, restartJobId: 'j' });
+			};
+			return calls;
+		}
+
+		const deploy = (extra = {}) =>
+			cliOperationsModule.cliOperations(
+				{
+					operation: 'deploy_component',
+					package: '@scope/widget',
+					project: 'widget',
+					restart: 'rolling',
+					target: 'example.com',
+					...extra,
+				},
+				true
+			);
+
+		const activated = (node) => ({ node, activation: { activated: true, certification: 'certified' } });
+
+		it('waits on get_deployment, with the credential the deploy used, and exits 0 once the last node took it', async () => {
+			const calls = cluster([
+				{ deployment_id: ID, status: 'rolling_out', peer_results: [activated('peer-a'), { node: 'peer-b' }] },
+				{ deployment_id: ID, status: 'success', peer_results: [activated('peer-a'), activated('peer-b')] },
+			]);
+			const result = await deploy({ wait_timeout: 60000 });
+
+			const polls = calls.filter(({ req }) => req.operation === 'get_deployment');
+			assert.strictEqual(polls.length, 2);
+			assert.deepStrictEqual(polls[0].req, { operation: 'get_deployment', deployment_id: ID });
+			assert.strictEqual(polls[0].options.headers.Authorization, 'Bearer valid-token');
+			assert.strictEqual(polls[0].options.streamResponse, undefined);
+			const sent = calls.find(({ req }) => req.operation === 'deploy_component').req;
+			assert.strictEqual(sent.wait_timeout, undefined, 'wait options never reach the server');
+			assert.strictEqual(result.rollout.status, 'success');
+			assert.ok(errorLines.includes('  peer-b: took the release (certified)'));
+		});
+
+		it('exits non-zero naming a node whose canary rejected the release', async () => {
+			cluster([
+				{
+					deployment_id: ID,
+					status: 'partial',
+					peer_results: [
+						activated('peer-a'),
+						{ node: 'peer-b', activation: { activated: false, error: 'release failed to load in its canary worker' } },
+					],
+					error: {
+						message: 'Not activated on 1 of 2 peer node(s): peer-b (release failed to load in its canary worker)',
+					},
+				},
+			]);
+			await assert.rejects(deploy(), (error) => error instanceof ProcessExitSignal && error.code === 1);
+			assert.ok(errorLines.some((line) => line.startsWith('error: Not activated on 1 of 2 peer node(s): peer-b')));
+		});
+
+		it('ends at wait_timeout even while a read keeps trickling bytes', async () => {
+			cluster([]);
+			const deployOnly = commonUtilsModule.httpRequest;
+			// A trickle keeps the socket's idle timer reset, so only an absolute deadline ends the read.
+			commonUtilsModule.httpRequest = (options, req) =>
+				req.operation === 'get_deployment'
+					? new Promise((_resolve, reject) =>
+							options.signal?.addEventListener('abort', () => reject(options.signal.reason))
+						)
+					: deployOnly(options, req);
+			const started = Date.now();
+			const outcome = await Promise.race([
+				deploy({ wait_timeout: 200 }).then(
+					() => 'returned',
+					(error) => error
+				),
+				new Promise((resolve) => setTimeout(resolve, 5000, 'still waiting')),
+			]);
+			assert.ok(outcome instanceof ProcessExitSignal && outcome.code === 1, `ended with ${outcome}`);
+			assert.ok(Date.now() - started < 2000);
+			assert.ok(errorLines.some((line) => /^error: timed out after \d+s waiting for deployment/.test(line)));
+		});
+
+		it('refuses a wait_timeout it cannot use before sending anything', async () => {
+			const calls = cluster([{ deployment_id: ID, status: 'success' }]);
+			await assert.rejects(deploy({ wait_timeout: '10m' }), (error) => error instanceof ProcessExitSignal);
+			assert.ok(errorLines.some((line) => line.includes('wait_timeout must be a number of milliseconds')));
+			assert.strictEqual(calls.filter(({ req }) => req.operation === 'deploy_component').length, 0);
+		});
+
+		it('keeps the old behavior with wait=false', async () => {
+			const calls = cluster([{ deployment_id: ID, status: 'partial' }]);
+			const result = await deploy({ wait: false });
+			assert.strictEqual(calls.filter(({ req }) => req.operation === 'get_deployment').length, 0);
+			assert.strictEqual(result.rollout, undefined);
+			assert.strictEqual(calls.find(({ req }) => req.operation === 'deploy_component').req.wait, undefined);
 		});
 	});
 
@@ -1518,6 +1657,44 @@ describe('cliOperations', () => {
 			assert.doesNotMatch(multipartText, /name="auth_username"/);
 			assert.doesNotMatch(multipartText, /name="auth_password"/);
 			assert.match(multipartText, /name="operation"/);
+		});
+
+		it('hands the packer its pre-deploy scan, so the links it found to leave out stay out', async () => {
+			const originalScan = packageComponentModule.scanPackageDirectory;
+			const originalStream = packageComponentModule.streamPackagedDirectory;
+			const scan = {
+				totalSize: 0,
+				danglingSymlinks: [],
+				installLinks: [path.join('node_modules', 'plugin', 'node_modules', 'harper')],
+			};
+			packageComponentModule.scanPackageDirectory = async () => scan;
+			let packedWith;
+			packageComponentModule.streamPackagedDirectory = (...args) => {
+				packedWith = args;
+				return Readable.from(Buffer.from('fake-tar-bytes'));
+			};
+			commonUtilsModule.httpRequest = async (options, body) => {
+				if (body && typeof body.operation === 'string' && body.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				for await (const _chunk of body);
+				return Object.assign(
+					Readable.from([`event: done\ndata: ${JSON.stringify({ result: { success: true } })}\n\n`]),
+					{ statusCode: 200, headers: { 'content-type': 'text/event-stream' } }
+				);
+			};
+
+			try {
+				await cliOperationsModule.cliOperations(
+					{ operation: 'deploy_component', project: 'widget', target: 'example.com', skip_node_modules: false },
+					true
+				);
+			} finally {
+				packageComponentModule.scanPackageDirectory = originalScan;
+				packageComponentModule.streamPackagedDirectory = originalStream;
+			}
+
+			assert.strictEqual(packedWith[3], scan);
 		});
 
 		// The credentials of the user being created/altered must never outrank the caller's own

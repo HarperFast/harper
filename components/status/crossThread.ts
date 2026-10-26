@@ -5,12 +5,12 @@
  * and aggregating it into a unified view.
  */
 
-import { sendItcEvent } from '../../server/threads/itc.js';
+import { sendItcEvent } from '../../server/threads/itc.ts';
 import {
 	getWorkerIndex,
 	onMessageByType,
 	getEligibleBroadcastRecipientThreadIds,
-} from '../../server/threads/manageThreads.js';
+} from '../../server/threads/manageThreads.ts';
 import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
@@ -340,6 +340,9 @@ export class StatusAggregator {
 		let mostRecentCheckTime = 0;
 		let latestMessage: string | undefined;
 		let error: Error | string | undefined;
+		let loadedAt: number | undefined;
+		let source: ComponentStatusSummary['source'];
+		let totalOccurrenceCount = 0;
 		const statusCounts = new Map<ComponentStatusLevel, number>();
 		const abnormalities = new Map<string, ComponentStatusAbnormality>();
 
@@ -363,6 +366,8 @@ export class StatusAggregator {
 				}
 			}
 
+			if (status.loadedAt) loadedAt = Math.max(loadedAt ?? 0, new Date(status.loadedAt).getTime());
+
 			// Track status counts
 			statusCounts.set(status.status, (statusCounts.get(status.status) || 0) + 1);
 
@@ -379,6 +384,9 @@ export class StatusAggregator {
 					error = status.error;
 				}
 			}
+
+			if (status.source) source = status.source;
+			if (status.occurrenceCount) totalOccurrenceCount += status.occurrenceCount;
 		}
 
 		// Determine overall status (priority: error > warning > loading > unknown > healthy)
@@ -412,7 +420,10 @@ export class StatusAggregator {
 			lastChecked: lastCheckedTimes,
 			latestMessage,
 			error,
+			source,
+			occurrenceCount: totalOccurrenceCount || undefined,
 		};
+		if (loadedAt !== undefined) aggregatedStatus.loadedAt = loadedAt;
 
 		// Only add abnormalities if there are any
 		if (abnormalities.size > 0) {

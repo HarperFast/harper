@@ -13,7 +13,7 @@ const { orderedArray } = testUtils;
 const test_data = require('../../../../testData');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
 const write_utility = require('#src/utility/lmdb/writeUtility');
 const SearchObject = require('#src/dataLayer/SearchObject');
 const lmdb_search = rewire('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetDataByValue');

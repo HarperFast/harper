@@ -1,21 +1,23 @@
+import * as userRuntimeModule from '../security/user.ts';
 import type { User } from '../security/user.ts';
 import type { RecordObject } from './RecordEncoder.ts';
 import {
-	ResourceInterface,
-	SubscriptionRequest,
-	Id,
-	Context,
-	Query,
-	SourceContext,
-	RequestTargetOrId,
+	type ResourceInterface,
+	type SubscriptionRequest,
+	type Id,
+	type Context,
+	type Query,
+	type SourceContext,
+	type RequestTargetOrId,
 } from './ResourceInterface.ts';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import {
 	DatabaseTransaction,
 	isJoinableScope,
 	isReleasedTransaction,
 	type Transaction,
 } from './DatabaseTransaction.ts';
+import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -27,9 +29,21 @@ import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
+import { isFormDataIterable, resolveBody } from './resolveBody.ts';
+
+// Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
+// read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
+const WRITE_METHODS = new Set(['put', 'patch', 'delete', 'invalidate', 'update']);
+
+function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
+	// the transport has already started parsing a request body; nothing else will observe it now
+	for (const arg of args) if (typeof arg?.then === 'function') arg.then(undefined, () => {});
+	return Promise.reject(readOnlyModeError());
+}
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+export const WRITE_CONDITION = Symbol('writeCondition');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -143,6 +157,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
+	 * A static override receives the {@link ResourceBody} and owns its resolution and authorization.
 	 */
 	static put = transactional(
 		function (resource: any, query: RequestTarget, request: Context, data: any) {
@@ -206,6 +221,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		{ hasContent: true, type: 'update', method: 'put' }
 	);
 
+	/** A static override receives the {@link ResourceBody} and owns its resolution and authorization. */
 	static patch = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
 			// TODO: Allow array like put?
@@ -290,6 +306,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		{ hasContent: false, type: 'update', method: 'invalidate' }
 	);
 
+	/** A static override receives the {@link ResourceBody} and owns its resolution and authorization. */
 	static post = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
 			if (resource.#id != null) resource.update?.(); // save any changes made during post
@@ -530,12 +547,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
-	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
+	allowUpdate(user: User, record: Record, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
-	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
+	allowCreate(user: User, record: Record, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
@@ -680,8 +697,12 @@ function transactional(
 ) {
 	applyContext.reliesOnPrototype = true;
 	const hasContent = options.hasContent;
+	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
+	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
+		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
+			return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
 		let id, query, isCollection;
 		let data;
 		// An absent argument, not a context — and not this call's data either.
@@ -747,11 +768,11 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
-		if (options.method === 'query' && typeof (data as any)?.then === 'function') {
+		if (options.method === 'query' && (typeof data?.then === 'function' || isFormDataIterable(data))) {
 			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
 			// sanitization must happen before resource resolution and allowRead, not later in runAction.
 			const dataWasFirstArgument = data === idOrQuery;
-			return (data as Promise<any>).then((resolvedData) =>
+			return resolveBody(data, true, (resolvedData: any) =>
 				dataWasFirstArgument
 					? applyContext.call(this, resolvedData, context)
 					: applyContext.call(this, idOrQuery, resolvedData, context)
@@ -941,51 +962,50 @@ function transactional(
 				context.authorize = false;
 				query.checkPermission = true;
 			}
-			if (checkPermission) {
-				if (loadAsInstance !== false) {
-					// do permission checks, with allow methods
-					let allowed;
-					try {
-						allowed =
-							options.type === 'read'
-								? resource.allowRead(context.user, query, context)
-								: options.type === 'update'
-									? resource.doesExist?.() === false
-										? resource.allowCreate(context.user, data, context)
-										: resource.allowUpdate(context.user, data, context)
-									: options.type === 'create'
-										? resource.allowCreate(context.user, data, context)
-										: resource.allowDelete(context.user, query, context);
-					} catch {
-						// allow* threw — fail closed rather than letting the request proceed
-						throw new AccessViolation(context.user);
-					}
-					if ((allowed as any)?.then) {
-						return (allowed as any).then(
-							(allowed) => {
-								query.checkPermission = false;
-								if (!allowed) {
+			return resolveBody(data, collectForms, authorizeResolvedBody);
+			function authorizeResolvedBody(data: any) {
+				if (checkPermission) {
+					if (loadAsInstance !== false) {
+						// do permission checks, with allow methods
+						let allowed;
+						try {
+							allowed =
+								options.type === 'read'
+									? resource.allowRead(context.user, query, context)
+									: options.type === 'update'
+										? resource.doesExist?.() === false
+											? resource.allowCreate(context.user, data, context)
+											: resource.allowUpdate(context.user, data, context)
+										: options.type === 'create'
+											? resource.allowCreate(context.user, data, context)
+											: resource.allowDelete(context.user, query, context);
+						} catch {
+							// allow* threw — fail closed rather than letting the request proceed
+							throw new AccessViolation(context.user);
+						}
+						if ((allowed as any)?.then) {
+							return (allowed as any).then(
+								(allowed) => {
+									query.checkPermission = false;
+									if (!allowed) {
+										throw new AccessViolation(context.user);
+									}
+									return runAction(data);
+								},
+								() => {
+									// async allow* rejected — fail closed
 									throw new AccessViolation(context.user);
 								}
-								return when(data, (data) => {
-									return runAction(data);
-								});
-							},
-							() => {
-								// async allow* rejected — fail closed
-								throw new AccessViolation(context.user);
-							}
-						);
-					}
-					query.checkPermission = false;
-					if (!allowed) {
-						throw new AccessViolation(context.user);
+							);
+						}
+						query.checkPermission = false;
+						if (!allowed) {
+							throw new AccessViolation(context.user);
+						}
 					}
 				}
-			}
-			return when(data, (data) => {
 				return runAction(data);
-			});
+			}
 		}
 	}
 }
@@ -1062,7 +1082,7 @@ function registerLiveSubscriptionForContext(
 	if (!username) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	securityUser ??= require('../security/user');
+	securityUser ??= userRuntimeModule;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
 	// A select written by authorization names no relationship, so the default allowRead's result still
 	// reads only the role's table permission; a caller's select can reach related tables' allowRead.

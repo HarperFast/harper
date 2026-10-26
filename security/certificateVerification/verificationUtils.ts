@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../../utility/packageUtils.js';
 /**
  * Shared utilities for certificate verification
  */
@@ -70,7 +71,7 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
 		// Parse the certificate using PKI.js
 		const certBuffer = pemToBuffer(certPem);
 		const pkijs = loadPkijs();
-		const asn1js = require('asn1js') as typeof Asn1js;
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for CRL Distribution Points extension (OID: 2.5.29.31)
@@ -130,7 +131,7 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
 export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocspUrls: string[] } {
 	try {
 		const pkijs = loadPkijs();
-		const asn1js = require('asn1js') as typeof Asn1js;
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		// Parse the certificate using PKI.js (single parse for both URL types)
 		const certBuffer = pemToBuffer(certPem);
 		const cert = pkijs.Certificate.fromBER(certBuffer);
@@ -225,7 +226,7 @@ export function extractOCSPUrls(certPem: string): string[] {
 		// Parse the certificate using PKI.js
 		const certBuffer = pemToBuffer(certPem);
 		const pkijs = loadPkijs();
-		const asn1js = require('asn1js') as typeof Asn1js;
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for Authority Information Access extension (OID: 1.3.6.1.5.5.7.1.1)
@@ -383,7 +384,7 @@ export function extractIssuerKeyId(certPem: string): string {
 	try {
 		const certBuffer = pemToBuffer(certPem);
 		const pkijs = loadPkijs();
-		const asn1js = require('asn1js') as typeof Asn1js;
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for Authority Key Identifier extension (OID: 2.5.29.35)

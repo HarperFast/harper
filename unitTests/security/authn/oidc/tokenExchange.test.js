@@ -64,7 +64,7 @@ function installMockTable(name, primaryKey) {
  * intercept the factory rather than seeding `databases.system`, which that call would sail straight past.
  */
 function installMockTableFactory(name, mock) {
-	const databasesModule = require('#src/resources/databases');
+	const databasesModule = require('#js/resources/databases');
 	const realTable = databasesModule.table;
 	databasesModule.table = (definition) => (definition?.table === name ? mock : realTable(definition));
 	return () => (databasesModule.table = realTable);
@@ -212,6 +212,29 @@ describe('exchangeOidcToken', () => {
 
 		const user = await validateOperationToken(result.operation_token);
 		assert.strictEqual(user.username, 'ci-deploy');
+	});
+
+	it("signs the policy and the run's verified claims into the token, for a deploy to record as attested (harper#3061)", async () => {
+		await addPolicy();
+		const result = await exchangeOidcToken({
+			operation: 'exchange_oidc_token',
+			token: identityToken({ sha: 'a'.repeat(40), run_attempt: '2' }),
+		});
+		const expected = {
+			via: 'oidc',
+			policy: 'my-app-prod',
+			repository: 'HarperFast/my-app',
+			sha: 'a'.repeat(40),
+			ref: 'refs/heads/main',
+			workflow_ref: WORKFLOW_REF,
+			run_id: '99',
+			run_attempt: '2',
+			actor: 'octocat',
+			environment: 'production',
+		};
+		assert.deepStrictEqual(decodeJWT(result.operation_token).deploy_source, expected);
+		const user = await validateOperationToken(result.operation_token);
+		assert.deepStrictEqual(user.deploySource, expected);
 	});
 
 	// A stored row that add_oidc_trust would reject (repository pinned, but no workflow/ref gate) — as

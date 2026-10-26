@@ -1,0 +1,4 @@
+type Probe @table @export {
+	id: ID @primaryKey
+	value: String
+}

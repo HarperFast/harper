@@ -6,8 +6,8 @@ const path = require('node:path');
 const os = require('node:os');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-const validator = require('#js/components/operationsValidation');
-const operations = require('#js/components/operations');
+const validator = require('#src/components/operationsValidation');
+const operations = require('#src/components/operations');
 const { isReservedComponentName } = require('#src/utility/componentNames');
 
 // The validators return undefined when valid and an Error when invalid.

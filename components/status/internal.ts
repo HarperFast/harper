@@ -9,6 +9,7 @@
 import type { ComponentStatusLevel } from './types.ts';
 import { componentStatusRegistry } from './registry.ts';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
+import { initLogBridge } from './logBridge.ts';
 
 // Internal classes and types
 export { ComponentStatus } from './ComponentStatus.ts';
@@ -24,6 +25,11 @@ export * from './errors.ts';
 
 // All type definitions
 export * from './types.ts';
+
+export { initLogBridge } from './logBridge.ts';
+export { startHealthChecks } from './healthChecks.ts';
+
+initLogBridge();
 
 // Internal query functions for Harper core
 export const query = {

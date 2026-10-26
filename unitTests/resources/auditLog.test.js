@@ -13,13 +13,13 @@ const {
 	AUDIT_STORE_OPTIONS,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	removeStorageReclamation,
 	runReclamationHandlers,
 	setAvailableSpaceRatioGetter,
 } = require('#src/server/storageReclamation');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
@@ -28,7 +28,7 @@ const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const { transaction } = require('#src/resources/transaction');
 const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { logger } = require('#src/utility/logging/logger');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 require('#src/server/serverHelpers/serverUtilities');
@@ -624,7 +624,7 @@ describe('Audit log', () => {
 	});
 	it('RocksDB versioned removal preserves records recreated before or during removal', async function () {
 		if (!AuditedTable.primaryStore.isPrimaryRocksDatabase) return this.skip();
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const recordId = 'rocks-cleanup-race';
 		try {
 			await AuditedTable.put(recordId, { name: 'deleted' });
@@ -976,6 +976,35 @@ describe('Audit log', () => {
 		assert(
 			AuditedTable.auditStore.get(entries[1].previousVersion, AuditedTable.tableId, id),
 			'previousVersion must resolve back to the actual prior audit entry'
+		);
+	});
+	it('getHistoryOfRecord reconstructs a patch entry that a later put overwrote (harper#1413)', async () => {
+		const id = 'patch-under-later-put';
+		await AuditedTable.put(id, { name: 'v1' });
+		await AuditedTable.patch(id, { name: 'v2' });
+		await AuditedTable.put(id, { name: 'v3' });
+		await AuditedTable.patch(id, { name: 'v4' });
+		await AuditedTable.put(id, { name: 'v5' });
+		const history = await AuditedTable.getHistoryOfRecord(id);
+		assert.deepEqual(
+			history.map((entry) => [entry.type, entry.value?.name]),
+			[
+				['put', 'v1'],
+				['patch', 'v2'],
+				['put', 'v3'],
+				['patch', 'v4'],
+				['put', 'v5'],
+			]
+		);
+		const byHash = await new ResourceBridge().readAuditLog({
+			schema: AuditedTable.databaseName,
+			table: 'AuditedTable',
+			search_type: 'hash_value',
+			search_values: [id],
+		});
+		assert.deepEqual(
+			byHash[id].map((entry) => entry.records[0]?.name),
+			['v1', 'v2', 'v3', 'v4', 'v5']
 		);
 	});
 	// LMDB assigns each record's own localTime via lmdb-js's native monotonic clock, independent of
@@ -2518,6 +2547,19 @@ describe('history after record eviction (issue #3164)', () => {
 		assert.strictEqual(byTimestampAfterReinsert.length, 4);
 		assert.deepStrictEqual(byTimestampAfterReinsert[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
 		assert.deepStrictEqual(byTimestampAfterReinsert[3].records, [{ id: 'rec-1', name: 'refetched', count: 7 }]);
+
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'rewritten', count: 8 });
+		const byTimestampAfterRewrite = await Array.fromAsync(
+			await bridge.readAuditLog({
+				schema,
+				table: tableName,
+				search_type: 'timestamp',
+				search_values: [0],
+			})
+		);
+		assert.strictEqual(byTimestampAfterRewrite.length, 5);
+		assert.deepStrictEqual(byTimestampAfterRewrite[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
+		assert.deepStrictEqual(byTimestampAfterRewrite[4].records, [{ id: 'rec-1', name: 'rewritten', count: 8 }]);
 	});
 
 	it('contains a per-entry reconstruction failure in getHistory, getHistoryOfRecord, and readAuditLog without dropping buffered or subsequent entries', async () => {

@@ -1,14 +1,24 @@
 import { table } from '../resources/databases.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import { keyArrayToString, resources } from '../resources/Resources.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { warn, trace } from '../utility/logging/harper_logger.ts';
 import { transaction } from '../resources/transaction.ts';
-import { getWorkerIndex } from '../server/threads/manageThreads.js';
-import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { getWorkerIndex } from '../server/threads/manageThreads.ts';
+import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 import { server } from '../server/Server.ts';
-import { RequestTarget } from '../resources/RequestTarget';
+import { RequestTarget } from '../resources/RequestTarget.ts';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
+import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
+import { getThisNodeName } from './nodeName.ts';
+import {
+	ORIGIN_ID,
+	admitCheckpoint,
+	positionBefore,
+	validateCheckpoint,
+	type SubscriptionCheckpoint,
+} from '../resources/subscriptionCheckpoint.ts';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 /** Inbound QoS 2 exchanges a client may hold open, advertised in the v5 CONNACK. */
@@ -51,6 +61,11 @@ function isWillFromExpiredScopedToken(will: any): boolean {
 	return !user.authExpiresAt || user.authExpiresAt * 1000 <= Date.now();
 }
 
+function isPastBearerExpiry(willUser: any): boolean {
+	const exp = willUser?.authExpiresAt;
+	return typeof exp === 'number' && exp * 1000 <= Date.now();
+}
+
 /** Drops the runtime-only pre-expanded operations Set so the permission set is storage-safe. */
 function stripRuntimePermissionState(permission: any): any {
 	if (!permission || typeof permission !== 'object') return permission;
@@ -75,32 +90,44 @@ function getLastWill() {
 	}
 	return _LastWill;
 }
-if (getWorkerIndex() === 0) {
+// Defer to startup so `whenComponentsLoaded` (an `export const` in threadServer.ts)
+// is past TDZ — this module is loaded inside threadServer's static-graph SCC.
+onStartup(() => {
+	if (getWorkerIndex() !== 0) return;
 	(async () => {
 		await whenComponentsLoaded;
 		await new Promise((resolve) => setTimeout(resolve, 2000));
 		for await (const will of getLastWill().search({})) {
-			const data = will.data;
-			const message = { ...will };
 			try {
-				if (message.user?._scopedToken) {
-					// A scoped token's username is attribution only; never rehydrate it by name (that could
-					// substitute a real principal). The will carries the token's own downgraded role.
-					if (!isWillFromExpiredScopedToken(message)) {
-						await publishMessage(message, data, message);
-					} else warn('Dropping will from an expired scoped token', data);
-				} else {
-					if (message.user?.username) message.user = await (server as any).getUser(message.user.username);
-					await publishMessage(message, data, message);
-				}
-				await getLastWill().delete(will.id);
+				await replayLastWill(will);
 			} catch {
 				// One will's publish/delete failure must not abort replay of the rest; the row stays and
 				// is retried on the next restart.
-				warn('Failed to publish will', data);
+				warn('Failed to publish will', will.data);
 			}
 		}
 	})();
+});
+
+export async function replayLastWill(will: any): Promise<void> {
+	const data = will.data;
+	const message = { ...will };
+	if (message.user?._scopedToken) {
+		// A scoped token's username is attribution only; never rehydrate it by name (that could
+		// substitute a real principal). The will carries the token's own downgraded role.
+		if (!isWillFromExpiredScopedToken(message)) {
+			await publishMessage(message, data, message);
+		} else warn('Dropping will from an expired scoped token', data);
+	} else if (isPastBearerExpiry(message.user)) {
+		warn('Dropping will from an expired bearer token', data);
+	} else {
+		const persistedUser = message.user;
+		if (persistedUser?.username) message.user = await (server as any).getUser(persistedUser.username);
+		// the lookup can outlast a bearer token
+		if (isPastBearerExpiry(persistedUser)) warn('Dropping will from an expired bearer token', data);
+		else await publishMessage(message, data, message);
+	}
+	await getLastWill().delete(will.id);
 }
 
 /**
@@ -190,7 +217,9 @@ export async function getSession({
 						permission: stripRuntimePermissionState(user.role.permission),
 					},
 				}
-			: { username: user?.username };
+			: user?._bearerValidator
+				? { username: user.username, authExpiresAt: user.authExpiresAt }
+				: { username: user?.username };
 		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
 		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
@@ -276,13 +305,13 @@ class SubscriptionsSession {
 		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		let omitCurrent;
+		let omitCurrent = subscriptionRequest.omitCurrent === true;
 		if (existingSubscription) {
-			omitCurrent = retainHandling > 0;
+			omitCurrent ||= retainHandling > 0;
 			existingSubscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existingSubscription), 1);
 		} else {
-			omitCurrent = retainHandling === 2;
+			omitCurrent ||= retainHandling === 2;
 		}
 		if (startTime) trace('Resuming subscription from', topic, 'from', startTime);
 		const entry = resources.getMatch(path, 'mqtt');
@@ -360,6 +389,8 @@ class SubscriptionsSession {
 			omitCurrent,
 			databaseGeneration: subscriptionRequest.databaseGeneration,
 			reportProgress: subscriptionRequest.reportProgress,
+			resume: subscriptionRequest.resume,
+			filterKey: subscriptionRequest.filterKey,
 			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
 			checkPermission: this.user?.role?.permission ?? {},
 		});
@@ -624,7 +655,7 @@ class SubscriptionsSession {
 		try {
 			if (publish) {
 				const will = await getLastWill().get(willId, {});
-				if (will && !isWillFromExpiredScopedToken(will)) {
+				if (will && !isWillFromExpiredScopedToken(will) && !isPastBearerExpiry(will.user)) {
 					const context = this.createContext();
 					// A scoped will authorizes under its own embedded role, never the disconnecting
 					// session's user (which may be a later same-clientId reconnect).
@@ -692,10 +723,19 @@ type DurableEntry = {
 	receivedRuns?: [number, number][];
 	/** Every delivery with a key above `startTime` and at or below this was taken. */
 	receivedThrough?: number;
-	/** QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs. */
-	inFlight?: [...DeliveryIdentity, number][];
+	/**
+	 * QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs; with a
+	 * checkpoint, each names its origin so a resume on another node can hold that origin's boundary.
+	 */
+	inFlight?: [...DeliveryIdentity, number, string?][];
 	/** The database generation whose log keys the receipts and in-flight deliveries name. */
 	receiptsGeneration?: string;
+	/**
+	 * The per-origin checkpoint, kept beside the scalar position an older reader resumes from.
+	 * Once established it is never replaced by the scalar: it stops advancing while floors are unavailable, and a
+	 * resume it can no longer satisfy resets the session (410).
+	 */
+	checkpoint?: SubscriptionCheckpoint;
 };
 function deliveryId(id: unknown) {
 	if (Array.isArray(id)) return keyArrayToString(id);
@@ -714,31 +754,25 @@ type TopicState = {
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
-	unacked: Map<number, { key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean }>;
+	unacked: Map<
+		number,
+		{ key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean; origin?: number }
+	>;
 	received?: Map<string, DeliveryIdentity>;
 	receivedRuns?: Map<number, number>;
 	receivedThrough?: number;
-	resend?: Map<string, [...DeliveryIdentity, number]>;
+	resend?: Map<string, [...DeliveryIdentity, number, string?]>;
 	ordinalKey?: number;
 	ordinal: number;
 	/** Unacked deliveries that arrived below a key delivered before them. */
 	lateUnacked: number;
 	consumed: number;
+	currentCheckpoint?: SubscriptionCheckpoint;
+	checkpointComputedAt?: number;
 };
 
 /** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
 const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
-
-const KEY_SCRATCH = new Float64Array(1);
-const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
-/** The greatest double below a log key, so a replay after it starts at the key. */
-function positionBefore(key: number): number {
-	if (key === 0) return -Number.MIN_VALUE;
-	// doubles of one sign order by their bit patterns, read as signed integers
-	KEY_SCRATCH[0] = key;
-	KEY_BITS[0] += key > 0 ? -1n : 1n;
-	return KEY_SCRATCH[0];
-}
 
 function logKeysPerEntry(topic: string): boolean {
 	const auditStore = resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
@@ -756,12 +790,67 @@ function checkpointInterval(): number {
  */
 function sessionRecordResumable(record: any): boolean {
 	for (const entry of record.subscriptions || []) {
-		if (!boundToCurrentGeneration(entry)) continue;
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
-		if (!/[+#]/.test(match.relativeURL ?? '')) continue;
+		// a checkpoint names origin keys, so it is checked here whichever node issued it, record topics too
+		const admission =
+			entry.checkpoint === undefined ? 'fallback' : checkpointAdmission(match?.Resource, entry.checkpoint);
+		if (admission === 'refused') return false;
+		// the scalar sits at or below the token's floor, so a lagging origin can hold it under retention; it is
+		// only read if the token is refused
+		if (admission === 'admitted') continue;
+		if (!/[+#]/.test(match?.relativeURL ?? '')) continue;
+		if (!boundToCurrentGeneration(entry)) continue;
 		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
 	}
 	return true;
+}
+
+/**
+ * Only a 410 refuses before CONNACK; a malformed or re-scoped checkpoint falls back to the scalar after it. A
+ * topic's other scope parts (target, collection, filter key) follow from the topic itself.
+ */
+function checkpointAdmission(Resource: any, checkpoint: unknown): 'admitted' | 'fallback' | 'refused' {
+	if (!Resource?.auditStore?.reusableIterable || !Resource.dbisDB) return 'fallback';
+	try {
+		const token = validateCheckpoint(checkpoint);
+		// a token for another table, or a recreated one, is a 409 and a scalar fallback after CONNACK, not a reset
+		const [database, table, tableGeneration] = JSON.parse(token.scope);
+		if (
+			database !== Resource.databaseName ||
+			table !== Resource.name ||
+			tableGeneration !== (Resource.storageGeneration ?? null)
+		) {
+			return 'fallback';
+		}
+		admitCheckpoint(Resource.auditStore, Resource.dbisDB, token);
+		return 'admitted';
+	} catch (error) {
+		return error?.statusCode === 410 ? 'refused' : 'fallback';
+	}
+}
+
+/** The lowest key the checkpoint certifies everything below: the common boundary, or the lowest exception. */
+function checkpointFloor(checkpoint: SubscriptionCheckpoint): number {
+	let floor = checkpoint.time - checkpoint.overlap;
+	const exceptions = checkpoint.exceptions;
+	for (const name in exceptions) if (exceptions[name] < floor) floor = exceptions[name];
+	return floor;
+}
+
+/** The newest scalar position a topic keeping `checkpoint` may hold: an older reader or a fallback replays from it. */
+function scalarCap(checkpoint: SubscriptionCheckpoint): number {
+	return positionBefore(checkpointFloor(checkpoint));
+}
+
+function auditStoreOf(topic: string): any {
+	return resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
+}
+
+function originNameOf(topic: string, origin: number | undefined): string | undefined {
+	if (origin === undefined) return;
+	if (origin === 0) return getThisNodeName();
+	const auditStore = auditStoreOf(topic);
+	return auditStore ? getNodeNameForId(auditStore, origin, true) : undefined;
 }
 
 /**
@@ -798,6 +887,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	reservedIds = new Set<number>();
 	receivedCount = 0;
 	inFlightChanged = false;
+	/** Bumped per `advancePositions`, so each topic computes its checkpoint once per pass. */
+	advanceCount = 0;
 	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
 	sealing = false;
 	savesStarted = 0;
@@ -815,7 +906,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			(this.awaitingCompletion ??= new Map()).set(messageId, true);
 		}
 		for (const entry of record?.subscriptions || []) {
-			const { qos, topic, startTime, databaseGeneration } = entry;
+			const { qos, topic, startTime, databaseGeneration, checkpoint } = entry;
 			const state = newTopicState(
 				qos > 0
 					? {
@@ -823,11 +914,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							topic,
 							startTime,
 							databaseGeneration: boundToCurrentGeneration(entry) ? databaseGeneration : undefined,
+							checkpoint,
 						}
 					: { qos, topic }
 			);
-			// keys from another node's log, or from before a restore or copy, name nothing here
-			if (entry.receiptsGeneration === currentGeneration(topic)) {
+			// keys from another node's log, or from before a restore or copy, name nothing here; receipts kept with
+			// a checkpoint name origin keys, which are the same on every node
+			if (entry.receiptsGeneration === currentGeneration(topic) || checkpoint !== undefined) {
 				state.receivedThrough = entry.receivedThrough;
 				for (const [key, count] of entry.receivedRuns || []) {
 					(state.receivedRuns ??= new Map()).set(key, count);
@@ -858,13 +951,30 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (this.topics.size > 0) this.startCheckpoints();
 		for (const state of [...this.topics.values()]) {
 			if (this.terminated) return;
-			const { qos, topic, startTime, databaseGeneration } = state.entry;
+			const { qos, topic, startTime, databaseGeneration, checkpoint } = state.entry;
 			const durable = qos > 0;
 			try {
-				// retain handling, not omitCurrent, decides whether a subscription starts with current values
+				if (durable && checkpoint !== undefined) {
+					try {
+						await this.resumeSubscription(
+							{ topic, qos, rh: 2, resume: checkpoint, filterKey: topic, reportProgress: true },
+							durable
+						);
+						continue;
+					} catch (error) {
+						// a checkpoint for another scope (the table was recreated) resumes from the scalar it kept
+						if (error?.statusCode !== 409 && error?.statusCode !== 400) throw error;
+						warn(
+							`Durable session ${this.sessionId} resumes ${topic} from its position; its checkpoint was refused: ${error.message}`
+						);
+						delete state.entry.checkpoint;
+						this.dropForeignReceipts(state);
+						if (this.terminated) return;
+					}
+				}
 				await this.resumeSubscription(
 					durable
-						? { omitCurrent: true, topic, qos, startTime, databaseGeneration, reportProgress: true }
+						? { topic, qos, rh: 2, startTime, databaseGeneration, reportProgress: true, filterKey: topic }
 						: { topic, qos, rh: 2 },
 					durable
 				);
@@ -904,12 +1014,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				// the replacement replays from the position, so a delivery still awaiting its PUBREC keeps its id
 				for (const [messageId, sent] of replaced.unacked) {
 					if (this.awaitingAcks?.get(messageId)?.qos !== 2) continue;
-					(state.resend ??= new Map()).set(slotOf(sent.key, sent.ordinal), [
-						sent.key,
-						sent.ordinal,
-						sent.id,
-						messageId,
-					]);
+					const originName = originNameOf(subscription.topic, sent.origin);
+					(state.resend ??= new Map()).set(
+						slotOf(sent.key, sent.ordinal),
+						originName === undefined
+							? [sent.key, sent.ordinal, sent.id, messageId]
+							: [sent.key, sent.ordinal, sent.id, messageId, originName]
+					);
 					this.reservedIds.add(messageId);
 				}
 			} else this.forgetTopic(replaced);
@@ -996,12 +1107,20 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	 * Every key below the deliveries still awaiting PUBREC, and below the last delivered key (whose
 	 * transaction may have more queued), was taken whole, so its entries collapse into `receivedThrough`.
 	 */
-	compactReceived(state: TopicState) {
+	compactReceived(state: TopicState, checkpointFloor?: number) {
 		let bound = state.deliveredKey;
 		if (bound === undefined) return;
-		// a transaction that took a key below the delivered ones can still commit until progress passes it
-		const progress = state.subscription?.progress?.();
-		if (progress !== undefined && progress < bound) bound = progress;
+		if (state.entry.checkpoint !== undefined) {
+			// an origin can commit below the scalar watermark but never below its own certified floor, which the
+			// checkpoint's lowest boundary is at or below; without a current checkpoint nothing is compacted
+			const floor = checkpointFloor ?? state.subscription?.checkpointFloor?.();
+			if (floor === undefined) return;
+			if (floor < bound) bound = floor;
+		} else {
+			// a transaction that took a key below the delivered ones can still commit until progress passes it
+			const progress = state.subscription?.progress?.();
+			if (progress !== undefined && progress < bound) bound = progress;
+		}
 		for (const { key } of state.unacked.values()) {
 			if (key < bound) bound = key;
 			// with none late, the oldest unacknowledged delivery has the lowest key
@@ -1051,6 +1170,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				id: qos === 2 ? deliveryId(update.id) : undefined,
 				previousKey: state.keyBefore,
 				late,
+				origin: typeof update[ORIGIN_ID] === 'number' ? update[ORIGIN_ID] : undefined,
 			});
 		}
 		return messageId;
@@ -1073,34 +1193,43 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (owed === false) return this.owePubrel(messageId);
 		if (owed !== undefined) return owed;
 		const delivery = this.awaitingAcks?.get(messageId);
-		if (delivery?.qos !== 2) return false;
-		const state = this.topics.get(delivery.topic);
+		if (delivery && delivery.qos !== 2) return false;
+		let state = delivery && this.topics.get(delivery.topic);
 		const sent = state?.unacked.get(messageId);
 		let identity: DeliveryIdentity | undefined = sent && [sent.key, sent.ordinal, sent.id];
-		if (!sent && state) {
-			// sent by a subscription this one replaced, and not yet sent again
+		const held = sent ? undefined : this.takeResend(messageId);
+		if (held) ({ state, identity } = held);
+		if (!delivery && !identity) return false;
+		this.dirty = true;
+		this.acknowledge(messageId);
+		this.scheduleCheckpoint();
+		if (state) {
+			// compacted first, so the receipt limit counts only what is still kept; the boundary vector built here
+			// is the one the position advance below reuses
+			this.advanceCount++;
+			const checkpoint = state.entry.checkpoint === undefined ? undefined : this.currentCheckpoint(state);
+			const floor = checkpoint === undefined ? undefined : checkpointFloor(checkpoint);
+			this.compactReceived(state, floor);
+			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
+			if (identity) {
+				this.addReceived(state, identity);
+				this.compactReceived(state, floor);
+			}
+		}
+		if (failed) return true;
+		this.advancePositions(false);
+		return this.owePubrel(messageId);
+	}
+	takeResend(messageId: number): { state: TopicState; identity: DeliveryIdentity } | undefined {
+		if (!this.reservedIds.has(messageId)) return;
+		for (const state of this.topics.values()) {
 			for (const [slot, resend] of state.resend ?? []) {
 				if (resend[3] !== messageId) continue;
 				state.resend.delete(slot);
 				this.reservedIds.delete(messageId);
-				identity = [resend[0], resend[1], resend[2]];
-				break;
+				return { state, identity: [resend[0], resend[1], resend[2]] };
 			}
 		}
-		this.dirty = true;
-		this.acknowledge(messageId);
-		if (state) {
-			// compacted first, so the receipt limit counts only what is still kept
-			this.compactReceived(state);
-			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
-			if (identity) {
-				this.addReceived(state, identity);
-				this.compactReceived(state);
-			}
-		}
-		if (failed) return true;
-		this.advancePositions();
-		return this.owePubrel(messageId);
 	}
 	owePubrel(messageId: number) {
 		const awaitingCompletion = (this.awaitingCompletion ??= new Map());
@@ -1177,17 +1306,38 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const replaced = existing?.subscription;
 		let request = subscription;
 		if (durable) {
-			request = { ...subscription, reportProgress: true };
+			request = { ...subscription, reportProgress: true, filterKey: topic };
 			if (existing?.entry.qos > 0) {
 				// replacing a subscription must lose nothing, so the new one continues the topic's position
 				this.advancePositions();
-				request.startTime = existing.entry.startTime;
-				if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
+				if (existing.entry.checkpoint !== undefined) request.resume = existing.entry.checkpoint;
+				else {
+					request.startTime = existing.entry.startTime;
+					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
+				}
 			}
 		}
 		let started;
 		try {
-			started = await this.resumeSubscription(request, needsAck);
+			if (request.resume !== undefined) {
+				try {
+					started = await this.resumeSubscription(request, needsAck);
+				} catch (error) {
+					if (error?.statusCode !== 409 && error?.statusCode !== 400) throw error;
+					// another scope, or LMDB: continue from the scalar the topic kept, as a resume does
+					warn(
+						`Durable session ${this.sessionId} continues ${topic} from its position; its checkpoint was refused: ${error.message}`
+					);
+					delete existing.entry.checkpoint;
+					this.dropForeignReceipts(existing);
+					// nothing to continue for a session that ended meanwhile, and no topic to drop
+					if (this.terminated) return subscription;
+					delete request.resume;
+					request.startTime = existing.entry.startTime;
+					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
+					started = await this.resumeSubscription(request, needsAck);
+				}
+			} else started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
 			if (durable || started) await this.persist();
 		} catch (error) {
@@ -1257,42 +1407,111 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (progress === undefined) return;
 		return boundary < progress ? boundary : progress;
 	}
-	advancePositions(): boolean {
+	/** `fresh`: false reuses the checkpoints a `received` computed for this pass. */
+	advancePositions(fresh = true): boolean {
 		let changed = false;
+		if (fresh) this.advanceCount++;
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
-			const next = this.nextPosition(state);
+			let next = this.nextPosition(state);
 			if (next === undefined) continue;
+			// the scalar never claims more than the token: it is capped by the current one, else frozen at the kept one
+			const checkpoint = this.currentCheckpoint(state) ?? state.entry.checkpoint;
+			if (checkpoint !== undefined) {
+				const cap = scalarCap(checkpoint);
+				if (cap < next) next = cap;
+			}
 			const bound = state.entry.databaseGeneration !== undefined;
 			// an unbound start came from a clock, so a certified position replaces it rather than racing it
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			for (const [slot, [key]] of state.received ?? []) {
-				if (key <= next) {
-					state.received.delete(slot);
-					this.receivedCount--;
-				}
-			}
-			if (state.receivedThrough <= next) state.receivedThrough = undefined;
-			for (const key of state.receivedRuns?.keys() ?? []) {
-				if (key <= next) {
-					state.receivedRuns.delete(key);
-					this.receivedCount--;
-				}
-			}
-			for (const [slot, delivery] of state.resend ?? []) {
-				if (delivery[0] <= next) {
-					state.resend.delete(slot);
-					this.reservedIds.delete(delivery[3]);
-				}
-			}
+			// a checkpoint resume replays from its boundaries, below which a remote origin can sit under the scalar:
+			// once floors certify a boundary, nothing above it is pruned, from the very call that establishes the token
+			if (state.entry.checkpoint === undefined) this.pruneReceipts(state, next);
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
 				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
 			changed = true;
 		}
+		for (const state of this.topics.values()) {
+			if (!(state.entry.qos > 0)) continue;
+			const checkpoint = this.currentCheckpoint(state);
+			if (checkpoint && !sameCheckpoint(checkpoint, state.entry.checkpoint)) {
+				// the scalar watermark was compacted against a position an origin can commit below; from the first
+				// checkpoint on, receipts are bounded by its floor only
+				if (state.entry.checkpoint === undefined) state.receivedThrough = undefined;
+				state.entry.checkpoint = checkpoint;
+				this.pruneReceipts(state, scalarCap(checkpoint));
+				changed = true;
+			}
+			// the first token, or a floor a hold lowered, can sit under a scalar the monotonic advance kept
+			if (lowerScalar(state.entry)) changed = true;
+		}
 		return changed;
+	}
+	/** The checkpoint the topic's subscription certifies now, computed once per `advancePositions` pass. */
+	currentCheckpoint(state: TopicState): SubscriptionCheckpoint | undefined {
+		if (state.checkpointComputedAt === this.advanceCount) return state.currentCheckpoint;
+		state.checkpointComputedAt = this.advanceCount;
+		state.currentCheckpoint = undefined;
+		if (!state.verified || !state.subscription?.checkpoint) return;
+		const holds = this.holdsOf(state);
+		if (holds) state.currentCheckpoint = state.subscription.checkpoint(holds);
+		return state.currentCheckpoint;
+	}
+	/** Drops receipts and resends at or below `through`, which no replay from this topic's position reaches. */
+	pruneReceipts(state: TopicState, through: number) {
+		for (const [slot, [key]] of state.received ?? []) {
+			if (key <= through) {
+				state.received.delete(slot);
+				this.receivedCount--;
+			}
+		}
+		if (state.receivedThrough <= through) state.receivedThrough = undefined;
+		for (const key of state.receivedRuns?.keys() ?? []) {
+			if (key <= through) {
+				state.receivedRuns.delete(key);
+				this.receivedCount--;
+			}
+		}
+		for (const [slot, delivery] of state.resend ?? []) {
+			if (delivery[0] <= through) {
+				state.resend.delete(slot);
+				this.reservedIds.delete(delivery[3]);
+			}
+		}
+	}
+	/** Receipts kept for a checkpoint name origin keys that a scalar replay in this generation may not. */
+	dropForeignReceipts(state: TopicState) {
+		if (state.entry.databaseGeneration !== undefined) return;
+		this.receivedCount -= (state.received?.size ?? 0) + (state.receivedRuns?.size ?? 0);
+		state.received = undefined;
+		state.receivedRuns = undefined;
+		state.receivedThrough = undefined;
+	}
+	/**
+	 * The lowest key per origin among deliveries the client has not taken, which hold that origin's boundary;
+	 * undefined when a delivery's origin is unknown (restored by a build that did not record it), so the
+	 * checkpoint keeps its last value.
+	 */
+	holdsOf(state: TopicState): Map<number, number> | undefined {
+		const holds = new Map<number, number>();
+		for (const { key, origin } of state.unacked.values()) {
+			if (origin === undefined) return;
+			if (!(holds.get(origin) <= key)) holds.set(origin, key);
+		}
+		if (state.resend?.size) {
+			const thisNodeName = getThisNodeName();
+			const nameToId = exportIdMapping(auditStoreOf(state.entry.topic)) ?? {};
+			for (const delivery of state.resend.values()) {
+				const name = delivery[4];
+				const origin = name === undefined ? undefined : name === thisNodeName ? 0 : nameToId[name];
+				if (typeof origin !== 'number') return;
+				if (!(holds.get(origin) <= delivery[0])) holds.set(origin, delivery[0]);
+			}
+		}
+		return holds;
 	}
 	/** Settles once the scheduled checkpoint's save has, and never rejects. */
 	scheduleCheckpoint(): Promise<void> {
@@ -1327,12 +1546,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.receivedRuns?.size > 0) saved.receivedRuns = [...state.receivedRuns];
 			if (state.receivedThrough !== undefined) saved.receivedThrough = state.receivedThrough;
 			if (qos === 2) {
-				const inFlight = [...(state.resend?.values() ?? [])];
-				for (const [messageId, { key, ordinal, id }] of state.unacked) inFlight.push([key, ordinal, id, messageId]);
+				const inFlight: [...DeliveryIdentity, number, string?][] = [...(state.resend?.values() ?? [])];
+				for (const [messageId, { key, ordinal, id, origin }] of state.unacked) {
+					const originName = originNameOf(topic, origin);
+					inFlight.push(
+						originName === undefined ? [key, ordinal, id, messageId] : [key, ordinal, id, messageId, originName]
+					);
+				}
 				if (inFlight.length > 0) saved.inFlight = inFlight;
 			}
 			if (saved.received || saved.receivedRuns || saved.receivedThrough !== undefined || saved.inFlight)
 				saved.receiptsGeneration = currentGeneration(topic);
+			if (state.entry.checkpoint !== undefined) saved.checkpoint = state.entry.checkpoint;
 			subscriptions.push(saved);
 		}
 		const record: any = { id: this.sessionId, incarnation: this.incarnation, subscriptions };
@@ -1477,6 +1702,22 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 const SEAL_WAIT = 5_000;
 function sealWait() {
 	return new Promise<void>((resolve) => setTimeout(resolve, SEAL_WAIT).unref());
+}
+
+/** Lowers a kept scalar to its checkpoint's cap; true if it moved. */
+function lowerScalar(entry: DurableEntry): boolean {
+	if (entry.checkpoint === undefined || !(entry.startTime > scalarCap(entry.checkpoint))) return false;
+	entry.startTime = scalarCap(entry.checkpoint);
+	return true;
+}
+
+function sameCheckpoint(a: SubscriptionCheckpoint, b: SubscriptionCheckpoint | undefined): boolean {
+	if (!b) return false;
+	if (a.time !== b.time || a.overlap !== b.overlap || a.members !== b.members || a.scope !== b.scope) return false;
+	const names = Object.keys(a.exceptions);
+	if (names.length !== Object.keys(b.exceptions).length) return false;
+	for (const name of names) if (a.exceptions[name] !== b.exceptions[name]) return false;
+	return true;
 }
 
 function newTopicState(entry: DurableEntry): TopicState {

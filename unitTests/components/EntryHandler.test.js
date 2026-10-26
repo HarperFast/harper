@@ -1,4 +1,4 @@
-const { EntryHandler } = require('#src/components/EntryHandler');
+const { EntryHandler } = require('#js/components/EntryHandler');
 const { EventEmitter, once } = require('node:events');
 const assert = require('node:assert');
 const { join, basename, sep } = require('node:path');

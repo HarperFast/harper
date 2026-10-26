@@ -14,7 +14,7 @@
  * (/home/kzyp/dev/harper/dist/bin/harper.js) over the SAME dataRootDir — the actual upgrade-boot
  * scenario #1865 reports.
  *
- * The 6-surface read matrix, the base-store-scan oracle, and the heal/boot-order arms are reused
+ * The 6-surface read matrix, the base-store-scan oracle, and the boot-order arm are reused
  * verbatim from the same-build-restart arm (same fixture shape, same Resource surface set) so
  * results are directly comparable between the two arms:
  *   - cached point-GET   : in-process Resource `table.get(id)` (/PointGet/)
@@ -25,8 +25,6 @@
  *   - ops search_by_id    : legacy ops API primary-key point lookup
  *
  * Also probes:
- *   - write-then-read heal: does re-putting a missed row's known original fields repair the
- *     cached point-GET surface? (/Touch/)
  *   - boot-order dependence: does a SECOND restart (current build, no further version change)
  *     clear a miss seen after the cross-version restart, or is the miss stable/growing?
  *
@@ -51,7 +49,7 @@
  * Repro: timeout 420 npm run test:integration -- "integrationTests/upgrade/cross-version-upgrade-visibility.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, deepStrictEqual } from 'node:assert';
+import { strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -236,7 +234,6 @@ suite(
 
 		let matrixBaseline: SurfaceMatrix;
 		let matrixAfterCrossVerRestart: SurfaceMatrix;
-		let matrixAfterHeal: SurfaceMatrix | null = null;
 		let matrixAfterRestart2: SurfaceMatrix;
 
 		before(async () => {
@@ -360,38 +357,6 @@ suite(
 			);
 		});
 
-		test('Q3 write-then-read heal: does re-putting a missed row repair it?', { timeout: 30_000 }, async (t) => {
-			const anyMisses =
-				matrixAfterCrossVerRestart.cachedGetMisses.length ||
-				matrixAfterCrossVerRestart.restMisses.length ||
-				matrixAfterCrossVerRestart.opsByIdMisses.length ||
-				matrixAfterCrossVerRestart.sqlMisses.length;
-			if (!anyMisses) {
-				t.skip('no miss observed after the cross-version upgrade boot on any point surface — nothing to heal');
-				return;
-			}
-			// Prefer a row missed on cached point-GET (the surface #1865 names); fall back to any miss.
-			const targetId =
-				matrixAfterCrossVerRestart.cachedGetMisses[0] ??
-				matrixAfterCrossVerRestart.restMisses[0] ??
-				matrixAfterCrossVerRestart.opsByIdMisses[0] ??
-				matrixAfterCrossVerRestart.sqlMisses[0];
-			const row = rows.find((r) => r.id === targetId)!;
-			log(`Q3: healing probe targets ${targetId} (missed pre-heal)`);
-
-			const beforeHeal = await cachedGet(targetId);
-			const r = await post('/Touch/', row);
-			strictEqual(r.status, 200, 'Touch should return 200');
-			const touchBody = (await r.json()) as { foundAfterTouch: boolean };
-			const afterHeal = await cachedGet(targetId);
-			log(
-				`Q3: ${targetId} cachedGET before-write=${beforeHeal}, Touch.foundAfterTouch=${touchBody.foundAfterTouch}, ` +
-					`cachedGET after-write=${afterHeal} -> ${afterHeal ? 'WRITE HEALS the miss' : 'STILL MISSING after the write'}`
-			);
-			matrixAfterHeal = await buildMatrix('POST-HEAL');
-			ok(true, `heal probe recorded (before=${beforeHeal}, after=${afterHeal})`);
-		});
-
 		test(
 			'Q4 RESTART #2 (current build, no further version change): is the miss stable, cleared, or does it grow?',
 			{ timeout: 90_000 },
@@ -441,9 +406,6 @@ suite(
 						`  POST-CROSSVER-UPGRADE    : oracle=${matrixAfterCrossVerRestart.oracleIds.size}/${ROW_COUNT} opsScan=${matrixAfterCrossVerRestart.opsScanIds.size}/${ROW_COUNT} ` +
 						`cachedGET=${matrixAfterCrossVerRestart.cachedGetHits.length}/${ROW_COUNT} REST=${matrixAfterCrossVerRestart.restHits.length}/${ROW_COUNT} ` +
 						`opsById=${matrixAfterCrossVerRestart.opsByIdHits.length}/${ROW_COUNT} SQL=${matrixAfterCrossVerRestart.sqlHits.length}/${ROW_COUNT}\n` +
-						(matrixAfterHeal
-							? `  POST-HEAL         : oracle=${matrixAfterHeal.oracleIds.size}/${ROW_COUNT} cachedGET=${matrixAfterHeal.cachedGetHits.length}/${ROW_COUNT} REST=${matrixAfterHeal.restHits.length}/${ROW_COUNT} opsById=${matrixAfterHeal.opsByIdHits.length}/${ROW_COUNT} SQL=${matrixAfterHeal.sqlHits.length}/${ROW_COUNT}\n`
-							: '') +
 						`  POST-RESTART-2    : oracle=${matrixAfterRestart2.oracleIds.size}/${ROW_COUNT} opsScan=${matrixAfterRestart2.opsScanIds.size}/${ROW_COUNT} ` +
 						`cachedGET=${matrixAfterRestart2.cachedGetHits.length}/${ROW_COUNT} REST=${matrixAfterRestart2.restHits.length}/${ROW_COUNT} ` +
 						`opsById=${matrixAfterRestart2.opsByIdHits.length}/${ROW_COUNT} SQL=${matrixAfterRestart2.sqlHits.length}/${ROW_COUNT}`

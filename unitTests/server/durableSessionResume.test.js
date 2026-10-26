@@ -11,7 +11,7 @@ const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
 const mqttPacket = require('mqtt-packet');
 const { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -142,6 +142,58 @@ async function storedEntry(clientId, condition) {
 		return entry && condition(entry);
 	});
 	return entry;
+}
+
+/** Resumes unchecked: on LMDB always, on RocksDB from a position in another generation. */
+function resetsAcrossReloadWhileAway(otherGeneration) {
+	for (const [label, levels] of [
+		['root', '#'],
+		['prefix', 'team/#'],
+	]) {
+		it(`resets a ${label} topic's session that resumes unchecked across a reload, and the client can subscribe again`, async () => {
+			const { T, name } = topicTable();
+			await T.put('team/seed', { value: 0 });
+			const topic = `${name}/${levels}`;
+			const clientId = `reloaded-${label}-${name}`;
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			await T.put('team/a', { value: 1 });
+			await waitFor(() => first.received.length >= 1);
+			await ackAll(first.session, first.received);
+			first.session.checkpoint();
+			await first.session.writes;
+			const entry = await storedEntry(clientId, (saved) => !otherGeneration || saved.databaseGeneration !== undefined);
+			first.session.disconnect(true);
+			await first.session.writes;
+			await T.primaryStore.put('team/back', { id: 'team/back', value: 'back' });
+			await T.writeReloadMarker();
+			await T.put('team/after', { value: 'after' });
+			if (otherGeneration) {
+				await databases.system.hdb_durable_session.put({
+					id: clientId,
+					subscriptions: [{ ...entry, databaseGeneration: 'f'.repeat(entry.databaseGeneration.length) }],
+				});
+			}
+			const second = await connect(clientId);
+			assert.strictEqual(second.session.sessionWasPresent, true, 'precondition: the session resumes');
+			await second.session.resume();
+			await waitFor(() => second.closed.length === 1, {
+				message: () => `received ${JSON.stringify(values(second.received))}`,
+			});
+			assert.strictEqual(second.closed[0].code, 'RESUME_HISTORY_UNAVAILABLE', `closed with ${second.closed[0]}`);
+			await waitFor(async () => (await stored(clientId)) == null);
+			assert.ok(!values(second.received).includes('after'), 'nothing past the reload is delivered');
+			const third = await connect(clientId);
+			assert.ok(!third.session.sessionWasPresent, 'the reset session is gone');
+			await third.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+			// the retained snapshot of a string-path prefix delivers none of its rows (harper#3481)
+			if (label === 'root') await waitFor(() => values(third.received).includes('back'));
+			await T.put('team/live', { value: 'live' });
+			await waitFor(() => values(third.received).includes('live'));
+			await ackAll(third.session, third.received);
+			third.session.disconnect(true);
+		});
+	}
 }
 
 describe('MQTT durable sessions resuming through the checked subscription', function () {
@@ -522,6 +574,8 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.strictEqual(closed[0].code, 'RESUME_HISTORY_UNAVAILABLE');
 		await waitFor(async () => (await stored(clientId)) == null);
 	});
+
+	describe('from another generation', () => resetsAcrossReloadWhileAway(true));
 
 	it('ignores a legacy acks list rather than filtering by key', async () => {
 		const { T, name } = topicTable();
@@ -1015,6 +1069,12 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		older.handlers.close();
 		await waitFor(async () => (await T.get('older'))?.value === 'older');
 		assert.ok(!(await T.get('newer')), 'the newer connection is still connected');
+		await waitFor(async () => {
+			for await (const will of databases.system.hdb_session_will.search({})) {
+				if (will.id[0] === clientId && will.topic === `${name}/older`) return false;
+			}
+			return true;
+		});
 		const wills = [];
 		for await (const will of databases.system.hdb_session_will.search({})) {
 			if (will.id[0] === clientId) wills.push(will.topic);
@@ -1579,6 +1639,94 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		socket.handlers.close();
 	});
 
+	async function restoredWithInFlight(open, clientId, T, name, values) {
+		const first = await subscribed(open, clientId, `${name}/#`);
+		for (const value of values) await T.put(value, { value });
+		await waitFor(() => published(first, values.at(-1)));
+		const sent = values.map((value) => published(first, value));
+		first.handlers.close();
+		return sent;
+	}
+	const connectWith = (clientId, ...packets) => Buffer.concat([connectPacket(clientId), ...packets]);
+
+	it('answers a PUBREC for a restored delivery not yet sent again, and never sends it again', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-restored-pubrec-${name}`;
+		const [a, b, c] = await restoredWithInFlight(open, clientId, T, name, ['a', 'b', 'c']);
+		const second = open();
+		second.handlers.message(
+			connectWith(
+				clientId,
+				generate({ cmd: 'pubrec', messageId: b.messageId }, v5),
+				generate({ cmd: 'pubrec', messageId: 4242 }, v5)
+			)
+		);
+		await waitFor(() => ofCommand(second, 'pubrel').length === 2);
+		assert.deepStrictEqual(
+			new Map(ofCommand(second, 'pubrel').map((packet) => [packet.messageId, packet.reasonCode])),
+			new Map([
+				[b.messageId, 0],
+				[4242, 0x92],
+			]),
+			'a restored id is known, an unknown one is not'
+		);
+		const [entry] = (await stored(clientId)).subscriptions;
+		assert.deepStrictEqual(
+			entry.inFlight.map((delivery) => delivery[3]).sort(),
+			[a.messageId, c.messageId].sort(),
+			'saved as received before its PUBREL went out'
+		);
+		assert.deepStrictEqual((await stored(clientId)).awaitingCompletion, [b.messageId]);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => published(second, 'after'));
+		assert.deepStrictEqual(ofCommand(second, 'publish').map(payloadValue), ['a', 'c', 'after']);
+		for (const [value, original] of [
+			['a', a],
+			['c', c],
+		]) {
+			const resent = published(second, value);
+			assert.deepStrictEqual([resent.messageId, resent.dup], [original.messageId, true], `${value} keeps its id`);
+		}
+		second.handlers.close();
+		const third = open();
+		third.handlers.message(connectPacket(clientId));
+		await T.put('last', { value: 'last' });
+		await waitFor(() => published(third, 'last'));
+		assert.deepStrictEqual(
+			sentPackets(third)
+				.slice(0, 2)
+				.map((packet) => [packet.cmd, packet.messageId]),
+			[
+				['connack', undefined],
+				['pubrel', b.messageId],
+			]
+		);
+		assert.deepStrictEqual(ofCommand(third, 'publish').map(payloadValue), ['a', 'c', 'after', 'last']);
+		third.handlers.close();
+	});
+
+	it('ends a restored delivery whose PUBREC failed, without a PUBREL or sending it again', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-restored-refused-${name}`;
+		const [, b] = await restoredWithInFlight(open, clientId, T, name, ['a', 'b']);
+		const second = open();
+		second.handlers.message(
+			connectWith(clientId, generate({ cmd: 'pubrec', messageId: b.messageId, reasonCode: 0x80 }, v5))
+		);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => published(second, 'after'));
+		assert.deepStrictEqual(ofCommand(second, 'publish').map(payloadValue), ['a', 'after']);
+		assert.strictEqual(ofCommand(second, 'pubrel').length, 0);
+		await waitFor(
+			async () => !(await stored(clientId)).subscriptions[0].inFlight?.some((delivery) => delivery[3] === b.messageId)
+		);
+		second.handlers.close();
+	});
+
 	it('publishes a retransmitted QoS 2 PUBLISH once on MQTT 3.1.1', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -1967,5 +2115,155 @@ describe('MQTT durable sessions on LMDB', function () {
 		await waitFor(() => values(second.received).includes(2));
 		assert.ok(!values(second.received).includes(1), 'an acknowledged transaction is not redelivered');
 		second.session.disconnect(true);
+	});
+
+	resetsAcrossReloadWhileAway(false);
+});
+
+describe('MQTT durable record topics on resume', function () {
+	this.timeout(60_000);
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+	});
+
+	for (const qos of [1, 2]) {
+		it(`does not resend the record it already delivered (QoS ${qos})`, async () => {
+			const { T, name } = topicTable();
+			const topic = `${name}/r`;
+			const clientId = `record-resume-${qos}-${name}`;
+			await T.put('r', { value: 0 });
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic, qos, rh: 2 }, true);
+			await T.put('r', { value: 1 });
+			await waitFor(() => values(first.received).includes(1));
+			const deliveredKey = first.session.topics.get(topic).deliveredKey;
+			await ackAll(first.session, first.received);
+			await storedEntry(clientId, (entry) => entry.startTime >= deliveredKey);
+			first.session.disconnect(true);
+			await first.session.writes;
+
+			const second = await connect(clientId);
+			const requests = [];
+			const resumeSubscription = second.session.resumeSubscription;
+			second.session.resumeSubscription = function (request, ...rest) {
+				requests.push(request);
+				return resumeSubscription.call(this, request, ...rest);
+			};
+			await second.session.resume();
+			await T.put('r', { value: 2 });
+			await waitFor(() => values(second.received).includes(2));
+			assert.deepStrictEqual(values(second.received), [2], 'the acknowledged version is not sent again');
+			assert.strictEqual(requests[0].rh, 2, 'a resumed subscription asks for no retained values');
+			second.session.disconnect(true);
+		});
+	}
+
+	it('sends no current value to a request that asks to omit it, whatever its retain handling', async () => {
+		const { T, name } = topicTable();
+		await T.put('r', { value: 0 });
+		const { session, received } = await connect(`omit-current-${name}`);
+		await session.addSubscription({ topic: `${name}/r`, qos: 1, omitCurrent: true }, true);
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		assert.deepStrictEqual(values(received), [1]);
+		session.disconnect(true);
+	});
+
+	it('delivers only the newest version once when the record changed while away', async () => {
+		const { T, name } = topicTable();
+		const topic = `${name}/r`;
+		const clientId = `record-changed-${name}`;
+		await T.put('r', { value: 0 });
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(first.received).includes(1));
+		const deliveredKey = first.session.topics.get(topic).deliveredKey;
+		await ackAll(first.session, first.received);
+		await storedEntry(clientId, (entry) => entry.startTime >= deliveredKey);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('r', { value: 2 });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('r', { value: 3 });
+		await waitFor(() => values(second.received).includes(3));
+		assert.deepStrictEqual(values(second.received), [2, 3]);
+		second.session.disconnect(true);
+	});
+});
+
+describe('MQTT durable collection topics on retained delivery', function () {
+	this.timeout(60_000);
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+	});
+
+	// the primary-key scan visits 'a' before 'z', though 'z' was written first and has the lower log key
+	async function retainedTopic(qos) {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('z', { value: 'z1' });
+		await T.put('a', { value: 'a1' });
+		const clientId = `retained-scan-${qos}-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos, rh: 0 }, true);
+		await waitFor(() => first.received.length === 2);
+		return { T, topic, clientId, first };
+	}
+
+	for (const qos of [1, 2]) {
+		it(`keeps the saved position at its start when retained records are acknowledged (QoS ${qos})`, async () => {
+			const { topic, clientId, first } = await retainedTopic(qos);
+			const subscribedAt = first.session.topics.get(topic).entry.startTime;
+			await ackAll(first.session, first.received);
+			first.session.checkpoint();
+			await first.session.writes;
+			assert.ok(first.session.topics.get(topic).entry.startTime >= subscribedAt, 'the position did not move back');
+			assert.ok((await stored(clientId)).subscriptions[0].startTime >= subscribedAt, 'nor did the saved one');
+			first.session.disconnect(true);
+		});
+
+		it(`resumes after retained records with only the newer version (QoS ${qos})`, async () => {
+			const { T, topic, clientId, first } = await retainedTopic(qos);
+			await ackAll(first.session, first.received);
+			first.session.disconnect(true);
+			await first.session.writes;
+			await T.put('a', { value: 'a2' });
+
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => values(second.received).includes('a2'));
+			await T.put('marker', { value: 'marker' });
+			await waitFor(() => values(second.received).includes('marker'));
+			assert.deepStrictEqual(values(second.received), ['a2', 'marker'], `${topic} replays no older version`);
+			second.session.disconnect(true);
+		});
+	}
+
+	it('keeps the position when a reload re-snapshot is acknowledged', async function () {
+		if (isRocksDB) this.skip(); // durable subscribers are closed at the marker instead
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const { session, received } = await connect(`reload-resnapshot-${name}`);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('z', { value: 'z1' });
+		await T.put('a', { value: 'a1' });
+		await waitFor(() => received.length === 2);
+		const state = session.topics.get(topic);
+		const lastDelivered = state.deliveredKey;
+		await T.writeReloadMarker();
+		await waitFor(() => received.length === 4);
+		await ackAll(session, received);
+		assert.ok(
+			session.nextPosition(state) >= lastDelivered,
+			'acknowledging the re-snapshot did not move the position back'
+		);
+		session.disconnect(true);
 	});
 });

@@ -1,3 +1,4 @@
+import * as userRuntimeModule from '../security/user.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
 import type { UserChange } from '../security/user.ts';
@@ -174,7 +175,7 @@ function ensureStarted(): void {
 	}
 	if (!userChangeListenerInstalled) {
 		try {
-			securityUser ??= require('../security/user');
+			securityUser ??= userRuntimeModule;
 			securityUser!.onUserChange(onUserChanged);
 			userChangeListenerInstalled = true;
 		} catch (error) {
@@ -194,7 +195,7 @@ function stopIfIdle(): void {
 function indexRole(group: PrincipalGroup): void {
 	let roleId: unknown;
 	try {
-		securityUser ??= require('../security/user');
+		securityUser ??= userRuntimeModule;
 		roleId = securityUser!.userRecordVersions(group.username).roleId;
 	} catch {
 		roleId = ANY_ROLE;

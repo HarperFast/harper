@@ -7,7 +7,7 @@ const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { createBlob } = require('#src/resources/blob');
 const { logger } = require('#src/utility/logging/logger');
-const { onMessageByType, setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { onMessageByType, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const MESSAGE_TYPE = 'drop-table-cross-worker-test';
 const CONTROL_TYPE = 'drop-table-cross-worker-control';

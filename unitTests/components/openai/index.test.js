@@ -117,6 +117,59 @@ describe('OpenAIBackend', () => {
 	});
 
 	describe('embed', () => {
+		const inputPrefixes = { document: 'search_document: ', query: 'search_query: ' };
+		for (const [label, prefixes, inputType, expected] of [
+			['document', inputPrefixes, 'document', 'search_document: '],
+			['query', inputPrefixes, 'query', 'search_query: '],
+			['no inputType', inputPrefixes, undefined, ''],
+			['unconfigured', undefined, 'document', ''],
+			['missing key', { document: 'doc: ' }, 'query', ''],
+			['empty prefix', { document: '' }, 'document', ''],
+			['verbatim whitespace', { query: ' λ: \n' }, 'query', ' λ: \n'],
+		]) {
+			for (const input of ['hello', Object.freeze(['hello', '', 'search_document: existing'])]) {
+				it(`applies inputPrefixes: ${label}, ${Array.isArray(input) ? 'batch' : 'scalar'}`, async () => {
+					const original = Array.isArray(input) ? [...input] : [input];
+					const fetch = mockFetch(() =>
+						jsonResponse({ data: original.map((_, index) => ({ index, embedding: [index] })) })
+					);
+					const backend = new OpenAIBackend({ apiKey: API_KEY, model: 'served-alias', inputPrefixes: prefixes }, fetch);
+					await backend.embed(input, { accounting: ACCOUNTING, inputType });
+					assert.deepStrictEqual(
+						JSON.parse(fetch.calls[0].init.body).input,
+						original.map((text) => expected + text)
+					);
+					assert.deepStrictEqual(Array.isArray(input) ? input : [input], original);
+				});
+			}
+		}
+
+		it('captures per-entry prefixes at construction, including when the provider model is overridden', async () => {
+			const fetch = mockFetch(() => jsonResponse({ data: [{ embedding: [0] }] }));
+			const prefixes = { document: 'original: ' };
+			const backend = new OpenAIBackend({ apiKey: API_KEY, model: 'm', inputPrefixes: prefixes }, fetch);
+			prefixes.document = 'changed: ';
+			await backend.embed('x', { accounting: ACCOUNTING, inputType: 'document', model: 'override' });
+			assert.deepStrictEqual(JSON.parse(fetch.calls[0].init.body), { model: 'override', input: ['original: x'] });
+			const other = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+			await other.embed('x', { accounting: ACCOUNTING, inputType: 'document' });
+			assert.deepStrictEqual(JSON.parse(fetch.calls[1].init.body).input, ['x']);
+		});
+
+		for (const inputPrefixes of [
+			null,
+			[],
+			'prefix',
+			{ document: 42 },
+			{ query: false },
+			{ typo: 'x' },
+			{ document: '${UNSET_PREFIX}' },
+		]) {
+			it(`rejects invalid inputPrefixes at construction: ${JSON.stringify(inputPrefixes)}`, () => {
+				assert.throws(() => new OpenAIBackend({ apiKey: API_KEY, inputPrefixes }), OpenAIBackendError);
+			});
+		}
+
 		it('POSTs /embeddings and returns Float32Array vectors', async () => {
 			const fetch = mockFetch(() =>
 				jsonResponse({

@@ -15,6 +15,7 @@ import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,6 +23,7 @@ import { Transaction as RocksTransaction, type Store as RocksStore, constants } 
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey, transferLocalKey } from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
+import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
 import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 import { server } from '../server/Server.ts';
@@ -46,7 +48,7 @@ const ONCE = Object.freeze({ once: true });
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
 let MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
-const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
+let DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN: 1, // the transaction is open and can be used for reads and writes
@@ -107,6 +109,7 @@ const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
 // record of why a request was failed. Mutates only when it grants, so a caller with its own
 // suppression as well (checkOverloaded's per-node `logged`) must test that first.
 const lastStuckCommitLogAt = { shed: -Infinity, abandon: -Infinity, overdue: -Infinity };
+let lastOverloadStatusAt = -Infinity;
 function allowStuckCommitLog(site: 'shed' | 'abandon' | 'overdue', now: number): boolean {
 	if (now - lastStuckCommitLogAt[site] <= OVERLOAD_LOG_MIN_INTERVAL_MS) return false;
 	lastStuckCommitLogAt[site] = now;
@@ -489,6 +492,9 @@ export function replicationConfirmation(callback, feasibility?: typeof confirmat
 	confirmReplication = callback;
 	confirmationFeasibility = feasibility;
 }
+export function registeredReplicationConfirmation() {
+	return confirmReplication;
+}
 
 export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
 	let result;
@@ -690,8 +696,8 @@ export type TransactionWrite = {
 	result?: any;
 	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
 	savedBlobs?: Blob[];
-	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
-	// reset at the top of each commit-handler invocation so retries see a fresh state.
+	// this round staged neither a record nor an audit entry. An earlier durable audit entry may
+	// still own savedBlobs. Reset at the top of each commit-handler invocation.
 	skipped?: boolean;
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
@@ -702,6 +708,7 @@ export type TransactionWrite = {
 	stagedIn?: DatabaseTransaction;
 	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
 	priorWrite?: TransactionWrite;
+	keyId?: unknown;
 	// set only by a write that BOTH reads priorStagedWrite() and publishes stagedEntry; addWrite orders
 	// those against earlier same-key writes. A write that does one or neither would be ordered against a
 	// basis it cannot consume.
@@ -716,8 +723,8 @@ export type TransactionWrite = {
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.
 	superseded?: boolean;
-	// this write appended an audit entry, which references its saved blobs — they then belong to the
-	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
+	// Audit pruning owns blobs referenced by an appended audit entry once its handle commits or
+	// has a durable log; a staged entry in an unsubmitted handle owns none.
 	blobsAuditReferenced?: boolean;
 	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
 	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
@@ -766,10 +773,6 @@ export function validateWrite(operation: TransactionWrite, txnTime: number, tran
 	} finally {
 		if (generation) generation.internalWrites--;
 	}
-}
-
-export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
-	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
 }
 
 /**
@@ -864,6 +867,10 @@ export class DatabaseTransaction implements Transaction {
 	readTxn: ReadTransaction;
 	readTxnRefCount: number;
 	readTxnsUsed: number;
+	// Bumped each time this instance acquires a read handle, so a reference can be returned to the
+	// acquisition it came from (doneReadTxn()). Not the handle's identity: lmdb-js hands back the same
+	// read Txn object for a new snapshot.
+	readTxnGeneration = 0;
 	timeout: number;
 	// Write recency, tracked separately from `timeout`: set only by addWrite, never by a read. `timeout`
 	// is re-armed by reads too (on a link with no pending writes of its own, see the fast path in
@@ -1110,6 +1117,7 @@ export class DatabaseTransaction implements Transaction {
 		readTransactionOwners.set(transaction, this);
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
+		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		this.handleOpenedAt = performance.now();
 	}
@@ -1210,12 +1218,12 @@ export class DatabaseTransaction implements Transaction {
 		// the array it never got threw (issue #2222). Capturing an Error per read that nothing can dump
 		// is not worth doing either, so those reads stay untraced.
 		if (DEBUG_LONG_TXNS && this.stackTraces) this.stackTraces.push(new StartedTransaction());
-		this.readTxnsUsed++;
+		if (readTxn) this.readTxnsUsed++;
 		return readTxn;
 	}
 
-	doneReadTxn() {
-		if (!this.transaction) return;
+	doneReadTxn(generation = this.readTxnGeneration) {
+		if (!this.transaction || generation !== this.readTxnGeneration) return;
 		if (--this.readTxnsUsed === 0) {
 			// The native handle was only being held open for the read iterators: any writes staged
 			// through it were already committed at commit() time by replaying them onto a fresh
@@ -1296,7 +1304,7 @@ export class DatabaseTransaction implements Transaction {
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
-		const keyId = writeKeyId(operation.key);
+		const keyId = (operation.keyId = writeKeyId(operation.key));
 		const priorWrite = writesForStore.get(keyId);
 		if (priorWrite) operation.priorWrite = priorWrite;
 		writesForStore.set(keyId, operation);
@@ -1855,6 +1863,10 @@ export class DatabaseTransaction implements Transaction {
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
 			}
+			if (now - lastOverloadStatusAt > 15_000) {
+				lastOverloadStatusAt = now;
+				harperLogger.status({ problem: 'database.write-queue-overloaded', expires: 60 });
+			}
 			throw new ServerError('Outstanding write transactions have too long a queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
@@ -1863,8 +1875,8 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * What a `replicatedConfirmation` commit waits for: the log position peers must acknowledge (the
 	 * committed transaction's own log key when a confirmable write appended an audit entry to it,
-	 * else the last confirmable write's entry version as in lastConfirmableEntry), and the residents of its
-	 * writes, as checked before submission.
+	 * else the last confirmable write's entry version), and the residents of its writes, as checked
+	 * before submission.
 	 */
 	confirmationTarget(
 		committedLogKey?: number,
@@ -1950,24 +1962,6 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.debug?.('cleaning up a transaction whose confirmation was refused', abortError);
 			}
 			throw error;
-		}
-	}
-
-	/**
-	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
-	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
-	 * replicable writes staged earlier: writes that explicitly opt out (audit-only markers, which stage
-	 * no record), and writes with no stored entry at all — a delete leaves a readable tombstone on any
-	 * audited or delete-tracking table, so only a delete on a table with neither is entry-less. Such a
-	 * `put(A); delete(B)` confirms on A's entry, whose version is this transaction's (every write in a
-	 * transaction is stamped with one version).
-	 */
-	lastConfirmableEntry(): Partial<Entry> | undefined {
-		for (let i = this.writes.length - 1; i >= 0; i--) {
-			const write = this.writes[i];
-			if (!write || write.skipReplicationConfirmation) continue;
-			const entry = write.store.getEntry(write.key);
-			if (entry) return entry;
 		}
 	}
 
@@ -2229,9 +2223,9 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 			(transaction as RocksTransactionWithRetry).retries = this.retries;
 		} else if (!remoteOrigin) {
-			// Before the first staged write, which freezes the native timestamp. A key below the floor's
-			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
-			// record version, and the entry then carries both clocks as an applied write does.
+			// Before the first staged write, which freezes the native timestamp. The key is always a minted
+			// one, replaced on the handle only: `txnTime` keeps an explicit value as the record version, and
+			// the entry then carries both clocks as an applied write does.
 			const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
 			if (!txnTime) {
 				txnTime = key;
@@ -2254,12 +2248,12 @@ export class DatabaseTransaction implements Transaction {
 				this.save(pendingWrites[index], transaction, false, options);
 			operation.pendingPriorWrite = null;
 		}
-		// `txnTime` is this transaction's timestamp — the key its entries take in the per-origin log.
-		// A write applied from elsewhere carries the origin's record version too, and that is what the
-		// record is stored at; the two coincide for every locally-originated write. Gated on the apply
-		// flags so an ordinary write never reads the property (harper#2412).
-		const writeVersion =
-			this.sourceApply || this.isReplay ? getAppliedWriteVersion(operation.recordVersion, txnTime) : txnTime;
+		// `txnTime` is this transaction's timestamp: the record version, and the log key for a write that
+		// minted it. A write applied from elsewhere carries the origin's record version, which may sit
+		// above the origin's log key (an explicit timestamp ahead of its clock), and that is what the
+		// record is stored at. Gated on the apply flags so an ordinary write never reads the property
+		// (harper#2412).
+		const writeVersion = this.sourceApply || this.isReplay ? (operation.recordVersion ?? txnTime) : txnTime;
 		// A base that feeds stored state must come from this transaction's snapshot, never the
 		// cross-worker cache vouch (stale when a resequenced write reused a version). That closes the
 		// lost-update window only when this transaction holds a snapshot to validate the later Put
@@ -2485,6 +2479,7 @@ export class DatabaseTransaction implements Transaction {
 	 * scope or pre-commit work happens to finish. Reads never subscribe.
 	 */
 	admitRequestWrite(): void {
+		if (isReadOnlyMode()) throw readOnlyModeError();
 		const root = this.root ?? this;
 		const signal = root.requestSignal;
 		if (!signal) return;
@@ -3060,7 +3055,14 @@ export class DatabaseTransaction implements Transaction {
 										: Boolean(write.stagedOn) && write.stagedOn !== committedTransaction
 								)
 									continue;
-								if (write.skipped || (write.superseded && !write.blobsAuditReferenced))
+								if (
+									(write.skipped &&
+										!(
+											write.blobsAuditReferenced &&
+											(write.appendedTo === committedTransaction || hasDurableLog(write.appendedTo))
+										)) ||
+									(write.superseded && !write.blobsAuditReferenced)
+								)
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							const committedStagedTxnTime = this.getHandleStagedTxnTime(committedTransaction);
@@ -3259,7 +3261,12 @@ export class DatabaseTransaction implements Transaction {
 							: this.hasSiblingCommitInFlight(transaction) && Boolean(write.stagedOn) && write.stagedOn !== transaction
 					)
 						continue;
-					if (write.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
+					if (
+						write.savedBlobs &&
+						((write.skipped &&
+							!(write.blobsAuditReferenced && (write.appendedTo === transaction || hasDurableLog(write.appendedTo)))) ||
+							(write.superseded && !write.blobsAuditReferenced))
+					)
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
@@ -3476,7 +3483,7 @@ export class DatabaseTransaction implements Transaction {
 						this.baseReadRefConsumed = true;
 					}
 				} else {
-					while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+					while (this.transaction && this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 				}
 				// A write-only transaction never took a read reference (getReadTxn was never called), so the
 				// loop above releases nothing even though save() created a native handle. Keep an iterator's
@@ -4325,6 +4332,7 @@ function startMonitoringTxns() {
 					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
 					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
 					// those, keep the prior force-commit behavior below.
+					harperLogger.status({ problem: 'database.txn-open-too-long', expires: 120 });
 					harperLogger.error(
 						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
 							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
@@ -4368,6 +4376,14 @@ function startMonitoringTxns() {
 }
 
 startMonitoringTxns();
+
+// The ESM graph can load this module before configuration. Refresh the cached
+// limits and re-arm the monitor before startup begins serving requests.
+onStartup(() => {
+	MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000;
+	DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
+	setTxnExpiration(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000);
+});
 
 /**
  * Test seam: re-arms the once-per-process replay warning. The whole unit suite shares one process,

@@ -25,8 +25,8 @@ const {
 	completeDatabaseDropPreparation,
 	databases,
 } = require('#src/resources/databases');
-const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
-const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
+const { getRegistryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { schemaHandler } = require('#src/server/itc/serverHandlers');
 const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const { dropSchema } = require('#src/dataLayer/schema');
@@ -59,7 +59,7 @@ describe('RocksDB handle release', function () {
 	}
 
 	function refCountFor(dbPath) {
-		return registryStatus().find((e) => e.path === dbPath)?.refCount ?? 0;
+		return getRegistryStatus().find((e) => e.path === dbPath)?.refCount ?? 0;
 	}
 
 	it('returns a stable conflict error for a concurrent database drop', function () {
@@ -502,7 +502,7 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(
 			refCountFor(rootStore.path),
 			0,
-			`a same-worker drop retry must release the stranded native wrapper (${rootStore.status}): ${JSON.stringify(registryStatus())}`
+			`a same-worker drop retry must release the stranded native wrapper (${rootStore.status}): ${JSON.stringify(getRegistryStatus())}`
 		);
 		assert.strictEqual(databases[databaseName], undefined);
 	});

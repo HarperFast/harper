@@ -7,6 +7,19 @@ import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
 import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
 
+/**
+ * A part has exactly name/value fields; consume each streamed Blob before requesting the next part.
+ * Stream-backed Blob read APIs require persistence; delegate to the inherited method to materialize files.
+ */
+export type ResourceBodyPart<Value = unknown> = { name: string; value: Value };
+/**
+ * Inherited writes collect named parts before authorization and instance dispatch.
+ * Static consumers own destination authorization and must commit staged Blob saves before advancing.
+ * Delegate to the inherited static method before reading or returning the iterator, with no concurrent consumer.
+ * Direct consumers must finish consuming or return the iterator before responding.
+ */
+export type ResourceBody<T> = T | AsyncIterable<ResourceBodyPart> | Promise<T | AsyncIterable<ResourceBodyPart>>;
+
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
 	allowRead(user: User, target: RequestTarget, context: Context): boolean | Promise<boolean>;
@@ -19,7 +32,7 @@ export interface ResourceInterface<Record extends object = any>
 		| Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 	search?(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
 
-	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowCreate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	create?(
 		target: RequestTargetOrId,
 		newRecord: Partial<Record & RecordObject>
@@ -29,7 +42,7 @@ export interface ResourceInterface<Record extends object = any>
 		newRecord: Partial<Record & RecordObject>
 	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
 
-	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowUpdate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	put?(
 		record: Record & RecordObject,
 		target?: RequestTargetOrId
@@ -75,13 +88,14 @@ export interface Context {
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
 	session?: Session;
 	/**
-	 * The database transaction object. `undefined` means none was ever attached. On the RocksDB path, a
-	 * completed transaction releases its back-reference (DatabaseTransaction.ts's releaseContext()) and
-	 * the slot holds RELEASED_TRANSACTION, a shared completed transaction: always safe to call
-	 * `commit()`/`abort()` on (both no-ops) and to read through (latest committed state, no snapshot),
-	 * so code that commits mid-handler can keep using its context. LMDBTransaction does not release,
-	 * so there the completed transaction itself stays in the slot — also safe to call, but retained.
-	 * `null` was the previous released marker and is still accepted defensively.
+	 * The database transaction object. `undefined` means none was ever attached. Once the scope that
+	 * attached it completes (`transaction()`, or the static API servicing a call), it releases its
+	 * back-reference (DatabaseTransaction.ts's releaseContext()) and the slot holds RELEASED_TRANSACTION, a
+	 * shared completed transaction: truthy, never OPEN, always safe to call `commit()`/`abort()` on (both
+	 * no-ops) and to read through (latest committed state, no snapshot), so code that commits mid-handler
+	 * can keep using its context. This holds on LMDB storage too, because the slot holds the scope's root
+	 * DatabaseTransaction rather than an LMDBTransaction; on RocksDB the release waits for any iterator the
+	 * scope returned to drain. `null` was the previous released marker and is still accepted defensively.
 	 *
 	 * A read that resolves a transaction without going through the static-API wrappers (an instance load,
 	 * for one) replaces a released or never-set slot with an ImmediateTransaction, which commits every
@@ -248,6 +262,9 @@ export interface SubSelect {
 }
 export type Select = (string | SubSelect)[];
 
+import type { SubscriptionCheckpoint } from './subscriptionCheckpoint.ts';
+export type { SubscriptionCheckpoint };
+
 export interface SubscriptionRequest extends RequestTarget {
 	/** The starting time of events to return (defaults to now) */
 	startTime?: number;
@@ -263,6 +280,23 @@ export interface SubscriptionRequest extends RequestTarget {
 	 * marker or a failure to build a live event ends it, and its snapshot keeps every event buffered during the scan.
 	 */
 	reportProgress?: boolean;
+	/**
+	 * Resume from a per-origin checkpoint issued by `checkpoint()` on this or another node of the cluster
+	 * (RocksDB): refused with a 400 if malformed, a 409 if issued for another scope or on LMDB, and a 410 if
+	 * this node cannot serve every origin it certifies completely from its boundary; exposes `resumeVerified`.
+	 * Implies `reportProgress`; exclusive with `startTime`, `databaseGeneration` and `previousCount`.
+	 */
+	resume?: SubscriptionCheckpoint;
+	/**
+	 * With `reportProgress`: deliver `{ type: 'checkpoint', checkpoint }` events through the subscription's own
+	 * queue, at most every this many milliseconds (at least 1000) and only when a boundary advanced.
+	 */
+	checkpointInterval?: number;
+	/**
+	 * Names the caller's filter contract for `rowFilter`/`eventFilter`: a checkpoint binds to it, and a
+	 * resume under another key starts fresh. Required to issue or resume a checkpoint with a filter.
+	 */
+	filterKey?: string;
 	/** The count of previously recorded events to return */
 	previousCount?: number;
 	/** If the current record state should be omitted as the first event */
@@ -333,6 +367,14 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	progress?: () => number | undefined;
 	/** Present only when subscribed with `reportProgress`: how many events have been sent to this subscription. */
 	sentCount?: number;
+	/**
+	 * Present only when subscribed with `reportProgress` (RocksDB): the compact per-origin checkpoint every event
+	 * below which has been taken from this subscription, or undefined while none can be certified. `holds` lowers
+	 * an origin's boundary to a delivery the consumer has not yet consumed, by origin node id.
+	 */
+	checkpoint?: (holds?: Map<number, number>) => SubscriptionCheckpoint | undefined;
+	/** With `checkpoint`: its lowest boundary, below which no event can be delivered anew; cheaper than encoding one. */
+	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 
 	end(): void;
 	toJSON(): { name: 'subscription' };

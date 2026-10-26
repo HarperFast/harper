@@ -11,9 +11,10 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { removeAuditEntry } = require('#src/resources/auditStore');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor.js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -21,13 +22,15 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 describe('Dual-clock audit records (harper#2412)', () => {
 	let Plain, Filled, auditStore;
 	let reportedVersion;
+	// Applied writes name their origin: an entry for a named origin is filed in that origin's log under
+	// the origin's key, which these tests assert. An unnamed id resolves to `local`, where every key is
+	// minted (resources/originClosedFloor.ts).
+	let originId, otherId;
 
-	// Origin log keys for applied writes. Each must be unique on the local log: auditStore.get reads
+	// Origin log keys for applied writes. Each must be unique on the origin log: auditStore.get reads
 	// only the contiguous run of entries at a key, so a second transaction at the same key hides
 	// whatever was written after it. Anchors are 100 s apart so the offsets tests subtract from one
-	// (at most 60 s) never reach the previous anchor. They sit in the future: an applied write for
-	// nodeId 0 lands in the `local` log, where a key below the origin-closed floor is replaced by a
-	// fresh one (resources/originClosedFloor.ts), and these tests assert the key they chose.
+	// (at most 60 s) never reach the previous anchor.
 	let lastAnchor = Date.now() + 3 * 3_600_000;
 	function originClock() {
 		return (lastAnchor += 100_000);
@@ -58,7 +61,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		TableClass,
 		id,
 		record,
-		{ logKey, version, nodeId = 1, fullUpdate = true, isCopyApply = false }
+		{ logKey, version, nodeId = originId, fullUpdate = true, isCopyApply = false }
 	) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
@@ -72,7 +75,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		});
 	}
 
-	function deleteFromOrigin(TableClass, id, { logKey, version, nodeId = 1 }) {
+	function deleteFromOrigin(TableClass, id, { logKey, version, nodeId = originId }) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
 			const resource = await TableClass.getResource(id, context);
@@ -80,7 +83,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		});
 	}
 
-	function invalidateFromOrigin(TableClass, id, partialRecord, { logKey, version, nodeId = 1 }) {
+	function invalidateFromOrigin(TableClass, id, partialRecord, { logKey, version, nodeId = originId }) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
 			const resource = await TableClass.getResource(id, context);
@@ -88,7 +91,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		});
 	}
 
-	function relocateFromOrigin(TableClass, id, { logKey, version, nodeId = 1 }) {
+	function relocateFromOrigin(TableClass, id, { logKey, version, nodeId = originId }) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
 			const resource = await TableClass.getResource(id, context);
@@ -123,6 +126,8 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			}
 		);
 		auditStore = Plain.primaryStore.rootStore.auditStore;
+		originId = getIdOfRemoteNode('dual-clock-origin', auditStore);
+		otherId = getIdOfRemoteNode('dual-clock-other', auditStore);
 	});
 
 	it('a plain write records its version as both the record version and the log key', async function () {
@@ -177,13 +182,13 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			Plain,
 			id,
 			{ id, name: 'base', count: 0 },
-			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
+			{ logKey: baseVersion, version: baseVersion, nodeId: originId, isCopyApply: true }
 		);
 		const logKey = baseVersion + 5_000;
 		const version = baseVersion + 2_000;
-		await applyFromOrigin(Plain, id, { name: 'newer' }, { logKey, version, nodeId: 0, fullUpdate: false });
+		await applyFromOrigin(Plain, id, { name: 'newer' }, { logKey, version, nodeId: originId, fullUpdate: false });
 		const head = Plain.primaryStore.getEntry(id);
-		assert(head.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0));
+		assert(head.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === originId));
 		assert((await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey));
 
 		const olderLogKey = baseVersion + 4_000;
@@ -192,16 +197,18 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			Plain,
 			id,
 			{ count: { __op__: 'add', value: 1 } },
-			{ logKey: olderLogKey, version: olderVersion, nodeId: 2, fullUpdate: false }
+			{ logKey: olderLogKey, version: olderVersion, nodeId: otherId, fullUpdate: false }
 		);
 		assert.deepEqual(await Plain.get(id), { id, name: 'newer', count: 1 });
 		assert.equal(
 			Plain.primaryStore.getEntry(id).nodeId,
-			0,
+			originId,
 			'the stored node id stays paired with the surviving record version'
 		);
 		assert(
-			Plain.primaryStore.getEntry(id).additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			Plain.primaryStore
+				.getEntry(id)
+				.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === originId),
 			'an out-of-order merge must retain the surviving head in the log-key domain'
 		);
 		assert(
@@ -211,27 +218,29 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const olderAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === olderLogKey);
 		assert.equal(olderAudit.version, olderVersion, "crash replay must see the folded write's original version");
 		assert.equal(olderAudit.previousVersion, version, 'the compatibility link remains the prior record version');
-		assert.deepEqual(olderAudit.previousAdditionalAuditRefs, [{ version: logKey, nodeId: 0 }]);
+		assert.deepEqual(olderAudit.previousAdditionalAuditRefs, [{ version: logKey, nodeId: originId }]);
 	});
 
 	it('distinguishes equal record versions from distinct log-key writes', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'equal-version-distinct-log-key-1';
 		const version = originClock() - 30_000;
-		await applyFromOrigin(Plain, id, { id, name: 'base', count: 0 }, { logKey: version, version, nodeId: 0 });
+		await applyFromOrigin(Plain, id, { id, name: 'base', count: 0 }, { logKey: version, version, nodeId: originId });
 		const logKey = originClock();
 		await applyFromOrigin(
 			Plain,
 			id,
 			{ count: { __op__: 'add', value: 1 } },
-			{ logKey, version, nodeId: 0, fullUpdate: false }
+			{ logKey, version, nodeId: originId, fullUpdate: false }
 		);
 		assert.equal((await Plain.get(id)).count, 1, 'a distinct equal-version patch must still be folded');
 		assert(
-			Plain.primaryStore.getEntry(id).additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			Plain.primaryStore
+				.getEntry(id)
+				.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === originId),
 			'the distinct write remains addressable by its log identity'
 		);
-		assert.equal(auditStore.get(logKey, Plain.tableId, id, 0)?.version, version);
+		assert.equal(auditStore.get(logKey, Plain.tableId, id, originId)?.version, version);
 	});
 
 	it('keeps a log-key pointer to an applied delete whose version differs', async function () {
@@ -243,15 +252,15 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			Plain,
 			id,
 			{ id, name: 'present' },
-			{ logKey: writeLogKey, version: writeVersion, nodeId: 0 }
+			{ logKey: writeLogKey, version: writeVersion, nodeId: originId }
 		);
 		const deleteLogKey = writeLogKey + 1_000;
 		const deleteVersion = writeVersion + 1;
-		await deleteFromOrigin(Plain, id, { logKey: deleteLogKey, version: deleteVersion, nodeId: 0 });
+		await deleteFromOrigin(Plain, id, { logKey: deleteLogKey, version: deleteVersion, nodeId: originId });
 		const tombstone = Plain.primaryStore.getEntry(id);
 		assert.equal(tombstone.value, null);
 		assert.equal(tombstone.version, deleteVersion);
-		assert(tombstone.additionalAuditRefs?.some((ref) => ref.version === deleteLogKey && ref.nodeId === 0));
+		assert(tombstone.additionalAuditRefs?.some((ref) => ref.version === deleteLogKey && ref.nodeId === originId));
 		const deleteAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === deleteLogKey);
 		assert.equal(deleteAudit.type, 'delete');
 		assert.equal(deleteAudit.version, deleteVersion);
@@ -261,7 +270,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			null,
 			'cleanup must retain a tombstone while its delete audit entry is newer than the cutoff'
 		);
-		await removeAuditEntry(auditStore, auditStore.get(deleteLogKey, Plain.tableId, id, 0));
+		await removeAuditEntry(auditStore, auditStore.get(deleteLogKey, Plain.tableId, id, originId));
 		assert.equal(Plain.primaryStore.getEntry(id), undefined, 'removing the matching audit entry removes its tombstone');
 	});
 
@@ -273,16 +282,16 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			Plain,
 			id,
 			{ id, name: 'present' },
-			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
+			{ logKey: baseVersion, version: baseVersion, nodeId: originId, isCopyApply: true }
 		);
 		const logKey = originClock();
 		const version = baseVersion;
-		await invalidateFromOrigin(Plain, id, { id, name: 'present' }, { logKey, version, nodeId: 0 });
+		await invalidateFromOrigin(Plain, id, { id, name: 'present' }, { logKey, version, nodeId: originId });
 		const invalidated = Plain.primaryStore.getEntry(id);
 		const invalidateAudit = auditEntriesFor(Plain, id).find((entry) => entry.type === 'invalidate');
 		assert.equal(invalidated.version, version);
 		assert(
-			invalidated.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			invalidated.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === originId),
 			`invalidated record must retain ${logKey}; refs=${JSON.stringify(invalidated.additionalAuditRefs)} audit=${JSON.stringify(invalidateAudit)}`
 		);
 		assert.equal(invalidateAudit.type, 'invalidate');
@@ -299,16 +308,16 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			Plain,
 			id,
 			{ id, name: 'present' },
-			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
+			{ logKey: baseVersion, version: baseVersion, nodeId: originId, isCopyApply: true }
 		);
 		const logKey = originClock();
 		const version = baseVersion;
-		await relocateFromOrigin(Plain, id, { logKey, version, nodeId: 0 });
+		await relocateFromOrigin(Plain, id, { logKey, version, nodeId: originId });
 		const relocated = Plain.primaryStore.getEntry(id);
 		const relocateAudit = auditEntriesFor(Plain, id).find((entry) => entry.type === 'relocate');
 		assert.equal(relocated.version, version);
 		assert(
-			relocated.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			relocated.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === originId),
 			`relocated record must retain ${logKey}; refs=${JSON.stringify(relocated.additionalAuditRefs)} audit=${JSON.stringify(relocateAudit)}`
 		);
 		assert.equal(relocateAudit.type, 'relocate');
@@ -328,24 +337,24 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			{
 				logKey,
 				version: logKey - 30_000,
-				nodeId: 0,
+				nodeId: originId,
 				isCopyApply: true,
 			}
 		);
 		assert.equal(Plain.primaryStore.getEntry(id).additionalAuditRefs, undefined);
-		assert.equal(auditStore.get(logKey, Plain.tableId, id, 0), undefined);
+		assert.equal(auditStore.get(logKey, Plain.tableId, id, originId), undefined);
 	});
 
 	it('does not let an audit-only fold displace an ordinary audit head', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'ordinary-fold-head-1';
 		const head = originClock() - 10_000;
-		await applyFromOrigin(Plain, id, { id, name: 'newer' }, { logKey: head, version: head, nodeId: 0 });
+		await applyFromOrigin(Plain, id, { id, name: 'newer' }, { logKey: head, version: head, nodeId: originId });
 		await applyFromOrigin(
 			Plain,
 			id,
 			{ name: 'older', count: { __op__: 'add', value: 1 } },
-			{ logKey: head + 1_000, version: head - 1, nodeId: 0, fullUpdate: false }
+			{ logKey: head + 1_000, version: head - 1, nodeId: originId, fullUpdate: false }
 		);
 		assert(
 			(await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === head),
@@ -353,15 +362,18 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		);
 	});
 
-	it('bounds an applied record version by the originating transaction-log key', async function () {
+	it('keeps an applied record version that sits above its transaction-log key', async function () {
 		if (isLMDB) return this.skip();
+		// An origin's explicit timestamp ahead of its clock is its record version while its log key is
+		// minted below it; a peer stores the same version, or the two nodes would disagree on which of
+		// two later writes wins.
 		const id = 'applied-out-of-order-1';
 		const logKey = originClock();
-		const survivingVersion = logKey + 30_000;
-		await applyFromOrigin(Plain, id, { id, name: 'from-origin' }, { logKey, version: survivingVersion });
-		assert.equal(Plain.primaryStore.getEntry(id).version, logKey);
+		const aheadVersion = logKey + 30_000;
+		await applyFromOrigin(Plain, id, { id, name: 'from-origin' }, { logKey, version: aheadVersion });
+		assert.equal(Plain.primaryStore.getEntry(id).version, aheadVersion);
 		const [entry] = auditEntriesFor(Plain, id);
-		assert.equal(entry.version, logKey);
+		assert.equal(entry.version, aheadVersion);
 		assert.equal(entry.txnLogKey, logKey);
 	});
 
@@ -376,13 +388,13 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			const older = await Plain.getResource('batched-old', context);
 			await older._writeUpdate('batched-old', { id: 'batched-old', name: 'a' }, true, {
 				isNotification: true,
-				nodeId: 0,
+				nodeId: originId,
 				version: olderVersion,
 			});
 			const current = await Plain.getResource('batched-new', context);
 			await current._writeUpdate('batched-new', { id: 'batched-new', name: 'b' }, true, {
 				isNotification: true,
-				nodeId: 0,
+				nodeId: originId,
 				version: logKey,
 			});
 		});
@@ -394,7 +406,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		assert.equal(newEntry.version, logKey);
 		assert.equal(oldEntry.txnLogKey, logKey, 'both share the transaction log key');
 		assert.equal(newEntry.txnLogKey, logKey);
-		const foundSecond = auditStore.get(logKey, Plain.tableId, 'batched-new', 0);
+		const foundSecond = auditStore.get(logKey, Plain.tableId, 'batched-new', originId);
 		assert.equal(foundSecond?.recordId, 'batched-new', 'lookup scans every entry sharing the transaction log key');
 	});
 
@@ -455,12 +467,11 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const id = 'lookup-1';
 		const logKey = originClock();
 		const version = logKey - 30_000;
-		// nodeId 0 so the entry lands in — and is read back from — the one log a single-node test has
-		await applyFromOrigin(Plain, id, { id, name: 'lookup' }, { logKey, version, nodeId: 0 });
-		const found = auditStore.get(logKey, Plain.tableId, id, 0);
+		await applyFromOrigin(Plain, id, { id, name: 'lookup' }, { logKey, version, nodeId: originId });
+		const found = auditStore.get(logKey, Plain.tableId, id, originId);
 		assert.ok(found, 'the entry is addressable by its log key');
 		assert.equal(found.version, version);
-		assert.equal(auditStore.get(version, Plain.tableId, id, 0), undefined, 'and not by its record version');
+		assert.equal(auditStore.get(version, Plain.tableId, id, originId), undefined, 'and not by its record version');
 	});
 });
 

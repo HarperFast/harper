@@ -2,7 +2,7 @@ const { parentPort, workerData } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { reloadBranchAt } = require('#src/resources/databases');
 const { getOrCreateBranch } = require('#src/resources/branchDatabase');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // phase (main -> here): 0 open the branch, 1 the main thread has declared the table. Absent when
 // mocha loads this file itself.

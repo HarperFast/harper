@@ -9,7 +9,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 async function collect(iter) {
 	const out = [];
