@@ -141,13 +141,13 @@ for (const sqlEngine of ['auto', 'new']) {
 			}
 
 			// REST shares Table.search: a non-driving lt/le or `ne null` excludes null and omitted values, while REST
-			// `=null` still matches only an explicit null.
+			// `==null` still matches only an explicit null.
 			for (const [query, expected] of [
 				['c=alpha&b=lt=3', ['r1']],
 				['b=lt=3&c=alpha', ['r1']],
 				['c=alpha&b=le=1', ['r1']],
 				['c=alpha&b=ne=null', ['r1', 'r_a1_b5']],
-				['c=alpha&b=null', ['r_a1_bnull']],
+				['c=alpha&b==null', ['r_a1_bnull']],
 			] as const) {
 				test(`REST GET /${TABLE}/?${query}`, async () => {
 					await reseed(client);
