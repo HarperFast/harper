@@ -217,6 +217,29 @@ describe('Secondary-index range select', function () {
 			assert.equal(reads, 1);
 		});
 
+		it('projects a plain column exactly as the general path projects it', function () {
+			function method() {}
+			const record = {
+				id: 1,
+				text: 'x',
+				count: 0,
+				flag: false,
+				empty: null,
+				when: new Date(0),
+				list: [1, 'two'],
+				method,
+			};
+			const names = ['text', 'count', 'flag', 'empty', 'when', 'list', 'method', 'missing'];
+			for (const forceNulls of [false, true]) {
+				const plain = names.slice();
+				const general = names.map((name) => ({ name }));
+				plain.forceNulls = general.forceNulls = forceNulls;
+				const fromPlain = Records.transformEntryForSelect(plain, {}, undefined, null)({ key: 1, value: record });
+				const fromGeneral = Records.transformEntryForSelect(general, {}, undefined, null)({ key: 1, value: record });
+				assert.deepStrictEqual(fromPlain, fromGeneral);
+			}
+		});
+
 		it('decides per column when the row is projected, not when the transform is built', function () {
 			const select = ['id', 'nested'];
 			const transform = Records.transformEntryForSelect(select, {}, undefined, null);
