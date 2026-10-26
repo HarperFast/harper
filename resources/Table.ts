@@ -6867,6 +6867,7 @@ export function makeTable(options): TableResourceClass {
 										}
 									} else {
 										const value = await transformToRecord.call(this, iteration.value);
+										if (closed) return { done: true, value: undefined };
 										if (value !== SKIP) return { value };
 										continue;
 									}
@@ -6920,6 +6921,7 @@ export function makeTable(options): TableResourceClass {
 								iteration = nextSorted();
 								if (!iteration.done) {
 									const value = await transformToRecord.call(this, iteration.value);
+									if (closed) return { done: true, value: undefined };
 									if (value !== SKIP) return { value };
 									continue;
 								}
@@ -10091,7 +10093,6 @@ export function makeTable(options): TableResourceClass {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
-		if (record == null) return;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			let resolvers = propertyResolvers;
@@ -10109,7 +10110,7 @@ export function makeTable(options): TableResourceClass {
 			return value;
 		}
 		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
+		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost

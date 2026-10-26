@@ -230,7 +230,7 @@ describe('Reads of residency stubs', function () {
 		);
 	});
 
-	it('skips a null cache invalidation before local-only sorting', async () => {
+	it('sorts null cache invalidations for local-only and ordinary reads', async () => {
 		const Rows = table({
 			database: 'test',
 			table: 'NullCacheLocalSort',
@@ -274,11 +274,51 @@ describe('Reads of residency stubs', function () {
 		assert.equal(loads, 1);
 	});
 
-	for (const leadingRow of [false, true]) {
-		it(`stops sorted materialization after closure (${leadingRow ? 'subsequent' : 'first'} row)`, async () => {
+	it('preserves metadata sort keys for null cache invalidations', async () => {
+		const Rows = table({
+			database: 'test',
+			table: 'NullCacheMetadataSort',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'body' }],
+		});
+		Rows.sourcedFrom({
+			get(id) {
+				return { id, body: 'loaded' };
+			},
+		});
+		for (const id of ['a', 'b']) {
+			await Rows.put(id, { id, body: 'old' });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Rows.getResource(id, context, { ensureLoaded: false });
+				resource._writeInvalidate(id);
+			});
+			assert.equal(Rows.primaryStore.getEntry(id).value, null);
+		}
+		assert.ok(Rows.primaryStore.getEntry('b').version > Rows.primaryStore.getEntry('a').version);
+		const target = {
+			allowFullScan: true,
+			conditions: [],
+			sort: { attribute: 'body', next: { attribute: '$updatedtime', descending: true } },
+		};
+		assert.ok(Rows.search({ ...target, explain: true }).postOrdering);
+		const rows = await Rows.search(target).asArray;
+		assert.deepStrictEqual(
+			rows.map((row) => row.id),
+			['b', 'a']
+		);
+	});
+
+	for (const [leadingRow, found] of [
+		[false, false],
+		[true, false],
+		[false, true],
+		[true, true],
+	]) {
+		it(`stops sorted materialization after closure (${leadingRow ? 'subsequent' : 'first'} row, ${found ? 'present' : 'absent'})`, async () => {
 			const Rows = table({
 				database: 'test',
-				table: `ClosedSortedRead${leadingRow}`,
+				table: `ClosedSortedRead${leadingRow}${found}`,
 				audit: true,
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
 			});
@@ -320,7 +360,7 @@ describe('Reads of residency stubs', function () {
 			try {
 				await iterator.return();
 			} finally {
-				resolveLoad();
+				resolveLoad(found ? { id: 'a', name: 'indexed', body: 'loaded' } : undefined);
 			}
 			assert.equal((await pending).done, true);
 			assert.deepStrictEqual(loads, ['a']);
