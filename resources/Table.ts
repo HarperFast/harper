@@ -6830,12 +6830,23 @@ export function makeTable(options): TableResourceClass {
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
-					function collect(entry) {
+					function collect(entry): Promise<unknown> | undefined {
 						ordered.push(entry);
+						let pending: Promise<void>[];
 						for (let i = 0; i < clauseCount; i++) {
 							const clause = clauses[i];
-							orderedKeys[i].push(convertToComparableKeys(getAttributeValue(entry, clause.attribute, context, clause)));
+							const keys = orderedKeys[i];
+							const value = getAttributeValue(entry, clause.attribute, context, clause);
+							if (value?.then) {
+								const position = keys.push(undefined) - 1;
+								(pending ??= []).push(
+									value.then((value) => {
+										keys[position] = convertToComparableKeys(value);
+									})
+								);
+							} else keys.push(convertToComparableKeys(value));
 						}
+						if (pending) return Promise.all(pending);
 					}
 					function comparePositions(positionA: number, positionB: number): number {
 						for (let i = 0; i < clauseCount; i++) {
@@ -6870,7 +6881,7 @@ export function makeTable(options): TableResourceClass {
 							ordered = [];
 							orderedKeys = [];
 							for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
-							if (enqueuedEntryForNextGroup) collect(enqueuedEntryForNextGroup);
+							if (enqueuedEntryForNextGroup) await collect(enqueuedEntryForNextGroup);
 							// need to load all the entries into ordered
 							do {
 								iteration = await dbIterator.next();
@@ -6903,7 +6914,8 @@ export function makeTable(options): TableResourceClass {
 											break;
 										}
 									}
-									collect(entry);
+									const collecting = collect(entry);
+									if (collecting) await collecting;
 								}
 							} while (true);
 							if ((sort as any).isGrouped) {
@@ -8928,6 +8940,10 @@ export function makeTable(options): TableResourceClass {
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
 							attribute.resolve.resolveKeys = (object, context) => searchRelated(object, context).asArray;
+							attribute.resolve.loadEntries = (object, context) =>
+								when(attribute.resolve.resolveKeys(object, context), (keys) =>
+									loadRelatedEntries(keys, attribute.elements.definition.tableClass, context)
+								);
 							attribute.resolve.toMany = true;
 							attribute.set = () => {
 								// ideally we want to throw an error here, but if the user had (accidently?) set a property into storage
@@ -8992,6 +9008,13 @@ export function makeTable(options): TableResourceClass {
 								const ids = object[relationship.from];
 								if (ids == null || !attribute.elements || Array.isArray(ids)) return ids;
 								return [ids];
+							};
+							attribute.resolve.loadEntries = (object, context) => {
+								const keys = attribute.resolve.resolveKeys(object);
+								if (keys == null) return keys;
+								if (attribute.elements)
+									return loadRelatedEntries(keys, definition.tableClass, context, relationship.filterMissing);
+								return when(loadRelatedEntries([keys], definition.tableClass, context), (entries) => entries[0]);
 							};
 							attribute.resolve.toMany = Boolean(attribute.elements);
 							attribute.resolve.relationship = relationship;
@@ -10096,6 +10119,25 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
+	/**
+	 * What a relationship resolver returns with returnEntry, read through the async-capable path: the
+	 * related entries, or a Promise for them when a read has to go to storage.
+	 */
+	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
+		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
+		let pending = false;
+		const entries = keys.map((key) => {
+			if (key && key.key !== undefined) return key; // already an entry
+			const entry = relatedTable.primaryStore.getEntry(key, options);
+			if (entry?.then) pending = true;
+			return entry;
+		});
+		const settle = (entries: any[]) => {
+			if (TableResource.loadAsInstance === false) for (const entry of entries) freezeRecord(entry?.value);
+			return filterMissing ? entries.filter(exists) : entries;
+		};
+		return pending ? Promise.all(entries).then(settle) : settle(entries);
+	}
 	function getAttributeValue(entry, attribute_name, context, sort?) {
 		if (!entry) {
 			return;
@@ -10103,22 +10145,35 @@ export function makeTable(options): TableResourceClass {
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
-			let resolvers = propertyResolvers;
-			let value = record;
-			for (let i = 0, l = attribute_name.length; i < l; i++) {
-				const attribute = attribute_name[i];
-				const resolver = resolvers?.[attribute];
+			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort);
+		}
+		const resolver = propertyResolvers[attribute_name];
+		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
+	}
+	function getPathValue(value, path, start, resolvers, entry, context, sort) {
+		for (let i = start, l = path.length; i < l; i++) {
+			const attribute = path[i];
+			const resolver = resolvers?.[attribute];
+			resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+			if (resolver?.loadEntries && value) {
+				const loaded = resolver.loadEntries(value, context);
+				const toValue = (loaded) => (resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value);
+				if (loaded?.then) {
+					const nextResolvers = resolvers;
+					return loaded.then((loaded) =>
+						getPathValue(toValue(loaded), path, i + 1, nextResolvers, null, context, sort)
+					);
+				}
+				value = toValue(loaded);
+			} else {
 				value =
 					resolver && value
 						? resolver(value, context, entry, false, i === l - 1 ? sort : undefined, true)
 						: value?.[attribute];
-				entry = null; // can't use this in the nested object
-				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
-			return value;
+			entry = null; // can't use this in the nested object
 		}
-		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
+		return value;
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
@@ -10135,10 +10190,18 @@ export function makeTable(options): TableResourceClass {
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
 			if (!record) return SKIP;
-			// apply the record-level filters
-			for (let i = 0; i < filtersLength; i++) {
-				if (idFiltersApplied?.includes(i)) continue; // already applied
-				if (!filters[i](record, entry)) return SKIP; // didn't match filters
+			return applyFilters(record, entry, id, idFiltersApplied, 0);
+		}
+		// apply the record-level filters; a relationship filter's maybeAsync variant returns a Promise when it
+		// has to read a related record from storage
+		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
+			for (let i = start; i < filtersLength; i++) {
+				if (applied?.includes(i)) continue; // already applied
+				const filter = filters[i];
+				const matches = (filter.maybeAsync ?? filter)(record, entry);
+				if (matches?.then)
+					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
+				if (!matches) return SKIP; // didn't match filters
 			}
 			if (id !== undefined) entry.key = id;
 			return entry;

@@ -1,4 +1,5 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
+import { when, someWhen, everyWhen } from '../utility/when.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP, ExtendedIterable } from '@harperfast/extended-iterable';
@@ -176,8 +177,16 @@ export function executeConditions(
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
 					const filters = mapConditionsToFilters(condition.conditions, !union, estimatedIncomingCount);
-					if (union) return (record, entry) => filters.some((filter) => filter(record, entry));
-					else return (record, entry) => filters.every((filter) => filter(record, entry));
+					const groupFilter: any = union
+						? (record, entry) => filters.some((filter) => filter(record, entry))
+						: (record, entry) => filters.every((filter) => filter(record, entry));
+					if (filters.some((filter) => filter.maybeAsync)) {
+						const matchesFilter = (record, entry) => (filter) => (filter.maybeAsync ?? filter)(record, entry);
+						groupFilter.maybeAsync = union
+							? (record, entry) => someWhen(filters, matchesFilter(record, entry))
+							: (record, entry) => everyWhen(filters, matchesFilter(record, entry));
+					}
+					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
 				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount);
@@ -1359,57 +1368,88 @@ export function findAttribute(attributes, attribute_name) {
  * @returns
  */
 function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>) {
-	return new rightIterable.constructor({
-		[Symbol.iterator]() {
-			let joinedIterator;
-			(joined as any).hasMappings = true;
+	const rightProperty = attribute.relationship.to;
+	const addEntry = (key, entry) => {
+		let entriesForKey = joined.get(key);
+		if (entriesForKey) entriesForKey.push(entry);
+		else joined.set(key, (entriesForKey = [entry]));
+	};
+	const addRelated = (entry, record) => {
+		const leftKey = record?.[rightProperty];
+		if (leftKey == null) return;
+		if (isManyToMany) {
+			for (let i = 0; i < leftKey.length; i++) {
+				addEntry(leftKey[i], entry);
+			}
+		} else {
+			addEntry(leftKey, entry);
+		}
+	};
+	const results = new ExtendedIterable();
+	results.iterate = (options) => {
+		let joinedIterator;
+		(joined as any).hasMappings = true;
+		if (options?.async) {
 			return {
-				next() {
+				async next() {
 					if (!joinedIterator) {
-						const rightProperty = attribute.relationship.to;
-						const addEntry = (key, entry) => {
-							let entriesForKey = joined.get(key);
-							if (entriesForKey) entriesForKey.push(entry);
-							else joined.set(key, (entriesForKey = [entry]));
-						};
-						//let i = 0;
-						// get all the ids of the related records
-						for (const entry of rightIterable) {
-							const record = entry.value ?? store.getSync(entry.key ?? entry);
-							const leftKey = record?.[rightProperty];
-							if (leftKey == null) continue;
-							if ((joined as any).filters?.some((filter) => !filter(record))) continue;
-							if (isManyToMany) {
-								for (let i = 0; i < leftKey.length; i++) {
-									addEntry(leftKey[i], entry);
-								}
-							} else {
-								addEntry(leftKey, entry);
-							}
-							// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
-							/*
-							if (i++ > 100) {
-								// yield the event turn every 100 ids. See below for more explanation
-								await new Promise(setImmediate);
-								i = 0;
-							}*/
+						// get all the ids of the related records, reading any that are not in memory in the background
+						const iterator = rightIterable[Symbol.asyncIterator]();
+						let iteration = iterator.next();
+						while (true) {
+							if (iteration.then) iteration = await iteration;
+							if (iteration.done) break;
+							const entry = iteration.value;
+							let record = entry.value ?? store.get(entry.key ?? entry);
+							if (record?.then) record = await record;
+							if (record != null && (joined as any).filters) {
+								let matches: any = matchesAll((joined as any).filters, record);
+								if (matches?.then) matches = await matches;
+								if (matches) addRelated(entry, record);
+							} else addRelated(entry, record);
+							iteration = iterator.next();
 						}
 						joinedIterator = joined.keys()[Symbol.iterator]();
-						return this.next();
 					}
-					const joinedEntry = joinedIterator.next();
-					if (joinedEntry.done) return joinedEntry;
-					return {
-						// if necessary, get the original key from the entries array
-						value: joinedEntry.value,
-					};
+					return joinedIterator.next();
 				},
 				return() {
-					if (joinedIterator?.return) return joinedIterator.return();
+					return { done: true, value: undefined };
 				},
 			};
-		},
-	});
+		}
+		return {
+			next() {
+				if (!joinedIterator) {
+					//let i = 0;
+					// get all the ids of the related records
+					for (const entry of rightIterable) {
+						const record = entry.value ?? store.getSync(entry.key ?? entry);
+						if (record != null && (joined as any).filters?.some((filter) => !filter(record))) continue;
+						addRelated(entry, record);
+						// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
+						/*
+						if (i++ > 100) {
+							// yield the event turn every 100 ids. See below for more explanation
+							await new Promise(setImmediate);
+							i = 0;
+						}*/
+					}
+					joinedIterator = joined.keys()[Symbol.iterator]();
+				}
+				return joinedIterator.next();
+			},
+			return() {
+				return { done: true, value: undefined };
+			},
+		};
+	};
+	return results;
+}
+// whether a record matches every one of a join's additional filters, which a relationship filter may answer with a
+// Promise (see filterByType)
+function matchesAll(filters, record) {
+	return everyWhen(filters, (filter: any) => (filter.maybeAsync ?? filter)(record));
 }
 /**
  * This is used to join the results of a query where the right side is a set of ids and the left side is a set of records
@@ -1422,76 +1462,107 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
  * @returns
  */
 function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry) {
-	return new rightIterable.constructor({
-		[Symbol.iterator]() {
-			let idIterator;
-			let joinedIterator;
-			const seenIds = new Set();
-			return {
-				next() {
-					let joinedEntry;
-					if (joinedIterator) {
-						while (true) {
-							joinedEntry = joinedIterator.next();
-							if (joinedEntry.done) break; // and continue to find next
-							const id = joinedEntry.value;
-							if (seenIds.has(id)) continue;
-							seenIds.add(id);
-							return joinedEntry;
-						}
-					}
-					if (!idIterator) {
-						// get the ids of the related records as a Set so we can quickly check if it is in the set
-						// when are iterating through the results
-						const ids = new Set();
-						// Define the fromRecord function so that we can use it to filter the related records
-						// that are in the select(), to only those that are in this set of ids
-						(joined as any).fromRecord = (record) => {
-							// TODO: Sort based on order ids
-							return record[attribute.relationship.from]?.filter?.((id) => ids.has(id));
-						};
-						//let i = 0;
-						// get all the ids of the related records
-						for (const id of rightIterable) {
-							if ((joined as any).filters) {
-								// if additional filters are defined, we need to check them
-								const record = store.getSync(id);
-								if ((joined as any).filters.some((filter) => !filter(record))) continue;
-							}
-							ids.add(id);
-							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
-							/*
-							if (i++ > 100) {
-								// yield the event turn every 100 ids. We don't want to monopolize the
-								// event loop, give others a chance to run. However, we are much more aggressive
-								// about running here than in simple filter operations, because we are
-								// executing a very minimal range iteration and because this is consuming
-								// memory (so we want to get it over with) and the user isn't getting any
-								// results until we finish
-								await new Promise(setImmediate);
-								i = 0;
-							}*/
-						}
-						// and now start iterating through the ids
-						idIterator = ids[Symbol.iterator]();
-						return this.next();
-					}
-					do {
-						const idEntry = idIterator.next();
-						if (idEntry.done) return idEntry;
-						joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
-						return this.next();
-					} while (true);
-				},
-				return() {
-					return joinedIterator?.return?.();
-				},
-				throw() {
-					return joinedIterator?.throw?.();
-				},
+	const results = new ExtendedIterable();
+	results.iterate = (options) => {
+		let idIterator;
+		let joinedIterator;
+		const seenIds = new Set();
+		// get the ids of the related records as a Set so we can quickly check if it is in the set
+		// when are iterating through the results
+		const ids = new Set();
+		// Define the fromRecord function so that we can use it to filter the related records
+		// that are in the select(), to only those that are in this set of ids
+		const defineFromRecord = () => {
+			(joined as any).fromRecord = (record) => {
+				// TODO: Sort based on order ids
+				return record[attribute.relationship.from]?.filter?.((id) => ids.has(id));
 			};
-		},
-	});
+		};
+		const nextJoined = () => {
+			while (true) {
+				if (joinedIterator) {
+					while (true) {
+						const joinedEntry = joinedIterator.next();
+						if (joinedEntry.done) break; // and continue to find next
+						const id = joinedEntry.value;
+						if (seenIds.has(id)) continue;
+						seenIds.add(id);
+						return joinedEntry;
+					}
+				}
+				const idEntry = idIterator.next();
+				if (idEntry.done) return idEntry;
+				joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
+			}
+		};
+		const iterator: any = {
+			return() {
+				return joinedIterator?.return?.();
+			},
+			throw() {
+				return joinedIterator?.throw?.();
+			},
+		};
+		if (options?.async) {
+			iterator.next = async () => {
+				if (!idIterator) {
+					defineFromRecord();
+					// get all the ids of the related records, reading any that additional filters need in the background
+					const rightIterator = rightIterable[Symbol.asyncIterator]();
+					let iteration = rightIterator.next();
+					while (true) {
+						if (iteration.then) iteration = await iteration;
+						if (iteration.done) break;
+						const id = iteration.value;
+						if ((joined as any).filters) {
+							let record = store.get(id);
+							if (record?.then) record = await record;
+							let matches: any = matchesAll((joined as any).filters, record);
+							if (matches?.then) matches = await matches;
+							if (matches) ids.add(id);
+						} else ids.add(id);
+						iteration = rightIterator.next();
+					}
+					// and now start iterating through the ids
+					idIterator = ids[Symbol.iterator]();
+				}
+				return nextJoined();
+			};
+		} else {
+			iterator.next = () => {
+				if (!idIterator) {
+					defineFromRecord();
+					//let i = 0;
+					// get all the ids of the related records
+					for (const id of rightIterable) {
+						if ((joined as any).filters) {
+							// if additional filters are defined, we need to check them
+							const record = store.getSync(id);
+							if ((joined as any).filters.some((filter) => !filter(record))) continue;
+						}
+						ids.add(id);
+						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
+						/*
+						if (i++ > 100) {
+							// yield the event turn every 100 ids. We don't want to monopolize the
+							// event loop, give others a chance to run. However, we are much more aggressive
+							// about running here than in simple filter operations, because we are
+							// executing a very minimal range iteration and because this is consuming
+							// memory (so we want to get it over with) and the user isn't getting any
+							// results until we finish
+							await new Promise(setImmediate);
+							i = 0;
+						}*/
+					}
+					// and now start iterating through the ids
+					idIterator = ids[Symbol.iterator]();
+				}
+				return nextJoined();
+			};
+		}
+		return iterator;
+	};
+	return results;
 }
 
 const ALTERNATE_COMPARATOR_NAMES = {
@@ -1688,20 +1759,49 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				const { subObject, subEntry } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
-				const filterMap = filtered?.[firstAttributeName];
-				if (!filterMap && filtered) {
+				preserveForSelect();
+				return subObject.some(nextFilter);
+			};
+			const loadEntries = resolver?.loadEntries;
+			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
+			const preserveForSelect = () => {
+				if (filtered && !filtered[firstAttributeName]) {
 					// establish a filtering that can preserve this filter for the select() results of these sub objects
 					filtered[firstAttributeName] = {
 						fromRecord(record) {
 							// this is called when selecting the fields to include in results
+							if (loadEntries) {
+								return when(loadEntries(record, context), (loaded) => {
+									if (!resolver.toMany) return loaded?.value;
+									const values = loaded.map((entry) => entry?.value);
+									const matches = values.map((value) => value != null && nextMatch(value));
+									const matchingIds = (matches) =>
+										values.filter((_value, i) => matches[i]).map((value) => value[relatedTable.primaryKey]);
+									return matches.some((matches) => matches?.then)
+										? Promise.all(matches).then(matchingIds)
+										: matchingIds(matches);
+								});
+							}
 							const value = getSubObject(record, undefined).subObject;
 							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
 							return value;
 						},
 					};
 				}
-				return subObject.some(nextFilter);
 			};
+			if (loadEntries) {
+				// reads the related records through the async-capable path, so a related record that is not in
+				// memory is read in the background rather than blocking the worker
+				(recordFilter as any).maybeAsync = (record, entry) => {
+					if (nextFilter.idFilter) return recordFilter(record, entry);
+					return when(loadEntries(record, context), (loaded) => {
+						if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
+						if (!loaded) return false;
+						preserveForSelect();
+						return someWhen(loaded, (entry: any) => entry?.value != null && nextMatch(entry.value));
+					});
+				};
+			}
 			return recordFilter;
 		}
 	}
