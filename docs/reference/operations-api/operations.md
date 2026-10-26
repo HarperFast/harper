@@ -934,7 +934,7 @@ Only a deploy that restarts workers can be checked before it serves. On a node r
 
 <VersionBadge version="v5.4.0" />
 
-Before its release goes live, a deploy checks the built component for every `jsResource.files` and `graphqlSchema.files` pattern its own config file declares: `harper-config.yaml`, `harperdb-config.yaml` or `config.yaml`, whichever it finds first in that order. A pattern that matches no file is named in a `warning` event and at the end of the response's `message`, such as `The release of my-app is missing entry points its config.yaml declares: jsResource.files 'resources.js' matched no file.` A truncated or partial payload looks exactly like this. The deploy still goes ahead, since a config can name a file a release no longer ships. A component with no config file of its own declares nothing, so it is not checked, and neither are other plugins' `files`.
+Before its release goes live, a deploy checks the built component for every `jsResource.files` and `graphqlSchema.files` pattern its own config file declares: `harper-config.yaml`, `harperdb-config.yaml` or `config.yaml`, whichever it finds first in that order. A pattern counts only the entries its [`only`](../components/extension-api.md) setting lets the component load, so a directory does not satisfy `only: files`. A pattern that matches nothing is named in a `warning` event and at the end of the response's `message`, such as `The release of my-app is missing entry points its config.yaml declares: jsResource.files 'resources.js' matched no file.` A truncated or partial payload looks exactly like this. The deploy still goes ahead, since a config can name a file a release no longer ships. A component with no config file of its own declares nothing, so it is not checked, and neither are other plugins' `files`.
 
 #### How a deploy updates the root config
 
@@ -1172,7 +1172,8 @@ The deploy responds once it has started the job, and its [record](#get_deploymen
 - The node that received the deploy writes the record as `rolling_out`, with the job's id in `restart_job_id`.
 - As the job visits each node, it adds that node's outcome to the node's `peer_results` entry as `activation`: `activated`, `certification`, `message`, `error` and `completed_at`.
 - When the job has visited every node, it ends the record `success`, or `partial` with `error.nodes` naming each node that did not take the release.
-- If the job is interrupted, because its node restarted mid-rollout, that node ends the record at its next start: `partial`, naming each node with no confirmed activation.
+- If the job fails before it has visited every node, it ends the record `partial` itself.
+- If the record is left `rolling_out` — the job's node restarted mid-rollout, or the job's last write to the record kept failing, which fails the job — that node ends it at its next start. It adds any node's outcome the job recorded in its own result but the record lacks, then ends it `success` if every node took the release, otherwise `partial`, naming each node with no confirmed activation. Until then the record reads `rolling_out`, and `harper deploy restart=rolling` keeps waiting, up to its `wait_timeout`.
 
 The record replicates, so any node can answer [`get_deployment`](#get_deployment) for it, and [`harper deploy restart=rolling`](../cli/commands.md#waiting-for-a-rolling-deploy) waits on it. The job lives only on the node that received the deploy: [`get_job`](#get_job) on its `restartJobId` answers only there, ending `COMPLETE`, or `ERROR` with a `message` listing each node's outcome under `activated`.
 
