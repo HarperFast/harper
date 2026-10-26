@@ -10,6 +10,10 @@
  *     rate keyed on CLIENT IDENTITY rather than session. Session buckets are
  *     trivially cycled by an anonymous client (initialize → call → drop
  *     session → repeat); the client bucket survives that loop.
+ *   - initializePerSecond / initializeBurst (default ON): session creation
+ *     (`initialize`) per client identity. Each session is a persisted row held
+ *     for the idle timeout, so unthrottled creation is a disk-exhaustion vector
+ *     on the anonymous application profile.
  *   - identityHeader (#1610): identity is the socket IP by default; proxied
  *     deployments can name a trusted header (e.g. `x-forwarded-for`) whose
  *     first (client-most) value is used instead. Only set this when the
@@ -39,6 +43,9 @@ export interface RateLimitConfig {
 	/** 0 disables the per-client-identity bucket (the default). */
 	perClientPerSecond: number;
 	perClientBurst: number;
+	/** 0 disables the per-client-identity `initialize` bucket. */
+	initializePerSecond: number;
+	initializeBurst: number;
 	/** Trusted header (lowercased) to derive client identity from; absent = socket IP. */
 	identityHeader?: string;
 }
@@ -51,6 +58,8 @@ const DEFAULTS: Record<'operations' | 'application', RateLimitConfig> = {
 		sessionPerSecond: 100,
 		perClientPerSecond: 0,
 		perClientBurst: 0,
+		initializePerSecond: 10,
+		initializeBurst: 50,
 	},
 	application: {
 		perToolPerSecond: 25,
@@ -59,6 +68,8 @@ const DEFAULTS: Record<'operations' | 'application', RateLimitConfig> = {
 		sessionPerSecond: 200,
 		perClientPerSecond: 0,
 		perClientBurst: 0,
+		initializePerSecond: 10,
+		initializeBurst: 50,
 	},
 };
 
@@ -70,6 +81,8 @@ const CONFIG_KEYS = {
 		sessionPerSecond: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_SESSIONPERSECOND,
 		perClientPerSecond: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_PERCLIENTPERSECOND,
 		perClientBurst: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_PERCLIENTBURST,
+		initializePerSecond: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_INITIALIZEPERSECOND,
+		initializeBurst: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_INITIALIZEBURST,
 		identityHeader: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_IDENTITYHEADER,
 	},
 	application: {
@@ -79,6 +92,8 @@ const CONFIG_KEYS = {
 		sessionPerSecond: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_SESSIONPERSECOND,
 		perClientPerSecond: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_PERCLIENTPERSECOND,
 		perClientBurst: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_PERCLIENTBURST,
+		initializePerSecond: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_INITIALIZEPERSECOND,
+		initializeBurst: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_INITIALIZEBURST,
 		identityHeader: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_IDENTITYHEADER,
 	},
 };
@@ -114,8 +129,14 @@ function buildConfig(profile: 'operations' | 'application'): RateLimitConfig {
 		const v = env.get(key);
 		return typeof v === 'number' && v > 0 ? v : fallback;
 	};
+	// 0 must be honored here: it is how the default-on limit is turned off.
+	const readAllowingZero = (key: string, fallback: number): number => {
+		const v = env.get(key);
+		return typeof v === 'number' && v >= 0 ? v : fallback;
+	};
 	const identityHeader = env.get(keys.identityHeader);
 	const perClientPerSecond = read(keys.perClientPerSecond, defaults.perClientPerSecond);
+	const initializePerSecond = readAllowingZero(keys.initializePerSecond, defaults.initializePerSecond);
 	return {
 		perToolPerSecond: read(keys.perToolPerSecond, defaults.perToolPerSecond),
 		perToolBurst: read(keys.perToolBurst, defaults.perToolBurst),
@@ -127,6 +148,8 @@ function buildConfig(profile: 'operations' | 'application'): RateLimitConfig {
 		// rate (0.1/s = "6 per minute") yields a bucket that can never admit
 		// (consume requires a whole token and refill caps at burst).
 		perClientBurst: read(keys.perClientBurst, perClientPerSecond > 0 ? Math.max(1, perClientPerSecond) : 0),
+		initializePerSecond,
+		initializeBurst: read(keys.initializeBurst, defaults.initializeBurst),
 		...(typeof identityHeader === 'string' && identityHeader ? { identityHeader: identityHeader.toLowerCase() } : {}),
 	};
 }
@@ -159,8 +182,8 @@ export function resolveClientIdentity(
  * `tokens` + `lastRefill`, both updated on every consume call.
  */
 class TokenBucket {
-	private readonly rate: number;
-	private readonly burst: number;
+	private rate: number;
+	private burst: number;
 	private tokens: number;
 	private lastRefill: number;
 	constructor(rate: number, burst: number) {
@@ -176,6 +199,14 @@ class TokenBucket {
 			return true;
 		}
 		return false;
+	}
+	/** Apply a changed rate/burst without refunding tokens already spent. */
+	reconfigure(rate: number, burst: number): void {
+		if (rate === this.rate && burst === this.burst) return;
+		this.refill();
+		this.rate = rate;
+		this.burst = burst;
+		this.tokens = Math.min(this.tokens, burst);
 	}
 	/**
 	 * Refill-and-check, without consuming. Used by `tryAdmit` to peek each
@@ -219,6 +250,10 @@ interface ClientState {
 	lastSeen: number;
 }
 const clients = new Map<string, ClientState>();
+// Separate from `clients` so session creation and tool calls never share tokens.
+const initializeClients = new Map<string, ClientState & { config: RateLimitConfig }>();
+const INITIALIZE_PRUNE_INTERVAL_MS = 10_000;
+let lastInitializePruneAt = 0;
 
 // Belt-and-braces against state leaks: sessions that get TTL-evicted from the
 // system.mcp_session table never reach deleteSession() in this process, so
@@ -243,6 +278,19 @@ function pruneIdleSessions(): void {
 	for (const [key, c] of clients) {
 		if (c.lastSeen < cutoff) {
 			clients.delete(key);
+		}
+	}
+}
+
+// Swept from `initialize` itself, never from `tools/call`: the map holds one
+// entry per source address, which an attacker controls. A bucket idle past its
+// full-refill time is indistinguishable from a new one, so it is dropped then.
+function pruneInitializeClients(t: number): void {
+	if (t - lastInitializePruneAt < INITIALIZE_PRUNE_INTERVAL_MS) return;
+	lastInitializePruneAt = t;
+	for (const [key, c] of initializeClients) {
+		if (c.lastSeen < t - (c.config.initializeBurst / c.config.initializePerSecond) * 1000) {
+			initializeClients.delete(key);
 		}
 	}
 }
@@ -292,6 +340,8 @@ export function clearSessionRateState(sessionId: string): void {
 export function _resetForTest(): void {
 	sessions.clear();
 	clients.clear();
+	initializeClients.clear();
+	lastInitializePruneAt = 0;
 	configCache.clear();
 	warnedIdentityHeader = false;
 }
@@ -352,4 +402,29 @@ export function tryAdmit(
 			if (state.inFlight > 0) state.inFlight -= 1;
 		},
 	};
+}
+
+/**
+ * Admit an `initialize` (session creation) from `clientIdentity`. Absent
+ * identity or a 0 rate admits — the same skip rule as the per-client
+ * `tools/call` bucket.
+ */
+export function tryAdmitInitialize(profile: 'operations' | 'application', clientIdentity: string | undefined): boolean {
+	const config = configFor(profile);
+	if (!clientIdentity || config.initializePerSecond <= 0) return true;
+	const t = now();
+	pruneInitializeClients(t);
+	const key = `${profile}\n${clientIdentity}`;
+	let c = initializeClients.get(key);
+	if (!c) {
+		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst), lastSeen: t, config };
+		initializeClients.set(key, c);
+	} else {
+		c.lastSeen = t;
+		if (c.config !== config) {
+			c.rate.reconfigure(config.initializePerSecond, config.initializeBurst);
+			c.config = config;
+		}
+	}
+	return c.rate.tryConsume();
 }

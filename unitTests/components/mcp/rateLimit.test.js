@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const {
 	tryAdmit,
+	tryAdmitInitialize,
 	clearSessionRateState,
 	configFor,
 	resolveClientIdentity,
@@ -38,6 +39,8 @@ describe('mcp/rateLimit', () => {
 				sessionPerSecond: 100,
 				perClientPerSecond: 0,
 				perClientBurst: 0,
+				initializePerSecond: 10,
+				initializeBurst: 50,
 			});
 			const app = configFor('application');
 			assert.deepEqual(app, {
@@ -47,6 +50,8 @@ describe('mcp/rateLimit', () => {
 				sessionPerSecond: 200,
 				perClientPerSecond: 0,
 				perClientBurst: 0,
+				initializePerSecond: 10,
+				initializeBurst: 50,
 			});
 		});
 
@@ -223,6 +228,68 @@ describe('mcp/rateLimit', () => {
 			assert.equal(stillExhausted.allowed, false, 'active session keeps its state');
 		});
 	});
+	describe('tryAdmitInitialize (session-creation throttle)', () => {
+		it('is on by default: admits the burst per client identity, then denies', () => {
+			for (let i = 0; i < 50; i++) assert.equal(tryAdmitInitialize('application', '10.0.0.1'), true, `admit ${i}`);
+			assert.equal(tryAdmitInitialize('application', '10.0.0.1'), false, 'burst exhausted');
+			assert.equal(tryAdmitInitialize('application', '10.0.0.2'), true, 'other identities unaffected');
+			assert.equal(tryAdmitInitialize('operations', '10.0.0.1'), true, 'profiles are separate');
+		});
+
+		it('refills at initializePerSecond', () => {
+			envOverrides.mcp_application_rateLimit_initializePerSecond = 2;
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			assert.equal(tryAdmitInitialize('application', 'ip'), true);
+			assert.equal(tryAdmitInitialize('application', 'ip'), false);
+			clock += 500;
+			assert.equal(tryAdmitInitialize('application', 'ip'), true, 'one token after 1/rate seconds');
+		});
+
+		it('an explicit 0 rate disables it, and no identity skips it', () => {
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			assert.equal(tryAdmitInitialize('application', undefined), true);
+			assert.equal(tryAdmitInitialize('application', undefined), true);
+			_resetForTest();
+			envOverrides.mcp_application_rateLimit_initializePerSecond = 0;
+			for (let i = 0; i < 5; i++) assert.equal(tryAdmitInitialize('application', 'ip'), true);
+		});
+
+		it('applies a lowered limit to an identity that already has a bucket, without refunding spent tokens', () => {
+			envOverrides.mcp_application_rateLimit_initializePerSecond = 2;
+			envOverrides.mcp_application_rateLimit_initializeBurst = 4;
+			for (let i = 0; i < 3; i++) assert.equal(tryAdmitInitialize('application', 'ip'), true);
+			envOverrides.mcp_application_rateLimit_initializePerSecond = 0.1;
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			clock += 10_001; // past the config cache TTL
+			assert.equal(tryAdmitInitialize('application', 'ip'), true, 'the one remaining token, capped at the new burst');
+			clock += 500;
+			assert.equal(tryAdmitInitialize('application', 'ip'), false, 'refills at the new 0.1/s, not the old 2/s');
+		});
+
+		it('sweeps idle initialize buckets from initialize itself, not from tools/call', () => {
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			assert.equal(tryAdmitInitialize('application', 'a'), true);
+			assert.equal(tryAdmitInitialize('application', 'a'), false);
+			clock += 61 * 60 * 1000;
+			tryAdmit('s1', 't', 'application').release(); // runs the tools/call sweep
+			clock -= 61 * 60 * 1000;
+			assert.equal(tryAdmitInitialize('application', 'a'), false, 'tools/call sweep left the bucket alone');
+			clock += 11_000;
+			tryAdmitInitialize('application', 'b'); // sweeps: 'a' has been idle past its refill time
+			assert.equal(tryAdmitInitialize('application', 'a'), true);
+		});
+
+		it('does not share tokens with the per-client tools/call bucket', () => {
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 1;
+			envOverrides.mcp_application_rateLimit_perClientBurst = 1;
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			assert.equal(tryAdmitInitialize('application', 'ip'), true);
+			const call = tryAdmit('s1', 't', 'application', 'ip');
+			assert.equal(call.allowed, true, 'tools/call bucket still full');
+			call.release();
+		});
+	});
+
 	describe('per-client identity buckets (#1610)', () => {
 		it('is disabled by default: identity present but zero rate adds no per_client denials', () => {
 			for (let i = 0; i < 60; i++) {

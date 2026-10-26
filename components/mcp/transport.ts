@@ -31,7 +31,7 @@ import { emitAuditEntry } from './audit.ts';
 import { emitMcpLogToSession, isValidMcpLogLevel, setSessionLogLevel } from './logging.ts';
 import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
-import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
+import { tryAdmit, tryAdmitInitialize, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
@@ -327,6 +327,17 @@ async function dispatchInitialize(
 	message: JsonRpcMessage,
 	messageId: JsonRpcId
 ): Promise<NormResponse> {
+	const clientIdentity = resolveClientIdentity(request.headers, request.clientIp, request.profile);
+	if (!tryAdmitInitialize(request.profile, clientIdentity)) {
+		const limited = jsonRpcErrorResponse(
+			429,
+			messageId,
+			ERROR_CODES.INVALID_REQUEST,
+			'MCP initialize rate limit reached; back off and try again'
+		);
+		limited.headers['Retry-After'] = '1';
+		return limited;
+	}
 	const params = 'params' in message ? (message.params as { protocolVersion?: unknown } | undefined) : undefined;
 	const outcome = await handleInitialize(params, request.user);
 	if (outcome.ok !== true) {

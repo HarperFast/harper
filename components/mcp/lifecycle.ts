@@ -82,11 +82,11 @@ export async function handleInitialize(
 	const negotiated = SUPPORTED_PROTOCOL_VERSIONS.includes(requested as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])
 		? requested
 		: PROTOCOL_VERSION_PREFERRED;
-	const clientCapabilities =
-		params?.capabilities && typeof params.capabilities === 'object' && !Array.isArray(params.capabilities)
-			? (params.capabilities as Record<string, unknown>)
-			: undefined;
-	const session = await createSession({ user, protocolVersion: negotiated, clientCapabilities });
+	const session = await createSession({
+		user,
+		protocolVersion: negotiated,
+		clientCapabilities: pickClientCapabilities(params?.capabilities),
+	});
 	return {
 		ok: true,
 		session,
@@ -96,6 +96,23 @@ export async function handleInitialize(
 			capabilities: SERVER_CAPABILITIES,
 		},
 	};
+}
+
+/**
+ * Client capabilities Harper acts on: the gates for server→client requests in
+ * `serverRequests.ts`, which test presence only. Everything else the client
+ * declares is dropped rather than persisted, so the session row's size does not
+ * depend on what an (often anonymous) client sends.
+ */
+const STORED_CLIENT_CAPABILITIES = ['sampling', 'elicitation', 'roots'] as const;
+
+function pickClientCapabilities(capabilities: unknown): Record<string, unknown> | undefined {
+	if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return undefined;
+	let picked: Record<string, unknown> | undefined;
+	for (const name of STORED_CLIENT_CAPABILITIES) {
+		if ((capabilities as Record<string, unknown>)[name]) (picked ??= {})[name] = {};
+	}
+	return picked;
 }
 
 /**
