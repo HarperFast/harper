@@ -53,7 +53,6 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 
 	before(async function () {
 		if (isLMDB) return this.skip(); // forks are RocksDB-only
-		await testUtils.ensureSystemTables();
 		table({ database: BASE, table: 'Rows', attributes: [{ name: 'id', isPrimaryKey: true }] });
 	});
 
