@@ -6,8 +6,7 @@ const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { replicationConfirmation: rocksConfirmation } = require('#src/resources/DatabaseTransaction');
-const { replicationConfirmation: lmdbConfirmation } = require('#src/resources/LMDBTransaction');
+const { replicationConfirmation } = require('#src/resources/DatabaseTransaction');
 const { Transaction } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -42,28 +41,18 @@ describe('replicatedConfirmation of a write that appends nothing to replicate', 
 			waits.push(args);
 			return new Promise((resolve) => releases.push(resolve));
 		};
-		if (isLMDB) lmdbConfirmation(wait);
-		else rocksConfirmation(wait, (...args) => checks.push(args));
+		replicationConfirmation(wait, (...args) => checks.push(args));
 	});
 
 	afterEach(() => {
-		if (isLMDB) lmdbConfirmation(undefined);
-		else rocksConfirmation(undefined);
+		replicationConfirmation(undefined);
 	});
-
-	// LMDB's write-bearing link does not inherit the context's count, so ask on the table's own link
-	function requestConfirmation(Table, context) {
-		let link = context.transaction;
-		while (link && link.db?.path !== Table.primaryStore.path) link = link.next;
-		link.replicatedConfirmation = 1;
-	}
 
 	function confirmedWrite(Table, id, stage) {
 		const context = { replicatedConfirmation: 1 };
 		return transaction(context, async () => {
 			const resource = await Table.getResource(id, context);
 			await stage(resource);
-			requestConfirmation(Table, context);
 		});
 	}
 
@@ -164,9 +153,23 @@ describe('replicatedConfirmation of a write that appends nothing to replicate', 
 				const resource = await Unaudited.getResource(id, context);
 				resource._writeUpdate(id, { id, name: 'new' }, true, {});
 				if (!auditedFirst) await Audited.put({ id, name: 'audited' });
-				requestConfirmation(Audited, context);
 			});
 			await waitsUntilReleased(commit);
+		});
+	}
+
+	for (const replicableFirst of [false, true]) {
+		it(`still waits on the replicable write sharing a commit with a local-only one${replicableFirst ? ', staged first' : ''}`, async () => {
+			const id = nextId('mixed-local');
+			const context = { replicatedConfirmation: 1 };
+			const commit = transaction(context, async () => {
+				if (replicableFirst) await Audited.put({ id, name: 'replicable' });
+				const resource = await Audited.getResource(`${id}-local`, context);
+				resource._writeUpdate(`${id}-local`, { id: `${id}-local`, name: 'local' }, true, { localOnly: true });
+				if (!replicableFirst) await Audited.put({ id, name: 'replicable' });
+			});
+			await waitsUntilReleased(commit);
+			if (isLMDB) assert.equal(waits[0][1], Audited.primaryStore.getEntry(id).localTime);
 		});
 	}
 

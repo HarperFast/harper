@@ -766,7 +766,7 @@ export type TransactionWrite = {
 	instanceClosed?: boolean;
 };
 
-function confirmsNothing(write: TransactionWrite): boolean {
+export function confirmsNothing(write: TransactionWrite): boolean {
 	return write.skipReplicationConfirmation || write.stagedAudit === 'none' || write.stagedAudit === 'local';
 }
 
