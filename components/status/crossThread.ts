@@ -5,6 +5,7 @@
  * and aggregating it into a unified view.
  */
 
+import { isMainThread } from 'node:worker_threads';
 import { sendItcEvent } from '../../server/threads/itc.ts';
 import {
 	getWorkerIndex,
@@ -34,10 +35,26 @@ const STATUS_PRIORITY = [
 	COMPONENT_STATUS_LEVELS.HEALTHY,
 ];
 
-function stripThreadIdentity(statusKey: string): string {
-	const threadLabelStart = statusKey.lastIndexOf('@') + 1;
-	const identityIndex = statusKey.indexOf(THREAD_IDENTITY_SEPARATOR, threadLabelStart);
-	return identityIndex === -1 ? statusKey : statusKey.substring(0, identityIndex);
+function parseStatusKey(statusKey: string): {
+	componentName: string;
+	threadLabel: string;
+	publicNameWithThread: string;
+} {
+	const atIndex = statusKey.lastIndexOf('@');
+	if (atIndex <= 0) {
+		return {
+			componentName: statusKey,
+			threadLabel: '',
+			publicNameWithThread: statusKey,
+		};
+	}
+	const identityIndex = statusKey.indexOf(THREAD_IDENTITY_SEPARATOR, atIndex + 1);
+	const publicNameWithThread = identityIndex === -1 ? statusKey : statusKey.substring(0, identityIndex);
+	return {
+		componentName: publicNameWithThread.substring(0, atIndex),
+		threadLabel: publicNameWithThread.substring(atIndex + 1),
+		publicNameWithThread,
+	};
 }
 
 /**
@@ -208,8 +225,8 @@ export class CrossThreadStatusCollector {
 
 			// Add local thread's component status
 			const localStatuses = registry.getAllStatuses();
-			const localWorkerIndex = getWorkerIndex();
-			const localThreadLabel = localWorkerIndex === undefined ? 'main' : `worker-${localWorkerIndex}`;
+			const localWorkerIndex = isMainThread ? undefined : getWorkerIndex();
+			const localThreadLabel = isMainThread ? 'main' : `worker-${localWorkerIndex}`;
 
 			for (const [name, status] of localStatuses) {
 				this.setThreadStatus(aggregatedStatuses, name, localThreadLabel, status, localWorkerIndex);
@@ -268,8 +285,8 @@ export class CrossThreadStatusCollector {
 	private getLocalStatusOnly(registry: ComponentStatusRegistry): Map<string, ComponentStatusSummary> {
 		const localStatuses = registry.getAllStatuses();
 		const fallbackStatuses = new Map<string, ComponentStatusSummary>();
-		const localWorkerIndex = getWorkerIndex();
-		const localThreadLabel = localWorkerIndex === undefined ? 'main' : `worker-${localWorkerIndex}`;
+		const localWorkerIndex = isMainThread ? undefined : getWorkerIndex();
+		const localThreadLabel = isMainThread ? 'main' : `worker-${localWorkerIndex}`;
 
 		for (const [name, status] of localStatuses) {
 			this.setThreadStatus(fallbackStatuses, name, localThreadLabel, status, localWorkerIndex);
@@ -305,9 +322,8 @@ export class StatusAggregator {
 		const componentGroups = new Map<string, Array<[string, ComponentStatusSummary]>>();
 
 		for (const [nameWithThread, status] of allStatuses) {
-			// Extract component name without thread suffix (e.g., "myComponent@worker-1" -> "myComponent")
-			const atIndex = nameWithThread.indexOf('@');
-			const componentName = atIndex !== -1 ? nameWithThread.substring(0, atIndex) : nameWithThread;
+			// Extract component name without thread suffix (e.g., "@scope/app@worker-1" -> "@scope/app")
+			const { componentName } = parseStatusKey(nameWithThread);
 
 			let group = componentGroups.get(componentName);
 			if (!group) {
@@ -348,9 +364,7 @@ export class StatusAggregator {
 
 		// Analyze all instances of this component
 		for (const [nameWithThread, status] of statusEntries) {
-			const atIndex = nameWithThread.lastIndexOf('@');
-			const threadLabelWithIdentity = atIndex !== -1 ? nameWithThread.substring(atIndex + 1) : '';
-			const threadLabel = stripThreadIdentity(threadLabelWithIdentity);
+			const { threadLabel } = parseStatusKey(nameWithThread);
 
 			// Convert lastChecked to ms since epoch
 			const checkTime =
@@ -398,7 +412,7 @@ export class StatusAggregator {
 			// There are inconsistencies - populate abnormalities
 			for (const [nameWithThread, status] of statusEntries) {
 				if (status.status !== determinedStatus) {
-					const publicNameWithThread = stripThreadIdentity(nameWithThread);
+					const { publicNameWithThread } = parseStatusKey(nameWithThread);
 					const existing = abnormalities.get(publicNameWithThread);
 					if (existing && STATUS_PRIORITY.indexOf(existing.status) <= STATUS_PRIORITY.indexOf(status.status)) {
 						continue;

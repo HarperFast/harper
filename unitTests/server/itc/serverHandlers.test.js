@@ -215,6 +215,29 @@ describe('Test hdbChildIpcHandler module', () => {
 				internal.componentStatusRegistry.reset();
 			}
 		});
+
+		it('Test componentStatusRequestHandler reports isMainThread: true when threads.count is 0 (setMainIsWorker)', async () => {
+			sandbox.resetHistory();
+			const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+			setMainIsWorker(true);
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			try {
+				expect(getWorkerIndex()).to.equal(0);
+				await component_status_handler({
+					type: 'component_status_request',
+					message: { originator: 7, requestId: 'req-zero-workers' },
+				});
+
+				expect(sendToThreadStub).to.have.been.calledOnce;
+				const responseMessage = sendToThreadStub.firstCall.args[1];
+				expect(responseMessage.message.isMainThread).to.equal(true);
+				expect(responseMessage.message.workerIndex).to.equal(undefined);
+			} finally {
+				setMainIsWorker(false);
+				sendToThreadStub.restore();
+			}
+		});
 	});
 
 	describe('Test resourceOpenApiRequestHandler function', () => {
