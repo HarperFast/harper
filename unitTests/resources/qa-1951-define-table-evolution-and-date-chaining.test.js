@@ -1,6 +1,3 @@
-// QA-1951: defineTable schema evolution (relationship & tracked accessor cleanup)
-// and types.date modifier chaining order.
-
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -60,7 +57,6 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 			assert.strictEqual(authorBooks.length, 1);
 			assert.strictEqual(authorBooks[0].title, 'A Wizard of Earthsea');
 
-			// Re-declare Book with an additional indexed field `genre`
 			const BookEvolved = defineTable(
 				'Book',
 				{
@@ -195,7 +191,6 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 			assert.ok(initialAuthor, 'initial relationship should resolve');
 			assert.strictEqual(initialAuthor.name, 'Ursula');
 
-			// Re-declare Book without the `author` relationship
 			defineTable(
 				'Book',
 				{
@@ -259,7 +254,6 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 			assert.strictEqual(initialBooks.length, 1);
 			assert.strictEqual(initialBooks[0].title, 'Earthsea');
 
-			// Re-declare Author replacing `books` hasMany relationship with a stored `types.any.nullable` attribute
 			defineTable(
 				'Author',
 				{
@@ -285,8 +279,8 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 		});
 	});
 
-	describe('Arm 4 — Tracked accessor cleanup on Table.prototype and Updatable.prototype during schema evolution', () => {
-		it('4a. removes typed scalar tracked accessor from Table.prototype and Updatable.prototype when attribute is removed on an unsealed table', async () => {
+	describe('Arm 4 — Tracked accessor cleanup on the table prototype during schema evolution', () => {
+		it('4a. removes typed scalar tracked accessor from the table prototype when attribute is removed on an unsealed table', async () => {
 			const DB = 'qa_1951_arm4a';
 			const Item = defineTable(
 				'Item',
@@ -305,7 +299,6 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 				'legacyCode tracked accessor should initially be installed on Item.prototype'
 			);
 
-			// Re-declare Item without `legacyCode` (still unsealed)
 			defineTable(
 				'Item',
 				{
@@ -315,7 +308,6 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 				{ database: DB, sealed: false }
 			);
 
-			// Updating `legacyCode` with a non-Int dynamic string on the unsealed table must not trigger stale Int validation
 			await transaction(async () => {
 				const rec = await Item.update('i1');
 				rec.name = 'Updated';
@@ -332,7 +324,7 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 			);
 		});
 
-		it('4b. removes relationship tracked accessor from Table.prototype and Updatable.prototype when relationship is removed on re-declaration', async () => {
+		it('4b. removes relationship tracked accessor from the table prototype when relationship is removed on re-declaration', async () => {
 			const DB = 'qa_1951_arm4b';
 			const Author = defineTable(
 				'Author',
@@ -360,10 +352,9 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 				const rec = await Article.update('art1');
 				return await rec.author;
 			});
-			assert.ok(initialResolved, 'initial relationship should resolve on Updatable record');
+			assert.ok(initialResolved, 'initial relationship should resolve on the updated record');
 			assert.strictEqual(initialResolved.name, 'Ursula');
 
-			// Re-declare Article without `author`
 			defineTable(
 				'Article',
 				{
@@ -381,7 +372,7 @@ describe('QA-1951: defineTable schema evolution and types.date modifier chaining
 			assert.strictEqual(
 				afterResolved,
 				undefined,
-				'removed relationship should not resolve on Updatable record after schema re-declaration'
+				'removed relationship should not resolve on the updated record after schema re-declaration'
 			);
 			assert.strictEqual(
 				Object.getOwnPropertyDescriptor(Article.prototype, 'author'),

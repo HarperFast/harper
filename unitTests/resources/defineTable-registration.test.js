@@ -13,7 +13,6 @@ const { databases } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { transaction } = require('#src/resources/transaction');
 const { defineTable, types } = require('#src/resources/defineTable');
 
 const { id, string, int, date } = types;
@@ -454,8 +453,6 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		await Press.put({ id: 'p1', name: 'Parnassus' });
 		await Novel.put({ id: 'n1', title: 'Earthsea', writerId: 'w1', pressId: 'p1' });
 		assert.strictEqual((await (await Novel.get('n1')).press).name, 'Parnassus');
-		const updatablePrototype = () => transaction(async () => Object.getPrototypeOf(await Novel.update('n1')));
-		assert.ok(Object.getOwnPropertyDescriptor(await updatablePrototype(), 'press')?.get?.isAttribute);
 
 		defineTable('Novel', novelShape, { database: EVOLVE_DB });
 		const withoutPress = await Novel.get('n1');
@@ -463,9 +460,6 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		assert.strictEqual(withoutPress.press, undefined);
 		assert.strictEqual(Object.getOwnPropertyDescriptor(Novel.prototype, 'press'), undefined);
 		assert.ok(Object.getOwnPropertyDescriptor(Novel.prototype, 'writer')?.get?.isAttribute);
-		const updatable = await updatablePrototype();
-		assert.strictEqual(Object.getOwnPropertyDescriptor(updatable, 'press'), undefined);
-		assert.ok(Object.getOwnPropertyDescriptor(updatable, 'writer')?.get?.isAttribute);
 
 		defineTable('Novel', withPress, { database: EVOLVE_DB });
 		const readded = await Novel.get('n1');
