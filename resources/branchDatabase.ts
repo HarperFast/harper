@@ -775,7 +775,6 @@ export async function removeBranches(): Promise<void> {
 	for (const branchPath of [...branchesByPath.keys()]) await removeBranchAt(branchPath);
 }
 
-/** The branch root under every storage root a database could have. */
 function branchRoots(fail: (what: string, error: unknown) => void): Set<string> {
 	getDatabases();
 	const baseNames = new Set<string>([
