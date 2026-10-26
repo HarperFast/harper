@@ -255,10 +255,19 @@ interface ClientState {
 	lastSeen: number;
 }
 const clients = new Map<string, ClientState>();
-// Separate from `clients` so session creation and tool calls never share tokens.
-const initializeClients = new Map<string, ClientState & { config: RateLimitConfig }>();
+interface InitializeState {
+	clients: Map<string, ClientState & { config: RateLimitConfig }>;
+	lastPruneAt: number;
+}
+const initializeState: Record<'operations' | 'application', InitializeState> = {
+	operations: { clients: new Map(), lastPruneAt: 0 },
+	application: { clients: new Map(), lastPruneAt: 0 },
+};
 const INITIALIZE_PRUNE_INTERVAL_MS = 10_000;
-let lastInitializePruneAt = 0;
+// Past this many tracked identities, new ones share the no-identity bucket:
+// memory stays bounded and no existing bucket is evicted (eviction would refund it).
+const MAX_INITIALIZE_IDENTITIES = 100_000;
+const SHARED_IDENTITY = '';
 
 // Belt-and-braces against state leaks: sessions that get TTL-evicted from the
 // system.mcp_session table never reach deleteSession() in this process, so
@@ -290,13 +299,12 @@ function pruneIdleSessions(): void {
 // Swept from `initialize` itself, never from `tools/call`: the map holds one
 // entry per source address, which an attacker controls. A bucket idle past its
 // full-refill time is indistinguishable from a new one, so it is dropped then.
-function pruneInitializeClients(t: number): void {
-	if (t - lastInitializePruneAt < INITIALIZE_PRUNE_INTERVAL_MS) return;
-	lastInitializePruneAt = t;
-	for (const [key, c] of initializeClients) {
-		if (c.lastSeen < t - (c.config.initializeBurst / c.config.initializePerSecond) * 1000) {
-			initializeClients.delete(key);
-		}
+function pruneInitializeClients(state: InitializeState, config: RateLimitConfig, t: number): void {
+	if (t - state.lastPruneAt < INITIALIZE_PRUNE_INTERVAL_MS) return;
+	state.lastPruneAt = t;
+	const idleCutoff = t - (config.initializeBurst / config.initializePerSecond) * 1000;
+	for (const [key, c] of state.clients) {
+		if (c.lastSeen < idleCutoff) state.clients.delete(key);
 	}
 }
 
@@ -345,8 +353,10 @@ export function clearSessionRateState(sessionId: string): void {
 export function _resetForTest(): void {
 	sessions.clear();
 	clients.clear();
-	initializeClients.clear();
-	lastInitializePruneAt = 0;
+	for (const state of Object.values(initializeState)) {
+		state.clients.clear();
+		state.lastPruneAt = 0;
+	}
 	configCache.clear();
 	warnedIdentityHeader = false;
 }
@@ -421,17 +431,19 @@ export function tryAdmitInitialize(
 	clientIdentity: string | undefined
 ): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
 	const config = configFor(profile);
+	const state = initializeState[profile];
 	if (config.initializePerSecond <= 0) {
-		initializeClients.clear();
+		state.clients.clear();
 		return { allowed: true };
 	}
 	const t = now();
-	pruneInitializeClients(t);
-	const key = `${profile}\n${clientIdentity ? initializeIdentity(clientIdentity) : ''}`;
-	let c = initializeClients.get(key);
+	pruneInitializeClients(state, config, t);
+	let key = clientIdentity ? initializeIdentity(clientIdentity) : SHARED_IDENTITY;
+	if (!state.clients.has(key) && state.clients.size >= MAX_INITIALIZE_IDENTITIES) key = SHARED_IDENTITY;
+	let c = state.clients.get(key);
 	if (!c) {
 		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst), lastSeen: t, config };
-		initializeClients.set(key, c);
+		state.clients.set(key, c);
 	} else {
 		c.lastSeen = t;
 		if (c.config !== config) {
@@ -445,8 +457,13 @@ export function tryAdmitInitialize(
 }
 
 function initializeIdentity(identity: string): string {
-	const address = identity.split('%')[0];
-	if (!address.includes(':') || address.includes('.')) return identity;
+	let address = identity.split('%')[0];
+	if (!address.includes(':') || /^::ffff:[\d.]+$/i.test(address)) return identity;
+	const dotted = address.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+	if (dotted) {
+		const [, prefix, a, b, c, d] = dotted;
+		address = `${prefix}${((+a << 8) | +b).toString(16)}:${((+c << 8) | +d).toString(16)}`;
+	}
 	const [head, tail] = address.split('::');
 	const headGroups = head ? head.split(':') : [];
 	const tailGroups = tail ? tail.split(':') : [];

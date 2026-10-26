@@ -262,6 +262,8 @@ describe('mcp/rateLimit', () => {
 			assert.equal(admit('2001:db8:1:3::1'), true, 'next /64');
 			assert.equal(admit('a::b:c:d:e:f:1'), true);
 			assert.equal(admit('a:0:b:c::1'), false, 'groups after :: still count toward the /64');
+			assert.equal(admit('2001:db8:5:6::192.0.2.1'), true);
+			assert.equal(admit('2001:db8:5:6::192.0.2.2'), false, 'a dotted tail is grouped like any other address');
 			assert.equal(admit('::ffff:10.0.0.9'), true, 'IPv4-mapped is keyed per address');
 			assert.equal(admit('::ffff:10.0.0.8'), true);
 		});
@@ -283,15 +285,35 @@ describe('mcp/rateLimit', () => {
 		});
 
 		it('applies a lowered limit to a live bucket without refunding spent tokens', () => {
-			envOverrides.mcp_application_rateLimit_initializePerSecond = 2;
+			envOverrides.mcp_application_rateLimit_initializePerSecond = 0.05;
 			envOverrides.mcp_application_rateLimit_initializeBurst = 40;
 			for (let i = 0; i < 40; i++) assert.equal(admit('ip'), true);
 			envOverrides.mcp_application_rateLimit_initializePerSecond = 0.1;
 			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
-			clock += 10_001; // past the config cache TTL, well inside the old 20 s refill window
-			assert.equal(admit('ip'), true, 'refilled tokens are capped at the new burst of 1');
-			clock += 500;
-			assert.equal(admit('ip'), false, 'refills at the new 0.1/s, not the old 2/s');
+			clock += 9000;
+			assert.equal(admit('ip'), false, 'old config still cached: 0.45 tokens');
+			clock += 1001;
+			// A recreated bucket would start full and admit; the reconfigured one keeps ~0.5 tokens.
+			assert.equal(admit('ip'), false);
+			clock += 5000;
+			assert.equal(admit('ip'), true, 'refills at the new 0.1/s');
+		});
+
+		it('disabling one profile leaves the other profile’s spent buckets alone', () => {
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			envOverrides.mcp_operations_rateLimit_initializePerSecond = 0;
+			assert.equal(admit('ip'), true);
+			assert.equal(admit('ip'), false);
+			assert.equal(admit('ip', 'operations'), true);
+			assert.equal(admit('ip'), false, 'still exhausted after the disabled profile ran');
+		});
+
+		it('past the identity cap, new identities share the no-identity bucket', () => {
+			envOverrides.mcp_application_rateLimit_initializeBurst = 1;
+			for (let i = 0; i < 100_000; i++) admit(`id-${i}`);
+			assert.equal(admit('newcomer-1'), true);
+			assert.equal(admit('newcomer-2'), false, 'shares the overflow bucket');
+			assert.equal(admit('id-5'), false, 'existing buckets are kept, not evicted');
 		});
 
 		it('sweeps idle buckets from initialize itself, not from tools/call', () => {
