@@ -50,19 +50,22 @@ describe('PR preview metadata (harper#3048)', () => {
 				validator.deployComponentValidator({ ...base, preview: preview(1, { expiresAt: 1893456000000 }) }),
 				undefined
 			);
-			assert.equal(validator.deployComponentValidator({ ...base, preview: { app: 'shop', pr: 1 } }), undefined);
+			const dated = { app: 'shop', pr: 1, expiresAt: 1893456000000 };
+			assert.equal(validator.deployComponentValidator({ ...base, preview: dated }), undefined);
 		});
 
+		const dated = { expiresAt: 1893456000000 };
 		for (const [description, value] of [
-			['no app', { pr: 1 }],
-			['no PR number', { app: 'shop' }],
-			['a PR number that is not a positive integer', { app: 'shop', pr: '12' }],
-			['a sha that is not hex', { app: 'shop', pr: 1, sha: 'not-a-sha' }],
+			['no app', { pr: 1, ...dated }],
+			['no PR number', { app: 'shop', ...dated }],
+			['a PR number that is not a positive integer', { app: 'shop', pr: '12', ...dated }],
+			['a sha that is not hex', { app: 'shop', pr: 1, sha: 'not-a-sha', ...dated }],
 			['an expiresAt that is not a date', { app: 'shop', pr: 1, expiresAt: 'tomorrow' }],
-			['an unknown field', { app: 'shop', pr: 1, owner: 'x' }],
-			['an app the project does not belong to', { app: 'docs', pr: 1 }],
-			['another PR number than the project names', { app: 'shop', pr: 2 }],
-			['an app that is only a prefix of the name', { app: 'shop-pr', pr: 1 }],
+			['no expiresAt, which no sweep would ever reach', { app: 'shop', pr: 1 }],
+			['an unknown field', { app: 'shop', pr: 1, owner: 'x', ...dated }],
+			['an app the project does not belong to', { app: 'docs', pr: 1, ...dated }],
+			['another PR number than the project names', { app: 'shop', pr: 2, ...dated }],
+			['an app that is only a prefix of the name', { app: 'shop-pr', pr: 1, ...dated }],
 		]) {
 			it(`refuses ${description}`, () => assert.ok(validator.deployComponentValidator({ ...base, preview: value })));
 		}

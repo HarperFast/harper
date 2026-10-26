@@ -547,7 +547,7 @@ effect, which publishes between them. A preview's payload is reclaimed after a s
 
 ### PR previews record what they came from, and expire
 
-A deploy's optional `preview` metadata (`app`, `pr`, `repository`, `branch`, `sha`, `expiresAt`; harper#3048) is
+A deploy's optional `preview` metadata (`app`, `pr`, `repository`, `branch`, `sha`, and a required `expiresAt`; harper#3048) is
 written into the candidate's `.harper-deployment.json` beside its id, so it belongs to the release: a staged build's
 activation and a canary restore bring back the metadata that build was deployed with, and a peer writes the same
 from the replicated request. It is also kept on the `hdb_deployment` row. `get_components` reads it from each live

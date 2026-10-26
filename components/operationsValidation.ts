@@ -630,7 +630,8 @@ function deployComponentValidator(req) {
 			sha: Joi.string()
 				.pattern(/^[0-9a-f]{7,64}$/i)
 				.optional(),
-			expiresAt: Joi.alternatives().try(Joi.number().integer().min(0).strict(), Joi.string().isoDate()).optional(),
+			// Required: nothing else would ever drop a preview a caller forgot to date.
+			expiresAt: Joi.alternatives().try(Joi.number().integer().min(0).strict(), Joi.string().isoDate()).required(),
 		})
 			.unknown(false)
 			// The cap counts previews by `app`, so a preview's name has to say which application it is a preview of.
