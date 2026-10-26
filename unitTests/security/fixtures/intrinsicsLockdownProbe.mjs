@@ -82,6 +82,7 @@ function probe(phase) {
 		shadow,
 		unsealed: LOCKED_NAMES.filter((name) => {
 			const intrinsic = globalThis[name];
+			if (intrinsic === undefined) return false;
 			return (
 				!Object.isSealed(intrinsic) || (intrinsic.prototype !== undefined && !Object.isSealed(intrinsic.prototype))
 			);
@@ -108,6 +109,7 @@ function probe(phase) {
 
 const originalWeakRef = WeakRef;
 globalThis.WeakRef = class ReplacedWeakRef extends WeakRef {};
+delete globalThis.FinalizationRegistry;
 let markLoaded;
 const whenLoaded = new Promise((resolve) => (markLoaded = resolve));
 lockDownIntrinsics(workerData.mode, whenLoaded);

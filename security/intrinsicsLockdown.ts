@@ -1,28 +1,29 @@
 export type Lockdown = 'none' | 'freeze' | 'freeze-after-load' | 'seal' | 'seal-after-load' | 'ses';
 
-const currentIntrinsics = () => [
-	Object,
-	Array,
-	Promise,
-	BigInt,
-	String,
-	Number,
-	Boolean,
-	Symbol,
-	RegExp,
-	Date,
-	Map,
-	Set,
-	WeakMap,
-	WeakSet,
-	Math,
-	JSON,
-	Reflect,
-	Atomics,
-	SharedArrayBuffer,
-	WeakRef,
-	FinalizationRegistry,
+const INTRINSIC_NAMES = [
+	'Object',
+	'Array',
+	'Promise',
+	'BigInt',
+	'String',
+	'Number',
+	'Boolean',
+	'Symbol',
+	'RegExp',
+	'Date',
+	'Map',
+	'Set',
+	'WeakMap',
+	'WeakSet',
+	'Math',
+	'JSON',
+	'Reflect',
+	'Atomics',
+	'SharedArrayBuffer',
+	'WeakRef',
+	'FinalizationRegistry',
 ];
+const currentIntrinsics = () => INTRINSIC_NAMES.map((name) => globalThis[name]);
 // A component may replace one of these globals while it loads; literals and async functions keep using the original.
 const realmIntrinsics = currentIntrinsics();
 

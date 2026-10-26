@@ -49,7 +49,7 @@ const UNLOCKED = {
 	sloppyAdd: each(TARGETS, 'added'),
 	pollutedVisible: true,
 	shadow: each(SHADOWS, true),
-	unsealed: ALL_LOCKED,
+	unsealed: ALL_LOCKED.filter((name) => name !== 'FinalizationRegistry'),
 	originalOfReplacedSealed: false,
 	functionSealed: false,
 	functionPrototypeExtensible: true,
