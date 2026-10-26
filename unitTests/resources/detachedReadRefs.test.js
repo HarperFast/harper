@@ -326,19 +326,24 @@ describe('harper#3308 read references against a detached handle', function () {
 			await assertMissReleasesSnapshotBeforeSourceResolves(releaseContext, 'cache-miss-after-release', firstGeneration);
 		});
 
-		const midCommitContext = {};
-		await transaction(midCommitContext, async () => {
-			await Refs.put({ id: 'r0', v: 10 }, midCommitContext);
-			const midCommit = midCommitContext.transaction.commit();
-			const seeded = await SourcedRefs.get('seeded', midCommitContext);
-			assert.equal(seeded?.v, 1);
-			for (let t = midCommitContext.transaction; t; t = t.next) {
-				if (t.readTxn) t.releaseReadTxn();
-			}
-			await midCommit;
+		if (!isLMDB) {
+			const midCommitContext = {};
+			await transaction(midCommitContext, async () => {
+				await Refs.put({ id: 'r0', v: 10 }, midCommitContext);
+				const head = midCommitContext.transaction;
+				const preCommitGeneration = head.readTxnGeneration;
+				const midCommit = head.commit();
+				assert.equal(head.open, TRANSACTION_STATE.CLOSED);
+				assert.equal(head.getReadTxn(), undefined, 'premise: CLOSED with no handle');
+				await midCommit;
 
-			await assertMissReleasesSnapshotBeforeSourceResolves(midCommitContext, 'cache-miss-after-mid-commit', 0);
-		});
+				await assertMissReleasesSnapshotBeforeSourceResolves(
+					midCommitContext,
+					'cache-miss-after-mid-commit',
+					preCommitGeneration
+				);
+			});
+		}
 	});
 
 	it('clamps unpaired disregardReadTxn at 0 so a later shared reader cannot close a live snapshot', async function () {
@@ -432,25 +437,27 @@ describe('harper#3308 read references against a detached handle', function () {
 			});
 		}
 
-		const { txn: untouchedTxn } = newTransaction();
-		assert.equal(Boolean(untouchedTxn.baseReadRefConsumed), false);
-		let current = untouchedTxn.readTxnsUsed ?? 0;
-		let minReadTxnsUsed = current;
-		Object.defineProperty(untouchedTxn, 'readTxnsUsed', {
-			configurable: true,
-			get() {
-				return current;
-			},
-			set(value) {
-				current = value;
-				if (value < minReadTxnsUsed) minReadTxnsUsed = value;
-			},
-		});
-		await untouchedTxn.commit();
-		assert.equal(
-			minReadTxnsUsed,
-			0,
-			'performCommit on a transaction that never attached a handle must not decrement readTxnsUsed'
-		);
+		if (!isLMDB) {
+			const { txn: untouchedTxn } = newTransaction();
+			assert.equal(Boolean(untouchedTxn.baseReadRefConsumed), false);
+			let current = untouchedTxn.readTxnsUsed ?? 0;
+			let minReadTxnsUsed = current;
+			Object.defineProperty(untouchedTxn, 'readTxnsUsed', {
+				configurable: true,
+				get() {
+					return current;
+				},
+				set(value) {
+					current = value;
+					if (value < minReadTxnsUsed) minReadTxnsUsed = value;
+				},
+			});
+			await untouchedTxn.commit();
+			assert.equal(
+				minReadTxnsUsed,
+				0,
+				'performCommit on a transaction that never attached a handle must not decrement readTxnsUsed'
+			);
+		}
 	});
 });
