@@ -7032,9 +7032,6 @@ export function makeTable(options): TableResourceClass {
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					record = entry.deref ? entry.deref() : entry.value;
-					if (entry.metadataFlags & INVALIDATED && context.replicateFrom === false && canSkip && entry.residencyId) {
-						return SKIP;
-					}
 					if (checkLoaded && entry.metadataFlags & REPLICA && record) refreshReplicaOnRead(entry);
 					if (!record && (entry.key === undefined || entry.deref)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
@@ -7052,6 +7049,9 @@ export function makeTable(options): TableResourceClass {
 						);
 						if ((entry as any)?.then) return (entry as any).then(transform.bind(this));
 						record = entry?.value;
+					}
+					if (context?.replicateFrom === false && canSkip && entry?.metadataFlags & INVALIDATED) {
+						return SKIP;
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source

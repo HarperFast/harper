@@ -4,10 +4,11 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { ServerError } = require('#src/utility/errors/hdbError');
 const { INVALIDATED } = require('#src/resources/Table');
 const { server } = require('#src/server/Server');
+const { SKIP } = require('@harperfast/extended-iterable');
 
 describe('Reads of residency stubs', function () {
 	this.timeout(10_000);
@@ -57,6 +58,100 @@ describe('Reads of residency stubs', function () {
 		const records = [];
 		for await (const record of Records.search({ conditions, select })) records.push(record);
 		return records;
+	}
+
+	it('returns complete rows from an instance search without a context', async () => {
+		const Rows = table({
+			database: 'test',
+			table: 'ContextlessLocalReads',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Rows.put('local', { id: 'local' });
+		const rows = [];
+		for await (const row of new Rows().search({ conditions: [] })) rows.push({ ...row });
+		assert.deepStrictEqual(rows, [{ id: 'local' }]);
+	});
+
+	for (const shape of ['key', 'lazy', 'entry', 'missing']) {
+		it(`skips a synchronous local-only ${shape} after loading its metadata`, async () => {
+			const entry =
+				shape === 'missing'
+					? 'missing'
+					: shape === 'key'
+						? 'record'
+						: shape === 'lazy'
+							? { key: 'record', deref: () => undefined }
+							: Records.primaryStore.getEntry('record');
+			const transform = Records.transformEntryForSelect(
+				undefined,
+				{ replicateFrom: false },
+				undefined,
+				null,
+				true,
+				true
+			);
+			assert.equal(transform.call({ isSync: true }, entry), SKIP);
+			assert.deepEqual(calls, []);
+		});
+	}
+
+	for (const residencyId of [123, undefined]) {
+		for (const indexed of [false, true]) {
+			for (const select of [undefined, ['id', 'name']]) {
+				it(`skips local-only invalidations (${residencyId ? 'residency' : 'cache'}, ${indexed ? 'index' : 'scan'}, ${select ? 'projection' : 'full'})`, async () => {
+					const Rows = table({
+						database: 'test',
+						table: `LocalOnlyReads${residencyId ?? 0}${indexed}${Boolean(select)}`,
+						attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+						audit: true,
+					});
+					let loads = 0;
+					Rows.sourcedFrom({
+						get(id) {
+							loads++;
+							return { id, name: 'indexed', body: 'source' };
+						},
+					});
+					for (const id of ['a', 'b', 'c']) {
+						await Rows.put(id, { id, name: 'indexed', body: 'old' });
+						const context = {};
+						await transaction(context, async () => {
+							const resource = await Rows.getResource(id, context, { ensureLoaded: false });
+							resource._writeInvalidate(id, { id, name: 'indexed' }, { residencyId });
+						});
+					}
+					const snapshot = () =>
+						Array.from(
+							Rows.primaryStore.getRange({ versions: true }),
+							({ key, value, metadataFlags, residencyId }) => ({
+								key,
+								value: { ...value },
+								metadataFlags,
+								residencyId,
+							})
+						);
+					const before = snapshot();
+					assert.ok(before.every((entry) => entry.metadataFlags & INVALIDATED));
+					const target = { conditions: indexed ? [{ attribute: 'name', value: 'indexed' }] : [], select, limit: 1 };
+					const read = async () => {
+						const rows = [];
+						for await (const row of Rows.search(target, { replicateFrom: false })) rows.push({ ...row });
+						return rows;
+					};
+					assert.deepStrictEqual(await read(), []);
+					assert.equal(loads, 0);
+					assert.deepStrictEqual(snapshot(), before);
+					const local = { id: 'z', name: 'indexed', body: 'complete' };
+					await Rows.put('z', local);
+					assert.deepStrictEqual(await read(), [select ? { id: 'z', name: 'indexed' } : local]);
+					assert.equal(loads, 0);
+					const remote = [];
+					for await (const row of Rows.search({ ...target, select: undefined })) remote.push(row);
+					assert.equal(remote[0].body, 'source');
+					assert.ok(loads > 0);
+				});
+			}
+		}
 	}
 
 	it('propagates the original source error from a single-record read', async () => {
