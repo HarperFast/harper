@@ -626,7 +626,9 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 
 **Remediating a node damaged before this was enforced.** The fix is forward-only. A node that already lost an attribute's catalog descriptor still has `schemaDefined: true` persisted, so the handshake's honor-local guard refuses to re-add the attribute from any peer and `search_by_value` keeps failing with `unknown attribute`; the recurring `Schema for '<db>.<table>' is defined locally, but attribute '<name>: <type>' from '<node>' does not match local attribute which does not exist` warn is the only detection signal. Local schema authoring is now the only path permitted to write that descriptor back, so remediation is to re-declare the attribute locally on the damaged node — the `create_attribute` operation, or redeploying the component whose `@table` declares it.
 
-**The primary key is never removable.** `table()` re-prepends an omitted primary descriptor, so a declaration cannot carry a removal: that intent exists only in `Table.removeAttributes(names)`, which rejects any list naming `primaryKey` (ClientError 400) before it filters or calls `table()`, so a mixed list changes nothing. `drop_attribute` repeats the check against the resolved table's `primaryKey`. Without it the removal "succeeded" as a no-op and `ResourceBridge.dropAttribute` then stripped the key property from every dynamic-table record. Enforced by `unitTests/resources/dropAttributePrimaryKey.test.js` and the primary-key case in `integrationTests/apiTests/configuration.test.mjs`.
+## The primary key is never removable (`Table.removeAttributes`)
+
+`table()` re-prepends an omitted primary descriptor, so a declaration cannot carry a removal; only `Table.removeAttributes(names)` does, and it rejects any list naming `primaryKey` (ClientError 400) before changing anything. `drop_attribute` checks first. Enforced by `unitTests/resources/dropAttributePrimaryKey.test.js`.
 
 ## A table is invisible to catalog scans until its create is complete (`databases.ts` `table()` / `initStores`)
 

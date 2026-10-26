@@ -81,6 +81,20 @@ describe('the primary key cannot be dropped', () => {
 			});
 		}
 
+		it('rejects the primary key before the bridge runs', async () => {
+			await createDynamicTable('DynamicDropKeyEarly');
+			let bridgeCalls = 0;
+			harperBridge.dropAttribute = () => {
+				bridgeCalls++;
+			};
+			try {
+				await assert.rejects(() => dropAttribute('DynamicDropKeyEarly', 'id'), isPrimaryKeyRejection);
+			} finally {
+				delete harperBridge.dropAttribute;
+			}
+			assert.strictEqual(bridgeCalls, 0);
+		});
+
 		it('still drops an ordinary attribute and strips it from the stored records', async () => {
 			const Table = await createDynamicTable('DynamicDropOrdinary');
 			const result = await dropAttribute('DynamicDropOrdinary', 'price');

@@ -312,14 +312,7 @@ export async function dropAttribute(dropAttributeObject: any) {
 	if (
 		dropAttributeObject.attribute === getDatabases()[dropAttributeObject.schema][dropAttributeObject.table].primaryKey
 	) {
-		throw handleHDBError(
-			new Error(),
-			'You cannot drop a hash attribute',
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
+		throw new ClientError('You cannot drop a hash attribute');
 	}
 
 	if (hdbTerms.TIME_STAMP_NAMES.indexOf(dropAttributeObject.attribute) >= 0) {
