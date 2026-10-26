@@ -8941,10 +8941,13 @@ export function makeTable(options): TableResourceClass {
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
 							attribute.resolve.resolveKeys = (object, context) => searchRelated(object, context).asArray;
-							attribute.resolve.loadEntries = (object, context) =>
-								when(attribute.resolve.resolveKeys(object, context), (keys) =>
-									loadRelatedEntries(keys, attribute.elements.definition.tableClass, context)
-								);
+							attribute.resolve.loadEntries = (object, context) => {
+								const keys = attribute.resolve.resolveKeys(object, context);
+								const relatedTable = attribute.elements.definition.tableClass;
+								return keys?.then
+									? keys.then((keys) => loadRelatedEntries(keys, relatedTable, context))
+									: loadRelatedEntries(keys, relatedTable, context);
+							};
 							attribute.resolve.toMany = true;
 							attribute.set = () => {
 								// ideally we want to throw an error here, but if the user had (accidently?) set a property into storage
@@ -10123,6 +10126,8 @@ export function makeTable(options): TableResourceClass {
 	// must settle to what the relationship resolver returns with returnEntry
 	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
 		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
+		// as in loadLocalRecord: the query ended, so read nothing more through its finished transaction
+		if (options.transaction?.isDone) return settleRelatedEntries([], filterMissing);
 		let pending = false;
 		const entries = keys.map((key) => {
 			if (key && key.key !== undefined) return key;
@@ -10138,10 +10143,9 @@ export function makeTable(options): TableResourceClass {
 		return filterMissing ? entries.filter(exists) : entries;
 	}
 	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
-		const entry = relatedTable.primaryStore.getEntry(key, {
-			transaction: txnForContext(context).getReadTxn(),
-			async: true,
-		});
+		const transaction = txnForContext(context).getReadTxn();
+		if (transaction?.isDone) return;
+		const entry = relatedTable.primaryStore.getEntry(key, { transaction, async: true });
 		return entry?.then ? entry.then(freezeRelatedEntry) : freezeRelatedEntry(entry);
 	}
 	function freezeRelatedEntry(entry: any) {

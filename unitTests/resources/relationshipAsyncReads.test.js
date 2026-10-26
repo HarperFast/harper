@@ -155,8 +155,8 @@ describe('Queries read related records asynchronously', () => {
 			parentReads = instrumentReads(ColdParent, true);
 		});
 		afterEach(function () {
-			childReads.restore();
-			parentReads.restore();
+			childReads?.restore();
+			parentReads?.restore();
 		});
 
 		describe('select', function () {

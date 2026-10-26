@@ -1425,6 +1425,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 			const readOptions = { transaction, async: true };
 			return {
 				next() {
+					if (scan.closed) return { done: true, value: undefined };
 					if (joinedIterator) return joinedIterator.next();
 					scanned ??= scanRelated(
 						rightIterable,
@@ -1473,11 +1474,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 	return results;
 }
 const entryValue = (entry) => entry?.value;
-/**
- * Collect a join's related search under async iteration: each related record is read through the async-capable path
- * (a cold read waits on its Promise instead of blocking the worker) and passed to `add` when it satisfies the join's
- * additional filters. Stops at the first step after the join iterator is returned.
- */
+// A join's related search under async iteration: a cold related read waits on its Promise instead of blocking
 async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean }) {
 	const iterator = rightIterable[Symbol.asyncIterator]();
 	let done = false;
@@ -1491,12 +1488,18 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: { close
 			}
 			const entry = iteration.value;
 			let record = readRecord(entry);
-			if (record?.then) record = await record;
+			if (record?.then) {
+				record = await record;
+				if (scan.closed) return;
+			}
 			const filters = (joined as any).filters;
 			if (filters) {
 				if (record == null) continue;
 				let matches = matchesFilters(filters, record, undefined, false);
-				if (matches?.then) matches = await matches;
+				if (matches?.then) {
+					matches = await matches;
+					if (scan.closed) return;
+				}
 				if (!matches) continue;
 			}
 			add(entry, record);
@@ -1580,7 +1583,8 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 		const iterator: any = {
 			return() {
 				scan.closed = true;
-				return joinedIterator?.return?.();
+				joinedIterator?.return?.();
+				return { done: true, value: undefined };
 			},
 			throw() {
 				return joinedIterator?.throw?.();
@@ -1590,6 +1594,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 			let scanned: Promise<void>;
 			const readOptions = { transaction, async: true };
 			iterator.next = () => {
+				if (scan.closed) return { done: true, value: undefined };
 				if (idIterator) return nextJoined();
 				if (!scanned) {
 					defineFromRecord();
