@@ -4,6 +4,7 @@ import { contextStorage, transaction } from '../transaction.ts';
 import type { Context } from '../ResourceInterface.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { CREDENTIAL_KEY } from '../../utility/credentials.ts';
 import { canonicalJson, isAllowedValue, isObjectSchema } from './decision.ts';
 import type {
 	DecisionLeaf,
@@ -450,8 +451,6 @@ function withoutRoutingAndPricing(config: unknown): unknown {
 	const { fallback: _fallback, pricing: _pricing, ...rest } = config as Record<string, unknown>;
 	return rest;
 }
-
-const CREDENTIAL_KEY = /^(apiKey|accessKeyId|authorization|.*secret.*|.*password.*|.*credential.*|.*key|.*token)$/i;
 
 function withoutCredentials(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(withoutCredentials);
