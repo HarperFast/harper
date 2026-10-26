@@ -111,6 +111,13 @@ const RELEASE_FIELDS = ['deployment_id', 'project', 'status', 'activated_from', 
  * one (installed before 5.3, by `add_component`, or from a `file:` link) is described by the project's newest
  * released deployment, one bounded search per released status, so no run of unreleased deploys can hide it.
  */
+/** A deployment's record by id, without its payload; undefined when this node has none. */
+export async function deploymentRecord(deploymentId: unknown): Promise<any | undefined> {
+	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
+	if (!table || typeof deploymentId !== 'string') return undefined;
+	return stripBlob(await table.get(deploymentId)) ?? undefined;
+}
+
 export async function deploymentOfLiveRelease(
 	project: string,
 	liveDeploymentId: string | undefined

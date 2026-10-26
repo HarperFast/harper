@@ -316,11 +316,32 @@ jobs:
 				deployIf,
 				`    if: github.event.action == 'opened' ||${sameRepository.slice(3)}\n`
 			);
-			assert.deepStrictEqual(check(either).unverified, [
-				'that job "deploy"\'s `if` excludes fork pull requests on every side of its ||',
-			]);
+			assert.deepStrictEqual(check(either).unverified, ['that job "deploy"\'s `if` excludes fork pull requests']);
 			const needs = starter.replace(deployIf, '    needs: [gate]\n');
 			assert.match(check(needs).unverified.join(), /a job "deploy" needs \(gate\) excludes fork pull requests/);
+		});
+
+		it('cannot read a condition that names the head repository without plainly admitting only it', () => {
+			for (const condition of [
+				'${{ !(github.event.pull_request.head.repo.full_name == github.repository) }}',
+				'(github.event.pull_request.head.repo.full_name == github.repository) == false',
+				'${{ !!github.event.pull_request.head.repo.fork }}',
+			]) {
+				const negated = starter.replace(deployIf, `    if: ${condition}\n`);
+				assert.deepStrictEqual(check(negated), {
+					problems: [],
+					unverified: ['that job "deploy"\'s `if` excludes fork pull requests'],
+				});
+			}
+		});
+
+		it('checks every job that holds the identity token, whatever its environment', () => {
+			const expression = starter.replace('    environment: preview-cleanup\n', '    environment: ${{ inputs.env }}\n');
+			const unguarded = expression.replace(
+				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				''
+			);
+			assert.match(problemsOf(unguarded), /job "cleanup" runs for pull requests from forks/);
 		});
 
 		it('refuses a workflow in which no job in the environment may request an identity token', () => {

@@ -204,6 +204,7 @@ export async function runPreviewCommand(argv: readonly string[] = process.argv):
 				const { checkPreviewReachable } = await import('./previewReachability.ts');
 				const outcome = await checkPreviewReachable(url);
 				if (!outcome.reachable) console.error(chalk.yellow(`warning: the preview deployed, but ${outcome.reason}`));
+				else if (outcome.status! >= 500) console.error(chalk.yellow(`warning: the preview answered ${outcome.status}`));
 			}
 			return `Preview: ${url}`;
 		}

@@ -232,5 +232,37 @@ describe('deploy_component under a component grant (harper#3046)', function () {
 			await activate(3, due.deployment_id);
 			assert.ok((await listLocalPreviews()).some((entry) => entry.component === 'pe-pr-3'));
 		});
+
+		it('checks a release that is already live before activating it again', async () => {
+			const live = await deploy({ project: 'pf-pr-1', host: 'pf-1.app.example.com' }, superUser);
+			await assert.rejects(
+				deployComponent({
+					operation: 'deploy_component',
+					project: 'pf-pr-1',
+					deployment_id: live.deployment_id,
+					hdb_user: previewUser(previewGrant('pf')),
+				}),
+				{ statusCode: 403, message: /as a PR preview/ }
+			);
+		});
+
+		it('refuses to make a preview live once its deployer was revoked during the deploy', async () => {
+			const { getUserWithRole } = require('#src/security/user');
+			const permission = { super_user: false, component_deploy: previewGrant('pg') };
+			const seeded = (active) =>
+				testUtils.seedUsers([{ username: 'pg-ci', active, role: { id: 'pg-ci', role: 'pg-ci', permission } }]);
+			await seeded(true);
+			const deployer = getUserWithRole('pg-ci');
+			await seeded(false);
+			try {
+				await assert.rejects(
+					deploy({ project: 'pg-pr-1', host: 'pg-1.app.example.com', preview: metadata('pg', 1) }, deployer),
+					{ statusCode: 403, message: /changed while it deployed/ }
+				);
+				assert.ok(!(await listLocalPreviews()).some((entry) => entry.component === 'pg-pr-1'));
+			} finally {
+				await testUtils.seedUsers();
+			}
+		});
 	});
 });

@@ -1,16 +1,10 @@
 /**
- * `harper preview setup` and `harper preview teardown` against a real Harper, through the real CLI (harper#3042).
+ * Invariant: setup leaves an identity that can deploy previews of its application within the grant's bounds, and
+ * nothing else (harper#3042).
  *
- * Invariant: setup leaves an identity that can deploy previews of its application and nothing else: a preview
- * deploys through `harper preview deploy` as the created user, within the grant's host suffix, cap and maximum time
- * to live, while a deploy of the application itself, of another application's preview, or past the cap is refused.
- * A workflow file that would hand the identity to a fork stops setup before it writes. Teardown drops the preview and
- * removes the identity.
- *
- * `gh` is kept off PATH and the repository doesn't exist, so the GitHub lookup finds nothing and the given
- * `repository_id=` is used; without `gh` the repository variable cannot be set, so setup exits 1 after the cluster
- * part, and says so. The OIDC exchange itself is covered by unitTests/security/authn/oidc/tokenExchange.test.js; here
- * the created user signs in with a password the test sets.
+ * `gh` is kept off PATH and the repository doesn't exist, so the lookup finds nothing and `repository_id=` is used;
+ * without `gh` the repository variable cannot be set, so setup exits 1 after the cluster part. The OIDC exchange is
+ * covered by unitTests/security/authn/oidc/tokenExchange.test.js; here the created user signs in with a password.
  *
  * Run:
  *   npm run test:integration -- "integrationTests/deploy/preview-setup.test.ts"

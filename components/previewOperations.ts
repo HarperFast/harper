@@ -1,10 +1,4 @@
-// `enable_previews` / `disable_previews` / `get_preview_policy`: an application's PR-preview identity and policy, set
-// up and removed by the cluster so every client (the CLI, Studio's preview panel) gets the same records. Why these are
-// operations rather than client compositions, and what each guarantees: security/DESIGN.md, "PR previews are enabled
-// by the cluster".
-//
-// The records are system-table rows, which harper-pro replicates, so none of this calls replicateOperation; the
-// preview drops in disable are replicated drop_component calls, which replicate themselves.
+// What these guarantee, and why they are operations: security/DESIGN.md, "PR previews are enabled by the cluster".
 
 import Joi from 'joi';
 import { randomBytes } from 'node:crypto';
@@ -18,6 +12,7 @@ import { PROJECT_NAME_PATTERN } from '../utility/componentNames.ts';
 import {
 	CI_PREVIEW_CLEANUP_OPERATIONS,
 	CI_PREVIEW_OPERATIONS,
+	DEFAULT_PREVIEW_MAX_TTL_DAYS,
 	GITHUB_ACTIONS_ISSUER,
 	PREVIEW_CLEANUP_ENVIRONMENT,
 	PREVIEW_ENVIRONMENT,
@@ -45,13 +40,17 @@ import {
 	dropOidcTrust,
 	listOidcTrust,
 } from '../security/authn/oidc/trustPolicyOperations.ts';
-import { previewExpiresAtMs } from './deploymentProvenance.ts';
 import { listLocalPreviews } from './previews.ts';
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
 import { dropComponent } from './operations.ts';
+import { deploymentRecord } from './deploymentOperations.ts';
+import { handleListReleases } from './releaseOperations.ts';
+import { REPLICATION_NOT_IMPLEMENTED, server } from '../server/Server.ts';
+import { getThisNodeName } from '../server/nodeName.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const ENDED_DEPLOYMENT_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
+const PEER_DROP_TIMEOUT_MS = 5 * 60 * 1000;
 
 function requireSuperUser(req: any): void {
 	if (!req?.hdb_user?.role?.permission?.super_user) {
@@ -66,7 +65,6 @@ function validate(validation: any): void {
 	if (validation) throw new ClientError(validation.message);
 }
 
-/** The shared derivations throw an Error carrying statusCode 400; here it is a client error like any other. */
 function asClientError<T>(derive: () => T): T {
 	try {
 		return derive();
@@ -82,10 +80,13 @@ function previewNamesOf(req: any): PreviewNames {
 	return asClientError(() => derivePreviewNames(req.app));
 }
 
-/** One enable or disable of an application at a time on this node; a writer on another node is not excluded. */
+/**
+ * One enable or disable at a time on this node, of any application: two applications sharing a workflow file would
+ * otherwise both pass the overlap check. A writer on another node is not excluded.
+ */
 function withPreviewEnablementLock<T>(app: string, run: () => Promise<T>): Promise<T> {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT) as string;
-	return withComponentPreparationLock(join(componentsRoot, `.preview-enablement-${app}`), run, {
+	return withComponentPreparationLock(join(componentsRoot, '.preview-enablement'), run, {
 		purpose: `enabling or disabling previews of ${app}`,
 	});
 }
@@ -122,10 +123,7 @@ export function desiredPreviewIdentity(req: EnableRequest): { names: PreviewName
 				repository_id: Joi.alternatives()
 					.try(Joi.string().pattern(/^[1-9]\d{0,19}$/), Joi.number().integer().min(1).strict())
 					.required(),
-				branch: Joi.string()
-					.pattern(/^(?!-)[^\s~^:?*[\\]+$/)
-					.max(255)
-					.required(),
+				branch: Joi.string().max(255).required(),
 				audience: Joi.string().min(1).max(512).required(),
 				workflow: Joi.string().max(512),
 				environment: Joi.string().min(1).max(255),
@@ -139,6 +137,7 @@ export function desiredPreviewIdentity(req: EnableRequest): { names: PreviewName
 	const names = asClientError(() => derivePreviewNames(req.app));
 	const workflow = asClientError(() => canonicalWorkflowPath(req.workflow ?? PREVIEW_WORKFLOW));
 	const branch = req.branch.replace(/^refs\/heads\//, '');
+	if (!/^(?!-)[^\s~^:?*[\\]+$/.test(branch)) throw new ClientError(`'branch' is not a branch name: ${req.branch}`);
 	const environment = req.environment ?? PREVIEW_ENVIRONMENT;
 	if (environment === PREVIEW_CLEANUP_ENVIRONMENT) {
 		throw new ClientError(
@@ -158,7 +157,7 @@ export function desiredPreviewIdentity(req: EnableRequest): { names: PreviewName
 			...(req.dataMode !== 'shared' && { branchedDatabases: 'required' as const }),
 			preview: 'required',
 			...(req.maxPreviews !== undefined && { maxPreviews: req.maxPreviews }),
-			...(req.maxTtlDays !== undefined && { maxTtlDays: req.maxTtlDays }),
+			maxTtlDays: req.maxTtlDays ?? DEFAULT_PREVIEW_MAX_TTL_DAYS,
 		},
 	};
 	const grantError = componentGrantError(grant);
@@ -193,6 +192,42 @@ export function desiredPreviewIdentity(req: EnableRequest): { names: PreviewName
 	return { names, desired };
 }
 
+/** Enabled policies other than this identity's own that would match the same runs as one of `wanted`. */
+function rivalPolicies(names: PreviewNames, policies: any[], wanted: DesiredPolicy[]): string[] {
+	const ours = new Set([names.policy, names.cleanupPolicy]);
+	return wanted.flatMap((policy) => {
+		const rival = policies.find(
+			(candidate) => !ours.has(candidate?.id) && candidate?.enabled !== false && policiesOverlap(candidate, policy)
+		);
+		return rival
+			? [
+					`Trust policy "${rival.id}" would also match the runs "${policy.id}" is for, and the exchange takes ` +
+						`whichever comes first by id. Give this application its own workflow file (workflow=).`,
+				]
+			: [];
+	});
+}
+
+/** Why `role` is not one `enable_previews` wrote for these names, if it is not. */
+function managedRoleProblem(names: PreviewNames, role: any): string | undefined {
+	const permission = role?.permission ?? {};
+	const grant = permission.component_deploy;
+	const otherKeys = Object.keys(permission).filter(
+		(key) => !['super_user', 'operations', 'component_deploy'].includes(key)
+	);
+	if (
+		permission.super_user === true ||
+		otherKeys.length > 0 ||
+		!Array.isArray(grant?.names) ||
+		grant.names.length !== 1 ||
+		grant.names[0] !== names.components ||
+		grant.constraints?.preview !== 'required'
+	) {
+		return `role "${names.role}" is not a preview role for ${names.components} alone`;
+	}
+	return undefined;
+}
+
 async function listPolicies(req: any): Promise<any[]> {
 	return (await listOidcTrust({ hdb_user: req.hdb_user, operation: 'list_oidc_trust' })).policies as any[];
 }
@@ -207,18 +242,7 @@ export async function enablePreviews(req: any) {
 			desired,
 			(id) => `Disable previews of ${req.app} (disable_previews) or drop it (drop_oidc_trust id=${id}) first.`
 		);
-		const ours = new Set([names.policy, names.cleanupPolicy]);
-		for (const wanted of desired.policies) {
-			const rival = policies.find(
-				(policy) => !ours.has(policy?.id) && policy?.enabled !== false && policiesOverlap(policy, wanted)
-			);
-			if (rival) {
-				plan.conflicts.push(
-					`Trust policy "${rival.id}" would also match the runs "${wanted.id}" is for, and the exchange takes ` +
-						`whichever comes first by id. Give this application its own workflow file (workflow=).`
-				);
-			}
-		}
+		plan.conflicts.push(...rivalPolicies(names, policies, desired.policies));
 		if (plan.conflicts.length > 0) {
 			throw new ClientError(
 				`Nothing was changed.\n${plan.conflicts.map((conflict) => `  - ${conflict}`).join('\n')}`,
@@ -236,7 +260,6 @@ export async function enablePreviews(req: any) {
 				username: names.user,
 				role: names.role,
 				active: true,
-				// Nothing signs in with it: runs authenticate through the trust policies.
 				password: randomBytes(32).toString('base64url'),
 			});
 			created.push(`user ${names.user}`);
@@ -244,12 +267,17 @@ export async function enablePreviews(req: any) {
 		for (const [index, wanted] of desired.policies.entries()) {
 			if (plan.policies[index] !== 'create') continue;
 			// add_oidc_trust replaces, so a policy written since the listing (by hand, or from another node) would be
-			// overwritten; reading again narrows that to the time between this read and the write.
-			if ((await listPolicies(req)).some((policy) => policy?.id === wanted.id)) {
-				throw new ClientError(
-					`Trust policy "${wanted.id}" was created while previews of ${req.app} were being enabled. Enable them again to check it.`,
-					HTTP_STATUS_CODES.CONFLICT
-				);
+			// overwritten, and one that matches the same runs would leave which identity a run gets to the ids. Reading
+			// again narrows both to the time between this read and the write.
+			const now = await listPolicies(req);
+			const raced = [
+				...(now.some((policy) => policy?.id === wanted.id)
+					? [`Trust policy "${wanted.id}" was created while previews of ${req.app} were being enabled.`]
+					: []),
+				...rivalPolicies(names, now, [wanted]),
+			];
+			if (raced.length > 0) {
+				throw new ClientError(`${raced.join(' ')} Enable them again to check it.`, HTTP_STATUS_CODES.CONFLICT);
 			}
 			await addOidcTrust({ ...wanted, operation: 'add_oidc_trust', hdb_user: req.hdb_user });
 			created.push(`trust policy ${wanted.id}`);
@@ -289,6 +317,7 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	const deploy = trust.find((policy) => policy.id === names.policy);
 	const problems: string[] = [];
 	if (!role) problems.push(`role "${names.role}" is missing`);
+	else if (managedRoleProblem(names, role)) problems.push(managedRoleProblem(names, role));
 	if (!user) problems.push(`user "${names.user}" is missing`);
 	else if (user.active === false) problems.push(`user "${names.user}" is inactive`);
 	else if (user.role?.role !== names.role) problems.push(`user "${names.user}" is in role "${user.role?.role}"`);
@@ -322,57 +351,91 @@ export async function getPreviewPolicy(req: any) {
 	return describePreviewPolicy(req, previewNamesOf(req));
 }
 
+interface PreviewRelease {
+	node: string;
+	project: string;
+	deploymentId: string;
+}
+
 /**
- * The components disable may drop: named `<app>-pr-<n>` and recorded as a preview of `app`, by this node's provenance
- * or by a deployment row (replicated, so a preview only a peer holds is still named) whose preview has not expired.
- * `shop-pr-tools`, or a preview of `shop-pr`, is never a preview of `shop`.
+ * The preview releases of `app` live on each node, as each node reports them: a component named `<app>-pr-<n>` whose
+ * live release was deployed as a preview of `app`. A node that cannot answer is returned as unreachable, since what it
+ * holds is unknown. A component redeployed under that name as something else is not a preview release.
  */
-async function ownedPreviews(app: string, now = Date.now()): Promise<{ projects: string[]; inProgress: string[] }> {
-	const projects = new Set<string>();
-	for (const live of await listLocalPreviews()) {
-		if (live.preview.app === app && isPreviewProjectOf(app, live.component, live.preview.pr)) {
-			projects.add(live.component);
+async function livePreviewReleases(app: string): Promise<{ releases: PreviewRelease[]; unreachable: string[] }> {
+	let answer: any;
+	try {
+		answer = await handleListReleases({ operation: 'list_releases', replicated: true });
+	} catch (error) {
+		if ((error as any)?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
+		answer = { nodes: [await handleListReleases({ operation: 'list_releases' })] };
+	}
+	const local = new Map((await listLocalPreviews()).map((live) => [live.component, live]));
+	const previewOf = new Map<string, any>();
+	const releases: PreviewRelease[] = [];
+	const unreachable: string[] = [];
+	for (const node of answer.nodes ?? []) {
+		if (node.error) {
+			unreachable.push(`${node.node ?? 'a node'}: ${node.error}`);
+			continue;
+		}
+		for (const { project, deployment_id: deploymentId } of node.components ?? []) {
+			if (!deploymentId || !isPreviewProjectOf(app, project)) continue;
+			if (!previewOf.has(deploymentId)) {
+				const known = local.get(project);
+				previewOf.set(
+					deploymentId,
+					known?.deploymentId === deploymentId ? known.preview : (await deploymentRecord(deploymentId))?.preview
+				);
+			}
+			const preview = previewOf.get(deploymentId);
+			if (preview?.app === app && isPreviewProjectOf(app, project, preview.pr)) {
+				releases.push({ node: node.node, project, deploymentId });
+			}
 		}
 	}
-	const inProgress = new Set<string>();
+	return { releases, unreachable };
+}
+
+/**
+ * Drops one release on the node that reported it, and only while it is still that node's live release. Not replicated:
+ * a drop whose release is not the origin's own would stop on the origin before it reached the node holding it.
+ */
+async function dropPreviewRelease({ node, project, deploymentId }: PreviewRelease, hdbUser: any): Promise<any> {
+	const operation = {
+		operation: 'drop_component',
+		project,
+		ifDeploymentId: deploymentId,
+		restart: false,
+		replicated: false,
+	};
+	if (node === getThisNodeName()) return dropComponent({ ...operation, hdb_user: hdbUser });
+	const peer = (server as any).nodes?.find((candidate: any) => candidate?.name === node);
+	if (!peer) throw new Error(`${node} is not among this node's peers`);
+	return server.replication.sendOperationToNode(peer, operation, { timeoutMs: PEER_DROP_TIMEOUT_MS });
+}
+
+/** Previews of `app` whose deploy had not finished when this looked; one admitted before a revocation can still go live. */
+async function previewsInProgress(app: string): Promise<string[]> {
 	const deployments = (databases as any).system?.hdb_deployment;
-	if (deployments) {
-		for await (const row of deployments.search([
-			{ attribute: 'project', comparator: 'starts_with', value: `${app}-pr-` },
-		])) {
-			const preview = row?.preview;
-			if (preview?.app !== app || !isPreviewProjectOf(app, row.project, preview.pr)) continue;
-			if (!ENDED_DEPLOYMENT_STATUSES.has(row.status)) inProgress.add(row.project);
-			const expiresAt = previewExpiresAtMs(preview);
-			if (expiresAt === undefined || expiresAt > now) projects.add(row.project);
-		}
+	if (!deployments) return [];
+	const projects = new Set<string>();
+	for await (const row of deployments.search([
+		{ attribute: 'project', comparator: 'starts_with', value: `${app}-pr-` },
+	])) {
+		if (row?.preview?.app === app && !ENDED_DEPLOYMENT_STATUSES.has(row.status)) projects.add(row.project);
 	}
-	return { projects: [...projects].sort(), inProgress: [...inProgress].sort() };
+	return [...projects].sort();
 }
 
 /** Why a record named like this application's preview identity is not one `enable_previews` wrote, if it is not. */
 function foreignRecords(names: PreviewNames, role: any, users: any[], policies: any[]): string[] {
 	const problems: string[] = [];
-	if (role) {
-		const permission = role.permission ?? {};
-		const grant = permission.component_deploy;
-		const otherKeys = Object.keys(permission).filter(
-			(key) => !['super_user', 'operations', 'component_deploy'].includes(key)
-		);
-		if (
-			permission.super_user === true ||
-			otherKeys.length > 0 ||
-			!Array.isArray(grant?.names) ||
-			grant.names.length !== 1 ||
-			grant.names[0] !== names.components ||
-			grant.constraints?.preview !== 'required'
-		) {
-			problems.push(`Role "${names.role}" is not a preview role for ${names.components} alone.`);
-		}
-	}
+	const roleProblem = role && managedRoleProblem(names, role);
+	if (roleProblem) problems.push(`The ${roleProblem}.`);
 	for (const user of users) {
 		const roleName = typeof user?.role === 'object' ? user.role?.role : user?.role;
-		if (user?.username === names.user && role && roleName !== names.role) {
+		if (user?.username === names.user && roleName !== names.role) {
 			problems.push(`User "${names.user}" is in role "${roleName}", not "${names.role}".`);
 		}
 		if (user?.username !== names.user && roleName === names.role) {
@@ -389,8 +452,9 @@ function foreignRecords(names: PreviewNames, role: any, users: any[], policies: 
 
 /**
  * Revokes first and removes last: the trust policies go, so no run can authenticate, and the user is deactivated, so
- * an issued token stops working; then each preview of the application is dropped on every node; only then the user
- * and the role. A drop that fails anywhere stops it there with the identity revoked, and running it again resumes.
+ * an issued token stops working; then each preview release of the application is dropped on every node; only then the
+ * user and the role. A drop that fails anywhere, or a node that cannot say what it holds, stops it there with the
+ * identity revoked, and running it again resumes.
  */
 export async function disablePreviews(req: any) {
 	requireSuperUser(req);
@@ -414,25 +478,16 @@ export async function disablePreviews(req: any) {
 		const user: any = getUserWithRole(names.user);
 		if (user && user.active !== false) await alterUser({ username: names.user, active: false });
 
-		const { projects, inProgress } = await ownedPreviews(req.app);
+		const { releases, unreachable } = await livePreviewReleases(req.app);
 		const dropped: any[] = [];
-		const failed: string[] = [];
-		for (const project of projects) {
+		const failed = [...unreachable];
+		for (const release of releases) {
 			try {
-				const response: any = await dropComponent({
-					operation: 'drop_component',
-					project,
-					restart: false,
-					hdb_user: req.hdb_user,
-				});
-				dropped.push({ project, ...response });
-				for (const peer of response?.replicated ?? []) {
-					if (peer?.status === 'failed' || peer?.error)
-						failed.push(`${project} on ${peer.node ?? 'a peer'}: ${peer.error}`);
-				}
+				const answer: any = await dropPreviewRelease(release, req.hdb_user);
+				dropped.push({ ...release, componentRemoved: answer?.componentRemoved, message: answer?.message });
 			} catch (error) {
-				dropped.push({ project, error: (error as Error).message });
-				failed.push(`${project}: ${(error as Error).message}`);
+				dropped.push({ ...release, error: (error as Error).message });
+				failed.push(`${release.project} on ${release.node}: ${(error as Error).message}`);
 			}
 		}
 		if (failed.length > 0) {
@@ -449,6 +504,7 @@ export async function disablePreviews(req: any) {
 			await dropRole({ id: role.id });
 			removed.push(`role ${names.role}`);
 		}
+		const inProgress = await previewsInProgress(req.app);
 		return {
 			message:
 				removed.length + dropped.length > 0
@@ -457,7 +513,6 @@ export async function disablePreviews(req: any) {
 			app: req.app,
 			dropped,
 			removed,
-			// Deploys admitted before the revocation may still go live; each is bound by its own expiry.
 			...(inProgress.length > 0 && { inProgress }),
 		};
 	});

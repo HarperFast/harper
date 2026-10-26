@@ -73,7 +73,8 @@ export async function assertPreviewCapacity(
 	component: string,
 	app: string,
 	max: number | undefined = positiveInteger(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION)),
-	previews?: LocalPreview[]
+	previews?: LocalPreview[],
+	limitName = 'deployment.previews.maxPerApplication'
 ): Promise<void> {
 	if (max === undefined) return;
 	const ofApp = (previews ?? (await listLocalPreviews())).filter((live) => live.preview.app === app);
@@ -81,7 +82,7 @@ export async function assertPreviewCapacity(
 	const oldest = ofApp.reduce((a, b) => (b.deployedAtMs < a.deployedAtMs ? b : a));
 	throw new ClientError(
 		`Cannot deploy preview '${component}': '${app}' already has ${ofApp.length} preview(s), the most ` +
-			`deployment.previews.maxPerApplication allows. The oldest is '${oldest.component}'` +
+			`${limitName} allows. The oldest is '${oldest.component}'` +
 			(oldest.preview.pr !== undefined ? ` (PR ${oldest.preview.pr})` : '') +
 			`; drop it, or another, first.`,
 		409
@@ -99,7 +100,8 @@ export async function admitPreviewActivation(
 	activate: () => Promise<void>,
 	max: number | undefined = positiveInteger(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION)),
 	componentsRoot: string = componentsRootPath(),
-	admit?: (preview: PreviewMetadata | undefined) => void
+	admit?: (preview: PreviewMetadata | undefined) => void,
+	limitName?: string
 ): Promise<void> {
 	if (max === undefined && !admit) return activate();
 	const raw = await readFile(join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(() => undefined);
@@ -109,7 +111,7 @@ export async function admitPreviewActivation(
 	await withComponentPreparationLock(
 		join(componentsRoot, `.preview-admission-${encodeURIComponent(preview.app)}`),
 		async () => {
-			await assertPreviewCapacity(component, preview.app, max, await listLocalPreviews(componentsRoot));
+			await assertPreviewCapacity(component, preview.app, max, await listLocalPreviews(componentsRoot), limitName);
 			await activate();
 		},
 		{ purpose: `preview admission for ${preview.app}` }

@@ -9,6 +9,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 
 interface ListReleasesRequest {
+	operation?: string;
 	project?: string;
 	replicated?: boolean;
 }

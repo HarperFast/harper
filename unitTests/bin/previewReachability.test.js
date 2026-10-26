@@ -1,7 +1,5 @@
 'use strict';
 
-// What `harper preview deploy` says when the preview's URL does not answer from the preview, from a stand-in fetch
-// for each way that happens.
 const assert = require('node:assert');
 const { checkPreviewReachable, probePreview } = require('#src/bin/previewReachability');
 const { formatTeardown } = require('#src/bin/previewSetup');
@@ -41,6 +39,11 @@ describe('preview reachability (harper#3042)', () => {
 			(await probePreview(URL, answer(404, '', { server: 'nginx/1.27' }))).reason,
 			/answered 404 from nginx/
 		);
+		assert.match((await probePreview(URL, answer(502))).reason, /answered 502, not from the preview/);
+	});
+
+	it("counts the preview's own server error as an answer from the preview", async () => {
+		assert.deepStrictEqual(await probePreview(URL, answer(500, 'boom')), { reachable: true, status: 500 });
 	});
 
 	it('retries what can still change, within the window, and reports the last outcome', async () => {
@@ -77,7 +80,7 @@ describe('preview reachability (harper#3042)', () => {
 			},
 		});
 		const overloaded = await probePreview(URL, async () => new Response(endless, { status: 503 }));
-		assert.match(overloaded.reason, /answered 503/);
+		assert.deepStrictEqual(overloaded, { reachable: true, status: 503 });
 		assert.ok(pulled < 10, `read ${pulled} chunks`);
 	});
 
@@ -96,15 +99,9 @@ describe('preview reachability (harper#3042)', () => {
 		const text = formatTeardown({
 			message: 'Disabled previews of shop',
 			dropped: [
-				{
-					project: 'shop-pr-1',
-					node: 'a',
-					componentRemoved: true,
-					replicated: [
-						{ node: 'b', componentRemoved: false },
-						{ node: 'c', error: 'unreachable' },
-					],
-				},
+				{ project: 'shop-pr-1', node: 'a', componentRemoved: true },
+				{ project: 'shop-pr-1', node: 'b', componentRemoved: false },
+				{ project: 'shop-pr-1', node: 'c', error: 'unreachable' },
 			],
 			removed: ['user shop-ci-preview', 'role shop-ci-preview'],
 			inProgress: ['shop-pr-2'],

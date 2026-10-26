@@ -11,6 +11,7 @@ const RETRY_DELAY_MS = 2_000;
 const MAX_BODY_BYTES = 4096;
 // server/isolatedHostGuard.ts: a shared worker's answer for a host an isolated application owns.
 const SHARED_PORT_REFUSAL = /is served by an isolated application whose worker is not running/;
+const PROXY_SERVERS = /nginx|envoy|cloudflare|haproxy|caddy|apache|awselb|traefik|varnish/i;
 const CERTIFICATE_ERRORS = new Set([
 	'ERR_TLS_CERT_ALTNAME_INVALID',
 	'CERT_HAS_EXPIRED',
@@ -98,8 +99,14 @@ export async function probePreview(url: string, fetchImpl: Fetch = fetch as Fetc
 				'not route preview hosts to isolated applications (on Fabric, an nginx-mode host), or the worker is still starting.',
 		};
 	}
+	// Harper sends no Server header; a gateway error, or an error from a server that names itself a proxy, is the proxy's.
 	const server = response.headers.get('server') ?? '';
-	if (response.status >= 500 || ((response.status === 404 || response.status === 421) && /nginx/i.test(server))) {
+	const fromProxy = PROXY_SERVERS.test(server);
+	if (
+		response.status === 502 ||
+		response.status === 504 ||
+		(fromProxy && (response.status >= 500 || response.status === 404 || response.status === 421))
+	) {
 		return {
 			reachable: false,
 			retry: response.status >= 500,

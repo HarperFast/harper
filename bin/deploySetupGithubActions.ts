@@ -13,12 +13,7 @@ import * as YAML from 'yaml';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { cliOperations, resolveGitRepo } from './cliOperations.ts';
 import { normalizeTarget } from './cliCredentials.ts';
-import {
-	GITHUB_ACTIONS_ISSUER,
-	buildWorkflowRef,
-	canonicalWorkflowPath,
-	CI_PREVIEW_OPERATIONS,
-} from '../utility/previewIdentity.ts';
+import { GITHUB_ACTIONS_ISSUER, buildWorkflowRef, canonicalWorkflowPath } from '../utility/previewIdentity.ts';
 import {
 	planIdentityReconcile,
 	policyDifferences,
@@ -34,7 +29,6 @@ export {
 	GITHUB_ACTIONS_ISSUER,
 	buildWorkflowRef,
 	canonicalWorkflowPath,
-	CI_PREVIEW_OPERATIONS,
 	policyDifferences,
 	roleDifference,
 	userDifference,
@@ -185,14 +179,56 @@ function triggerEvents(triggers: unknown): { names: string[]; config: Record<str
 	return { names: [], config: {} };
 }
 
-const SAME_REPOSITORY_CONDITION = new RegExp(
-	[
-		String.raw`github\.event\.pull_request\.head\.repo\.full_name\s*==\s*(?:github\.repository|github\.event\.pull_request\.base\.repo\.full_name)\b`,
-		String.raw`(?:github\.repository|github\.event\.pull_request\.base\.repo\.full_name)\s*==\s*github\.event\.pull_request\.head\.repo\.full_name\b`,
-		String.raw`github\.event\.pull_request\.head\.repo\.fork\s*==\s*false\b`,
-		String.raw`!\s*github\.event\.pull_request\.head\.repo\.fork\b`,
-	].join('|')
+const HEAD_REPOSITORY = String.raw`github\.event\.pull_request\.head\.repo`;
+const BASE_REPOSITORY = String.raw`(?:github\.repository|github\.event\.pull_request\.base\.repo\.full_name)`;
+/** A whole `&&` term that admits only same-repository pull requests. */
+const SAME_REPOSITORY_TERM = new RegExp(
+	`^(?:${[
+		`${HEAD_REPOSITORY}\\.full_name\\s*==\\s*${BASE_REPOSITORY}`,
+		`${BASE_REPOSITORY}\\s*==\\s*${HEAD_REPOSITORY}\\.full_name`,
+		`${HEAD_REPOSITORY}\\.fork\\s*==\\s*false`,
+		`false\\s*==\\s*${HEAD_REPOSITORY}\\.fork`,
+		`!\\s*${HEAD_REPOSITORY}\\.fork`,
+	].join('|')})$`
 );
+
+function withoutEnclosingParentheses(term: string): string {
+	let text = term.trim();
+	for (;;) {
+		if (!text.startsWith('(') || !text.endsWith(')')) return text;
+		let depth = 0;
+		const inner = text.slice(1, -1);
+		for (const character of inner) {
+			depth += character === '(' ? 1 : character === ')' ? -1 : 0;
+			if (depth < 0) return text;
+		}
+		text = inner.trim();
+	}
+}
+
+/** The top-level `&&` terms of an expression; undefined when it has a top-level `||`. */
+function conjuncts(expression: string): string[] | undefined {
+	const terms: string[] = [];
+	let depth = 0;
+	let start = 0;
+	let quoted = false;
+	for (let index = 0; index < expression.length; index++) {
+		const character = expression[index];
+		if (character === "'") quoted = !quoted;
+		if (quoted) continue;
+		if (character === '(') depth++;
+		else if (character === ')') depth--;
+		else if (depth === 0 && expression.startsWith('||', index)) return undefined;
+		else if (depth === 0 && expression.startsWith('&&', index)) {
+			terms.push(expression.slice(start, index));
+			start = index + 2;
+			index++;
+		}
+	}
+	terms.push(expression.slice(start));
+	return terms.map(withoutEnclosingParentheses);
+}
+
 const PULL_REQUEST_HEAD = /head\.sha|head\.ref|head\.repo|head_ref|merge_commit_sha|refs\/pull\//;
 const PR_HEAD_SHELL_CHECKOUT =
 	/\bgh\s+pr\s+checkout\b|\bgit\b[^\n]*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b[^\n]*(?:head\.sha|head\.ref|head_ref|refs\/pull\/|pull\/)/;
@@ -227,13 +263,22 @@ function checkPullRequestCheckout(name: string, job: any, problems: string[], un
 	}
 }
 
-/** Fork PRs run `pull_request_target` with the base repository's identity, and no token claim names the head repository. */
+/**
+ * Fork PRs run `pull_request_target` with the base repository's identity, and no token claim names the head repository,
+ * so the job's own condition is the only gate. Only a whole `&&` term that admits same-repository pull requests counts:
+ * a negation, a comparison of the test with `false`, or an `||` around it is reported as unverified.
+ */
 function checkSameRepositoryCondition(name: string, job: any, problems: string[], unverified: string[]): void {
-	const condition = typeof job?.if === 'string' ? job.if.replace(/\$\{\{|\}\}/g, ' ').replace(/\s+/g, ' ') : '';
-	if (SAME_REPOSITORY_CONDITION.test(condition)) {
-		if (condition.includes('||')) {
-			unverified.push(`that job "${name}"'s \`if\` excludes fork pull requests on every side of its ||`);
-		}
+	const condition =
+		typeof job?.if === 'string'
+			? job.if
+					.replace(/\$\{\{|\}\}/g, ' ')
+					.replace(/\s+/g, ' ')
+					.trim()
+			: '';
+	if (conjuncts(withoutEnclosingParentheses(condition))?.some((term) => SAME_REPOSITORY_TERM.test(term))) return;
+	if (/head\.repo/.test(condition)) {
+		unverified.push(`that job "${name}"'s \`if\` excludes fork pull requests`);
 		return;
 	}
 	const needs = asList(job?.needs);
@@ -286,7 +331,7 @@ export function checkPreviewWorkflowFile(
 		}
 		if (!grantsIdToken(job, workflow) && typeof job?.uses !== 'string') continue;
 		checkPullRequestCheckout(name, job, problems, unverified);
-		if (environmentOfJob === environment) checkSameRepositoryCondition(name, job, problems, unverified);
+		checkSameRepositoryCondition(name, job, problems, unverified);
 	}
 	return { problems, unverified };
 }
@@ -499,7 +544,6 @@ export async function resolveSetupTarget(
 }
 
 export interface GithubRepository {
-	/** As the user named it. */
 	repository: string;
 	/** As GitHub spells it, which is what workflow_ref carries; the name as given when it was not looked up. */
 	fullName: string;

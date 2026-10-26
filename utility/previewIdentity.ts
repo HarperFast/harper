@@ -1,7 +1,5 @@
-// The names and claims an application's PR-preview identity is made of, derived in one place because the server's
-// `enable_previews` writes them and the CLI (and Studio's preview panel) must reach the same ones from their side: the
-// workflow file a policy pins, the environment it gates on, the hostname suffix the grant allows. Node builtins only,
-// like componentNames.ts, so the CLI can import it without the server's databases/config surface.
+// The names and claims of an application's PR-preview identity, which `enable_previews` writes and the CLI and Studio
+// must derive the same way. Node builtins only, like componentNames.ts, so the CLI can import it.
 
 import { posix } from 'node:path';
 import { PROJECT_NAME_PATTERN } from './componentNames.ts';
@@ -24,6 +22,8 @@ export const CI_PREVIEW_OPERATIONS = [
 	'registration_info',
 ];
 export const CI_PREVIEW_CLEANUP_OPERATIONS = ['drop_component'];
+/** What `enable_previews` caps a preview's life at unless told otherwise: the TTL `harper preview deploy` sends. */
+export const DEFAULT_PREVIEW_MAX_TTL_DAYS = 7;
 
 // add_oidc_trust's id grammar (security/authn/oidc/trustPolicyOperations.ts).
 const POLICY_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;

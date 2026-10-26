@@ -303,7 +303,6 @@ export async function deploySetup(req: any): Promise<void> {
 		return setupGithubActions(req, transport, component);
 	}
 
-	// 1. The cluster's public secrets key.
 	const key = await fetchSecretsPublicKey(transport);
 
 	// 2. Which component is the credential for? (the grant is scoped to it)

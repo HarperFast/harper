@@ -1,7 +1,5 @@
-// The create-only reconcile of a CI identity — a role, a user in it, and trust policies naming that user — shared by
-// `harper deploy setup=true provider=github-actions` (bin/deploySetupGithubActions.ts) and `enable_previews`
-// (components/previewOperations.ts). A record that already matches is kept; one that differs stops the caller before
-// it writes, so setup never repurposes a role, widens a grant or undoes a revocation. Pure: no storage, no imports.
+// The create-only reconcile of a CI identity (a role, its user, trust policies naming the user), shared by the CLI's
+// production setup and `enable_previews`: a record that differs stops the caller before it writes. No imports.
 
 export interface DesiredRole {
 	role: string;

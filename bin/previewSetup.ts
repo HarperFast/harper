@@ -1,9 +1,4 @@
-/**
- * `harper preview setup|teardown`: the GitHub side of an application's PR previews, around the one cluster operation
- * that creates (`enable_previews`) or removes (`disable_previews`) its identity and policy. The cluster owns the
- * records so Studio's preview panel gets the same ones; this checks the workflow file, looks the repository up, sets
- * the target variable, and can write a starter workflow and seal a private repository's source credential.
- */
+/** `harper preview setup|teardown`: the GitHub side, around one `enable_previews` or `disable_previews` call. */
 import chalk from 'chalk';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -46,8 +41,8 @@ export interface StarterWorkflowOptions {
 /**
  * The smallest workflow the preview policies match. It runs from the default branch and never checks out the PR, so a
  * PR cannot change what runs with the identity, and the cluster fetches the PR's commit itself. Cleanup runs in its own
- * environment, which carries no required reviewers, so a closure never waits for an approval; a deploy that waited
- * re-reads the PR and goes ahead only while it is open at the same commit.
+ * environment, which carries no required reviewers, so a closure never waits for an approval. A deploy that waited
+ * goes ahead only while the PR is open at its commit, and drops what it deployed if the PR closed meanwhile.
  */
 export function starterPreviewWorkflow({
 	app,
@@ -102,8 +97,11 @@ export function starterPreviewWorkflow({
 		'    steps:',
 		...setup,
 		'      - run: |',
-		`          if [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.state + " " + .head.sha')" = "open $SHA" ]; then`,
+		`          pr() { gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.state + " " + .head.sha'; }`,
+		'          if [ "$(pr)" = "open $SHA" ]; then',
 		`            harper preview deploy ${deployArguments}`,
+		'            # Closed while this deployed: its cleanup may have run first.',
+		`            if [ "$(pr | cut -d' ' -f1)" != open ]; then harper preview drop app=${app} pr="$PR"; fi`,
 		'          fi',
 		'  cleanup:',
 		`    if: github.event.action == 'closed' && ${sameRepository}`,
@@ -113,7 +111,9 @@ export function starterPreviewWorkflow({
 		'      id-token: write',
 		'    steps:',
 		...setup,
-		`      - run: harper preview drop app=${app} pr="$PR"`,
+		'      - run: |',
+		'          # A deploy still holding the preview answers 409 until it finishes.',
+		`          for attempt in 1 2 3 4 5; do harper preview drop app=${app} pr="$PR" && exit 0; sleep 30; done; exit 1`,
 		'',
 	].join('\n');
 }
@@ -257,18 +257,8 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 export function formatTeardown(response: any): string {
 	const lines = [response?.message ?? 'Disabled previews.'];
 	for (const drop of response?.dropped ?? []) {
-		if (drop.error) {
-			lines.push(`  ${drop.project}: ${drop.error}`);
-			continue;
-		}
-		lines.push(
-			`  ${drop.project}: ${drop.node ?? 'this node'} ${drop.componentRemoved ? 'dropped' : 'did not hold it'}`
-		);
-		for (const peer of drop.replicated ?? []) {
-			lines.push(
-				`  ${drop.project}: ${peer.node ?? 'a peer'} ${peer.error ? `failed: ${peer.error}` : peer.componentRemoved ? 'dropped' : 'did not hold it'}`
-			);
-		}
+		const outcome = drop.error ? `failed: ${drop.error}` : drop.componentRemoved ? 'dropped' : 'did not hold it';
+		lines.push(`  ${drop.project}: ${drop.node} ${outcome}`);
 	}
 	if (response?.removed?.length) lines.push(`  Removed ${response.removed.join(', ')}.`);
 	if (response?.inProgress?.length) {

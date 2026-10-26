@@ -243,6 +243,19 @@ describe('component grants (harper#3046)', () => {
 			assert.strictEqual(componentGrantPreviewRefusal(previewGrant, 'shop-pr-tools', undefined), undefined);
 		});
 
+		it("cover only the previews of the grant's applications, for every operation the grant reaches", () => {
+			assert.ok(grantCoversComponent(bounded, 'shop-pr-12'));
+			for (const component of ['shop-pr-tools', 'shop-pr-pr-3', 'shop-pr-0']) {
+				assert.ok(!grantCoversComponent(bounded, component), component);
+			}
+			const user = previewUser(bounded);
+			const denial = op_auth.verifyPerms(
+				{ operation: 'drop_component', project: 'shop-pr-tools', hdb_user: user },
+				operations.dropComponent.name
+			);
+			assert.match(JSON.stringify(denial?.unauthorized_access), /not covered by this role's component grant/);
+		});
+
 		it('bound the expiry and the count', () => {
 			assert.strictEqual(previewExpiryBound(bounded, 1000), 1000 + 2 * 24 * 60 * 60 * 1000);
 			assert.strictEqual(previewExpiryBound(previewGrant, 1000), undefined);

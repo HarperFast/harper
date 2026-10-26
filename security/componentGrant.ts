@@ -143,8 +143,15 @@ export function componentGrantOf(user: any): ComponentGrant | undefined {
 	return componentGrantError(grant) === null ? (grant as ComponentGrant) : { names: [] };
 }
 
+/** Under `preview: required`, only `<app>-pr-<n>` for an `<app>-pr-*` the grant lists: not `shop-pr-tools`. */
 export function grantCoversComponent(grant: ComponentGrant, component: unknown): boolean {
-	return typeof component === 'string' && grant.names.some((pattern) => componentNameMatches(pattern, component));
+	if (typeof component !== 'string') return false;
+	if (grant.constraints?.preview === 'required') {
+		return grant.names.some(
+			(pattern) => pattern.endsWith('-pr-*') && isPreviewProjectOf(pattern.slice(0, -'-pr-*'.length), component)
+		);
+	}
+	return grant.names.some((pattern) => componentNameMatches(pattern, component));
 }
 
 /** Why the grant does not allow publishing `routing` for `component`, or undefined when it does. */

@@ -44,7 +44,7 @@ import {
 	retireComponentDirectory,
 	liveDeploymentIdOf,
 } from './Application.ts';
-import { deploymentOfLiveRelease } from './deploymentOperations.ts';
+import { deploymentOfLiveRelease, deploymentRecord } from './deploymentOperations.ts';
 const prepareApplication = _prepareApplication;
 import {
 	COMPONENT_PREPARATION_LOCK_DIR,
@@ -84,6 +84,7 @@ import {
 	previewExpiryBound,
 } from '../security/componentGrant.ts';
 import { admitPreviewActivation, assertPreviewCapacity } from './previews.ts';
+import { isCurrentUser } from '../security/user.ts';
 
 const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const DROP_ANSWER_MARGIN_MS = 60_000;
@@ -602,6 +603,14 @@ async function deployComponent(req?: any) {
 	// A staged build's metadata is the build's own, so its activation is refused rather than clamped.
 	const admitGrantPreview = (preview) => {
 		assertGrantPreview(preview);
+		// Disabling previews deactivates the deployer before it drops what is live, so a deploy it admitted earlier
+		// stops here rather than going live after the drops.
+		if (req.hdb_user && !isCurrentUser(req.hdb_user)) {
+			throw new ClientError(
+				`'${req.project}' was not activated: the user or role that deployed it changed while it deployed`,
+				HTTP_STATUS_CODES.FORBIDDEN
+			);
+		}
 		const bound = previewExpiryBound(componentGrant, Date.now());
 		if (bound !== undefined && !(previewExpiresAtMs(preview) <= bound)) {
 			throw new ClientError(
@@ -610,6 +619,8 @@ async function deployComponent(req?: any) {
 			);
 		}
 	};
+	const previewCap = previewCapOf(componentGrant);
+	const previewCapName = previewCap === undefined ? undefined : "this role's component grant's maxPreviews";
 	let previewExpiryClamped;
 	if (componentGrant && !isActivation) {
 		assertGrantPreview(req.preview);
@@ -620,6 +631,12 @@ async function deployComponent(req?: any) {
 			req.preview = { ...req.preview, expiresAt: new Date(bound).toISOString() };
 			previewExpiryClamped = req.preview.expiresAt;
 		}
+	}
+	// An activation names a build the grant may never have admitted, live here or dormant on a peer, so its recorded
+	// preview is checked first, ahead of the return for a release that is already live.
+	if (componentGrant?.constraints?.preview === 'required' && isActivation) {
+		const record = await deploymentRecord(req.deployment_id);
+		admitGrantPreview(record?.project === req.project ? record.preview : undefined);
 	}
 	// Only the originating node rejects admission: replicated peers must commit the same desired config,
 	// then report any node-local inability to run it through component lifecycle status.
@@ -659,10 +676,8 @@ async function deployComponent(req?: any) {
 	// refuse an activation whose artifact turns isolation OFF for a component whose present isolated state is
 	// itself the refusal — a 409 for the request that would fix it.
 	if (!isActivation) await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
-	// A grant is resolved only for a request that did not come from a peer, so its bounds hold even for one that carries
-	// a `_deploymentId`.
 	if (req.preview && !isActivation && (!isReplicatedExecution || componentGrant)) {
-		await assertPreviewCapacity(req.project, req.preview.app, previewCapOf(componentGrant));
+		await assertPreviewCapacity(req.project, req.preview.app, previewCap, undefined, previewCapName);
 	}
 	const { ingestCredentials, resolveCredentials } = secretOperationsRuntimeModule;
 	// An activation resolves, fetches and installs nothing, so there is no credential for it to carry.
@@ -886,9 +901,10 @@ async function deployComponent(req?: any) {
 								req.project,
 								candidateDirPath,
 								activate,
-								previewCapOf(componentGrant),
+								previewCap,
 								undefined,
-								componentGrant?.constraints?.preview === 'required' ? admitGrantPreview : undefined
+								componentGrant?.constraints?.preview === 'required' ? admitGrantPreview : undefined,
+								previewCapName
 							),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);

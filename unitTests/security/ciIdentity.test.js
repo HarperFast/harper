@@ -1,8 +1,6 @@
 'use strict';
 
-// The create-only reconcile both CI setups share. The production setup's own cases are in
-// unitTests/bin/deploySetupGithubActions.test.js; these cover what the preview identity adds: a component grant on
-// the role, two policies, and policies that would match the same runs.
+// The production setup's cases are in unitTests/bin/deploySetupGithubActions.test.js.
 const assert = require('node:assert');
 const { planIdentityReconcile, policiesOverlap, roleDifference } = require('#src/security/ciIdentity');
 const { derivePreviewNames, isPreviewProjectOf, canonicalWorkflowPath } = require('#src/utility/previewIdentity');

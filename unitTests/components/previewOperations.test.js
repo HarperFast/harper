@@ -1,8 +1,6 @@
 'use strict';
 
-// enable_previews / disable_previews / get_preview_policy (harper#3042) against real system tables: what enable
-// writes, that it only ever creates, and that disable revokes before it removes and drops only the application's own
-// previews. The end-to-end run through the CLI is integrationTests/deploy/preview-setup.test.ts.
+// Against real system tables. The run through the CLI is integrationTests/deploy/preview-setup.test.ts.
 const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -26,7 +24,7 @@ const AUDIENCE = 'https://cluster.example.com:9925/';
 const enableRequest = (app, overrides = {}) => ({
 	operation: 'enable_previews',
 	app,
-	repository: 'acme/web',
+	repository: 'acme/opsweb',
 	repository_id: '67890',
 	branch: 'main',
 	audience: AUDIENCE,
@@ -68,18 +66,21 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			},
 		};
 		for (const operation of [enablePreviews, disablePreviews, getPreviewPolicy]) {
-			await assert.rejects(operation(enableRequest('nosu', { hdb_user: delegated })), { statusCode: 403 });
+			await assert.rejects(operation(enableRequest('opsnosu', { hdb_user: delegated })), { statusCode: 403 });
 		}
 	});
 
 	it('creates the role, user and both trust policies, and reads them back as enabled', async () => {
-		const response = await enablePreviews(enableRequest('web', { maxPreviews: 3, maxTtlDays: 5 }));
-		assert.match(response.message, /Enabled previews of web: created role web-ci-preview, user web-ci-preview/);
+		const response = await enablePreviews(enableRequest('opsweb', { maxPreviews: 3, maxTtlDays: 5 }));
+		assert.match(
+			response.message,
+			/Enabled previews of opsweb: created role opsweb-ci-preview, user opsweb-ci-preview/
+		);
 		assert.strictEqual(response.enabled, true, JSON.stringify(response.problems));
 
-		const role = await getRoleByName('web-ci-preview');
+		const role = await getRoleByName('opsweb-ci-preview');
 		assert.deepStrictEqual(role.permission.component_deploy, {
-			names: ['web-pr-*'],
+			names: ['opsweb-pr-*'],
 			constraints: {
 				isolated: true,
 				hostSuffix: '.app.cluster.example.com',
@@ -97,27 +98,27 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			'registration_info',
 		]);
 		assert.strictEqual(role.permission.super_user, false);
-		const user = getUserWithRole('web-ci-preview');
+		const user = getUserWithRole('opsweb-ci-preview');
 		assert.strictEqual(user.active, true);
-		assert.strictEqual(user.role.role, 'web-ci-preview');
+		assert.strictEqual(user.role.role, 'opsweb-ci-preview');
 
-		const [deploy, cleanup] = (await policiesOf('web')).sort((a, b) => a.id.localeCompare(b.id));
+		const [deploy, cleanup] = (await policiesOf('opsweb')).sort((a, b) => a.id.localeCompare(b.id));
 		const claims = {
 			repository_id: '67890',
-			workflow_ref: 'acme/web/.github/workflows/preview.yaml@refs/heads/main',
+			workflow_ref: 'acme/opsweb/.github/workflows/preview.yaml@refs/heads/main',
 			event_name: 'pull_request_target',
 		};
-		assert.strictEqual(deploy.id, 'github-actions-web-preview');
+		assert.strictEqual(deploy.id, 'github-actions-opsweb-preview');
 		assert.deepStrictEqual(deploy.claims, { ...claims, environment: 'preview' });
 		assert.strictEqual(deploy.audience, AUDIENCE);
-		assert.strictEqual(deploy.user, 'web-ci-preview');
-		assert.strictEqual(cleanup.id, 'github-actions-web-preview-cleanup');
+		assert.strictEqual(deploy.user, 'opsweb-ci-preview');
+		assert.strictEqual(cleanup.id, 'github-actions-opsweb-preview-cleanup');
 		assert.deepStrictEqual(cleanup.claims, { ...claims, environment: 'preview-cleanup' });
 		assert.deepStrictEqual(cleanup.operations, ['drop_component']);
 
-		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'web', hdb_user: SU });
+		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsweb', hdb_user: SU });
 		assert.strictEqual(policy.enabled, true);
-		assert.strictEqual(policy.repository, 'acme/web');
+		assert.strictEqual(policy.repository, 'acme/opsweb');
 		assert.strictEqual(policy.workflow, '.github/workflows/preview.yaml');
 		assert.strictEqual(policy.branch, 'main');
 		assert.strictEqual(policy.environment, 'preview');
@@ -125,15 +126,18 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 	});
 
 	it('changes nothing when run again, and stops before writing when a record differs', async () => {
-		const rerun = await enablePreviews(enableRequest('web', { maxPreviews: 3, maxTtlDays: 5 }));
+		const rerun = await enablePreviews(enableRequest('opsweb', { maxPreviews: 3, maxTtlDays: 5 }));
 		assert.match(rerun.message, /already enabled; nothing changed/);
-		await assert.rejects(enablePreviews(enableRequest('web', { maxPreviews: 4, maxTtlDays: 5 })), (error) => {
+		await assert.rejects(enablePreviews(enableRequest('opsweb', { maxPreviews: 4, maxTtlDays: 5 })), (error) => {
 			assert.strictEqual(error.statusCode, 409);
 			assert.match(error.message, /Nothing was changed/);
 			assert.match(error.message, /its component_deploy grant is/);
 			return true;
 		});
-		assert.strictEqual((await getRoleByName('web-ci-preview')).permission.component_deploy.constraints.maxPreviews, 3);
+		assert.strictEqual(
+			(await getRoleByName('opsweb-ci-preview')).permission.component_deploy.constraints.maxPreviews,
+			3
+		);
 	});
 
 	it('refuses what could never be told apart, before it writes anything', async () => {
@@ -154,15 +158,36 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			// An array the generated scalar is a member of still matches the same runs.
 			claims: {
 				repository_id: '67890',
-				workflow_ref: 'acme/web/.github/workflows/rival.yaml@refs/heads/main',
+				workflow_ref: 'acme/opsweb/.github/workflows/rival.yaml@refs/heads/main',
 				event_name: ['pull_request_target', 'push'],
 			},
 		});
 		await assert.rejects(
-			enablePreviews(enableRequest('overlap', { workflow: '.github/workflows/rival.yaml' })),
+			enablePreviews(enableRequest('opsoverlap', { workflow: '.github/workflows/rival.yaml' })),
 			/Trust policy "rival" would also match the runs/
 		);
-		assert.strictEqual(await getRoleByName('overlap-ci-preview'), null);
+		assert.strictEqual(await getRoleByName('opsoverlap-ci-preview'), null);
+	});
+
+	it('caps the time to live at 7 days unless told otherwise, and takes the branch as a ref or a name', async () => {
+		await enablePreviews(enableRequest('opsttl', { branch: 'refs/heads/trunk' }));
+		assert.strictEqual(
+			(await getRoleByName('opsttl-ci-preview')).permission.component_deploy.constraints.maxTtlDays,
+			7
+		);
+		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsttl', hdb_user: SU });
+		assert.strictEqual(policy.branch, 'trunk');
+		await assert.rejects(enablePreviews(enableRequest('opsbranch', { branch: 'refs/heads/' })), { statusCode: 400 });
+	});
+
+	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
+		const workflow = '.github/workflows/shared.yaml';
+		const outcomes = await Promise.allSettled([
+			enablePreviews(enableRequest('opsonea', { workflow })),
+			enablePreviews(enableRequest('opsoneb', { workflow })),
+		]);
+		assert.deepStrictEqual(outcomes.map((outcome) => outcome.status).sort(), ['fulfilled', 'rejected']);
+		assert.match(outcomes.find((outcome) => outcome.status === 'rejected').reason.message, /would also match the runs/);
 	});
 
 	describe('disable_previews', () => {
@@ -172,75 +197,162 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		const componentNames = async () => (await getComponents()).entries.map((entry) => entry.name);
 
 		it('drops only previews of the application, then removes the trust policies, user and role', async () => {
-			await deploy('web-pr-1', metadata('web', 1));
-			await deploy('web-pr-tools');
-			await deploy('web-pr-pr-3', metadata('web-pr', 3));
+			await deploy('opsweb-pr-1', metadata('opsweb', 1));
+			await deploy('opsweb-pr-tools');
+			await deploy('opsweb-pr-pr-3', metadata('opsweb-pr', 3));
 
-			const response = await disablePreviews({ operation: 'disable_previews', app: 'web', hdb_user: SU });
+			const response = await disablePreviews({ operation: 'disable_previews', app: 'opsweb', hdb_user: SU });
 			assert.deepStrictEqual(
 				response.dropped.map((drop) => [drop.project, drop.componentRemoved]),
-				[['web-pr-1', true]]
+				[['opsweb-pr-1', true]]
 			);
 			assert.deepStrictEqual(response.removed.sort(), [
-				'role web-ci-preview',
-				'trust policy github-actions-web-preview',
-				'trust policy github-actions-web-preview-cleanup',
-				'user web-ci-preview',
+				'role opsweb-ci-preview',
+				'trust policy github-actions-opsweb-preview',
+				'trust policy github-actions-opsweb-preview-cleanup',
+				'user opsweb-ci-preview',
 			]);
 			const names = await componentNames();
-			assert.ok(!names.includes('web-pr-1'));
-			assert.ok(names.includes('web-pr-tools') && names.includes('web-pr-pr-3'), names.join(', '));
-			assert.strictEqual(await getRoleByName('web-ci-preview'), null);
-			assert.strictEqual(getUserWithRole('web-ci-preview'), undefined);
-			assert.deepStrictEqual(await policiesOf('web'), []);
+			assert.ok(!names.includes('opsweb-pr-1'));
+			assert.ok(names.includes('opsweb-pr-tools') && names.includes('opsweb-pr-pr-3'), names.join(', '));
+			assert.strictEqual(await getRoleByName('opsweb-ci-preview'), null);
+			assert.strictEqual(getUserWithRole('opsweb-ci-preview'), undefined);
+			assert.deepStrictEqual(await policiesOf('opsweb'), []);
 
-			const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'web', hdb_user: SU });
+			const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsweb', hdb_user: SU });
 			assert.strictEqual(policy.enabled, false);
-			assert.ok(policy.problems.includes('role "web-ci-preview" is missing'));
+			assert.ok(policy.problems.includes('role "opsweb-ci-preview" is missing'));
 		});
 
-		it("still names a preview this node no longer holds, from its deployment's record", async () => {
-			await enablePreviews(enableRequest('web'));
-			const response = await disablePreviews({ operation: 'disable_previews', app: 'web', hdb_user: SU });
+		it('keeps a component redeployed under the name as something else', async () => {
+			await enablePreviews(enableRequest('opsweb'));
+			await deploy('opsweb-pr-5', metadata('opsweb', 5));
+			await deploy('opsweb-pr-5');
+			const response = await disablePreviews({ operation: 'disable_previews', app: 'opsweb', hdb_user: SU });
+			assert.deepStrictEqual(response.dropped, []);
+			assert.ok((await componentNames()).includes('opsweb-pr-5'));
+		});
+
+		/** Stands in for harper-pro: a peer node-b that reports `peerReleases` and answers drops with `answerDrop`. */
+		function withPeer(peerReleases, answerDrop) {
+			const replication = server.replication;
+			const saved = {
+				replicateOperation: replication.replicateOperation,
+				sendOperationToNode: replication.sendOperationToNode,
+			};
+			const savedNodes = server.nodes;
+			const sent = [];
+			replication.replicateOperation = async () => ({
+				replicated: [{ node: 'node-b', components: peerReleases }],
+			});
+			replication.sendOperationToNode = async (node, operation) => {
+				sent.push({ node: node.name, ...operation });
+				return answerDrop(operation);
+			};
+			server.nodes = [{ name: 'node-b' }];
+			return {
+				sent,
+				restore() {
+					Object.assign(replication, saved);
+					server.nodes = savedNodes;
+				},
+			};
+		}
+
+		it('drops the preview release a peer still holds, whatever its expiry, on that peer and at that release', async () => {
+			await enablePreviews(enableRequest('opsexp'));
+			const expired = { app: 'opsexp', pr: 1, expiresAt: '2000-01-01T00:00:00.000Z' };
+			const { deployment_id } = await deploy('opsexp-pr-1', expired);
+			await deploy('opsexp-pr-1');
+			const peer = withPeer([{ project: 'opsexp-pr-1', deployment_id }], () => ({ componentRemoved: true }));
+			let response;
+			try {
+				response = await disablePreviews({ operation: 'disable_previews', app: 'opsexp', hdb_user: SU });
+			} finally {
+				peer.restore();
+			}
 			assert.deepStrictEqual(
-				response.dropped.map((drop) => [drop.project, drop.componentRemoved]),
-				[['web-pr-1', false]]
+				response.dropped.map(({ node, project, componentRemoved }) => [node, project, componentRemoved]),
+				[['node-b', 'opsexp-pr-1', true]]
 			);
+			assert.deepStrictEqual(peer.sent, [
+				{
+					node: 'node-b',
+					operation: 'drop_component',
+					project: 'opsexp-pr-1',
+					ifDeploymentId: deployment_id,
+					restart: false,
+					replicated: false,
+				},
+			]);
+			assert.ok((await componentNames()).includes('opsexp-pr-1'), "this node's later release is kept");
 		});
 
 		it('stops with the identity revoked when a node fails to drop, and finishes when run again', async () => {
-			await enablePreviews(enableRequest('shop'));
-			await deploy('shop-pr-2', metadata('shop', 2));
-			const replicateOperation = server.replication.replicateOperation;
-			server.replication.replicateOperation = async () => ({
-				replicated: [{ node: 'node-b', status: 'failed', reason: 'unreachable' }],
+			await enablePreviews(enableRequest('opsshop'));
+			const { deployment_id } = await deploy('opsshop-pr-2', metadata('opsshop', 2));
+			const peer = withPeer([{ project: 'opsshop-pr-2', deployment_id }], () => {
+				throw new Error('unreachable');
 			});
 			try {
-				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'shop', hdb_user: SU }), (error) => {
-					assert.strictEqual(error.statusCode, 500);
-					assert.match(error.message, /revoked but not removed: shop-pr-2 on node-b: unreachable/);
-					return true;
+				await assert.rejects(
+					disablePreviews({ operation: 'disable_previews', app: 'opsshop', hdb_user: SU }),
+					(error) => {
+						assert.strictEqual(error.statusCode, 500);
+						assert.match(error.message, /revoked but not removed: opsshop-pr-2 on node-b: unreachable/);
+						return true;
+					}
+				);
+			} finally {
+				peer.restore();
+			}
+			assert.ok(!(await componentNames()).includes('opsshop-pr-2'), 'this node dropped its own');
+			assert.deepStrictEqual(await policiesOf('opsshop'), []);
+			assert.strictEqual(getUserWithRole('opsshop-ci-preview').active, false);
+			assert.ok(await getRoleByName('opsshop-ci-preview'), 'the role is kept until every drop succeeds');
+
+			const finished = await disablePreviews({ operation: 'disable_previews', app: 'opsshop', hdb_user: SU });
+			assert.deepStrictEqual(finished.removed.sort(), ['role opsshop-ci-preview', 'user opsshop-ci-preview']);
+			assert.strictEqual(getUserWithRole('opsshop-ci-preview'), undefined);
+		});
+
+		it('stops when a node cannot say what it holds', async () => {
+			await enablePreviews(enableRequest('opsquiet'));
+			const replicateOperation = server.replication.replicateOperation;
+			server.replication.replicateOperation = async () => ({
+				replicated: [{ node: 'node-c', status: 'failed', reason: 'timed out' }],
+			});
+			try {
+				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsquiet', hdb_user: SU }), {
+					statusCode: 500,
+					message: /revoked but not removed: node-c: timed out/,
 				});
 			} finally {
 				server.replication.replicateOperation = replicateOperation;
 			}
-			assert.deepStrictEqual(await policiesOf('shop'), []);
-			assert.strictEqual(getUserWithRole('shop-ci-preview').active, false);
-			assert.ok(await getRoleByName('shop-ci-preview'), 'the role is kept until every drop succeeds');
+			assert.ok(await getRoleByName('opsquiet-ci-preview'));
+		});
 
-			const finished = await disablePreviews({ operation: 'disable_previews', app: 'shop', hdb_user: SU });
-			assert.deepStrictEqual(finished.removed.sort(), ['role shop-ci-preview', 'user shop-ci-preview']);
-			assert.strictEqual(getUserWithRole('shop-ci-preview'), undefined);
+		it('refuses, changing nothing, a user named like the identity in another role, the role absent', async () => {
+			await addRole({ role: 'opsother', permission: { super_user: false, operations: ['get_components'] } });
+			await addUser({ username: 'opsalien-ci-preview', role: 'opsother', active: true, password: 'Alien-Password-1' });
+			await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsalien', hdb_user: SU }), {
+				statusCode: 409,
+				message: /User "opsalien-ci-preview" is in role "opsother"/,
+			});
+			assert.strictEqual(getUserWithRole('opsalien-ci-preview').active, true);
 		});
 
 		it('refuses, changing nothing, when a record named like the identity is not one enable wrote', async () => {
-			await addRole({ role: 'odd-ci-preview', permission: { super_user: false, operations: ['deploy_component'] } });
-			await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'odd', hdb_user: SU }), (error) => {
+			await addRole({ role: 'opsodd-ci-preview', permission: { super_user: false, operations: ['deploy_component'] } });
+			await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsodd', hdb_user: SU }), (error) => {
 				assert.strictEqual(error.statusCode, 409);
-				assert.match(error.message, /Role "odd-ci-preview" is not a preview role for odd-pr-\* alone/);
+				assert.match(error.message, /role "opsodd-ci-preview" is not a preview role for opsodd-pr-\* alone/);
 				return true;
 			});
-			assert.ok(await getRoleByName('odd-ci-preview'));
+			assert.ok(await getRoleByName('opsodd-ci-preview'));
+			const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsodd', hdb_user: SU });
+			assert.ok(policy.problems.includes('role "opsodd-ci-preview" is not a preview role for opsodd-pr-* alone'));
 		});
 	});
 });
