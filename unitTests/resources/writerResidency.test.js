@@ -7,6 +7,10 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { INVALIDATED } = require('#src/resources/Table');
 const { logger } = require('#src/utility/logging/logger');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { waitFor } = require('../waitFor.js');
 
 const SELF = global.server.hostname || hostname();
 const PEER = 'writer-residency-peer';
@@ -312,6 +316,35 @@ describe('Writer residency (harper#2257)', () => {
 			.filter(({ value }) => value === 'by-id-deleted')
 			.map(({ key }) => key);
 		assert.deepEqual(indexed, [], 'the deleted row left index entries behind');
+	});
+
+	it('keeps the blob files of a stored row an id-based omission leaves in place', async () => {
+		const Files = table({
+			table: 'WriterResidencyFiles',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'file', type: 'Any' },
+			],
+			audit: true,
+		});
+		const fileOf = (id) => getFilePathForBlob(Files.primaryStore.getEntry(id).value.file);
+		// above the inline size, so each row owns a file
+		await Files.put('kept', { id: 'kept', file: createBlob(randomBytes(25000)) });
+		await Files.put('control', { id: 'control', file: createBlob(randomBytes(25000)) });
+		const keptFile = fileOf('kept');
+		const controlFile = fileOf('control');
+		setDeletionDelay(0);
+		Files.setResidencyById((id) => (id === 'kept' ? [PEER] : undefined));
+		try {
+			await Files.put('kept', { id: 'kept', file: createBlob(randomBytes(25000)) });
+			await Files.delete('control');
+			await waitFor(() => !existsSync(controlFile), { message: 'premise: a deleted row releases its blob file' });
+			assert.ok(existsSync(keptFile), 'the omission released the blob file of the row it left in place');
+		} finally {
+			setDeletionDelay(undefined);
+			Files.setResidencyById(undefined);
+		}
 	});
 
 	it('leaves setResidencyById omission unchanged', async () => {

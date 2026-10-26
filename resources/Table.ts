@@ -5975,7 +5975,8 @@ export function makeTable(options): TableResourceClass {
 						updateRecord(
 							id,
 							storeRecord ? recordToStore : undefined,
-							storeRecord ? existingEntry : { ...existingEntry, value: undefined },
+							// with no record stored (audit-only, or an id-based omission) the stored row and its blobs stay
+							storeRecord && recordToStore !== undefined ? existingEntry : { ...existingEntry, value: undefined },
 							isRocksDB
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
@@ -10712,7 +10713,8 @@ export function makeTable(options): TableResourceClass {
 							updateRecord(
 								id,
 								recordToStore,
-								existingEntry,
+								// an id-based omission stores no row, so the stored one keeps its blobs
+								recordToStore === undefined ? { ...existingEntry, value: undefined } : existingEntry,
 								recordVersion,
 								omitLocalRecord ? INVALIDATED : 0,
 								writeAudit,

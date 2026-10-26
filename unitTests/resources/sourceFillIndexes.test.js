@@ -131,7 +131,7 @@ describe('Source fills', function () {
 			await waitFor(() => !Placed.primaryStore.hasLock('by-id'));
 			assert.equal(Placed.primaryStore.getEntry('by-id')?.value ?? undefined, undefined);
 			const logged = Array.from(Placed.auditStore.getRange({ start: 1 })).filter(
-				(auditRecord) => auditRecord.recordId === 'by-id'
+				(auditRecord) => auditRecord.recordId === 'by-id' && auditRecord.tableId === Placed.tableId
 			);
 			assert.equal(logged.length, 1, 'premise: the fill committed its audit record');
 			assert.deepEqual(indexedKeys(Placed, 'name', 'by-id'), []);
