@@ -415,6 +415,7 @@ assignTrackedAccessors(GenericTrackedObject, {}, true);
  * @returns
  */
 export function collapseData(target) {
+	if (target.constructor === Array) return collapseArray(target);
 	const changes = target.getChanges?.();
 	let copiedSource;
 	for (const key in changes) {
@@ -435,6 +436,15 @@ export function collapseData(target) {
 		Object.assign(copiedSource, target);
 	}
 	return copiedSource || target.getRecord?.() || target;
+}
+function collapseArray(target: any) {
+	if (target.getRecord && !hasChanges(target)) return target.getRecord();
+	const collapsed = new Array(target.length);
+	for (let i = 0, l = target.length; i < l; i++) {
+		const element = target[i];
+		collapsed[i] = element?.getRecord ? collapseData(element) : element;
+	}
+	return collapsed;
 }
 const hasOwnProperty = Object.prototype.hasOwnProperty;
 /**
@@ -509,6 +519,7 @@ export function hasChanges(target) {
 		for (let i = 0, l = target.length; i < l; i++) {
 			const sourceValue = source[i];
 			const targetValue = target[i];
+			if (sameValue(targetValue, sourceValue)) continue;
 			if (sourceValue && targetValue?.getRecord?.() === sourceValue) {
 				if (hasChanges(targetValue)) return true;
 			} else return true;
@@ -526,8 +537,15 @@ export function hasChanges(target) {
 				} else return true;
 			} else return true;
 		}
+		// own properties are merged into the stored record by updateAndFreeze/collapseData
+		for (const key of Object.keys(target)) {
+			if (!sameValue(target[key], source?.[key])) return true;
+		}
 	}
 	return false;
+}
+function sameValue(a, b) {
+	return a === b || (a !== a && b !== b); // NaN
 }
 
 /**
