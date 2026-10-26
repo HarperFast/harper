@@ -571,21 +571,12 @@ export function hasAsyncSerialization() {
 	return !!asyncSerializations;
 }
 
-<<<<<<< HEAD
-function streamToBuffer(stream: Readable): Promise<Buffer> {
-	const MAX_REQUEST_BODY_SIZE = envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
-=======
 export function getMaxRequestBodySize(): number {
 	return envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
 }
 
-type RequestBodyStream = AsyncIterable<Uint8Array> & {
-	on(event: string, listener: (...args: any[]) => void): unknown;
-};
-
-function streamToBuffer(stream: RequestBodyStream): Promise<Buffer> {
+function streamToBuffer(stream: Readable): Promise<Buffer> {
 	const MAX_REQUEST_BODY_SIZE = getMaxRequestBodySize();
->>>>>>> 1e98fcb9a (Enforce http.maxRequestBodySize on the MCP application endpoint)
 	return new Promise((resolve, reject) => {
 		const buffers = [];
 		let size = 0;
