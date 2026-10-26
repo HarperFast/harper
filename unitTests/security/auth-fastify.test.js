@@ -14,11 +14,6 @@ const insert = require('#src/dataLayer/insert');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
-function setTokenTimeout(param, value) {
-	const original = env.get(param);
-	env.setProperty(param, value);
-	return () => env.setProperty(param, original);
-}
 const serverModule = require('#src/server/Server');
 const {
 	credentialRejectionError,
@@ -27,6 +22,12 @@ const {
 	isCredentialRejection,
 } = require('#src/security/deferredAuthentication');
 >>>>>>> 0974ce0db (Settle deferred credential rejections on legacy Fastify routes and challenge every authentication 401)
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
