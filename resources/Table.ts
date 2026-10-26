@@ -769,11 +769,7 @@ const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
-/**
- * Holds a tracked record's `#savingOperation` slot while its write waits on the HTTP precondition lock,
- * so `save()`, `addTo()` and `doesExist()` see a write in flight, as they would for one staged
- * synchronously. The real write replaces it once staged under the lock.
- */
+// A tracked record's #savingOperation while its write waits on the HTTP precondition lock
 class ConditionLockWait {
 	fullUpdate: boolean;
 	staged: Promise<unknown>;
@@ -2011,7 +2007,9 @@ export function makeTable(options): TableResourceClass {
 		if (condition.locking) return condition.locking;
 		// read (once) by the #reloadLocked this lock() runs, to tell it apart from an application lock
 		condition.acquiring = resource;
-		return (condition.locking = resource.lock(id, { hold: true }).then((locked) => {
+		const acquisition = resource.lock(id, { hold: true });
+		acquisition.catch(() => (condition.acquiring = undefined));
+		return (condition.locking = acquisition.then((locked) => {
 			if (condition.finished)
 				return locked.unlock().then(() => {
 					throw new ClientError('Conditional request already completed', 409);
@@ -4285,8 +4283,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		#whenStaged(staging: any) {
 			const updated = when(staging, () => this);
-			// A caller may discard update() as it would a synchronous one (addTo() does): a write waiting
-			// on its precondition lock reports failure through save() instead.
+			// discardable like a synchronous update() (addTo() discards it); save() reports the failure
 			const saving = this.#savingOperation;
 			if (saving instanceof ConditionLockWait && staging === saving.staged) (updated as Promise<this>).catch(noop);
 			return updated;
@@ -5261,7 +5258,7 @@ export function makeTable(options): TableResourceClass {
 			// blob metadata) stays the pre-transaction one.
 			const context = this.getContext();
 			const condition = context?.[WRITE_CONDITION];
-			const forCondition = condition?.acquiring === this;
+			const forCondition = condition?.acquiring === this && writeKeyId(id) === writeKeyId(condition.id);
 			if (forCondition) condition.acquiring = undefined;
 			const link = txnForContext(context);
 			let entryForReload: any = admitted ? admitted.entry : primaryStore.getEntry(id);
@@ -5301,12 +5298,13 @@ export function makeTable(options): TableResourceClass {
 			if (holdHandle != null) this.#lockHandle = holdHandle;
 			this.#baseReadTxn = undefined;
 			this.#baseReadEntry = undefined;
+			const callerRecord = this.#record;
 			TableResource._updateResource(this, entryForReload);
 			if (forCondition) {
-				// A precondition lock only refreshes the entry its predicate is checked against: the
-				// record's tracked write stays as the caller left it, and the record does not become
-				// lock-writable.
-				if (this.#savingOperation?.fullUpdate) this.#record = {};
+				// A precondition lock only refreshes the entry its predicate is checked against: a pending
+				// tracked write keeps the record it was made against (a full replacement's cleared one too),
+				// and the record does not become lock-writable.
+				if (this.#savingOperation instanceof ConditionLockWait) this.#record = callerRecord;
 				return this;
 			}
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that

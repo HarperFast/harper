@@ -1640,11 +1640,19 @@ describe('conditional writes through a tracked record instance', () => {
 				return this.save();
 			}
 		}
+		let lockSettled;
 		class DelayedSave extends Tracked {
+			async lock(...args) {
+				const locked = await super.lock(...args);
+				lockSettled.resolve();
+				return locked;
+			}
 			async patch(data) {
+				lockSettled = Promise.withResolvers();
 				this.addTo('n', data.add);
 				this.name = data.name;
-				await delay(20);
+				if (!isLMDB) await lockSettled.promise;
+				await nextTurn();
 				return this.save();
 			}
 		}
@@ -1722,6 +1730,60 @@ describe('conditional writes through a tracked record instance', () => {
 		const response = await pending;
 		assert.strictEqual(response.status, 204, await bodyOf(response));
 		assert.deepStrictEqual(stored('across'), { id: 'across', n: 15, m: 5, name: 'after', legacy: 'changed' });
+	});
+
+	it('keeps a pending tracked write when the handler locks another record first', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(10_000);
+		const otherLocked = Promise.withResolvers();
+		class LocksOther extends Tracked {
+			async patch(data) {
+				this.addTo('n', data.add);
+				const other = await this.lock('lock-other-target');
+				other.addTo('n', 1);
+				otherLocked.resolve();
+				return this.save();
+			}
+		}
+		resources.set('LocksOther', LocksOther, { rest: true });
+		await Tracked.put('lock-other', { n: 10 });
+		await Tracked.put('lock-other-target', { n: 0 });
+		const etag = etagOf('lock-other');
+		const held = await Tracked.lock('lock-other', { hold: true });
+		let pending;
+		try {
+			pending = request('PATCH', '/LocksOther/lock-other', { add: 5 }, { 'if-match': etag });
+			await otherLocked.promise;
+		} finally {
+			await held.unlock();
+		}
+		const response = await pending;
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(stored('lock-other').n, 15);
+		assert.strictEqual(stored('lock-other-target').n, 1);
+	});
+
+	it('keeps a full replacement cleared when another update() follows it before the lock settles', async () => {
+		let observed;
+		class ReplaceThenUpdate extends Tracked {
+			async put(data) {
+				this.update({ name: data.name }, true);
+				await this.update({ m: 2 });
+				observed = this.legacy;
+				return this.save();
+			}
+		}
+		resources.set('ReplaceThenUpdate', ReplaceThenUpdate, { rest: true });
+		await Tracked.put('replace-update', { n: 1, name: 'before', legacy: 'old' });
+		const response = await request(
+			'PUT',
+			'/ReplaceThenUpdate/replace-update',
+			{ name: 'after' },
+			{ 'if-match': etagOf('replace-update') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(observed, undefined);
+		assert.deepStrictEqual(stored('replace-update'), { id: 'replace-update', name: 'after', m: 2 });
 	});
 
 	it('keeps a full replacement on the instance and closes it on save()', async () => {

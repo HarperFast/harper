@@ -89,8 +89,6 @@ export class ConditionalCounter extends tables.Counter {
 	}
 }
 
-// The tracked-record shape: addTo() starts the update without awaiting it, and save() must still
-// apply the write and its precondition.
 export class ConditionalTrackedCounter extends tables.Counter {
 	patch(data) {
 		this.addTo('n', data.add);
