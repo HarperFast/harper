@@ -131,23 +131,26 @@ function holdsField(record: any, key: string) {
 	return false;
 }
 
-// A plain set has no inverse, so its key is left to older history (`unknowns`). An integer add is
-// judged once every newer patch is reversed (`reversedAdds`); a fractional one can leave a float
-// residue, so its key is unknown outright.
+// A plain set has no inverse, so its key is left to older history (`unknowns`). An add reverses
+// exactly only in integer arithmetic (a float or an unsafe integer can carry a rounding residue), so
+// only such an add's key waits in `reversedAdds` for getRecordAtTime to judge its final value.
 export function applyReverse(record, update, unknowns: Set<string>, reversedAdds: Set<string>) {
 	for (const key in update) {
 		const value = update[key];
 		if (value?.__op__) {
 			const reverse = operations[value.__op__]?.reverse;
-			if (reverse) reverse(record, key, { value: value.value });
-			else throw new Error(`Unsupported operation ${value.__op__}`);
-			if (value.__op__ === 'add' && (typeof value.value === 'bigint' || Number.isInteger(value.value)))
-				reversedAdds.add(key);
-			else unknowns.add(key);
+			if (!reverse) throw new Error(`Unsupported operation ${value.__op__}`);
+			const exact = value.__op__ === 'add' && isExactInteger(record[key]) && isExactInteger(value.value);
+			reverse(record, key, { value: value.value });
+			(exact ? reversedAdds : unknowns).add(key);
 		} else {
 			unknowns.add(key);
 		}
 	}
+}
+
+function isExactInteger(value: unknown) {
+	return typeof value === 'bigint' || Number.isSafeInteger(value);
 }
 
 // Apply an audit update onto a record moving forward in time (the inverse of applyReverse). When
@@ -226,10 +229,12 @@ function reconstructForward(
 			}
 		}
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+		if (partial && mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp))
+			partial.truncated = true;
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
 	}
-	if (partial) partial.truncated = truncated;
+	if (partial && truncated) partial.truncated = true;
 	if (entries.length === 0) return null; // record did not exist at `timestamp`
 	// Replay oldest-first. The base is the put if the chain reached one; otherwise an empty record
 	// (the first in-range write was a patch, or a delete bounds the history) onto which patches apply.
@@ -276,6 +281,15 @@ function resolveAuditPosition(auditStore, tableId: number, recordId: any, versio
 	return { txnLogKey: version, nodeId };
 }
 
+// An out-of-order write merged into the record sits on a branch the walks never visit (they follow
+// one predecessor), so history that crosses one merged by `timestamp` cannot prove a key absent.
+function mergesBranchBy(refs, followed, timestamp) {
+	return refs?.some(
+		(ref) =>
+			ref.version <= timestamp && (ref.version !== followed.txnLogKey || (ref.nodeId ?? 0) !== (followed.nodeId ?? 0))
+	);
+}
+
 function previousAuditPosition(auditStore, tableId: number, recordId: any, auditEntry) {
 	return resolveAuditPosition(
 		auditStore,
@@ -315,6 +329,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		: { txnLogKey: currentEntry.localTime ?? currentEntry.version, nodeId: currentEntry.nodeId };
 	let auditTime = initialPosition.txnLogKey;
 	let auditNodeId = initialPosition.nodeId;
+	let branched = mergesBranchBy(currentEntry.additionalAuditRefs, initialPosition, timestamp);
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
 	const reversedAdds = new Set<string>();
@@ -328,10 +343,16 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				replaced = true;
 				break;
 			case 'patch':
-				if (!replaced) applyReverse(record, auditEntry.getValue(store), unknowns, reversedAdds);
+				if (!replaced) {
+					const update = auditEntry.getValue(store);
+					// a patch with no readable body cannot be reversed, but the state before it does not need it
+					if (update == null) replaced = true;
+					else applyReverse(record, update, unknowns, reversedAdds);
+				}
 				break;
 		}
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+		branched ||= mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp);
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
 	}
@@ -360,12 +381,12 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	// number). Trusting that spares a counter the walk back to its base below.
 	for (const key of reversedAdds) {
 		const value = record[key];
-		if (!(typeof value === 'bigint' ? value !== 0n : Number.isSafeInteger(value) && value !== 0)) unknowns.add(key);
+		if (!isExactInteger(value) || value === 0 || value === 0n) unknowns.add(key);
 	}
 	// Unknown keys take their value at `timestamp` from a forward rebuild, so CRDT ops accumulate
 	// correctly; a key a complete rebuild lacks did not exist then.
 	if (unknowns.size > 0 && auditTime > 0) {
-		const partial = { truncated: false };
+		const partial = { truncated: branched };
 		const priorRecord = reconstructForward(
 			auditStore,
 			store,

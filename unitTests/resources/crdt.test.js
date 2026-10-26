@@ -574,6 +574,49 @@ describe('crdt getRecordAtTime', () => {
 			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'L'), { id: 'L', v: 2, total: 0.1 });
 		});
 
+		it('settles a counter whose newer total exceeded safe-integer precision from history', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'N', count: 3 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { count: add(5e15) }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(5e15) }, previousVersion: 20 },
+			]);
+			// 3 + 5e15 + 5e15 rounds to 10000000000000004, so reversing gives 5000000000000004
+			const current = currentEntry({ id: 'N', count: 3 + 5e15 + 5e15 }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'N'), { id: 'N', count: 5000000000000003 });
+		});
+
+		it('does not claim absence across an out-of-order write merged on another branch', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'O', v: 1 }, previousVersion: 0 },
+				{ version: 30, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				// another node's write, versioned 20, merged at log key 40 after the newer version 30
+				{ txnLogKey: 40, version: 20, nodeId: 2, type: 'patch', value: { extra: 'x' } },
+				{
+					version: 50,
+					type: 'patch',
+					value: { extra: 'y' },
+					previousVersion: 30,
+					previousNodeId: 1,
+					previousAdditionalAuditRefs: [{ version: 40, nodeId: 2 }],
+				},
+			]);
+			const current = currentEntry({ id: 'O', v: 2, extra: 'y' }, 50);
+			// the single-link rebuild (50 -> 30 -> 10) never visits the merged write
+			assert.deepStrictEqual(getRecordAtTime(current, 40, store, 1, 'O'), { id: 'O', v: 2, extra: 'y' });
+			// before the merge there is no branch to miss
+			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'O'), { id: 'O', v: 2 });
+		});
+
+		it('rebuilds from older history across a newer patch with no readable body', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'P', label: 'a' }, previousVersion: 0 },
+				// wrote { label: 'b' }; its body is no longer readable
+				{ version: 20, type: 'patch', value: undefined, previousVersion: 10 },
+			]);
+			const current = currentEntry({ id: 'P', label: 'b' }, 20);
+			assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'P'), { id: 'P', label: 'a' });
+		});
+
 		it('trusts a nonzero integer counter reversal without reading older history', () => {
 			const store = makeStore([
 				{ version: 10, type: 'put', value: { id: 'M', count: 3 }, previousVersion: 0 },
