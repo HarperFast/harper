@@ -8,13 +8,37 @@ import chalk from 'chalk';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join, posix } from 'node:path';
+import { join } from 'node:path';
 import * as YAML from 'yaml';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { cliOperations, resolveGitRepo } from './cliOperations.ts';
 import { normalizeTarget } from './cliCredentials.ts';
+import {
+	GITHUB_ACTIONS_ISSUER,
+	buildWorkflowRef,
+	canonicalWorkflowPath,
+	CI_PREVIEW_OPERATIONS,
+} from '../utility/previewIdentity.ts';
+import {
+	planIdentityReconcile,
+	policyDifferences,
+	roleDifference,
+	userDifference,
+	type DesiredPolicy,
+	type DesiredRole,
+	type DesiredUser,
+	type Reconcile,
+} from '../security/ciIdentity.ts';
 
-export const GITHUB_ACTIONS_ISSUER = 'https://token.actions.githubusercontent.com';
+export {
+	GITHUB_ACTIONS_ISSUER,
+	buildWorkflowRef,
+	canonicalWorkflowPath,
+	CI_PREVIEW_OPERATIONS,
+	policyDifferences,
+	roleDifference,
+	userDifference,
+};
 // `get_deployment` is how `harper deploy restart=rolling` waits for the other nodes; `get_job` is kept for workflows
 // that still poll the activation job themselves. `registration_info` (which returns only Harper's version) is the
 // CLI's check before a deploy: refused, the deploy still works, but the cluster logs a denial on every run.
@@ -26,6 +50,7 @@ const DEFAULT_ENVIRONMENT = 'production';
 const POLICY_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const CHILD_PROCESS_TIMEOUT_MS = 15_000;
+const TARGET_VARIABLE = 'HARPER_CLI_TARGET';
 
 function cliError(message: string): Error {
 	return Object.assign(new Error(message), { statusCode: 400 });
@@ -48,25 +73,6 @@ export function deriveCiNames(component: string): CiNames {
 		throw cliError(`"${names.policy}" is not a valid trust policy id (1–128 letters, numbers, "_", "-" or ".").`);
 	}
 	return names;
-}
-
-export function buildWorkflowRef(repository: string, workflow: string, branch: string): string {
-	return `${repository}/${workflow}@refs/heads/${branch}`;
-}
-
-/** The repository-relative path GitHub names in workflow_ref, used for both the file check and the claim. */
-export function canonicalWorkflowPath(workflow: string): string {
-	const normalized = posix.normalize(workflow.replaceAll('\\', '/')).replace(/^\.\//, '');
-	if (
-		!normalized.startsWith('.github/workflows/') ||
-		normalized.split('/').length !== 3 ||
-		!/\.ya?ml$/.test(normalized)
-	) {
-		throw cliError(
-			`workflow=${workflow} must name a .yml or .yaml file in .github/workflows/, where GitHub reads workflows.`
-		);
-	}
-	return normalized;
 }
 
 /** An argument as typed: `branch=1.0` must stay "1.0", not become the number 1. */
@@ -99,6 +105,15 @@ function grantsIdToken(job: any, workflow: any): boolean {
 	return typeof permissions === 'object' && permissions !== null && permissions['id-token'] === 'write';
 }
 
+function parseWorkflow(content: string): { workflow?: any; error?: string } {
+	try {
+		// Failsafe keeps every scalar as written: the default schema reads `branches: [1.0]` as the number 1.
+		return { workflow: YAML.parse(content, { schema: 'failsafe' }) };
+	} catch (error) {
+		return { error: `it is not valid YAML: ${(error as Error).message}` };
+	}
+}
+
 /**
  * Checks the workflow file against the branch and environment the policy will pin. A literal value
  * that disagrees is a problem — no run of that workflow could match the policy. A value this cannot
@@ -107,13 +122,8 @@ function grantsIdToken(job: any, workflow: any): boolean {
 export function checkWorkflowFile(content: string, branch: string, environment: string): WorkflowCheck {
 	const problems: string[] = [];
 	const unverified: string[] = [];
-	let workflow: any;
-	try {
-		// Failsafe keeps every scalar as written: the default schema reads `branches: [1.0]` as the number 1.
-		workflow = YAML.parse(content, { schema: 'failsafe' });
-	} catch (error) {
-		return { problems: [`it is not valid YAML: ${(error as Error).message}`], unverified };
-	}
+	const { workflow, error } = parseWorkflow(content);
+	if (error) return { problems: [error], unverified };
 	const triggers = workflow?.on;
 	const push = triggers && typeof triggers === 'object' && !Array.isArray(triggers) ? triggers.push : undefined;
 	const branches = asList(push?.branches);
@@ -134,7 +144,12 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 			problems.push(`it deploys on pushes to ${branches.join(', ')}, not "${branch}"`);
 		}
 	}
+	checkEnvironmentJobs(workflow, environment, problems, unverified);
+	return { problems, unverified };
+}
 
+/** That some job runs in `environment` and may request an identity token there. */
+function checkEnvironmentJobs(workflow: any, environment: string, problems: string[], unverified: string[]): void {
 	const jobs: any[] = Object.values(workflow?.jobs ?? {});
 	const environments = jobs.map(environmentName).filter((name) => name !== undefined && name !== null);
 	const literal = environments.filter((name) => !isExpression(name));
@@ -151,7 +166,7 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 				);
 			}
 		}
-		return { problems, unverified };
+		return;
 	}
 	if (environments.length === 0 && !callsReusable) {
 		// GitHub omits the environment claim for a job with none, so the policy could never match.
@@ -161,73 +176,128 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	} else {
 		unverified.push(`that a job runs in the "${environment}" environment`);
 	}
+}
+
+function triggerEvents(triggers: unknown): { names: string[]; config: Record<string, any> } {
+	if (typeof triggers === 'string') return { names: [triggers], config: {} };
+	if (Array.isArray(triggers)) return { names: triggers.map(String), config: {} };
+	if (triggers && typeof triggers === 'object') return { names: Object.keys(triggers), config: triggers };
+	return { names: [], config: {} };
+}
+
+const SAME_REPOSITORY_CONDITION = new RegExp(
+	[
+		String.raw`github\.event\.pull_request\.head\.repo\.full_name\s*==\s*(?:github\.repository|github\.event\.pull_request\.base\.repo\.full_name)\b`,
+		String.raw`(?:github\.repository|github\.event\.pull_request\.base\.repo\.full_name)\s*==\s*github\.event\.pull_request\.head\.repo\.full_name\b`,
+		String.raw`github\.event\.pull_request\.head\.repo\.fork\s*==\s*false\b`,
+		String.raw`!\s*github\.event\.pull_request\.head\.repo\.fork\b`,
+	].join('|')
+);
+const PULL_REQUEST_HEAD = /head\.sha|head\.ref|head\.repo|head_ref|merge_commit_sha|refs\/pull\//;
+const PR_HEAD_SHELL_CHECKOUT =
+	/\bgh\s+pr\s+checkout\b|\bgit\b[^\n]*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b[^\n]*(?:head\.sha|head\.ref|head_ref|refs\/pull\/|pull\/)/;
+
+/** How a job holding an identity token could end up running the PR's own code, as far as its steps show. */
+function checkPullRequestCheckout(name: string, job: any, problems: string[], unverified: string[]): void {
+	if (typeof job?.uses === 'string') {
+		unverified.push(`that the reusable workflow job "${name}" calls never checks out the pull request's head`);
+		return;
+	}
+	for (const step of asList(job?.steps) as any[]) {
+		if (typeof step?.uses === 'string' && /^actions\/checkout@/i.test(step.uses.trim())) {
+			for (const field of ['ref', 'repository']) {
+				const value = step.with?.[field];
+				if (value === undefined) continue;
+				if (PULL_REQUEST_HEAD.test(String(value))) {
+					problems.push(
+						`job "${name}" holds an identity token and checks out the pull request's head (${field}: ${value}), so a ` +
+							`PR's code would run with the preview identity`
+					);
+				} else if (isExpression(value)) {
+					unverified.push(`that job "${name}"'s checkout ${field} (${value}) is not the pull request's head`);
+				}
+			}
+		}
+		if (typeof step?.run === 'string' && PR_HEAD_SHELL_CHECKOUT.test(step.run)) {
+			problems.push(
+				`job "${name}" holds an identity token and a step checks out the pull request's head, so a PR's code would ` +
+					'run with the preview identity'
+			);
+		}
+	}
+}
+
+/** Fork PRs run `pull_request_target` with the base repository's identity, and no token claim names the head repository. */
+function checkSameRepositoryCondition(name: string, job: any, problems: string[], unverified: string[]): void {
+	const condition = typeof job?.if === 'string' ? job.if.replace(/\$\{\{|\}\}/g, ' ').replace(/\s+/g, ' ') : '';
+	if (SAME_REPOSITORY_CONDITION.test(condition)) {
+		if (condition.includes('||')) {
+			unverified.push(`that job "${name}"'s \`if\` excludes fork pull requests on every side of its ||`);
+		}
+		return;
+	}
+	const needs = asList(job?.needs);
+	if (needs.length > 0 && !/\b(?:always|failure|cancelled)\s*\(/.test(condition)) {
+		unverified.push(`that a job "${name}" needs (${needs.join(', ')}) excludes fork pull requests`);
+		return;
+	}
+	problems.push(
+		`job "${name}" runs for pull requests from forks: add \`if: github.event.pull_request.head.repo.full_name == ` +
+			'github.repository` to it'
+	);
+}
+
+/**
+ * Checks a `pull_request_target` preview workflow against the policies `enable_previews` writes: what can never match
+ * them is a problem, and so is what would hand a fork, or a PR's own code, the preview identity.
+ */
+export function checkPreviewWorkflowFile(
+	content: string,
+	branch: string,
+	environment: string,
+	cleanupEnvironment: string
+): WorkflowCheck {
+	const problems: string[] = [];
+	const unverified: string[] = [];
+	const { workflow, error } = parseWorkflow(content);
+	if (error) return { problems: [error], unverified };
+	const { names, config } = triggerEvents(workflow?.on);
+	if (!names.includes('pull_request_target')) {
+		problems.push(`it has no pull_request_target trigger, so no run's token carries event_name pull_request_target`);
+	} else {
+		const filter = config.pull_request_target;
+		const branches = asList(filter?.branches);
+		if (branches.length > 0 && !branches.includes(branch)) {
+			if (branches.some((entry) => isExpression(entry) || /[*?[!+]/.test(String(entry)))) {
+				unverified.push(`that ${branches.join(', ')} matches "${branch}"`);
+			} else {
+				problems.push(`it runs only for pull requests into ${branches.join(', ')}, not "${branch}"`);
+			}
+		}
+		if (asList(filter?.['branches-ignore']).includes(branch)) {
+			problems.push(`its branches-ignore filter leaves out pull requests into "${branch}"`);
+		}
+	}
+	checkEnvironmentJobs(workflow, environment, problems, unverified);
+	for (const [name, job] of Object.entries<any>(workflow?.jobs ?? {})) {
+		const environmentOfJob = environmentName(job);
+		if (environmentOfJob === cleanupEnvironment && !grantsIdToken(job, workflow) && typeof job?.uses !== 'string') {
+			problems.push(`job "${name}" runs in "${cleanupEnvironment}" without \`permissions: id-token: write\``);
+		}
+		if (!grantsIdToken(job, workflow) && typeof job?.uses !== 'string') continue;
+		checkPullRequestCheckout(name, job, problems, unverified);
+		if (environmentOfJob === environment) checkSameRepositoryCondition(name, job, problems, unverified);
+	}
 	return { problems, unverified };
 }
 
 export interface DesiredRecords {
-	role: { role: string; permission: { super_user: false; operations: string[] } };
-	user: { username: string; role: string };
-	policy: {
-		id: string;
-		issuer: string;
-		audience: string;
-		user: string;
-		claims: Record<string, string>;
-		operations: string[];
-		description: string;
-	};
+	role: DesiredRole;
+	user: DesiredUser;
+	policy: DesiredPolicy;
 }
 
-const sameSet = (left: unknown, right: string[]) =>
-	Array.isArray(left) && left.length === right.length && right.every((entry) => left.includes(entry));
-
-const ROLE_FLAGS = new Set(['super_user', 'structure_user', 'cluster_user', 'operations']);
-
-export function roleDifference(existing: any, desired: DesiredRecords['role']): string | undefined {
-	const permission = existing?.permission ?? {};
-	if (permission.super_user === true) return 'it is a super_user role';
-	for (const flag of ['structure_user', 'cluster_user']) {
-		if (permission[flag]) return `it sets ${flag}`;
-	}
-	if (!sameSet(permission.operations, desired.permission.operations)) {
-		return `its operations are ${JSON.stringify(permission.operations ?? null)}, not ${JSON.stringify(desired.permission.operations)}`;
-	}
-	const tableGrants = Object.keys(permission).filter((key) => !ROLE_FLAGS.has(key));
-	if (tableGrants.length > 0) return `it grants database permissions (${tableGrants.join(', ')})`;
-	return undefined;
-}
-
-export function userDifference(existing: any, desired: DesiredRecords['user']): string | undefined {
-	const roleName = typeof existing?.role === 'object' ? existing.role?.role : existing?.role;
-	if (roleName !== desired.role) return `it is in role "${roleName}", not "${desired.role}"`;
-	if (existing.active === false) return 'it is inactive';
-	return undefined;
-}
-
-export function policyDifferences(existing: any, desired: DesiredRecords['policy']): string[] {
-	const differences: string[] = [];
-	for (const field of ['issuer', 'audience', 'user'] as const) {
-		if (existing?.[field] !== desired[field]) {
-			differences.push(`${field} is ${JSON.stringify(existing?.[field])}, not ${JSON.stringify(desired[field])}`);
-		}
-	}
-	const claims = existing?.claims ?? {};
-	const claimNames = new Set([...Object.keys(claims), ...Object.keys(desired.claims)]);
-	for (const name of claimNames) {
-		if (claims[name] !== desired.claims[name]) {
-			differences.push(`claim ${name} is ${JSON.stringify(claims[name])}, not ${JSON.stringify(desired.claims[name])}`);
-		}
-	}
-	if (!sameSet(existing?.operations, desired.operations)) {
-		differences.push(
-			`operations are ${JSON.stringify(existing?.operations ?? null)}, not ${JSON.stringify(desired.operations)}`
-		);
-	}
-	if (existing?.enabled === false) differences.push('it is disabled');
-	return differences;
-}
-
-export type Reconcile = 'create' | 'keep';
+export type { Reconcile };
 
 export interface ReconcilePlan {
 	role: Reconcile;
@@ -240,35 +310,19 @@ export function planReconcile(
 	existing: { roles: any[]; users: any[]; policies: any[] },
 	desired: DesiredRecords
 ): ReconcilePlan {
-	const conflicts: string[] = [];
-	const role = existing.roles.find((candidate) => candidate?.role === desired.role.role);
-	const roleProblem = role && roleDifference(role, desired.role);
-	if (roleProblem) conflicts.push(`Role "${desired.role.role}" already exists and ${roleProblem}.`);
-
-	const user = existing.users.find((candidate) => candidate?.username === desired.user.username);
-	const userProblem = user && userDifference(user, desired.user);
-	if (userProblem) conflicts.push(`User "${desired.user.username}" already exists and ${userProblem}.`);
-
-	const policy = existing.policies.find((candidate) => candidate?.id === desired.policy.id);
-	const policyProblems = policy ? policyDifferences(policy, desired.policy) : [];
-	if (policyProblems.length > 0) {
-		conflicts.push(
-			`Trust policy "${desired.policy.id}" already exists and ${policyProblems.join('; ')}. If it should be replaced, ` +
-				`drop it with \`harper drop_oidc_trust id=${desired.policy.id}\` and run setup again.`
-		);
-	}
-	return {
-		role: role ? 'keep' : 'create',
-		user: user ? 'keep' : 'create',
-		policy: policy ? 'keep' : 'create',
-		conflicts,
-	};
+	const plan = planIdentityReconcile(
+		existing,
+		{ role: desired.role, user: desired.user, policies: [desired.policy] },
+		(id) => `If it should be replaced, drop it with \`harper drop_oidc_trust id=${id}\` and run setup again.`
+	);
+	return { role: plan.role, user: plan.user, policy: plan.policies[0], conflicts: plan.conflicts };
 }
 
 interface RepositoryInfo {
 	id: string;
 	fullName: string;
 	defaultBranch?: string;
+	private?: boolean;
 }
 
 function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
@@ -278,6 +332,7 @@ function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
 		id: String(data.id),
 		fullName: data.full_name,
 		defaultBranch: typeof data.default_branch === 'string' ? data.default_branch : undefined,
+		private: typeof data.private === 'boolean' ? data.private : undefined,
 	};
 }
 
@@ -356,10 +411,10 @@ async function resolveRepositoryId(req: any, info: RepositoryInfo | undefined, i
 export type VariableState =
 	{ state: 'absent' } | { state: 'set'; value: string } | { state: 'unknown'; reason: string };
 
-function readGithubVariable(repository: string): VariableState {
+function readGithubVariable(repository: string, name: string): VariableState {
 	const result = spawnSync(
 		'gh',
-		['api', '--hostname', 'github.com', `repos/${repository}/actions/variables/HARPER_CLI_TARGET`, '--jq', '.value'],
+		['api', '--hostname', 'github.com', `repos/${repository}/actions/variables/${name}`, '--jq', '.value'],
 		{ encoding: 'utf8', timeout: CHILD_PROCESS_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] }
 	);
 	if (result.error) {
@@ -394,7 +449,7 @@ export function variableAction(current: VariableState, audience: string): 'keep'
 }
 
 /** POST only creates (`gh variable set` would replace), so a variable written since the read is not overwritten. */
-function createGithubVariable(repository: string, value: string): { ok: boolean; reason?: string } {
+function createGithubVariable(repository: string, name: string, value: string): { ok: boolean; reason?: string } {
 	const result = spawnSync(
 		'gh',
 		[
@@ -405,7 +460,7 @@ function createGithubVariable(repository: string, value: string): { ok: boolean;
 			'POST',
 			`repos/${repository}/actions/variables`,
 			'-f',
-			'name=HARPER_CLI_TARGET',
+			`name=${name}`,
 			'-f',
 			`value=${value}`,
 		],
@@ -421,24 +476,44 @@ function createGithubVariable(repository: string, value: string): { ok: boolean;
 	return { ok: true };
 }
 
-export async function setupGithubActions(req: any, transport: any, component: string): Promise<void> {
-	const interactive = Boolean(process.stdin.isTTY);
-	const names = deriveCiNames(component);
-
-	const initial: any = await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true);
-	const resolvedTarget: string | undefined = initial?.resolvedTarget;
+/**
+ * The target the setup operations go to, from the response to a first operation sent there. A target from a saved
+ * login can change if someone runs `harper login` during setup, so it is pinned; an explicit or environment target
+ * can't, and pinning it would drop credentials in its userinfo.
+ */
+export async function resolveSetupTarget(
+	transport: any,
+	probe: Record<string, unknown>
+): Promise<{ response: any; audience: string }> {
+	const response: any = await cliOperations({ ...transport, ...probe }, true);
+	const resolvedTarget: string | undefined = response?.resolvedTarget;
 	if (!resolvedTarget) {
 		throw cliError(
 			'GitHub Actions setup needs a remote cluster: pass target=<url>, set HARPER_CLI_TARGET, or run `harper login <url>` first.'
 		);
 	}
-	// A target from a saved login can change if someone runs `harper login` during setup, so pin it. An
-	// explicit or environment target can't, and pinning it would drop credentials in its userinfo.
 	if (!transport.target && !process.env.HARPER_CLI_TARGET && !process.env.CLI_TARGET) {
 		transport.target = resolvedTarget;
 	}
-	const audience = normalizeTarget(resolvedTarget);
+	return { response, audience: normalizeTarget(resolvedTarget) };
+}
 
+export interface GithubRepository {
+	/** As the user named it. */
+	repository: string;
+	/** As GitHub spells it, which is what workflow_ref carries; the name as given when it was not looked up. */
+	fullName: string;
+	repositoryId: string;
+	defaultBranch?: string;
+	private?: boolean;
+	lookedUp: boolean;
+}
+
+export async function resolveGithubRepository(
+	req: any,
+	interactive: boolean,
+	notes: string[]
+): Promise<GithubRepository> {
 	const repository = await resolveRepository(req, interactive);
 	// Looked up even when repository_id= is given: GitHub's spelling of the name is what workflow_ref
 	// carries, and the claim is compared exactly.
@@ -448,41 +523,109 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		throw cliError(`${info.fullName} has id ${info.id}, not ${repositoryId}.`);
 	}
 	const fullName = info?.fullName ?? repository;
-	const workflow = canonicalWorkflowPath(rawStringArg(req, 'workflow') ?? DEFAULT_WORKFLOW);
-	const branch = rawStringArg(req, 'branch') ?? DEFAULT_BRANCH;
-	const environment = rawStringArg(req, 'environment') ?? DEFAULT_ENVIRONMENT;
-
-	const notes: string[] = [];
 	if (!info) {
 		notes.push(
 			`The repository name was not looked up, so its casing was not verified: workflow_ref is compared exactly, ` +
 				`so "${fullName}" must be spelled as GitHub spells it.`
 		);
 	}
-	if (info?.defaultBranch && info.defaultBranch !== branch) {
-		notes.push(`The repository's default branch is "${info.defaultBranch}"; the policy pins "${branch}".`);
-	}
+	return {
+		repository,
+		fullName,
+		repositoryId,
+		defaultBranch: info?.defaultBranch,
+		private: info?.private,
+		lookedUp: info !== undefined,
+	};
+}
+
+/**
+ * The workflow file as this checkout has it, when the checkout is of `repository`: a workflow file is only evidence
+ * about the repository it was checked out from. Undefined, with a note saying why, otherwise.
+ */
+export function readCheckoutWorkflow(
+	repository: GithubRepository,
+	workflow: string,
+	notes: string[]
+): { path: string; content?: string } | undefined {
 	let checkoutRepository: string | undefined;
 	try {
 		checkoutRepository = resolveGitRepo();
 	} catch {}
-	// A workflow file is only evidence about the repository it was checked out from.
-	const isTargetCheckout = [fullName, repository].some(
+	const isTargetCheckout = [repository.fullName, repository.repository].some(
 		(name) => checkoutRepository?.toLowerCase() === name.toLowerCase()
 	);
-	const workflowPath = join(gitTopLevel(), workflow);
 	if (!isTargetCheckout) {
 		notes.push(
-			`This checkout is ${checkoutRepository ?? 'not a GitHub repository'}, not ${fullName}, so ${workflow} was not checked.`
+			`This checkout is ${checkoutRepository ?? 'not a GitHub repository'}, not ${repository.fullName}, so ${workflow} was not checked.`
 		);
-	} else if (existsSync(workflowPath)) {
-		let content: string;
-		try {
-			content = readFileSync(workflowPath, 'utf8');
-		} catch (error) {
-			throw cliError(`Couldn't read ${workflow}: ${(error as Error).message}`);
+		return undefined;
+	}
+	const path = join(gitTopLevel(), workflow);
+	if (!existsSync(path)) return { path };
+	try {
+		return { path, content: readFileSync(path, 'utf8') };
+	} catch (error) {
+		throw cliError(`Couldn't read ${workflow}: ${(error as Error).message}`);
+	}
+}
+
+/** Sets a repository variable to the cluster's target unless it already names one; throws, after the cluster part, when it can't. */
+export function setupGithubVariable(fullName: string, name: string, audience: string): void {
+	const setCommand = `  gh variable set ${name} --repo ${fullName} --body ${audience}`;
+	let current = readGithubVariable(fullName, name);
+	let action = variableAction(current, audience);
+	let variableWrite: { ok: boolean; reason?: string } | undefined;
+	if (action === 'set') {
+		variableWrite = createGithubVariable(fullName, name, audience);
+		if (!variableWrite.ok) {
+			// Someone may have created it since the read; judge what is there now rather than the failure.
+			const now = readGithubVariable(fullName, name);
+			if (now.state === 'set') {
+				current = now;
+				action = variableAction(now, audience);
+			}
 		}
-		const check = checkWorkflowFile(content, branch, environment);
+	}
+	if (action === 'keep') {
+		console.log(chalk.green(`✓ The ${name} variable on ${fullName} is already ${audience}.`));
+		return;
+	}
+	if (action === 'conflict') {
+		throw cliError(
+			`The cluster is set up, but the ${name} variable on ${fullName} is ` +
+				`${withoutCredentials((current as { value: string }).value)}, so its workflows deploy there; setup left it as it is. ` +
+				`To deploy to ${audience} instead, set it with:\n${setCommand}`
+		);
+	}
+	const variable = variableWrite ?? { ok: false, reason: (current as { reason: string }).reason };
+	if (!variable.ok) {
+		throw cliError(
+			`The cluster is set up, but the ${name} repository variable was not set (${variable.reason}). Set it with:\n` +
+				setCommand
+		);
+	}
+	console.log(chalk.green(`✓ Set the ${name} variable on ${fullName} to ${audience}.`));
+}
+
+export async function setupGithubActions(req: any, transport: any, component: string): Promise<void> {
+	const interactive = Boolean(process.stdin.isTTY);
+	const names = deriveCiNames(component);
+
+	const { response: initial, audience } = await resolveSetupTarget(transport, { operation: 'list_oidc_trust' });
+	const notes: string[] = [];
+	const repository = await resolveGithubRepository(req, interactive, notes);
+	const { fullName, repositoryId } = repository;
+	const workflow = canonicalWorkflowPath(rawStringArg(req, 'workflow') ?? DEFAULT_WORKFLOW);
+	const branch = rawStringArg(req, 'branch') ?? DEFAULT_BRANCH;
+	const environment = rawStringArg(req, 'environment') ?? DEFAULT_ENVIRONMENT;
+
+	if (repository.defaultBranch && repository.defaultBranch !== branch) {
+		notes.push(`The repository's default branch is "${repository.defaultBranch}"; the policy pins "${branch}".`);
+	}
+	const checkout = readCheckoutWorkflow(repository, workflow, notes);
+	if (checkout?.content !== undefined) {
+		const check = checkWorkflowFile(checkout.content, branch, environment);
 		if (check.problems.length > 0) {
 			throw cliError(
 				`${workflow} cannot match the trust policy: ${check.problems.join('; ')}. Pass branch= or environment= to ` +
@@ -490,7 +633,7 @@ export async function setupGithubActions(req: any, transport: any, component: st
 			);
 		}
 		for (const item of check.unverified) notes.push(`Not verified from ${workflow}: ${item}.`);
-	} else {
+	} else if (checkout) {
 		notes.push(`${workflow} is not in this checkout, so its branch and environment were not checked.`);
 	}
 
@@ -584,38 +727,5 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		)
 	);
 
-	const setCommand = `  gh variable set HARPER_CLI_TARGET --repo ${fullName} --body ${audience}`;
-	let current = readGithubVariable(fullName);
-	let action = variableAction(current, audience);
-	let variableWrite: { ok: boolean; reason?: string } | undefined;
-	if (action === 'set') {
-		variableWrite = createGithubVariable(fullName, audience);
-		if (!variableWrite.ok) {
-			// Someone may have created it since the read; judge what is there now rather than the failure.
-			const now = readGithubVariable(fullName);
-			if (now.state === 'set') {
-				current = now;
-				action = variableAction(now, audience);
-			}
-		}
-	}
-	if (action === 'keep') {
-		console.log(chalk.green(`✓ The HARPER_CLI_TARGET variable on ${fullName} is already ${audience}.`));
-		return;
-	}
-	if (action === 'conflict') {
-		throw cliError(
-			`The cluster is set up, but the HARPER_CLI_TARGET variable on ${fullName} is ` +
-				`${withoutCredentials((current as { value: string }).value)}, so its workflows deploy there; setup left it as it is. ` +
-				`To deploy to ${audience} instead, set it with:\n${setCommand}`
-		);
-	}
-	const variable = variableWrite ?? { ok: false, reason: (current as { reason: string }).reason };
-	if (!variable.ok) {
-		throw cliError(
-			`The cluster is set up, but the HARPER_CLI_TARGET repository variable was not set (${variable.reason}). Set it with:\n` +
-				setCommand
-		);
-	}
-	console.log(chalk.green(`✓ Set the HARPER_CLI_TARGET variable on ${fullName} to ${audience}.`));
+	setupGithubVariable(fullName, TARGET_VARIABLE, audience);
 }

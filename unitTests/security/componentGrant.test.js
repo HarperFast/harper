@@ -8,7 +8,10 @@ const {
 	componentGrantError,
 	componentGrantOf,
 	componentGrantConstraintRefusal,
+	componentGrantPreviewRefusal,
 	grantCoversComponent,
+	previewCapOf,
+	previewExpiryBound,
 } = require('#src/security/componentGrant');
 const { componentNameMatches } = require('#src/utility/componentNames');
 const op_auth = require('#src/utility/operation_authorization');
@@ -65,6 +68,22 @@ describe('component grants (harper#3046)', () => {
 				'an unknown branchedDatabases value',
 				{ names: ['a'], constraints: { branchedDatabases: true } },
 				/only be 'required'/,
+			],
+			['an unknown preview value', { names: ['a'], constraints: { preview: true } }, /preview' can only be 'required'/],
+			[
+				'a maxPreviews that is not a whole number',
+				{ names: ['a'], constraints: { preview: 'required', maxPreviews: 1.5 } },
+				/whole number of at least 1/,
+			],
+			[
+				'a maxTtlDays that is not positive',
+				{ names: ['a'], constraints: { preview: 'required', maxTtlDays: 0 } },
+				/positive number of days/,
+			],
+			[
+				'a bound on previews the grant does not require',
+				{ names: ['a'], constraints: { maxPreviews: 2 } },
+				/need 'preview: required'/,
 			],
 		]) {
 			it(`refuses ${description}`, () => assert.match(componentGrantError(grant) ?? '', message));
@@ -203,6 +222,33 @@ describe('component grants (harper#3046)', () => {
 			assert.ok(canRoleInvokeOperation(previewUser(), 'deploy_component'));
 			assert.ok(canRoleInvokeOperation(previewUser(), 'get_components'));
 			assert.ok(!canRoleInvokeOperation(previewUser(), 'get_component_file'));
+		});
+	});
+	describe('preview constraints (harper#3042)', () => {
+		const bounded = {
+			names: ['shop-pr-*'],
+			constraints: { preview: 'required', maxPreviews: 4, maxTtlDays: 2 },
+		};
+
+		it('validate', () => assert.strictEqual(componentGrantError(bounded), null));
+
+		it('require a preview of an application the grant previews, named as that preview', () => {
+			assert.strictEqual(componentGrantPreviewRefusal(bounded, 'shop-pr-12', { app: 'shop', pr: 12 }), undefined);
+			assert.match(componentGrantPreviewRefusal(bounded, 'shop-pr-12', undefined), /as a PR preview/);
+			assert.match(
+				componentGrantPreviewRefusal(bounded, 'shop-pr-pr-3', { app: 'shop-pr', pr: 3 }),
+				/a preview of an application/
+			);
+			assert.match(componentGrantPreviewRefusal(bounded, 'shop-pr-12', { app: 'shop', pr: 13 }), /'<app>-pr-<n>'/);
+			assert.strictEqual(componentGrantPreviewRefusal(previewGrant, 'shop-pr-tools', undefined), undefined);
+		});
+
+		it('bound the expiry and the count', () => {
+			assert.strictEqual(previewExpiryBound(bounded, 1000), 1000 + 2 * 24 * 60 * 60 * 1000);
+			assert.strictEqual(previewExpiryBound(previewGrant, 1000), undefined);
+			assert.strictEqual(previewExpiryBound(undefined, 1000), undefined);
+			assert.strictEqual(previewCapOf(bounded), 4);
+			assert.strictEqual(previewCapOf(undefined), undefined);
 		});
 	});
 });

@@ -7,8 +7,12 @@
  * branch.
  */
 import { createHash } from 'node:crypto';
+import chalk from 'chalk';
 import { buildRequest, cliOperations, resolveCredentialHost, transportContext } from './cliOperations.ts';
 import { deriveGitSecretName, PROJECT_NAME_PATTERN } from '../utility/componentNames.ts';
+import { defaultPreviewDomain } from '../utility/previewIdentity.ts';
+
+export { defaultPreviewDomain };
 
 const DEFAULT_SLUG_LENGTH = 40;
 const DEFAULT_TTL_DAYS = 7;
@@ -28,7 +32,7 @@ const RESERVED_SLUGS = new Set([
 	'test',
 ]);
 // Read here, never sent: everything else on the command line is a deploy_component field, as for `harper deploy`.
-const PREVIEW_ARGUMENTS = ['app', 'pr', 'branch', 'label', 'domain', 'ttl', 'repository', 'sha'];
+const PREVIEW_ARGUMENTS = ['app', 'pr', 'branch', 'label', 'domain', 'ttl', 'repository', 'sha', 'check'];
 const GIT_CREDENTIAL_HOST = 'github.com';
 
 function usageError(message: string): Error {
@@ -53,17 +57,6 @@ export function previewSlug(branch: string, pr: number, max: number = DEFAULT_SL
 		slug = `${slug.slice(0, max - 7).replace(/-+$/, '')}-${hash}`;
 	}
 	return slug;
-}
-
-/** `app.` under the target's own host name, which every Fabric cluster serves with a wildcard certificate. */
-export function defaultPreviewDomain(resolvedTarget: string | undefined): string | undefined {
-	if (!resolvedTarget) return undefined;
-	try {
-		const { hostname } = new URL(resolvedTarget);
-		return hostname && !/^[\d.]+$|^\[|^localhost$/i.test(hostname) ? `app.${hostname.toLowerCase()}` : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 /** As typed: `buildRequest` JSON-parses every value, which would read `branch=1.0` as `1`. */
@@ -206,7 +199,22 @@ export async function runPreviewCommand(argv: readonly string[] = process.argv):
 			const { entries, resolvedTarget } = await listComponents(args);
 			const { request, host } = planPreviewDeploy(args, { components: entries, resolvedTarget });
 			await cliOperations(request);
-			return `Preview: https://${host}/`;
+			const url = `https://${host}/`;
+			if (args.check !== false) {
+				const { checkPreviewReachable } = await import('./previewReachability.ts');
+				const outcome = await checkPreviewReachable(url);
+				if (!outcome.reachable) console.error(chalk.yellow(`warning: the preview deployed, but ${outcome.reason}`));
+			}
+			return `Preview: ${url}`;
+		}
+		case 'setup': {
+			const { previewSetup } = await import('./previewSetup.ts');
+			await previewSetup(args);
+			return undefined;
+		}
+		case 'teardown': {
+			const { previewTeardown } = await import('./previewSetup.ts');
+			return previewTeardown(args);
 		}
 		case 'drop': {
 			const request = planPreviewDrop(args);
@@ -217,8 +225,11 @@ export async function runPreviewCommand(argv: readonly string[] = process.argv):
 			return formatPreviewList((await listComponents(args)).entries, args.app);
 		default:
 			throw usageError(
-				'usage: harper preview deploy app=<component> pr=<n> branch=<name> [label=<dns-label>] [domain=<domain>] ' +
-					'[ttl=<days>] | harper preview drop app=<component> pr=<n> [restart=true] [keepBranches=true] | ' +
+				'usage: harper preview setup app=<component> [repo=<owner/name>] [branch=<default branch>] [domain=<domain>] ' +
+					'[dataMode=branched|shared] [maxPreviews=<n>] [maxTtlDays=<days>] [credential=true] [write_workflow=true] | ' +
+					'harper preview teardown app=<component> | ' +
+					'harper preview deploy app=<component> pr=<n> branch=<name> [label=<dns-label>] [domain=<domain>] ' +
+					'[ttl=<days>] [check=false] | harper preview drop app=<component> pr=<n> [restart=true] [keepBranches=true] | ' +
 					'harper preview list [app=<component>]'
 			);
 	}

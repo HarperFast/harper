@@ -51,7 +51,7 @@ import {
 	ComponentPreparationLockTimeoutError,
 	withComponentPreparationLock,
 } from './componentPreparationLock.ts';
-import { DEPLOYMENT_PROVENANCE_FILE } from './deploymentProvenance.ts';
+import { DEPLOYMENT_PROVENANCE_FILE, previewExpiresAtMs } from './deploymentProvenance.ts';
 import { isReadOnlyMode } from '../resources/readOnlyMode.ts';
 import { pathPresent } from '../utility/durableFile.ts';
 import { compareInstallFingerprints, describeInstallDrift } from './installFingerprint.ts';
@@ -75,7 +75,14 @@ import {
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } from './deploymentRecorder.ts';
 import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
-import { componentGrantConstraintRefusal, componentGrantOf, grantCoversComponent } from '../security/componentGrant.ts';
+import {
+	componentGrantConstraintRefusal,
+	componentGrantOf,
+	componentGrantPreviewRefusal,
+	grantCoversComponent,
+	previewCapOf,
+	previewExpiryBound,
+} from '../security/componentGrant.ts';
 import { admitPreviewActivation, assertPreviewCapacity } from './previews.ts';
 
 const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -588,6 +595,32 @@ async function deployComponent(req?: any) {
 					}
 		);
 	}
+	const assertGrantPreview = (preview) => {
+		const refusal = componentGrant && componentGrantPreviewRefusal(componentGrant, req.project, preview);
+		if (refusal) throw new ClientError(refusal, HTTP_STATUS_CODES.FORBIDDEN);
+	};
+	// A staged build's metadata is the build's own, so its activation is refused rather than clamped.
+	const admitGrantPreview = (preview) => {
+		assertGrantPreview(preview);
+		const bound = previewExpiryBound(componentGrant, Date.now());
+		if (bound !== undefined && !(previewExpiresAtMs(preview) <= bound)) {
+			throw new ClientError(
+				`'${req.project}' expires at ${preview.expiresAt}, later than this role's component grant allows`,
+				HTTP_STATUS_CODES.FORBIDDEN
+			);
+		}
+	};
+	let previewExpiryClamped;
+	if (componentGrant && !isActivation) {
+		assertGrantPreview(req.preview);
+		// Clamped here, before the deployment row records the metadata and before it is replicated, so every node writes
+		// the bounded expiry.
+		const bound = previewExpiryBound(componentGrant, Date.now());
+		if (bound !== undefined && req.preview && !(previewExpiresAtMs(req.preview) <= bound)) {
+			req.preview = { ...req.preview, expiresAt: new Date(bound).toISOString() };
+			previewExpiryClamped = req.preview.expiresAt;
+		}
+	}
 	// Only the originating node rejects admission: replicated peers must commit the same desired config,
 	// then report any node-local inability to run it through component lifecycle status.
 	const assertIsolationAdmission = async (isolated) => {
@@ -626,8 +659,10 @@ async function deployComponent(req?: any) {
 	// refuse an activation whose artifact turns isolation OFF for a component whose present isolated state is
 	// itself the refusal — a 409 for the request that would fix it.
 	if (!isActivation) await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
-	if (req.preview && !isActivation && !isReplicatedExecution) {
-		await assertPreviewCapacity(req.project, req.preview.app);
+	// A grant is resolved only for a request that did not come from a peer, so its bounds hold even for one that carries
+	// a `_deploymentId`.
+	if (req.preview && !isActivation && (!isReplicatedExecution || componentGrant)) {
+		await assertPreviewCapacity(req.project, req.preview.app, previewCapOf(componentGrant));
 	}
 	const { ingestCredentials, resolveCredentials } = secretOperationsRuntimeModule;
 	// An activation resolves, fetches and installs nothing, so there is no credential for it to carry.
@@ -689,6 +724,11 @@ async function deployComponent(req?: any) {
 	delete req.source;
 
 	const emit = (event, data) => emitter?.emit(event, data);
+	if (previewExpiryClamped) {
+		emit('warning', {
+			message: `This preview expires at ${previewExpiryClamped}, the latest this role's component grant allows`,
+		});
+	}
 
 	// The new payload-via-replicated-row path depends on the `system` database actually
 	// being replicated on this node. If the cluster is configured with a narrower
@@ -838,9 +878,18 @@ async function deployComponent(req?: any) {
 				isolated: Boolean(nowIsolated),
 			}),
 			// The cap is the origin's: a peer makes live what the origin admitted.
-			aroundActivation: isReplicatedExecution
-				? undefined
-				: (candidateDirPath, activate) => admitPreviewActivation(req.project, candidateDirPath, activate),
+			aroundActivation:
+				isReplicatedExecution && !componentGrant
+					? undefined
+					: (candidateDirPath, activate) =>
+							admitPreviewActivation(
+								req.project,
+								candidateDirPath,
+								activate,
+								previewCapOf(componentGrant),
+								undefined,
+								componentGrant?.constraints?.preview === 'required' ? admitGrantPreview : undefined
+							),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);

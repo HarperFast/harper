@@ -145,7 +145,8 @@ export const DEFAULT_ALLOW: readonly string[] = [
  * OIDC trust policies (#2171) are excluded on the same grounds and then some: a
  * policy grants an external CI workflow the right to authenticate as a Harper
  * user, so reading the set tells an attacker exactly which repository and
- * workflow to compromise, and writing one is a way to grant itself access.
+ * workflow to compromise, and writing one is a way to grant itself access. The
+ * preview operations read and write such policies, with the role and user they name.
  */
 export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'set_secret',
@@ -158,6 +159,9 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'list_oidc_trust',
 	'drop_oidc_trust',
 	'exchange_oidc_token',
+	'enable_previews',
+	'disable_previews',
+	'get_preview_policy',
 ]);
 
 /**
@@ -178,6 +182,7 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'delete_transaction_logs_before',
 	'drop_user',
 	'drop_role',
+	'disable_previews',
 	'restart',
 	'restart_service',
 	'set_configuration',

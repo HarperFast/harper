@@ -91,19 +91,21 @@ export async function assertPreviewCapacity(
 /**
  * Swap a preview in only while its application is under its cap, holding one lock per application across the count
  * and the swap, so two previews never both take the last slot. The metadata is the candidate's own, which a staged
- * build's later activation carries too.
+ * build's later activation carries too, and `admit` may refuse it, a missing one included, before anything is counted.
  */
 export async function admitPreviewActivation(
 	component: string,
 	candidateDirPath: string,
 	activate: () => Promise<void>,
 	max: number | undefined = positiveInteger(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION)),
-	componentsRoot: string = componentsRootPath()
+	componentsRoot: string = componentsRootPath(),
+	admit?: (preview: PreviewMetadata | undefined) => void
 ): Promise<void> {
-	if (max === undefined) return activate();
+	if (max === undefined && !admit) return activate();
 	const raw = await readFile(join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(() => undefined);
 	const preview = raw === undefined ? undefined : parseDeploymentPreview(raw, component);
-	if (!preview) return activate();
+	admit?.(preview);
+	if (!preview || max === undefined) return activate();
 	await withComponentPreparationLock(
 		join(componentsRoot, `.preview-admission-${encodeURIComponent(preview.app)}`),
 		async () => {
