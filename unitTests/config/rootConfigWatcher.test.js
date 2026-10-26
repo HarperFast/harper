@@ -135,6 +135,89 @@ describe('RootConfigWatcher', function () {
 		configWatcher.close();
 	});
 
+	it('reads the final state when two atomic writes land 20ms apart', async () => {
+		const initial = { foo: 'bar' };
+		writeFileSync(this.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const changes = [];
+		configWatcher.on('change', (cfg) => changes.push(cfg));
+
+		const first = { foo: 'first' };
+		const second = { foo: 'second' };
+		configUtils.atomicWriteFile(this.configFilePath, stringify(first));
+		await delay(20);
+		configUtils.atomicWriteFile(this.configFilePath, stringify(second));
+
+		await waitFor(() => changes.length === 2, {
+			timeout: 2000,
+			interval: 20,
+			message: () => `expected [first, second] changes, got: ${JSON.stringify(changes)}`,
+		});
+
+		assert.deepEqual(changes, [first, second]);
+		assert.deepEqual(configWatcher.config, second);
+		configWatcher.close();
+	});
+
+	it('delivers both change events when two atomic writes land 200ms apart', async () => {
+		const initial = { foo: 'bar' };
+		writeFileSync(this.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const changes = [];
+		configWatcher.on('change', (cfg) => changes.push(cfg));
+
+		const first = { foo: 'first' };
+		const second = { foo: 'second' };
+		configUtils.atomicWriteFile(this.configFilePath, stringify(first));
+		await delay(200);
+		configUtils.atomicWriteFile(this.configFilePath, stringify(second));
+
+		await waitFor(() => changes.length === 2, {
+			timeout: 2000,
+			interval: 20,
+			message: () => `expected [first, second] changes, got: ${JSON.stringify(changes)}`,
+		});
+
+		assert.deepEqual(changes, [first, second]);
+		assert.deepEqual(configWatcher.config, second);
+		configWatcher.close();
+	});
+
+	it('does not emit a duplicate change event for identical content', async () => {
+		const initial = { foo: 'bar' };
+		writeFileSync(this.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const changes = [];
+		configWatcher.on('change', (cfg) => changes.push(cfg));
+
+		const updated = { foo: 'baz' };
+		configUtils.atomicWriteFile(this.configFilePath, stringify(updated));
+		await waitFor(() => changes.length === 1, {
+			timeout: 2000,
+			interval: 20,
+		});
+
+		// Wait past chokidar's 50ms throttle and the 100ms trailing verify-read window, then
+		// rewrite the same configuration and wait for the watcher to read it again.
+		await delay(200);
+		const readsBeforeDuplicateWrite = configWatcher._readCountForTests;
+		configUtils.atomicWriteFile(this.configFilePath, stringify({ foo: 'baz' }));
+		await waitFor(() => configWatcher._readCountForTests > readsBeforeDuplicateWrite, {
+			timeout: 2000,
+			interval: 20,
+		});
+		await delay(150);
+
+		assert.deepEqual(changes, [updated], 'identical config content must not emit a duplicate change event');
+		configWatcher.close();
+	});
+
 	describe('backend selection by runtime', () => {
 		const bunDescriptor = Object.getOwnPropertyDescriptor(process.versions, 'bun');
 		afterEach(() => {
@@ -335,6 +418,7 @@ describe('RootConfigWatcher', function () {
 		writeFileSync(suite.configFilePath, stringify({ foo: 'baz' }));
 		await firstChange;
 
+		writeFileSync(suite.configFilePath, stringify({ foo: 'qux' }));
 		if (!denyReads(suite.configFilePath)) {
 			configWatcher.close();
 			return this.skip();
@@ -349,7 +433,7 @@ describe('RootConfigWatcher', function () {
 
 		// chokidar reports the unlocking chmod as a change of its own, so this asserts that the
 		// config comes back, not which path delivered it; configReadRetry.test.js covers the ladder.
-		assert.deepEqual(updated, { foo: 'baz' }, 'a read denied once must not leave the config stale');
+		assert.deepEqual(updated, { foo: 'qux' }, 'a read denied once must not leave the config stale');
 		configWatcher.close();
 	});
 

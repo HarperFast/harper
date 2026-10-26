@@ -2,6 +2,7 @@ import { FSWatcher } from 'chokidar';
 import { getConfigFilePath } from './configUtils.ts';
 import { readConfigFileSync } from './readConfigFileSync.ts';
 import { EventEmitter, once } from 'node:events';
+import { isDeepStrictEqual } from 'node:util';
 import { parseConfigFile } from './parseConfigFile.ts';
 import {
 	POLLING_FALLBACK_OPTIONS,
@@ -37,6 +38,11 @@ export function getSharedRootConfigWatcher(): RootConfigWatcher {
 	return (sharedWatcher ??= new RootConfigWatcher());
 }
 
+// Chokidar 5.0.0 throttles EV.CHANGE per path for 50ms with no trailing emission, so a second
+// atomic write landing inside that window never triggers another watcher callback. Re-reading
+// once after the throttle window closes catches the final state on disk.
+const TRAILING_VERIFY_READ_DELAY_MS = 100;
+
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
 	#watchPath: string;
@@ -47,6 +53,7 @@ export class RootConfigWatcher extends EventEmitter {
 	#openCount: number = 0;
 	#readCount: number = 0;
 	#readRetry: ConfigReadRetry = new ConfigReadRetry();
+	#trailingReadTimer?: NodeJS.Timeout;
 	#armGate: ArmGate = new ArmGate();
 	// The gate above is chokidar's scan finishing; this is the barrier's gate. A terminal outcome
 	// opens it without claiming the watch is armed, so the arming re-read still runs afterwards.
@@ -205,13 +212,33 @@ export class RootConfigWatcher extends EventEmitter {
 	}
 
 	handleChange() {
+		this.#clearTrailingRead();
 		this.#read(true);
+		this.#scheduleTrailingRead();
+	}
+
+	#scheduleTrailingRead() {
+		this.#clearTrailingRead();
+		if (this.#closed || this.#readRetry.pending) return;
+		this.#trailingReadTimer = setTimeout(() => {
+			this.#trailingReadTimer = undefined;
+			this.#read(true);
+		}, TRAILING_VERIFY_READ_DELAY_MS);
+		this.#trailingReadTimer.unref();
+	}
+
+	#clearTrailingRead() {
+		if (this.#trailingReadTimer) {
+			clearTimeout(this.#trailingReadTimer);
+			this.#trailingReadTimer = undefined;
+		}
 	}
 
 	// `harper_logger.start()` awaits `ready` with no timeout and the ladder may be the only thing
 	// left to settle it, so until then its timer keeps the thread alive rather than letting it
 	// drain and exit mid-boot.
 	#schedule(): boolean {
+		this.#clearTrailingRead();
 		return this.#readRetry.schedule(() => this.#read(false), !this.#readyEmitted);
 	}
 
@@ -281,6 +308,8 @@ export class RootConfigWatcher extends EventEmitter {
 			return;
 		}
 
+		if (isDeepStrictEqual(config, this.#config)) return;
+
 		try {
 			this.emit('change', (this.#config = config));
 		} catch (error) {
@@ -296,6 +325,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#readyStaged = true;
 		this.#emitReady();
 		this.#closed = true;
+		this.#clearTrailingRead();
 		this.#readRetry.cancel();
 		this.#armGate.cancel();
 		// chokidar's close() is a promise; an unhandled teardown rejection would reach Node as one,

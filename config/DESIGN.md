@@ -116,7 +116,11 @@ the last read that config gets, and the thread holds the pre-truncate value inde
 empty read to `ConfigReadRetry`, the same ladder a lock takes and for the same reason — there is no
 further event to re-read on. `OptionsWatcher` applies it on both read paths, not only the
 synchronous one: the asynchronous read is far less likely to land in a truncate window, but the
-consequence there is a spurious `remove` that tears the scope down.
+consequence there is a spurious `remove` that tears the scope down. Even with `atomicWriteFile()`,
+two complete writes landing within chokidar's 50ms `EV.CHANGE` throttle window lose the second
+event with no trailing emission, so `RootConfigWatcher.handleChange` schedules one 100ms trailing
+verify-read (re-armed per event, cleared on `close()` or when `ConfigReadRetry` takes over) and
+emits `change` only when `!isDeepStrictEqual(config, this.#config)` (`unitTests/config/rootConfigWatcher.test.js`).
 
 A read that _parses_ to nothing is the same event and takes the same ladder: a truncated document,
 a lone `\n` and a file of nothing but comments all yield `null` from the parser rather than
