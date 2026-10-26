@@ -86,6 +86,7 @@ function probe(phase) {
 				!Object.isSealed(intrinsic) || (intrinsic.prototype !== undefined && !Object.isSealed(intrinsic.prototype))
 			);
 		}),
+		originalOfReplacedSealed: Object.isSealed(originalWeakRef) && Object.isSealed(originalWeakRef.prototype),
 		functionSealed: Object.isSealed(Function),
 		functionPrototypeExtensible: Object.isExtensible(Function.prototype),
 		frozen: {
@@ -105,7 +106,7 @@ function probe(phase) {
 	};
 }
 
-// a global a component replaces while it loads is the one that gets locked
+const originalWeakRef = WeakRef;
 globalThis.WeakRef = class ReplacedWeakRef extends WeakRef {};
 let markLoaded;
 const whenLoaded = new Promise((resolve) => (markLoaded = resolve));

@@ -50,6 +50,7 @@ const UNLOCKED = {
 	pollutedVisible: true,
 	shadow: each(SHADOWS, true),
 	unsealed: ALL_LOCKED,
+	originalOfReplacedSealed: false,
 	functionSealed: false,
 	functionPrototypeExtensible: true,
 	frozen: each(['Object.prototype', 'Array.prototype', 'Function.prototype'], false),
@@ -74,6 +75,7 @@ const SEALED = {
 	sloppyAdd: each(TARGETS, 'ignored'),
 	pollutedVisible: false,
 	unsealed: [],
+	originalOfReplacedSealed: true,
 	functionSealed: true,
 	functionPrototypeExtensible: false,
 	descriptors: {
@@ -97,6 +99,7 @@ const FROZEN = {
 	pollutedVisible: false,
 	shadow: each(SHADOWS, (shadow) => (shadow === 'array.push' || shadow === 'date.toJSON' ? 'TypeError' : true)),
 	unsealed: [],
+	originalOfReplacedSealed: true,
 	functionSealed: true,
 	frozen: { 'Object.prototype': true, 'Array.prototype': true, 'Function.prototype': false },
 	descriptors: {

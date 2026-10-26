@@ -53,12 +53,12 @@ async function measure(mode: string): Promise<BenchResult> {
 		});
 		const url = `${ctx.harper.httpURL}/LockdownBench?iterations=${values.iterations}&rounds=${values.rounds}`;
 		const authorization = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
-		const deadline = Date.now() + 60_000;
+		const deadline = Date.now() + 180_000;
 		while (Date.now() < deadline) {
 			try {
 				const response = await fetch(url, {
 					headers: { Authorization: authorization },
-					signal: AbortSignal.timeout(120_000),
+					signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
 				});
 				if (response.status === 200) return (await response.json()) as BenchResult;
 				await response.body?.cancel();

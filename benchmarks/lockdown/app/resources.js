@@ -21,7 +21,6 @@ const OPERATIONS = {
 	msgpackrUnpack() {
 		return unpackr.unpack(productRecord);
 	},
-	// controls: neither touches array holes
 	packedApply() {
 		return String.fromCharCode.apply(null, prefilled);
 	},

@@ -2,7 +2,8 @@
  * The first suite leaves `applications.lockdown` unset, so it covers whatever `static/defaultConfig.yaml` ships.
  *
  * Run: npm run test:integration -- "integrationTests/components/intrinsics-lockdown.test.ts"
- */ import { suite, test, before, after } from 'node:test';
+ */
+import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

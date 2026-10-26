@@ -1,7 +1,6 @@
 export type Lockdown = 'none' | 'freeze' | 'freeze-after-load' | 'seal' | 'seal-after-load' | 'ses';
 
-// read when locking, not at import: a global a component replaced while loading is the one that gets locked
-const lockedIntrinsics = () => [
+const currentIntrinsics = () => [
 	Object,
 	Array,
 	Promise,
@@ -24,6 +23,13 @@ const lockedIntrinsics = () => [
 	WeakRef,
 	FinalizationRegistry,
 ];
+// A component may replace one of these globals while it loads. Lock the replacement, and the realm's original too:
+// literals and async functions keep using it.
+const realmIntrinsics = currentIntrinsics();
+function lockedIntrinsics() {
+	const current = currentIntrinsics();
+	return current.concat(realmIntrinsics.filter((intrinsic, index) => intrinsic !== current[index]));
+}
 
 /** An unrecognized mode freezes eagerly: config values are not validated, so a typo fails closed. */
 export function lockDownIntrinsics(mode: Exclude<Lockdown, 'none' | 'ses'>, whenLoaded: Promise<unknown>): void {
