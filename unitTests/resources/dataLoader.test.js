@@ -40,7 +40,6 @@ const {
 // Restore the forComponent stub immediately after import to prevent it from affecting other modules
 forComponentStub.restore();
 
-// The tracking key the data loader stores a record's hash under
 function hashKey(database, table, id) {
 	return createHash('sha256')
 		.update(JSON.stringify([database, table]))

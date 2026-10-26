@@ -64,7 +64,6 @@ function sortTopLevelKeys(record: Record<string, any>): Record<string, any> {
 	return sortedRecord;
 }
 
-// A replacer sees each value after its toJSON, so a Date is hashed as its ISO string
 function sortObjectKeys(_key: string, value: any) {
 	if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
 	// null prototype, so a nested `__proto__` key stays an own property and in the hash
@@ -132,15 +131,30 @@ async function getLegacyHashes(
 	if (tableName.includes(':') || (!isDefaultDatabase && (database.includes(':') || tablesRef?.[tableName]))) {
 		return [];
 	}
-	const prefixes = isDefaultDatabase
-		? [`${tableName}:`, `${DEFAULT_DATABASE_NAME}:${tableName}:`]
-		: [`${database}:${tableName}:`];
-	// the stored record keeps the `id` an earlier version loaded if the file has changed it since
-	const ids = primaryKey === 'id' ? [newRecord.id] : [...new Set([newRecord.id, existingRecord.id, undefined])];
+	// a default-database table named `data:table` or `database:table` wrote keys of the same form
+	const prefixes = (
+		isDefaultDatabase ? [tableName, `${DEFAULT_DATABASE_NAME}:${tableName}`] : [`${database}:${tableName}`]
+	)
+		.filter((prefix) => prefix === tableName || !tablesRef?.[prefix])
+		.map((prefix) => prefix + ':');
+	// Every id but the shared slot's is one the file's `id` field holds, so the content check covers it. The stored
+	// record keeps the `id` an earlier version loaded if the file has changed it since
+	const ids =
+		primaryKey === 'id'
+			? [newRecord.id]
+			: newRecord.id === undefined
+				? [undefined]
+				: [...new Set([newRecord.id, existingRecord.id, undefined])];
 	const hashes: string[] = [];
 	for (const prefix of prefixes) {
 		for (const id of ids) {
-			const hashRecord = await trackingTable.get(prefix + id);
+			let hashRecord;
+			try {
+				hashRecord = await trackingTable.get(prefix + id);
+			} catch {
+				// an unreadable entry is no evidence (a key over the size limit was never writable either)
+				continue;
+			}
 			if (hashRecord) hashes.push(hashRecord.hash);
 		}
 	}
@@ -285,6 +299,7 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 		}
 
 		const primaryKey = tableRef.primaryKey ?? 'id';
+		const trackingTable = getHashTrackingTable(databasesRef);
 
 		// Process records with timestamp comparison
 		// Count metrics
@@ -312,15 +327,16 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 							existingRecord = await tableRef.get(recordId);
 						}
 
-						const trackingTable = getHashTrackingTable(databasesRef);
 						const hashKey = recordId === undefined ? undefined : getHashKey(database, tableName, recordId);
 
 						if (!existingRecord) {
 							// If the record doesn't exist yet, insert it
 							newRecords++;
+							// before the put, which stamps @createdTime/@updatedTime fields into the record it is given
+							const newRecordHash = computeRecordHash(newRecord);
 							const result = await tableRef.put(newRecord);
 							// A record without a primary key value can't be looked up again, so there is nothing to track
-							if (hashKey) await storeHash(trackingTable, hashKey, computeRecordHash(newRecord));
+							if (hashKey) await storeHash(trackingTable, hashKey, newRecordHash);
 							return result;
 						}
 

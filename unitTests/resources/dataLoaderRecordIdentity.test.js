@@ -16,7 +16,7 @@ function legacyHash(record) {
 	return createHash('sha256').update(JSON.stringify(sortedRecord)).digest('hex');
 }
 
-// Hashes are persisted under this key, so it is pinned here rather than imported
+// Stored hashes stay findable only while this key does not change, so the test pins it rather than importing it
 function currentKey(database, tableName, id) {
 	return createHash('sha256')
 		.update(JSON.stringify([database, tableName]))
@@ -105,6 +105,20 @@ describe('Data loader record identity', function () {
 		}
 		type DlIdProto @table {
 			id: ID @primaryKey
+		}
+		type DlIdStamped @table {
+			id: ID @primaryKey
+			value: Int
+			createdAt: Long @createdTime
+			updatedAt: Long @updatedTime
+		}
+		type DlIdHomonym @table {
+			id: Int @primaryKey
+			value: Int
+		}
+		type DlIdLongLegacy @table {
+			id: String @primaryKey
+			value: Int
 		}`);
 	});
 
@@ -156,6 +170,12 @@ describe('Data loader record identity', function () {
 		assert.equal((await databases.dl_identity_tenant.DlIdShared.get('item-2')).label, 'tenant');
 		assert.ok(!(await tables.DlIdShared.get('item-2')));
 		assert.equal((await tables.DlIdShared.get('item-1')).label, 'data-owned');
+	});
+
+	it('updates a record in a table that stamps created and updated times', async function () {
+		await load({ table: 'DlIdStamped', records: [{ id: 's-1', value: 1 }] });
+		await load({ table: 'DlIdStamped', records: [{ id: 's-1', value: 2 }] });
+		assert.equal((await tables.DlIdStamped.get('s-1')).value, 2);
 	});
 
 	describe('default database spelling', function () {
@@ -347,6 +367,34 @@ describe('Data loader record identity', function () {
 
 			await load({ database: 'dl_identity_tenant_items', table: 'DlIdTenantItems', records: [{ id: 1, value: 2 }] });
 			assert.equal((await tenantItems.get(1)).value, 1);
+		});
+
+		it('ignores an earlier hash a default-database table named like the key prefix may have written', async function () {
+			// `data:DlIdHomonym` keyed its hashes `data:DlIdHomonym:<id>`, the same form a file naming database
+			// "data" used for DlIdHomonym
+			const homonym = table({
+				table: 'data:DlIdHomonym',
+				attributes: [
+					{ name: 'id', type: 'Int', isPrimaryKey: true },
+					{ name: 'value', type: 'Int' },
+				],
+			});
+			await homonym.put({ id: 1, value: 1 });
+			await tables.DlIdHomonym.put({ id: 1, value: 1 });
+			await hashTable.put({ id: 'data:DlIdHomonym:1', hash: legacyHash({ id: 1, value: 1 }) });
+
+			await load({ table: 'DlIdHomonym', records: [{ id: 1, value: 2 }] });
+			assert.equal((await tables.DlIdHomonym.get(1)).value, 1);
+		});
+
+		it('uses the earlier hash it can read when another candidate key is too long to read', async function () {
+			// fits as `DlIdLongLegacy:<id>`, but `data:DlIdLongLegacy:<id>` is over the key size limit
+			const id = 'x'.repeat(1960);
+			await tables.DlIdLongLegacy.put({ id, value: 1 });
+			await hashTable.put({ id: `DlIdLongLegacy:${id}`, hash: legacyHash({ id, value: 1 }) });
+
+			await load({ table: 'DlIdLongLegacy', records: [{ id, value: 2 }] });
+			assert.equal((await tables.DlIdLongLegacy.get(id)).value, 2);
 		});
 
 		it('does not treat the hash of a record keyed "undefined" as evidence for other records', async function () {
