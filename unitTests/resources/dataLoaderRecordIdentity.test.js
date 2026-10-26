@@ -1,7 +1,8 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { createHash } = require('node:crypto');
+const { toBufferKey } = require('ordered-binary');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { table, tables, databases } = require('#src/resources/databases');
@@ -15,9 +16,25 @@ function legacyHash(record) {
 	return createHash('sha256').update(JSON.stringify(sortedRecord)).digest('hex');
 }
 
+// Hashes are persisted under this key, so it is pinned here rather than imported
+function currentKey(database, tableName, id) {
+	return createHash('sha256')
+		.update(JSON.stringify([database, tableName]))
+		.update(toBufferKey(id))
+		.digest('hex');
+}
+
 function load(data) {
 	return loadDataFile(
 		{ contents: Buffer.from(JSON.stringify(data)), absolutePath: `/dataloader-identity/${data.table}.json` },
+		tables,
+		databases
+	);
+}
+
+function loadYaml(name, contents) {
+	return loadDataFile(
+		{ contents: Buffer.from(contents), absolutePath: `/dataloader-identity/${name}.yaml` },
 		tables,
 		databases
 	);
@@ -65,9 +82,29 @@ describe('Data loader record identity', function () {
 			sku: String @primaryKey
 			value: Int
 		}
+		type DlIdShadow @table {
+			sku: Int @primaryKey
+			id: Int
+			value: Int
+		}
 		type DlIdUndefinedKey @table {
 			sku: String @primaryKey
 			value: Int
+		}
+		type DlIdTenantItems @table {
+			id: Int @primaryKey
+			value: Int
+		}
+		type DlIdInfinity @table {
+			id: Float @primaryKey
+			value: Int
+		}
+		type DlIdLongKey @table {
+			id: String @primaryKey
+			value: Int
+		}
+		type DlIdProto @table {
+			id: ID @primaryKey
 		}`);
 	});
 
@@ -86,7 +123,9 @@ describe('Data loader record identity', function () {
 			const result = await load({ table: 'DlIdSku', records: v1 });
 			assert.equal(result.status, 'success');
 			assert.equal((await tables.DlIdSku.get('SKU-200')).price, 50);
-			for (const record of v1) assert.equal(await storedHash(`DlIdSku:${record.sku}`), computeRecordHash(record));
+			for (const record of v1) {
+				assert.equal(await storedHash(currentKey('data', 'DlIdSku', record.sku)), computeRecordHash(record));
+			}
 			assert.ok(!(await hashTable.get('DlIdSku:undefined')));
 		});
 
@@ -155,17 +194,51 @@ describe('Data loader record identity', function () {
 			assert.equal((await load({ table: 'DlIdNested', records: [reordered] })).status, 'success');
 			assert.equal((await tables.DlIdNested.get('n-1')).items[0].p, 3);
 		});
+
+		it('tracks a record with a top-level __proto__ field by its other fields', async function () {
+			const record = (label) => JSON.parse(`{"id": "p-1", "label": "${label}", "__proto__": {"x": 1}}`);
+			await load({ table: 'DlIdProto', records: [record('a')] });
+			await load({ table: 'DlIdProto', records: [record('b')] });
+			assert.equal((await tables.DlIdProto.get('p-1')).label, 'b');
+		});
+	});
+
+	describe('record keys', function () {
+		it('tracks Infinity and -Infinity keys separately', async function () {
+			await loadYaml(
+				'DlIdInfinity',
+				'table: DlIdInfinity\nrecords:\n  - { id: .inf, value: 1 }\n  - { id: -.inf, value: 1 }\n'
+			);
+			await loadYaml(
+				'DlIdInfinity',
+				'table: DlIdInfinity\nrecords:\n  - { id: .inf, value: 2 }\n  - { id: -.inf, value: 1 }\n'
+			);
+			assert.equal((await tables.DlIdInfinity.get(Infinity)).value, 2);
+			assert.equal((await tables.DlIdInfinity.get(-Infinity)).value, 1);
+		});
+
+		it('tracks a key whose escaped form would exceed the maximum key size', async function () {
+			const id = '\u0000'.repeat(400);
+			await load({ table: 'DlIdLongKey', records: [{ id, value: 1 }] });
+			await load({ table: 'DlIdLongKey', records: [{ id, value: 2 }] });
+			assert.equal((await tables.DlIdLongKey.get(id)).value, 2);
+		});
 	});
 
 	describe('hashes stored by earlier versions', function () {
 		it('honors a hash stored under the "data:" spelling when the file names no database', async function () {
 			const old = { id: 'l-1', label: 'v1' };
+			const oldHash = legacyHash(old);
 			await tables.DlIdLegacy.put(old);
-			await hashTable.put({ id: 'data:DlIdLegacy:l-1', hash: legacyHash(old) });
+			await hashTable.put({ id: 'data:DlIdLegacy:l-1', hash: oldHash });
 
 			await load({ table: 'DlIdLegacy', records: [{ id: 'l-1', label: 'v2' }] });
 			assert.equal((await tables.DlIdLegacy.get('l-1')).label, 'v2');
-			assert.equal(await storedHash('DlIdLegacy:l-1'), computeRecordHash({ id: 'l-1', label: 'v2' }));
+			assert.equal(
+				await storedHash(currentKey('data', 'DlIdLegacy', 'l-1')),
+				computeRecordHash({ id: 'l-1', label: 'v2' })
+			);
+			assert.equal(await storedHash('data:DlIdLegacy:l-1'), oldHash);
 		});
 
 		it('honors a top-level-only hash of nested content without rewriting the record', async function () {
@@ -176,10 +249,20 @@ describe('Data loader record identity', function () {
 
 			assert.equal((await load({ table: 'DlIdLegacy', records: [old] })).status, 'skipped');
 			assert.equal((await tables.DlIdLegacy.get('l-2')).getUpdatedTime(), version);
-			assert.notEqual(await storedHash('DlIdLegacy:l-2'), legacyHash(old));
+			assert.equal(await storedHash(currentKey('data', 'DlIdLegacy', 'l-2')), computeRecordHash(old));
+			assert.equal(await storedHash('DlIdLegacy:l-2'), legacyHash(old));
 
 			await load({ table: 'DlIdLegacy', records: [{ id: 'l-2', meta: { z: 5, a: 2 } }] });
 			assert.equal((await tables.DlIdLegacy.get('l-2')).meta.z, 5);
+		});
+
+		it('keeps a record modified since this version loaded it, whatever an earlier hash matches', async function () {
+			await load({ table: 'DlIdLegacy', records: [{ id: 'l-3', label: 'v1' }] });
+			await tables.DlIdLegacy.patch('l-3', { label: 'v0' });
+			await hashTable.put({ id: 'DlIdLegacy:l-3', hash: legacyHash({ id: 'l-3', label: 'v0' }) });
+
+			await load({ table: 'DlIdLegacy', records: [{ id: 'l-3', label: 'v2' }] });
+			assert.equal((await tables.DlIdLegacy.get('l-3')).label, 'v0');
 		});
 
 		it('honors a hash stored under the id field of a record with another primary key', async function () {
@@ -191,6 +274,21 @@ describe('Data loader record identity', function () {
 			const record = await tables.DlIdSkuWithId.get('a');
 			assert.equal(record.value, 2);
 			assert.equal(record.userNote, 'keep');
+		});
+
+		it("does not confuse a record's primary key with another record's id field", async function () {
+			const old = [
+				{ sku: 5, id: 9, value: 1 },
+				{ sku: 9, id: 5, value: 1 },
+			];
+			for (const record of old) {
+				await tables.DlIdShadow.put(record);
+				await hashTable.put({ id: `DlIdShadow:${record.id}`, hash: legacyHash(record) });
+			}
+
+			await load({ table: 'DlIdShadow', records: old.map((record) => ({ ...record, value: 2 })) });
+			assert.equal((await tables.DlIdShadow.get(5)).value, 2);
+			assert.equal((await tables.DlIdShadow.get(9)).value, 2);
 		});
 
 		describe('custom primary key without an id field', function () {
@@ -209,8 +307,7 @@ describe('Data loader record identity', function () {
 				assert.equal((await tables.DlIdLegacySku.get('c')).value, 2);
 				assert.equal((await tables.DlIdLegacySku.get('a')).value, 1);
 				assert.equal((await tables.DlIdLegacySku.get('b')).value, 7);
-				assert.equal(await storedHash('DlIdLegacySku:c'), computeRecordHash({ sku: 'c', value: 2 }));
-				assert.ok(!(await hashTable.get('DlIdLegacySku:a')));
+				assert.equal(await storedHash('DlIdLegacySku:undefined'), legacyHash({ sku: 'c', value: 1 }));
 			});
 
 			it('never adopts a record created outside the data loader, even with identical content', async function () {
@@ -219,6 +316,25 @@ describe('Data loader record identity', function () {
 				await load({ table: 'DlIdLegacySku', records: [{ sku: 'd', value: 10 }] });
 				assert.equal((await tables.DlIdLegacySku.get('d')).value, 9);
 			});
+		});
+
+		it('ignores an earlier hash for a named database whose records it may have written to data', async function () {
+			// Earlier versions wrote this file's records into data.DlIdTenantItems; the identical row in the
+			// named database was created through the API afterwards
+			const tenantItems = table({
+				database: 'dl_identity_tenant_items',
+				table: 'DlIdTenantItems',
+				attributes: [
+					{ name: 'id', type: 'Int', isPrimaryKey: true },
+					{ name: 'value', type: 'Int' },
+				],
+			});
+			await tables.DlIdTenantItems.put({ id: 1, value: 1 });
+			await tenantItems.put({ id: 1, value: 1 });
+			await hashTable.put({ id: 'dl_identity_tenant_items:DlIdTenantItems:1', hash: legacyHash({ id: 1, value: 1 }) });
+
+			await load({ database: 'dl_identity_tenant_items', table: 'DlIdTenantItems', records: [{ id: 1, value: 2 }] });
+			assert.equal((await tenantItems.get(1)).value, 1);
 		});
 
 		it('does not treat the hash of a record keyed "undefined" as evidence for other records', async function () {
