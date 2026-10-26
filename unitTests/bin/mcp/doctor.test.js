@@ -109,7 +109,6 @@ describe('bin/mcp/doctor.runDoctor', () => {
 			res.end();
 		});
 		const result = await runDoctor({ ...BASE, target: `http://127.0.0.1:${fake.port}` });
-		// 405 is the default config, reported as OK so the summary doesn't contradict a FAIL line.
 		assert.equal(result.ok, true);
 		const cleanup = result.steps.find((s) => s.name === 'session cleanup');
 		assert.equal(cleanup.ok, true);

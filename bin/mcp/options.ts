@@ -77,8 +77,8 @@ export function parseArgs(argv: readonly string[]): McpCliOptions {
 			case '--profile':
 			case 'profile': {
 				const v = consumeNext();
-				// Throw rather than keep the default: a typo would otherwise land on the
-				// local UDS operations surface, which needs no credentials.
+				// Throw rather than keep the default: a bad --profile or an empty --target would
+				// otherwise land on the local UDS operations surface, which needs no credentials.
 				if (v !== 'operations' && v !== 'application') {
 					throw new Error(`harper mcp: --profile must be 'operations' or 'application', got '${v ?? ''}'`);
 				}
@@ -88,8 +88,6 @@ export function parseArgs(argv: readonly string[]): McpCliOptions {
 			case '--target':
 			case 'target':
 				opts.target = consumeNext();
-				// Same reason: an empty or missing value (e.g. an unset shell variable)
-				// must not silently mean "connect to the local UDS".
 				if (!opts.target) throw new Error('harper mcp: --target requires a URL, e.g. https://<host>:<port>');
 				break;
 			case '--mount-path':

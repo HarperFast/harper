@@ -932,8 +932,7 @@ async function dispatchResourcesSubscribe(
 	try {
 		ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
 	} catch (err) {
-		// A denied subscribe is a permission error, same as resources/read (#1735),
-		// not an internal error with a stack in the log.
+		// Same permission-error mapping as resources/read.
 		if (err instanceof AccessViolation) {
 			return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `permission denied: ${uri}`));
 		}
