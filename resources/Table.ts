@@ -9599,9 +9599,8 @@ export function makeTable(options): TableResourceClass {
 	}
 	/**
 	 * A stub (an INVALIDATED entry's value) is a projection, not a record. `preserveComputed` keeps computed
-	 * indexes as committed. With `existingIsStub`, a computed index's old value resolved over the stub is a
-	 * guess: it is removed if it differs from the new value, the new value is always written, and when the
-	 * resolver throws (it needs a field the stub lacks) the committed entry stays (harper#2370).
+	 * indexes as committed; `existingIsStub` treats a computed index's old value resolved over the stub as a
+	 * guess (resources/DESIGN.md, residency stubs).
 	 */
 	function updateIndices(
 		id: any,
@@ -9629,15 +9628,15 @@ export function makeTable(options): TableResourceClass {
 			// that is present but whose attribute is null is a different case (record is a truthy object) and
 			// still indexes under null. See harper#1894 (F-149).
 			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
-			const guessed = existingIsStub && resolver && primaryStore.encoder.resolvedAttributeNames?.has(key);
+			const overStub = existingIsStub && resolver && primaryStore.encoder.resolvedAttributeNames?.has(key);
 			const existingValue =
 				existingRecord &&
 				(resolver
-					? guessed
+					? overStub
 						? resolveOverStub(resolver, existingRecord, key)
 						: resolver(existingRecord)
 					: existingRecord[key]);
-			if (value === existingValue && !isIndexing && !guessed) {
+			if (value === existingValue && !isIndexing && !overStub) {
 				continue;
 			}
 			if (index.customIndex) {
@@ -9659,7 +9658,7 @@ export function makeTable(options): TableResourceClass {
 							if (setToRemove.has(value)) {
 								// if the value is retained, we don't need to remove or add it, so remove it from the set
 								setToRemove.delete(value);
-								return guessed;
+								return overStub;
 							} else {
 								// keep in the list of values to add to index
 								return true;

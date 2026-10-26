@@ -716,7 +716,6 @@ describe('Reads of residency stubs', function () {
 				],
 				audit: true,
 			});
-			// over a stub (no `name`) this resolves to its fallback instead of throwing
 			Labeled.setComputedAttribute('label', (record) => record.name ?? 'unnamed');
 			await Labeled.put('guessed', { id: 'guessed', name: 'named' });
 			const context = {};
@@ -729,6 +728,47 @@ describe('Reads of residency stubs', function () {
 				.filter(({ value }) => value === 'guessed')
 				.map(({ key }) => key);
 			assert.ok(labels.includes('unnamed'), `the new computed value was not indexed: ${JSON.stringify(labels)}`);
+		});
+
+		it('evicting a stub whose computed vector cannot be resolved removes its graph node and every edge to it', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			const Embedded = table({
+				database: 'test',
+				table: 'ResidencyComputedVectors',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'angle', type: 'Float' },
+					{
+						name: 'embedding',
+						type: 'Array',
+						computed: true,
+						indexed: { type: 'HNSW', nativePlane: false, quantization: 'none' },
+					},
+				],
+			});
+			Embedded.setComputedAttribute('embedding', (record) => [
+				Math.cos(record.angle.valueOf()),
+				Math.sin(record.angle.valueOf()),
+			]);
+			for (let i = 0; i < 8; i++) await Embedded.put(`v${i}`, { id: `v${i}`, angle: i / 4 });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Embedded.getResource('v3', context, { ensureLoaded: false });
+				resource._writeInvalidate('v3');
+			});
+			const stub = Embedded.primaryStore.getEntry('v3');
+			assert.ok(stub.metadataFlags & INVALIDATED, 'premise: a stub');
+			await Embedded.evict('v3', stub.value, stub.version);
+			const graph = Embedded.indices.embedding;
+			assert.equal(graph.getSync('v3'), undefined, 'the evicted record keeps a graph node');
+			const dangling = [];
+			for (const { key, value: node } of graph.getRange({})) {
+				if (typeof key !== 'number' || node?.level === undefined) continue;
+				for (let level = 0; level <= node.level; level++)
+					for (const { id: neighbor } of node[level] ?? [])
+						if (graph.getSync(neighbor)?.level === undefined) dangling.push(`${key}->${neighbor}`);
+			}
+			assert.deepEqual(dangling, [], 'a graph node was removed without its neighbors being cleaned up');
 		});
 
 		it('evicting a stub removes it', async () => {
