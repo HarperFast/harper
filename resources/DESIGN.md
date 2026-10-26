@@ -251,16 +251,7 @@ A contract is `{ path, record?, get/post/put/patch/delete: { query?, body?, resp
 
 ## Conventions
 
-- Single-record nested selections use `Resource.transformForSelect`; searches use
-  `Table.transformEntryForSelect`. Plain JSON needs no target table; classless primitive array items
-  and whole selected Dates keep their values (Date-array subselects keep the search projection policy).
-  Missing targets preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object
-  projection. Only callable values count as a Promise or `getRecord`, so method-like JSON keys are data;
-  generic fallbacks treat function values as absent but keep inherited data and getters, and registered
-  resolver results pass through unchanged. Resolver dictionaries are read by own entries, the private
-  transform cache has no prototype, and a selected own `__proto__` is a data property on a normal response object. Pinned by
-  `../unitTests/resources/nestedSelectMissingValues.test.js` and
-  `../integrationTests/resources/relationship-and-status-contract.test.ts`. Still open, outside these helpers: [singleton-selector parsing and invalid-subselect policy](https://github.com/HarperFast/harper/issues/1415); separately, [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168) and [a `__proto__` key poisoning a table, and proto-named attributes rejected at insert](https://github.com/HarperFast/harper/issues/1295).
+- Single-record nested selections use `Resource.transformForSelect`; searches use `Table.transformEntryForSelect`. Their contracts for missing targets, `forceNulls`, Dates, callable values, resolver dictionaries and a selected `__proto__` are pinned by `../unitTests/resources/nestedSelectMissingValues.test.js` and `../integrationTests/resources/relationship-and-status-contract.test.ts`. Still open, outside these helpers: [singleton-selector parsing and invalid-subselect policy](https://github.com/HarperFast/harper/issues/1415); separately, [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168) and [a `__proto__` key poisoning a table, and proto-named attributes rejected at insert](https://github.com/HarperFast/harper/issues/1295).
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
