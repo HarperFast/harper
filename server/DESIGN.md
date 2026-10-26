@@ -375,16 +375,13 @@ have received, and can never reach an application catch-all. Only a URL that rea
 The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
 header, no credential rename, and no pre-auth stripping shim.
 
-**Every authentication 401 Harper renders is challenged; an application's own 401 under a deferred
-credential is not re-decorated.** `credentialRejectionResponse()` builds the in-place and settled 401s:
-a negotiated `Content-Type` and, off the operations API, `authenticationChallenge()` — `Bearer realm="Harper"`
-for a Bearer credential (browsers raise a dialog for Basic), with `error="invalid_token"` only when the token
-itself was rejected, else `Basic realm="Harper"`. `security/auth.ts` challenges or login-redirects a downstream
-401 only when nothing was deferred: a settled 401 is already challenged and a redirect would loop (`static.ts`
-settles the login page), and an application catch-all's 401 is its own. The legacy Fastify error handler
-(`fastifyRoutes.ts`) adds a missing challenge from the one the error carries (a settled rejection's deferred
-strategy, or a token `bearerTokenRejection()` marked), else from the presented scheme without `invalid_token`.
-The #1565 identity floor is stamped in `applyResponseHeaders` either way.
+**Every authentication 401 Harper renders is challenged; an app's own 401 under a deferral is not re-decorated.**
+`credentialRejectionResponse()` builds in-place and settled 401s: a negotiated `Content-Type` and, off the operations
+API, `Bearer realm="Harper"` for a Bearer credential (`error="invalid_token"` only for a rejected token; browsers raise
+a dialog for Basic), else `Basic realm="Harper"`. `auth.ts` challenges or login-redirects a downstream 401 only when
+nothing was deferred: a settled 401 is already challenged, and a redirect would loop (`static.ts` settles the login
+page). The legacy Fastify error handler adds a missing challenge from the error (its deferred strategy, or
+`bearerTokenRejection()`), else from the presented scheme. The #1565 identity floor is stamped in `applyResponseHeaders`.
 
 **The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a
 deferred credential is credential-dependent (#1565), so `authentication` stamps
