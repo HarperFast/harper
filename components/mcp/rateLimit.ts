@@ -259,8 +259,12 @@ interface ClientState {
 	lastSeen: number;
 }
 const clients = new Map<string, ClientState>();
+interface InitializeBucket {
+	rate: TokenBucket;
+	config: RateLimitConfig;
+}
 interface InitializeState {
-	clients: Map<string, ClientState & { config: RateLimitConfig }>;
+	clients: Map<string, InitializeBucket>;
 	lastPruneAt: number;
 }
 const initializeState: Record<'operations' | 'application', InitializeState> = {
@@ -312,7 +316,7 @@ function pruneInitializeClients(state: InitializeState, config: RateLimitConfig,
 	}
 }
 
-function reconfigureInitializeClient(c: ClientState & { config: RateLimitConfig }, config: RateLimitConfig): void {
+function reconfigureInitializeClient(c: InitializeBucket, config: RateLimitConfig): void {
 	if (c.config === config) return;
 	c.rate.reconfigure(config.initializePerSecond, config.initializeBurst);
 	c.config = config;
@@ -452,10 +456,9 @@ export function tryAdmitInitialize(
 	if (!state.clients.has(key) && state.clients.size >= MAX_INITIALIZE_IDENTITIES) key = SHARED_IDENTITY;
 	let c = state.clients.get(key);
 	if (!c) {
-		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst), lastSeen: t, config };
+		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst), config };
 		state.clients.set(key, c);
 	} else {
-		c.lastSeen = t;
 		reconfigureInitializeClient(c, config);
 	}
 	return c.rate.tryConsume()
@@ -468,6 +471,8 @@ function initializeIdentity(identity: string): string {
 		.replace(/^\[|\](:\d+)?$/g, '')
 		.split('%')[0]
 		.toLowerCase();
+	const ipv4WithPort = address.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+	if (ipv4WithPort) return ipv4WithPort[1];
 	if (!address.includes(':')) return address;
 	const groups = expandIpv6(address);
 	if (!groups) return address;

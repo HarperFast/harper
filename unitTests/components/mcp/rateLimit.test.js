@@ -273,6 +273,8 @@ describe('mcp/rateLimit', () => {
 			assert.equal(admit('0:0:0:0:0:ffff:10.0.0.4'), true);
 			assert.equal(admit('::FFFF:10.0.0.3'), false, 'same client in another spelling');
 			assert.equal(admit('10.0.0.4'), false, 'same client as plain IPv4');
+			assert.equal(admit('10.1.2.3:54321'), true);
+			assert.equal(admit('10.1.2.3:54322'), false, 'a source port does not make a new client');
 		});
 
 		it('an explicit 0 rate disables it, including quoted', () => {
