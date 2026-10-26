@@ -706,9 +706,9 @@ export type TransactionWrite = {
 	appendedAuditEntry?: boolean;
 	// the audit entry recordUpdater appended for this write in its current staging (handlers pass the
 	// write as its `write` option): 'none' until it appends, 'local' for a LOCAL_ONLY entry, which the
-	// sender never replicates. Reset per fresh staging: a runtime enableAuditing() changes the answer
-	// for a restaged write. Unset when no staging has run, or the last fresh one was skipped (it lost to
-	// a newer entry and confirms on that entry, harper#3182).
+	// sender never replicates. Reset per fresh staging so an earlier staging's append does not carry onto
+	// a restage. Unset when no staging has run, or the last fresh one was skipped (it lost to a newer
+	// entry and confirms on that entry, harper#3182).
 	stagedAudit?: 'none' | 'local' | 'replicable';
 	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
 	// only its trigger, so it can be triggered after the context has moved on to another transaction;

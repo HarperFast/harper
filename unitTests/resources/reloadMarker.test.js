@@ -178,7 +178,7 @@ describe('table-reload marker (harper-pro#489)', () => {
 			confirmedVersion = undefined;
 			await deleteTransaction.commit({ doneWriting: true });
 			assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
-			assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the put, not the delete');
+			assert.ok(confirmedVersion != null, 'confirmation targets the put, not the delete');
 		} finally {
 			setReplicationConfirmation(undefined);
 		}
