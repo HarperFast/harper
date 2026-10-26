@@ -5473,7 +5473,7 @@ export function makeTable(options): TableResourceClass {
 			if (awaitsConditionLock(condition)) {
 				// Installed before lock(), whose re-entrant reload runs synchronously. Every deferral reacts to the
 				// one lock promise, so they stage in program order and the slot keeps the newest write, as on the
-				// unlocked path; save() waits on that newest wait, which carries any failure it displaced.
+				// unlocked path.
 				const prior = this.#savingOperation;
 				const wait = new ConditionLockWait(fullUpdate);
 				this.#savingOperation = wait;
