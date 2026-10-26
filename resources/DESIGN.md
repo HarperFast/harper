@@ -358,22 +358,16 @@ bit is persisted, so it cannot follow a renumbered rocksdb-js constant without a
 `unitTests/resources/caching-rocks-database.test.js` ('marks a record whose version was reused…') pins
 the layout against raw stored values.
 
-A fill's puts carry no condition of their own; the commit handler decides for all of its writes.
-Against other transactions the engine enforces that decision: on LMDB, `LMDBTransaction`'s
-`ifVersion` block holds the condition, primary put, index writes and audit puts in one native write
-transaction; on RocksDB, a conflict retries the handler against the current record (the failed
-attempt's log entry stays, as `DatabaseTransaction.save` notes). A write the source makes to the same
-key through its context is in the fill's own transaction, where neither check sees it. On RocksDB the
-handler's `existingEntry` is read through that transaction and includes the write, and a source
-`update()` saves after the fill and applies on top of it. On LMDB `existingEntry` is the committed
-record, so the handler yields to any earlier same-key write that was not skipped
-(`followsAppliedWrite`): a staged put or invalidation, or a publish that restamps without staging. An
-`update()` that changes nothing is removed at validation and leaves the per-key chain
-(`LMDBTransaction.removeWrite`), so it does not hold the fill back. A per-put `ifVersion` is no
-substitute: it cannot stop the index writes, and on the unversioned audit store LMDB compares the entry's first 8 bytes and drops the write. On LMDB an
-invalidated record keeps its local time only while that audit entry exists to be replaced
-(`recordUpdater`); otherwise the fill assigns a new one, because an appended audit entry is keyed by
-the last assigned time and would otherwise take another write's key.
+A fill's puts carry no condition of their own: on LMDB the `LMDBTransaction` `ifVersion` block holds
+the condition with the primary, index and audit puts in one native write transaction (a per-put
+`ifVersion` cannot stop the index writes, and on the unversioned audit store it drops the write); on
+RocksDB a conflict retries the commit handler. A write the source makes to the same key through its
+context joins the fill's transaction, where neither check sees it. RocksDB reads the fill's
+`existingEntry` through that transaction; LMDB's optimistic path reads the committed record, so on
+LMDB the fill yields to any earlier same-key write not skipped (`followsAppliedWrite`), and a no-op
+`update()` removed at validation leaves the per-key chain (`LMDBTransaction.removeWrite`). On LMDB an
+invalidated record keeps its local time only while its audit entry exists to be replaced
+(`recordUpdater`), since an appended entry is keyed by the last assigned time.
 `unitTests/resources/sourceFillConditionalWrite.test.js` pins both engines.
 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits

@@ -10021,7 +10021,7 @@ export function makeTable(options): TableResourceClass {
 						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
 						if (
 							// The source wrote this key through its context: that write is ahead of the fill in this
-							// transaction, and on LMDB existingEntry is the committed record, which cannot show it.
+							// transaction, and LMDB's optimistic path reads existingEntry as committed, which cannot show it.
 							(!isRocksDB && followsAppliedWrite(sourceWrite)) ||
 							(racedVersion !== existingVersion &&
 								// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
