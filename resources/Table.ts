@@ -4293,7 +4293,7 @@ export function makeTable(options): TableResourceClass {
 						for (const name in indices) {
 							if (!newRecord) newRecord = {};
 							// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-							newRecord[name] = existingRecord[name];
+							newRecord[name] = existingRecord?.[name];
 						}
 						metadata = INVALIDATED;
 					} else {
