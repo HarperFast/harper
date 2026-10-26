@@ -139,7 +139,7 @@ function legacyHashReader(
 		.filter((prefix) => prefix === tableName || !tablesRef?.[prefix])
 		.map((prefix) => prefix + ':');
 	// promises, so the records of one file share each read of their table's `undefined` slot
-	const entries = new Map<string, Promise<any>>();
+	const slotEntries = new Map<string, Promise<any>>();
 	return async (recordId, existingRecordSubset) => {
 		// those hashes went through JSON, which conflates some keys (Infinity and -Infinity both become null)
 		if (prefixes.length === 0 || !toBufferKey(JSON.parse(JSON.stringify(recordId))).equals(toBufferKey(recordId))) {
@@ -151,10 +151,10 @@ function legacyHashReader(
 		const hashes: string[] = [];
 		for (const prefix of prefixes) {
 			const key = prefix + id;
-			let entry = entries.get(key);
+			let entry = slotEntries.get(key);
 			if (!entry) {
 				entry = Promise.resolve().then(() => trackingTable.get(key));
-				entries.set(key, entry);
+				if (id === undefined) slotEntries.set(key, entry);
 			}
 			let hashRecord;
 			try {
@@ -373,7 +373,6 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 						}
 
 						if (!loadedByDataLoader) {
-							// Created or modified outside the data loader (operations API etc.)
 							skippedRecords++;
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
