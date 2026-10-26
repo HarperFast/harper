@@ -1620,7 +1620,7 @@ function projectPlainValue(transformCache: Map<any, (value: any) => any>, attrib
 	}
 	return transform(value);
 }
-const sameEntry = (entry: Entry | undefined) => entry;
+const entryOf = (_resource: unknown, entry: Entry | undefined) => entry;
 
 export function makeTable(options): TableResourceClass {
 	const {
@@ -3070,23 +3070,8 @@ export function makeTable(options): TableResourceClass {
 					resourceOptions,
 					target,
 					this,
-					(entry, baseReadTxn) => {
-						if (entry) {
-							TableResource._updateResource(this, entry);
-						} else {
-							this.#entryLoaded = true;
-							this.#record = null;
-						}
-						if (baseReadTxn) {
-							this.#baseReadTxn = baseReadTxn;
-							this.#baseReadEntry = entry;
-						}
-						return this;
-					},
-					(entry) => {
-						TableResource._updateResource(this, entry);
-						return this;
-					}
+					TableResource.#installLocalEntry,
+					TableResource.#installLoadedEntry
 				);
 			} catch (error) {
 				if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
@@ -3106,6 +3091,23 @@ export function makeTable(options): TableResourceClass {
 			resource.#entryLoaded = true;
 			resource.#record = entry?.value ?? null;
 			resource.#version = entry?.version;
+		}
+		static #installLocalEntry(resource: TableResource, entry: Entry | undefined, baseReadTxn?: any) {
+			if (entry) {
+				TableResource._updateResource(resource, entry);
+			} else {
+				resource.#entryLoaded = true;
+				resource.#record = null;
+			}
+			if (baseReadTxn) {
+				resource.#baseReadTxn = baseReadTxn;
+				resource.#baseReadEntry = entry;
+			}
+			return resource;
+		}
+		static #installLoadedEntry(resource: TableResource, entry: Entry | undefined) {
+			TableResource._updateResource(resource, entry);
+			return resource;
 		}
 		/**
 		 * This is a request to explicitly ensure that the record is loaded from source, rather than only using the local record.
@@ -10837,7 +10839,7 @@ export function makeTable(options): TableResourceClass {
 		)
 			return NOT_HANDLED;
 		checkValidId(id);
-		const entry = loadRecord(id, context, resourceOptions, undefined, undefined, sameEntry, sameEntry);
+		const entry = loadRecord(id, context, resourceOptions, undefined, undefined, entryOf, entryOf);
 		if ((entry as any)?.then) {
 			// authorization and the instance get run after an asynchronous load on the general path, so they do here
 			return new LoadingResource(
@@ -11044,8 +11046,8 @@ export function makeTable(options): TableResourceClass {
 		resourceOptions: any,
 		target: RequestTarget | undefined,
 		resource: TableResource | undefined,
-		installLocal: (entry: Entry | undefined, baseReadTxn?: any) => T,
-		installLoaded: (entry: Entry | undefined) => T
+		installLocal: (resource: TableResource | undefined, entry: Entry | undefined, baseReadTxn?: any) => T,
+		installLoaded: (resource: TableResource | undefined, entry: Entry | undefined) => T
 	): MaybePromise<T> {
 		if (typeof id === 'object' && id && !Array.isArray(id)) {
 			throw new Error(`Invalid id ${JSON.stringify(id)}`);
@@ -11074,7 +11076,7 @@ export function makeTable(options): TableResourceClass {
 			},
 			sync,
 			(entry) => {
-				const installed = installLocal(entry, readsCommitBase ? readTxn : undefined);
+				const installed = installLocal(resource, entry, readsCommitBase ? readTxn : undefined);
 				if (request.onlyIfCached) {
 					// don't go into the loading from source condition, but HTTP spec says to
 					// return 504 (rather than 404) if there is no content and the cache-control header
@@ -11094,7 +11096,7 @@ export function makeTable(options): TableResourceClass {
 					);
 					if (loadingFromSource) {
 						txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-						return when(loadingFromSource as Promise<Entry>, installLoaded);
+						return when(loadingFromSource as Promise<Entry>, (entry) => installLoaded(resource, entry));
 					} else if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 				}
 				return installed;

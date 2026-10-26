@@ -16,9 +16,7 @@ const { ServerError } = require('#src/utility/errors/hdbError');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 
-// A static get by a string/number id inside an open transaction is served by the table's registered
-// primitive-id getter instead of the RequestTarget + instance dispatch; `Table.get({ id })` always takes
-// the instance dispatch, so each case compares the two.
+// `Table.get({ id })` always takes the instance dispatch, so it is the reference for `Table.get(id)`.
 describe('Table.get by a primitive id', function () {
 	this.timeout(20_000);
 	let Records, Restricted, AttributeRestricted, records;
@@ -168,7 +166,6 @@ describe('Table.get by a primitive id', function () {
 					await waitFor(() => reads.length >= count, { timeout: 10_000, message: 'no analytics report was flushed' });
 					assert.strictEqual(reads.length, count);
 				};
-				// flushes whatever earlier tests left in the open report
 				await inTransaction(() => Records.get('a'));
 				await waitForReport(1);
 				await inTransaction(async () => {
@@ -255,18 +252,28 @@ describe('Table.get by a primitive id', function () {
 			} finally {
 				Records.prototype.get = original;
 			}
-			const originalGetResource = Resource.getResource;
-			let resolved = 0;
-			Resource.getResource = function (...args) {
-				resolved++;
-				return originalGetResource.apply(this, args);
-			};
-			try {
-				await assertNotHandled(Records, () => inTransaction(() => Records.get('a')));
-			} finally {
-				Resource.getResource = originalGetResource;
+			for (const [owner, name] of [
+				[Records, 'getResource'],
+				[Resource, 'getResource'],
+				[Records, '_updateResource'],
+				[Records.prototype, '_loadRecord'],
+				[Records.prototype, 'getRecord'],
+			]) {
+				const hook = owner[name];
+				let called = 0;
+				owner[name] = function (...args) {
+					called++;
+					return hook.apply(this, args);
+				};
+				try {
+					await assertNotHandled(Records, () =>
+						inTransaction(async () => assert.strictEqual((await Records.get('a')).name, 'A'))
+					);
+				} finally {
+					owner[name] = hook;
+				}
+				assert.ok(called > 0, `${name} ran`);
 			}
-			assert.strictEqual(resolved, 1);
 		});
 
 		it('for loadAsInstance = false and getReturnMutable', async () => {
