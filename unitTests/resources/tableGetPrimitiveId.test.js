@@ -252,11 +252,11 @@ describe('Table.get by a primitive id', function () {
 			} finally {
 				Records.prototype.get = original;
 			}
-			for (const [owner, name] of [
-				[Records, 'getResource'],
-				[Resource, 'getResource'],
-				[Records, '_updateResource'],
-				[Records.prototype, '_loadRecord'],
+			for (const [owner, name, calls] of [
+				[Records, 'getResource', 1],
+				[Resource, 'getResource', 1],
+				[Records, '_updateResource', 1],
+				[Records.prototype, '_loadRecord', 1],
 				[Records.prototype, 'getRecord'],
 			]) {
 				const hook = owner[name];
@@ -272,7 +272,8 @@ describe('Table.get by a primitive id', function () {
 				} finally {
 					owner[name] = hook;
 				}
-				assert.ok(called > 0, `${name} ran`);
+				if (calls) assert.strictEqual(called, calls, name);
+				else assert.ok(called > 0, `${name} ran`);
 			}
 		});
 

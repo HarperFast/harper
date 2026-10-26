@@ -10813,7 +10813,7 @@ export function makeTable(options): TableResourceClass {
 		AssertTrue<ExactlyEqual<TableResourceClass['prototype'], TableResourceInstance>>,
 	];
 	const tablePrototype = TableResource.prototype;
-	// the hooks the instance dispatch of a get calls, as defined; see resources/DESIGN.md before adding one
+	// see resources/DESIGN.md before adding a hook
 	const tableGetResource = TableResource.getResource;
 	const updateResource = TableResource._updateResource;
 	const { get: tableGet, _loadRecord: tableLoadRecord, getRecord: tableGetRecord } = tablePrototype;
