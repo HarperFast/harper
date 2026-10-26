@@ -431,7 +431,7 @@ RocksDB index rows store `null`, so `RocksIndexStore.getRange` derives `{ key: i
 
 ## A read reference belongs to the handle acquisition it was taken on (`DatabaseTransaction.useReadTxn`/`doneReadTxn`, harper#3308)
 
-`readTxnsUsed` and `readTxnRefCount` are never positive without a read handle: `getReadTxn()` only counts references when opening or reusing a live handle, detaching the handle (`DatabaseTransaction.detachOwnedTransaction` / `LMDBTransaction.doneReadTxn`) zeroes both counters and marks `baseReadRefConsumed = true`, `disregardReadTxn()` clamps `readTxnRefCount` at zero, and `doneReadTxn(generation)` ignores a return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot). Enforced by `unitTests/resources/detachedReadRefs.test.js`.
+`readTxnsUsed` and `readTxnRefCount` are never non-zero without a read handle, and neither carries across handle acquisitions. `doneReadTxn(generation)` ignores an iterator return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot); point-read `disregardReadTxn()` is not generation-stamped, so a cache miss resuming after its acquisition was released can still decrement a later acquisition's count. Enforced by `unitTests/resources/detachedReadRefs.test.js`.
 
 ## `getRecordCount`'s estimate is a heuristic guess, not a guaranteed bound on the truth (`Table.ts`)
 

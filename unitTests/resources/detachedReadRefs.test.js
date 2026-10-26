@@ -262,7 +262,7 @@ describe('harper#3308 read references against a detached handle', function () {
 	it('releases a second-generation snapshot via disregardReadTxn before a slow source fetch resolves', async function () {
 		let resolveSource;
 		let markSourceEntered;
-		const sourceEntered = new Promise((resolve) => {
+		let sourceEntered = new Promise((resolve) => {
 			markSourceEntered = resolve;
 		});
 		const SourcedRefs = table({
@@ -279,28 +279,20 @@ describe('harper#3308 read references against a detached handle', function () {
 			},
 		});
 
-		const context = {};
-		let pendingGet;
-		try {
-			await transaction(context, async () => {
-				const seeded = await SourcedRefs.get('seeded', context);
-				assert.equal(seeded?.v, 1);
+		async function assertMissReleasesSnapshotBeforeSourceResolves(context, missId, previousGeneration) {
+			let pendingGet = SourcedRefs.get(missId, context);
+			try {
+				await Promise.race([
+					sourceEntered,
+					pendingGet.then(() => assert.fail('the cache miss never reached the source')),
+				]);
 				let txn;
-				for (txn = context.transaction; txn && !txn.readTxn && !txn.transaction; txn = txn.next);
-				assert.ok(txn, 'premise: first-generation read opened a transaction handle');
-				const firstGeneration = txn.readTxnGeneration;
-				txn.releaseReadTxn();
-				assert.equal(txn.readTxn ?? txn.transaction, null, 'premise: first-generation handle detached');
-				assert.equal(txn.readTxnsUsed, 0);
-
-				pendingGet = SourcedRefs.get('cache-miss-id', context);
-				await sourceEntered;
-
-				assert.ok(txn.readTxnGeneration > firstGeneration, 'premise: cache-miss read opened a second generation');
+				for (txn = context.transaction; txn?.next; txn = txn.next);
+				assert.ok(txn.readTxnGeneration > previousGeneration, 'premise: cache-miss read opened a new generation');
 				assert.equal(
 					txn.readTxn ?? txn.transaction,
 					null,
-					'disregardReadTxn must release the second-generation snapshot while the source fetch is still pending'
+					'disregardReadTxn must release the snapshot while the source fetch is still pending'
 				);
 				assert.equal(txn.readTxnsUsed, 0);
 				assert.equal(txn.readTxnRefCount, 0);
@@ -310,11 +302,43 @@ describe('harper#3308 read references against a detached handle', function () {
 				const loaded = await pendingGet;
 				pendingGet = null;
 				assert.equal(loaded?.v, 42);
-			});
-		} finally {
-			resolveSource?.();
-			await pendingGet?.catch(() => {});
+			} finally {
+				resolveSource?.();
+				await pendingGet?.catch(() => {});
+				sourceEntered = new Promise((resolve) => {
+					markSourceEntered = resolve;
+				});
+			}
 		}
+
+		const releaseContext = {};
+		await transaction(releaseContext, async () => {
+			const seeded = await SourcedRefs.get('seeded', releaseContext);
+			assert.equal(seeded?.v, 1);
+			let txn;
+			for (txn = releaseContext.transaction; txn && !txn.readTxn && !txn.transaction; txn = txn.next);
+			assert.ok(txn, 'premise: first-generation read opened a transaction handle');
+			const firstGeneration = txn.readTxnGeneration;
+			txn.releaseReadTxn();
+			assert.equal(txn.readTxn ?? txn.transaction, null, 'premise: first-generation handle detached');
+			assert.equal(txn.readTxnsUsed, 0);
+
+			await assertMissReleasesSnapshotBeforeSourceResolves(releaseContext, 'cache-miss-after-release', firstGeneration);
+		});
+
+		const midCommitContext = {};
+		await transaction(midCommitContext, async () => {
+			await Refs.put({ id: 'r0', v: 10 }, midCommitContext);
+			const midCommit = midCommitContext.transaction.commit();
+			const seeded = await SourcedRefs.get('seeded', midCommitContext);
+			assert.equal(seeded?.v, 1);
+			for (let t = midCommitContext.transaction; t; t = t.next) {
+				if (t.readTxn) t.releaseReadTxn();
+			}
+			await midCommit;
+
+			await assertMissReleasesSnapshotBeforeSourceResolves(midCommitContext, 'cache-miss-after-mid-commit', 0);
+		});
 	});
 
 	it('clamps unpaired disregardReadTxn at 0 so a later shared reader cannot close a live snapshot', async function () {
@@ -332,7 +356,6 @@ describe('harper#3308 read references against a detached handle', function () {
 			);
 			assert.equal(txn.readTxnRefCount, 0);
 
-			// Unpaired disregardReadTxn at refcount 0 must clamp at 0 instead of underflowing to -1.
 			txn.disregardReadTxn();
 
 			const snapA = txn.getReadTxn();
@@ -350,7 +373,6 @@ describe('harper#3308 read references against a detached handle', function () {
 			assert.equal(txn.readTxnsUsed, 1);
 			assert.equal(txn.readTxnRefCount, 1);
 
-			// Also verify clamping within the same generation while an iterator holds readTxnsUsed > 1.
 			txn.useReadTxn();
 			assert.equal(txn.readTxnsUsed, 2);
 			assert.equal(txn.readTxnRefCount, 2);
@@ -384,9 +406,11 @@ describe('harper#3308 read references against a detached handle', function () {
 				for (txn = context.transaction; txn && !txn.readTxn && !txn.transaction; txn = txn.next);
 				assert.ok(txn, 'premise: read handle opened');
 				assert.equal(txn.readTxnsUsed, 1);
+				assert.equal(txn.baseReadRefConsumed, false);
 				detach(txn);
 				assert.equal(txn.readTxn ?? txn.transaction, null, 'premise: handle detached before commit');
 				assert.equal(txn.readTxnsUsed, 0);
+				assert.equal(txn.baseReadRefConsumed, true, 'detaching the handle must mark baseReadRefConsumed');
 
 				let current = txn.readTxnsUsed;
 				let minReadTxnsUsed = current;
@@ -407,5 +431,26 @@ describe('harper#3308 read references against a detached handle', function () {
 				assert.equal(txn.baseReadRefConsumed, true);
 			});
 		}
+
+		const { txn: untouchedTxn } = newTransaction();
+		assert.equal(Boolean(untouchedTxn.baseReadRefConsumed), false);
+		let current = untouchedTxn.readTxnsUsed ?? 0;
+		let minReadTxnsUsed = current;
+		Object.defineProperty(untouchedTxn, 'readTxnsUsed', {
+			configurable: true,
+			get() {
+				return current;
+			},
+			set(value) {
+				current = value;
+				if (value < minReadTxnsUsed) minReadTxnsUsed = value;
+			},
+		});
+		await untouchedTxn.commit();
+		assert.equal(
+			minReadTxnsUsed,
+			0,
+			'performCommit on a transaction that never attached a handle must not decrement readTxnsUsed'
+		);
 	});
 });
