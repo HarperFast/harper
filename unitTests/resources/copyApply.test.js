@@ -97,15 +97,27 @@ describe('copy-apply snapshot writes (harper-pro#480)', () => {
 		const held = new Promise((resolve) => (release = resolve));
 		const version = Date.now();
 		const key = version + 100;
-		const Rows = makeReplicatedTable('CopyApplySelfOrigin', [
-			{ type: 'put', id: 1, value: { id: 1, name: 'self snapshot' }, nodeId: 0, version, timestamp: key, isCopyApply: true },
-		], held);
+		const Rows = makeReplicatedTable(
+			'CopyApplySelfOrigin',
+			[
+				{
+					type: 'put',
+					id: 1,
+					value: { id: 1, name: 'self snapshot' },
+					nodeId: 0,
+					version,
+					timestamp: key,
+					isCopyApply: true,
+				},
+			],
+			held
+		);
 		try {
 			await waitFor(async () => (await Rows.get(1))?.name === 'self snapshot', 'self-origin snapshot applied');
 			const entry = Rows.primaryStore.getEntry(1);
 			assert.equal(entry.version, version);
 			assert.notEqual(entry.localTime, key);
-			assert.ok(!entry.additionalAuditRefs?.some(ref => ref.version === key));
+			assert.ok(!entry.additionalAuditRefs?.some((ref) => ref.version === key));
 			assert.equal((await Rows.getHistoryOfRecord(1)).length, 0);
 		} finally {
 			release();

@@ -6390,7 +6390,6 @@ export function makeTable(options): TableResourceClass {
 			const locking = lockConditionalWrite(this, id, condition);
 			if (locking) return locking.then(() => this._writeDelete(id, options));
 			const transaction = txnForContext(context);
-			const writtenHere = !options?.isNotification && !transaction.sourceApply && !transaction.isReplay;
 			const localShardingWrite = !transaction.isReplay && !isReplicationApply(transaction);
 			this.#evaluateWriteCondition(id, condition, transaction);
 			assertDerivedIndexAdmission(options, transaction);

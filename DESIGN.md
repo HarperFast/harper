@@ -232,7 +232,6 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 - [Logger status dispatch uses the active runtime facade](utility/DESIGN.md#logger-status-dispatch-uses-the-active-runtime-facade) — Read CommonJS exports per call and reuse the source default facade.
 - [Core runtime and product paths (`packageUtils.js`)](utility/DESIGN.md#core-runtime-and-product-paths-packageutilsjs) — Core files and schema assets follow the module tree; metadata, product startup and public relative-worker paths retain their package owner.
-
 - [Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)](utility/DESIGN.md#every-path-handed-to-a-native-file-watch-must-be-canonicalized-utilitywatchpathts) — Every native file-watch path is canonicalized first: libuv aborts the process on a Windows 8.3 short-path mismatch.
 - [Interactive CLI prompts go through `utility/interactivePrompts.ts`](utility/DESIGN.md#interactive-cli-prompts-go-through-utilityinteractivepromptsts) — Every `@inquirer` prompt uses this seam, which lazy-loads packages off the boot path, exits 130 on Ctrl-C and gives tests a stubbable raw layer.
 - [An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)](utility/DESIGN.md#an-hdberrors-message-is-a-string-the-structured-body-is-http_resp_msg-utilityerrorshdberrorts) — A report object passed to `handleHDBError` is the response body and the job message; `message` is a string derived from it.
