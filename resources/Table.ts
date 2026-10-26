@@ -7226,20 +7226,14 @@ export function makeTable(options): TableResourceClass {
 									for (const key in record) {
 										selected[key] = record[key];
 									}
-								else {
-									if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
-										const value = record[attribute];
-										// a function is not column data; selectAttribute decides what it projects to
-										if (typeof value !== 'function') {
-											selected[attribute] = value === undefined && forceNulls ? null : value;
-											continue;
-										}
-									}
+								else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
+									const value = record[attribute];
+									selected[attribute] = value === undefined && forceNulls ? null : value;
+								} else
 									selectAttribute(attribute, (value, attribute_name) => {
 										if (value === undefined && forceNulls) value = null;
 										selected[attribute_name] = value;
 									});
-								}
 							}
 						}
 					} else throw new ClientError('Invalid select' + select);
