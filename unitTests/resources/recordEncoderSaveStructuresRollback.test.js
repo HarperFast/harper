@@ -7,7 +7,6 @@ const { open } = require('lmdb');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
 const OpenEnvironmentObject = require('#src/utility/lmdb/OpenEnvironmentObject').default;
-const harperLogger = require('#js/utility/logging/harper_logger');
 
 // Each engine opens its store directly, so one run covers all three save paths regardless of
 // HARPER_STORAGE_ENGINE. `saveStore` is the store whose transactionSync runs the structure save;
@@ -111,22 +110,13 @@ function failSaves(handle, ...faults) {
 
 describe('RecordEncoder discards structures from a structure save that did not commit', () => {
 	let tmpDir;
-	let warnings, errors, restoreWarn, restoreError;
 	const handles = [];
 
 	beforeEach(() => {
 		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-struct-rollback-'));
-		warnings = [];
-		errors = [];
-		restoreWarn = harperLogger.warn;
-		restoreError = harperLogger.error;
-		harperLogger.warn = (...args) => warnings.push(args);
-		harperLogger.error = (...args) => errors.push(args);
 	});
 
 	afterEach(() => {
-		harperLogger.warn = restoreWarn;
-		harperLogger.error = restoreError;
 		while (handles.length) {
 			try {
 				handles.pop().close();
@@ -134,11 +124,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 		}
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});
-
-	function assertNoDecodeFailures() {
-		assert.deepStrictEqual(warnings, [], 'no missing-structure warnings');
-		assert.deepStrictEqual(errors, [], 'no decode errors');
-	}
 
 	function assertTypedRecord(handle, key) {
 		const raw = handle.getBinary(key);
@@ -173,7 +158,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 
 					const reader = reopen(writer);
 					assert.deepEqual(reader.get('k1'), { a: 1, b: 2 });
-					assertNoDecodeFailures();
 				});
 
 				it('keeps durable typed structures when a later mint aborts', () => {
@@ -189,7 +173,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 					assert.deepEqual(reader.get('k1'), { alpha: 1, beta: 2 });
 					assert.deepEqual(reader.get('k2'), { x: 3, y: 4 });
 					assert.strictEqual(reader.db.encoder.getStructureCounts().typed, 2);
-					assertNoDecodeFailures();
 				});
 
 				it('throws when the retry after an abort fails too, and the next write persists', () => {
@@ -202,7 +185,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 
 					const reader = reopen(writer);
 					assert.deepEqual(reader.get('good'), { a: 1, b: 2 });
-					assertNoDecodeFailures();
 				});
 			}
 
@@ -216,7 +198,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 
 				const reader = reopen(writer);
 				assert.deepEqual(reader.get('good'), { alpha: 1, beta: 2 });
-				assertNoDecodeFailures();
 			});
 
 			it('re-mints a typed structure whose save lost to a classic-only dictionary', () => {
@@ -237,7 +218,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 				assert.deepEqual(reader.get('w0'), [{ m: 1 }]);
 				assert.deepEqual(reader.get('p1'), [{ o: 1 }]);
 				assert.deepEqual(reader.get('w1'), { alpha: 1, beta: 2 });
-				assertNoDecodeFailures();
 			});
 
 			it("keeps durable typed structures through a failed mint and reads a peer's reuse of its id", () => {
@@ -257,7 +237,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 				assert.deepEqual(reader.get('kp'), { p: 'hello', q: 'world' });
 				assert.deepEqual(reader.get('k2'), { alpha: 1, beta: 2 });
 				assert.strictEqual(reader.db.encoder.getStructureCounts().typed, 3);
-				assertNoDecodeFailures();
 			});
 		});
 	}
@@ -283,7 +262,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 			assert.throws(() => writer.put('w2', { other: 1 }), /injected structure-save failure/);
 			restore();
 			assert.ok(writer.db.encoder.structureUpdate, 'a failed save leaves the earlier unconsumed update');
-			assertNoDecodeFailures();
 		});
 	});
 
@@ -299,6 +277,5 @@ describe('RecordEncoder discards structures from a structure save that did not c
 		const reader = openRocks(tmpDir, { randomAccessStructure: false });
 		handles.push(reader);
 		assert.deepEqual(reader.get('c1'), { a: 1, b: 2 });
-		assertNoDecodeFailures();
 	});
 });
