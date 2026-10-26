@@ -219,7 +219,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
-import { commutativeOpsOf, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
+import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -8404,35 +8404,34 @@ export function makeTable(options): TableResourceClass {
 			const addError = (path: string, code: string, message: string) => {
 				(validationErrors || (validationErrors = [])).push({ path, code, message });
 			};
-			// Returns a coerced replacement for `value`, or undefined to keep it. A patch operation envelope
-			// (`{ __op__: 'add', value }`) is never replaced: the commit applies it, so only its operand is
-			// checked and coerced.
-			const validateValue = (value, attribute: Attribute, name, isOperand?: boolean) => {
-				if (patch && !isOperand && value?.__op__) {
-					if (attribute.type && attribute.type !== 'Any') {
-						if (!NUMERIC_TYPES.has(attribute.type)) {
-							addError(
-								name,
-								'type',
-								`Operation ${stringify(value.__op__)} in property ${name} requires a numeric property, not ${attribute.type}`
-							);
-							return;
-						}
-						if (value.value == null) {
-							addError(
-								name,
-								'type',
-								`Value ${stringify(value.value)} for operation ${stringify(value.__op__)} in property ${name} must be a number`
-							);
-							return;
-						}
+			// A patch operation (`{ __op__: 'add', value }`) is applied at commit, so it stays in the record and only
+			// its operand is checked and coerced. The commit applies operations on top-level properties only.
+			const validateOperation = (operation, attribute: Attribute, name) => {
+				const operand = operation.value;
+				const typed = attribute.type && attribute.type !== 'Any';
+				if (!crdtOperations[operation.__op__]) {
+					addError(name, 'type', `Operation ${stringify(operation.__op__)} in property ${name} is not supported`);
+				} else if (typed && !NUMERIC_TYPES.has(attribute.type)) {
+					addError(
+						name,
+						'type',
+						`Operation ${operation.__op__} in property ${name} requires a numeric property, not ${attribute.type}`
+					);
+				} else if (typed ? operand == null : typeof operand !== 'number' && typeof operand !== 'bigint') {
+					addError(
+						name,
+						'type',
+						`Value ${stringify(operand)} for operation ${operation.__op__} in property ${name} must be numeric`
+					);
+				} else {
+					const coerced = validateValue(operand, attribute, name);
+					if (coerced !== undefined) {
+						if (Object.isFrozen(operation)) return { __op__: operation.__op__, value: coerced };
+						operation.value = coerced;
 					}
-					const coerced = validateValue(value.value, attribute, name, true);
-					if (coerced === undefined) return;
-					if (Object.isFrozen(value)) return { __op__: value.__op__, value: coerced };
-					value.value = coerced;
-					return;
 				}
+			};
+			const validateValue = (value, attribute: Attribute, name) => {
 				if (attribute.type && value != null) {
 					if (attribute.properties) {
 						if (typeof value !== 'object' || Array.isArray(value)) {
@@ -8445,10 +8444,12 @@ export function makeTable(options): TableResourceClass {
 							);
 						} else {
 							const properties = attribute.properties;
+							// a tracked sub-object holds assignments in its pending changes, not as own properties
+							const changes = value.getChanges?.();
 							for (let i = 0, l = properties.length; i < l; i++) {
 								const attribute = properties[i];
 								if (attribute.relationship || attribute.computed) {
-									if (Object.hasOwn(value, attribute.name)) {
+									if (Object.hasOwn(value, attribute.name) || (changes && attribute.name in changes)) {
 										addError(
 											`${name}.${attribute.name}`,
 											'computed',
@@ -8579,7 +8580,11 @@ export function makeTable(options): TableResourceClass {
 					continue;
 				}
 				if (!patch || attribute.name in record) {
-					const updated = validateValue(record[attribute.name], attribute, attribute.name);
+					const value = record[attribute.name];
+					const updated =
+						patch && typeof value === 'object' && value?.__op__
+							? validateOperation(value, attribute, attribute.name)
+							: validateValue(value, attribute, attribute.name);
 					if (updated !== undefined) record[attribute.name] = updated;
 				}
 			}

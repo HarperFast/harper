@@ -177,6 +177,8 @@ describe('Validation of patch operations, coercion write-back and object sub-typ
 				{ name: 'balance', type: 'BigInt' },
 				{ name: 'count', type: 'Int' },
 				{ name: 'when', type: 'Date' },
+				{ name: 'untyped' },
+				{ name: 'anything', type: 'Any' },
 				{ name: 'sharedLabel', type: 'String' },
 				{ name: 'bigList', type: 'array', elements: { type: 'BigInt' } },
 				{
@@ -269,12 +271,41 @@ describe('Validation of patch operations, coercion write-back and object sub-typ
 			async () => CoercionTest.patch('add-5', { sub: { __op__: 'add', value: null } }),
 			assertIssues([{ path: 'sub', code: 'type' }])
 		);
+		await assert.rejects(
+			async () => CoercionTest.patch('add-5', { balance: { __op__: 'subtract', value: 1 } }),
+			assertIssues([{ path: 'balance', code: 'type' }])
+		);
+		await assert.rejects(
+			async () => CoercionTest.patch('add-5', { sub: { fromStr: { __op__: 'add', value: 1 } } }),
+			assertIssues([{ path: 'sub.fromStr', code: 'type' }])
+		);
+		await assert.rejects(
+			async () => CoercionTest.patch('add-5', { bigList: [{ __op__: 'add', value: 1 }] }),
+			assertIssues([{ path: 'bigList[*]', code: 'type' }])
+		);
 		const record = await CoercionTest.get('add-5');
 		assert.strictEqual(record.balance, 100n);
 		assert.strictEqual(record.when.getTime(), 0);
 		assert.strictEqual(record.sub.fromStr, 1n);
 		await CoercionTest.patch('add-5', { balance: { __op__: 'add', value: 1 } });
 		assert.strictEqual((await CoercionTest.get('add-5')).balance, 101n);
+	});
+	it('requires a numeric operand for a patch operation on an untyped property', async function () {
+		await CoercionTest.put('add-6', { untyped: 100n, anything: 10 });
+		for (const value of [null, '5']) {
+			await assert.rejects(
+				async () =>
+					CoercionTest.patch('add-6', { untyped: { __op__: 'add', value }, anything: { __op__: 'add', value } }),
+				assertIssues([
+					{ path: 'untyped', code: 'type' },
+					{ path: 'anything', code: 'type' },
+				])
+			);
+		}
+		await CoercionTest.patch('add-6', { untyped: { __op__: 'add', value: 5n }, anything: { __op__: 'add', value: 5 } });
+		const record = await CoercionTest.get('add-6');
+		assert.strictEqual(record.untyped, 105n);
+		assert.strictEqual(record.anything, 15);
 	});
 	it('coerces zero to 0n in object sub-types and arrays', async function () {
 		await CoercionTest.put('zero-1', { sub: { fromStr: '0', fromNum: 0 }, bigList: ['0', 0, '5'] });
@@ -292,6 +323,14 @@ describe('Validation of patch operations, coercion write-back and object sub-typ
 		assert.strictEqual((await CoercionTest.get('computed-2')).sharedLabel, 'top-level');
 		await CoercionTest.put('computed-3', Object.assign(Object.create(null), { sub: { fromNum: 2 } }));
 		assert.strictEqual((await CoercionTest.get('computed-3')).sub.fromNum, 2n);
+		await assert.rejects(
+			transaction(async (txn) => {
+				const record = await CoercionTest.update('computed-3', {}, txn);
+				record.sub.subComputed = 'injected';
+			}),
+			assertIssues([{ path: 'sub.subComputed', code: 'computed' }])
+		);
+		assert.strictEqual((await CoercionTest.get('computed-3')).sub.subComputed, undefined);
 	});
 	it('rejects an array or primitive for an object sub-type with one error', async function () {
 		await assert.rejects(
