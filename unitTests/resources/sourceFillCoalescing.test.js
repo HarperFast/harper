@@ -205,6 +205,26 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(new Set(results).size, 20);
 	});
 
+	it('do not share a record carrying a one-shot stream body', async function () {
+		respond = (id, attempt) => ({ id, name: 'streamed ' + attempt, headers: {}, body: new ReadableStream() });
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'streamed', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
+	it('do not share a record a response could not copy', async function () {
+		respond = (id, attempt) => Object.assign(Object.create(null), { id, name: 'bare ' + attempt, headers: { a: '1' } });
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'bare', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
 	it('refetch for a caching waiter when a no-store leader finds an expired record absent', async function () {
 		let originHasRecord = true;
 		respond = (id) => (originHasRecord ? { id, name: 'stale ' + id } : undefined);

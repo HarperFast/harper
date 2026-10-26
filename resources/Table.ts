@@ -10459,9 +10459,15 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					// finalizeResponse merges into a Headers-like `headers` in place, so one shared would leak
-					// one request's response headers into another's
-					if (!sourceContext.noCacheStore && typeof updatedRecord?.headers?.set !== 'function')
+					// A response writes into a record it cannot copy, merges into a Headers-like `headers` in place and
+					// reads a stream `body` once, so only a copyable record without them is handed to several requests
+					if (
+						!sourceContext.noCacheStore &&
+						(updatedRecord == null ||
+							(entryMap.has(updatedRecord) &&
+								updatedRecord.body === undefined &&
+								typeof updatedRecord.headers?.set !== 'function'))
+					)
 						sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
