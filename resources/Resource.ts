@@ -641,13 +641,14 @@ _assignPackageExport('Resource', Resource);
  */
 export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
 
-/** Captured before application code can replace it, so a replacement is never mistaken for the built-in. */
+/** Captured at load, before application code can replace it. */
 export const defaultGetResource = Resource.getResource;
 
 /**
- * A static `get(id)` with a string or number id, served without building a RequestTarget or resource
- * instance. Registered per exact class, so subclasses never use it. Returns the record value, NOT_HANDLED
- * to use the general dispatch, or a LoadingResource when the read went asynchronous.
+ * Serves a static `get(id)` with a string or number id, inside a joinable transaction, without a
+ * RequestTarget or resource instance; registered per exact class, so subclasses never match. Returns the
+ * record value, NOT_HANDLED, or a LoadingResource. It must not consume its arguments: on NOT_HANDLED the
+ * general dispatch continues with the context resolved for it.
  */
 type PrimitiveIdGet = (id: string | number, context: Context, resourceOptions: any) => any;
 const primitiveIdGets = new WeakMap<object, PrimitiveIdGet>();
@@ -658,7 +659,7 @@ export function registerPrimitiveIdGet(resourceClass: object, get: PrimitiveIdGe
 export function primitiveIdGetFor(resourceClass: object): PrimitiveIdGet | undefined {
 	return primitiveIdGets.get(resourceClass);
 }
-/** The resource instance an asynchronous primitive-id read produced; general dispatch takes over from it. */
+/** An asynchronous primitive-id read: the general dispatch continues from the instance it loads. */
 export class LoadingResource {
 	loaded: Promise<ResourceInterface>;
 	constructor(loaded: Promise<ResourceInterface>) {
@@ -756,14 +757,16 @@ function transactional(
 		if (isGet && !context && (typeof idOrQuery === 'string' || typeof idOrQuery === 'number')) {
 			const getPrimitiveId = primitiveIdGets.get(this);
 			if (getPrimitiveId) {
-				// resolved once: on NOT_HANDLED the general path below continues with this context
+				// resolved once: the general path below continues with this context
 				context = dataOrContext
 					? (dataOrContext as any).getContext?.() || dataOrContext
 					: (contextStorage.getStore() ?? {});
 				dataOrContext = undefined;
-				const result = getPrimitiveId(idOrQuery, context, options);
-				if (result instanceof LoadingResource) loadingResource = result.loaded;
-				else if (result !== NOT_HANDLED) return promiseNormalize(result, options as any);
+				if (isJoinableScope(context.transaction)) {
+					const result = getPrimitiveId(idOrQuery, context, options);
+					if (result instanceof LoadingResource) loadingResource = result.loaded;
+					else if (result !== NOT_HANDLED) return promiseNormalize(result, options as any);
+				}
 			}
 		}
 		// First we do our argument normalization. There are two main types of methods, with or without content

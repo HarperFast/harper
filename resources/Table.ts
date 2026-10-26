@@ -10811,7 +10811,7 @@ export function makeTable(options): TableResourceClass {
 		AssertTrue<ExactlyEqual<TableResourceClass['prototype'], TableResourceInstance>>,
 	];
 	const tablePrototype = TableResource.prototype;
-	// every extension point the general get dispatch would call, as defined, before application code can replace one
+	// the hooks the instance dispatch of a get calls, as defined; see resources/DESIGN.md before adding one
 	const tableGetResource = TableResource.getResource;
 	const updateResource = TableResource._updateResource;
 	const { get: tableGet, _loadRecord: tableLoadRecord, getRecord: tableGetRecord } = tablePrototype;
@@ -10826,7 +10826,6 @@ export function makeTable(options): TableResourceClass {
 			tablePrototype.get !== tableGet ||
 			tablePrototype._loadRecord !== tableLoadRecord ||
 			tablePrototype.getRecord !== tableGetRecord ||
-			!isJoinableScope(context.transaction) ||
 			context.authorize ||
 			context.onlyIfCached ||
 			context.isCollection ||

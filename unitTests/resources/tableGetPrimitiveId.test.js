@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { Resource, NOT_HANDLED, primitiveIdGetFor, registerPrimitiveIdGet } = require('#src/resources/Resource');
 const { transaction } = require('#src/resources/transaction');
@@ -167,8 +168,8 @@ describe('Table.get by a primitive id', function () {
 						if (metric.metric === 'db-read' && metric.path === 'PrimitiveIdGet') reads.push(metric);
 				});
 				const waitForReport = async (count) => {
-					for (let attempt = 0; attempt < 100 && reads.length < count; attempt++) await delay(50);
-					assert.strictEqual(reads.length, count, 'an analytics report was flushed');
+					await waitFor(() => reads.length >= count, { timeout: 10_000, message: 'no analytics report was flushed' });
+					assert.strictEqual(reads.length, count);
 				};
 				// the open report may also hold the earlier tests' reads
 				await inTransaction(() => Records.get('a'));
@@ -409,6 +410,18 @@ describe('Table.get by a primitive id', function () {
 				calls.restore();
 			}
 			assert.deepStrictEqual([...calls], ['handled']);
+		});
+
+		it('resolves a successful absence to null on both routes', async () => {
+			load = async () => undefined;
+			const calls = countPrimitiveGets(Resident);
+			try {
+				assert.strictEqual(await inTransaction(() => Resident.get('stub')), null);
+			} finally {
+				calls.restore();
+			}
+			assert.deepStrictEqual([...calls], ['handled']);
+			assert.strictEqual(await inTransaction(() => Resident.get({ id: 'stub' })), null);
 		});
 
 		it('rejects the caller with the resident’s error', async () => {
