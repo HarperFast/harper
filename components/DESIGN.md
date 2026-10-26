@@ -671,7 +671,7 @@ as a component is that package's dependency, and the target does not reinstall a
 `scanPackageDirectory()` finds them in its async walk, so `tar-fs`'s synchronous `ignore` does no I/O and the size
 estimate leaves out exactly what the packer does. A scan is not a snapshot: a link created or replaced between the scan
 and the pack is classified by the tree the scan saw. A `harperdb` link to `PACKAGE_ROOT` cannot be omitted: the loader only repairs an existing one, and `installApplication` skips installing when `node_modules` exists (harper#2577).
-It ships as an empty 0755 directory the loader relinks, injected after the walk (`finalize: false` plus `finish`; a `map` rewrite keeps the absolute `linkname`) with a `/`-joined name; a directory entry over a live link would follow it.
+It ships as an empty 0755 directory the loader relinks, injected after the walk (`finalize: false` plus `finish`), because rewriting the link in `map` would keep its absolute `linkname` with a `/`-joined name; a directory entry over a live link would follow it.
 
 ## Deploy watcher generations preserve logical entry events
 
