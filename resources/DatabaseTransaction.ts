@@ -639,7 +639,11 @@ type MaybePromise<T> = T | Promise<T>;
 export type OwnedReadIterator = { onDone?: (() => void) | null };
 
 /** A read reference on one database's link, held for a search whose own handle is on `holder`. */
-export type ReadLease = OwnedReadIterator & { holder: DatabaseTransaction; readTxn: ReadTransaction };
+export type ReadLease = OwnedReadIterator & {
+	holder: DatabaseTransaction;
+	link: DatabaseTransaction;
+	readTxn: ReadTransaction;
+};
 
 export type CommitOptions = {
 	doneWriting?: boolean;
@@ -1009,9 +1013,11 @@ export class DatabaseTransaction implements Transaction {
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
-	// Read references held for searches running on other links (a join into this database). While a
-	// holder's own scan is active, this link is not idle: the search it serves is still progressing.
+	// Read references held for searches running on other links (a join into this database), and the
+	// leases this link's searches hold on others. A search spans its holder and its leased links, so
+	// real range activity on any of them keeps all of them from idling out.
 	declare readLeases?: Set<ReadLease>;
+	declare heldLeases?: Set<ReadLease>;
 	// The monitor tick that last consumed this link's own range activity.
 	declare rangeActiveTick?: number;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
@@ -1207,15 +1213,18 @@ export class DatabaseTransaction implements Transaction {
 		const generation = this.readTxnGeneration;
 		const lease: ReadLease = {
 			holder,
+			link: this,
 			readTxn,
 			onDone: () => {
 				lease.onDone = null;
 				this.readLeases.delete(lease);
+				holder.heldLeases.delete(lease);
 				this.unregisterReadIterator(lease);
 				if (readTxn) this.doneReadTxn(generation);
 			},
 		};
 		(this.readLeases ??= new Set()).add(lease);
+		(holder.heldLeases ??= new Set()).add(lease);
 		this.registerReadIterator(lease);
 		return lease;
 	}
@@ -4259,6 +4268,22 @@ export function deferForCommitInFlight(
 	return true;
 }
 
+function rangeActive(txn: DatabaseTransaction): boolean {
+	// either side of it in this tick's walk
+	return txn.rangeReadActive || txn.rangeActiveTick >= monitorTick - 1;
+}
+
+/**
+ * Whether a search this link takes part in is still scanning on another of its links. Only real range
+ * activity counts, never another link's renewal: two leases held in opposite directions must not keep
+ * each other alive.
+ */
+function searchScanning(txn: DatabaseTransaction): boolean {
+	if (txn.readLeases) for (const { holder } of txn.readLeases) if (rangeActive(holder)) return true;
+	if (txn.heldLeases) for (const { link } of txn.heldLeases) if (rangeActive(link)) return true;
+	return false;
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		monitorTick++;
@@ -4288,15 +4313,8 @@ function startMonitoringTxns() {
 			txn.rangeReadActive = false;
 			txn.rangeActiveTick = monitorTick;
 			txn.renewReadTimeout();
-		} else if (txn.readLeases) {
-			// Only the holder's own activity counts (either side of it in this tick's walk): two leases
-			// held in opposite directions must not keep each other alive.
-			for (const { holder } of txn.readLeases) {
-				if (holder.rangeReadActive || holder.rangeActiveTick >= monitorTick - 1) {
-					txn.renewReadTimeout();
-					break;
-				}
-			}
+		} else if (searchScanning(txn)) {
+			txn.renewReadTimeout();
 		}
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{

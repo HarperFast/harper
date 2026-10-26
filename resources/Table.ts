@@ -6692,7 +6692,7 @@ export function makeTable(options): TableResourceClass {
 			// so the results hold a lease on each such link until they are done.
 			let relatedLeases: Map<DatabaseTransaction, ReadLease> | undefined;
 			const readTxnFor =
-				hasRelationships && hasJoinCondition(conditions, propertyResolvers)
+				hasRelationships && hasCrossDatabaseJoin(conditions, TableResource)
 					? (relatedTable: typeof TableResource) => {
 							const link = relatedTable._txnForContext(context);
 							if (link === txn) return readTxn;
@@ -12667,14 +12667,22 @@ function releaseLeases(leases: Map<DatabaseTransaction, ReadLease> | undefined) 
 	if (leases) for (const lease of leases.values()) lease.onDone?.();
 }
 
-function hasJoinCondition(conditions: any[], propertyResolvers: any): boolean {
+/** Whether a condition's relationship path steps from one database into another. */
+function hasCrossDatabaseJoin(conditions: any[], table: any): boolean {
 	for (const condition of conditions) {
 		if (condition.conditions) {
-			if (hasJoinCondition(condition.conditions, propertyResolvers)) return true;
+			if (hasCrossDatabaseJoin(condition.conditions, table)) return true;
 			continue;
 		}
 		const attribute = condition.attribute ?? condition[0];
-		if (Array.isArray(attribute) && propertyResolvers?.[attribute[0]]?.definition) return true;
+		if (!Array.isArray(attribute)) continue;
+		let hop = table;
+		for (let i = 0; i < attribute.length - 1; i++) {
+			const related = hop.propertyResolvers?.[attribute[i]]?.definition?.tableClass;
+			if (!related) break;
+			if (related.primaryStore.path !== hop.primaryStore.path) return true;
+			hop = related;
+		}
 	}
 	return false;
 }

@@ -891,15 +891,18 @@ per call. A search join (`?vault.name==x`) scans the related index lazily, after
 the request, so `Table.search` takes a lease on each related link
 (`DatabaseTransaction.leaseReadTxn`, through its `readTxnFor` callback) and releases the leases with
 its own handle (`onDone`, the counting drain, the error path). A lease is registered on its own
-link, never as the outer results: abandoned-read cleanup on that link releases only that link. The
-RocksDB monitor renews a leased link while the lease holder's own scan was active in the current or
-previous tick: the related scan is often idle while the source scans (a drained join map, an inner
-scan whose rows are filtered or sorted). Handle ownership is not the test, or two leases held in
-opposite directions would keep each other alive. A same-database related table reuses the caller's
+link, never as the outer results: abandoned-read cleanup on that link releases only that link. A
+search spans its holder link and its leased links, so the RocksDB monitor renews any of them while
+another shows its own range activity in the current or previous tick (`searchScanning`): one side is
+often idle while the other scans (a drained join map, an inner scan whose rows are filtered or
+sorted). Only real range activity counts, never another link's renewal, or two leases held in
+opposite directions would keep each other alive. LMDB needs none of this: a lease holds its own
+reference on a reference-counted snapshot. A same-database related table reuses the caller's
 transaction; a join reached without `readTxnFor` reads another database's latest committed state
 rather than a foreign handle. A related read after the request committed takes a handle-free
-transaction. Each database is read at its own snapshot; a cross-database read is not one consistent
-snapshot.
+transaction, so a projection resolved then sees the latest state, not the join's snapshot
+(harper#3603). Each database is read at its own snapshot; a cross-database read is not one
+consistent snapshot.
 
 ## `enc:v1:` env values decrypt through a registered decryptor, and skip non-fatally without one (`resources/loadEnv.ts`, `resources/secretDecryptor.ts`, `utility/envFile.ts`)
 
