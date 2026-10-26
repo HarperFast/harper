@@ -847,8 +847,13 @@ function branchDirectoriesFor(appName: string): {
  */
 const REMOVAL_PENDING_MARKER = '`removal-pending`';
 
+/** Refused when a directory the removal would cover cannot be read, since no marker could cover it. */
 export function recordPendingBranchRemoval(appName: string): void {
-	for (const directory of branchDirectoriesFor(appName).directories) {
+	const { directories, failures } = branchDirectoriesFor(appName);
+	if (failures.length) {
+		throw new Error(`Could not record the owed removal of branch storage for '${appName}': ${failures.join('; ')}`);
+	}
+	for (const directory of directories) {
 		writeFileDurably(
 			join(directory, REMOVAL_PENDING_MARKER),
 			new Date().toISOString(),
@@ -857,7 +862,6 @@ export function recordPendingBranchRemoval(appName: string): void {
 	}
 }
 
-/** Forget an owed removal, then the `<app>` directories that leaves empty. */
 export async function clearPendingBranchRemoval(appName: string): Promise<void> {
 	for (const directory of branchDirectoriesFor(appName).directories) {
 		removeFileDurably(join(directory, REMOVAL_PENDING_MARKER));
@@ -865,17 +869,21 @@ export async function clearPendingBranchRemoval(appName: string): Promise<void> 
 	}
 }
 
-/** Whether a drop still owes the removal of this application's branches; a marker that cannot be checked throws. */
+/** Throws when that cannot be established, rather than answering no. */
 export function hasPendingBranchRemoval(appName: string): boolean {
-	return branchDirectoriesFor(appName).directories.some((directory) =>
-		pathPresent(join(directory, REMOVAL_PENDING_MARKER))
-	);
+	const { directories, failures } = branchDirectoriesFor(appName);
+	if (directories.some((directory) => pathPresent(join(directory, REMOVAL_PENDING_MARKER)))) return true;
+	if (failures.length) throw new Error(`Could not check branch storage for '${appName}': ${failures.join('; ')}`);
+	return false;
 }
 
-/** Every application whose branches a drop on this node still owes a removal. */
-export function applicationsWithPendingBranchRemoval(): string[] {
-	const warn = (what: string, error: unknown) =>
+/** `complete` is false when a storage root or marker could not be read, so the list may be short. */
+export function applicationsWithPendingBranchRemoval(): { applications: string[]; complete: boolean } {
+	let complete = true;
+	const warn = (what: string, error: unknown) => {
+		complete = false;
 		logger.warn?.(`Could not look for owed branch removals in ${what}`, error);
+	};
 	const applications = new Set<string>();
 	for (const root of branchRoots(warn)) {
 		let entries;
@@ -886,12 +894,16 @@ export function applicationsWithPendingBranchRemoval(): string[] {
 			continue;
 		}
 		for (const entry of entries) {
-			if (entry.isDirectory() && existsSync(join(root, entry.name, REMOVAL_PENDING_MARKER))) {
-				applications.add(entry.name);
+			if (!entry.isDirectory()) continue;
+			const marker = join(root, entry.name, REMOVAL_PENDING_MARKER);
+			try {
+				if (pathPresent(marker)) applications.add(entry.name);
+			} catch (error) {
+				warn(marker, error);
 			}
 		}
 	}
-	return [...applications];
+	return { applications: [...applications], complete };
 }
 
 /** Whether undeploying this application would leave branched database storage behind. */

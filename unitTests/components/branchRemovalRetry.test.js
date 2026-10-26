@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, rmSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, rmSync } = require('node:fs');
 const path = require('node:path');
 
 const testUtils = require('../testUtils.js');
@@ -67,10 +67,32 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		const release = await heldFork('timer-app');
 
 		await assert.rejects(drop({ project: 'timer-app' }), /open reference\(s\) to its store remain/);
-		assert.ok(existsSync(forksOf('timer-app')));
+		await operations.retryPendingBranchRemovals();
+		assert.ok(existsSync(forksOf('timer-app')), 'every pass so far found it held');
 		await release();
 
 		await waitFor(() => !existsSync(forksOf('timer-app')), {
+			timeout: 10_000,
+			interval: 50,
+			message: 'the fork was left on disk',
+		});
+	});
+
+	it('keeps retrying while it cannot read the storage the removal is owed in', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip(); // root reads it anyway
+		operations.setBranchRemovalRetryDelayForTests?.(50);
+		const release = await heldFork('unread-app');
+		await assert.rejects(drop({ project: 'unread-app' }), /open reference\(s\) to its store remain/);
+		const branchRoot = path.dirname(forksOf('unread-app'));
+		chmodSync(branchRoot, 0o000);
+		try {
+			await release();
+			await operations.retryPendingBranchRemovals();
+		} finally {
+			chmodSync(branchRoot, 0o755);
+		}
+
+		await waitFor(() => !existsSync(forksOf('unread-app')), {
 			timeout: 10_000,
 			interval: 50,
 			message: 'the fork was left on disk',

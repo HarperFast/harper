@@ -2231,7 +2231,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 
 		recordPendingBranchRemoval('cycleApp');
 		assert.ok(exists(marker), 'the debt is on disk beside the branch');
-		assert.ok(applicationsWithPendingBranchRemoval().includes('cycleApp'));
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
 		const hold = join(branchPath, 'hold');
 		mkdirSync(hold);
 		writeFileSync(join(hold, 'keep'), '');
@@ -2242,7 +2242,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 			chmodSync(join(`${branchPath}\`removing\``, 'hold'), 0o755);
 		}
 		assert.ok(exists(marker), 'a removal that failed keeps it');
-		assert.ok(applicationsWithPendingBranchRemoval().includes('cycleApp'));
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
 
 		await removeBranchesForApplication('cycleApp');
 		assert.strictEqual(
@@ -2250,7 +2250,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 			false,
 			'a removal that completed takes it, and the empty directory'
 		);
-		assert.ok(!applicationsWithPendingBranchRemoval().includes('cycleApp'));
+		assert.ok(!applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
 	});
 
 	it('forgets an owed removal without touching the branches it names (harper#3463)', async function () {

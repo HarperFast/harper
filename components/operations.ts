@@ -476,11 +476,11 @@ const BRANCH_STORAGE_RETAINED = {
 	keepBranches:
 		'. Its branched database storage was left in place (keepBranches); drop it again without keepBranches to discard that data',
 	loaded:
-		'. Any branched database storage this application owns was left in place, since workers still have it loaded; ' +
-		'it is discarded once they restart',
+		'. Any branched database storage this application owns was left in place, since workers may still have it ' +
+		'loaded; it is discarded once none does',
 	restart:
 		'. Any branched database storage this application owns was left in place, since the restart did not finish ' +
-		'replacing every worker; it is discarded once they are replaced',
+		'replacing every worker; it is discarded once none holds it',
 };
 
 /** Report a restart outcome the operation's own success message cannot convey. */
@@ -1885,13 +1885,19 @@ async function dropApplication(request, requester?: any, answerEarly?: any) {
 				const poolMayHold = manageThreads.poolMayHold(project);
 				const hadWorker = manageThreads.workersForApplication(project).length > 0;
 				const restartsPool = present && req.restart === true && (!isolated || poolMayHold);
-				const branched = applicationHasBranchStorage(project);
-				let retained;
-				if (branched && req.keepBranches === true) retained = 'keepBranches';
-				else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
-				if (retained === 'keepBranches') await clearPendingBranchRemoval(project);
+				const keep = req.keepBranches === true;
+				let branched = applicationHasBranchStorage(project);
+				if (branched && keep) await clearPendingBranchRemoval(project);
 				else if (branched) recordPendingBranchRemoval(project);
 				if (present) await removeApplication(project, componentPath);
+				// a worker still loading it can have created one since
+				if (!branched && applicationHasBranchStorage(project)) {
+					branched = true;
+					if (!keep) recordPendingBranchRemoval(project);
+				}
+				let retained;
+				if (branched && keep) retained = 'keepBranches';
+				else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
 				const outcome = nodeOutcome(present);
 				let message = present
 					? `Successfully dropped: ${project}${restartsPool ? ', restarting Harper' : ''}`
@@ -1946,6 +1952,7 @@ let branchRemovalRetryFirstMs = BRANCH_REMOVAL_RETRY_FIRST_MS;
 let branchRemovalRetryDelayMs = BRANCH_REMOVAL_RETRY_FIRST_MS;
 let branchRemovalRetryTimer: NodeJS.Timeout | undefined;
 let branchRemovalPass: Promise<void> | undefined;
+let branchRemovalPassRunning = false;
 let branchRemovalPassRequested = false;
 
 /**
@@ -1956,14 +1963,24 @@ let branchRemovalPassRequested = false;
  */
 function retryPendingBranchRemovals(): Promise<void> {
 	branchRemovalPassRequested = true;
-	branchRemovalPass ??= (async () => {
+	if (!branchRemovalPassRunning) {
+		branchRemovalPassRunning = true;
+		branchRemovalPass = runBranchRemovalPasses();
+	}
+	return branchRemovalPass;
+}
+
+async function runBranchRemovalPasses(): Promise<void> {
+	try {
 		let outstanding = false;
 		while (branchRemovalPassRequested) {
 			branchRemovalPassRequested = false;
 			outstanding = false;
 			if (isReadOnlyMode()) break;
 			try {
-				for (const project of branchDatabaseRuntimeModule.applicationsWithPendingBranchRemoval()) {
+				const { applications, complete } = branchDatabaseRuntimeModule.applicationsWithPendingBranchRemoval();
+				if (!complete) outstanding = true;
+				for (const project of applications) {
 					if (!(await retryBranchRemoval(project))) outstanding = true;
 				}
 			} catch (error) {
@@ -1982,10 +1999,10 @@ function retryPendingBranchRemovals(): Promise<void> {
 			}, branchRemovalRetryDelayMs).unref();
 			branchRemovalRetryDelayMs = Math.min(branchRemovalRetryDelayMs * 2, BRANCH_REMOVAL_RETRY_MAX_MS);
 		}
-	})().finally(() => {
-		branchRemovalPass = undefined;
-	});
-	return branchRemovalPass;
+	} finally {
+		// in the same turn as the last check of the request flag, so no request lands on a finished pass
+		branchRemovalPassRunning = false;
+	}
 }
 
 /**
@@ -2009,7 +2026,11 @@ async function retryBranchRemoval(project: string): Promise<boolean> {
 				log.info(`Removed the branched database storage a drop of ${project} left in place`);
 				return true;
 			},
-			{ timeoutMs: 0, purpose: `removing the branched database storage a drop of ${project} left in place` }
+			{
+				timeoutMs: 0,
+				isOwnerAlive: componentDropLockOptions(project).isOwnerAlive,
+				purpose: `removing the branched database storage a drop of ${project} left in place`,
+			}
 		);
 	} catch (error) {
 		if (!(error instanceof ComponentPreparationLockTimeoutError)) {
