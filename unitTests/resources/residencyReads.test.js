@@ -705,6 +705,32 @@ describe('Reads of residency stubs', function () {
 			});
 		}
 
+		it('a write over a stub indexes a computed value equal to the one guessed over the stub', async () => {
+			const Labeled = table({
+				database: 'test',
+				table: 'ResidencyComputedGuess',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name' },
+					{ name: 'label', indexed: true, computed: true },
+				],
+				audit: true,
+			});
+			// over a stub (no `name`) this resolves to its fallback instead of throwing
+			Labeled.setComputedAttribute('label', (record) => record.name ?? 'unnamed');
+			await Labeled.put('guessed', { id: 'guessed', name: 'named' });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Labeled.getResource('guessed', context, { ensureLoaded: false });
+				resource._writeInvalidate('guessed');
+			});
+			await Labeled.put('guessed', { id: 'guessed' });
+			const labels = Array.from(Labeled.indices.label.getRange({}))
+				.filter(({ value }) => value === 'guessed')
+				.map(({ key }) => key);
+			assert.ok(labels.includes('unnamed'), `the new computed value was not indexed: ${JSON.stringify(labels)}`);
+		});
+
 		it('evicting a stub removes it', async () => {
 			await Computed.put('evicted', { id: 'evicted', sku: 'A', name: 'old' });
 			const context = {};

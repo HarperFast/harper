@@ -9591,14 +9591,16 @@ export function makeTable(options): TableResourceClass {
 		try {
 			return resolver(stub);
 		} catch (error) {
+			// a replication worker runs no application resolver at all; that refusal must surface
+			if (isDedicatedPoolWorker()) throw error;
 			logger.trace?.(`No prior value for computed index ${name} of ${tableName} over a stub`, error);
 		}
 	}
 	/**
 	 * A stub (an INVALIDATED entry's value) is a projection, not a record. `preserveComputed` keeps computed
-	 * indexes as committed. With `existingIsStub`, a computed index's old value is resolved over the stub
-	 * where it can be; a resolver needing a field the stub lacks throws, and its committed entry is then
-	 * left in place (harper#2370).
+	 * indexes as committed. With `existingIsStub`, a computed index's old value resolved over the stub is a
+	 * guess: it is removed if it differs from the new value, the new value is always written, and when the
+	 * resolver throws (it needs a field the stub lacks) the committed entry stays (harper#2370).
 	 */
 	function updateIndices(
 		id: any,
@@ -9626,14 +9628,15 @@ export function makeTable(options): TableResourceClass {
 			// that is present but whose attribute is null is a different case (record is a truthy object) and
 			// still indexes under null. See harper#1894 (F-149).
 			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
+			const guessed = existingIsStub && resolver && primaryStore.encoder.resolvedAttributeNames?.has(key);
 			const existingValue =
 				existingRecord &&
 				(resolver
-					? existingIsStub && primaryStore.encoder.resolvedAttributeNames?.has(key)
+					? guessed
 						? resolveOverStub(resolver, existingRecord, key)
 						: resolver(existingRecord)
 					: existingRecord[key]);
-			if (value === existingValue && !isIndexing) {
+			if (value === existingValue && !isIndexing && !guessed) {
 				continue;
 			}
 			if (index.customIndex) {
@@ -9655,6 +9658,7 @@ export function makeTable(options): TableResourceClass {
 							if (setToRemove.has(value)) {
 								// if the value is retained, we don't need to remove or add it, so remove it from the set
 								setToRemove.delete(value);
+								return guessed;
 							} else {
 								// keep in the list of values to add to index
 								return true;
@@ -10661,8 +10665,10 @@ export function makeTable(options): TableResourceClass {
 							const racedCreatedTime =
 								assignCreatedTime && existingVersion == null ? currentRecord?.[createdTimeProperty.name] : undefined;
 							if (racedCreatedTime != null) {
-								recordToStore = Object.assign(Object.create(Object.getPrototypeOf(updatedRecord)), updatedRecord);
+								recordToStore = Object.setPrototypeOf({ ...updatedRecord }, Object.getPrototypeOf(updatedRecord));
 								recordToStore[createdTimeProperty.name] = racedCreatedTime;
+								const fillEntry = entryMap.get(updatedRecord);
+								if (fillEntry) entryMap.set(recordToStore, fillEntry);
 							}
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
