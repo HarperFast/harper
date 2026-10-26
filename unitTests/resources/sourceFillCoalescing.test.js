@@ -234,6 +234,49 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(new Set(results).size, 20);
 	});
 
+	it('do not share a record holding a one-shot iterator', async function () {
+		respond = (id, attempt) =>
+			attempt % 2
+				? { id, name: 'iterated ' + attempt, headers: {}, data: (async function* () {})() }
+				: { id, name: 'iterated ' + attempt, items: { rows: [(async function* () {})()] } };
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'iterated', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
+	it('share a record of nested plain data, arrays, dates and bytes', async function () {
+		respond = (id) => ({
+			id,
+			name: 'plain ' + id,
+			nested: { list: [1, 'a', null, { when: new Date(0) }], bytes: Buffer.from('x') },
+			headers: { a: '1' },
+			body: 'text',
+		});
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'plain', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 1);
+		assert.deepEqual(results, Array(20).fill('plain plain'));
+	});
+
+	it('do not share a record too large to scan within the budget', async function () {
+		respond = (id, attempt) => ({
+			id,
+			name: 'large ' + attempt,
+			rows: Array.from({ length: 10_001 }, (_, index) => index),
+		});
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'large', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
 	it('do not share a record a response could not copy', async function () {
 		respond = (id, attempt) => Object.assign(Object.create(null), { id, name: 'bare ' + attempt, headers: { a: '1' } });
 		const results = outcomes(

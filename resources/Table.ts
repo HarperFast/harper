@@ -531,6 +531,26 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 			}
 		});
 }
+// A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
+// it cannot copy, so only a copyable record of plain data goes to several requests. The scan is bounded.
+function isSharableRecord(record: any): boolean {
+	if (!entryMap.has(record)) return false;
+	const budget = { nodes: 10_000 };
+	return Object.keys(record).every((key) => isPlainData(record[key], budget, 1));
+}
+function isPlainData(value: any, budget: { nodes: number }, depth: number): boolean {
+	if (--budget.nodes < 0 || depth > 32) return false;
+	if (value == null) return true;
+	const type = typeof value;
+	if (type === 'function' || type === 'symbol') return false;
+	if (type !== 'object') return true;
+	if (Array.isArray(value)) return value.every((element) => isPlainData(element, budget, depth + 1));
+	if (ArrayBuffer.isView(value) || value instanceof Date) return true;
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) return false;
+	for (const key in value) if (!isPlainData(value[key], budget, depth + 1)) return false;
+	return true;
+}
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
 // a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
@@ -10459,17 +10479,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					// A response writes into a record it cannot copy, merges into a Headers-like `headers` in place and
-					// reads a stream `body` or passthrough `data` once, so only a copyable record without them is handed to several requests
-					if (
-						!sourceContext.noCacheStore &&
-						(updatedRecord == null ||
-							(entryMap.has(updatedRecord) &&
-								updatedRecord.body === undefined &&
-								typeof updatedRecord.headers?.set !== 'function' &&
-								typeof updatedRecord.contentType !== 'string' &&
-								typeof updatedRecord.data?.contentType !== 'string'))
-					)
+					if (!sourceContext.noCacheStore && (updatedRecord == null || isSharableRecord(updatedRecord)))
 						sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
