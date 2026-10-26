@@ -1607,3 +1607,125 @@ describe('conditional write lock scope', () => {
 		assert.strictEqual((await Row.get('unavailable')).n, 2);
 	});
 });
+
+describe('conditional writes through a tracked record instance', () => {
+	let Tracked, resources, request;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Tracked = table({
+			database: 'test',
+			table: 'TrackedConditions',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n' },
+				{ name: 'm' },
+				{ name: 'name' },
+				{ name: 'legacy' },
+			],
+		});
+		resources = new Resources();
+		request = rest(resources);
+	});
+
+	const etagOf = (id) => versionToEtag(Tracked.primaryStore.getEntry(id).version);
+	const stored = (id) => ({ ...Tracked.primaryStore.getEntry(id).value });
+
+	it('applies synchronous tracked mutations followed by return this.save()', async () => {
+		class SyncPatch extends Tracked {
+			patch(data) {
+				this.addTo('n', data.add);
+				this.subtractFrom('m', data.add);
+				this.name = data.name;
+				return this.save();
+			}
+		}
+		class SyncReplace extends Tracked {
+			put(data) {
+				this.update({ name: data.name }, true);
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		resources.set('SyncPatch', SyncPatch, { rest: true });
+		resources.set('SyncReplace', SyncReplace, { rest: true });
+		for (const [path, method, expected] of [
+			['SyncPatch', 'PATCH', { id: 'sync-PATCH', n: 15, m: 5, name: 'after', legacy: 'kept' }],
+			['SyncReplace', 'PUT', { id: 'sync-PUT', n: 5, name: 'after' }],
+		]) {
+			const id = `sync-${method}`;
+			await Tracked.put(id, { n: 10, m: 10, name: 'before', legacy: 'kept' });
+			const original = stored(id);
+			const stale = await request(method, `/${path}/${id}`, { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
+			assert.strictEqual(stale.status, 412, await bodyOf(stale));
+			assert.deepStrictEqual(stored(id), original);
+			const matched = await request(method, `/${path}/${id}`, { add: 5, name: 'after' }, { 'if-match': etagOf(id) });
+			assert.strictEqual(matched.status, 204, await bodyOf(matched));
+			assert.deepStrictEqual(stored(id), expected);
+		}
+	});
+
+	it('keeps tracked mutations made while the precondition lock is pending and after it settles', async () => {
+		const entered = Promise.withResolvers();
+		const lockSettled = Promise.withResolvers();
+		class AcrossLock extends Tracked {
+			async lock(...args) {
+				const locked = await super.lock(...args);
+				lockSettled.resolve();
+				return locked;
+			}
+			async patch(data) {
+				this.addTo('n', data.add);
+				this.name = data.name;
+				entered.resolve();
+				if (!isLMDB) await lockSettled.promise;
+				await nextTurn();
+				this.subtractFrom('m', data.add);
+				this.legacy = 'changed';
+				return this.save();
+			}
+		}
+		resources.set('AcrossLock', AcrossLock, { rest: true });
+		await Tracked.put('across', { n: 10, m: 10, name: 'before', legacy: 'kept' });
+		const etag = etagOf('across');
+		const held = isLMDB ? undefined : await Tracked.lock('across', { hold: true });
+		const pending = request('PATCH', '/AcrossLock/across', { add: 5, name: 'after' }, { 'if-match': etag });
+		await entered.promise;
+		await nextTurn();
+		await held?.unlock();
+		const response = await pending;
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(stored('across'), { id: 'across', n: 15, m: 5, name: 'after', legacy: 'changed' });
+	});
+
+	it('keeps a full replacement on the instance and closes it on save()', async () => {
+		let observed, lateWrite;
+		class AwaitedReplace extends Tracked {
+			async put(data) {
+				await this.update({ name: data.name }, true);
+				observed = { legacy: this.legacy, n: this.n };
+				this.addTo('n', data.add);
+				await this.save();
+				try {
+					this.legacy = 'late';
+				} catch (error) {
+					lateWrite = error;
+				}
+			}
+		}
+		resources.set('AwaitedReplace', AwaitedReplace, { rest: true });
+		await Tracked.put('replace', { n: 100, m: 1, name: 'before', legacy: 'old' });
+		const stale = await request('PUT', '/AwaitedReplace/replace', { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		const response = await request(
+			'PUT',
+			'/AwaitedReplace/replace',
+			{ add: 5, name: 'after' },
+			{ 'if-match': etagOf('replace') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(observed, { legacy: undefined, n: undefined });
+		assert.strictEqual(lateWrite?.statusCode, 409, 'the instance must be closed after save()');
+		assert.deepStrictEqual(stored('replace'), { id: 'replace', n: 5, name: 'after' });
+	});
+});
