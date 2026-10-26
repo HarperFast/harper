@@ -309,7 +309,7 @@ for (const isolated of [false, true]) {
 						const kept = await operation({ operation: 'drop_component', project, restart: true });
 						assert.strictEqual(kept.status, 200, JSON.stringify(kept.body));
 						assert.strictEqual(kept.body.branchesRemoved, false, JSON.stringify(kept.body));
-						assert.match(kept.body.message, /workers still have it loaded/);
+						assert.match(kept.body.message, /workers may still have it loaded/);
 						const loaded = await httpThreadIds();
 						await sendOperation(ctx.harper, { operation: 'restart_service', service: 'http' });
 						await waitFor(async () => (await httpThreadIds()).every((id: number) => !loaded.includes(id)), {
