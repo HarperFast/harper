@@ -12,35 +12,6 @@ export function when<T, R>(
 	return callback(value as T);
 }
 
-// Array some/every for a predicate that may return a Promise; items are tested in order and testing stops at the
-// first item that decides the result, so a Promise is returned only once a predicate returns one
-export function someWhen<T>(
-	items: T[],
-	predicate: (item: T) => boolean | Promise<boolean>,
-	start = 0
-): boolean | Promise<boolean> {
-	for (let i = start; i < items.length; i++) {
-		const matches = predicate(items[i]);
-		if ((matches as Promise<boolean>)?.then)
-			return (matches as Promise<boolean>).then((matches) => matches || someWhen(items, predicate, i + 1));
-		if (matches) return true;
-	}
-	return false;
-}
-export function everyWhen<T>(
-	items: T[],
-	predicate: (item: T) => boolean | Promise<boolean>,
-	start = 0
-): boolean | Promise<boolean> {
-	for (let i = start; i < items.length; i++) {
-		const matches = predicate(items[i]);
-		if ((matches as Promise<boolean>)?.then)
-			return (matches as Promise<boolean>).then((matches) => matches && everyWhen(items, predicate, i + 1));
-		if (!matches) return false;
-	}
-	return true;
-}
-
 export function promiseNormalize<T>(returnValue: T | Promise<T>, target: RequestTargetOrId): T | Promise<T> {
 	if (!(returnValue as Promise<T>)?.then && !(target as RequestTarget)?.syncAllowed) {
 		return Promise.resolve(returnValue);

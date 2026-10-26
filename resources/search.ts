@@ -1,5 +1,5 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
-import { when, someWhen, everyWhen } from '../utility/when.ts';
+import { when } from '../utility/when.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP, ExtendedIterable } from '@harperfast/extended-iterable';
@@ -180,12 +180,8 @@ export function executeConditions(
 					const groupFilter: any = union
 						? (record, entry) => filters.some((filter) => filter(record, entry))
 						: (record, entry) => filters.every((filter) => filter(record, entry));
-					if (filters.some((filter) => filter.maybeAsync)) {
-						const matchesFilter = (record, entry) => (filter) => (filter.maybeAsync ?? filter)(record, entry);
-						groupFilter.maybeAsync = union
-							? (record, entry) => someWhen(filters, matchesFilter(record, entry))
-							: (record, entry) => everyWhen(filters, matchesFilter(record, entry));
-					}
+					if (filters.some((filter) => filter.maybeAsync))
+						groupFilter.maybeAsync = (record, entry) => matchesFilters(filters, record, entry, union);
 					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
@@ -933,7 +929,7 @@ export function searchByIndex(
 				filtered[attribute_name[0]] = joined;
 				// Use the joinTo to join the results of the related table to the current table (can be one-to-many or many-to-many)
 				const isManyToMany = Boolean(findAttribute(relatedTable.attributes, attribute.relationship.to)?.elements);
-				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined);
+				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined, transaction);
 			}
 			if (attribute.relationship.from) {
 				const searchEntry = (relatedEntry) => {
@@ -949,7 +945,7 @@ export function searchByIndex(
 				if (attribute.elements) {
 					filtered[attribute_name[0]] = joined;
 					// many-to-many relationship (forward), get all the ids first
-					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry);
+					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, transaction);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
 					results = (results as any).flatMap(searchEntry);
@@ -1365,9 +1361,10 @@ export function findAttribute(attributes, attribute_name) {
  * @param store
  * @param isManyToMany
  * @param joined
+ * @param transaction
  * @returns
  */
-function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>) {
+function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>, transaction) {
 	const rightProperty = attribute.relationship.to;
 	const addEntry = (key, entry) => {
 		let entriesForKey = joined.get(key);
@@ -1390,30 +1387,25 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 		let joinedIterator;
 		(joined as any).hasMappings = true;
 		if (options?.async) {
+			const scan = { closed: false };
+			let scanned: Promise<void>;
+			const readOptions = { transaction, async: true };
 			return {
-				async next() {
-					if (!joinedIterator) {
-						// get all the ids of the related records, reading any that are not in memory in the background
-						const iterator = rightIterable[Symbol.asyncIterator]();
-						let iteration = iterator.next();
-						while (true) {
-							if (iteration.then) iteration = await iteration;
-							if (iteration.done) break;
-							const entry = iteration.value;
-							let record = entry.value ?? store.get(entry.key ?? entry);
-							if (record?.then) record = await record;
-							if (record != null && (joined as any).filters) {
-								let matches: any = matchesAll((joined as any).filters, record);
-								if (matches?.then) matches = await matches;
-								if (matches) addRelated(entry, record);
-							} else addRelated(entry, record);
-							iteration = iterator.next();
-						}
+				next() {
+					if (joinedIterator) return joinedIterator.next();
+					scanned ??= scanRelated(
+						rightIterable,
+						(entry) => entry.value ?? when(store.getEntry(entry.key ?? entry, readOptions), entryValue),
+						joined,
+						addRelated,
+						scan
+					).then(() => {
 						joinedIterator = joined.keys()[Symbol.iterator]();
-					}
-					return joinedIterator.next();
+					});
+					return scanned.then(() => joinedIterator.next());
 				},
 				return() {
+					scan.closed = true;
 					return { done: true, value: undefined };
 				},
 			};
@@ -1446,10 +1438,64 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 	};
 	return results;
 }
-// whether a record matches every one of a join's additional filters, which a relationship filter may answer with a
-// Promise (see filterByType)
-function matchesAll(filters, record) {
-	return everyWhen(filters, (filter: any) => (filter.maybeAsync ?? filter)(record));
+const entryValue = (entry) => entry?.value;
+/**
+ * Collect a join's related search under async iteration: each related record is read through the async-capable path
+ * (a cold read waits on its Promise instead of blocking the worker) and passed to `add` when it satisfies the join's
+ * additional filters. Stops at the first step after the join iterator is returned.
+ */
+async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean }) {
+	const iterator = rightIterable[Symbol.asyncIterator]();
+	let done = false;
+	try {
+		while (!scan.closed) {
+			let iteration = iterator.next();
+			if (iteration.then) iteration = await iteration;
+			if (iteration.done) {
+				done = true;
+				return;
+			}
+			const entry = iteration.value;
+			let record = readRecord(entry);
+			if (record?.then) record = await record;
+			const filters = (joined as any).filters;
+			if (filters) {
+				if (record == null) continue;
+				let matches = matchesFilters(filters, record, undefined, false);
+				if (matches?.then) matches = await matches;
+				if (!matches) continue;
+			}
+			add(entry, record);
+		}
+	} finally {
+		if (!done) iterator.return?.();
+	}
+}
+/**
+ * Whether a record matches any (`any`) or all of the filters, through each filter's maybeAsync variant (see
+ * filterByType), so the result is a Promise only once a filter has to read a related record from storage
+ */
+function someRelatedMatch(entries, match, start: number) {
+	for (let i = start; i < entries.length; i++) {
+		const value = entries[i]?.value;
+		if (value == null) continue;
+		const matches = match(value);
+		if (matches?.then) return matches.then((matches) => matches || someRelatedMatch(entries, match, i + 1));
+		if (matches) return true;
+	}
+	return false;
+}
+function matchesFilters(filters, record, entry, any: boolean, start = 0) {
+	for (let i = start; i < filters.length; i++) {
+		const filter = filters[i];
+		const matches = (filter.maybeAsync ?? filter)(record, entry);
+		if (matches?.then)
+			return matches.then((matches) =>
+				(any ? matches : !matches) ? any : matchesFilters(filters, record, entry, any, i + 1)
+			);
+		if (any ? matches : !matches) return any;
+	}
+	return !any;
 }
 /**
  * This is used to join the results of a query where the right side is a set of ids and the left side is a set of records
@@ -1459,9 +1505,10 @@ function matchesAll(filters, record) {
  * @param store
  * @param joined
  * @param searchEntry
+ * @param transaction
  * @returns
  */
-function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry) {
+function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry, transaction) {
 	const results = new ExtendedIterable();
 	results.iterate = (options) => {
 		let idIterator;
@@ -1495,8 +1542,10 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 				joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
 			}
 		};
+		const scan = { closed: false };
 		const iterator: any = {
 			return() {
+				scan.closed = true;
 				return joinedIterator?.return?.();
 			},
 			throw() {
@@ -1504,29 +1553,24 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 			},
 		};
 		if (options?.async) {
-			iterator.next = async () => {
-				if (!idIterator) {
+			let scanned: Promise<void>;
+			const readOptions = { transaction, async: true };
+			iterator.next = () => {
+				if (idIterator) return nextJoined();
+				if (!scanned) {
 					defineFromRecord();
-					// get all the ids of the related records, reading any that additional filters need in the background
-					const rightIterator = rightIterable[Symbol.asyncIterator]();
-					let iteration = rightIterator.next();
-					while (true) {
-						if (iteration.then) iteration = await iteration;
-						if (iteration.done) break;
-						const id = iteration.value;
-						if ((joined as any).filters) {
-							let record = store.get(id);
-							if (record?.then) record = await record;
-							let matches: any = matchesAll((joined as any).filters, record);
-							if (matches?.then) matches = await matches;
-							if (matches) ids.add(id);
-						} else ids.add(id);
-						iteration = rightIterator.next();
-					}
-					// and now start iterating through the ids
-					idIterator = ids[Symbol.iterator]();
+					scanned = scanRelated(
+						rightIterable,
+						// the related record is only needed for the join's additional filters
+						(id) => (joined as any).filters && when(store.getEntry(id, readOptions), entryValue),
+						joined,
+						(id) => ids.add(id),
+						scan
+					).then(() => {
+						idIterator = ids[Symbol.iterator]();
+					});
 				}
-				return nextJoined();
+				return scanned.then(nextJoined);
 			};
 		} else {
 			iterator.next = () => {
@@ -1772,7 +1816,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 							// this is called when selecting the fields to include in results
 							if (loadEntries) {
 								return when(loadEntries(record, context), (loaded) => {
-									if (!resolver.toMany) return loaded?.value;
+									if (!resolver.toMany || !loaded) return loaded?.value;
 									const values = loaded.map((entry) => entry?.value);
 									const matches = values.map((value) => value != null && nextMatch(value));
 									const matchingIds = (matches) =>
@@ -1790,16 +1834,16 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				}
 			};
 			if (loadEntries) {
-				// reads the related records through the async-capable path, so a related record that is not in
-				// memory is read in the background rather than blocking the worker
+				const matchLoaded = (loaded) => {
+					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
+					if (!loaded) return false;
+					preserveForSelect();
+					return someRelatedMatch(loaded, nextMatch, 0);
+				};
 				(recordFilter as any).maybeAsync = (record, entry) => {
 					if (nextFilter.idFilter) return recordFilter(record, entry);
-					return when(loadEntries(record, context), (loaded) => {
-						if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
-						if (!loaded) return false;
-						preserveForSelect();
-						return someWhen(loaded, (entry: any) => entry?.value != null && nextMatch(entry.value));
-					});
+					const loaded = loadEntries(record, context);
+					return loaded?.then ? loaded.then(matchLoaded) : matchLoaded(loaded);
 				};
 			}
 			return recordFilter;

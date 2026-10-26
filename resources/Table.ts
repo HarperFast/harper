@@ -6881,7 +6881,10 @@ export function makeTable(options): TableResourceClass {
 							ordered = [];
 							orderedKeys = [];
 							for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
-							if (enqueuedEntryForNextGroup) await collect(enqueuedEntryForNextGroup);
+							if (enqueuedEntryForNextGroup) {
+								const collecting = collect(enqueuedEntryForNextGroup);
+								if (collecting) await collecting;
+							}
 							// need to load all the entries into ordered
 							do {
 								iteration = await dbIterator.next();
@@ -6899,12 +6902,13 @@ export function makeTable(options): TableResourceClass {
 									// if the index has already provided the first order of sorting, we only need to sort
 									// within each grouping
 									if (dbOrderedAttribute) {
-										const groupingValue = getAttributeValue(
+										let groupingValue = getAttributeValue(
 											entry,
 											dbOrderedAttribute,
 											context,
 											(sort as any).dbOrderedSort
 										);
+										if (groupingValue?.then) groupingValue = await groupingValue;
 										if (firstEntry) {
 											firstEntry = false;
 											lastGroupingValue = groupingValue;
@@ -7117,8 +7121,6 @@ export function makeTable(options): TableResourceClass {
 						let value;
 						if (resolver) {
 							const filterMap = filtered?.[attribute_name];
-							// Related keys are loaded by the target table's transform below, so a related record that
-							// is not in memory is read in the background when this query is iterated asynchronously.
 							let keysOnly = false;
 							if (filterMap) {
 								if (filterMap.hasMappings) {
@@ -7185,17 +7187,16 @@ export function makeTable(options): TableResourceClass {
 											);
 										};
 										const promised = nextValue(iterator.next());
-										if (promised) {
-											if (!promises) promises = [];
-											promises.push(promised);
-										}
-										return;
+										// returned as well as collected: when this runs in a resolved value's continuation,
+										// Promise.all below has already read `promises`, so only the chain can make it wait
+										if (promised) (promises ??= []).push(promised);
+										return promised;
 									} else {
 										value = transform.call(this, value);
 										if (value?.then) {
-											if (!promises) promises = [];
-											promises.push(value.then((value: any) => callback(value, attribute_name)));
-											return;
+											const promised = value.then((value: any) => callback(value, attribute_name));
+											(promises ??= []).push(promised);
+											return promised;
 										}
 									}
 								}
@@ -9014,7 +9015,7 @@ export function makeTable(options): TableResourceClass {
 								if (keys == null) return keys;
 								if (attribute.elements)
 									return loadRelatedEntries(keys, definition.tableClass, context, relationship.filterMissing);
-								return when(loadRelatedEntries([keys], definition.tableClass, context), (entries) => entries[0]);
+								return loadRelatedEntry(keys, definition.tableClass, context);
 							};
 							attribute.resolve.toMany = Boolean(attribute.elements);
 							attribute.resolve.relationship = relationship;
@@ -10119,10 +10120,7 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
-	/**
-	 * What a relationship resolver returns with returnEntry, read through the async-capable path: the
-	 * related entries, or a Promise for them when a read has to go to storage.
-	 */
+	// must settle to what the relationship resolver returns with returnEntry
 	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
 		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
 		let pending = false;
@@ -10132,11 +10130,23 @@ export function makeTable(options): TableResourceClass {
 			if (entry?.then) pending = true;
 			return entry;
 		});
-		const settle = (entries: any[]) => {
-			if (TableResource.loadAsInstance === false) for (const entry of entries) freezeRecord(entry?.value);
-			return filterMissing ? entries.filter(exists) : entries;
-		};
-		return pending ? Promise.all(entries).then(settle) : settle(entries);
+		if (pending) return Promise.all(entries).then((entries) => settleRelatedEntries(entries, filterMissing));
+		return settleRelatedEntries(entries, filterMissing);
+	}
+	function settleRelatedEntries(entries: any[], filterMissing?: boolean) {
+		if (TableResource.loadAsInstance === false) for (const entry of entries) freezeRecord(entry?.value);
+		return filterMissing ? entries.filter(exists) : entries;
+	}
+	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
+		const entry = relatedTable.primaryStore.getEntry(key, {
+			transaction: txnForContext(context).getReadTxn(),
+			async: true,
+		});
+		return entry?.then ? entry.then(freezeRelatedEntry) : freezeRelatedEntry(entry);
+	}
+	function freezeRelatedEntry(entry: any) {
+		if (TableResource.loadAsInstance === false) freezeRecord(entry?.value);
+		return entry;
 	}
 	function getAttributeValue(entry, attribute_name, context, sort?) {
 		if (!entry) {
@@ -10148,7 +10158,12 @@ export function makeTable(options): TableResourceClass {
 			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort);
 		}
 		const resolver = propertyResolvers[attribute_name];
+		if (resolver?.loadEntries)
+			return getPathValue(record, [attribute_name], 0, propertyResolvers, entry, context, sort);
 		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
+	}
+	function relatedValue(resolver, loaded) {
+		return resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value;
 	}
 	function getPathValue(value, path, start, resolvers, entry, context, sort) {
 		for (let i = start, l = path.length; i < l; i++) {
@@ -10157,14 +10172,13 @@ export function makeTable(options): TableResourceClass {
 			resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			if (resolver?.loadEntries && value) {
 				const loaded = resolver.loadEntries(value, context);
-				const toValue = (loaded) => (resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value);
 				if (loaded?.then) {
 					const nextResolvers = resolvers;
 					return loaded.then((loaded) =>
-						getPathValue(toValue(loaded), path, i + 1, nextResolvers, null, context, sort)
+						getPathValue(relatedValue(resolver, loaded), path, i + 1, nextResolvers, null, context, sort)
 					);
 				}
-				value = toValue(loaded);
+				value = relatedValue(resolver, loaded);
 			} else {
 				value =
 					resolver && value
@@ -10192,13 +10206,12 @@ export function makeTable(options): TableResourceClass {
 			if (!record) return SKIP;
 			return applyFilters(record, entry, id, idFiltersApplied, 0);
 		}
-		// apply the record-level filters; a relationship filter's maybeAsync variant returns a Promise when it
-		// has to read a related record from storage
+		// a relationship filter's maybeAsync variant returns a Promise when it reads a related record from storage
+		const matchers = filters?.map((filter) => filter.maybeAsync ?? filter);
 		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
 			for (let i = start; i < filtersLength; i++) {
 				if (applied?.includes(i)) continue; // already applied
-				const filter = filters[i];
-				const matches = (filter.maybeAsync ?? filter)(record, entry);
+				const matches = matchers[i](record, entry);
 				if (matches?.then)
 					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
 				if (!matches) return SKIP; // didn't match filters

@@ -65,11 +65,14 @@ describe('Queries read related records asynchronously', () => {
 				childIds: ['child-' + (i + 4), 'child-missing', 'child-' + (i + 8)],
 			});
 		}
+		// shares parent-1's child, for sorts with ties
+		await ColdParent.put({ id: 'parent-4', childId: 'child-1', childIds: [] });
+		await ColdParent.put({ id: 'parent-null', childId: null, childIds: null });
 	});
 
 	// Count a table's record reads by path: a sync read blocks the worker on a cold record, an async read
 	// returns a Promise when the record has to be read from storage. With simulateCold, every async read
-	// returns a Promise, as a read that misses every in-memory cache does.
+	// returns a Promise that settles on a later event-loop turn, as a read that misses every in-memory cache does.
 	function instrumentReads(Table, simulateCold) {
 		const store = Table.primaryStore;
 		const reads = { sync: 0, async: 0, promised: 0 };
@@ -91,7 +94,10 @@ describe('Queries read related records asynchronously', () => {
 					return result;
 				}
 				reads.async++;
-				if (simulateCold && !result?.then) result = Promise.resolve(result);
+				if (simulateCold) {
+					const settled = result;
+					result = new Promise((resolve, reject) => setImmediate(() => Promise.resolve(settled).then(resolve, reject)));
+				}
 				if (result?.then) reads.promised++;
 				return result;
 			};
@@ -105,9 +111,11 @@ describe('Queries read related records asynchronously', () => {
 		return reads;
 	}
 
+	// snapshot each record as it is yielded: a projection that settles after the row is handed out would
+	// otherwise look complete once the whole result is collected
 	async function collect(iterable) {
 		const results = [];
-		for await (const record of iterable) results.push(record);
+		for await (const record of iterable) results.push(JSON.parse(JSON.stringify(record)));
 		return results;
 	}
 
@@ -272,6 +280,66 @@ describe('Queries read related records asynchronously', () => {
 				assert.equal(childReads.sync, 0);
 				assert(childReads.promised > 0, 'the joined children were read in the background');
 			});
+		});
+
+		it('select of a filtered many-to-many relationship with a nested sort is complete when the row is yielded', async function () {
+			const results = await collect(
+				ColdParent.search({
+					conditions: [
+						firstFourParents,
+						{ attribute: ['children', 'label'], comparator: 'starts_with', value: 'label 1' },
+					],
+					select: ['id', { name: 'children', select: ['name'], sort: { attribute: 'name' } }],
+				})
+			);
+			assert.deepEqual(results, [
+				{ id: 'parent-2', children: [{ name: 'child 10' }] },
+				{ id: 'parent-3', children: [{ name: 'child 11' }] },
+			]);
+			assert.equal(childReads.sync, 0);
+		});
+
+		it('select of a filtered relationship on a row whose foreign key is null', async function () {
+			const results = await collect(
+				ColdParent.search({
+					conditions: [
+						{ attribute: 'id', comparator: 'between', value: ['parent-0', 'parent-null'] },
+						{
+							operator: 'or',
+							conditions: [
+								{ attribute: ['children', 'label'], value: 'label 9' },
+								{ attribute: 'id', value: 'parent-null' },
+							],
+						},
+					],
+					select: ['id', { name: 'children', select: ['name'] }],
+				})
+			);
+			assert.deepEqual(results, [{ id: 'parent-1', children: [{ name: 'child 9' }] }, { id: 'parent-null' }]);
+			assert.equal(childReads.sync, 0);
+		});
+
+		it('sort whose index-ordered first key is a related attribute keeps ties in the next key order', async function () {
+			const results = await collect(
+				ColdParent.search({
+					conditions: [{ attribute: ['child', 'name'], comparator: 'starts_with', value: 'child 1' }],
+					sort: { attribute: ['child', 'name'], next: { attribute: 'id', descending: true } },
+					select: ['id'],
+				})
+			);
+			assert.deepEqual(
+				results.map((record) => record.id),
+				['parent-4', 'parent-1']
+			);
+			assert.equal(childReads.sync, 0);
+		});
+
+		it('sort by the relationship itself', async function () {
+			const results = await collect(
+				ColdParent.search({ conditions: [firstFourParents], sort: { attribute: 'child' }, select: ['id'] })
+			);
+			assert.equal(results.length, 4);
+			assert.equal(childReads.sync, 0);
 		});
 
 		it('sort by a related attribute', async function () {
