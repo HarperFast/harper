@@ -14,20 +14,9 @@ const env_mgr = require('#js/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { databases } = require('#src/resources/databases');
 const password = require('#src/utility/password');
-let user = require('#src/security/user');
-const { server } = require('#src/server/Server');
+const user = require('#src/security/user');
 
 const TEST_PASSWORD = 'test1234!';
-// setHashFunction re-requires these modules; later suites must get back the instances the rest of the
-// process imported, and the server hooks those instances installed
-const originalModules = ['#src/security/user', '#src/utility/password'].map((id) => {
-	const key = require.resolve(id);
-	return [key, require.cache[key]];
-});
-const originalServerHooks = ['getUser', 'authenticateUser', 'invalidateUser', 'onInvalidatedUser'].map((name) => [
-	name,
-	server[name],
-]);
 const originalHashFunction = env_mgr.get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION);
 
 async function dropTestUsers() {
@@ -49,11 +38,11 @@ async function addTestUser() {
 }
 
 function setHashFunction(hashFunction) {
-	delete require.cache[require.resolve('#src/security/user')];
-	delete require.cache[require.resolve('#src/utility/password')];
 	env_mgr.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, hashFunction);
-	require('#src/utility/password');
-	user = require('#src/security/user');
+}
+
+async function storedHashFunction(username) {
+	return (await databases.system.hdb_user.get(username)).hash_function;
 }
 
 describe('user.ts Unit Tests', () => {
@@ -80,8 +69,6 @@ describe('user.ts Unit Tests', () => {
 	});
 
 	after(() => {
-		for (const [key, module] of originalModules) require.cache[key] = module;
-		for (const [name, hook] of originalServerHooks) server[name] = hook;
 		env_mgr.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, originalHashFunction);
 	});
 
@@ -118,6 +105,13 @@ describe('user.ts Unit Tests', () => {
 			expect(users.get('test_user_md5').password.length).to.be.greaterThan(10);
 			expect(users.get('test_user_sha256').password.length).to.be.greaterThan(10);
 			expect(users.get('test_user_argon2id').password.length).to.be.greaterThan(10);
+			expect(await storedHashFunction('test_user_undefined')).to.equal('sha256');
+			expect(await storedHashFunction('test_user_md5')).to.equal('md5');
+			expect(await storedHashFunction('test_user_sha256')).to.equal('sha256');
+			expect(await storedHashFunction('test_user_argon2id')).to.equal('argon2id');
+			expect((await user.findAndValidateUser('test_user_argon2id', 'pass-argon2id')).username).to.equal(
+				'test_user_argon2id'
+			);
 		});
 
 		it('should throw an error if role is not found', async () => {
@@ -145,6 +139,16 @@ describe('user.ts Unit Tests', () => {
 			await user.alterUser(alterUserObj);
 			const findUser = await user.userInfo({ hdb_user: { username: 'test_user' } });
 			expect(findUser.username).to.equal('test_user');
+		});
+
+		it('should store a changed password with the hash function configured at that time', async () => {
+			setHashFunction('sha256');
+			await addTestUser();
+			setHashFunction('argon2id');
+			await user.alterUser({ operation: 'alter_user', username: 'test_user', password: 'new-password' });
+			expect(await storedHashFunction('test_user')).to.equal('argon2id');
+			expect((await user.findAndValidateUser('test_user', 'new-password')).username).to.equal('test_user');
+			await expect(user.findAndValidateUser('test_user', TEST_PASSWORD)).to.be.rejected;
 		});
 
 		it('should throw an error if validation fails', async () => {
