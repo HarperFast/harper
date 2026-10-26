@@ -287,7 +287,7 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
-const NUMERIC_TYPES = new Set(['Int', 'Long', 'Float', 'BigInt']);
+const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
@@ -8404,33 +8404,6 @@ export function makeTable(options): TableResourceClass {
 			const addError = (path: string, code: string, message: string) => {
 				(validationErrors || (validationErrors = [])).push({ path, code, message });
 			};
-			// A patch operation (`{ __op__: 'add', value }`) is applied at commit, so it stays in the record and only
-			// its operand is checked and coerced. The commit applies operations on top-level properties only.
-			const validateOperation = (operation, attribute: Attribute, name) => {
-				const operand = operation.value;
-				const typed = attribute.type && attribute.type !== 'Any';
-				if (!crdtOperations[operation.__op__]) {
-					addError(name, 'type', `Operation ${stringify(operation.__op__)} in property ${name} is not supported`);
-				} else if (typed && !NUMERIC_TYPES.has(attribute.type)) {
-					addError(
-						name,
-						'type',
-						`Operation ${operation.__op__} in property ${name} requires a numeric property, not ${attribute.type}`
-					);
-				} else if (typed ? operand == null : typeof operand !== 'number' && typeof operand !== 'bigint') {
-					addError(
-						name,
-						'type',
-						`Value ${stringify(operand)} for operation ${operation.__op__} in property ${name} must be numeric`
-					);
-				} else {
-					const coerced = validateValue(operand, attribute, name);
-					if (coerced !== undefined) {
-						if (Object.isFrozen(operation)) return { __op__: operation.__op__, value: coerced };
-						operation.value = coerced;
-					}
-				}
-			};
 			const validateValue = (value, attribute: Attribute, name) => {
 				if (attribute.type && value != null) {
 					if (attribute.properties) {
@@ -8444,12 +8417,12 @@ export function makeTable(options): TableResourceClass {
 							);
 						} else {
 							const properties = attribute.properties;
-							// a tracked sub-object holds assignments in its pending changes, not as own properties
-							const changes = value.getChanges?.();
 							for (let i = 0, l = properties.length; i < l; i++) {
 								const attribute = properties[i];
 								if (attribute.relationship || attribute.computed) {
-									if (Object.hasOwn(value, attribute.name) || (changes && attribute.name in changes)) {
+									// a tracked sub-object holds assignments in its pending changes, not as own properties
+									const changes = typeof value.getChanges === 'function' ? value.getChanges() : undefined;
+									if (Object.hasOwn(value, attribute.name) || (changes && Object.hasOwn(changes, attribute.name))) {
 										addError(
 											`${name}.${attribute.name}`,
 											'computed',
@@ -8580,12 +8553,41 @@ export function makeTable(options): TableResourceClass {
 					continue;
 				}
 				if (!patch || attribute.name in record) {
-					const value = record[attribute.name];
-					const updated =
-						patch && typeof value === 'object' && value?.__op__
-							? validateOperation(value, attribute, attribute.name)
-							: validateValue(value, attribute, attribute.name);
-					if (updated !== undefined) record[attribute.name] = updated;
+					const name = attribute.name;
+					const value = record[name];
+					if (patch && typeof value === 'object' && value?.__op__) {
+						// A patch operation (`{ __op__: 'add', value }`) is applied at commit, and only on top-level
+						// properties, so it stays in the record with its operand coerced.
+						const operand = value.value;
+						if (!crdtOperations[value.__op__]) {
+							addError(name, 'type', `Operation ${stringify(value.__op__)} in property ${name} is not supported`);
+						} else if (attribute.type && !OPERATION_TYPES.has(attribute.type)) {
+							addError(
+								name,
+								'type',
+								`Operation ${value.__op__} in property ${name} requires a numeric property, not ${attribute.type}`
+							);
+						} else if (
+							typeof operand !== 'bigint' &&
+							!Number.isFinite(operand) &&
+							!(attribute.type === 'BigInt' && typeof operand === 'string')
+						) {
+							addError(
+								name,
+								'type',
+								`Value ${stringify(operand)} for operation ${value.__op__} in property ${name} must be numeric`
+							);
+						} else {
+							const coerced = validateValue(operand, attribute, name);
+							if (coerced !== undefined) {
+								if (Object.isFrozen(value)) record[name] = { __op__: value.__op__, value: coerced };
+								else value.value = coerced;
+							}
+						}
+					} else {
+						const updated = validateValue(value, attribute, name);
+						if (updated !== undefined) record[name] = updated;
+					}
 				}
 			}
 			if (sealed) {

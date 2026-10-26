@@ -292,7 +292,7 @@ describe('Validation of patch operations, coercion write-back and object sub-typ
 	});
 	it('requires a numeric operand for a patch operation on an untyped property', async function () {
 		await CoercionTest.put('add-6', { untyped: 100n, anything: 10 });
-		for (const value of [null, '5']) {
+		for (const value of [null, '5', NaN, Infinity]) {
 			await assert.rejects(
 				async () =>
 					CoercionTest.patch('add-6', { untyped: { __op__: 'add', value }, anything: { __op__: 'add', value } }),
