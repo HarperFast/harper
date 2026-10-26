@@ -637,6 +637,8 @@ export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
 const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
+/** A replication pool worker refusing to maintain an indexed computed attribute resolved by application code. */
+class PoolWorkerResolverRefusal extends Error {}
 let minReplicaScanIntervalMs = MIN_REPLICA_SCAN_INTERVAL_MS;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
@@ -9078,7 +9080,7 @@ export function makeTable(options): TableResourceClass {
 						if (userResolver) return userResolver(value, context, entry);
 						// a pool worker would otherwise maintain this index with undefined values, silently
 						if (indices[attribute.name] && isDedicatedPoolWorker())
-							throw new Error(
+							throw new PoolWorkerResolverRefusal(
 								`Computed index "${attribute.name}" of table "${tableName}" is resolved by application code, which this replication worker does not run`
 							);
 						if (warnedUnresolvedComputed.has(attribute.name)) return;
@@ -9591,8 +9593,8 @@ export function makeTable(options): TableResourceClass {
 		try {
 			return resolver(stub);
 		} catch (error) {
-			// a replication worker's refusal to maintain an index whose resolver is application code must surface
-			if (isDedicatedPoolWorker() && !TableResource.userResolvers[name]) throw error;
+			// raised by this attribute's resolver or by one it reads through, the refusal must surface
+			if (error instanceof PoolWorkerResolverRefusal) throw error;
 			logger.trace?.(`No prior value for computed index ${name} of ${tableName} over a stub`, error);
 		}
 	}
