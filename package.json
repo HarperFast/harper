@@ -79,6 +79,8 @@
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
 		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:resources:core": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:resources:core:a-m": "mocha \"unitTests/resources/**/[a-mA-M]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:resources:core:n-z": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-mA-M]*.js\"",
 		"test:unit:resources:indexes": "mocha \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"bench": "mocha \"unitTests/resources/caching-rocks-database.bench.js\" \"unitTests/resources/indexRangeSelect.bench.js\" \"unitTests/resources/originClosedFloor.bench.js\" \"unitTests/resources/liveSubscriptionReauth.bench.js\"",
 		"test:unit:bin": "mocha \"unitTests/bin/**/*.js\"",
@@ -96,6 +98,8 @@
 		"test:unit:typestrip:resources": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:typestrip:main": "node unitTests/runTypeStripTests.mts",
 		"test:unit:typestrip:resources:core": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:typestrip:resources:core:a-m": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/[a-mA-M]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:typestrip:resources:core:n-z": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-mA-M]*.js\"",
 		"test:unit:typestrip:resources:indexes": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:types:unit": "tsc --project unitTests/tsconfig.harness.json"
 	},

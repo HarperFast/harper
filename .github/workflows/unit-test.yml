@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (72 on Node 22/24, 69 on Node 26), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 73
+    # sum (78 on Node 22/24, 75 on Node 26), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 79
     strategy:
       fail-fast: false
       matrix:
@@ -137,10 +137,16 @@ jobs:
         timeout-minutes: 3
         run: npm run test:unit:apitests
 
-      - name: 'Unit tests: resources (core)'
+      # Split by file name so each half's budget stays spendable as the suite grows; see AGENTS.md "Resources".
+      - name: 'Unit tests: resources (core a-m)'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 8
-        run: npm run test:unit:resources:core
+        timeout-minutes: 7
+        run: npm run test:unit:resources:core:a-m
+
+      - name: 'Unit tests: resources (core n-z)'
+        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 7
+        run: npm run test:unit:resources:core:n-z
 
       - name: 'Unit tests: resources (indexes)'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
@@ -155,7 +161,7 @@ jobs:
   unit-test-source:
     name: Native Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 39
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -183,10 +189,14 @@ jobs:
       - name: Native core units
         timeout-minutes: 8
         run: npm run test:unit:typestrip
-      - name: Native resource units (core)
+      - name: Native resource units (core a-m)
         if: '!cancelled()'
-        timeout-minutes: 8
-        run: npm run test:unit:typestrip:resources:core
+        timeout-minutes: 7
+        run: npm run test:unit:typestrip:resources:core:a-m
+      - name: Native resource units (core n-z)
+        if: '!cancelled()'
+        timeout-minutes: 7
+        run: npm run test:unit:typestrip:resources:core:n-z
       - name: Native resource units (indexes)
         if: '!cancelled()'
         timeout-minutes: 5
