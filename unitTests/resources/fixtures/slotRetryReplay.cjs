@@ -4,6 +4,8 @@ const { mkdirSync, writeFileSync } = require('node:fs');
 const assert = require('node:assert');
 const req = createRequire(path.resolve(__dirname, '../../../package.json'));
 const [mode, root, output] = process.argv.slice(2);
+process.env.ROOTPATH = root;
+process.env.STORAGE_PATH = path.join(root, 'database');
 const env = req('#src/utility/environment/environmentManager');
 const terms = req('#src/utility/hdbTerms');
 env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, root);
@@ -12,6 +14,8 @@ env.setProperty('replication_shards', [0, 1]);
 env.setProperty('replication_shard', 0);
 env.setProperty(terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 mkdirSync(path.join(root, 'database'), { recursive: true });
+assert.equal(env.get(terms.CONFIG_PARAMS.STORAGE_PATH), path.join(root, 'database'));
+
 const { DatabaseTransaction, replicationConfirmation } = req('#src/resources/DatabaseTransaction');
 const native = req('@harperfast/rocksdb-js');
 if (process.env.HARPER_TEST_ABORT_MARKER_LEGACY_RED === '1') native.Transaction.prototype.usesAbortMarkers = () => true;
@@ -54,6 +58,7 @@ server.shards = new Map([
 			'type RetryRows @table(database: "slotabort", replicaExpiration: 0) @sharded(slots: 2, by: "region", slotFrom: "region === 0 ? 0 : zone") { id: ID @primaryKey region: Int @indexed zone: Int @indexed body: String }'
 		);
 		const Records = getDatabases().slotabort.RetryRows;
+		assert.ok(Records.primaryStore.rootStore.path.startsWith(root + path.sep), 'isolated native store');
 		await getResidencyMapTable().primaryStore.rootStore.flush();
 		await Records.primaryStore.rootStore.flush();
 		const result = await helper.abortMove(Records, {
@@ -67,6 +72,7 @@ server.shards = new Map([
 		process.kill(process.pid, 'SIGKILL');
 	} else {
 		const Records = getDatabases().slotabort.RetryRows;
+		assert.ok(Records.primaryStore.rootStore.path.startsWith(root + path.sep), 'isolated native store');
 		const result = {
 			commits,
 			primary: helper.snapshot(Records),
