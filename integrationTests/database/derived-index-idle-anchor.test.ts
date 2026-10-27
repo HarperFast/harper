@@ -75,7 +75,6 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 		const result = await request(`/IdleProbe/${id}`, 'PUT', { id, vector: vectorOf(id) });
 		ok(result.status < 300, JSON.stringify(result));
 	};
-	// Caught up: the durable cursor anchors the log and its persisted coverage is the log's committed tail.
 	const caughtUp = () =>
 		waitFor(
 			async () => {
@@ -89,7 +88,6 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 			},
 			{ timeout: 60_000, message: 'the index never caught up with a persisted coverage' }
 		);
-	// Retention only deletes fully flushed files; it runs on its own schedule with `auditRetention: 2s`.
 	const emptiedByRetention = () =>
 		waitFor(
 			async () => {
@@ -130,6 +128,11 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 		);
 		strictEqual((await status()).cursor.logs.local, indexed.cursor.logs.local, 'the anchor did not move');
 
+		const linesBefore = rebuildLines();
+		ok(
+			linesBefore.some((line) => line.includes('backend has no durable cursor')),
+			`the fresh index's own rebuild line is the anchor: ${JSON.stringify(linesBefore)}`
+		);
 		await killHarper(ctx);
 		await startHarper(ctx, OPTIONS);
 		noteLogDir();
@@ -146,15 +149,6 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 			{ timeout: 60_000, message: 'the next commit did not anchor the log again' }
 		);
 
-		const lines = rebuildLines();
-		ok(
-			lines.some((line) => line.includes('backend has no durable cursor')),
-			`the fresh index's own rebuild line is the anchor: ${JSON.stringify(lines)}`
-		);
-		deepStrictEqual(
-			lines.filter((line) => !line.includes('backend has no durable cursor')),
-			[],
-			'no install over the emptied log condemned the cursor'
-		);
+		deepStrictEqual(rebuildLines().slice(linesBefore.length), [], 'the install after the restart condemned nothing');
 	});
 });

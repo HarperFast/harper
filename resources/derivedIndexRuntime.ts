@@ -1132,7 +1132,7 @@ class DerivedIndexRunner {
 		const recovered = this.#recoverPurgedAnchors(cursor);
 		if (recovered) {
 			this.#openRange(recovered);
-			// Delivered ahead of any log work, so the backend's cursor stays an offered vector throughout.
+			// Ahead of any log work, so the saved vector stays offered until the conversion is durable.
 			const { batch } = this.#newChunk(false);
 			batch.through = recovered;
 			this.#pendingBatch = batch;
@@ -1151,14 +1151,7 @@ class DerivedIndexRunner {
 		this.#iterator = this.#iterable[Symbol.iterator]();
 	}
 
-	/**
-	 * Retention purges every file of an idle, flushed log, the one holding its anchor included. The
-	 * cursor covers every commit at or before its coverage position, and purge deletes only flushed
-	 * files, so while the flush witness has not passed that position nothing after it was lost: the log
-	 * is read from a floor instead. The floor's inventory is sampled before the witness, because
-	 * `getStats` reads the flush position before the file inventory and one call can pair a stale
-	 * witness with the inventory left by a purge of an uncovered entry.
-	 */
+	/** Separate getStats calls: one reads the flush position before the file inventory. */
 	#recoverPurgedAnchors(cursor: DerivedIndexCursor): DerivedIndexCursor | undefined {
 		const iterable = this.#iterable!;
 		if (iterable.exactStartFailures.size === 0 || iterable.corruptFrameStop.breaks > 0 || iterable.failedLogs.size > 0)
@@ -1169,11 +1162,14 @@ class DerivedIndexRunner {
 			if (failure !== 'missing' || !isLogPosition(covered)) return;
 			const log = this.#logStore.rootStore.useLog(logName);
 			const inventory = log.getStats();
-			const witness = log.getStats().lastFlushedPosition;
+			const proof = log.getStats();
+			const witness = proof.lastFlushedPosition;
 			if (
 				!isLogPosition(witness) ||
 				(witness.sequence === 0 && witness.offset === 0) ||
-				positionAfter(witness, covered)
+				positionAfter(witness, covered) ||
+				// A tail lost before it reached disk leaves the file holding the witness; a purge does not.
+				(proof.fileCount > 0 && proof.oldestSequenceNumber <= witness.sequence)
 			)
 				return;
 			recovered ??= cloneCursor(cursor);
