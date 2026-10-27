@@ -9520,6 +9520,10 @@ export function makeTable(options): TableResourceClass {
 							residencyId: base?.residencyId,
 							expiresAt: base?.expiresAt,
 							residencySlot: residencyPolicy?.byAttribute ? (base?.residencySlot ?? existingEntry?.residencySlot) : undefined,
+							// what removed the record, for a later delete's re-delivery check (removalBefore)
+							localTime: base?.localTime,
+							nodeId: base?.nodeId,
+							additionalAuditRefs: base?.additionalAuditRefs,
 							unchanged: !priorStagedOp || priorStagedOp.stagedEntry.unchanged === true,
 						};
 						// an attribute patch after this publish still needs the complete record an earlier write staged

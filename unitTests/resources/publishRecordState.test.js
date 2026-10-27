@@ -55,6 +55,7 @@ describe('publish leaves the record unchanged', function () {
 				const resource = await T.getResource({ id }, context);
 				const writeOptions = { isNotification: true, nodeId, version, ...options };
 				if (type === 'message') resource._writePublish(id, value, writeOptions);
+				else if (type === 'delete') resource._writeDelete(id, writeOptions);
 				else await resource._writeUpdate(id, value, false, writeOptions);
 			}
 		});
@@ -152,6 +153,25 @@ describe('publish leaves the record unchanged', function () {
 		assert.strictEqual((await T.get('counter')).count, 2);
 		await applyFromOrigin('counter', writes, { version, nodeId: nodeA });
 		assert.strictEqual((await T.get('counter')).count, 2, 'the re-delivered increment was applied again');
+	});
+
+	it('a copy of a delete after a message in the same origin transaction still logs once', async () => {
+		await T.put({ id: 'deleted-twice', tag: 'v1' });
+		const version = Date.now() + 86_400_000;
+		await applyFromOrigin(
+			'deleted-twice',
+			[
+				['delete', undefined],
+				['message', { note: 'between' }],
+				['delete', undefined],
+			],
+			{ version, nodeId: nodeA }
+		);
+		assert.ok((await T.get('deleted-twice')) == null);
+		const deletes = [...T.auditStore.getRange({ start: 1 })].filter(
+			(entry) => entry.recordId === 'deleted-twice' && entry.type === 'delete'
+		);
+		assert.strictEqual(deletes.length, 1);
 	});
 
 	it('keeps the local-only flag an invalidation or delete earlier in the transaction stored', async () => {
