@@ -83,6 +83,10 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			// and still match older version numbers that may commit in the future. But we have to start
 			// immediately so we are at the right position.
 			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({});
+			// LMDB passes read from lastTxnTime, which no pass advanced while nothing was subscribed
+			else if (committedThrough !== undefined) databaseSubscriptions.lastTxnTime = committedThrough;
+			else if (auditStore.rootStore?.status !== 'closing' && auditStore.rootStore?.status !== 'closed')
+				databaseSubscriptions.lastTxnTime = newestCommittedKey(auditStore);
 		} else if (!databaseSubscriptions.passYielded && !databaseSubscriptions.dispatching) {
 			notifyFromTransactionData(
 				databaseSubscriptions,

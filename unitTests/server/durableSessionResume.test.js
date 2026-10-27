@@ -2311,6 +2311,23 @@ describe('MQTT durable record topics on resume', function () {
 		session.disconnect(true);
 	});
 
+	it('sends no write committed before the first subscriber of its database, when Date.now() trails the log keys', async () => {
+		const { T, name } = topicTable();
+		await T.put('r', { value: 0 });
+		const { session, received } = await connect(`trailing-date-${name}`);
+		const realNow = Date.now;
+		Date.now = () => realNow() - 1000;
+		try {
+			await session.addSubscription({ topic: `${name}/r`, qos: 1, omitCurrent: true }, true);
+		} finally {
+			Date.now = realNow;
+		}
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		assert.deepStrictEqual(values(received), [1]);
+		session.disconnect(true);
+	});
+
 	it('delivers only the newest version once when the record changed while away', async () => {
 		const { T, name } = topicTable();
 		const topic = `${name}/r`;
