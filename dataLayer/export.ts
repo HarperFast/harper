@@ -200,16 +200,17 @@ export async function saveToLocal(filePath: string, sourceDataFormat: string, da
 	throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
 }
 
-// the file a write to filePath lands on: through a chain of symlinks, even one whose last target does not exist yet
+// the file a write to filePath lands on: through a chain of symlinks, even one whose last target does not exist yet,
+// resolving each link against its real directory as the kernel does
 async function exportTarget(filePath: string): Promise<string> {
 	let target = filePath;
 	// the kernel's own ELOOP limit
 	for (let hops = 0; hops < 40; hops++) {
 		const link = await fs.promises.lstat(target).catch(() => undefined);
-		if (!link?.isSymbolicLink()) break;
-		target = path.resolve(path.dirname(target), await fs.promises.readlink(target));
+		if (!link?.isSymbolicLink()) return target;
+		target = path.resolve(await fs.promises.realpath(path.dirname(target)), await fs.promises.readlink(target));
 	}
-	return target;
+	throw Object.assign(new Error(`Too many levels of symbolic links: ${filePath}`), { code: 'ELOOP' });
 }
 
 /**

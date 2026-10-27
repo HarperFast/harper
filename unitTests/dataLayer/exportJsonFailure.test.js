@@ -99,6 +99,33 @@ describe('JSON export to a local file when its source fails', function () {
 		assert.deepStrictEqual(JSON.parse(fs.readFileSync(realPath, 'utf8')), [{ id: 1 }]);
 	});
 
+	it('resolves a link relative to its real directory, as the kernel does', async function () {
+		if (process.platform === 'win32') this.skip();
+		fs.mkdirSync(path.join(dir, 'real', 'exports'), { recursive: true });
+		fs.mkdirSync(path.join(dir, 'real', 'archive'));
+		fs.symlinkSync(path.join(dir, 'real', 'exports'), path.join(dir, 'srv'));
+		fs.symlinkSync('../archive/out.json', path.join(dir, 'real', 'exports', 'out.json'));
+		function* rows() {
+			yield { id: 1 };
+		}
+		await saveToLocal(path.join(dir, 'srv', 'out.json'), 'json', rows());
+		assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'real', 'archive', 'out.json'), 'utf8')), [
+			{ id: 1 },
+		]);
+	});
+
+	it('rejects a symlink cycle', async function () {
+		if (process.platform === 'win32') this.skip();
+		fs.symlinkSync(path.join(dir, 'b.json'), path.join(dir, 'a.json'));
+		fs.symlinkSync(path.join(dir, 'a.json'), path.join(dir, 'b.json'));
+		function* rows() {
+			yield { id: 1 };
+		}
+		await assert.rejects(saveToLocal(path.join(dir, 'a.json'), 'json', rows()), { code: 'ELOOP' });
+		assert.strictEqual(fs.lstatSync(path.join(dir, 'a.json')).isSymbolicLink(), true);
+		assert.strictEqual(fs.lstatSync(path.join(dir, 'b.json')).isSymbolicLink(), true);
+	});
+
 	it('never makes the rows readable wider than the file it replaces while writing', async function () {
 		if (process.platform === 'win32') this.skip();
 		const filePath = path.join(dir, 'private.json');
