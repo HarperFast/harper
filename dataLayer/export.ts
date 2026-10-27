@@ -160,8 +160,12 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 	}
 
 	if (sourceDataFormat === JSON_TEXT) {
-		// Create a write stream to the local export file.
-		await pipeline(streamAsJSON(data), fs.createWriteStream(filePath));
+		try {
+			await pipeline(streamAsJSON(data), fs.createWriteStream(filePath));
+		} catch (error) {
+			await fs.remove(filePath).catch(() => {});
+			throw error;
+		}
 
 		return {
 			message: LOCAL_JSON_EXPORT_MSG,

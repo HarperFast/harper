@@ -32,6 +32,7 @@ class JSONStream extends Readable {
 	_amReading?: boolean;
 	done?: boolean;
 	failed?: boolean;
+	failure?: Error;
 
 	constructor(options) {
 		// Calls the stream.Readable(options) constructor
@@ -71,7 +72,6 @@ class JSONStream extends Readable {
 									(error) => {
 										failed = true;
 										failure = error;
-										iteratorResult = { done: false, value: streamError(error) };
 										return '';
 									}
 								);
@@ -79,7 +79,11 @@ class JSONStream extends Readable {
 						} catch (error) {
 							failed = true;
 							failure = error;
-							iteratorResult = { done: false, value: streamError(error) };
+						}
+						if (failed) {
+							this.untrackIterator(iterator);
+							// thrown rather than yielded, so backpressure cannot stall between the element and the failure
+							throw new StreamFailure(failure, (first ? '' : ',') + stringify(streamError(failure)));
 						}
 						if (iteratorResult.done) {
 							this.untrackIterator(iterator);
@@ -92,12 +96,6 @@ class JSONStream extends Readable {
 								yield ',';
 							}
 							yield* this.serialize(iteratorResult.value);
-							if (failed) {
-								// the error element is only a diagnostic: no closing bracket, and the throw
-								// unwinds every enclosing array so the stream fails instead of ending
-								this.untrackIterator(iterator);
-								throw failure;
-							}
 						}
 					}
 				}
@@ -112,9 +110,20 @@ class JSONStream extends Readable {
 				return;
 			}
 			if (object.then) {
-				yield object.then((object) => this.serialize(object));
+				yield object.then(
+					(object) => this.serialize(object),
+					(error) => {
+						throw elementFailure(error);
+					}
+				);
 			} else {
-				yield stringify(object);
+				let json;
+				try {
+					json = stringify(object);
+				} catch (error) {
+					throw elementFailure(error);
+				}
+				yield json;
 			}
 		} else {
 			yield stringify(object);
@@ -122,7 +131,8 @@ class JSONStream extends Readable {
 	}
 
 	_read() {
-		if (this._amReading || this.failed) {
+		if (this.failed) return;
+		if (this._amReading) {
 			// I don't know why _read is called from within a push call, but if we are already reading, ignore the call
 			return;
 		}
@@ -145,15 +155,21 @@ class JSONStream extends Readable {
 	}
 
 	/**
-	 * End the stream as failed rather than complete, so the transport aborts the response instead of
-	 * framing what was sent as the whole result.
+	 * Fail the stream instead of ending it, so the transport aborts the response rather than framing a
+	 * partial array as the whole result. A StreamFailure leaves its error element as a diagnostic.
 	 */
 	fail(error: unknown) {
 		if (this.failed) return;
 		this.failed = true;
+		if (error instanceof StreamFailure) {
+			this.buffer.push(error.diagnostic);
+			this.bufferSize += error.diagnostic.length;
+			error = error.error;
+		}
+		this.failure = (error || new Error('JSON stream failed')) as Error;
 		if (this.bufferSize > 0) this.flush();
 		// destroy() discards unread data, so give the consumer a turn to take the diagnostic element first
-		setImmediate(() => this.destroy((error ?? new Error('JSON stream failed')) as Error));
+		setImmediate(() => this.destroy(this.failure));
 	}
 
 	untrackIterator(iterator: Iterator<any> | AsyncIterator<any>) {
@@ -231,22 +247,36 @@ class JSONStream extends Readable {
 	}
 
 	_destroy(error, callback) {
-		// throw(error) hands the error back when the iterator does not handle it; that is not a cleanup failure
-		const onCleanupError = (cleanupError) => {
-			if (cleanupError !== error) harperLogger.warn('Error closing a streamed iterator', cleanupError);
-		};
-		for (const iterator of this.activeIterators) {
-			try {
-				// an iterator enclosing our own failure did not fail, it just needs closing
-				const result = error && !this.failed && iterator.throw ? iterator.throw(error) : iterator.return?.();
-				(result as any)?.then?.(null, onCleanupError);
-			} catch (cleanupError) {
-				onCleanupError(cleanupError);
+		if (this.activeIterators.length > 0) {
+			// throw(error) hands the error back when the iterator does not handle it; that is not a cleanup failure
+			const onCleanupError = (cleanupError) => {
+				if (cleanupError !== error) harperLogger.warn('Error closing a streamed iterator', cleanupError);
+			};
+			for (const iterator of this.activeIterators) {
+				try {
+					const result = error && !this.failed && iterator.throw ? iterator.throw(error) : iterator.return?.();
+					(result as any)?.then?.(null, onCleanupError);
+				} catch (cleanupError) {
+					onCleanupError(cleanupError);
+				}
 			}
 		}
-		// only our own failure is reported as an 'error'; an external destroyer already has its error
-		callback(this.failed ? error : null);
+		callback(this.failure ?? error);
 	}
+}
+
+class StreamFailure {
+	error: unknown;
+	diagnostic: string;
+	constructor(error: unknown, diagnostic: string) {
+		this.error = error;
+		this.diagnostic = diagnostic;
+	}
+}
+
+// the element's comma is already written, so its diagnostic takes the element's place
+function elementFailure(error: unknown) {
+	return new StreamFailure(error, stringify(streamError(error)));
 }
 
 export function stringify(value) {

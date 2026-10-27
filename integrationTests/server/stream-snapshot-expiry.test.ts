@@ -18,9 +18,9 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 const FIXTURE_PATH = resolve(import.meta.dirname, 'stream-snapshot-expiry');
 const MAX_TXN_OPEN_MS = 1000;
 const ROWS = 20_000;
-// ~20 MB of response, well past what loopback socket buffers absorb, so a paused client stalls the scan
-const PAD = 'x'.repeat(1000);
-const SEED_BATCH = 2000;
+// ~40 MB of response, several times what loopback socket buffers absorb, so a paused client stalls the scan
+const PAD = 'x'.repeat(2000);
+const SEED_BATCH = 1000;
 const QUERY = '/StallRow/?group=g&select(id,pad)';
 
 interface Capture {
@@ -55,7 +55,6 @@ function decodeChunked(raw: Buffer): Omit<Capture, 'clientTimedOut'> {
 	return { status, sawTerminalChunk, body: Buffer.concat(parts).toString('utf8') };
 }
 
-// Read `pauseAfterBytes`, stop reading for `stallMs`, then read to the end.
 function stalledGet(
 	httpURL: string,
 	auth: string,

@@ -406,8 +406,6 @@ suite(
 			assertServerTerminated(cap);
 		}
 
-		// A JSON array has no record that can mark it failed, so the transfer itself is aborted: the error
-		// element stays as a diagnostic, but there is no closing bracket and no chunked terminator.
 		function assertJsonArrayAborted(cap: RawCapture, expectedBody: string) {
 			strictEqual(cap.status, 200, `a failed JSON-array stream has already committed its 200, got ${cap.status}`);
 			strictEqual(cap.decodedBody, expectedBody);
@@ -671,7 +669,7 @@ suite(
 				})
 			);
 			captures.push(cap);
-			// the compressor may not have produced a byte before the failure, and then not even the head is sent
+			// with no compressed byte produced before the failure, not even the head is sent
 			ok(cap.status === null || cap.status === 200, `unexpected status ${cap.status}`);
 			strictEqual(cap.sawTerminalChunk, false, 'a failed compressed stream must not send the chunked terminator');
 			assertServerTerminated(cap);

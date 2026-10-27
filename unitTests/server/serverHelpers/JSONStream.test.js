@@ -56,7 +56,6 @@ describe('Test JSONStream module ', () => {
 		});
 	});
 	describe('Failure ends the stream with an error, never a clean end', function () {
-		// resolves once the stream closes, with what a consumer saw
 		function collect(stream) {
 			return new Promise((resolve) => {
 				let out = '';
@@ -119,10 +118,7 @@ describe('Test JSONStream module ', () => {
 				yield Promise.reject(new Error('boom'));
 				yield { n: 2 };
 			}
-			const result = await collect(streamAsJSON(rows()));
-			assert.strictEqual(result.ended, false);
-			assert.strictEqual(result.error?.message, 'boom');
-			assert.ok(!result.out.includes('"n":2'), `the stream must stop at the failed element, got ${result.out}`);
+			assertFailed(await collect(streamAsJSON(rows())), '[{"n":0},{"error":"Error: boom"}', 'boom');
 		});
 
 		it('a row that fails to serialize', async function () {
@@ -135,10 +131,67 @@ describe('Test JSONStream module ', () => {
 				};
 				yield { n: 2 };
 			}
+			assertFailed(await collect(streamAsJSON(rows())), '[{"n":0},{"error":"Error: boom"}', 'boom');
+		});
+
+		it('a failure behind a backpressured row neither stalls nor closes the failed iterator again', async function () {
+			const big = 'x'.repeat(100_000);
+			let calls = 0;
+			let returned = false;
+			const rows = {
+				[Symbol.iterator]() {
+					return {
+						next() {
+							if (calls++ === 0) return { done: false, value: { big } };
+							throw new Error('boom');
+						},
+						return() {
+							returned = true;
+							return { done: true };
+						},
+					};
+				},
+			};
+			const stream = streamAsJSON(rows);
+			stream.read(0);
+			await delay(20);
+			assert.strictEqual(stream.readableLength > stream.readableHighWaterMark, true);
+			const result = await collect(stream);
+			assertFailed(result, `[{"big":"${big}"},{"error":"Error: boom"}`, 'boom');
+			assert.strictEqual(returned, false);
+		});
+
+		it('a falsy thrown value still fails with an error', async function () {
+			function* rows() {
+				yield { n: 0 };
+				throw '';
+			}
 			const result = await collect(streamAsJSON(rows()));
 			assert.strictEqual(result.ended, false);
-			assert.strictEqual(result.error?.message, 'boom');
-			assert.ok(!result.out.includes('"n":2'), `the stream must stop at the failed row, got ${result.out}`);
+			assert.ok(result.error instanceof Error);
+		});
+
+		it('reports an external destroy error and hands it to the active iterator', async function () {
+			let thrown;
+			const rows = {
+				[Symbol.iterator]() {
+					return {
+						next: () => new Promise(() => {}),
+						throw(error) {
+							thrown = error;
+							return { done: true };
+						},
+					};
+				},
+			};
+			const stream = streamAsJSON(rows);
+			const result = collect(stream);
+			stream.resume();
+			await delay(5);
+			const external = new Error('client went away');
+			stream.destroy(external);
+			assert.strictEqual((await result).error, external);
+			assert.strictEqual(thrown, external);
 		});
 
 		for (const [name, cleanup] of [

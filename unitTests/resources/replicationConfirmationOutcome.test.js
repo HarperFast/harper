@@ -765,7 +765,6 @@ describe('Replication confirmation failure after a local commit', () => {
 				}
 				const text = Buffer.concat(chunks).toString();
 				if (type === 'application/json') {
-					// a JSON array has no terminal record, so the element is a diagnostic and the stream fails
 					assert.ok(streamError, 'a failed JSON-array stream must fail rather than end');
 					assert.throws(() => JSON.parse(text), SyntaxError);
 				} else assert.strictEqual(streamError, undefined);

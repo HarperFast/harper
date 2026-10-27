@@ -132,6 +132,7 @@ describe('Test export.js', () => {
 				}),
 				/scan failed/
 			);
+			assert.strictEqual(fs.existsSync(file_name), false, 'a failed export must not leave a partial file');
 		});
 
 		it('Call to export_local with bad path', async function () {

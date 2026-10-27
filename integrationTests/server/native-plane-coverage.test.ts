@@ -52,13 +52,14 @@ test(
 					body: body === undefined ? undefined : JSON.stringify(body),
 					signal: AbortSignal.timeout(30_000),
 				});
-				// a stream that fails after its head is cut off, so keep what arrived and parse only a complete body
 				let text = '';
 				let aborted = false;
 				const decoder = new TextDecoder();
 				try {
 					for await (const chunk of response.body ?? []) text += decoder.decode(chunk, { stream: true });
-				} catch {
+				} catch (error) {
+					// undici reports a server-aborted body as TypeError; the client's own timeout is a DOMException
+					if (!(error instanceof TypeError)) throw error;
 					aborted = true;
 				}
 				return {
@@ -95,7 +96,6 @@ test(
 				if (shortWait.aborted)
 					assert.match(shortWait.text, /\{"error":"DerivedIndexLagError/, JSON.stringify(shortWait));
 				else {
-					// a row error recovered through mapError stays a row value
 					const errors = shortWait.body.filter((record: any) => record.error);
 					if (errors.length) {
 						assert.equal(errors.length, 1, JSON.stringify(shortWait));
