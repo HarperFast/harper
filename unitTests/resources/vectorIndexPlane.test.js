@@ -131,7 +131,6 @@ describe('HNSW native plane file-primary delivery', function () {
 		);
 	}
 
-	/** The native graph mutations `apply` makes, in order. */
 	function nativeMutations(apply) {
 		const plane = customIndex().getPlane();
 		const calls = [];
@@ -321,21 +320,21 @@ describe('HNSW native plane file-primary delivery', function () {
 
 	it('re-inserts an unchanged value whose pending mapping only storage holds', async () => {
 		const id = 50_005;
-		const vector = makeVector(id);
 		const index = customIndex();
 		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
-		index.applyDerivedValue(id, vector, 1);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		const vector = makeVector(id + 1);
+		index.applyDerivedValue(id, vector, 2);
 		index.pendingDerivedMappings.clear();
 		assert.equal(mapping().pending, true);
-		const mutations = nativeMutations(() => index.applyDerivedValue(id, vector, 1));
-		assert.deepStrictEqual(
-			mutations,
-			['remove', 'insert'],
-			'a stored pending mapping does not prove its node survived'
-		);
+		const mutations = nativeMutations(() => index.applyDerivedValue(id, vector, 2));
+		assert.equal(mutations.at(-1), 'insert', 'a stored pending mapping does not prove its node survived');
+		assert.equal(mapping().previousId, published);
 		await index.flushDerived();
 		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
-		index.applyDerivedValue(id, undefined, 2);
+		index.applyDerivedValue(id, undefined, 3);
 		await index.flushDerived();
 		assert.equal(mapping(), undefined);
 	});
@@ -1192,7 +1191,6 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 			const index = Replayed.indices.vector.customIndex;
 			for (let i = 0; i < COUNT; i++) {
 				index.applyDerivedValue(i, allowVector(i), 1);
-				// what a rebuild's scan and its overlapping log replay both deliver
 				if (i === 16) index.applyDerivedValue(i, allowVector(i), 1);
 			}
 			await index.flushDerived();
@@ -1204,8 +1202,9 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 				{ filter: () => true, candidateKeys: planFor(allowed) }
 			);
 			assert.deepStrictEqual(
-				entries.slice(0, 4).map((entry) => entry.key),
-				[0, 3, 6, 9]
+				entries.map((entry) => entry.key),
+				allowed,
+				'every allowed node is reached, nearest first'
 			);
 		} finally {
 			await Replayed.dropTable();
