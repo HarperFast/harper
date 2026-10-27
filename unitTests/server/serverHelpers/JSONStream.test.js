@@ -135,8 +135,7 @@ describe('Test JSONStream module ', () => {
 		});
 
 		it('fails while its consumer is backpressured, without closing the failed iterator again', async function () {
-			// row a flushes at once; row b stays buffered until the long diagnostic pushes the readable past its high-water mark
-			const rows = [{ a: 'x'.repeat(10_001) }, { b: 'y'.repeat(6000) }];
+			const rows = [];
 			let returned = false;
 			const iterable = {
 				[Symbol.iterator]() {
@@ -153,6 +152,9 @@ describe('Test JSONStream module ', () => {
 				},
 			};
 			const stream = streamAsJSON(iterable);
+			// row a flushes at once under the high-water mark; row b stays buffered until the long diagnostic
+			// flushes it and pushes the readable past the mark
+			rows.push({ a: 'x'.repeat(stream.readableHighWaterMark - 5000) }, { b: 'y'.repeat(6000) });
 			let streamError;
 			stream.on('error', (error) => (streamError = error));
 			stream.read(0);

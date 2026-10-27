@@ -119,9 +119,8 @@ describe('Test export.js', () => {
 				yield TEST_OBJECT;
 				throw new Error('scan failed');
 			}
-			search_stub = sandbox.stub().returns(failingResults());
 			file_name = path.join(TMP_TEST_DIR, 'failed_file.json');
-			hdb_export.__set__('pSql', search_stub);
+			hdb_export.__set__('pSql', async () => failingResults());
 			await assert.rejects(
 				export_local({
 					operation: 'export_local',
