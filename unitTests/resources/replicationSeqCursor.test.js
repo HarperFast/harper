@@ -384,9 +384,70 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 					partialHistory: false,
 					hole: undefined,
 					floorRevoked: undefined,
-					revokedFloor: undefined,
 				}
 			);
+		} finally {
+			release();
+		}
+	});
+
+	it('records each generation an origin left on its direct route only, keeping a reversal as a contradiction', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		let localTime = now;
+		const floors = (routeId, list) => {
+			const event = {
+				type: 'end_txn',
+				localTime: ++localTime,
+				timestamp: localTime,
+				remoteNodeIds: [routeId],
+				txnStream,
+				onFailure: () => false,
+			};
+			event.onCommit = () => {
+				event.originFloors = list;
+			};
+			return event;
+		};
+		const generations = Array.from({ length: 10 }, (_, index) => `gen-${index}`);
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorReplacedGenerationsTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				floors(53, [
+					[53, now - 20, true, 'gen-a', true],
+					[21, now - 20, true, 'gen-a', true],
+				]),
+				floors(53, [
+					[53, now - 19, true, 'gen-b', true],
+					[21, now - 19, true, 'gen-b', true],
+				]),
+				// a level-1 certificate in between orders nothing
+				floors(53, [[53, now - 18, true]]),
+				floors(53, [[53, now - 17, true, 'gen-c', true]]),
+				floors(54, [[54, now - 20, true, 'gen-a', true]]),
+				floors(54, [[54, now - 19, true, 'gen-b', true]]),
+				floors(54, [[54, now - 18, true, 'gen-a', true]]),
+				...generations.map((generation, index) => floors(55, [[55, now - 16 + index, true, generation, true]])),
+			],
+			held
+		);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 55)?.seqId === localTime, {
+				timeout: 5000,
+				message: 'the last generation change recorded its sequence id',
+			});
+			const node = (routeId, id) => readCursor(ReplicatedTable, routeId).nodes.find((state) => state.id === id);
+			assert.equal(node(53, 53).originGeneration, 'gen-c');
+			assert.deepEqual(node(53, 53).replacedGenerations, ['gen-a']);
+			assert.equal(node(53, 21).originGeneration, 'gen-b');
+			assert.equal(node(53, 21).replacedGenerations, undefined, 'a relayed origin is no witness');
+			assert.equal(node(54, 54).originGeneration, 'gen-a');
+			assert.deepEqual(node(54, 54).replacedGenerations, ['gen-a', 'gen-b']);
+			assert.equal(node(55, 55).originGeneration, 'gen-9');
+			assert.deepEqual(node(55, 55).replacedGenerations, generations.slice(1, 9));
 		} finally {
 			release();
 		}

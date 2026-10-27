@@ -11,13 +11,16 @@ const { setOriginCaptureIntervalForTests } = require('#src/resources/transaction
 const {
 	COPY_BOUND_KEY,
 	MAX_OVERLAP_MS,
-	bumpOriginStateEpoch,
 	encodeCheckpoint,
 	membersDigest,
 	positionBefore,
+	readCopyBounds,
+	readOriginStateEpoch,
 	resolveMembership,
 	validateCheckpoint,
+	writeCopyBounds,
 } = require('#src/resources/subscriptionCheckpoint');
+const { suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -522,8 +525,8 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			const resumed = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
 			assert.strictEqual(await resumed.resumeVerified, true);
 			resumed.end();
-			T.dbisDB.putSync([COPY_BOUND_KEY, 77], { [peerId]: floor - 1000 });
-			bumpOriginStateEpoch(T.primaryStore.rootStore);
+			const rootStore = T.primaryStore.rootStore;
+			await writeCopyBounds(rootStore, 77, { raise: new Map([[peerId, floor - 1000]]) });
 			assert.strictEqual(subscription.checkpoint(), undefined, 'a capture from before the bound is not used');
 			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
 			await sleep(400);
@@ -534,16 +537,15 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			again.end();
 			await waitFor(() => subscription.checkpoint()?.members === members);
 			// a copy that restored this node's own lost rows: its own log is complete only above them
-			T.dbisDB.putSync([COPY_BOUND_KEY, 79], { 0: floor - 100_000 });
+			await writeCopyBounds(rootStore, 79, { raise: new Map([[0, floor - 100_000]]) });
 			const belowOwn = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
 			assert.strictEqual(await belowOwn.resumeVerified, true);
 			belowOwn.end();
-			T.dbisDB.putSync([COPY_BOUND_KEY, 79], { 0: floor });
+			await writeCopyBounds(rootStore, 79, { raise: new Map([[0, floor]]) });
 			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
-			bumpOriginStateEpoch(T.primaryStore.rootStore);
 			await sleep(400);
 			assert.strictEqual(subscription.checkpoint(), undefined, 'no capture while the own floor is below its start');
-			T.dbisDB.removeSync([COPY_BOUND_KEY, 79]);
+			await writeCopyBounds(rootStore, 79, { release: [[]] });
 			for (const malformed of [
 				{ [peerId]: 'not a version' },
 				{ [peerId]: -1 },
@@ -561,6 +563,259 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			}
 			subscription.end();
 		});
+
+		it('drops a replay a copy bound voids while it is still running', async () => {
+			const T = tableInOwnDatabase();
+			const listener = collector();
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => listener.values().includes('a'));
+			await sleep(2);
+			const floor = certify(T);
+			const peerId = writeSeqRow(T, 'replayed-peer', {
+				closedFloor: floor,
+				originGeneration: 'replayed-generation',
+				fullCoverage: true,
+				certifiedFrom: floor - 1000,
+			});
+			const members = membersDigest([...ownMembers(T), ['replayed-peer', 'replayed-generation']]);
+			let token;
+			await waitFor(() => (token = subscription.checkpoint())?.members === members);
+			subscription.end();
+			for (let i = 0; i < 250; i++) await T.put(`r${i}`, { value: i });
+			// no listener: the replay stops at the queue's high-water mark until it is drained
+			const resumed = await T.subscribe({ resume: token, omitCurrent: true });
+			await waitFor(() => resumed.queue?.length > 100);
+			await writeCopyBounds(T.primaryStore.rootStore, 80, { raise: new Map([[peerId, floor - 1000]]) });
+			resumed.on('data', () => {});
+			assert.strictEqual(await resumed.resumeVerified, false);
+		});
+
+		it('writes copy bounds in one commit per change and bumps the epoch on every call, or writes nothing', async () => {
+			const T = tableInOwnDatabase();
+			const rootStore = T.primaryStore.rootStore;
+			const row = (...key) => {
+				const value = T.dbisDB.getSync([COPY_BOUND_KEY, ...key]);
+				return value && typeof value === 'object' ? { ...value } : value;
+			};
+			let epoch = readOriginStateEpoch(rootStore);
+			const bumped = () => {
+				const previous = epoch;
+				epoch = readOriginStateEpoch(rootStore);
+				return epoch > previous;
+			};
+			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 500]]) }), true);
+			assert.deepStrictEqual(row(7), { 3: 500 });
+			assert.ok(bumped());
+			// an unchanged retry still bumps, publishing a commit whose writer stopped before its bump
+			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 400]]) }), false);
+			assert.deepStrictEqual(row(7), { 3: 500 });
+			assert.ok(bumped());
+			// a reservation, then its settlement and release in one commit
+			await writeCopyBounds(rootStore, 7, { raise: new Map([[4, 900]]), at: ['reserved', 1] });
+			assert.deepStrictEqual(
+				readCopyBounds(T.dbisDB),
+				new Map([
+					[3, 500],
+					[4, 900],
+				])
+			);
+			await writeCopyBounds(rootStore, 7, { raise: new Map([[4, 700]]), release: [['reserved', 1]] });
+			assert.strictEqual(row(7, 'reserved', 1), undefined);
+			assert.deepStrictEqual(
+				readCopyBounds(T.dbisDB),
+				new Map([
+					[3, 500],
+					[4, 700],
+				])
+			);
+			// concurrent raises of one peer are serialized, so none is lost
+			await Promise.all(
+				[600, 800, 650].map((bound) => writeCopyBounds(rootStore, 7, { raise: new Map([[5, bound]]) }))
+			);
+			assert.strictEqual(row(7)[5], 800);
+			bumped();
+			// refused, writing nothing: no epoch to bump, an invalid bound, a malformed row, a rejected commit
+			await assert.rejects(writeCopyBounds({ dbisDb: T.dbisDB }, 8, { raise: new Map([[3, 1]]) }), /epoch/);
+			assert.strictEqual(row(8), undefined);
+			for (const invalid of [new Map([[3, -1]]), new Map([[3, NaN]]), new Map([[-1, 1]]), new Map([[1.5, 1]])]) {
+				await assert.rejects(writeCopyBounds(rootStore, 7, { raise: invalid }), /Invalid copy bound/);
+			}
+			T.dbisDB.putSync([COPY_BOUND_KEY, 9], { 3: 'not a version' });
+			await assert.rejects(
+				writeCopyBounds(rootStore, 9, { raise: new Map([[3, 1]]) }),
+				(error) => error.statusCode === 410
+			);
+			assert.deepStrictEqual(row(9), { 3: 'not a version' });
+			const suspension = suspendDatabaseCommits([rootStore]);
+			try {
+				await assert.rejects(writeCopyBounds(rootStore, 7, { raise: new Map([[6, 1]]) }));
+			} finally {
+				suspension.release();
+			}
+			assert.strictEqual(row(7)[6], undefined);
+			assert.ok(!bumped());
+			// a release reads no bound, so it clears a malformed row; the lock was released by every refusal
+			await writeCopyBounds(rootStore, 9, { release: [[]] });
+			assert.strictEqual(row(9), undefined);
+			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[6, 1]]) }), true);
+		});
+
+		describe('an origin two routes certify under different generations', () => {
+			const g1 = '1'.repeat(32);
+			const g2 = '2'.repeat(32);
+			const g3 = '3'.repeat(32);
+			const admits = async (T, token) => {
+				const resumed = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
+				const verified = await resumed.resumeVerified;
+				resumed.end();
+				return verified;
+			};
+			const refuses = (T, token, message) =>
+				assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410, message);
+
+			/** A token naming `${name}-origin` under g1, certified by the `retained` route's g1 row alone. */
+			async function issueG1Token(name) {
+				const T = tableInOwnDatabase();
+				const listener = collector();
+				const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+				await T.put('a', { value: 'a' });
+				await waitFor(() => listener.values().includes('a'));
+				await sleep(2);
+				const floor = certify(T);
+				const origin = getIdOfRemoteNode(`${name}-origin`, T.auditStore);
+				const retained = getIdOfRemoteNode(`${name}-retained`, T.auditStore);
+				const live = getIdOfRemoteNode(`${name}-live`, T.auditStore);
+				assert.ok(origin < retained && retained < live);
+				const route = (routeId, node) =>
+					T.dbisDB.putSync([SEQ, routeId], { seqId: 1, nodes: [{ id: origin, ...node }] });
+				// the origin's g1 clock ran ahead of the host its g2 restore landed on
+				const healthy = (generation, closedFloor, replacedGenerations) => ({
+					closedFloor,
+					originGeneration: generation,
+					fullCoverage: true,
+					certifiedFrom: floor - 1000,
+					replacedGenerations,
+				});
+				route(retained, healthy(g1, floor + 100));
+				const members = (generation) => membersDigest([...ownMembers(T), [`${name}-origin`, generation]]);
+				let token;
+				await waitFor(() => (token = subscription.checkpoint())?.members === members(g1));
+				assert.strictEqual(await admits(T, token), true);
+				return { T, subscription, floor, origin, retained, live, route, healthy, members, token };
+			}
+
+			it('fails closed when nothing shows which replaced the other, whichever floor is higher', async () => {
+				const { T, subscription, floor, retained, live, route, healthy, token } = await issueG1Token('unordered');
+				const revokedG2 = { originGeneration: g2, floorRevoked: true };
+				route(live, revokedG2);
+				await refuses(T, token, 'a revoked g2 row after the healthy g1 row');
+				route(retained, revokedG2);
+				route(live, healthy(g1, floor + 100));
+				await refuses(T, token, 'a revoked g2 row before the healthy g1 row');
+				route(retained, healthy(g2, floor + 100));
+				await refuses(T, token, 'equal floors');
+				// a relayed route is no witness: a restored relay can forward an older generation after a newer one
+				route(retained, healthy(g2, floor, [g1]));
+				await refuses(T, token, 'a relayed route that saw g1 replaced');
+				await sleep(400);
+				assert.strictEqual(subscription.checkpoint(), undefined, 'no capture names either generation');
+				subscription.end();
+			});
+
+			it('takes the generation the direct route saw replace every other, and fails closed on a contradiction', async () => {
+				const { T, subscription, floor, origin, retained, live, route, healthy, members, token } =
+					await issueG1Token('witnessed');
+				route(origin, { originGeneration: g2, floorRevoked: true, replacedGenerations: [g1] });
+				await refuses(T, token, "g2's revocation counts though g1's floor is higher");
+				route(origin, healthy(g2, floor, [g1]));
+				await refuses(T, token, 'g1 is replaced');
+				let g2Token;
+				await waitFor(() => (g2Token = subscription.checkpoint())?.members === members(g2));
+				assert.strictEqual(await admits(T, g2Token), true);
+				// a generation the direct route did not see replaced orders nothing
+				route(live, healthy(g3, floor));
+				await refuses(T, g2Token, 'an unwitnessed third generation');
+				route(origin, healthy(g2, floor, [g3, g1]));
+				assert.strictEqual(await admits(T, g2Token), true);
+				// a direct route that returned to a generation it left contradicts itself
+				route(origin, healthy(g2, floor, [g1, g3, g2]));
+				await refuses(T, g2Token, 'a reversal');
+				T.dbisDB.removeSync([SEQ, live]);
+				T.dbisDB.removeSync([SEQ, retained]);
+				assert.strictEqual(await admits(T, g2Token), true, 'one generation needs no witness');
+				subscription.end();
+			});
+
+			it('orders a restore whose clock is behind through certificates the apply loop records', async () => {
+				const T = tableInOwnDatabase();
+				const listener = collector();
+				const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+				await T.put('a', { value: 'a' });
+				await waitFor(() => listener.values().includes('a'));
+				await sleep(2);
+				const floor = certify(T);
+				const origin = getIdOfRemoteNode('restored-origin', T.auditStore);
+				const relay = getIdOfRemoteNode('restored-relay', T.auditStore);
+				const pending = [];
+				let wake;
+				const Feed = table({
+					table: `RestoreFeed${++sequence}`,
+					database: T.databaseName,
+					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+				});
+				Feed.sourcedFrom(
+					{
+						subscribeOnThisThread: () => true,
+						async *subscribe() {
+							yield { type: 'put', id: 'seed', value: { id: 'seed' }, timestamp: Date.now() };
+							for (;;) {
+								while (pending.length > 0) yield pending.shift();
+								await new Promise((resolve) => (wake = resolve));
+							}
+						},
+					},
+					{ intermediateSource: true }
+				);
+				const txnStream = {};
+				let localTime = Date.now();
+				const send = (routeId, fields, originFloors) => {
+					const event = {
+						type: 'end_txn',
+						localTime: ++localTime,
+						timestamp: localTime,
+						remoteNodeIds: [routeId],
+						txnStream,
+						onFailure: () => false,
+						...fields,
+					};
+					if (originFloors) event.onCommit = () => (event.originFloors = originFloors);
+					pending.push(event);
+					wake?.();
+					return waitFor(() => T.dbisDB.getSync([SEQ, routeId])?.seqId === event.localTime);
+				};
+				const certifyRoute = async (routeId, generation, closedFloor) => {
+					await send(routeId, {}, [[origin, closedFloor, true, generation, true]]);
+					await send(routeId, { originRouteStates: [[origin, floor - 1000, undefined, undefined, generation]] });
+				};
+				const members = (generation) => membersDigest([...ownMembers(T), ['restored-origin', generation]]);
+				await certifyRoute(origin, g1, floor + 100);
+				await certifyRoute(relay, g1, floor + 100);
+				let token;
+				await waitFor(() => (token = subscription.checkpoint())?.members === members(g1));
+				assert.strictEqual(await admits(T, token), true);
+				// restored on a host whose clock is behind: the direct route certifies g2 below g1's floor
+				await certifyRoute(origin, g2, floor);
+				await refuses(T, token, 'the relay still holds g1 at a higher floor');
+				assert.deepStrictEqual(T.dbisDB.getSync([SEQ, origin]).nodes[0].replacedGenerations, [g1]);
+				let g2Token;
+				await waitFor(() => (g2Token = subscription.checkpoint())?.members === members(g2));
+				assert.strictEqual(await admits(T, g2Token), true);
+				await send(origin, { originFloorRevocations: [[origin, g2]] });
+				await refuses(T, g2Token, "g2's revocation is not hidden by g1's higher floor");
+				subscription.end();
+			});
+		});
 	});
 
 	describe('on LMDB', () => {
@@ -576,6 +831,22 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true });
 			assert.strictEqual(subscription.checkpoint, undefined);
 			subscription.end();
+		});
+		it('writes copy bounds in one transaction and bumps the epoch', async () => {
+			const T = tableInOwnDatabase();
+			const rootStore = T.primaryStore.rootStore;
+			const before = readOriginStateEpoch(rootStore);
+			assert.strictEqual(
+				await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 500]]), at: ['reserved', 1] }),
+				true
+			);
+			assert.strictEqual(
+				await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 400]]), release: [['reserved', 1]] }),
+				true
+			);
+			assert.deepStrictEqual(readCopyBounds(T.dbisDB), new Map([[3, 400]]));
+			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 300]]) }), false);
+			assert.strictEqual(readOriginStateEpoch(rootStore), before + 3);
 		});
 	});
 });
