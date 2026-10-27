@@ -71,6 +71,28 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 		assert.strictEqual(vector.ownerEpoch, vectorEpoch, 'HNSW must not rebuild');
 	}
 
+	async function indexEpochs() {
+		const fullText = await fullTextReadiness();
+		const { vector } = await request('/SourceState/');
+		assert.match(fullText.ownerEpoch, /^[1-9]\d*$/);
+		assert.match(vector.ownerEpoch, /^[1-9]\d*$/);
+		return { fullText: fullText.ownerEpoch, vector: vector.ownerEpoch };
+	}
+
+	async function assertIndexProgress(marker: string, vector: number[], before: { fullText: string; vector: string }) {
+		await request(`/Probe/${marker}`, 'PUT', { body: `${marker}checkpoint`, vector });
+		await waitFor(
+			async () => {
+				await assertIndexesReady(before.fullText, before.vector);
+				return (await search(`${marker}checkpoint`)).includes(marker) && (await neighbors(vector))[0] === marker;
+			},
+			{ timeout: 30_000, message: 'the indexes must consume past the source and cache commits' }
+		);
+		assert.deepStrictEqual(await search('lighthouse'), ['p1']);
+		assert.deepStrictEqual(await neighbors([1, 0, 0]), ['p1']);
+		await assertIndexesReady(before.fullText, before.vector);
+	}
+
 	before(async () => {
 		await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'sourcedfrom-log-identity'), {
 			config: { threads: { count: 1 } },
@@ -99,10 +121,7 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 		test(`${kind} live apply preserves versions, unique commit keys and native index availability`, async () => {
 			const source = `${kind}Source`;
 			const mirror = `${kind}Mirror`;
-			const fullTextBefore = await fullTextReadiness();
-			const { vector: vectorBefore } = await request('/SourceState/');
-			assert.match(fullTextBefore.ownerEpoch, /^[1-9]\d*$/);
-			assert.match(vectorBefore.ownerEpoch, /^[1-9]\d*$/);
+			const before = await indexEpochs();
 			for (const [id, title] of [
 				['s1', 'alpha'],
 				['s2', 'beta'],
@@ -146,19 +165,7 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				assert.strictEqual(cached.version, state.records[source][index].version);
 			}
 
-			const marker = kind.toLowerCase();
-			const vector = kind === 'Direct' ? [0, 1, 0] : [0, 0, 1];
-			await request(`/Probe/${marker}`, 'PUT', { body: `${marker}checkpoint`, vector });
-			await waitFor(
-				async () => {
-					await assertIndexesReady(fullTextBefore.ownerEpoch, vectorBefore.ownerEpoch);
-					return (await search(`${marker}checkpoint`)).includes(marker) && (await neighbors(vector))[0] === marker;
-				},
-				{ timeout: 30_000, message: 'the index must consume past the source and cache commits' }
-			);
-			assert.deepStrictEqual(await search('lighthouse'), ['p1']);
-			assert.deepStrictEqual(await neighbors([1, 0, 0]), ['p1']);
-			await assertIndexesReady(fullTextBefore.ownerEpoch, vectorBefore.ownerEpoch);
+			await assertIndexProgress(kind.toLowerCase(), kind === 'Direct' ? [0, 1, 0] : [0, 0, 1], before);
 			assert.strictEqual(
 				new Set(entries.map(({ key }) => key)).size,
 				6,
@@ -167,6 +174,7 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 		});
 
 		test(`${kind} multi-record live apply keeps each transaction grouped under one fresh key`, async () => {
+			const before = await indexEpochs();
 			await request(`/${kind}Source/`, 'PUT', [
 				{ id: 'batch1', title: 'one', revision: 'r1' },
 				{ id: 'batch2', title: 'two', revision: 'r1' },
@@ -201,6 +209,7 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				mirror.map(({ version }) => version),
 				source.map(({ version }) => version)
 			);
+			await assertIndexProgress(`${kind.toLowerCase()}batch`, kind === 'Direct' ? [0, 1, 1] : [0, -1, 1], before);
 		});
 	}
 });
