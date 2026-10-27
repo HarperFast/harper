@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const database = 'selector_authorization';
 const broadUser = {
@@ -137,6 +137,17 @@ describe('relationship selector authorization isolation', function () {
 			selection.forceNulls = true;
 			const original = structuredClone(selection);
 			assert.deepStrictEqual(await read(method, selection, restrictedUser), expected(restrictedUser));
+			assertUnchanged(selection, original);
+		});
+		it(`${method} authorizes parsed nested predicates after copying the selector`, async function () {
+			const selection = new RequestTarget('?select(id,child[leafId=l1&select(id,secret,leaf[select(id,secret)])])')
+				.select[1];
+			const original = structuredClone(selection);
+			await assert.rejects(
+				() => read(method, selection, restrictedUser),
+				(error) => error.statusCode === 403
+			);
+			assert.deepStrictEqual(await read(method, selection, broadUser), expected(broadUser));
 			assertUnchanged(selection, original);
 		});
 		it(`${method} retains explicit trusted nested permission controls`, async function () {
