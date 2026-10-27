@@ -4,6 +4,7 @@ import _logger from '../utility/logging/harper_logger.ts';
 const logger = _logger;
 import {
 	configValidator,
+	effectiveHttpConfigValidator,
 	getDomainSocketPathLengthWarning,
 	isLegacySqlApplicationEntry,
 } from '../validation/configValidator.ts';
@@ -875,10 +876,11 @@ function validateConfig(configDoc, skipFsValidation = false) {
 	}
 
 	const validation = configValidator(configJson, skipFsValidation);
-	if (validation.error) {
+	const error = validation.error ?? effectiveHttpConfigValidator(flattenConfig(configDoc.toJSON())).error;
+	if (error) {
 		throw handleHDBError(
 			new Error(),
-			HDB_ERROR_MSGS.CONFIG_VALIDATION(validation.error.message),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(error.message),
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,

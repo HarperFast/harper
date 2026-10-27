@@ -5,15 +5,14 @@ const assert = require('node:assert');
 const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const { parse } = require('yaml');
-const { configValidator } = require('#src/validation/configValidator');
+const { configValidator, effectiveHttpConfigValidator } = require('#src/validation/configValidator');
+const { flattenConfig } = require('#src/config/configUtils');
 
-function validate(limit, allowHeaders, legacyAllowHeaders) {
+function validate(limit, allowHeaders) {
 	const config = parse(readFileSync(resolve(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
 	config.rootPath = resolve(__dirname, '../envDir');
 	config.http.readRequestQueueLimit = limit;
 	config.http.corsAccessControlAllowHeaders = allowHeaders;
-	if (legacyAllowHeaders !== undefined)
-		config.customFunctions = { network: { corsAccessControlAllowHeaders: legacyAllowHeaders } };
 	return configValidator(config, true);
 }
 
@@ -48,20 +47,38 @@ describe('read queue CORS header configuration', () => {
 			assert(error?.details.some((detail) => detail.path.join('.') === 'http.corsAccessControlAllowHeaders'));
 		});
 	}
-	it('rejects an invalid customFunctions.network override, which listeners serve over http', () => {
-		const { error } = validate(undefined, 'Accept', 'Accept\nInjected: value');
-		assert(
-			error?.details.some((detail) => detail.path.join('.') === 'customFunctions.network.corsAccessControlAllowHeaders')
+});
+
+describe('effective HTTP admission configuration', () => {
+	const effectiveError = (config) => effectiveHttpConfigValidator(flattenConfig(config)).error;
+	for (const [label, config] of [
+		[
+			'a customFunctions.network allow-headers override',
+			{ http: {}, customFunctions: { network: { corsAccessControlAllowHeaders: 'Accept\nInjected: value' } } },
+		],
+		['a lowercase allow-headers spelling', { http: { corsaccesscontrolallowheaders: 'Accept\nInjected: value' } }],
+		[
+			'a customFunctions.network read limit override',
+			{ http: { readRequestQueueLimit: 1 }, customFunctions: { network: { readRequestQueueLimit: '60s' } } },
+		],
+		['a lowercase read limit spelling', { http: { readrequestqueuelimit: '60s' } }],
+	]) {
+		it(`rejects ${label}, which listeners read as http`, () => {
+			assert(effectiveError(config));
+		});
+	}
+	it('accepts valid legacy overrides and an unrelated legacy access-list string', () => {
+		assert.ifError(
+			effectiveError({
+				http: { readRequestQueueLimit: 1 },
+				customFunctions: {
+					network: {
+						corsAccessControlAllowHeaders: ['Accept'],
+						readRequestQueueLimit: false,
+						corsAccessList: 'https://a.example',
+					},
+				},
+			})
 		);
-	});
-	it('rejects a quoted customFunctions.network read limit, which listeners read as http', () => {
-		const config = parse(readFileSync(resolve(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
-		config.rootPath = resolve(__dirname, '../envDir');
-		config.customFunctions = { network: { readRequestQueueLimit: '60s' } };
-		const { error } = configValidator(config, true);
-		assert(error?.details.some((detail) => detail.path.join('.') === 'customFunctions.network.readRequestQueueLimit'));
-	});
-	it('accepts a valid customFunctions.network override', () => {
-		assert.ifError(validate(undefined, 'Accept', ['Accept', 'Content-Type']).error);
 	});
 });
