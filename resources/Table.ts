@@ -6442,9 +6442,12 @@ export function makeTable(options): TableResourceClass {
 				checkLoaded = true;
 			}
 <<<<<<< HEAD
+<<<<<<< HEAD
 			let transformCache;
 =======
 			// keyed by selector descriptor: one name can be selected twice with different sub-selects
+=======
+>>>>>>> e1d3f3395 (docs: widen the lone-wildcard exception; drop a restating comment)
 			let transformCache: Map<any, (value: any) => any>;
 			const selectsPrototype =
 				select === '__proto__' ||
