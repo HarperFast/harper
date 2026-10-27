@@ -1128,6 +1128,19 @@ class DerivedIndexRunner {
 			this.#pendingTimestamps.set(logName, [timestamp]);
 			this.#seenTimestamps.set(logName, new Set([timestamp]));
 		}
+		this.#openRange(cursor);
+		const recovered = this.#recoverPurgedAnchors(cursor);
+		if (recovered) {
+			this.#openRange(recovered);
+			// Delivered ahead of any log work, so the backend's cursor stays an offered vector throughout.
+			const { batch } = this.#newChunk(false);
+			batch.through = recovered;
+			this.#pendingBatch = batch;
+		}
+		return this.#checkRangeHealth();
+	}
+
+	#openRange(cursor: DerivedIndexCursor) {
 		this.#iterable = this.#logStore.getRange({
 			startByLog: new Map(Object.entries(cursor.logs)),
 			exactStart: true,
@@ -1136,7 +1149,39 @@ class DerivedIndexRunner {
 			includeLogName: true,
 		});
 		this.#iterator = this.#iterable[Symbol.iterator]();
-		return this.#checkRangeHealth();
+	}
+
+	/**
+	 * Retention purges every file of an idle, flushed log, the one holding its anchor included. The
+	 * cursor covers every commit at or before its coverage position, and purge deletes only flushed
+	 * files, so while the flush witness has not passed that position nothing after it was lost: the log
+	 * is read from a floor instead. The floor's inventory is sampled before the witness, because
+	 * `getStats` reads the flush position before the file inventory and one call can pair a stale
+	 * witness with the inventory left by a purge of an uncovered entry.
+	 */
+	#recoverPurgedAnchors(cursor: DerivedIndexCursor): DerivedIndexCursor | undefined {
+		const iterable = this.#iterable!;
+		if (iterable.exactStartFailures.size === 0 || iterable.corruptFrameStop.breaks > 0 || iterable.failedLogs.size > 0)
+			return;
+		let recovered: DerivedIndexCursor | undefined;
+		for (const [logName, failure] of iterable.exactStartFailures) {
+			const covered = cursor.coverage?.[logName];
+			if (failure !== 'missing' || !isLogPosition(covered)) return;
+			const log = this.#logStore.rootStore.useLog(logName);
+			const inventory = log.getStats();
+			const witness = log.getStats().lastFlushedPosition;
+			if (
+				!isLogPosition(witness) ||
+				(witness.sequence === 0 && witness.offset === 0) ||
+				positionAfter(witness, covered)
+			)
+				return;
+			recovered ??= cloneCursor(cursor);
+			delete recovered.logs[logName];
+			const floor = inventory.fileCount === 0 ? inventory.currentSequenceNumber : inventory.oldestSequenceNumber;
+			if (floor > 1) (recovered.floors ??= {})[logName] = floor;
+		}
+		return recovered;
 	}
 
 	#validateLogSet(cursor: DerivedIndexCursor) {
@@ -2523,6 +2568,16 @@ function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is Derive
 		}
 	}
 	return true;
+}
+
+function isLogPosition(position: unknown): position is { sequence: number; offset: number } {
+	if (!position || typeof position !== 'object') return false;
+	const { sequence, offset } = position as { sequence: unknown; offset: unknown };
+	return Number.isInteger(sequence) && Number.isInteger(offset) && (sequence as number) >= 0 && (offset as number) >= 0;
+}
+
+function positionAfter(left: { sequence: number; offset: number }, right: { sequence: number; offset: number }) {
+	return left.sequence > right.sequence || (left.sequence === right.sequence && left.offset > right.offset);
 }
 
 function cloneCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
