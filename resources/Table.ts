@@ -9514,16 +9514,17 @@ export function makeTable(options): TableResourceClass {
 						message
 					);
 					if (keyed) {
+						// a later delete's re-delivery check must see the removal it would without this publish
+						const removal = value === null ? removalBefore(write, existingEntry) : undefined;
 						write.stagedEntry = {
 							value,
 							metadataFlags,
 							residencyId: base?.residencyId,
 							expiresAt: base?.expiresAt,
 							residencySlot: residencyPolicy?.byAttribute ? (base?.residencySlot ?? existingEntry?.residencySlot) : undefined,
-							// what removed the record, for a later delete's re-delivery check (removalBefore)
-							localTime: base?.localTime,
-							nodeId: base?.nodeId,
-							additionalAuditRefs: base?.additionalAuditRefs,
+							localTime: removal?.localTime,
+							nodeId: removal?.nodeId,
+							additionalAuditRefs: removal?.additionalAuditRefs,
 							unchanged: !priorStagedOp || priorStagedOp.stagedEntry.unchanged === true,
 						};
 						// an attribute patch after this publish still needs the complete record an earlier write staged

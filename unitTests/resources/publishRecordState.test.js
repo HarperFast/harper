@@ -22,7 +22,7 @@ async function collect(iterable) {
 
 describe('publish leaves the record unchanged', function () {
 	this.timeout(10000);
-	let T, Unaudited, nodeA;
+	let T, Unaudited, Unindexed, nodeA;
 
 	before(async () => {
 		setupTestDBPath();
@@ -44,18 +44,26 @@ describe('publish leaves the record unchanged', function () {
 			audit: false,
 		});
 		if (Unaudited.indexingOperation) await Unaudited.indexingOperation;
+		// no indexed attributes, so an invalidation stores a null stub
+		Unindexed = table({
+			table: 'PublishRecordStateUnindexed',
+			database: 'publishRecordState',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+			audit: true,
+		});
 		nodeA = getIdOfRemoteNode('publish-state-a', T.auditStore);
 	});
 
 	/** Apply one origin transaction's writes as replication does. */
-	function applyFromOrigin(id, writes, { version, nodeId }) {
+	function applyFromOrigin(id, writes, { version, nodeId }, Table = T) {
 		const context = { source: {}, sourceApply: true, timestamp: version };
 		return transaction(context, async () => {
 			for (const [type, value, options] of writes) {
-				const resource = await T.getResource({ id }, context);
+				const resource = await Table.getResource({ id }, context);
 				const writeOptions = { isNotification: true, nodeId, version, ...options };
 				if (type === 'message') resource._writePublish(id, value, writeOptions);
 				else if (type === 'delete') resource._writeDelete(id, writeOptions);
+				else if (type === 'invalidate') resource._writeInvalidate(id, undefined, writeOptions);
 				else await resource._writeUpdate(id, value, false, writeOptions);
 			}
 		});
@@ -172,6 +180,25 @@ describe('publish leaves the record unchanged', function () {
 			(entry) => entry.recordId === 'deleted-twice' && entry.type === 'delete'
 		);
 		assert.strictEqual(deletes.length, 1);
+	});
+
+	it('a delete after a message still applies over an invalidated stub with the same identity', async () => {
+		await Unindexed.put({ id: 'stub-then-delete', tag: 'v1' });
+		const origin = { version: Date.now() + 86_400_000, nodeId: nodeA };
+		await applyFromOrigin('stub-then-delete', [['invalidate']], origin, Unindexed);
+		assert.ok(Unindexed.primaryStore.getEntry('stub-then-delete').metadataFlags & INVALIDATED);
+		await applyFromOrigin(
+			'stub-then-delete',
+			[
+				['message', { note: 'between' }],
+				['delete', undefined],
+			],
+			origin,
+			Unindexed
+		);
+		const entry = Unindexed.primaryStore.getEntry('stub-then-delete');
+		assert.ok(entry.value == null);
+		assert.strictEqual(entry.metadataFlags & INVALIDATED, 0, 'the key must hold a tombstone, not an invalidated stub');
 	});
 
 	it('keeps the local-only flag an invalidation or delete earlier in the transaction stored', async () => {
