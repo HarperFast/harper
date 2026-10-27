@@ -147,17 +147,19 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				: undefined;
 		const expectedVersion = cached?.version;
 
-		// Build get options, always merging with caller options to preserve
-		// transaction snapshot. Pass expectedVersion when cached:
+		// Build get options, carrying the caller's transaction to preserve its snapshot. Pass
+		// expectedVersion when cached:
 		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
 		// native layer seeds the VT slot in the same call.
+		// Copy only the keys rocksdb-js reads, not the caller's options: HNSW passes a whole
+		// DatabaseTransaction here.
 		let getOptions: any;
 		if (expectedVersion != null) {
-			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
+			getOptions = { transaction: options?.transaction, expectedVersion };
 		} else if (cache) {
-			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
+			getOptions = { transaction: options?.transaction, populateVersion: true };
 		} else {
 			getOptions = options;
 		}
