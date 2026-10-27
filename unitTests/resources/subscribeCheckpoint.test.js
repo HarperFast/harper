@@ -96,6 +96,47 @@ function writeSeqRow(T, peerName, node) {
 	return peerId;
 }
 
+/** Sends `end_txn` events for `[seq, routeId]` rows through T's database's real apply loop; resolves once each is recorded. */
+function sourceFeed(T) {
+	const pending = [];
+	let wake;
+	const Feed = table({
+		table: `Feed${++sequence}`,
+		database: T.databaseName,
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+	});
+	Feed.sourcedFrom(
+		{
+			subscribeOnThisThread: () => true,
+			async *subscribe() {
+				yield { type: 'put', id: 'seed', value: { id: 'seed' }, timestamp: Date.now() };
+				for (;;) {
+					while (pending.length > 0) yield pending.shift();
+					await new Promise((resolve) => (wake = resolve));
+				}
+			},
+		},
+		{ intermediateSource: true }
+	);
+	const txnStream = {};
+	let localTime = Date.now();
+	return (routeId, fields, originFloors) => {
+		const event = {
+			type: 'end_txn',
+			localTime: ++localTime,
+			timestamp: localTime,
+			remoteNodeIds: [routeId],
+			txnStream,
+			onFailure: () => false,
+			...fields,
+		};
+		if (originFloors) event.onCommit = () => (event.originFloors = originFloors);
+		pending.push(event);
+		wake?.();
+		return waitFor(() => T.dbisDB.getSync([SEQ, routeId])?.seqId === event.localTime);
+	};
+}
+
 describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', function () {
 	this.timeout(60_000);
 
@@ -591,6 +632,24 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			assert.strictEqual(await resumed.resumeVerified, false);
 		});
 
+		it('drops a replay once an origin it never accounted for joins a seq row', async () => {
+			const T = tableInOwnDatabase();
+			const listener = collector();
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => listener.values().includes('a'));
+			const token = await certifiedCheckpoint(T, subscription);
+			subscription.end();
+			for (let i = 0; i < 250; i++) await T.put(`r${i}`, { value: i });
+			const send = sourceFeed(T);
+			const resumed = await T.subscribe({ resume: token, omitCurrent: true });
+			await waitFor(() => resumed.queue?.length > 100);
+			const joined = getIdOfRemoteNode('joined-mid-replay', T.auditStore);
+			await send(joined, {}, [[joined, certify(T), true]]);
+			resumed.on('data', () => {});
+			assert.strictEqual(await resumed.resumeVerified, false);
+		});
+
 		it('writes copy bounds in one commit per change and bumps the epoch on every call, or writes nothing', async () => {
 			const T = tableInOwnDatabase();
 			const rootStore = T.primaryStore.rootStore;
@@ -800,43 +859,7 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				const floor = certify(T);
 				const origin = getIdOfRemoteNode('restored-origin', T.auditStore);
 				const relay = getIdOfRemoteNode('restored-relay', T.auditStore);
-				const pending = [];
-				let wake;
-				const Feed = table({
-					table: `RestoreFeed${++sequence}`,
-					database: T.databaseName,
-					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
-				});
-				Feed.sourcedFrom(
-					{
-						subscribeOnThisThread: () => true,
-						async *subscribe() {
-							yield { type: 'put', id: 'seed', value: { id: 'seed' }, timestamp: Date.now() };
-							for (;;) {
-								while (pending.length > 0) yield pending.shift();
-								await new Promise((resolve) => (wake = resolve));
-							}
-						},
-					},
-					{ intermediateSource: true }
-				);
-				const txnStream = {};
-				let localTime = Date.now();
-				const send = (routeId, fields, originFloors) => {
-					const event = {
-						type: 'end_txn',
-						localTime: ++localTime,
-						timestamp: localTime,
-						remoteNodeIds: [routeId],
-						txnStream,
-						onFailure: () => false,
-						...fields,
-					};
-					if (originFloors) event.onCommit = () => (event.originFloors = originFloors);
-					pending.push(event);
-					wake?.();
-					return waitFor(() => T.dbisDB.getSync([SEQ, routeId])?.seqId === event.localTime);
-				};
+				const send = sourceFeed(T);
 				const certifyRoute = async (routeId, generation, closedFloor) => {
 					await send(routeId, {}, [[origin, closedFloor, true, generation, true]]);
 					await send(routeId, { originRouteStates: [[origin, floor - 1000, undefined, undefined, generation]] });

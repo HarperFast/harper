@@ -2521,6 +2521,7 @@ export function makeTable(options): TableResourceClass {
 									if (!nodeState) {
 										nodeState = { id: nodeId, seqId: 0 };
 										nodeStates.push(nodeState);
+										qualifiersChanged = true;
 									}
 									nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
 									if (nodeId === committingNodeId) {
@@ -2529,10 +2530,18 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 							let originCursorsChanged = false;
+							// an origin new to the row is a new admission fact, so a replay admitted before it rechecks
+							const nodeStateFor = (nodeId: number) => {
+								let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+								if (!nodeState) {
+									nodeStates.push((nodeState = { id: nodeId }));
+									qualifiersChanged = true;
+								}
+								return nodeState;
+							};
 							if (originCursors)
 								for (const [nodeId, originLogKey] of originCursors) {
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateFor(nodeId);
 									if (!(nodeState.originLogKey >= originLogKey)) {
 										nodeState.originLogKey = originLogKey;
 										originCursorsChanged = true;
@@ -2541,8 +2550,7 @@ export function makeTable(options): TableResourceClass {
 							if (originFloors)
 								for (const [nodeId, closedFloor, relayable, originGeneration, fullCoverage] of originFloors) {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateFor(nodeId);
 									const previousGeneration = nodeState.originGeneration ?? nodeState.lastGeneration;
 									const generationChanged =
 										typeof originGeneration === 'string' &&
@@ -2610,8 +2618,7 @@ export function makeTable(options): TableResourceClass {
 								for (const revocation of originFloorRevocations) {
 									const nodeId = Array.isArray(revocation) ? revocation[0] : revocation;
 									const generation = Array.isArray(revocation) ? revocation[1] : undefined;
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateFor(nodeId);
 									if (nodeState.floorRevoked === true) continue;
 									// a route at level 1 still stands for the generation it last certified
 									if (
@@ -2642,8 +2649,7 @@ export function makeTable(options): TableResourceClass {
 									generation,
 									fullCoverage,
 								] of originRouteStates) {
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateFor(nodeId);
 									if (
 										generation !== undefined &&
 										(nodeState.originGeneration ?? nodeState.lastGeneration) !== generation
