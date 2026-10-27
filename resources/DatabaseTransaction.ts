@@ -638,7 +638,6 @@ type MaybePromise<T> = T | Promise<T>;
  */
 export type OwnedReadIterator = { onDone?: (() => void) | null };
 
-/** A read reference on one database's link, held for a search whose own handle is on `holder`. */
 export type ReadLease = OwnedReadIterator & {
 	holder: DatabaseTransaction;
 	link: DatabaseTransaction;
@@ -1019,6 +1018,8 @@ export class DatabaseTransaction implements Transaction {
 	declare readLeases?: Set<ReadLease>;
 	declare heldLeases?: Set<ReadLease>;
 	declare rangeActiveTick?: number;
+	declare searchScannedTick?: number;
+	declare searchScanning?: boolean;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
 	declare private activeCommitHandle?: RocksTransaction;
@@ -4278,7 +4279,6 @@ function consumeRangeActivity(txn: DatabaseTransaction): boolean {
 		txn.rangeReadActive = false;
 		txn.rangeActiveTick = monitorTick;
 	}
-	// this tick or the last, whichever side of the partner this tick's walk is on
 	return txn.rangeActiveTick >= monitorTick - 1;
 }
 
@@ -4286,9 +4286,11 @@ function consumeRangeActivity(txn: DatabaseTransaction): boolean {
 // included) is live while any of them scans. Only range activity counts, never a renewal: two leases
 // held in opposite directions must not keep each other alive once both searches are abandoned.
 function searchScanning(holder: DatabaseTransaction): boolean {
+	if (holder.searchScannedTick === monitorTick) return holder.searchScanning;
 	let scanning = consumeRangeActivity(holder);
 	for (const { link } of holder.heldLeases) if (consumeRangeActivity(link)) scanning = true;
-	return scanning;
+	holder.searchScannedTick = monitorTick;
+	return (holder.searchScanning = scanning);
 }
 
 function leasePartnerScanning(txn: DatabaseTransaction): boolean {
@@ -4324,7 +4326,6 @@ function startMonitoringTxns() {
 		reportBudget: LongLivedHolderReportBudget
 	) {
 		consumeRangeActivity(txn);
-		// both run every walk, so an unwalked partner's activity is stamped this tick
 		const partnerScanning = leasePartnerScanning(txn);
 		if (txn.rangeActiveTick === monitorTick || partnerScanning) txn.renewReadTimeout();
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
