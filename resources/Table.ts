@@ -1561,7 +1561,6 @@ function resumeRefusal(auditStore: any, generationId: string, cursor: number): E
 		: new DatabaseGenerationChangedError();
 }
 
-// an outer table's resolvers must never run against nested data that merely shares a name with them
 function projectPlainValue(transformCache: Map<any, (value: any) => any>, attribute: any, value: any) {
 	let transform = transformCache.get(attribute);
 	if (!transform) {
