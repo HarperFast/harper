@@ -9927,7 +9927,6 @@ export function makeTable(options): TableResourceClass {
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 	}
 	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
-		// the clock is read last: most records have no expiry
 		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
 	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
