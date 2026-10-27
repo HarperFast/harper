@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, 'v[0-9]+.[0-9]+']
   pull_request:
+  schedule:
+    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
       node-version:
@@ -23,18 +25,65 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: unit-test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# PR and push runs cover Node 24 and 26; Node 22 runs nightly and on a manual "all" dispatch.
 jobs:
   unit-test:
-    name: Unit Test (Node.js v${{ matrix.node-version }})
+    name: Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
-    # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (72 on Node 22/24, 69 on Node 26), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 73
+    # on a required check. Every step below is capped in its own right and this sits above the
+    # largest shard's sum (37 on `main`), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 38
     strategy:
       fail-fast: false
       matrix:
-        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('[22, 24, 26]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
+        node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
+        shard: [main, components, server, resources-core-a-q, resources-core-r-z, resources-indexes, lmdb]
+        # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
+        # each shard's test-step cap is what turns a wedged suite into a reported failure
+        # (harper#2587, harper#2017). `test:unit:lmdb` chains its own resources/apitests/bin runs
+        # with `&&`, so a failure there stops at the first of those three.
+        #
+        # Size a cap you are changing at roughly 1.5x that suite's slowest run which REACHED
+        # mocha's epilogue, pooling all Node legs since none is reliably the slowest, and re-derive
+        # it from the Actions step API: a cap-killed sample is right-censored and reads far too low.
+        # Derived 2026-10-27 over 66 Node legs since 2026-10-22: main 4m12, components 2m41,
+        # server 4m58, resources (indexes) 3m29 (1.5x is 5m14, so 6m), lmdb 5m34 (so 9m).
+        # `resources (core)` reached its epilogue at 8m12 — past its 8m cap — before the two
+        # retry-exhaustion tests stopped waiting out the production backoff (~40s), so ~7m30. It
+        # splits by file name at `r`; a local run put 68% of it in `a-q` (CI's per-suite times put
+        # 52%), so sized at the larger share: a-q ~5m06 -> 8m, r-z ~3m54 -> 6m.
+        #
+        # The resources shards partition the suite by file name, so a file added later lands in
+        # exactly one of them; AGENTS.md carries the pattern. They are the only default-engine run
+        # of that tree as a whole — `hnsw-plane` below and the Windows gate each run one file out
+        # of it — so a partition these globs stop making is a hole nothing else closes.
+        include:
+          - shard: main
+            script: test:unit:main:core
+            timeout: 8
+          - shard: components
+            script: test:unit:main:components
+            timeout: 8
+          - shard: server
+            script: test:unit:main:server
+            timeout: 8
+          - shard: resources-core-a-q
+            script: test:unit:resources:core:a-q
+            timeout: 8
+          - shard: resources-core-r-z
+            script: test:unit:resources:core:r-z
+            timeout: 6
+          - shard: resources-indexes
+            script: test:unit:resources:indexes
+            timeout: 6
+          - shard: lmdb
+            script: test:unit:lmdb
+            timeout: 9
 
     steps:
       - name: Checkout code
@@ -60,16 +109,17 @@ jobs:
         run: npm run build
 
       - name: Type contract tests
-        if: matrix.node-version == 22
+        if: matrix.shard == 'main' && matrix.node-version == 26
         timeout-minutes: 3
         run: npm run test:types # strict tsc over unitTests/types/ — asserts the shipped public types
 
       - name: Benchmark unit tests
+        if: matrix.shard == 'main'
         timeout-minutes: 3
         run: npm run test:bench # pure-logic tests for benchmarks/ converters; doesn't need a running Harper instance
 
       - name: Review-coverage action tests
-        if: matrix.node-version == 24
+        if: matrix.shard == 'main' && matrix.node-version == 26
         timeout-minutes: 3
         run: node --test .github/actions/review-coverage/*.test.mjs
 
@@ -86,80 +136,55 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
-      # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
-      # each step's own cap is what turns a wedged suite into a reported failure, so one bad
-      # top-level suite no longer hides the rest (harper#2587, harper#2017) — `test:unit:lmdb`
-      # still chains its own resources/apitests/bin runs with `&&`, so a failure there stops
-      # at the first of those three.
-      #
-      # Size a cap you are changing at roughly 1.5x that step's slowest run which REACHED mocha's
-      # epilogue, pooling all three Node legs since none is reliably the slowest, and re-derive it
-      # from the Actions step API: a cap-killed sample is right-censored and reads far too low.
-      # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
-      # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
-      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` was re-derived
-      # 2026-10-05 over ten pushes: slowest successful step 3m59; the new named-child suites add ~12s.
-      # All three Node legs reached their epilogues in 4m03 to 4m13, past the old 4m cap;
-      # 1.5x the slowest epilogue is 6m20, rounded up to 7m. harper#2981's legs, certification
-      # gate suites included, then took 4m56-5m16; 1.5x is 7m54, rounded up to 8m.
-      # `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
-      # slowest completed 3m38, ~3m20 once `subscriptionSuperseded` stopped replaying the shared
-      # `test` database's whole audit log; 1.5x is 5m, and the legs killed at 4m ran longer than any
-      # that completed, so 6m. Its LMDB-`resources` phase stretches on a slow runner in tests that
-      # commit one write at a time or replay a shared database's audit log from `startTime: 1`; look
-      # for another of those before raising it again.
-      #
-      # `resources` is two steps so that budget stays spendable as the suite grows, and so a
-      # wedged run is reported in 8 minutes rather than 12 (harper#2660). They partition the
-      # suite by file name, so a file added later lands in one of them rather than in neither;
-      # AGENTS.md carries the pattern. They are the only default-engine run of that tree as a
-      # whole — `hnsw-plane` below and the Windows gate each run one file out of it — so a
-      # partition these globs stop making is a hole nothing else closes. Their caps apply the
-      # rule above to the 7m40 worst case, split by the shards' measured share of it, 63/37:
-      # core 4m50 -> 8m, indexes 2m50 -> 5m.
-      - name: 'Unit tests: main'
-        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 8
-        run: npm run test:unit:main:core
-
-      - name: 'Unit tests: components'
-        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 8
-        run: npm run test:unit:main:components
-
-      - name: 'Unit tests: server'
-        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 8
-        run: npm run test:unit:main:server
+      - name: 'Unit tests: ${{ matrix.shard }}'
+        timeout-minutes: ${{ matrix.timeout }}
+        run: npm run ${{ matrix.script }}
 
       - name: 'Unit tests: apitests'
-        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        if: "!cancelled() && matrix.shard == 'components' && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 3
         run: npm run test:unit:apitests
 
-      - name: 'Unit tests: resources (core)'
-        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 8
-        run: npm run test:unit:resources:core
-
-      - name: 'Unit tests: resources (indexes)'
-        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 5
-        run: npm run test:unit:resources:indexes
-
-      - name: 'Unit tests: lmdb'
-        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 6
-        run: npm run test:unit:lmdb
+  # The one required check for this workflow: branch protection names this job rather than the
+  # shard legs, so shards can be added or renamed without touching the ruleset. `always()` rather
+  # than `!cancelled()`, because a skipped required check reads as passing.
+  unit-test-result:
+    name: Unit Test
+    if: always()
+    needs: [unit-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: All unit-test shards passed
+        run: test "${{ needs.unit-test.result }}" = success
 
   unit-test-source:
-    name: Native Unit Test (Node.js v${{ matrix.node-version }})
+    name: Native Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 39
+    timeout-minutes: 28
     strategy:
       fail-fast: false
       matrix:
-        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('["22.18.0", "24.0.0", 22, 24, 26]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
+        # 22.18.0 and 24.0.0 are the package.json `engines` floors, the oldest runtimes that must
+        # run the .ts sources directly; they run with Node 22 nightly. Caps follow the rule on the
+        # `unit-test` job, over the same window: core 6m27, resources (core) 7m33 before the
+        # retry-exhaustion fix (~6m53 after, split as there: a-q ~4m41 -> 8m, r-z ~3m35 -> 6m),
+        # resources (indexes) 3m49.
+        node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all') && '["22.18.0", "24.0.0", 22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
+        shard: [core, resources-core-a-q, resources-core-r-z, resources-indexes]
+        include:
+          - shard: core
+            script: test:unit:typestrip
+            timeout: 10
+          - shard: resources-core-a-q
+            script: test:unit:typestrip:resources:core:a-q
+            timeout: 8
+          - shard: resources-core-r-z
+            script: test:unit:typestrip:resources:core:r-z
+            timeout: 6
+          - shard: resources-indexes
+            script: test:unit:typestrip:resources:indexes
+            timeout: 6
     steps:
       - name: Checkout code
         timeout-minutes: 3
@@ -178,19 +203,12 @@ jobs:
         timeout-minutes: 1
         run: test ! -d dist
       - name: Check unit harness types
+        if: matrix.shard == 'core'
         timeout-minutes: 2
         run: npm run test:types:unit
-      - name: Native core units
-        timeout-minutes: 8
-        run: npm run test:unit:typestrip
-      - name: Native resource units (core)
-        if: '!cancelled()'
-        timeout-minutes: 8
-        run: npm run test:unit:typestrip:resources:core
-      - name: Native resource units (indexes)
-        if: '!cancelled()'
-        timeout-minutes: 5
-        run: npm run test:unit:typestrip:resources:indexes
+      - name: 'Native units: ${{ matrix.shard }}'
+        timeout-minutes: ${{ matrix.timeout }}
+        run: npm run ${{ matrix.script }}
 
   # Windows had no unit-level coverage at all before this job: every job above pins
   # ubuntu-latest, and integration-tests.yml was the only workflow touching Windows.
@@ -209,7 +227,7 @@ jobs:
   # Make this `unit-test-windows` job a REQUIRED status check on `main`. It fires on
   # every PR with no `paths:` filter, so it is satisfiable.
   unit-test-windows:
-    name: Unit Test (Windows, Node.js v24)
+    name: Unit Test (Windows, Node.js v26)
     runs-on: windows-latest
     timeout-minutes: 40
 
@@ -217,10 +235,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js 26
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
@@ -242,17 +260,17 @@ jobs:
   # tests belong to HarperFast/hnsw's CI, not here: this job runs the published prebuild, so
   # testing the crate source would grade something other than the binary under test.
   hnsw-plane:
-    name: HNSW native plane (Node.js v24)
+    name: HNSW native plane (Node.js v26)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js 26
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
@@ -280,17 +298,17 @@ jobs:
         run: npx mocha unitTests/resources/vectorIndexPlane.test.js
 
   uws-tcp-macos:
-    name: uWS TCP uploads (macOS, Node.js v24)
+    name: uWS TCP uploads (macOS, Node.js v26)
     runs-on: macos-14
     timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js 26
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
@@ -306,7 +324,7 @@ jobs:
         run: npx mocha unitTests/server/serverHelpers/uwsServer.test.js --grep 'uWS oversized TCP uploads' --forbid-pending --fail-zero
 
   fulltext-plane:
-    name: Full-text native plane (${{ matrix.os }}, Node.js v24)
+    name: Full-text native plane (${{ matrix.os }}, Node.js v26)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -317,10 +335,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js 26
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies

@@ -65,9 +65,11 @@ jobs:
         id: set-node-versions
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
-            # PR pushes run a single representative Node version to keep the dev loop fast;
-            # the full 22/24/26 matrix runs on push to main/release and on the nightly schedule.
-            echo "node-versions=[24]" >> $GITHUB_OUTPUT
+            # PR pushes run the recommended Node version alone to keep the dev loop fast; push to
+            # main/release adds 24, and Node 22 runs only nightly and on a manual "all" dispatch.
+            echo "node-versions=[26]" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            echo "node-versions=[24, 26]" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
             echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           else
@@ -219,7 +221,7 @@ jobs:
           if-no-files-found: ignore
 
   build-windows:
-    name: Build Harper (Windows, Node.js v24)
+    name: Build Harper (Windows, Node.js v26)
     runs-on: windows-latest
     timeout-minutes: 15
 
@@ -227,10 +229,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js 26
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
@@ -252,7 +254,7 @@ jobs:
           retention-days: 1
 
   run-integration-tests-windows:
-    name: Integration Tests ${{matrix.shard}}/6 (Windows, Node.js v24)
+    name: Integration Tests ${{matrix.shard}}/6 (Windows, Node.js v26)
     runs-on: windows-latest
     timeout-minutes: 35
     needs: [build-windows]
@@ -265,10 +267,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js 26
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Download build artifacts
@@ -309,7 +311,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: [generate-node-version-matrix, build]
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 24)
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 26)
     strategy:
       fail-fast: false
       matrix:
@@ -322,7 +324,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Setup Bun
@@ -333,7 +335,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: harper-build-artifacts-node-24
+          name: harper-build-artifacts-node-26
 
       - name: Relink bin scripts
         timeout-minutes: 5
@@ -362,7 +364,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     needs: [generate-node-version-matrix, build]
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 24)
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 26)
     strategy:
       fail-fast: false
       matrix:
@@ -375,13 +377,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Download build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: harper-build-artifacts-node-24
+          name: harper-build-artifacts-node-26
 
       - name: Relink bin scripts
         timeout-minutes: 5

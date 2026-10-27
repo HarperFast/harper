@@ -638,8 +638,8 @@ jobs:
           # nightly-scale matrix (~43 jobs); a PR push runs a single version.
           # Unpinned, one push to a PR milestoned onto three release branches
           # dispatches that matrix three times.
-          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
-          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
+          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=26
+          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=26
 
           # Locate the dispatched integration-tests run id (creation is async)
           RUN_ID=""
