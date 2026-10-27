@@ -2547,6 +2547,7 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									const advancesSequence = !!event.localTime && stream.lastSequenceId !== event.localTime;
+									const previousSequenceId = stream.lastSequenceId;
 									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
@@ -2613,8 +2614,9 @@ export function makeTable(options): TableResourceClass {
 										try {
 											await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 										} catch (error) {
-											// the transaction landed but its position and route state did not: the source that attached
-											// them must learn it, or it counts them as recorded
+											// the transaction landed but its position and route state did not: a repeat of this position
+											// must write again, and the source that attached them must learn it, or it counts them as recorded
+											stream.lastSequenceId = previousSequenceId;
 											if (event.onFailure && (await event.onFailure(error, failurePosition, true))) stream.held = true;
 											throw error;
 										}
