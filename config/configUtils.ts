@@ -992,9 +992,17 @@ function isSuffixEscapedParam(arg: string): boolean {
 	return component !== undefined && !isReservedComponentName(component);
 }
 
+// Written only by set_configuration, as whole values: kept out of CONFIG_PARAM_MAP so a bare env var or CLI arg of
+// the same name (a generic MODELS, say) is never applied at boot.
+const SET_CONFIGURATION_ONLY_PARAMS: ReadonlySet<string> = new Set([
+	'models',
+	hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION,
+	hdbTerms.STUDIO_CONFIG_PARAMS.LANDING,
+]);
+
 function lookupConfigWriteParam(arg: string): string | undefined {
-	// Keep the generic MODELS env var out of the boot/install config allowlist.
-	if (arg.toLowerCase() === 'models') return 'models';
+	const name = arg.toLowerCase();
+	if (SET_CONFIGURATION_ONLY_PARAMS.has(name)) return name;
 	return lookupConfigParam(arg) ?? (isSuffixEscapedParam(arg) ? arg : undefined);
 }
 
@@ -1323,6 +1331,23 @@ export function getConfiguration() {
 	return configDoc.toJSON();
 }
 
+// A malformed Studio setting is dropped when read rather than failing a boot, so this write is where it is refused.
+async function assertStudioSettingsValid(configFields) {
+	const problems: string[] = [];
+	let studioConfiguration;
+	for (const field in configFields) {
+		const param = field.toLowerCase();
+		if (param !== hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION && param !== hdbTerms.STUDIO_CONFIG_PARAMS.LANDING) continue;
+		// Imported lazily: it imports this module.
+		studioConfiguration ??= await import('./studioConfiguration.ts');
+		const value = castConfigValue(param, configFields[field]);
+		if (param === hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION)
+			studioConfiguration.validateStudioNavigation(value, problems);
+		else studioConfiguration.validateStudioLanding(value, problems);
+	}
+	if (problems.length > 0) throw new ClientError(`Unable to update config: ${problems.join('; ')}`, 400);
+}
+
 // `set_configuration` is the one config writer that also fans out (`replicated: true`), so a value
 // accepted here lands on every peer at once and the next rolling restart takes the whole cluster
 // down together (harper-pro#558). Boot-time writers are deliberately not gated the same way: config
@@ -1411,6 +1436,7 @@ export async function setConfiguration(setConfigJson) {
 		);
 	}
 	assertThreadHeapMemoryStartable(configFields);
+	await assertStudioSettingsValid(configFields);
 	if (Object.keys(configFields).some((field) => field.toLowerCase() === 'models')) {
 		const { envLayerNamingModels } = await import('../resources/models/bootstrap.ts');
 		const pinnedBy = envLayerNamingModels();

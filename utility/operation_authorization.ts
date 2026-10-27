@@ -36,6 +36,7 @@ import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
 import * as configUtils from '../config/configUtils.ts';
+import { getStudioConfiguration } from '../config/studioConfiguration.ts';
 import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
@@ -437,6 +438,10 @@ requiredPermissions.set(
 	new permission(false, [], terms.OPERATIONS_ENUM.REGISTRATION_INFO)
 );
 requiredPermissions.set(user.userInfo.name, new permission(false, [], terms.OPERATIONS_ENUM.USER_INFO));
+requiredPermissions.set(
+	getStudioConfiguration.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION)
+);
 //DescribeAll will only return the schema values a user has permissions for
 requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, [], terms.OPERATIONS_ENUM.DESCRIBE_ALL));
 

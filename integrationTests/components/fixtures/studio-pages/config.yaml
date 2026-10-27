@@ -1,0 +1,22 @@
+rest: true
+jsResource:
+  files: resources.js
+studio:
+  pages:
+    - id: redirects
+      name: Redirects
+      icon: signpost
+      placement: tab
+      description: HTTP redirects served before your app runs.
+      access:
+        role: super_user
+        endpoints: ['/Redirect/']
+      content:
+        kind: sections
+        sections:
+          - kind: table
+            columns: [from, to]
+      notAPageField: should not be returned
+    - id: Not_Valid
+      name: Dropped
+      placement: tab

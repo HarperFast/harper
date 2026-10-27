@@ -1812,6 +1812,7 @@ describe('Test operations permissions', function () {
 			terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS,
 			terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE,
 			terms.OPERATIONS_ENUM.REGISTRATION_INFO,
+			terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 		];
 
 		for (const operation of GRANTED_BY_NAME) {
@@ -1839,6 +1840,40 @@ describe('Test operations permissions', function () {
 				const req_json = makeOpUserSystemRequest([canonical]);
 				req_json.operation = alias;
 				assert.equal(op_auth.verifyPerms(req_json, dispatchedHandlerName(alias)), null);
+			});
+		}
+	});
+
+	describe('get_studio_configuration is open to every role, and to allowlisted ones only by listing', function () {
+		const operation = terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION;
+		function request(permission) {
+			const req_json = makeOpUserSystemRequest(undefined);
+			req_json.operation = operation;
+			req_json.hdb_user.role.permission = permission;
+			return req_json;
+		}
+
+		for (const [label, permission] of [
+			['a role with no permissions at all', { super_user: false }],
+			['a role with only table permissions', { super_user: false, [TEST_SCHEMA]: { describe: true, tables: {} } }],
+			['a structure_user', { super_user: false, structure_user: true }],
+			['super_user', { super_user: true }],
+			['a role allowlisting read_only', { super_user: false, operations: ['read_only'] }],
+			['a role allowlisting standard_user', { super_user: false, operations: ['standard_user'] }],
+			['a role allowlisting it by name', { super_user: false, operations: [operation] }],
+		]) {
+			it(`allows ${label}`, function () {
+				assert.equal(op_auth.verifyPerms(request(permission), dispatchedHandlerName(operation)), null);
+			});
+		}
+
+		for (const operations of [[], ['describe_all', 'user_info'], ['admin_read']]) {
+			it(`refuses a role whose allowlist ${JSON.stringify(operations)} omits it`, function () {
+				const result = op_auth.verifyPerms(
+					request({ super_user: false, operations }),
+					dispatchedHandlerName(operation)
+				);
+				assert.deepEqual(result?.unauthorized_access, [TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(operation)]);
 			});
 		}
 	});

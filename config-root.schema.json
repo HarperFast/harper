@@ -481,6 +481,32 @@
 				"enabled": { "type": "boolean", "description": "Enable local Harper Studio GUI. Default: false" }
 			}
 		},
+		"studio": {
+			"type": "object",
+			"description": "Cluster-level Harper Studio UI settings, written with set_configuration (studio_navigation, studio_landing) and readable by every authenticated role through get_studio_configuration. A UI choice only: server permissions are unchanged. An invalid entry is ignored with a logged warning.",
+			"properties": {
+				"navigation": {
+					"type": "object",
+					"description": "How Studio shows each built-in tab. A tab not listed is visible.",
+					"propertyNames": { "pattern": "^[a-z0-9-]+$" },
+					"properties": {
+						"applications": { "$ref": "#/definitions/studioNavigationState" },
+						"databases": { "$ref": "#/definitions/studioNavigationState" },
+						"apis": { "$ref": "#/definitions/studioNavigationState" },
+						"operations": { "$ref": "#/definitions/studioNavigationState" },
+						"status": { "$ref": "#/definitions/studioNavigationState" },
+						"logs": { "$ref": "#/definitions/studioNavigationState" },
+						"config": { "$ref": "#/definitions/studioNavigationState" }
+					},
+					"additionalProperties": { "$ref": "#/definitions/studioNavigationState" }
+				},
+				"landing": {
+					"type": "string",
+					"minLength": 1,
+					"description": "The page Studio opens the cluster on: a built-in tab key, or <component>.<pageId> for a page a component declares."
+				}
+			}
+		},
 
 		"logging": {
 			"type": "object",
@@ -1006,6 +1032,11 @@
 	"additionalProperties": true,
 
 	"definitions": {
+		"studioNavigationState": {
+			"type": "string",
+			"enum": ["visible", "tucked", "hidden"],
+			"description": "visible: a top tab; tucked: moved out of the top tabs; hidden: not shown."
+		},
 		"loggerConfig": {
 			"type": "object",
 			"additionalProperties": true,

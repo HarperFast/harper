@@ -21,6 +21,8 @@ export const HDB_ROOT_DIR_NAME = 'harper';
 export const REPLICATED_FROM = Symbol('replicatedFrom');
 /** Harper Component Config File */
 export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
+/** The config file names a component may use, in the order componentLoader looks for them; the first present wins. */
+export const COMPONENT_CONFIG_FILES = [HARPER_CONFIG_FILE, HDB_CONFIG_FILE, HDB_COMPONENT_CONFIG_FILE] as const;
 
 /** Name of the Harper Process Script */
 export const HDB_PROC_NAME = 'harper.js';
@@ -313,6 +315,7 @@ export const OPERATIONS_ENUM = {
 	DELETE_JOB: 'delete_job',
 	UPDATE_JOB: 'update_job',
 	REGISTRATION_INFO: 'registration_info',
+	GET_STUDIO_CONFIGURATION: 'get_studio_configuration',
 	SET_CONFIGURATION: 'set_configuration',
 	DROP_ATTRIBUTE: 'drop_attribute',
 	RESTART: 'restart',
@@ -849,6 +852,15 @@ export const CONFIG_PARAMS = {
 	SQL_ALLOWFULLSCAN: 'sql_allowFullScan',
 	SQL_MAXSORTROWS: 'sql_maxSortRows',
 	SQL_MAXHASHROWS: 'sql_maxHashRows',
+} as const;
+
+/**
+ * Root config params that only `set_configuration` writes: Studio's cluster UI settings. Kept out of CONFIG_PARAMS so
+ * a bare env var or CLI arg of the same name is never applied at boot.
+ */
+export const STUDIO_CONFIG_PARAMS = {
+	NAVIGATION: 'studio_navigation',
+	LANDING: 'studio_landing',
 } as const;
 
 /**
