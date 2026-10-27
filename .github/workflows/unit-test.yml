@@ -109,14 +109,16 @@ jobs:
       # commit one write at a time or replay a shared database's audit log from `startTime: 1`; look
       # for another of those before raising it again.
       #
-      # `resources` is two steps so that budget stays spendable as the suite grows, and so a
-      # wedged run is reported in 8 minutes rather than 12 (harper#2660). They partition the
+      # `resources` is three steps so that budget stays spendable as the suite grows, and so a
+      # wedged run is reported in 7 minutes rather than 12 (harper#2660). They partition the
       # suite by file name, so a file added later lands in one of them rather than in neither;
-      # AGENTS.md carries the pattern. They are the only default-engine run of that tree as a
+      # AGENTS.md carries the patterns. They are the only default-engine run of that tree as a
       # whole — `hnsw-plane` below and the Windows gate each run one file out of it — so a
-      # partition these globs stop making is a hole nothing else closes. Their caps apply the
-      # rule above to the 7m40 worst case, split by the shards' measured share of it, 63/37:
-      # core 4m50 -> 8m, indexes 2m50 -> 5m.
+      # partition these globs stop making is a hole nothing else closes. The 2026-09-18 caps
+      # split a 7m40 worst case 63/37: core 4m50 -> 8m, indexes 2m50 -> 5m. By 2026-10-27 core's
+      # completed runs reached 7m59 and it hit its 8m cap on 8 of 17 pushes, so it was split
+      # again into halves that measured 205s and 198s locally; at half the slowest core run
+      # (~4m10 each), 1.5x is 6m15, rounded up to 7m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 8

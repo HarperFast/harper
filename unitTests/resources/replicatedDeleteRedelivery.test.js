@@ -73,7 +73,7 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 			audit: true,
 		});
 		auditStore = Nodes.primaryStore.rootStore.auditStore;
-		// mapped here, so a write applies as a remote origin's at the log key it carries, whatever ran before
+		// a numeric origin is remote only once this store's mapping names it; an unmapped id applies as a local write
 		origin = getIdOfRemoteNode('redelivery-origin', auditStore);
 		otherOrigin = getIdOfRemoteNode('redelivery-other-origin', auditStore);
 	});
