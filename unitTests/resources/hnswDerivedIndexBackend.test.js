@@ -193,6 +193,24 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		assert.deepStrictEqual(backend.getDurableCursor().logs, { local: 1 });
 	});
 
+	it('strips coverage a cursor carries once an unanchored chunk applies after it', async () => {
+		start(0);
+		const coverage = { local: { sequence: 1, offset: 10 } };
+		const converted = { ...makeBatch(1, 0), through: { format: 1, logs: {}, floors: { local: 2 }, coverage } };
+		assert.equal(backend.deliver(converted), DERIVED_INDEX_ACCEPTED);
+		backend.flush('threshold');
+		(await waitFor(() => index.barriers[0], 5000)).settle();
+		await waitFor(() => backend.getDurableCursor()?.coverage !== undefined, 5000);
+
+		const firstChunk = makeBatch(2);
+		delete firstChunk.through;
+		assert.equal(backend.deliver(firstChunk), DERIVED_INDEX_ACCEPTED);
+		backend.flush('age');
+		(await waitFor(() => index.barriers[1], 5000)).settle();
+		await waitFor(() => backend.getDurableCursor().coverage === undefined, 5000);
+		assert.deepStrictEqual(backend.getDurableCursor(), { format: 1, logs: {}, floors: { local: 2 } });
+	});
+
 	it('publishes every completed batch across a catch-up spanning several barriers', async () => {
 		deliver(4);
 		backend.flush('threshold');

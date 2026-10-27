@@ -249,13 +249,15 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		this.#flushing = (async () => {
 			await this.#index.flushDerived();
 			if (epoch !== undefined && !host.isOwnerEpoch(epoch)) return;
-			if (cursor) {
-				const durable = this.getDurableCursor();
-				const coverage =
-					durable && !this.#appliedPastCoverage && sameDerivedIndexCursorVector(durable, cursor)
-						? durable.coverage
-						: undefined;
-				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...cursor, coverage } : cursor);
+			const durable = this.getDurableCursor();
+			// Records past the coverage are durable now, so no cursor written from here may keep it.
+			const written = cursor ?? (this.#appliedPastCoverage && durable?.coverage ? durable : undefined);
+			if (written) {
+				const { coverage: own, ...vector } = written;
+				const coverage = this.#appliedPastCoverage
+					? undefined
+					: (own ?? (durable && sameDerivedIndexCursorVector(durable, written) ? durable.coverage : undefined));
+				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...vector, coverage } : vector);
 			}
 		})();
 		this.#flushing.then(

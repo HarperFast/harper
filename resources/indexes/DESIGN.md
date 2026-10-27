@@ -312,8 +312,10 @@ its capture, and its vector then reflects commits past the captured position. Pe
 that nothing accepted beyond the durable vector carries a mutation, because HNSW stores coverage with its
 durable vector and full-text with its newest accepted one. Both backends keep coverage on a cursor write
 only when the new vector is the same (`sameDerivedIndexCursorVector`) and no record was applied since the
-coverage (HNSW `#appliedPastCoverage`, full-text `#hasStagedMutations`): a transaction's first chunks
-arrive under the vector it has not completed yet. Coverage persisted by a build from before these rules
+coverage (HNSW `#appliedPastCoverage`, full-text `#hasStagedMutations`), and once one was, the cursor they
+write is stripped of any coverage it carries: a transaction's first chunks arrive under the vector it has
+not completed yet, or with no vector at all. What remains is the window between a native flush and its
+cursor write, which no ordering closes and which the anchor-present resume shares. Coverage persisted by a build from before these rules
 may lag its vector; the first install after the upgrade trusts it, so a power loss under the old build
 that dropped a newer anchor at exactly that coverage would resume over rows the primary store lost. That
 needs three coincidences in a one-time window and is accepted rather than stamping a codec field. The converted vector reaches the backend as an empty `#pendingBatch` delivered before any
