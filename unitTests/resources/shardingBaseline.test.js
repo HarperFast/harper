@@ -29,7 +29,7 @@ const SelectValidator = require('#src/sqlTranslator/SelectValidator').default;
 			[1, [{ name: 'other-shard' }]],
 		]);
 		await loadGQLSchema(`type Rows @table(database: "baselineAdmission") @sharded(slots: 2, slotFrom: "Number(id) % 2") {
-			id: ID @primaryKey value: String
+			id: ID @primaryKey value: String @indexed
 		}`);
 		Records = databases.baselineAdmission.Rows;
 		Plain = table({ database: 'baselineAdmission', table: 'Plain', attributes: [{ name: 'id', isPrimaryKey: true }] });
@@ -68,6 +68,29 @@ const SelectValidator = require('#src/sqlTranslator/SelectValidator').default;
 		await Records.put('2', { id: '2', value: 'accepted' });
 		assert.equal(Records.primaryStore.getSync('2').value, 'accepted');
 	});
+
+	for (const sync of [false, true])
+		it(`retains owned-miss refusal through the relocated read helper (sync=${sync})`, async () => {
+			baseline = 'baseline unavailable';
+			await assert.rejects(
+				async () => Records.get({ id: '100', sync }),
+				(error) => error.statusCode === 503
+			);
+		});
+	for (const select of [['id'], ['value'], [{ name: 'value', select: ['nested'] }]])
+		it(`refuses a held indexed selection before returning an incomplete result (${JSON.stringify(select)})`, async () => {
+			baseline = 'baseline unavailable';
+			await assert.rejects(
+				async () => {
+					for await (const row of Records.search({
+						conditions: [{ attribute: 'value', comparator: 'between', value: ['a', 'z'] }],
+						select,
+					}))
+						assert.fail(`a held collection returned ${JSON.stringify(row)}`);
+				},
+				(error) => error.statusCode === 503
+			);
+		});
 
 	it('allows actual replication to fill a held owner but refuses external source apply and configuration mismatch', async () => {
 		baseline = 'waiting for a complete owner';

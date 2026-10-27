@@ -731,7 +731,12 @@ const { transaction } = require('#src/resources/transaction');
 		const original = Transaction.prototype.commit;
 		const attempts = [];
 		Transaction.prototype.commit = function (...args) {
-			if (this.store?.db === Records.primaryStore.store.db) attempts.push(this.id);
+			if (this.store?.db === Records.primaryStore.store.db) {
+				attempts.push(this.id);
+				setResidencyPlacementGuard(() => {
+					throw new Error('owner changed after native submission');
+				});
+			}
 			return original.apply(this, args);
 		};
 		setResidencyPlacementGuard(() => {});
@@ -741,10 +746,13 @@ const { transaction } = require('#src/resources/transaction');
 			return Promise.resolve();
 		});
 		try {
-			await transaction({}, async () => {
-				await Records.patch('moved', { region: 1 });
-				binding.forceTryAgainForTesting(1);
-			});
+			await Promise.race([
+				transaction({}, async () => {
+					await Records.patch('moved', { region: 1 });
+					binding.forceTryAgainForTesting(1);
+				}),
+				new Promise((_, reject) => setTimeout(() => reject(new Error('native retry did not settle')), 5000).unref()),
+			]);
 			assert.ok(attempts.length >= 2, 'native TryAgain forces a retry');
 			assert.equal(new Set(attempts).size, 1, 'retry retains the native handle that owns the durable log');
 			assert.equal(confirmations.length, 1);

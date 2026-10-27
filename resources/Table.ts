@@ -11196,7 +11196,9 @@ export function makeTable(options): TableResourceClass {
 						logger.debug?.(`Eviction batch conflict for ${tableName}, retrying once`);
 						continue; // re-stage into a fresh transaction; version guards drop the conflicting record(s)
 					}
-					logger.warn?.(`Eviction batch commit error for ${tableName}:`, error);
+					if (error instanceof DatabaseShardingHeldError)
+						logger.trace?.(`Eviction batch commit error for ${tableName}:`, error);
+					else logger.warn?.(`Eviction batch commit error for ${tableName}:`, error);
 					return;
 				}
 			}
