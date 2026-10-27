@@ -130,7 +130,10 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static get = transactional(
 		function (resource: any, query: RequestTarget, request: Context, _data: any) {
 			const loadAsInstance = resource.constructor.loadAsInstance;
-			if (loadAsInstance && query?.select && (query as any).parseError) throw (query as any).parseError;
+			if (loadAsInstance && query?.select) {
+				if ((query as any).parseError) throw (query as any).parseError;
+				assertNestedQueryOptions(query.select, resource.constructor);
+			}
 			const result = resource.get?.(query);
 			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
 			if (loadAsInstance === false) {
@@ -1181,16 +1184,57 @@ function selectFromObject(object, propertyResolvers, context) {
 	// TODO: eventually we will do aggregate functions here
 	return (property) => readPropertyFromObject(object, property, propertyResolvers, context);
 }
+export function hasNestedQueryOptions(property) {
+	return (
+		property &&
+		typeof property === 'object' &&
+		((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
+			property.operator !== undefined ||
+			property.limit !== undefined ||
+			property.offset !== undefined ||
+			(typeof property.sort === 'object' && property.sort))
+	);
+}
+
+export function assertNestedQueryOptions(select, resource) {
+	for (const property of Array.isArray(select) ? select : []) {
+		if (!property || typeof property !== 'object') continue;
+		const related = resource?.propertyResolvers?.[property.name]?.definition?.tableClass;
+		if (
+			((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
+				property.operator !== undefined) &&
+			(!resource?._prepareRelationshipSelection || !related)
+		)
+			throw new ClientError('Nested query constraints require a relationship attribute');
+		assertNestedQueryOptions(property.select || (Array.isArray(property) ? property : undefined), related);
+	}
+}
+
+function resolveSelectedArray(values) {
+	return values.some((value) => typeof value?.then === 'function') ? Promise.all(values) : values;
+}
+
 export function transformForSelect(select, resource) {
+	assertNestedQueryOptions(select, resource);
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
 	let subTransforms;
+	let relationshipSelections;
+	if (resource?._prepareRelationshipSelection)
+		for (const property of Array.isArray(select) ? select : []) {
+			if (propertyResolvers?.[property.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
+				(relationshipSelections ||= Object.create(null))[property.name] = resource._prepareRelationshipSelection(
+					property,
+					context ?? contextStorage.getStore()
+				);
+			}
+		}
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
-			if (Array.isArray(object)) return object.map(transform);
+			if (Array.isArray(object)) return resolveSelectedArray(object.map(transform));
 			return readPropertyFromObject(object, select, propertyResolvers, context);
 		};
 	else if (typeof select === 'object') {
@@ -1199,13 +1243,23 @@ export function transformForSelect(select, resource) {
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
-				if (Array.isArray(object)) return object.map(transform);
+				if (Array.isArray(object)) return resolveSelectedArray(object.map(transform));
 				const results = [];
-				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+				let promises;
+				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context), object);
 				for (const property of select) {
-					results.push(getProperty(property));
+					const index = results.length;
+					const value = getProperty(property);
+					results.push(value);
+					if (typeof value?.then === 'function') {
+						(promises ||= []).push(
+							value.then((value) => {
+								results[index] = value;
+							})
+						);
+					}
 				}
-				return results;
+				return promises ? Promise.all(promises).then(() => results) : results;
 			};
 		const forceNulls = select.forceNulls;
 		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
@@ -1213,10 +1267,12 @@ export function transformForSelect(select, resource) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
-				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
+				return resolveSelectedArray(
+					object.map((value) => (value && typeof value === 'object' ? transform(value) : value))
+				);
 			// finally the case of returning objects
 			const selectedData = {};
-			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context), object);
 			if (selectsPrototype)
 				Object.defineProperty(selectedData, '__proto__', {
 					value: undefined,
@@ -1243,13 +1299,16 @@ export function transformForSelect(select, resource) {
 			return selectedData;
 		};
 	} else throw new Error('Invalid select argument type ' + typeof select);
-	function handleProperty(getProperty) {
+	function handleProperty(getProperty, object) {
 		return (property) => {
 			if (typeof property === 'string') {
 				return getProperty(property);
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
+					const selection = relationshipSelections?.[property.name];
+					if (selection)
+						return selection(typeof object.getRecord === 'function' ? object.getRecord() || object : object);
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
 					if (!subTransforms) subTransforms = new WeakMap();

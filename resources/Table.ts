@@ -59,6 +59,7 @@ import {
 	convertToComparableKeys,
 } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
+import { assertNestedQueryOptions, hasNestedQueryOptions } from './Resource.ts';
 import {
 	DatabaseTransaction,
 	getReadTransactionGuard,
@@ -166,6 +167,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 	resolveComparator,
+	filterByType,
 	fullTextComparatorMode,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
@@ -1095,6 +1097,23 @@ interface TableResourceClass {
 	 */
 	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions, context?: any): Promise<any>;
 	operation(operation: any, context: any): any;
+	/** @internal */
+	_prepareRelationshipSelection(
+		attribute: any,
+		context: any,
+		filtered?: any,
+		ensureLoaded?: boolean
+	): (record: any, entry?: any, isSync?: boolean) => any;
+	/** @internal */
+	_prepareQueryConditions(
+		conditions: any,
+		operator: any,
+		target: any,
+		context: any,
+		nested?: boolean
+	): { conditions: any; includeFullTextHighlights: boolean };
+	/** @internal */
+	_assertNestedReadAccess(name: any, context: any, target: any): void;
 	/**
 	 * This is responsible for ordering and select()ing the attributes/properties from returned entries
 	 */
@@ -1239,6 +1258,7 @@ interface TableResourceClass {
 	cleanup(): void;
 	closeMaintenance(deadline?: number): Promise<void>;
 	resumeMaintenance(): void;
+	/** @internal */
 	_readTxnForContext(context: any): (LMDBReadTransaction | RocksTransaction) & {
 		openTimer?: number;
 		retryRisk?: number;
@@ -1349,6 +1369,20 @@ function cloneConditions(conditions: any[]): any[] {
 		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
 		return copy;
 	});
+}
+
+function copySelection(select) {
+	if (Array.isArray(select)) {
+		const copy = Object.assign([], select);
+		for (let index = 0; index < copy.length; index++) copy[index] = copySelection(copy[index]);
+		return copy;
+	}
+	if (!select || typeof select !== 'object') return select;
+	const copy = { ...select };
+	if (copy.select) copy.select = copySelection(copy.select);
+	if (copy.sort && typeof copy.sort === 'object') copy.sort = copySelection(copy.sort);
+	if (copy.next) copy.next = copySelection(copy.next);
+	return copy;
 }
 
 function selectRequestsProperty(select: any, propertyName: string): boolean {
@@ -3839,6 +3873,7 @@ export function makeTable(options): TableResourceClass {
 		get(target?: any): any {
 			const constructor: any = this.constructor;
 			if (target?.parseError) throw target.parseError;
+			assertNestedQueryOptions(target?.select, constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
 			if (fullTextFieldNames) {
 				assertRecordField(
@@ -4021,13 +4056,7 @@ export function makeTable(options): TableResourceClass {
 											if (cur.length === 0) return [];
 										}
 									}
-									if (
-										!property.select &&
-										!property.sort &&
-										property.limit === undefined &&
-										property.offset === undefined
-									)
-										return [property.name];
+									if (!property.select && !hasNestedQueryOptions(property)) return [property.name];
 								}
 								return [property];
 							}
@@ -6631,6 +6660,7 @@ export function makeTable(options): TableResourceClass {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
@@ -6780,136 +6810,8 @@ export function makeTable(options): TableResourceClass {
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
 			let syntheticOrderCondition;
-			let includeFullTextHighlights = false;
 			const filtered = {};
 
-			function prepareConditions(conditions: any[], operator: string) {
-				// some validation:
-				switch (operator) {
-					case 'and':
-					case undefined:
-						if (conditions.length < 1) throw new Error('An "and" operator requires at least one condition');
-						break;
-					case 'or':
-						if (conditions.length < 2) throw new Error('An "or" operator requires at least two conditions');
-						break;
-					default:
-						throw new Error('Invalid operator ' + operator);
-				}
-				for (const condition of conditions) {
-					if (condition.conditions) {
-						condition.conditions = prepareConditions(condition.conditions, condition.operator);
-						continue;
-					}
-					// Normalize `not_X` comparator forms passed in via structured queries.
-					// The REST parser already does this, but programmatic callers may
-					// pass `not_in`, `not_starts_with`, etc. directly.
-					if (condition.comparator) {
-						const resolved = resolveComparator(condition.comparator);
-						if (resolved.negated) {
-							condition.comparator = resolved.comparator;
-							condition.negated = true;
-						}
-					}
-					const attribute_name = condition[0] ?? condition.attribute;
-					const fullTextMode =
-						TableResource.fullTextIndexes.length > 0 ||
-						Array.isArray(attribute_name) ||
-						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
-							? fullTextComparatorMode(condition.comparator)
-							: undefined;
-					if (!fullTextMode && (fullTextFieldNames || hasRelationships)) assertFullTextRecordField(attribute_name);
-					const fullTextDefinition =
-						fullTextMode && typeof attribute_name === 'string'
-							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
-							: undefined;
-					if (fullTextMode && Array.isArray(attribute_name))
-						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
-					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
-					if (fullTextDefinition) {
-						const fields = condition.fields;
-						if (fields !== undefined) {
-							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
-								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
-							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
-						} else assertFullTextReadAccess(context, target, fullTextDefinition);
-						const value = condition[1] ?? condition.value;
-						if (typeof value !== 'string' || value.length === 0)
-							throw new ClientError(
-								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
-								400
-							);
-						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
-						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
-						if (fields !== undefined) {
-							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
-							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
-								throw new ClientError(
-									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
-									400
-								);
-						}
-						condition.includeHighlights =
-							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
-						if (condition.includeHighlights && !fullTextDefinition.highlighting)
-							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
-						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
-							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
-						includeFullTextHighlights ||= condition.includeHighlights;
-						continue;
-					}
-					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
-					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
-						// Plain JSON nested path: the leaf may not be declared in the
-						// schema. Fall back to the root attribute so we can validate
-						// existence without requiring the inner structure to be typed.
-						attribute = findAttribute(attributes, attribute_name[0]);
-					}
-					if (!attribute) {
-						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
-							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
-						// Do auto-coercion or coercion as required by the attribute type.
-						// Skipped for nested paths into plain JSON — the root attribute's
-						// type is not the leaf type, so coercion would be wrong.
-						const isNestedPathRoot =
-							Array.isArray(attribute_name) && attribute_name.length > 1 && !attribute.relationship;
-						if (!isNestedPathRoot) {
-							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
-							else condition[1] = coerceTypedValues(condition[1], attribute);
-						}
-					}
-					if (condition.chainedConditions) {
-						if (condition.operator === 'or')
-							throw new ClientError('Chaining a condition with |= is not supported, use | with the attribute name');
-						if (condition.operator && condition.operator !== 'and')
-							throw new ClientError(`Unknown chained condition operator ${condition.operator}`);
-						if (condition.chainedConditions.length !== 1)
-							throw new ClientError('Chaining more than one condition onto a condition is not supported');
-						const chained = condition.chainedConditions[0];
-						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
-						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
-						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
-						const lower = chainedIsLower ? chained : condition;
-						const upper = chainedIsLower ? condition : chained;
-						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
-						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
-						if (
-							(lowerComparator !== 'gt' && lowerComparator !== 'ge') ||
-							(upperComparator !== 'lt' && upperComparator !== 'le')
-						) {
-							throw new ClientError(
-								'Invalid chained condition, only a greater than and a less than condition can be chained together'
-							);
-						}
-						condition.comparator = (lowerComparator + upperComparator) as any;
-						condition.value = [lower.value, upper.value];
-					}
-				}
-				return conditions;
-			}
 			function orderConditions(conditions: Condition[], operator: string) {
 				if (target.enforceExecutionOrder) return conditions; // don't rearrange conditions
 				for (const condition of conditions) {
@@ -6921,14 +6823,10 @@ export function makeTable(options): TableResourceClass {
 				if (conditions.length > 1 && operator !== 'or') return sortBy(conditions, estimateCondition(TableResource));
 				else return conditions;
 			}
-			function coerceTypedValues(value: any, attribute: Attribute) {
-				if (Array.isArray(value)) {
-					return value.map((value) => coerceType(value, attribute));
-				}
-				return coerceType(value, attribute);
-			}
 			const operator = target.operator;
-			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
+			const prepared = TableResource._prepareQueryConditions(conditions, operator, target, context);
+			conditions = prepared.conditions;
+			const includeFullTextHighlights = prepared.includeFullTextHighlights;
 			let sort = typeof target.sort === 'object' && target.sort;
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
@@ -7187,9 +7085,12 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 						} finally {
-							// We own the iteration here (no results.onDone consumer), so release the read
-							// transaction unconditionally — including when the drain throws — or the snapshot leaks.
-							if (readTxn) txn.doneReadTxn(readTxnGeneration);
+							// Count pages have no streaming onDone consumer to release their cursors.
+							try {
+								(transformToRecord as any).return?.();
+							} finally {
+								if (readTxn) txn.doneReadTxn(readTxnGeneration);
+							}
 						}
 						let total: number | null;
 						if (wantExact) {
@@ -7228,6 +7129,7 @@ export function makeTable(options): TableResourceClass {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
+					(transformToRecord as any).return?.();
 					txn.unregisterReadIterator(results);
 					if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				};
@@ -7241,6 +7143,428 @@ export function makeTable(options): TableResourceClass {
 				if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				throw error;
 			}
+		}
+		static _prepareRelationshipSelection(
+			attribute,
+			context,
+			filtered?,
+			ensureLoaded = true
+		): (record: any, entry?: any, isSync?: boolean) => any {
+			if (attribute.conditions !== undefined && !Array.isArray(attribute.conditions))
+				throw new ClientError('Nested conditions must be an array');
+			const resolver = propertyResolvers[attribute.name];
+			const targetTable = resolver.definition.tableClass;
+			const offset = attribute.offset ?? 0;
+			const limit = attribute.limit ?? Infinity;
+			if (
+				!Number.isSafeInteger(offset) ||
+				offset < 0 ||
+				(attribute.limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0))
+			)
+				throw new ClientError('Nested limit and offset must be non-negative safe integers');
+			const filterMap = filtered?.[attribute.name];
+			const childFiltered = Object.assign(Object.create(null), filterMap);
+			const rejectUnsupported = (conditions) => {
+				for (const condition of conditions) {
+					if (condition.conditions) rejectUnsupported(condition.conditions);
+					else if (fullTextComparatorMode(condition.comparator))
+						throw new ClientError('Full-text predicates are not supported in relationship selections');
+				}
+			};
+			rejectUnsupported(attribute.conditions || []);
+			const conditions = targetTable._prepareQueryConditions(
+				cloneConditions(attribute.conditions || []),
+				attribute.operator,
+				attribute,
+				context,
+				true
+			).conditions;
+			for (let sort = typeof attribute.sort === 'object' && attribute.sort; sort; sort = sort.next)
+				targetTable._assertNestedReadAccess(sort.attribute, context, attribute);
+			const compile = (conditions, operator) => {
+				const predicates = conditions.map((condition) => {
+					if (condition.conditions) return compile(condition.conditions, condition.operator);
+					const predicate = filterByType(
+						condition,
+						targetTable,
+						context,
+						null,
+						(condition.attribute ?? condition[0]) === targetTable.primaryKey
+					);
+					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
+					return predicate;
+				});
+				return operator === 'or'
+					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
+					: (record, entry) => predicates.every((predicate) => predicate(record, entry));
+			};
+			const predicate = conditions.length ? compile(conditions, attribute.operator) : undefined;
+			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
+			if (limit === 0)
+				return (record) => {
+					if (resolver.from && !resolver.to && record[resolver.from] == null) return record[resolver.from];
+					return plural ? [] : undefined;
+				};
+			let transform;
+			let offsetGuard;
+			let transformReadTxn;
+			const active = new Set<() => void>();
+			let selectionStopped = false;
+			const relationshipSelection = (record, entry?, isSync = false) => {
+				if (selectionStopped) return undefined;
+				let value;
+				if (filterMap?.hasMappings) {
+					const key = resolver.from ? record[resolver.from] : flattenKey(entry?.key ?? record[primaryKey]);
+					value = filterMap.get(key) || [];
+				} else if (filterMap) value = filterMap.fromRecord?.(record);
+				else value = resolver(record, context, entry, true, undefined, undefined, true);
+				return when(value, (value) => {
+					if (selectionStopped) return undefined;
+					if (value == null) return value;
+					const many =
+						Array.isArray(value) ||
+						typeof value[Symbol.iterator] === 'function' ||
+						typeof value[Symbol.asyncIterator] === 'function';
+					const source = many ? value : [value];
+					let candidates = new ExtendedIterable();
+					candidates.iterate = (options) => {
+						const sourceIterator =
+							options?.async && source[Symbol.asyncIterator]
+								? source[Symbol.asyncIterator]()
+								: source[Symbol.iterator]();
+						let ended = false;
+						return {
+							next: () => (stopped || ended ? { done: true } : sourceIterator.next()),
+							return: () => {
+								if (ended) return { done: true };
+								return when(sourceIterator.return?.() || { done: true }, (result) => {
+									ended = true;
+									return result;
+								});
+							},
+						};
+					};
+					const readTxn = targetTable._readTxnForContext(context);
+					const readCandidate = (candidate) =>
+						when(candidate, (candidate) => {
+							if (stopped) return SKIP;
+							if (candidate == null) return predicate ? SKIP : candidate;
+							const entry =
+								typeof candidate === 'object' && candidate.key !== undefined
+									? candidate
+									: targetTable.primaryStore.getEntry(candidate, { transaction: readTxn });
+							return when(entry, (entry) =>
+								predicate && (!entry?.value || !predicate(entry.value, entry)) ? SKIP : entry
+							);
+						});
+					let examined = 0;
+					candidates = candidates.map((candidate) => {
+						if (!isSync && (++examined & (COUNT_YIELD_INTERVAL - 1)) === 0)
+							return new Promise((resolve) => setImmediate(resolve)).then(() => readCandidate(candidate));
+						return readCandidate(candidate);
+					});
+					let select = attribute.select || (Array.isArray(attribute) ? attribute : undefined);
+					const sort = typeof attribute.sort === 'object' && attribute.sort;
+					let nestedSort = false;
+					for (let order = sort; order; order = order.next) nestedSort ||= Array.isArray(order.attribute);
+					if (nestedSort) select = copySelection(select);
+					const ordered = targetTable.transformToOrderedSelect(
+						candidates,
+						select,
+						sort,
+						context,
+						readTxn,
+						(entry) => entry
+					);
+					if (!transform || transformReadTxn !== readTxn || nestedSort) {
+						transform = targetTable.transformEntryForSelect(
+							select,
+							context,
+							readTxn,
+							childFiltered,
+							ensureLoaded,
+							Boolean(predicate),
+							predicate
+						);
+						offsetGuard =
+							predicate && offset
+								? targetTable.transformEntryForSelect(
+										undefined,
+										context,
+										readTxn,
+										undefined,
+										ensureLoaded,
+										true,
+										predicate
+									)
+								: undefined;
+						transformReadTxn = readTxn;
+					}
+					const projectEntry = transform;
+					const checkOffsetEntry = offsetGuard;
+					const iterator = ordered[isSync ? Symbol.iterator : Symbol.asyncIterator]();
+					const results = [];
+					const txn = txnForContext(context);
+					let stopped = false;
+					let closed = false;
+					let closing;
+					const close = () => {
+						stopped = true;
+						if (closed) return;
+						if (closing) return closing;
+						const complete = () => {
+							closed = true;
+							active.delete(owned.onDone);
+							txn.unregisterReadIterator(owned);
+						};
+						const failed = (error) => {
+							closing = undefined;
+							txn.registerReadIterator(owned);
+							throw error;
+						};
+						try {
+							const returned = iterator.return?.();
+							if (typeof returned?.then === 'function') return (closing = returned.then(complete, failed));
+							complete();
+						} catch (error) {
+							return failed(error);
+						}
+					};
+					const owned = {
+						onDone: () => {
+							(projectEntry as any).return?.();
+							(checkOffsetEntry as any)?.return?.();
+							const completion = close();
+							if (typeof completion?.catch === 'function')
+								completion.catch((error) => logger.warn?.('Failed to close a nested relationship iterator', error));
+						},
+					};
+					active.add(owned.onDone);
+					txn.registerReadIterator(owned);
+					let skipped = 0;
+					const finish = () => when(close(), () => (many ? results : results[0]));
+					const fail = (error) => {
+						const rethrow = () => {
+							throw error;
+						};
+						let completion;
+						try {
+							completion = close();
+						} catch {
+							throw error;
+						}
+						if (typeof completion?.then === 'function') return completion.then(rethrow, rethrow);
+						throw error;
+					};
+					const advance = () => {
+						if (stopped) return finish();
+						try {
+							return consume(iterator.next());
+						} catch (error) {
+							return fail(error);
+						}
+					};
+					const consume = (iteration) => {
+						try {
+							if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
+							while (!iteration.done && !stopped) {
+								if (skipped < offset) {
+									const checked = checkOffsetEntry
+										? checkOffsetEntry.call({ isSync }, iteration.value)
+										: iteration.value;
+									if (typeof checked?.then === 'function')
+										return checked.then((value) => {
+											if (stopped) return finish();
+											if (value !== SKIP) skipped++;
+											return advance();
+										}, fail);
+									if (checked !== SKIP) skipped++;
+								} else {
+									const projected = projectEntry.call({ isSync }, iteration.value);
+									if (typeof projected?.then === 'function')
+										return projected.then((value) => {
+											if (stopped) return finish();
+											if (value !== SKIP) results.push(value);
+											return results.length >= limit ? finish() : advance();
+										}, fail);
+									if (projected !== SKIP) results.push(projected);
+									if (results.length >= limit) return finish();
+								}
+								iteration = iterator.next();
+								if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
+							}
+							return finish();
+						} catch (error) {
+							return fail(error);
+						}
+					};
+					return advance();
+				});
+			};
+			(relationshipSelection as any).return = () => {
+				selectionStopped = true;
+				for (const close of [...active]) {
+					try {
+						close();
+					} catch (error) {
+						logger.warn?.('Failed to close a nested relationship iterator', error);
+					}
+				}
+			};
+			return relationshipSelection;
+		}
+		static _assertNestedReadAccess(name, context, target) {
+			if (!target.checkPermission) return;
+			const permission = getTablePermissions(context?.user, target);
+			if (permission?.isSuperUser) return;
+			const path = Array.isArray(name) ? name : [name ?? primaryKey];
+			const readable = permission?.attribute_permissions;
+			if (!permission?.read || (readable?.length && !attributesAsObject(readable, 'read')[path[0]]))
+				throw new AccessViolation(context?.user);
+			if (path.length > 1)
+				propertyResolvers[path[0]]?.definition?.tableClass?._assertNestedReadAccess(path.slice(1), context, target);
+		}
+		static _prepareQueryConditions(conditions, operator, target, context, nested = false) {
+			let includeFullTextHighlights = false;
+			const QueryError = nested ? ClientError : Error;
+			function prepareConditions(conditions: any[], operator: string) {
+				// some validation:
+				switch (operator) {
+					case 'and':
+					case undefined:
+						if (conditions.length < 1) throw new QueryError('An "and" operator requires at least one condition');
+						break;
+					case 'or':
+						if (conditions.length < 2) throw new QueryError('An "or" operator requires at least two conditions');
+						break;
+					default:
+						throw new QueryError('Invalid operator ' + operator);
+				}
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						condition.conditions = prepareConditions(condition.conditions, condition.operator);
+						continue;
+					}
+					// Normalize `not_X` comparator forms passed in via structured queries.
+					// The REST parser already does this, but programmatic callers may
+					// pass `not_in`, `not_starts_with`, etc. directly.
+					if (condition.comparator) {
+						const resolved = resolveComparator(condition.comparator);
+						if (resolved.negated) {
+							condition.comparator = resolved.comparator;
+							condition.negated = true;
+						}
+					}
+					const attribute_name = condition[0] ?? condition.attribute;
+					if (nested) TableResource._assertNestedReadAccess(attribute_name, context, target);
+					const fullTextMode =
+						TableResource.fullTextIndexes.length > 0 ||
+						Array.isArray(attribute_name) ||
+						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
+							? fullTextComparatorMode(condition.comparator)
+							: undefined;
+					if (!fullTextMode && (fullTextFieldNames || hasRelationships)) assertFullTextRecordField(attribute_name);
+					const fullTextDefinition =
+						fullTextMode && typeof attribute_name === 'string'
+							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
+							: undefined;
+					if (fullTextMode && Array.isArray(attribute_name))
+						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
+					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
+					if (fullTextDefinition) {
+						const fields = condition.fields;
+						if (fields !== undefined) {
+							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
+						} else assertFullTextReadAccess(context, target, fullTextDefinition);
+						const value = condition[1] ?? condition.value;
+						if (typeof value !== 'string' || value.length === 0)
+							throw new ClientError(
+								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
+								400
+							);
+						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
+						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
+						if (fields !== undefined) {
+							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
+							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+								throw new ClientError(
+									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
+									400
+								);
+						}
+						condition.includeHighlights =
+							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
+						if (condition.includeHighlights && !fullTextDefinition.highlighting)
+							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
+						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
+							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
+						includeFullTextHighlights ||= condition.includeHighlights;
+						continue;
+					}
+					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
+					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
+						// Plain JSON nested path: the leaf may not be declared in the
+						// schema. Fall back to the root attribute so we can validate
+						// existence without requiring the inner structure to be typed.
+						attribute = findAttribute(attributes, attribute_name[0]);
+					}
+					if (!attribute) {
+						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
+							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
+					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
+						// Do auto-coercion or coercion as required by the attribute type.
+						// Skipped for nested paths into plain JSON — the root attribute's
+						// type is not the leaf type, so coercion would be wrong.
+						const isNestedPathRoot =
+							Array.isArray(attribute_name) && attribute_name.length > 1 && !attribute.relationship;
+						if (!isNestedPathRoot) {
+							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+							else condition[1] = coerceTypedValues(condition[1], attribute);
+						}
+					}
+					if (condition.chainedConditions) {
+						if (condition.operator === 'or')
+							throw new ClientError('Chaining a condition with |= is not supported, use | with the attribute name');
+						if (condition.operator && condition.operator !== 'and')
+							throw new ClientError(`Unknown chained condition operator ${condition.operator}`);
+						if (condition.chainedConditions.length !== 1)
+							throw new ClientError('Chaining more than one condition onto a condition is not supported');
+						const chained = condition.chainedConditions[0];
+						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
+						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
+						const lower = chainedIsLower ? chained : condition;
+						const upper = chainedIsLower ? condition : chained;
+						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
+						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
+						if (
+							(lowerComparator !== 'gt' && lowerComparator !== 'ge') ||
+							(upperComparator !== 'lt' && upperComparator !== 'le')
+						) {
+							throw new ClientError(
+								'Invalid chained condition, only a greater than and a less than condition can be chained together'
+							);
+						}
+						condition.comparator = (lowerComparator + upperComparator) as any;
+						condition.value = [lower.value, upper.value];
+					}
+				}
+				return conditions;
+			}
+			function coerceTypedValues(value: any, attribute: Attribute) {
+				if (Array.isArray(value)) {
+					return value.map((value) => coerceType(value, attribute));
+				}
+				return coerceType(value, attribute);
+			}
+			return {
+				conditions: conditions.length > 0 || operator ? prepareConditions(conditions, operator) : conditions,
+				includeFullTextHighlights,
+			};
 		}
 		/**
 		 * This is responsible for ordering and select()ing the attributes/properties from returned entries
@@ -7493,14 +7817,27 @@ export function makeTable(options): TableResourceClass {
 				checkLoaded = true;
 			}
 			let transformCache;
+			let relationshipSelections;
+			for (const attribute of Array.isArray(select) ? select : []) {
+				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
+					(relationshipSelections ||= Object.create(null))[attribute.name] = this._prepareRelationshipSelection(
+						attribute,
+						context,
+						filtered,
+						ensure_loaded
+					);
+				}
+			}
 			const source = this.source;
 			const resourceClass = this;
+			let selectionStopped = false;
 			const lazy = select?.length < 4;
 			const syncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded };
 			// loadLocalRecord sets `async` on the options of an async load, so sync loads need their own
 			const asyncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded, async: true };
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
+				if (selectionStopped) return SKIP;
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
@@ -7572,6 +7909,15 @@ export function makeTable(options): TableResourceClass {
 						const resolver = propertyResolvers?.[attribute_name];
 						let value;
 						if (resolver) {
+							const selection = relationshipSelections?.[attribute_name];
+							if (selection) {
+								const selected = selection(record, entry, this.isSync);
+								if (typeof selected?.then === 'function') {
+									if (!promises) promises = [];
+									promises.push(selected.then((value) => callback(value, attribute_name)));
+								} else callback(selected, attribute_name);
+								return;
+							}
 							const filterMap = filtered?.[attribute_name];
 							if (filterMap) {
 								if (filterMap.hasMappings) {
@@ -7738,6 +8084,12 @@ export function makeTable(options): TableResourceClass {
 					return selected;
 				}
 				return record;
+			};
+			(transform as any).return = () => {
+				selectionStopped = true;
+				for (const cache of [relationshipSelections, transformCache]) {
+					if (cache) for (const child of Object.values(cache)) (child as any).return?.();
+				}
 			};
 			return transform;
 		}
@@ -9434,12 +9786,20 @@ export function makeTable(options): TableResourceClass {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (
+								object,
+								context,
+								entry,
+								returnEntry?,
+								_sort?,
+								_comparing?,
+								lazy?
+							) => {
 								// TODO: Get raw record/entry?
 								const id = object[relationship.from ? relationship.from : primaryKey];
 								const relatedTable = attribute.elements.definition.tableClass;
 								if (returnEntry) {
-									return (
+									const candidates = (
 										searchByIndex(
 											{ attribute: relationship.to, value: id },
 											txnForContext(context).getReadTxn(),
@@ -9452,7 +9812,8 @@ export function makeTable(options): TableResourceClass {
 										return relatedTable.primaryStore.getEntry(entry, {
 											transaction: txnForContext(context).getReadTxn(),
 										});
-									}).asArray;
+									});
+									return lazy ? candidates : candidates.asArray;
 								}
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
@@ -9472,7 +9833,15 @@ export function makeTable(options): TableResourceClass {
 					} else if (relationship.from) {
 						const definition = attribute.definition || attribute.elements?.definition;
 						if (definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (
+								object,
+								context,
+								entry,
+								returnEntry?,
+								_sort?,
+								_comparing?,
+								lazy?
+							) => {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
 								const ctx = context ?? contextStorage.getStore();
@@ -9491,7 +9860,7 @@ export function makeTable(options): TableResourceClass {
 									const store = definition.tableClass.primaryStore;
 									const method = returnEntry ? 'getEntry' : 'getSync';
 									const options = { transaction: txnForContext(context).getReadTxn() };
-									const results = normalizedIds.map((id) => {
+									const results = (lazy ? new ExtendedIterable(normalizedIds) : normalizedIds).map((id) => {
 										const value = store[method](id, options);
 										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
