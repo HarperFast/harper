@@ -46,8 +46,8 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // before `transactionSync` commits, masking CAS conflicts on retry.
 const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
-// Rolling back only the new entries is not enough: structon's reload keeps local typed structures
-// when the durable dictionary is empty or classic-only (see resources/DESIGN.md).
+// Drops both dictionaries, not just the unsaved entries: structon's reload keeps local typed
+// structures when the durable dictionary is empty or classic-only (see resources/DESIGN.md).
 function discardUncommittedStructures(encoder: any): void {
 	encoder.clearSharedData();
 	if (encoder.structures) encoder.structures.uninitialized = true;
@@ -584,9 +584,7 @@ export class RecordEncoder extends StructonEncoder {
 				}
 				throw error;
 			}
-			// A decline still flags an update: a peer committed structures this encoder never flagged, and
-			// the re-pack may reuse them. LMDB audit entries carry no structureVersion, so the flag is
-			// the replication sender's only cue to reload before shipping that record.
+			// A decline still flags an update: the re-pack may reuse a peer's new structures (resources/DESIGN.md).
 			this.structureUpdate = structures;
 			if (result === false) {
 				discardUncommittedStructures(this);
