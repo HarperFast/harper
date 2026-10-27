@@ -25,7 +25,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	this.timeout(60_000);
 	let Tbl, rootStore, auditStore;
 	const tableName = 'OriginFloorTable';
-	const workers = new Set();
+	const workers = new Map(); // worker -> its thread id, which reads -1 once it has exited
 
 	before(function () {
 		if (isLMDB) return this.skip();
@@ -43,7 +43,11 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	});
 
 	afterEach(async () => {
-		for (const worker of workers) await worker.terminate();
+		for (const [worker, threadId] of workers) {
+			await worker.terminate();
+			// a worker a failed test left parked mid-reservation would otherwise stall every later certification
+			retireOriginFloorSlots(threadId);
+		}
 		workers.clear();
 	});
 
@@ -67,7 +71,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 
 	function startWorker(workerData) {
 		const worker = new Worker(__dirname + '/originClosedFloor-thread.js', { workerData });
-		workers.add(worker);
+		workers.set(worker, worker.threadId);
 		const messages = [];
 		const waiters = [];
 		worker.on('message', (message) => {
