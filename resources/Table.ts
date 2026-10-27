@@ -11929,6 +11929,7 @@ export function makeTable(options): TableResourceClass {
 				residencyId: current.residencyId,
 				recordNodeId: current.nodeId,
 				additionalAuditRefs: current.additionalAuditRefs,
+				receivedIdentityRefs: current.receivedIdentityRefs,
 				transaction,
 			};
 			// A stub has no inputs for computed indexes, so their committed entries are kept as an
@@ -12128,7 +12129,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	/**
 	 * Rewrite an expired replica as the stub it was fetched over: indexed fields, created time and the
-	 * residency, identity and record expiry it already carries. No audit entry, nothing replicates. A
+	 * residency, identity, audit refs and record expiry it already carries. No audit entry, nothing replicates. A
 	 * sweep passes the deadline it acted on; it is read again where no refresh or new admission can
 	 * interleave (after taking the entry's write lock, from the committed state), so a replica renewed
 	 * since the sweep read it is kept. The body's blobs are released only once the rewrite is known to
@@ -12143,6 +12144,7 @@ export function makeTable(options): TableResourceClass {
 			residencyId: entry.residencyId,
 			recordNodeId: entry.nodeId,
 			additionalAuditRefs: entry.additionalAuditRefs,
+			receivedIdentityRefs: entry.receivedIdentityRefs,
 			transaction,
 		};
 		const renewed = () => observedDeadline !== undefined && store?.getSync(entry.key) !== observedDeadline;

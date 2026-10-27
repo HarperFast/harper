@@ -12,7 +12,7 @@ const {
 	setMinReplicaScanIntervalForTesting,
 } = require('#src/resources/Table');
 const databases = require('#src/resources/databases');
-const { HAS_BLOBS } = require('#src/resources/auditStore');
+const { HAS_BLOBS, raiseAuditFloor } = require('#src/resources/auditStore');
 const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
 const { existsSync } = require('node:fs');
 const { randomBytes } = require('node:crypto');
@@ -566,6 +566,94 @@ describeReplicas('Local replicas of residency stubs', function () {
 		calls = [];
 		assert.equal((await Records.get(ID)).body, 'complete');
 		assert.deepEqual(calls, [ID], 'a demoted replica is fetched again');
+	});
+
+	it('keeps receivedIdentityRefs across admission and demotion so a re-delivered patch is not re-applied', async () => {
+		const Counters = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasReceivedIdentityRefs',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'count', indexed: true }, { name: 'body' }],
+			audit: true,
+		});
+		Counters.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = {
+						key: ID,
+						value: { id: ID, count: entry.value.count, body: 'complete' },
+						version: entry.version,
+						originNode: server.hostname,
+					};
+					await Counters._storeReplica(entry, found);
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const stubContext = {};
+		await transaction(stubContext, async () => {
+			const resource = await Counters.getResource(ID, stubContext, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { id: ID, count: 10 }, { residencyId: RESIDENCY_ID });
+		});
+		const initialStubVersion = Counters.primaryStore.getEntry(ID).version;
+		const stale = initialStubVersion - 86_400_000;
+		const unmappedOrigin = 77;
+		const deliverIncrement = () => {
+			const context = { source: {}, sourceApply: true, timestamp: stale };
+			return transaction(context, async () => {
+				const resource = await Counters.getResource(ID, context, { ensureLoaded: false });
+				resource._writeUpdate(ID, { count: { __op__: 'add', value: 1 } }, false, {
+					isNotification: true,
+					nodeId: unmappedOrigin,
+					version: stale,
+				});
+				resource.save();
+			});
+		};
+		raiseAuditFloor(Counters.auditStore, initialStubVersion);
+		await deliverIncrement();
+		const patchedStub = Counters.primaryStore.getEntry(ID);
+		assert.equal(patchedStub.value.count, 11);
+		assert.deepEqual(patchedStub.receivedIdentityRefs, [{ version: stale, nodeId: unmappedOrigin }]);
+		const expectedHistory = (await Counters.getHistoryOfRecord(ID)).map(({ type, version }) => ({ type, version }));
+
+		assert.deepEqual(await Counters.get(ID), { id: ID, count: 11, body: 'complete' });
+		await deliverIncrement();
+		const afterReplicaRedelivery = Counters.primaryStore.getEntry(ID);
+		assert.ok(
+			afterReplicaRedelivery.metadataFlags & REPLICA,
+			'a duplicate patch must not demote the replica to a stub'
+		);
+		assert.ok(!(afterReplicaRedelivery.metadataFlags & INVALIDATED));
+		assert.deepEqual(afterReplicaRedelivery.value, { id: ID, count: 11, body: 'complete' });
+		assert.deepEqual(afterReplicaRedelivery.receivedIdentityRefs, [{ version: stale, nodeId: unmappedOrigin }]);
+		assert.ok(deadlineOf(ID, Counters) > Date.now());
+		assert.deepEqual(
+			(await Counters.getHistoryOfRecord(ID)).map(({ type, version }) => ({ type, version })),
+			expectedHistory
+		);
+
+		await Counters.evict(ID, afterReplicaRedelivery.value, afterReplicaRedelivery.version);
+		await deliverIncrement();
+		const afterDemotedRedelivery = Counters.primaryStore.getEntry(ID);
+		assert.ok(afterDemotedRedelivery.metadataFlags & INVALIDATED);
+		assert.equal(
+			afterDemotedRedelivery.value.count,
+			11,
+			'a duplicate patch after demotion must not re-apply the increment'
+		);
+		assert.deepEqual(afterDemotedRedelivery.receivedIdentityRefs, [{ version: stale, nodeId: unmappedOrigin }]);
+		const indexed = [];
+		for await (const row of Counters.search({
+			conditions: [{ attribute: 'count', value: 11 }],
+			select: ['id', 'count'],
+		}))
+			indexed.push(row);
+		assert.deepEqual(indexed, [{ id: ID, count: 11 }]);
+		assert.deepEqual(
+			(await Counters.getHistoryOfRecord(ID)).map(({ type, version }) => ({ type, version })),
+			expectedHistory
+		);
 	});
 
 	it('releases a replica body’s blobs only after its demotion commits', async () => {
