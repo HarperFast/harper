@@ -491,8 +491,18 @@ describe('Test searchValidator module', () => {
 		}
 	});
 
-	it('allows null, Date, BigInt, and unsafe numbers in search_by_value and rejects array or plain object value such as ["*"]', () => {
-		for (const validValue of [null, '', 'abc', 0, Number.MAX_SAFE_INTEGER + 100, true, new Date('2025-01-01T00:00:00Z'), 123n]) {
+	it('allows null, Date, BigInt, Buffer, and unsafe numbers in search_by_value and rejects array or plain object value such as ["*"]', () => {
+		for (const validValue of [
+			null,
+			'',
+			'abc',
+			0,
+			Number.MAX_SAFE_INTEGER + 100,
+			true,
+			new Date('2025-01-01T00:00:00Z'),
+			123n,
+			Buffer.from([0x2a]),
+		]) {
 			assert.strictEqual(
 				searchValidator(
 					{

@@ -133,7 +133,10 @@ const searchByValueSchema = Joi.object({
 	attribute: hdbSchemaTable,
 	value: Joi.any()
 		.custom((value, helpers) => {
-			if (Array.isArray(value) || (value !== null && typeof value === 'object' && !(value instanceof Date))) {
+			if (
+				Array.isArray(value) ||
+				(value !== null && typeof value === 'object' && !(value instanceof Date) && !(value instanceof Uint8Array))
+			) {
 				return helpers.error('any.invalid');
 			}
 			return value;
