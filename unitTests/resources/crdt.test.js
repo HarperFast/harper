@@ -568,6 +568,17 @@ describe('crdt getRecordAtTime', () => {
 			assert.notStrictEqual(getRecordAtTime(current, 25, store, 1, 'S').status, 'initial');
 		});
 
+		it('does not fold an add after an invalidate onto an empty base', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'T', count: 10 }, previousVersion: 0 },
+				{ version: 20, type: 'invalidate', value: { id: 'T', count: 10 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(1.5) }, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { count: 100 }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ id: 'T', count: 100 }, 40);
+			assert.notStrictEqual(getRecordAtTime(current, 30, store, 1, 'T').count, 1.5);
+		});
+
 		it('rebuilds a snapshot older than a newer invalidate from history, not from its stub', () => {
 			const store = makeStore([
 				{ version: 10, type: 'put', value: { id: 'R', a: 1, b: 2 }, previousVersion: 0 },

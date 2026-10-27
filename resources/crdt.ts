@@ -230,7 +230,7 @@ function reconstructForward(
 			} else if (partial && auditEntry.type === 'invalidate') {
 				// an invalidate replaced the record with a stub (projection and indexed fields): older writes
 				// no longer describe it, and a field the stub lacks is unknown, not absent
-				partial.truncated = true;
+				partial.truncated = truncated = true;
 				break;
 			}
 		}
