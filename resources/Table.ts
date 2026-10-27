@@ -4474,7 +4474,7 @@ export function makeTable(options): TableResourceClass {
 					if (
 						precedesExisting < 0 ||
 						(isCopyApply && precedesExisting === 0) ||
-						(!priorStagedOp &&
+						((!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
 							precedesExisting === 0 &&
 							existingEntry?.value &&
 							!(existingEntry.metadataFlags & (INVALIDATED | REPLICA)) &&
@@ -4553,7 +4553,7 @@ export function makeTable(options): TableResourceClass {
 					);
 					write.stagedEntry = {
 						value: partialRecord,
-						metadataFlags: INVALIDATED,
+						metadataFlags: INVALIDATED | (options?.localOnly ? LOCAL_ONLY : 0),
 						residencyId: residencyPolicy ? undefined : options?.residencyId,
 						residencySlot,
 					};
@@ -5640,6 +5640,8 @@ export function makeTable(options): TableResourceClass {
 							);
 						existingRecord = loadedEntry.value;
 					}
+					// a publish stages the record as it found it, which is no earlier change
+					const priorChange = priorStaged?.unchanged ? undefined : priorStaged;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -5681,7 +5683,8 @@ export function makeTable(options): TableResourceClass {
 					// round, and must still go through the out-of-order merge below or its changes would be
 					// silently overwritten.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
-					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
+					// Unaudited, the tie is never a re-delivery check, only a publish's restamp.
+					if ((priorChange || (priorStaged && !audit)) && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					let type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
@@ -5773,7 +5776,7 @@ export function makeTable(options): TableResourceClass {
 							// in an origin's log a competing delivery shares the key, so only a minted key can tell).
 							let refBase: Partial<Entry> | undefined;
 							let readsOwnStaging = false;
-							if (!priorStaged) {
+							if (!priorChange) {
 								refBase =
 									identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
 								const ownMintedKey = isRocksDB ? reservedLocalKey(transaction) : undefined;
@@ -5790,7 +5793,7 @@ export function makeTable(options): TableResourceClass {
 									options?.nodeId
 								) === 0;
 							if (
-								!priorStaged &&
+								!priorChange &&
 								!readsOwnStaging &&
 								(refBase?.additionalAuditRefs?.some((ref) => ref.version === appendedLogKey && isSameOrigin(ref)) ||
 									(identityIsNotKey &&
@@ -6752,13 +6755,14 @@ export function makeTable(options): TableResourceClass {
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
 							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
 							if (recordToStore !== undefined) {
-								write.stagedEntry = keepWriterReplica
-									? { value: recordToStore, metadataFlags: REPLICA, residencySlot }
-									: omitLocalRecord
-										? { value: recordToStore, metadataFlags: INVALIDATED, residencyId, residencySlot }
-										: residencySlot === undefined
-											? { value: recordToStore }
-											: { value: recordToStore, residencySlot };
+								write.stagedEntry = {
+									value: recordToStore,
+									metadataFlags:
+										(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) | (options?.localOnly ? LOCAL_ONLY : 0),
+									residencyId: keepWriterReplica ? undefined : residencyId,
+									expiresAt,
+									residencySlot,
+								};
 								// any record an earlier write in this transaction stored is now replaced, so mark those
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
 								// anything older was already superseded by its own staged successor earlier in this round
@@ -6940,7 +6944,13 @@ export function makeTable(options): TableResourceClass {
 						const slot = residencySlot ?? calculateResidencySlot(id);
 						captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite, transaction);
 					}
-					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId, residencySlot };
+					const stagedRemoval = {
+						value: undefined,
+						localTime: txnLogKey,
+						nodeId: options?.nodeId,
+						metadataFlags: options?.localOnly ? LOCAL_ONLY : 0,
+						residencySlot,
+					};
 					if (
 						existingRecord == null &&
 						isAuditEntryWrite(removalBefore(write, existingEntry), { txnLogKey, nodeId: options?.nodeId })
@@ -9438,13 +9448,18 @@ export function makeTable(options): TableResourceClass {
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
+			// a root-topic message has no record to carry forward
+			const keyed = id !== null;
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
-				entry: this.#entry,
+				entry: keyed ? entryBeforeWrite(this.#entry, id, transaction, true) : this.#entry,
+				baseReadTxn: keyed ? this.#commitBaseTxn(id) : undefined,
+				chainsStagedState: keyed,
+				reloadCommitBase: keyed,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
 				validate: () => {
@@ -9459,30 +9474,34 @@ export function makeTable(options): TableResourceClass {
 						? (this.constructor as any).source.publish.bind((this.constructor as any).source, id, message, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					// just need to update the version number of the record so it points to the latest audit record
-					// but have to update the version number of the record
-					// TODO: would be faster to use getBinaryFast here and not have the record loaded
-
+					write.stagedEntry = undefined;
+					write.completeResidencyRecord = undefined;
+					write.superseded = false;
 					if (existingEntry === undefined && trackDeletes && !audit) {
 						scheduleCleanup();
 					}
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					// A reserved handle's admitted key; an unreserved one is a remote apply keyed by its context.
 					const appendedLogKey = reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime;
-					// always audit this, but don't change existing version
+					const priorStagedOp = keyed ? priorStagedWrite(write) : undefined;
+					const base = priorStagedOp?.stagedEntry ?? existingEntry;
+					const value = base?.value ?? null;
+					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
-					return updateRecord(
+					const result = updateRecord(
 						id,
-						existingEntry?.value ?? null,
+						value,
 						existingEntry,
 						txnTime,
-						(existingEntry?.metadataFlags ?? 0) & (residencyPolicy ? LOCAL_ONLY | INVALIDATED | REPLICA : LOCAL_ONLY),
+						metadataFlags,
 						true,
 						{
 							user: (context as any)?.user,
+							// the message's residency routes it; the record keeps its own
 							residencyId: residencyPolicy ? undefined : options?.residencyId,
-							residencySlot: residencyPolicy?.byAttribute ? existingEntry?.residencySlot : undefined,
-							expiresAt: context?.expiresAt,
+							recordResidencyId: base?.residencyId ?? 0,
+							residencySlot: residencyPolicy?.byAttribute ? (base?.residencySlot ?? existingEntry?.residencySlot) : undefined,
+							expiresAt: base?.expiresAt,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
@@ -9496,6 +9515,22 @@ export function makeTable(options): TableResourceClass {
 						false,
 						message
 					);
+					if (keyed) {
+						write.stagedEntry = {
+							value,
+							metadataFlags,
+							residencyId: base?.residencyId,
+							expiresAt: base?.expiresAt,
+							residencySlot: residencyPolicy?.byAttribute ? (base?.residencySlot ?? existingEntry?.residencySlot) : undefined,
+							unchanged: !priorStagedOp || priorStagedOp.stagedEntry.unchanged === true,
+						};
+						// an attribute patch after this publish still needs the complete record an earlier write staged
+						write.completeResidencyRecord = priorStagedOp?.completeResidencyRecord;
+						// its saved blobs are the message's, which its audit entry keeps
+						write.blobsAuditReferenced = true;
+						if (priorStagedOp) priorStagedOp.superseded = true;
+					}
+					return result;
 				},
 			};
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
@@ -11785,7 +11820,7 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	// The commit base is the committed record unless another write to the key already saved without being
-	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
+	// skipped and restamped it: a relocate always saves when it is added, a publish when nothing before it is pending.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
 		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
 			if (other !== write && other.saved && !other.skipped) return committedEntry(write.key);
