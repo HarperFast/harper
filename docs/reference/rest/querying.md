@@ -561,7 +561,7 @@ For source-backed caches, eligibility and sort keys use local cached entries, as
 
 Unsorted pagination can stop when the requested page is filled. Sorting or a predicate with few matches can still examine all related candidates; a small output limit does not guarantee a small scan.
 
-Nested query constraints require a table-backed relationship. Constraints on plain JSON projections or custom non-table resources, and full-text predicates inside a relationship selection, return HTTP 400 instead of being silently ignored. Projection-only selections remain supported. Earlier versions accepted nested filters and pagination but could silently ignore them and return all related children; this correction can reduce child arrays and reject previously ignored unsupported options.
+Nested filters require a table-backed relationship. Filters on plain JSON projections or custom non-table resources, and full-text predicates inside a relationship selection, return HTTP 400 instead of being silently ignored. Projection-only selections and sorting/pagination of plain JSON arrays remain supported. Earlier versions accepted nested filters and pagination but could silently ignore them and return all related children; this correction can reduce child arrays and reject previously ignored unsupported options.
 
 The [Resource API](../resources/resource-api.md#constraining-related-records) accepts the same options in a nested selection object.
 
