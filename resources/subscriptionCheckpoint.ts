@@ -162,6 +162,9 @@ export async function writeCopyBounds(
 		);
 	}
 	if (!(Number.isInteger(peerId) && peerId >= 0)) throw new Error(`Invalid copy bound peer id: ${peerId}`);
+	if (raise && release.some((slot) => slot.length === at.length && slot.every((part, index) => part === at[index]))) {
+		throw new Error('A copy bound change cannot raise and release the same row');
+	}
 	if (raise) {
 		for (const [originId, bound] of raise) {
 			if (!(Number.isInteger(originId) && originId >= 0 && isCopyBound(bound))) {
@@ -212,11 +215,12 @@ export async function writeCopyBounds(
 			changed = true;
 		});
 	} else {
-		rootStore.transactionSync(() => {
+		// resolves once its own transaction commits; a synchronous one nested in another could still be aborted with it
+		changed = await rootStore.transactionAsync(() => {
 			const { row, removals } = plan();
 			if (row) dbisDb.putSync(rowKey, row);
 			for (const key of removals) dbisDb.removeSync(key);
-			changed = Boolean(row) || removals.length > 0;
+			return Boolean(row) || removals.length > 0;
 		});
 	}
 	Atomics.add(epoch, 0, 1);
@@ -232,7 +236,6 @@ function unreadableCopyBound(): ResumeHistoryUnavailableError {
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
-	// each origin's row entries, with the peer whose row holds them
 	const entries = new Map<number, { node: any; routeId: number }[]>();
 	const generation = getDatabaseGeneration(auditStore)?.id;
 	const own: OriginState = {
@@ -563,6 +566,15 @@ export function admitCheckpoint(
 	const states = readOriginStates(auditStore, dbisDb);
 	if (typeof states.get(0)?.generation !== 'string') {
 		throw new ClientError('This database has no readable generation; resubscribe to resynchronize', 409);
+	}
+	// an origin with no generation is no membership candidate, so a token issued before it was known would match
+	// without accounting for it, and a copy can have written its rows with no log here to catch that
+	for (const state of states.values()) {
+		if (typeof state.generation !== 'string') {
+			throw new ResumeHistoryUnavailableError(
+				`Origin ${state.name} has no single certified generation here, so no checkpoint accounts for its history; resubscribe to resynchronize`
+			);
+		}
 	}
 	const candidates = new Map<string, string>();
 	const byName = new Map<string, OriginState>();

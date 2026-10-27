@@ -391,7 +391,7 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
-	it('records each generation an origin left on its direct route only, keeping a reversal as a contradiction', async function () {
+	it('records each generation an origin left on its direct route only, across level-1 certificates, keeping a reversal', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
 		const now = Date.now();
@@ -424,9 +424,14 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 					[53, now - 19, true, 'gen-b', true],
 					[21, now - 19, true, 'gen-b', true],
 				]),
-				// a level-1 certificate in between orders nothing
 				floors(53, [[53, now - 18, true]]),
 				floors(53, [[53, now - 17, true, 'gen-c', true]]),
+				floors(56, [[56, now - 20, true, 'gen-a', true]]),
+				floors(56, [[56, now - 19, true, 'gen-b', true]]),
+				floors(56, [[56, now - 18, true]]),
+				floors(56, [[56, now - 17, true, 'gen-b', true]]),
+				floors(56, [[56, now - 16, true]]),
+				floors(56, [[56, now - 15, true, 'gen-a', true]]),
 				floors(54, [[54, now - 20, true, 'gen-a', true]]),
 				floors(54, [[54, now - 19, true, 'gen-b', true]]),
 				floors(54, [[54, now - 18, true, 'gen-a', true]]),
@@ -441,11 +446,15 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			});
 			const node = (routeId, id) => readCursor(ReplicatedTable, routeId).nodes.find((state) => state.id === id);
 			assert.equal(node(53, 53).originGeneration, 'gen-c');
-			assert.deepEqual(node(53, 53).replacedGenerations, ['gen-a']);
+			assert.deepEqual(node(53, 53).replacedGenerations, ['gen-a', 'gen-b']);
 			assert.equal(node(53, 21).originGeneration, 'gen-b');
 			assert.equal(node(53, 21).replacedGenerations, undefined, 'a relayed origin is no witness');
 			assert.equal(node(54, 54).originGeneration, 'gen-a');
 			assert.deepEqual(node(54, 54).replacedGenerations, ['gen-a', 'gen-b']);
+			// returning to the generation it left is no transition, until the origin returns to one it replaced
+			assert.equal(node(56, 56).originGeneration, 'gen-a');
+			assert.deepEqual(node(56, 56).replacedGenerations, ['gen-a', 'gen-b']);
+			assert.equal(node(56, 56).lastGeneration, undefined);
 			assert.equal(node(55, 55).originGeneration, 'gen-9');
 			assert.deepEqual(node(55, 55).replacedGenerations, generations.slice(1, 9));
 		} finally {

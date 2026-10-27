@@ -611,7 +611,6 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 400]]) }), false);
 			assert.deepStrictEqual(row(7), { 3: 500 });
 			assert.ok(bumped());
-			// a reservation, then its settlement and release in one commit
 			await writeCopyBounds(rootStore, 7, { raise: new Map([[4, 900]]), at: ['reserved', 1] });
 			assert.deepStrictEqual(
 				readCopyBounds(T.dbisDB),
@@ -629,18 +628,20 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 					[4, 700],
 				])
 			);
-			// concurrent raises of one peer are serialized, so none is lost
 			await Promise.all(
 				[600, 800, 650].map((bound) => writeCopyBounds(rootStore, 7, { raise: new Map([[5, bound]]) }))
 			);
 			assert.strictEqual(row(7)[5], 800);
 			bumped();
-			// refused, writing nothing: no epoch to bump, an invalid bound, a malformed row, a rejected commit
 			await assert.rejects(writeCopyBounds({ dbisDb: T.dbisDB }, 8, { raise: new Map([[3, 1]]) }), /epoch/);
 			assert.strictEqual(row(8), undefined);
 			for (const invalid of [new Map([[3, -1]]), new Map([[3, NaN]]), new Map([[-1, 1]]), new Map([[1.5, 1]])]) {
 				await assert.rejects(writeCopyBounds(rootStore, 7, { raise: invalid }), /Invalid copy bound/);
 			}
+			await assert.rejects(
+				writeCopyBounds(rootStore, 7, { raise: new Map([[3, 900]]), at: ['s'], release: [['s']] }),
+				/same row/
+			);
 			T.dbisDB.putSync([COPY_BOUND_KEY, 9], { 3: 'not a version' });
 			await assert.rejects(
 				writeCopyBounds(rootStore, 9, { raise: new Map([[3, 1]]) }),
@@ -705,6 +706,37 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				return { T, subscription, floor, origin, retained, live, route, healthy, members, token };
 			}
 
+			it('refuses a token issued before an origin it now knows without a single certified generation', async () => {
+				const T = tableInOwnDatabase();
+				const listener = collector();
+				const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+				await T.put('a', { value: 'a' });
+				await waitFor(() => listener.values().includes('a'));
+				const token = await certifiedCheckpoint(T, subscription);
+				subscription.end();
+				const floor = certify(T);
+				// a copy can write an origin's rows with no log here, so only its seq-row entries say it is known
+				const origin = getIdOfRemoteNode('later-origin', T.auditStore);
+				const first = getIdOfRemoteNode('later-first', T.auditStore);
+				const second = getIdOfRemoteNode('later-second', T.auditStore);
+				const route = (routeId, node) =>
+					T.dbisDB.putSync([SEQ, routeId], { seqId: 1, nodes: [{ id: origin, ...node }] });
+				const healthy = (generation) => ({
+					closedFloor: floor,
+					originGeneration: generation,
+					fullCoverage: true,
+					certifiedFrom: floor - 1000,
+				});
+				route(first, healthy(g1));
+				route(second, healthy(g2));
+				await refuses(T, token, 'unordered generations');
+				T.dbisDB.removeSync([SEQ, second]);
+				route(first, { closedFloor: floor, relayable: true });
+				await refuses(T, token, 'a level-1 route alone');
+				T.dbisDB.removeSync([SEQ, first]);
+				assert.strictEqual(await admits(T, token), true);
+			});
+
 			it('fails closed when nothing shows which replaced the other, whichever floor is higher', async () => {
 				const { T, subscription, floor, retained, live, route, healthy, token } = await issueG1Token('unordered');
 				const revokedG2 = { originGeneration: g2, floorRevoked: true };
@@ -715,7 +747,6 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				await refuses(T, token, 'a revoked g2 row before the healthy g1 row');
 				route(retained, healthy(g2, floor + 100));
 				await refuses(T, token, 'equal floors');
-				// a relayed route is no witness: a restored relay can forward an older generation after a newer one
 				route(retained, healthy(g2, floor, [g1]));
 				await refuses(T, token, 'a relayed route that saw g1 replaced');
 				await sleep(400);
@@ -733,12 +764,10 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				let g2Token;
 				await waitFor(() => (g2Token = subscription.checkpoint())?.members === members(g2));
 				assert.strictEqual(await admits(T, g2Token), true);
-				// a generation the direct route did not see replaced orders nothing
 				route(live, healthy(g3, floor));
 				await refuses(T, g2Token, 'an unwitnessed third generation');
 				route(origin, healthy(g2, floor, [g3, g1]));
 				assert.strictEqual(await admits(T, g2Token), true);
-				// a direct route that returned to a generation it left contradicts itself
 				route(origin, healthy(g2, floor, [g1, g3, g2]));
 				await refuses(T, g2Token, 'a reversal');
 				T.dbisDB.removeSync([SEQ, live]);
@@ -846,6 +875,14 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			);
 			assert.deepStrictEqual(readCopyBounds(T.dbisDB), new Map([[3, 400]]));
 			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 300]]) }), false);
+			assert.strictEqual(readOriginStateEpoch(rootStore), before + 3);
+			// inside another write transaction, whose abort would take the bound with it
+			let nested;
+			rootStore.transactionSync(() => {
+				nested = writeCopyBounds(rootStore, 7, { raise: new Map([[3, 900]]) });
+			});
+			await assert.rejects(nested);
+			assert.deepStrictEqual(readCopyBounds(T.dbisDB), new Map([[3, 400]]));
 			assert.strictEqual(readOriginStateEpoch(rootStore), before + 3);
 		});
 	});
