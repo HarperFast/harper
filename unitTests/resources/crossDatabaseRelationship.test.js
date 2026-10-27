@@ -7,9 +7,6 @@ const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBT
 const { setTimeout: delay } = require('node:timers/promises');
 const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// A join into another database reads that database's indexes through its own link in the request's
-// transaction chain, lazily, after the request commits (REST serializes after commit). The search must
-// hold that link's read handle until its results are done, and give it back on every way they end.
 describe('cross-database relationship search', function () {
 	let Emp, Badge, Org, Vault, Staff, previousMainIsWorker;
 	const GOLD_IDS = Array.from({ length: 10 }, (_, i) => `e${i * 2}`).sort();
@@ -177,7 +174,6 @@ describe('cross-database relationship search', function () {
 	});
 
 	it('opens no read handle on a related database first read after the request committed', async function () {
-		// the context is released at commit, so a resolver read after it must take a handle-free transaction
 		const context = {};
 		let root;
 		const results = await transaction(context, (transaction) => {
