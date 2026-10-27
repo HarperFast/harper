@@ -294,7 +294,7 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
-type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -534,9 +534,15 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
 // it cannot copy, so only a copyable record of plain data goes to several requests. The scan is bounded.
 function isSharableRecord(record: any): boolean {
-	if (!entryMap.has(record)) return false;
-	const budget = { nodes: 10_000 };
-	return Object.keys(record).every((key) => isPlainData(record[key], budget, 1));
+	return entryMap.has(record) && hasPlainOwnValues(record, { nodes: 10_000 }, 0);
+}
+function hasPlainOwnValues(object: any, budget: { nodes: number }, depth: number): boolean {
+	for (const key of Reflect.ownKeys(object)) {
+		if (typeof key === 'symbol') return false;
+		const descriptor = Object.getOwnPropertyDescriptor(object, key);
+		if (!('value' in descriptor) || !isPlainData(descriptor.value, budget, depth + 1)) return false;
+	}
+	return true;
 }
 function isPlainData(value: any, budget: { nodes: number }, depth: number): boolean {
 	if (--budget.nodes < 0 || depth > 32) return false;
@@ -544,12 +550,11 @@ function isPlainData(value: any, budget: { nodes: number }, depth: number): bool
 	const type = typeof value;
 	if (type === 'function' || type === 'symbol') return false;
 	if (type !== 'object') return true;
-	if (Array.isArray(value)) return value.every((element) => isPlainData(element, budget, depth + 1));
+	if (Array.isArray(value))
+		return value.length <= budget.nodes && value.every((element) => isPlainData(element, budget, depth + 1));
 	if (ArrayBuffer.isView(value) || value instanceof Date) return true;
 	const prototype = Object.getPrototypeOf(value);
-	if (prototype !== Object.prototype && prototype !== null) return false;
-	for (const key in value) if (!isPlainData(value[key], budget, depth + 1)) return false;
-	return true;
+	return (prototype === Object.prototype || prototype === null) && hasPlainOwnValues(value, budget, depth);
 }
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
@@ -10278,7 +10283,11 @@ export function makeTable(options): TableResourceClass {
 				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
 			) {
 				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
-				if (outcome && (!heldFill.unstoredRecord || context?.noCacheStore)) {
+				if (
+					outcome &&
+					(!heldFill.unstoredRecord || context?.noCacheStore) &&
+					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
+				) {
 					setLoadedFromSource(target, false);
 					whenResolved(outcome);
 				}
@@ -10479,8 +10488,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					if (!sourceContext.noCacheStore && (updatedRecord == null || isSharableRecord(updatedRecord)))
-						sharedEntry = resolvedEntry;
+					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself

@@ -247,6 +247,26 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(new Set(results).size, 20);
 	});
 
+	it('do not share a record whose hazard sits behind a symbol, a hidden key, a hole or a getter', async function () {
+		const shapes = [
+			(attempt) => ({ name: 'symbol ' + attempt, data: { [Symbol.asyncIterator]: () => (async function* () {})() } }),
+			(attempt) =>
+				Object.defineProperty({ name: 'hidden ' + attempt }, 'body', {
+					value: new ReadableStream(),
+					enumerable: false,
+				}),
+			(attempt) => ({ name: 'sparse ' + attempt, rows: Object.assign([], { 1_700_000_000: 1 }) }),
+			(attempt) => Object.defineProperty({ name: 'getter ' + attempt }, 'late', { get: () => ({}), enumerable: true }),
+		];
+		respond = (id, attempt) => Object.assign(shapes[attempt % shapes.length](attempt), { id });
+		const results = outcomes(
+			await concurrentGets(CoalescingTable, 'hazards', { noCacheStore: true }),
+			(record) => record?.name
+		);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
 	it('share a record of nested plain data, arrays, dates and bytes', async function () {
 		respond = (id) => ({
 			id,
