@@ -219,7 +219,7 @@ describe('out-of-order patch on an audit:false table', () => {
 		await transaction(context, async () => {
 			const resource = await NoAudit.getResource(id, context);
 			const options = { isNotification: true, nodeId, version };
-			await resource._writeUpdate(id, { count: { __op__: 'add', value: 4 } }, false, options);
+			await resource._writeUpdate(id, { tag: 'patched', count: { __op__: 'add', value: 4 } }, false, options);
 			resource._writePublish(id, { message: 'hello' }, options);
 		});
 	};
@@ -229,7 +229,9 @@ describe('out-of-order patch on an audit:false table', () => {
 		await NoAudit.put(id, { tag: 'base', count: 10 });
 		const nodeId = getIdOfRemoteNode('origin-patch-then-publish', NoAudit.auditStore);
 		await applyPatchThenPublish(id, nodeId, Date.now() + 1000);
-		assert.strictEqual((await NoAudit.get(id)).count, 14);
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.tag, 'patched');
+		assert.strictEqual(record.count, 14);
 	});
 
 	itUnlessLmdb('a re-delivered patch-then-publish source transaction applies its increment once', async () => {
@@ -241,6 +243,28 @@ describe('out-of-order patch on an audit:false table', () => {
 		await applyPatchThenPublish(id, nodeId, version);
 		assert.strictEqual((await NoAudit.get(id)).count, 14);
 	});
+
+	itUnlessLmdb(
+		'a replicated patch older than a committed head merges only its ops when its publish restamps the head',
+		async () => {
+			const id = `noaudit-${nextId++}`;
+			const newer = Date.now() + 2000;
+			const newerNode = getIdOfRemoteNode('origin-newer-head', NoAudit.auditStore);
+			const context = { source: {}, sourceApply: true, timestamp: newer };
+			await transaction(context, async () => {
+				const resource = await NoAudit.getResource(id, context);
+				await resource._writeUpdate(id, { id, tag: 'newer', count: 10 }, true, {
+					isNotification: true,
+					nodeId: newerNode,
+					version: newer,
+				});
+			});
+			await applyPatchThenPublish(id, getIdOfRemoteNode('origin-older-patch', NoAudit.auditStore), newer - 1000);
+			const record = await NoAudit.get(id);
+			assert.strictEqual(record.tag, 'newer');
+			assert.strictEqual(record.count, 14);
+		}
+	);
 
 	it('a put after a publish to the record in the same transaction replaces it', async () => {
 		const id = `noaudit-${nextId++}`;
