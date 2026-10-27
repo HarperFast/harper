@@ -135,6 +135,7 @@ import {
 	executeConditions,
 	resolveComparator,
 	fullTextComparatorMode,
+	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -6435,36 +6436,30 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 					if (condition.chainedConditions) {
-						if (condition.chainedConditions.length === 1 && (!condition.operator || condition.operator == 'and')) {
-							const chained = condition.chainedConditions[0];
-							let upper: any, lower: any;
-							if (
-								chained.comparator === 'gt' ||
-								chained.comparator === 'greater_than' ||
-								chained.comparator === 'ge' ||
-								chained.comparator === 'greater_than_equal'
-							) {
-								upper = condition;
-								lower = chained;
-							} else {
-								upper = chained;
-								lower = condition;
-							}
-							if (
-								upper.comparator !== 'lt' &&
-								upper.comparator !== 'less_than' &&
-								upper.comparator !== 'le' &&
-								upper.comparator !== 'less_than_equal'
-							) {
-								throw new Error(
-									'Invalid chained condition, only less than and greater than conditions can be chained together'
-								);
-							}
-							const isGe = lower.comparator === 'ge' || lower.comparator === 'greater_than_equal';
-							const isLe = upper.comparator === 'le' || upper.comparator === 'less_than_equal';
-							condition.comparator = ((isGe ? 'ge' : 'gt') + (isLe ? 'le' : 'lt')) as any;
-							condition.value = [lower.value, upper.value];
-						} else throw new Error('Multiple chained conditions are not currently supported');
+						if (condition.operator === 'or')
+							throw new ClientError('Chaining a condition with |= is not supported, use | with the attribute name');
+						if (condition.operator && condition.operator !== 'and')
+							throw new ClientError(`Unknown chained condition operator ${condition.operator}`);
+						if (condition.chainedConditions.length !== 1)
+							throw new ClientError('Chaining more than one condition onto a condition is not supported');
+						const chained = condition.chainedConditions[0];
+						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
+						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
+						const lower = chainedIsLower ? chained : condition;
+						const upper = chainedIsLower ? condition : chained;
+						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
+						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
+						if (
+							(lowerComparator !== 'gt' && lowerComparator !== 'ge') ||
+							(upperComparator !== 'lt' && upperComparator !== 'le')
+						) {
+							throw new ClientError(
+								'Invalid chained condition, only a greater than and a less than condition can be chained together'
+							);
+						}
+						condition.comparator = (lowerComparator + upperComparator) as any;
+						condition.value = [lower.value, upper.value];
 					}
 				}
 				return conditions;
