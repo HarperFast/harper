@@ -17,6 +17,7 @@ const superUser = { role: { permission: { super_user: true } } };
 
 describe('REST and operations API select projection fixes', function () {
 	const dbName = 'rest_select_projection_fixes';
+	let Grandchild;
 	let Child;
 	let Parent;
 	let ParentInstanceTrue;
@@ -83,6 +84,15 @@ describe('REST and operations API select projection fixes', function () {
 		if (!Resources.resources) Resources.resetResources();
 		bridge = new ResourceBridge();
 
+		Grandchild = table({
+			database: dbName,
+			table: 'Grandchild',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true, type: 'String' },
+				{ name: 'secret', type: 'String' },
+			],
+		});
+
 		Child = table({
 			database: dbName,
 			table: 'Child',
@@ -90,6 +100,13 @@ describe('REST and operations API select projection fixes', function () {
 				{ name: 'id', isPrimaryKey: true, type: 'String' },
 				{ name: 'parentId', type: 'String', indexed: true },
 				{ name: 'label', type: 'String' },
+				{ name: 'grandchildId', type: 'String', indexed: true },
+				{
+					name: 'grandchild',
+					type: 'Grandchild',
+					relationship: { from: 'grandchildId' },
+					definition: { tableClass: Grandchild },
+				},
 			],
 		});
 
@@ -102,6 +119,8 @@ describe('REST and operations API select projection fixes', function () {
 				{ name: 'label', type: 'String' },
 				{ name: 'childId', type: 'String', indexed: true },
 				{ name: 'childIds', elements: { type: 'String' }, indexed: true },
+				{ name: 'tags', elements: { type: 'String' } },
+				{ name: 'addresses', elements: { type: 'Any' } },
 				{ name: 'expiresAt', type: 'Float', expiresAt: true },
 				{
 					name: 'child',
@@ -151,6 +170,7 @@ describe('REST and operations API select projection fixes', function () {
 		CustomInstanceEchoResource = class extends Resource {
 			static loadAsInstance = true;
 			async get(target) {
+				if (target.id === 'missing') return undefined;
 				return { rawIds: target.get('ids') };
 			}
 		};
@@ -162,6 +182,7 @@ describe('REST and operations API select projection fixes', function () {
 			server: { http: (listener) => (restHttp = listener), ws: () => [] },
 		});
 
+		mount('Grandchild', Grandchild);
 		mount('Child', Child);
 		mount('Parent', Parent);
 		mount('ParentInstanceTrue', ParentInstanceTrue);
@@ -170,20 +191,28 @@ describe('REST and operations API select projection fixes', function () {
 		mount('CustomEcho', CustomEchoResource);
 		mount('CustomInstanceEcho', CustomInstanceEchoResource);
 
-		await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
-		await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
+		await Grandchild.put({ id: 'g1', secret: 'top-secret-1' });
+		await Grandchild.put({ id: 'g2', secret: 'top-secret-2' });
+		await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' });
+		await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2', grandchildId: 'g2' });
 		await Parent.put({
 			id: 'p1',
 			title: 'parent-title-1',
 			label: 'parent-own-label',
 			childId: 'c1',
 			childIds: ['c1', 'c2'],
+			tags: ['beta', 'alpha'],
+			addresses: [
+				{ city: 'Denver', zip: '80202' },
+				{ city: 'Austin', zip: '78701' },
+			],
 		});
 		await Parent.put({
 			id: 'p-null-fk',
 			title: 'parent-null-fk',
 			label: 'parent-null-label',
 			childId: null,
+			childIds: [],
 		});
 		await Parent.put({
 			id: 'p-orphan-fk',
@@ -198,6 +227,7 @@ describe('REST and operations API select projection fixes', function () {
 		try {
 			await Parent?.dropTable();
 			await Child?.dropTable();
+			await Grandchild?.dropTable();
 		} finally {
 			if (previousMainIsWorker !== undefined) {
 				setMainIsWorker(previousMainIsWorker);
@@ -212,7 +242,7 @@ describe('REST and operations API select projection fixes', function () {
 			['loadAsInstance = false', 'ParentStaticFalse'],
 		]) {
 			it(`does not return 304 Not Modified on ?select(id,child{id,label}) or .child when related child changes (${modeLabel})`, async function () {
-				await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-initial' });
+				await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-initial', grandchildId: 'g1' });
 
 				const bareParent = await restGet(`/${route}/p1`);
 				assert.strictEqual(bareParent.status, 200);
@@ -245,7 +275,7 @@ describe('REST and operations API select projection fixes', function () {
 				assert.strictEqual(arrayFromBefore.status, 200);
 				assert.strictEqual(arrayFromBefore.headers.get('etag'), undefined);
 
-				await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-updated' });
+				await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-updated', grandchildId: 'g1' });
 
 				const selectAfter = await restGet(`/${route}/p1?select(id,child{id,label})`, {
 					'if-none-match': parentEtag,
@@ -290,7 +320,7 @@ describe('REST and operations API select projection fixes', function () {
 			}
 		});
 
-		it('still emits ETag and returns 304 when FK is null or no relationship is resolved', async function () {
+		it('still emits ETag and returns 304 when FK is null, empty FK array, or no relationship is resolved', async function () {
 			const scalarSelect = await restGet('/Parent/p1?select(id,title)');
 			assert.strictEqual(scalarSelect.status, 200);
 			const etag = scalarSelect.headers.get('etag');
@@ -309,13 +339,27 @@ describe('REST and operations API select projection fixes', function () {
 				'if-none-match': nullFkEtag,
 			});
 			assert.strictEqual(nullFk304.status, 304);
+
+			const emptyArrayFkSelect = await restGet('/Parent/p-null-fk?select(id,fromChildren{id,label})');
+			assert.strictEqual(emptyArrayFkSelect.status, 200);
+			assert.deepStrictEqual(emptyArrayFkSelect.body, { id: 'p-null-fk', fromChildren: [] });
+			const emptyArrayFkEtag = emptyArrayFkSelect.headers.get('etag');
+			assert.ok(
+				emptyArrayFkEtag,
+				'empty FK array does not read related table and remains cacheable until parent changes'
+			);
+
+			const emptyArrayFk304 = await restGet('/Parent/p-null-fk?select(id,fromChildren{id,label})', {
+				'if-none-match': emptyArrayFkEtag,
+			});
+			assert.strictEqual(emptyArrayFk304.status, 304);
 		});
 	});
 
 	describe('loadAsInstance tri-state single-projection and missing-record .property', function () {
 		beforeEach(async function () {
-			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
-			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
+			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' });
+			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2', grandchildId: 'g2' });
 		});
 
 		it('applies transformForSelect once when static loadAsInstance = true (scalar and nested relationship)', async function () {
@@ -371,8 +415,8 @@ describe('REST and operations API select projection fixes', function () {
 
 	describe('single-argument nested select(rel{...}) (#1415) and bracketed conditions in select()', function () {
 		beforeEach(async function () {
-			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
-			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
+			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' });
+			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2', grandchildId: 'g2' });
 		});
 
 		it('projects single-argument nested relationship selector instead of unwrapping inner fields onto parent', async function () {
@@ -417,34 +461,34 @@ describe('REST and operations API select projection fixes', function () {
 			const singleStarBrace = await restGet('/Parent/p1?select(child{*})');
 			assert.strictEqual(singleStarBrace.status, 200);
 			assert.deepStrictEqual(singleStarBrace.body, {
-				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' },
 			});
 
 			const multiStarBrace = await restGet('/Parent/p1?select(id,child{*})');
 			assert.strictEqual(multiStarBrace.status, 200);
 			assert.deepStrictEqual(multiStarBrace.body, {
 				id: 'p1',
-				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' },
 			});
 
 			const singleStarSubSelect = await restGet('/Parent/p1?select(child[select(*)])');
 			assert.strictEqual(singleStarSubSelect.status, 200);
 			assert.deepStrictEqual(singleStarSubSelect.body, {
-				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' },
 			});
 
 			const instanceTrueStar = await restGet('/ParentInstanceTrue/p1?select(child{*})');
 			assert.strictEqual(instanceTrueStar.status, 200);
 			assert.deepStrictEqual(instanceTrueStar.body, {
-				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1' },
+				child: { id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' },
 			});
 
 			const toManyStar = await restGet('/Parent/p1?select(children{*})');
 			assert.strictEqual(toManyStar.status, 200);
 			assert.deepStrictEqual(toManyStar.body, {
 				children: [
-					{ id: 'c1', parentId: 'p1', label: 'child-label-v1' },
-					{ id: 'c2', parentId: 'p1', label: 'child-label-v2' },
+					{ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' },
+					{ id: 'c2', parentId: 'p1', label: 'child-label-v2', grandchildId: 'g2' },
 				],
 			});
 		});
@@ -504,6 +548,32 @@ describe('REST and operations API select projection fixes', function () {
 				['c2']
 			);
 
+			const collectionUnsortedLimitRes = await restGet('/Parent/?id=p1&select(id,children[limit(1)])');
+			assert.strictEqual(collectionUnsortedLimitRes.status, 200);
+			assert.deepStrictEqual(
+				collectionUnsortedLimitRes.body[0].children.map((c) => c.id),
+				['c1']
+			);
+
+			const collectionUnsortedOffsetLimitRes = await restGet('/Parent/?id=p1&select(id,children[limit(1,2)])');
+			assert.strictEqual(collectionUnsortedOffsetLimitRes.status, 200);
+			assert.deepStrictEqual(
+				collectionUnsortedOffsetLimitRes.body[0].children.map((c) => c.id),
+				['c2']
+			);
+
+			const searchByValueSlicedRows = [];
+			for await (const row of bridge.searchByValue({
+				schema: dbName,
+				table: 'Parent',
+				attribute: 'id',
+				value: 'p1',
+				get_attributes: ['id', { name: 'children', offset: 1, limit: 1, select: ['id'] }],
+			})) {
+				searchByValueSlicedRows.push(row);
+			}
+			assert.deepStrictEqual(searchByValueSlicedRows, [{ id: 'p1', children: [{ id: 'c2' }] }]);
+
 			const nonSuperUser = {
 				role: {
 					permission: {
@@ -558,6 +628,152 @@ describe('REST and operations API select projection fixes', function () {
 			]);
 		});
 
+		it('enforces nested table and attribute read permissions on braced and bracketed sub-selects and sort paths', async function () {
+			const noGrandchildUser = {
+				role: {
+					permission: {
+						super_user: false,
+						[dbName]: {
+							tables: {
+								Parent: { read: true, attribute_permissions: [] },
+								Child: { read: true, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			};
+
+			const braceRes = await restGet('/Parent/p1?select(id,child{id,grandchild{secret}})', {}, noGrandchildUser);
+			assert.strictEqual(braceRes.status, 200);
+			assert.deepStrictEqual(braceRes.body, {
+				id: 'p1',
+				child: { id: 'c1' },
+			});
+
+			const bracketRes = await restGet(
+				'/Parent/p1?select(id,child[select(id,grandchild[select(secret)])])',
+				{},
+				noGrandchildUser
+			);
+			assert.strictEqual(bracketRes.status, 200);
+			assert.deepStrictEqual(bracketRes.body, {
+				id: 'p1',
+				child: { id: 'c1' },
+			});
+
+			const collectionBraceRes = await restGet(
+				'/Parent/?id=p1&select(id,child{id,grandchild{secret}})',
+				{},
+				noGrandchildUser
+			);
+			assert.strictEqual(collectionBraceRes.status, 200);
+			assert.deepStrictEqual(collectionBraceRes.body, [
+				{
+					id: 'p1',
+					child: { id: 'c1' },
+				},
+			]);
+
+			const unauthorizedSortSingle = await restGet(
+				'/Parent/p1?select(id,children[sort(grandchild.secret)])',
+				{},
+				noGrandchildUser
+			);
+			assert.strictEqual(unauthorizedSortSingle.status, 200);
+			assert.deepStrictEqual(unauthorizedSortSingle.body, { id: 'p1' });
+
+			const unauthorizedSortCollection = await restGet(
+				'/Parent/?id=p1&select(id,children[sort(grandchild.secret)])',
+				{},
+				noGrandchildUser
+			);
+			assert.strictEqual(unauthorizedSortCollection.status, 200);
+			assert.deepStrictEqual(unauthorizedSortCollection.body, [{ id: 'p1' }]);
+
+			const scopedChildUser = {
+				role: {
+					permission: {
+						super_user: false,
+						[dbName]: {
+							tables: {
+								Parent: { read: true, attribute_permissions: [] },
+								Child: {
+									read: true,
+									attribute_permissions: [
+										{ attribute_name: 'id', read: true },
+										{ attribute_name: 'label', read: true },
+										{ attribute_name: 'parentId', read: false },
+									],
+								},
+							},
+						},
+					},
+				},
+			};
+
+			const scopedSubsetSingle = await restGet('/Parent/p1?select(id,child{id})', {}, scopedChildUser);
+			assert.strictEqual(scopedSubsetSingle.status, 200);
+			assert.deepStrictEqual(scopedSubsetSingle.body, {
+				id: 'p1',
+				child: { id: 'c1' },
+			});
+
+			const scopedSubsetCollection = await restGet('/Parent/?id=p1&select(id,child{id})', {}, scopedChildUser);
+			assert.strictEqual(scopedSubsetCollection.status, 200);
+			assert.deepStrictEqual(scopedSubsetCollection.body, [
+				{
+					id: 'p1',
+					child: { id: 'c1' },
+				},
+			]);
+		});
+
+		it('applies bracketed sort, offset, limit, and select consistently to plain-JSON arrays across single-record and collection GET', async function () {
+			const singleTags = await restGet('/Parent/p1?select(id,tags[limit(1)])');
+			assert.strictEqual(singleTags.status, 200);
+			assert.deepStrictEqual(singleTags.body, { id: 'p1', tags: ['beta'] });
+
+			const collectionTags = await restGet('/Parent/?id=p1&select(id,tags[limit(1)])');
+			assert.strictEqual(collectionTags.status, 200);
+			assert.deepStrictEqual(collectionTags.body, [{ id: 'p1', tags: ['beta'] }]);
+
+			const singleAddresses = await restGet('/Parent/p1?select(id,addresses[sort(city)&limit(1)&select(city,)])');
+			assert.strictEqual(singleAddresses.status, 200);
+			assert.deepStrictEqual(singleAddresses.body, {
+				id: 'p1',
+				addresses: [{ city: 'Austin' }],
+			});
+
+			const collectionAddresses = await restGet(
+				'/Parent/?id=p1&select(id,addresses[sort(city)&limit(1)&select(city,)])'
+			);
+			assert.strictEqual(collectionAddresses.status, 200);
+			assert.deepStrictEqual(collectionAddresses.body, [
+				{
+					id: 'p1',
+					addresses: [{ city: 'Austin' }],
+				},
+			]);
+
+			const singleAddressesScalar = await restGet('/Parent/p1?select(id,addresses[sort(city)&limit(1)&select(city)])');
+			assert.strictEqual(singleAddressesScalar.status, 200);
+			assert.deepStrictEqual(singleAddressesScalar.body, {
+				id: 'p1',
+				addresses: ['Austin'],
+			});
+
+			const collectionAddressesScalar = await restGet(
+				'/Parent/?id=p1&select(id,addresses[sort(city)&limit(1)&select(city)])'
+			);
+			assert.strictEqual(collectionAddressesScalar.status, 200);
+			assert.deepStrictEqual(collectionAddressesScalar.body, [
+				{
+					id: 'p1',
+					addresses: ['Austin'],
+				},
+			]);
+		});
+
 		it('returns 400 on single-record Table GET when a non-select query parameter has a FIQL parse error', async function () {
 			const res = await restGet('/Parent/p1?v=1.2&nocache');
 			assert.strictEqual(res.status, 400);
@@ -574,13 +790,16 @@ describe('REST and operations API select projection fixes', function () {
 
 			const badSelectRes = await restGet('/CustomInstanceEcho/item?select(children[label=x])');
 			assert.strictEqual(badSelectRes.status, 400);
+
+			const badSelectMissingRes = await restGet('/CustomInstanceEcho/missing?select(children[label=x])');
+			assert.strictEqual(badSelectMissingRes.status, 400);
 		});
 	});
 
 	describe('operations API object get_attributes in search_by_hash and recursive validation (#3136)', function () {
 		beforeEach(async function () {
-			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
-			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
+			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' });
+			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2', grandchildId: 'g2' });
 		});
 
 		it('projects { name, select } and { name } get_attributes entries in searchByHash', async function () {

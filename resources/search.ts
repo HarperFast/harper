@@ -2186,9 +2186,7 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
 			if ((currentQuery as any).parseErrorMessage) {
 				(currentQuery as any).parseError = new SyntaxViolation((currentQuery as any).parseErrorMessage);
-				if (!query) throw (currentQuery as any).parseError;
 			}
-			return currentQuery;
 		} catch (error) {
 			error.statusCode = 400;
 			error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
@@ -2199,6 +2197,8 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 				throw error;
 			}
 		}
+		if (!query && (currentQuery as any).parseError) throw (currentQuery as any).parseError;
+		return currentQuery;
 	} else {
 		return query ?? new URLSearchParams(queryToParse);
 	}

@@ -35,6 +35,7 @@ import {
 	SEARCH_AUTHORIZATION,
 	WRITE_CONDITION,
 	transformForSelect,
+	sortAndSliceArray,
 	defaultAllowReads,
 	convertToComparableKeys,
 } from './Resource.ts';
@@ -3847,25 +3848,54 @@ export function makeTable(options): TableResourceClass {
 									if (relatedTable) {
 										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
 										if (!property.name) property = { name: property };
+										if (Array.isArray(property) && !(property as any).select)
+											(property as any).select = Array.from(property);
 										if (!property.checkPermission && (target as any).checkPermission)
 											property.checkPermission = (target as any).checkPermission;
 										// Invoke the related table's allowRead on a properly-bound instance rather than
 										// `.call(null, ...)` so `this` is a valid resource of the related type.
 										const relatedResource = new relatedTable(undefined, context);
 										if (!relatedResource.allowRead(user, property, context)) return false;
+										for (let s = typeof property.sort === 'object' ? property.sort : null; s; s = s.next) {
+											const segments = (Array.isArray(s.attribute) ? s.attribute : [s.attribute]).filter(Boolean);
+											if (segments.length === 0) continue;
+											let sortSelect: any = segments[segments.length - 1];
+											for (let i = segments.length - 2; i >= 0; i--) {
+												sortSelect = { name: segments[i], select: [sortSelect] };
+											}
+											const sortProbe: any = { select: [sortSelect], checkPermission: property.checkPermission };
+											if (!relatedResource.allowRead(user, sortProbe, context)) return false;
+											for (let cur = sortProbe.select; Array.isArray(cur); cur = cur[0]?.select) {
+												if (cur.length === 0) return false;
+											}
+										}
 										if (
-											!Array.isArray(property) &&
 											!property.select &&
 											!property.sort &&
 											property.limit === undefined &&
 											property.offset === undefined
 										)
-											return property.name; // no select or sub-query was applied, just return the name
+											return property.name;
 									}
 									return property;
 								}
 							})
 							.filter(Boolean);
+						if (
+							(target as any).select.length === 0 &&
+							Array.isArray(target) &&
+							attrsForType &&
+							selectArray.every((p: any) => !propertyResolvers[p?.name || p]?.definition?.tableClass)
+						) {
+							(target as any).select = attribute_permissions
+								.filter(
+									(attribute) =>
+										attribute.read &&
+										!fullTextFieldNames?.has(attribute.attribute_name) &&
+										!propertyResolvers[attribute.attribute_name]
+								)
+								.map((attribute) => attribute.attribute_name);
+						}
 					} else {
 						target.select = attribute_permissions
 							.filter(
@@ -7228,20 +7258,35 @@ export function makeTable(options): TableResourceClass {
 						} else {
 							value = record[attribute_name];
 							if (value && typeof value === 'object' && attribute_name !== attribute) {
-								const subTransform = TableResource.transformEntryForSelect(
-									attribute.select || attribute,
-									context,
-									readTxn,
-									null
-								);
+								const subSelect = attribute.select || (Array.isArray(attribute) ? attribute : null);
+								const subTransform =
+									subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
+										? TableResource.transformEntryForSelect(subSelect, context, readTxn, null)
+										: null;
 								// Plain JSON nested values: arrays project per-element so that
 								// `select: [{ name: 'addresses', select: ['city'] }]` returns
 								// `addresses: [{ city }, { city }]` rather than a single object.
 								if (Array.isArray(value)) {
-									value = value.map((item) =>
-										item && typeof item === 'object' ? subTransform({ value: item } as any) : item
-									);
-								} else if (!(value instanceof Date)) {
+									const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
+									for (
+										let clause = typeof attribute.sort === 'object' ? attribute.sort : null;
+										clause;
+										clause = clause.next
+									) {
+										sortClauses.push(clause);
+									}
+									const offset =
+										Number.isInteger(attribute.offset) && attribute.offset >= 0 ? attribute.offset : undefined;
+									const limit = Number.isInteger(attribute.limit) && attribute.limit >= 0 ? attribute.limit : undefined;
+									if (sortClauses.length > 0 || offset !== undefined || limit !== undefined) {
+										value = sortAndSliceArray(value, sortClauses, offset, limit, undefined, context);
+									}
+									if (subTransform) {
+										value = value.map((item) =>
+											item && typeof item === 'object' ? subTransform({ value: item } as any) : item
+										);
+									}
+								} else if (subTransform && !(value instanceof Date)) {
 									value = subTransform({ value } as any);
 								}
 							}
@@ -8983,7 +9028,6 @@ export function makeTable(options): TableResourceClass {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
 								const ctx = context ?? contextStorage.getStore();
-								if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
 								if (attribute.elements) {
 									// tolerate a scalar id in an array-typed FK field (legacy data written
 									// before attribute.set normalized single records to a one-element array)
@@ -8992,6 +9036,7 @@ export function makeTable(options): TableResourceClass {
 									// normalizedIds === ids is the record's own stored FK array, and returning it
 									// would let a caller's mutation (e.g. record.manyToMany.push(x)) alias into it
 									if (normalizedIds.length === 0) return [];
+									if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
 									// getSync (not get): relationship accessors are a synchronous contract (as in v4);
 									// on RocksDB get() returns a Promise on a block-cache miss, which would leak an
 									// intermittent MaybePromise into user code
@@ -9005,6 +9050,7 @@ export function makeTable(options): TableResourceClass {
 									});
 									return relationship.filterMissing ? results.filter(exists) : results;
 								}
+								if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
 								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'getSync'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});

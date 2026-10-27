@@ -415,6 +415,10 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('(name=value'), /expected '\)', but encountered end of string/);
 		assert.throws(() => parseQuery('name=value|test=3&foo=bar'), /mix operators/);
 		assert.throws(() => parseQuery('name=value&[test=3&foo=bar|test=4]'), /mix operators/);
+		assert.throws(
+			() => parseQuery('limit(-1)'),
+			(error) => error.statusCode === 400 && error.message === 'limit must be a non-negative integer at position 9'
+		);
 	});
 });
 describe('Parsing queries with RequestTarget', function () {

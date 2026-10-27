@@ -129,8 +129,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	 */
 	static get = transactional(
 		function (resource: any, query: RequestTarget, request: Context, _data: any) {
-			const result = resource.get?.(query);
 			const loadAsInstance = resource.constructor.loadAsInstance;
+			if (loadAsInstance && query?.select && (query as any).parseError) throw (query as any).parseError;
+			const result = resource.get?.(query);
 			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
 			if (loadAsInstance === false) {
 				return result?.then
@@ -144,7 +145,6 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
-					if (query.parseError) throw query.parseError;
 					const transform = transformForSelect(select, resource.constructor);
 					if (typeof result?.map === 'function') {
 						return result.map(transform);
@@ -1271,45 +1271,7 @@ export function transformForSelect(select, resource) {
 									return resolvedValue;
 								if (typeof resolvedValue.then === 'function') return resolvedValue.then(applySubQuery);
 								if (Array.isArray(resolvedValue)) {
-									let ordered = resolvedValue;
-									if (sortClauses.length === 1) {
-										const resolvers = targetResource?.propertyResolvers;
-										const ctx = targetResource?.getContext?.();
-										const clause = sortClauses[0];
-										const attr = clause.attribute;
-										ordered = resolvedValue
-											.map((item) => ({
-												item,
-												key: getComparableKey(item, attr, resolvers, ctx),
-											}))
-											.sort(
-												clause.descending ? (a, b) => compareKeys(b.key, a.key) : (a, b) => compareKeys(a.key, b.key)
-											)
-											.map((entry) => entry.item);
-									} else if (sortClauses.length > 1) {
-										const resolvers = targetResource?.propertyResolvers;
-										const ctx = targetResource?.getContext?.();
-										ordered = resolvedValue
-											.map((item) => ({
-												item,
-												keys: sortClauses.map((clause) => getComparableKey(item, clause.attribute, resolvers, ctx)),
-											}))
-											.sort((a, b) => {
-												for (let i = 0; i < sortClauses.length; i++) {
-													const diff = sortClauses[i].descending
-														? compareKeys(b.keys[i], a.keys[i])
-														: compareKeys(a.keys[i], b.keys[i]);
-													if (diff !== 0) return diff;
-												}
-												return 0;
-											})
-											.map((entry) => entry.item);
-									}
-									if (offset !== undefined || limit !== undefined) {
-										const start = offset ?? 0;
-										ordered = ordered.slice(start, limit !== undefined ? start + limit : undefined);
-									}
-									return innerTransform(ordered);
+									return innerTransform(sortAndSliceArray(resolvedValue, sortClauses, offset, limit, targetResource));
 								}
 								return innerTransform(resolvedValue);
 							};
@@ -1324,6 +1286,51 @@ export function transformForSelect(select, resource) {
 			} else return property;
 		};
 	}
+}
+
+export function sortAndSliceArray(
+	resolvedValue: any[],
+	sortClauses: { attribute: string | string[]; descending?: boolean }[],
+	offset: number | undefined,
+	limit: number | undefined,
+	targetResource?: any,
+	context?: any
+): any[] {
+	let ordered = resolvedValue;
+	const clauseCount = sortClauses.length;
+	if (clauseCount > 0 && resolvedValue.length > 1) {
+		const resolvers = targetResource?.propertyResolvers;
+		const ctx = context ?? targetResource?.getContext?.();
+		const n = resolvedValue.length;
+		const orderedKeys: any[][] = new Array(clauseCount);
+		for (let c = 0; c < clauseCount; c++) {
+			const attr = sortClauses[c].attribute;
+			const col = new Array(n);
+			for (let i = 0; i < n; i++) {
+				col[i] = getComparableKey(resolvedValue[i], attr, resolvers, ctx);
+			}
+			orderedKeys[c] = col;
+		}
+		const positions = new Array<number>(n);
+		for (let i = 0; i < n; i++) positions[i] = i;
+		positions.sort((posA, posB) => {
+			for (let c = 0; c < clauseCount; c++) {
+				const keys = orderedKeys[c];
+				const diff = sortClauses[c].descending
+					? compareKeys(keys[posB], keys[posA])
+					: compareKeys(keys[posA], keys[posB]);
+				if (diff !== 0) return diff;
+			}
+			return 0;
+		});
+		ordered = new Array(n);
+		for (let i = 0; i < n; i++) ordered[i] = resolvedValue[positions[i]];
+	}
+	if (offset !== undefined || limit !== undefined) {
+		const start = offset ?? 0;
+		ordered = ordered.slice(start, limit !== undefined ? start + limit : undefined);
+	}
+	return ordered;
 }
 
 export function convertToComparableKeys(value) {
