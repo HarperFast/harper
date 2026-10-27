@@ -330,6 +330,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 	})
 		.allow(null)
 		.optional();
+	const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
+		.prefs({ convert: false })
+		.optional();
 
 	const storagePathConstraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 	const tlsConstraints = Joi.object({
@@ -505,13 +508,14 @@ export function configValidator(configJson, skipFsValidation = false) {
 		}),
 		// flattenConfig() lets customFunctions.network override http, so its copy is what listeners serve
 		customFunctions: Joi.object({
-			network: Joi.object({ corsAccessControlAllowHeaders: corsAllowHeadersConstraints }).allow(null),
+			network: Joi.object({
+				corsAccessControlAllowHeaders: corsAllowHeadersConstraints,
+				readRequestQueueLimit: readRequestQueueLimitConstraints,
+			}).allow(null),
 		}).allow(null),
 		http: Joi.object({
 			corsAccessControlAllowHeaders: corsAllowHeadersConstraints,
-			readRequestQueueLimit: Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
-				.prefs({ convert: false })
-				.optional(),
+			readRequestQueueLimit: readRequestQueueLimitConstraints,
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),

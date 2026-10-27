@@ -54,6 +54,13 @@ describe('read queue CORS header configuration', () => {
 			error?.details.some((detail) => detail.path.join('.') === 'customFunctions.network.corsAccessControlAllowHeaders')
 		);
 	});
+	it('rejects a quoted customFunctions.network read limit, which listeners read as http', () => {
+		const config = parse(readFileSync(resolve(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
+		config.rootPath = resolve(__dirname, '../envDir');
+		config.customFunctions = { network: { readRequestQueueLimit: '60s' } };
+		const { error } = configValidator(config, true);
+		assert(error?.details.some((detail) => detail.path.join('.') === 'customFunctions.network.readRequestQueueLimit'));
+	});
 	it('accepts a valid customFunctions.network override', () => {
 		assert.ifError(validate(undefined, 'Accept', ['Accept', 'Content-Type']).error);
 	});

@@ -764,7 +764,7 @@ function isReadMethod(method) {
 function readRejectionHeaders(isOperationsServer: boolean) {
 	const prefix = isOperationsServer ? 'operationsApi_network' : 'http';
 	const cors = env.get(prefix + '_cors');
-	const accessList = env.get(prefix + '_corsAccessList') ?? [];
+	const accessList = [].concat(env.get(prefix + '_corsAccessList') ?? []);
 	const allowCredentials = env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
 	const allowHeaders =
 		env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';

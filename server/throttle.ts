@@ -82,7 +82,6 @@ function probeLoopIteration() {
 	} else loopProbePending = false;
 }
 
-/** Never queues or defers a call: it runs now or is rejected now (server/DESIGN.md). */
 export function rejectWhenLoopDelayed<A, B, R>(
 	fn: (a: A, b: B) => R,
 	onLimitExceeded: (a: A, b: B) => R,
