@@ -813,7 +813,14 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 					restored = true;
 				} catch {
 					try {
-						fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
+						let intact = false;
+						try {
+							intact = fs.readFileSync(resolvedConfigPath, 'utf8') === originalHdbConfigContent;
+						} catch {}
+						// writeFileSync truncates first, so never use it on a file that is still intact
+						if (!intact) {
+							fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
+						}
 						restored = true;
 					} catch (restoreErr) {
 						const backupNote =
