@@ -295,6 +295,7 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -530,6 +531,39 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 				finishDroppedTableBlobSweep(rootStore, store, storeLabel);
 			}
 		});
+}
+// A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
+// it cannot copy, so only a copyable record of plain data goes to several requests.
+function isSharableRecord(record: any): boolean {
+	try {
+		return entryMap.has(record) && hasPlainOwnValues(record, { nodes: 10_000 }, 0);
+	} catch {
+		return false; // a revoked proxy or a throwing trap is not plain data, and this runs in a lock callback
+	}
+}
+function hasPlainOwnValues(object: any, budget: { nodes: number }, depth: number): boolean {
+	for (const key of Reflect.ownKeys(object)) {
+		if (typeof key === 'symbol') return false;
+		const descriptor = Object.getOwnPropertyDescriptor(object, key);
+		if (!('value' in descriptor) || !isPlainData(descriptor.value, budget, depth + 1)) return false;
+	}
+	return true;
+}
+function isPlainData(value: any, budget: { nodes: number }, depth: number): boolean {
+	if (--budget.nodes < 0 || depth > 32) return false;
+	if (value == null) return true;
+	const type = typeof value;
+	if (type === 'function' || type === 'symbol') return false;
+	if (type !== 'object') return true;
+	if (Array.isArray(value))
+		return (
+			value.length <= budget.nodes &&
+			Object.getPrototypeOf(value) === Array.prototype &&
+			hasPlainOwnValues(value, budget, depth)
+		);
+	if (ArrayBuffer.isView(value) || value instanceof Date) return true;
+	const prototype = Object.getPrototypeOf(value);
+	return (prototype === Object.prototype || prototype === null) && hasPlainOwnValues(value, budget, depth);
 }
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
@@ -1529,6 +1563,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
+	let sourceFills: Map<unknown, SourceFill> | undefined;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
@@ -10259,6 +10294,8 @@ export function makeTable(options): TableResourceClass {
 			inheritedTimestamp ||
 			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
 		let whenResolved, timer;
+		const fillKey = writeKeyId(id);
+		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
 		// tryLock() will return true if we got the lock, and the callback won't be called.
@@ -10274,10 +10311,19 @@ export function makeTable(options): TableResourceClass {
 				!entry.value ||
 				entry.metadataFlags & (INVALIDATED | EVICTED) ||
 				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
-			)
+			) {
+				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
+				if (
+					outcome &&
+					(!heldFill.unstoredRecord || context?.noCacheStore) &&
+					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
+				) {
+					setLoadedFromSource(target, false);
+					whenResolved(outcome);
+				}
 				// try again — entry still not valid, need to actually fetch from source
-				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
-			else {
+				else whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
+			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
 				whenResolved(entry);
@@ -10295,6 +10341,12 @@ export function makeTable(options): TableResourceClass {
 		}
 		// lock acquired — this request will actually load from source
 		setLoadedFromSource(target, true);
+		const fill: SourceFill = { source };
+		(sourceFills ??= new Map()).set(fillKey, fill);
+		const releaseFill = () => {
+			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
+			primaryStore.unlock(id);
+		};
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
@@ -10319,7 +10371,8 @@ export function makeTable(options): TableResourceClass {
 		return new Promise((resolve, reject) => {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
-			let resolved;
+			let resolved, sharedEntry: Entry;
+			let stagedWrite: any;
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
@@ -10465,6 +10518,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
+					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -10674,11 +10728,16 @@ export function makeTable(options): TableResourceClass {
 				}
 				sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 				dbTxn.addWrite(sourceWrite);
+				stagedWrite = sourceWrite;
 			});
 			when(
 				commitPromise,
 				() => {
-					primaryStore.unlock(id);
+					if (sharedEntry && (!stagedWrite || stagedWrite.skipped === false)) {
+						fill.outcome = sharedEntry;
+						fill.unstoredRecord = !stagedWrite && (sharedEntry.value != null || existingEntry != null);
+					}
+					releaseFill();
 					if (removedRecordWithBlobs) {
 						try {
 							// a write committed since the removal may reference the same files again
@@ -10689,7 +10748,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
-					primaryStore.unlock(id);
+					releaseFill();
 					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
 						logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned

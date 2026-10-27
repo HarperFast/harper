@@ -302,6 +302,10 @@ In `getFromSource()` (`Table.ts`), the promise that callers await resolves with 
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
+## getFromSource() waiters share a fill that stored nothing
+
+A same-thread waiter that finds nothing valid in the store after the leader unlocks serves the leader's entry instead of calling the source again. Only a fill that resolved, committed and kept its write publishes one, and only if the record is copyable plain data (no stream, iterator, Headers or blob; checked once, within a budget) and the source did not set `noCacheStore` (per-request; preset on read-only nodes and dropping tables). A record a request-level `noCacheStore` kept out of the store goes only to waiters that asked for `noCacheStore` too. Failures, stale-on-error answers, a fill from another `source` and other threads' waiters are never shared. Pinned by `unitTests/resources/sourceFillCoalescing.test.js`.
+
 ## getFromSource() keeps source versions separate from fill ordering
 
 `getFromSource()` reserves a fallback timestamp before calling the source so competing first fills
