@@ -99,8 +99,8 @@ test(
 				const shortWait = await query(1_000_000, 1, target, path);
 				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
 				assert.equal(shortWait.coverage, null);
-				// the diagnostic is best-effort, so a bare cut-off body must have logged the lag error itself; waiting for
-				// for its line here also keeps a late line out of the next query's count
+				// the diagnostic is best-effort, so a bare cut-off body must have logged the lag error itself; waiting
+				// for its line also keeps a late line out of the next query's count
 				if (shortWait.aborted) {
 					assert(
 						/\{"error":"DerivedIndexLagError/.test(shortWait.text) || !shortWait.text.includes('{"error":'),
@@ -115,6 +115,7 @@ test(
 					if (errors.length) {
 						assert.equal(errors.length, 1, JSON.stringify(shortWait));
 						assert.match(errors[0].error, /^DerivedIndexLagError/);
+						await waitFor(() => lagLogLines() > lagLinesBefore, 5000);
 					} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
 				}
 			}
