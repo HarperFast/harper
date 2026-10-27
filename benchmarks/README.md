@@ -12,6 +12,7 @@ This directory contains single-node storage and throughput benchmarks for Harper
 | **SQL engine A/B** | `sql-engine/`                     | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape                                   |
 | **Compression**    | `compression/`                    | RocksDB codec comparison: on-disk size and throughput per codec                                             |
 | WebSocket scale    | [`ws-scale/`](ws-scale/README.md) | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
+| Lockdown           | `lockdown/`                       | Per-mode `applications.lockdown` cost in a worker: holey-array string building, msgpackr decode             |
 
 The three new benchmarks (ST-1, ST-2, ST-5) address gaps called out in §6.3 of the
 Harper Release Testing Strategy and §5 of the v5 Integration Test Plan.

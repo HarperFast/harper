@@ -403,6 +403,80 @@ describeReplicas('Local replicas of residency stubs', function () {
 		assert.equal(stub.residencyId, RESIDENCY_ID);
 	});
 
+	it('demotes a replica on a computed-index table without running the resolver', async () => {
+		const Computed = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasComputedDemotion',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'sku', indexed: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+			audit: true,
+		});
+		// a resolver that needs a request (its context, another table) cannot run in a maintenance sweep
+		let sweeping = false;
+		Computed.setComputedAttribute('upper', (record) => {
+			if (sweeping) throw new Error('resolver inputs are unavailable in a sweep');
+			return record.name.toUpperCase();
+		});
+		Computed.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = {
+						key: ID,
+						value: { id: ID, sku: 'A1', name: 'resident' },
+						version: entry.version,
+						originNode: server.hostname,
+					};
+					await Computed._storeReplica(entry, found);
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		await Computed.put(ID, { id: ID, sku: 'A1', name: 'original' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Computed.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { id: ID, sku: 'A1' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Computed.get(ID)).name, 'resident');
+		const entry = Computed.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA, 'premise: a replica');
+		sweeping = true;
+		try {
+			await Computed.evict(ID, entry.value, entry.version);
+		} finally {
+			sweeping = false;
+		}
+		const stub = Computed.primaryStore.getEntry(ID);
+		assert.ok(stub.metadataFlags & INVALIDATED, 'the replica was not demoted');
+		assert.equal(stub.value.id, ID);
+		assert.equal(stub.value.sku, 'A1');
+		assert.equal(stub.value.name, undefined);
+	});
+
+	it('keeps the primary key when a patch turns a replica back into a stub, so an index-only select stays local', async () => {
+		const before = await replica();
+		const context = { sourceApply: true, timestamp: before.version + 1 };
+		await transaction(context, async () => {
+			const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+			resource._writeUpdate(ID, { name: 'patched' }, false, {
+				version: before.version + 1,
+				nodeId: before.nodeId ?? 0,
+			});
+			resource.save();
+		});
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED, 'premise: the patch stores a stub');
+		calls = [];
+		assert.deepEqual(await query(['id', 'name'], [{ attribute: 'name', value: 'patched' }]), [
+			{ id: ID, name: 'patched' },
+		]);
+		assert.deepEqual(calls, []);
+	});
+
 	for (const [label, apply, expectStub, expectBody, expectName = 'changed'] of [
 		[
 			'a newer invalidation',
