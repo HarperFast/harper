@@ -60,11 +60,12 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	}
 	// sampled before the log is opened or drained, so a commit the subscriber could miss is above it
 	let startBound: ReturnType<typeof localStartBound>;
+	let committedThrough: number | undefined;
 	if (options?.reportProgress && table.auditStore?.reusableIterable) {
 		const existing = (options.crossThreads === false ? allSameThreadSubscriptions : allSubscriptions)[path];
 		if (!(existing?.progressConsumers > 0 && existing.dispatchedThrough !== undefined))
 			startBound = localStartBound(table.primaryStore.rootStore);
-	}
+	} else if (options?.reportProgress && table.auditStore) committedThrough = newestCommittedKey(table.auditStore);
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
 		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);
@@ -148,8 +149,19 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
 		if (dbisDb && !databaseSubscriptions.originFloorTimer) startOriginTracking(databaseSubscriptions, dbisDb);
-	}
+	} else if (committedThrough !== undefined) subscription.localResumeStart = committedThrough;
 	return subscription;
+}
+
+/**
+ * LMDB stamps each log key at commit, under the write lock, from the native realtime clock, so a commit this read
+ * cannot see yet takes a higher key as long as that clock never moves backwards; a stale snapshot only lowers the
+ * result. An empty log gives 1, the bottom of the log above its symbol metadata keys.
+ */
+function newestCommittedKey(auditStore: any): number {
+	auditStore.resetReadTxn?.();
+	for (const key of auditStore.getKeys({ reverse: true, limit: 1 })) if (typeof key === 'number' && key > 1) return key;
+	return 1;
 }
 
 let originCaptureInterval = ORIGIN_FLOOR_TICK_MS;
@@ -299,7 +311,10 @@ class Subscription extends IterableEventQueue {
 	resumeVerified?: Promise<boolean>;
 	reportsProgress?: boolean;
 	registeredThrough?: number;
-	/** With no `registeredThrough`: an exclusive start that skips no local key reserved when it registered or later. */
+	/**
+	 * With no `registeredThrough`: an exclusive start that skips no local key reserved (LMDB: committed) when it
+	 * registered or later.
+	 */
 	localResumeStart?: number;
 	sentCount?: number;
 	progress?: () => number | undefined;
