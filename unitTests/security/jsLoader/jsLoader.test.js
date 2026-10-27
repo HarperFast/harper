@@ -818,6 +818,20 @@ describe('compartment importHook', () => {
 			assert.ok(result.keys.includes('__proto__'), `keys: ${result.keys}`);
 		});
 
+		it('does not add a dynamically assigned callable then that would make a re-exporting entry thenable', async () => {
+			writePackage(
+				'thenpkg',
+				{
+					'index.cjs':
+						"exports.ok = 1;\nfor (const name of ['then']) exports[name] = (resolve) => resolve('wrong-value');\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys("export * from 'thenpkg';\nexport const entry = true;\n");
+			assert.strictEqual(result.entry, true);
+			assert.strictEqual(result.ok, 1);
+		});
+
 		it('adds no names for an array, string or buffer module.exports', async () => {
 			const exportsByPackage = {
 				arraypkg: "module.exports = ['a', 'b'];",
