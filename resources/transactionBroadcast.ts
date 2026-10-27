@@ -2,8 +2,8 @@ import { basename } from 'node:path';
 import { warn } from '../utility/logging/harper_logger.ts';
 import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
-import { ORIGIN_FLOOR_TICK_MS } from './originClosedFloor.ts';
-import { captureCertifiedFloors, type CertifiedFloors } from './subscriptionCheckpoint.ts';
+import { ORIGIN_FLOOR_TICK_MS, localStartBound } from './originClosedFloor.ts';
+import { captureCertifiedFloors, positionBefore, type CertifiedFloors } from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
 
@@ -57,6 +57,13 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		throw replaced && generationChanged(generationId, current.generationId, current.tracksGeneration)
 			? new DatabaseGenerationChangedError()
 			: closingError(table.auditStore, path);
+	}
+	// sampled before the log is opened or drained, so a commit the subscriber could miss is above it
+	let startBound: ReturnType<typeof localStartBound>;
+	if (options?.reportProgress && table.auditStore?.reusableIterable) {
+		const existing = (options.crossThreads === false ? allSameThreadSubscriptions : allSubscriptions)[path];
+		if (!(existing?.progressConsumers > 0 && existing.dispatchedThrough !== undefined))
+			startBound = localStartBound(table.primaryStore.rootStore);
 	}
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
@@ -137,6 +144,8 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
 		subscription.reportsProgress = true;
 		subscription.registeredThrough = databaseSubscriptions.dispatchedThrough;
+		if (subscription.registeredThrough === undefined && startBound)
+			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
 		if (dbisDb && !databaseSubscriptions.originFloorTimer) startOriginTracking(databaseSubscriptions, dbisDb);
 	}
@@ -290,6 +299,8 @@ class Subscription extends IterableEventQueue {
 	resumeVerified?: Promise<boolean>;
 	reportsProgress?: boolean;
 	registeredThrough?: number;
+	/** With no `registeredThrough`: an exclusive start that skips no local key reserved when it registered or later. */
+	localResumeStart?: number;
 	sentCount?: number;
 	progress?: () => number | undefined;
 	checkpoint?: (holds?: Map<number, number>) => any;

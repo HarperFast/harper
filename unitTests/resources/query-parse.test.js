@@ -1,6 +1,8 @@
 const assert = require('assert');
 const { parseQuery } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Parsing queries', () => {
 	before(function () {});
@@ -199,11 +201,111 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('name==value'), /unexpected operator/);
 		assert.throws(() => parseQuery('name&'), /no comparison/);
 	});
+	it('Parenthesized group values parse like top-level values', function () {
+		const query = parseQuery('(name=(value)|tags=in=(a,b))');
+		const group = query.conditions[0];
+		assert.equal(group.operator, 'or');
+		assert.equal(group.conditions[0].value, '(value)');
+		assert.deepEqual(group.conditions[1].value, ['a', 'b']);
+	});
+	it('Empty FIQL values before a separator or group closer', function () {
+		for (const [query, operator] of [
+			['(a=eq=|b=B)', 'or'],
+			['(a=eq=&b=B)', 'and'],
+			['[a=eq=|b=B]', 'or'],
+		]) {
+			const group = parseQuery(query).conditions[0];
+			assert.equal(group.operator, operator, query);
+			assert.deepEqual(
+				group.conditions.map(({ attribute, value }) => [attribute, value]),
+				[
+					['a', ''],
+					['b', 'B'],
+				],
+				query
+			);
+		}
+		const topLevel = parseQuery('a=eq=&b=B');
+		assert.deepEqual(
+			topLevel.conditions.map(({ attribute, value }) => [attribute, value]),
+			[
+				['a', ''],
+				['b', 'B'],
+			]
+		);
+		assert.equal(parseQuery('(a=eq=)').conditions[0].conditions[0].value, '');
+	});
+	it('Truncated groups are rejected, and a valid parse after a failed one is unaffected', function () {
+		for (const query of ['(a=in=(x,y)', '(a=eq=foo(bar)', '((a=1|b=2)', '(a=1&(b=in=(x,y))', '[a=1']) {
+			assert.throws(() => parseQuery(query), /but encountered end of string/, query);
+			assert.match(new RequestTarget('/T/?' + query).parseError?.message, /end of string/, query);
+		}
+		const query = parseQuery('(a=in=(x,y))');
+		assert.deepEqual(query.conditions[0].conditions[0].value, ['x', 'y']);
+	});
+	it('A condition pending at the end of the string is kept', function () {
+		const single = parseQuery('a=eq=');
+		assert.deepEqual(
+			single.conditions.map(({ attribute, value }) => [attribute, value]),
+			[['a', '']]
+		);
+		assert.equal(parseQuery('b=B&a=eq=').conditions.length, 2);
+		const chained = parseQuery('price=ge=10&=le=');
+		assert.equal(chained.conditions[0].chainedConditions.length, 1);
+		assert.equal(chained.conditions[0].chainedConditions[0].comparator, 'le');
+	});
+	it('Grouping and comparisons are rejected where they cannot apply', function () {
+		assert.throws(() => parseQuery('(a=eq=(b=1))'), /unexpected '\(' in a value/);
+		assert.throws(() => parseQuery('a=eq=[b=1]'), /unexpected '\[' in a value/);
+		assert.throws(() => parseQuery('select(a=1,b)'), /not allowed in a property list/);
+		assert.throws(() => parseQuery('select(a<1)'), /not allowed in a property list/);
+		assert.equal(parseQuery('(note=eq=select(id))').conditions[0].conditions[0].value, 'select(id)');
+		assert.throws(
+			() => parseQuery('a=gt=x{y}'),
+			(error) => error.statusCode === 400 && /in a value/.test(error.message)
+		);
+		assert.throws(() => parseQuery('p=ge=1&=5'), /chained condition needs a FIQL comparator/);
+		assert.throws(
+			() => parseQuery('a=gt=1&b{c}'),
+			(error) =>
+				error.statusCode === 400 && /property sets are not allowed/.test(error.message) && !/push/.test(error.message)
+		);
+	});
+	it('A character no tokenizer accepts ends the parse with an error instead of looping', function () {
+		// a child process, so a regression fails on the timeout instead of hanging the suite
+		const script = `
+			const { parseQuery } = require('#src/resources/search');
+			for (const query of ['(?a=1)', 'a=gt=1&(?)', 'select(?)', 'a=gt=1&?b=2']) {
+				try {
+					parseQuery(query);
+					console.log(query + ': no error');
+				} catch (error) {
+					console.log(query + ': ' + error.message);
+				}
+			}`;
+		const result = spawnSync(process.execPath, ['-e', script], {
+			cwd: path.join(__dirname, '../..'),
+			encoding: 'utf8',
+			timeout: 20000,
+		});
+		assert.equal(result.error, undefined, result.error?.message);
+		const lines = result.stdout.trim().split('\n');
+		assert.equal(lines.length, 4, result.stdout + result.stderr);
+		for (const line of lines) assert.match(line, /unexpected character '\?'/);
+	});
+	it('Single-argument select forms', function () {
+		assert.equal(parseQuery('select(name)').select, 'name');
+		assert.deepEqual(parseQuery('select(name,)').select, ['name']);
+		const asArray = parseQuery('select([name,id])').select;
+		assert.deepEqual([...asArray], ['name', 'id']);
+		assert.equal(asArray.asArray, true);
+	});
 	it('Bad nesting', function () {
 		assert.throws(() => parseQuery('(name=value)shouldntbehere'), /expected operator/);
 		assert.throws(() => parseQuery('(name))'), /no attribute/);
 		assert.throws(() => parseQuery('(=value&=test)'), /attribute must be specified/);
-		assert.throws(() => parseQuery('(name=(value))'), /no attribute/);
+		assert.throws(() => parseQuery('(name=value))'), /unexpected token '\)'/);
+		assert.throws(() => parseQuery('(name=value'), /expected '\)', but encountered end of string/);
 		assert.throws(() => parseQuery('name=value|test=3&foo=bar'), /mix operators/);
 		assert.throws(() => parseQuery('name=value&[test=3&foo=bar|test=4]'), /mix operators/);
 	});

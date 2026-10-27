@@ -9,17 +9,9 @@ import {
 	workersForApplication,
 	stopWorker,
 	isProcessShuttingDown,
-	failedClosedInMemory,
-	processIncarnation,
 	canaryVerdictTimeoutMs,
 } from './manageThreads.ts';
-import {
-	presentIsolatedApplicationNames,
-	isolatedApplicationRefusal,
-	isolatedApplicationCapacityRefusal,
-} from './isolatedApplications.ts';
-import { failClosedReleases, liveDeploymentId } from '../../components/releaseCertification.ts';
-import { getConfigPath } from '../../config/configUtils.ts';
+import { admittedIsolatedApplications, failedClosedApplications } from './isolatedApplications.ts';
 import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
@@ -132,9 +124,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		if (isProcessShuttingDown()) return [];
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
-		const failedClosed = await failedClosedApplications();
+		const failedClosed = await readFailedClosedApplications();
 		if (isProcessShuttingDown()) return [];
-		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()], failedClosed);
+		const isolated = admitIsolatedWorkers([...isolatedSlots.keys()], failedClosed);
 		if (dedicatedPools.length > 0) dedicatedWorkerCount = 0;
 		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
 		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
@@ -187,67 +179,30 @@ const isolatedSlots = new Map<string, IsolatedSlot>();
 const poolSlots: IsolatedSlot[] = [];
 
 /**
- * The isolated applications that get a dedicated worker. Ones already running keep their place; new
- * ones are admitted up to `threads.maxIsolated`, and only while a dedicated worker would be reachable
- * at all. Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool.
+ * Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool. A reconcile of one
+ * application reports nothing about the others, whose workers it leaves as they are.
  */
-function admittedIsolatedApplications(
+function admitIsolatedWorkers(
 	running: string[],
 	failedClosed: Map<string, Error> | undefined,
 	only?: string
 ): string[] {
-	// Admitted in the order boot admits them, so a restart keeps the same applications; a reconcile of one application
-	// reports nothing about the others, whose workers it leaves as they are.
-	const names = presentIsolatedApplicationNames();
-	const admitted = [];
-	const refusalOf = (name: string) => failedClosed?.get(name)?.message ?? isolatedApplicationRefusal(name);
-	const report = (name: string, refusal: string) => {
+	const { admitted, refused } = admittedIsolatedApplications(running, failedClosed);
+	for (const [name, refusal] of refused) {
 		if (only === undefined || only === name) reportIsolatedRefusal(name, refusal);
-	};
-	for (const name of running) {
-		if (!names.includes(name)) continue;
-		const refusal = refusalOf(name);
-		if (refusal) {
-			report(name, refusal);
-			continue;
-		}
-		admitted.push(name);
 	}
-	for (const name of names) {
-		if (admitted.includes(name)) continue;
-		const refusal =
-			(failedClosed ? refusalOf(name) : 'which releases may load could not be read') ??
-			isolatedApplicationCapacityRefusal(name, admitted);
-		if (refusal) {
-			report(name, refusal);
-			continue;
-		}
-		refusedIsolated.delete(name);
-		admitted.push(name);
-	}
+	for (const name of admitted) refusedIsolated.delete(name);
 	return admitted;
 }
 
-/**
- * Applications whose live release must not load: their dedicated worker would load nothing. Undefined when that cannot
- * be read, which keeps running workers running and starts no new one.
- */
-async function failedClosedApplications(): Promise<Map<string, Error> | undefined> {
-	const componentsRoot = getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	let failedClosed: Map<string, Error>;
+/** Undefined when the refusals cannot be read, which keeps running workers running and starts no new one. */
+async function readFailedClosedApplications(): Promise<Map<string, Error> | undefined> {
 	try {
-		failedClosed = await failClosedReleases(componentsRoot, processIncarnation);
+		return await failedClosedApplications();
 	} catch (error) {
 		harperLogger.error('Could not read which releases are refused; starting no new dedicated worker', error);
 		return undefined;
 	}
-	// each holds only while the release it refused is still the live one, as the loader's own check does
-	for (const [name, { deploymentId }] of failedClosedInMemory()) {
-		if (failedClosed.has(name)) continue;
-		if ((await liveDeploymentId(componentsRoot, name).catch(() => undefined)) !== deploymentId) continue;
-		failedClosed.set(name, new Error(`its live release ${deploymentId} was refused`));
-	}
-	return failedClosed;
 }
 
 function reportIsolatedRefusal(name: string, refusal: string) {
@@ -315,9 +270,7 @@ export function reconcileIsolatedWorkers(only?: string, refused = false): Promis
 
 async function reconcileIsolatedWorkersNow(only?: string, refused = false): Promise<string[]> {
 	if (!isMainThread || poolSize === 0) return [];
-	const wanted = new Set(
-		admittedIsolatedApplications([...isolatedSlots.keys()], await failedClosedApplications(), only)
-	);
+	const wanted = new Set(admitIsolatedWorkers([...isolatedSlots.keys()], await readFailedClosedApplications(), only));
 	// main already knows its release is refused, whatever this reading of the records says
 	if (refused && only !== undefined) wanted.delete(only);
 	const stopping = [];

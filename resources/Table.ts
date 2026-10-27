@@ -135,6 +135,7 @@ import {
 	executeConditions,
 	resolveComparator,
 	fullTextComparatorMode,
+	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -1021,7 +1022,8 @@ interface TableResourceClass {
 		sort: Sort,
 		context: Context,
 		readTxn: any,
-		transformToRecord: Function
+		transformToRecord: Function,
+		canSkip?: boolean
 	): any;
 	/**
 	 * This is responsible for select()ing the attributes/properties from returned entries
@@ -6435,36 +6437,30 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 					if (condition.chainedConditions) {
-						if (condition.chainedConditions.length === 1 && (!condition.operator || condition.operator == 'and')) {
-							const chained = condition.chainedConditions[0];
-							let upper: any, lower: any;
-							if (
-								chained.comparator === 'gt' ||
-								chained.comparator === 'greater_than' ||
-								chained.comparator === 'ge' ||
-								chained.comparator === 'greater_than_equal'
-							) {
-								upper = condition;
-								lower = chained;
-							} else {
-								upper = chained;
-								lower = condition;
-							}
-							if (
-								upper.comparator !== 'lt' &&
-								upper.comparator !== 'less_than' &&
-								upper.comparator !== 'le' &&
-								upper.comparator !== 'less_than_equal'
-							) {
-								throw new Error(
-									'Invalid chained condition, only less than and greater than conditions can be chained together'
-								);
-							}
-							const isGe = lower.comparator === 'ge' || lower.comparator === 'greater_than_equal';
-							const isLe = upper.comparator === 'le' || upper.comparator === 'less_than_equal';
-							condition.comparator = ((isGe ? 'ge' : 'gt') + (isLe ? 'le' : 'lt')) as any;
-							condition.value = [lower.value, upper.value];
-						} else throw new Error('Multiple chained conditions are not currently supported');
+						if (condition.operator === 'or')
+							throw new ClientError('Chaining a condition with |= is not supported, use | with the attribute name');
+						if (condition.operator && condition.operator !== 'and')
+							throw new ClientError(`Unknown chained condition operator ${condition.operator}`);
+						if (condition.chainedConditions.length !== 1)
+							throw new ClientError('Chaining more than one condition onto a condition is not supported');
+						const chained = condition.chainedConditions[0];
+						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
+						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
+						const lower = chainedIsLower ? chained : condition;
+						const upper = chainedIsLower ? condition : chained;
+						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
+						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
+						if (
+							(lowerComparator !== 'gt' && lowerComparator !== 'ge') ||
+							(upperComparator !== 'lt' && upperComparator !== 'le')
+						) {
+							throw new ClientError(
+								'Invalid chained condition, only a greater than and a less than condition can be chained together'
+							);
+						}
+						condition.comparator = (lowerComparator + upperComparator) as any;
+						condition.value = [lower.value, upper.value];
 					}
 				}
 				return conditions;
@@ -6668,7 +6664,8 @@ export function makeTable(options): TableResourceClass {
 					postOrdering,
 					context,
 					readTxn,
-					transformToRecord
+					transformToRecord,
+					true
 				);
 				const offset = target.offset || 0;
 				const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
@@ -6815,10 +6812,12 @@ export function makeTable(options): TableResourceClass {
 			sort: Sort,
 			context: Context,
 			readTxn: any,
-			transformToRecord: Function
+			transformToRecord: Function,
+			canSkip = false
 		) {
 			let results = new ExtendedIterable();
 			if (sort) {
+				const skipInvalidated = canSkip && context?.replicateFrom === false;
 				// there might be some situations where we don't need to transform to entries for sorting, not sure
 				entries = transformToEntries(entries, select, context, readTxn, null);
 				// Sort keys are resolved as entries are collected, so comparison never dereferences a record: a
@@ -6837,11 +6836,11 @@ export function makeTable(options): TableResourceClass {
 							? entries[Symbol.asyncIterator]()
 							: entries[Symbol.iterator]();
 					let dbDone: boolean;
+					let closed = false;
 					const dbOrderedAttribute = (sort as any).dbOrderedAttribute;
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
-					let closed = false;
 					// request teardown finishes the read transaction (onDone) without returning this iterator
 					const stopped = () => closed || readTxn?.isDone;
 					function collect(entry): Promise<unknown> | undefined {
@@ -6884,85 +6883,93 @@ export function makeTable(options): TableResourceClass {
 					}
 					return {
 						async next() {
-							let iteration: IteratorResult<any>;
-							if (sortedPositions) {
-								iteration = nextSorted();
-								if (iteration.done) {
-									if (dbDone) {
-										if (results.onDone) results.onDone();
-										return iteration;
-									}
-								} else {
-									const value = await transformToRecord.call(this, iteration.value);
-									return stopped() ? { done: true, value: undefined } : { value };
-								}
-							}
-							ordered = [];
-							orderedKeys = [];
-							for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
-							if (enqueuedEntryForNextGroup) {
-								const collecting = collect(enqueuedEntryForNextGroup);
-								if (collecting) await collecting;
-							}
-							// need to load all the entries into ordered
-							do {
+							for (;;) {
 								if (stopped()) return { done: true, value: undefined };
-								iteration = await dbIterator.next();
-								if (stopped()) return { done: true, value: undefined };
-								if (iteration.done) {
-									dbDone = true;
-									if (!ordered.length) {
-										if (results.onDone) results.onDone();
-										return iteration;
-									} else break;
-								} else {
-									let entry = iteration.value;
-									if (entry?.then) {
-										entry = await entry;
+								let iteration: IteratorResult<any>;
+								if (sortedPositions) {
+									iteration = nextSorted();
+									if (iteration.done) {
+										if (dbDone) {
+											if (results.onDone) results.onDone();
+											return iteration;
+										}
+									} else {
+										const value = await transformToRecord.call(this, iteration.value);
 										if (stopped()) return { done: true, value: undefined };
+										if (value !== SKIP) return { value };
+										continue;
 									}
-									if (entry === SKIP) continue;
-									// if the index has already provided the first order of sorting, we only need to sort
-									// within each grouping
-									if (dbOrderedAttribute) {
-										let groupingValue = getAttributeValue(
-											entry,
-											dbOrderedAttribute,
-											context,
-											(sort as any).dbOrderedSort
-										);
-										if (groupingValue?.then) {
-											groupingValue = await groupingValue;
-											if (stopped()) return { done: true, value: undefined };
-										}
-										if (firstEntry) {
-											firstEntry = false;
-											lastGroupingValue = groupingValue;
-										} else if (groupingValue !== lastGroupingValue) {
-											lastGroupingValue = groupingValue;
-											enqueuedEntryForNextGroup = entry;
-											break;
-										}
-									}
-									const collecting = collect(entry);
+								}
+								ordered = [];
+								orderedKeys = [];
+								for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
+								if (enqueuedEntryForNextGroup) {
+									const collecting = collect(enqueuedEntryForNextGroup);
 									if (collecting) await collecting;
 								}
-							} while (true);
-							if (stopped()) return { done: true, value: undefined };
-							if ((sort as any).isGrouped) {
-								// TODO: Return grouped results
+								// need to load all the entries into ordered
+								do {
+									if (stopped()) return { done: true, value: undefined };
+									iteration = await dbIterator.next();
+									if (stopped()) return { done: true, value: undefined };
+									if (iteration.done) {
+										dbDone = true;
+										if (!ordered.length) {
+											if (results.onDone) results.onDone();
+											return iteration;
+										} else break;
+									} else {
+										let entry = iteration.value;
+										if (entry?.then) {
+											entry = await entry;
+											if (stopped()) return { done: true, value: undefined };
+										}
+										if (entry === SKIP) continue;
+										if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
+										// if the index has already provided the first order of sorting, we only need to sort
+										// within each grouping
+										if (dbOrderedAttribute) {
+											let groupingValue = getAttributeValue(
+												entry,
+												dbOrderedAttribute,
+												context,
+												(sort as any).dbOrderedSort
+											);
+											if (groupingValue?.then) {
+												groupingValue = await groupingValue;
+												if (stopped()) return { done: true, value: undefined };
+											}
+											if (firstEntry) {
+												firstEntry = false;
+												lastGroupingValue = groupingValue;
+											} else if (groupingValue !== lastGroupingValue) {
+												lastGroupingValue = groupingValue;
+												enqueuedEntryForNextGroup = entry;
+												break;
+											}
+										}
+										const collecting = collect(entry);
+										if (collecting) await collecting;
+									}
+								} while (true);
+								if (stopped()) return { done: true, value: undefined };
+								if ((sort as any).isGrouped) {
+									// TODO: Return grouped results
+								}
+								sortedPositions = [];
+								for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
+								sortedPositions.sort(comparePositions);
+								sortedIndex = 0;
+								iteration = nextSorted();
+								if (!iteration.done) {
+									const value = await transformToRecord.call(this, iteration.value);
+									if (stopped()) return { done: true, value: undefined };
+									if (value !== SKIP) return { value };
+									continue;
+								}
+								if (results.onDone) results.onDone();
+								return iteration;
 							}
-							sortedPositions = [];
-							for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
-							sortedPositions.sort(comparePositions);
-							sortedIndex = 0;
-							iteration = nextSorted();
-							if (!iteration.done) {
-								const value = await transformToRecord.call(this, iteration.value);
-								return stopped() ? { done: true, value: undefined } : { value };
-							}
-							if (results.onDone) results.onDone();
-							return iteration;
 						},
 						return() {
 							closed = true;
@@ -6970,6 +6977,7 @@ export function makeTable(options): TableResourceClass {
 							return dbIterator.return();
 						},
 						throw() {
+							closed = true;
 							if (results.onDone) results.onDone();
 							return dbIterator.throw();
 						},
@@ -7082,9 +7090,6 @@ export function makeTable(options): TableResourceClass {
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					record = entry.deref ? entry.deref() : entry.value;
-					if (entry.metadataFlags & INVALIDATED && context.replicateFrom === false && canSkip && entry.residencyId) {
-						return SKIP;
-					}
 					if (checkLoaded && entry.metadataFlags & REPLICA && record) refreshReplicaOnRead(entry);
 					if (!record && (entry.key === undefined || entry.deref)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
@@ -7098,6 +7103,9 @@ export function makeTable(options): TableResourceClass {
 						);
 						if ((entry as any)?.then) return (entry as any).then(transform.bind(this));
 						record = entry?.value;
+					}
+					if (context?.replicateFrom === false && canSkip && entry?.metadataFlags & INVALIDATED) {
+						return SKIP;
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
@@ -10198,7 +10206,7 @@ export function makeTable(options): TableResourceClass {
 		const resolver = propertyResolvers[attribute_name];
 		if (resolver?.loadEntries)
 			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
-		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
+		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
 	}
 	function relatedValue(resolver, loaded) {
 		return resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value;
