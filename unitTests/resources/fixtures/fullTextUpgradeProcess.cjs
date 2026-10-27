@@ -21,6 +21,14 @@ const assert = require('node:assert');
 			await index.close({ mode: 'require-clean' });
 			index = undefined;
 		}
+		let resetError;
+		if (mode === 'reset') {
+			try {
+				await binding.resetNativeFullTextIndex({ path: options.path, indexId: options.indexId });
+			} catch (error) {
+				resetError = error.code;
+			}
+		}
 		const inspection = binding.inspectNativeFullTextIndex(options);
 		let openError;
 		if (mode === 'inspect') {
@@ -30,7 +38,7 @@ const assert = require('node:assert');
 				openError = error.code;
 			}
 		}
-		console.log(JSON.stringify({ inspection, openError, ghostIds }));
+		console.log(JSON.stringify({ inspection, openError, resetError, ghostIds }));
 	} finally {
 		await index?.close({ mode: 'rollback' });
 	}

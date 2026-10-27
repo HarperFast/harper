@@ -655,7 +655,7 @@ describe('published full-text 0.6.0 to 0.7.0 migration', function () {
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		rootPath = setupTestDBPath();
 		binding = await loadFullTextNativeBinding();
-		assert.strictEqual((await binding.runtimeInfo()).packageVersion, '0.7.0');
+		assert.strictEqual((await binding.runtimeInfo()).packageVersion, fullTextPackageVersion);
 	});
 
 	it('rejects old checkpoints, retires them and refuses unsafe downgrade opens', async () => {
@@ -688,6 +688,12 @@ describe('published full-text 0.6.0 to 0.7.0 migration', function () {
 		const reverse = previousFullTextProcess('inspect', native);
 		assert.deepStrictEqual(reverse.inspection, { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
 		assert.strictEqual(reverse.openError, 'E_IDENTITY_MISMATCH');
+		const refusedReset = previousFullTextProcess('reset', native);
+		assert.strictEqual(refusedReset.resetError, 'E_INDEX_CORRUPT');
+		assert.strictEqual(lifecycle.inspect().state, 'checkpointed');
+		await lifecycle.reset(2n);
+		const downgraded = previousFullTextProcess('seed', native, [], payload);
+		assert.deepStrictEqual(downgraded.inspection, { state: 'checkpointed', committedPayload: payload });
 	});
 
 	it('retires a dropped old-engine index without first rebuilding it', async () => {
@@ -750,7 +756,7 @@ describe('published full-text 0.6.0 to 0.7.0 migration', function () {
 			);
 			assert.strictEqual(seeded.inspection.state, 'checkpointed');
 			assert.deepStrictEqual(seeded.ghostIds, ['native-only-ghost']);
-			assert.deepEqual(decodeFullTextCursorPayload(seeded.inspection.committedPayload).logs, cursor.logs);
+			assert.deepStrictEqual({ ...decodeFullTextCursorPayload(seeded.inspection.committedPayload).logs }, cursor.logs);
 			assert.deepStrictEqual(lifecycle.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
 			let runtime;
 			let unregister;
@@ -759,13 +765,19 @@ describe('published full-text 0.6.0 to 0.7.0 migration', function () {
 			let resets = 0;
 			let auditAfterWrites;
 			let writeError;
+			let resetError;
 			try {
 				const backend = await createNativeFullTextDerivedIndexBackend({
 					...configuration,
 					id: configuration.indexId,
 					beforeReset: async () => {
 						resets++;
-						assert.strictEqual(runtime.getReadiness(configuration.indexId).state, 'rebuilding');
+						try {
+							assert.strictEqual(runtime.getReadiness(configuration.indexId).state, 'rebuilding');
+						} catch (error) {
+							resetError = error;
+							throw error;
+						}
 					},
 				});
 				runtime = new DerivedIndexRuntime(
@@ -805,6 +817,7 @@ describe('published full-text 0.6.0 to 0.7.0 migration', function () {
 					},
 				});
 				await waitFor(() => {
+					if (resetError) throw resetError;
 					if (writeError) throw writeError;
 					return auditAfterWrites;
 				}, 30_000);
@@ -832,6 +845,7 @@ describe('published full-text 0.6.0 to 0.7.0 migration', function () {
 				assert.strictEqual(result.total, 2);
 				assert.strictEqual(result.totalRelation, 'exact');
 				assert.strictEqual((await reader.search({ text: 'migrationghost', exactTotal: true })).total, 0);
+				assert.strictEqual((await reader.search({ text: 'removable', exactTotal: true })).total, 0);
 				assert.deepStrictEqual(
 					(await reader.search({ text: 'ad', exactTotal: true })).hits.map(({ id }) => id),
 					empty ? [] : [nativeId('ad')]
