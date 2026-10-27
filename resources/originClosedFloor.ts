@@ -85,7 +85,8 @@ class ThreadRegistry {
 		this.rootStore = rootStore;
 		this.words = new BigInt64Array(rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES)));
 		// a reservation's pending bound is `proposed` as it starts, so it must never be 0
-		storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());
+		if (Atomics.load(this.words, WORD_PROPOSED) === 0n)
+			storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());
 	}
 
 	private claimSlot(): number {
@@ -264,8 +265,8 @@ class ThreadRegistry {
 
 	/**
 	 * The lowest bound over owned slots, negated while any slot is pending: a reservation in progress (its
-	 * magnitude still bounds that thread), or a `0` — the stale word of a slot whose claimer has not stored
-	 * its first bound, and so has reserved nothing a reader that saw it must wait for.
+	 * magnitude still bounds that thread), or a `0` — the initial word of a slot whose claimer has not stored
+	 * its first bound, and so has reserved nothing yet. A reused slot's stale word in that window only errs low.
 	 */
 	minBound(): number {
 		let min = Infinity;
@@ -398,7 +399,9 @@ export function localStartBound(rootStore: RocksDatabase): { atOrAbove: number }
 	// a closed store's registry is retired; recreating it would retain the closed store
 	if (rootStore.status === 'closed') return;
 	const closed = sampleClosedBounds(rootStore);
-	return closed.bound <= closed.sample ? { atOrAbove: closed.bound } : { above: closed.sample };
+	// nothing appends below the published floor either; it is the tighter bound when a carried one is stale
+	const bound = Math.max(closed.bound, fromBits(Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED)));
+	return bound <= closed.sample ? { atOrAbove: bound } : { above: closed.sample };
 }
 
 function sampleClosedBounds(rootStore: RocksDatabase): { sample: number; bound: number; settled: boolean } {

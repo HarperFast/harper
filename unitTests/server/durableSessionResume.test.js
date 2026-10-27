@@ -22,8 +22,7 @@ const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 const user = { username: 'mqtt-durable-test', role: { permission: { super_user: true } } };
 
 let sequence = 0;
-function topicTable() {
-	const name = `DurableTopic${++sequence}`;
+function topicTable(name = `DurableTopic${++sequence}`) {
 	const T = table({
 		table: name,
 		database: `durable_${name}`,
@@ -2450,10 +2449,10 @@ describe('MQTT durable collection topics on retained delivery', function () {
 
 	it('resumes with a write that was in flight when the topic was subscribed while another thread was mid-reservation', async function () {
 		if (!isRocksDB) this.skip(); // LMDB topics start at the JS clock
-		const { T, name } = topicTable();
+		const name = `DurableTopic${++sequence}`;
 		const topic = `${name}/#`;
-		const commitInFlight = await heldTransaction(T, 'inflight');
 		const gate = new Int32Array(new SharedArrayBuffer(4));
+		// the worker opens the database first, so main's certification tick cannot publish a floor before it parks
 		const worker = new Worker(require.resolve('../resources/originClosedFloor-thread.js'), {
 			workerData: {
 				mode: 'park-reserving',
@@ -2484,9 +2483,16 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			Atomics.store(gate, 0, 1);
 			Atomics.notify(gate, 0);
 		};
+		let commitInFlight;
 		try {
 			await reached('parked');
-			assert.strictEqual(getOriginClosedFloor(T.primaryStore.rootStore), undefined, 'no floor is published yet');
+			const { T } = topicTable(name);
+			commitInFlight = await heldTransaction(T, 'inflight');
+			const rootStore = T.primaryStore.rootStore;
+			// a JS-clock start would then be above the in-flight key
+			const nativeNow = rootStore.getMonotonicTimestamp();
+			await waitFor(() => commonUtility.getNextMonotonicTime() > nativeNow, 10_000);
+			assert.strictEqual(getOriginClosedFloor(rootStore), undefined, 'no floor is published yet');
 			const clientId = `mid-reservation-${name}`;
 			const first = await connect(clientId);
 			await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
@@ -2508,7 +2514,7 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			second.session.disconnect(true);
 		} finally {
 			release();
-			await commitInFlight();
+			await commitInFlight?.();
 			await Promise.race([exited, worker.terminate()]);
 		}
 	});

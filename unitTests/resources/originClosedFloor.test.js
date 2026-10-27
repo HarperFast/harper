@@ -114,6 +114,25 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(startsAtOrBelow(start, entry.txnLogKey), `start ${JSON.stringify(start)} above ${entry.txnLogKey}`);
 	});
 
+	it('a registration sample stays at or below a key decided before it but not yet settled (worker thread)', async () => {
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { next, exited } = startWorker({
+			mode: 'park-rekeying',
+			gate,
+			tableName,
+			record: { id: 'parked-rekeying', n: 1 },
+		});
+		await next('ready');
+		await next('parked');
+		await sleep(2);
+		const start = localStartBound(rootStore);
+		releaseGate(gate);
+		await next('committed');
+		await exited;
+		const [entry] = entriesFor('parked-rekeying');
+		assert(startsAtOrBelow(start, entry.txnLogKey), `start ${JSON.stringify(start)} above ${entry.txnLogKey}`);
+	});
+
 	it('a thread mid-reservation still bounds the start at its outstanding key, below a newer sample (worker thread)', async () => {
 		const gate = new Int32Array(new SharedArrayBuffer(4));
 		const { worker, next, exited } = startWorker({ mode: 'hold-then-park-reserving', gate, tableName });

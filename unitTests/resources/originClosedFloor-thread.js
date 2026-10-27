@@ -80,8 +80,13 @@ async function run() {
 		};
 		await transaction({}, () => Tbl.put({ id: 'parked', n: 1 }));
 	} else if (mode === 'park-reserving') {
-		parkInsideNextReservation();
+		parkInsideNextReservation('getTimestamp');
 		await transaction({}, () => Tbl.put(record));
+		parentPort.postMessage({ type: 'committed' });
+	} else if (mode === 'park-rekeying') {
+		// an explicit timestamp is never a key, so the reservation mints one and installs it: park there
+		parkInsideNextReservation('setTimestamp');
+		await transaction({ timestamp: Date.now() - 60_000 }, () => Tbl.put(record));
 		parentPort.postMessage({ type: 'committed' });
 	} else if (mode === 'hold-then-park-reserving') {
 		let commitHeld;
@@ -92,7 +97,7 @@ async function run() {
 		while (!commitHeld) await new Promise((resolve) => setImmediate(resolve));
 		parentPort.postMessage({ type: 'held' });
 		await new Promise((resolve) => parentPort.once('message', resolve));
-		parkInsideNextReservation();
+		parkInsideNextReservation('getTimestamp');
 		await transaction({}, () => Tbl.put(record));
 		commitHeld();
 		await held;
@@ -100,15 +105,16 @@ async function run() {
 	}
 }
 
-// Stops inside the reservation itself: its slot already says so, and its key is not decided yet.
-function parkInsideNextReservation() {
-	const getTimestamp = Transaction.prototype.getTimestamp;
-	Transaction.prototype.getTimestamp = function () {
+// Stops inside the reservation, while its slot still says pending: before the key is decided at
+// `getTimestamp`, after it at `setTimestamp`.
+function parkInsideNextReservation(method) {
+	const native = Transaction.prototype[method];
+	Transaction.prototype[method] = function (...args) {
 		if (/ThreadRegistry\.reserve\b/.test(new Error().stack)) {
-			Transaction.prototype.getTimestamp = getTimestamp;
+			Transaction.prototype[method] = native;
 			parentPort.postMessage({ type: 'parked' });
 			Atomics.wait(gate, 0, 0);
 		}
-		return getTimestamp.call(this);
+		return native.apply(this, args);
 	};
 }
