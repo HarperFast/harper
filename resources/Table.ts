@@ -4293,7 +4293,11 @@ export function makeTable(options): TableResourceClass {
 		 */
 		save() {
 			const operation = this.#savingOperation;
-			if (operation instanceof ConditionLockWait) return operation.staged.then(() => this.save());
+			if (operation instanceof ConditionLockWait) {
+				const saved = operation.staged.then(() => this.save());
+				saved.catch(noop);
+				return saved;
+			}
 			const lockHandle = operation ? operation.lockHandle : this.#lockHandle;
 			if (this.#lockWritable && lockHandle?.writeRefused) {
 				this.#rejectRefusedLockWrite(lockHandle);

@@ -1847,6 +1847,37 @@ describe('conditional writes through a tracked record instance', () => {
 		assert.strictEqual(await Tracked.get('tracked-delete'), null);
 	});
 
+	it('answers 501 without an unhandled rejection when the handler does not return save()', async () => {
+		class UnreturnedSave extends Tracked {
+			patch(data) {
+				this.update();
+				this.addTo('n', data.add);
+				this.save();
+			}
+		}
+		resources.set('UnreturnedSave', UnreturnedSave, { rest: true });
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			await Tracked.put('unreturned-save', { n: 10 });
+			const stale = await request('PATCH', '/UnreturnedSave/unreturned-save', { add: 5 }, { 'if-match': '"stale"' });
+			const matched = await request(
+				'PATCH',
+				'/UnreturnedSave/unreturned-save',
+				{ add: 5 },
+				{ 'if-match': etagOf('unreturned-save') }
+			);
+			// LMDB stages synchronously; the RocksDB lock defers the write past the response, which refuses it (#3229)
+			assert.deepStrictEqual([stale.status, matched.status], isLMDB ? [412, 204] : [501, 501]);
+			assert.strictEqual(stored('unreturned-save').n, isLMDB ? 15 : 10);
+			await delay(10);
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
 	it('keeps a full replacement on the instance and closes it on save()', async () => {
 		let observed, lateWrite;
 		class AwaitedReplace extends Tracked {
