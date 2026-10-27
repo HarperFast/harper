@@ -130,12 +130,22 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 
 		const written = await call({
 			operation: 'set_configuration',
-			studio_navigation: { applications: 'hidden', apis: 'hidden', operations: 'tucked' },
+			studio_navigation: {
+				'applications': 'hidden',
+				'apis': 'hidden',
+				'operations': 'tucked',
+				'studio-pages.redirects': 'tucked',
+			},
 			studio_landing: 'studio-pages.redirects',
 		});
 		strictEqual(written.status, 200, JSON.stringify(written.body));
 		deepStrictEqual(await studioConfiguration('studio_no_permissions_user'), {
-			navigation: { applications: 'hidden', apis: 'hidden', operations: 'tucked' },
+			navigation: {
+				'applications': 'hidden',
+				'apis': 'hidden',
+				'operations': 'tucked',
+				'studio-pages.redirects': 'tucked',
+			},
 			landing: 'studio-pages.redirects',
 			pages: FIXTURE_PAGES,
 		});

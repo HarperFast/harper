@@ -487,8 +487,8 @@
 			"properties": {
 				"navigation": {
 					"type": "object",
-					"description": "How Studio shows each built-in tab. A tab not listed is visible.",
-					"propertyNames": { "pattern": "^[a-z0-9-]+$" },
+					"description": "How Studio shows each built-in tab, or a component's page keyed <component>.<pageId>. A tab not listed is visible.",
+					"propertyNames": { "$ref": "#/definitions/studioPageKey" },
 					"properties": {
 						"applications": { "$ref": "#/definitions/studioNavigationState" },
 						"databases": { "$ref": "#/definitions/studioNavigationState" },
@@ -501,8 +501,7 @@
 					"additionalProperties": { "$ref": "#/definitions/studioNavigationState" }
 				},
 				"landing": {
-					"type": "string",
-					"minLength": 1,
+					"$ref": "#/definitions/studioPageKey",
 					"description": "The page Studio opens the cluster on: a built-in tab key, or <component>.<pageId> for a page a component declares."
 				}
 			}
@@ -1032,6 +1031,12 @@
 	"additionalProperties": true,
 
 	"definitions": {
+		"studioPageKey": {
+			"type": "string",
+			"maxLength": 128,
+			"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.[a-z0-9-]+)$",
+			"description": "A built-in tab key, or <component>.<pageId>: a component's name as get_components reports it, a dot, and the id of a page it declares."
+		},
 		"studioNavigationState": {
 			"type": "string",
 			"enum": ["visible", "tucked", "hidden"],

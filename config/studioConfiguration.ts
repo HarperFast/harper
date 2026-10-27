@@ -32,6 +32,10 @@ interface WarningLogger {
 type ReadTextFile = (path: string, encoding: 'utf8') => Promise<string>;
 
 const KEY_PATTERN = /^[a-z0-9-]+$/;
+// A built-in tab, or `<component>.<pageId>` for a page a component declares. A page id holds no dot, so the last dot
+// separates the two, and a component name may hold dots of its own.
+const PAGE_KEY_PATTERN = /^(?:[a-z0-9-]+|[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[a-z0-9-]+)$/;
+const MAX_PAGE_KEY_LENGTH = 128;
 const NAVIGATION_STATES = new Set(['visible', 'tucked', 'hidden']);
 const PLACEMENTS = new Set(['tab', 'config']);
 const COMPONENT_READ_CONCURRENCY = 8;
@@ -42,6 +46,10 @@ const ROOT_SOURCE = '';
 
 function isMap(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isPageKey(value: unknown): value is string {
+	return typeof value === 'string' && value.length <= MAX_PAGE_KEY_LENGTH && PAGE_KEY_PATTERN.test(value);
 }
 
 export function validateStudioNavigation(
@@ -56,7 +64,8 @@ export function validateStudioNavigation(
 	const valid: Record<string, StudioNavigationState> = {};
 	let count = 0;
 	for (const [tab, state] of Object.entries(navigation)) {
-		if (!KEY_PATTERN.test(tab)) problems.push('studio.navigation has a key that does not match [a-z0-9-]+');
+		if (!isPageKey(tab))
+			problems.push('studio.navigation has a key that is neither a tab key nor <component>.<pageId>');
 		else if (typeof state !== 'string' || !NAVIGATION_STATES.has(state))
 			problems.push(`studio.navigation.${tab} must be visible, tucked or hidden`);
 		else {
@@ -69,8 +78,8 @@ export function validateStudioNavigation(
 
 export function validateStudioLanding(landing: unknown, problems: string[]): string | undefined {
 	if (landing == null) return undefined;
-	if (typeof landing === 'string' && landing.trim() !== '') return landing;
-	problems.push('studio.landing must be a non-empty string');
+	if (isPageKey(landing)) return landing;
+	problems.push('studio.landing must be a tab key or <component>.<pageId>');
 	return undefined;
 }
 

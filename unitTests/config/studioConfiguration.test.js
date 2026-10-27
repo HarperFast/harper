@@ -114,8 +114,11 @@ studio:
 			assert.match(warnings[0], /root config/);
 			assert.match(warnings[0], /studio\.navigation\.logs must be visible, tucked or hidden/);
 			assert.match(warnings[0], /studio\.navigation\.config must be visible, tucked or hidden/);
-			assert.strictEqual(warnings[0].match(/studio\.navigation has a key that does not match/g).length, 2);
-			assert.match(warnings[0], /studio\.landing must be a non-empty string/);
+			assert.strictEqual(
+				warnings[0].match(/studio\.navigation has a key that is neither a tab key nor <component>\.<pageId>/g).length,
+				2
+			);
+			assert.match(warnings[0], /studio\.landing must be a tab key or <component>\.<pageId>/);
 			assert.ok(!warnings[0].includes(SECRET) && !warnings[0].includes('gone'));
 		});
 
@@ -482,6 +485,42 @@ studio:
 			assert.strictEqual(configuration.pages.length, 2);
 		});
 
+		it("accepts a component page's <component>.<pageId> as a navigation key and as the landing page", async () => {
+			const navigation = {
+				'applications': 'hidden',
+				'harper-redirects.redirects': 'tucked',
+				'Dev_App-2.page': 'hidden',
+				'my.dotted.app.page': 'visible',
+			};
+			await setConfiguration({
+				operation: 'set_configuration',
+				studio_navigation: navigation,
+				studio_landing: 'harper-redirects.redirects',
+			});
+			const configuration = await getStudioConfiguration();
+			assert.deepStrictEqual(configuration.navigation, navigation);
+			assert.strictEqual(configuration.landing, 'harper-redirects.redirects');
+		});
+
+		for (const key of [
+			'harper-redirects.Redirects',
+			'harper redirects.redirects',
+			'harper-redirects.',
+			'.harper-redirects.redirects',
+			'app/nested.page',
+			'harper-redirects.redirects!',
+			'@scope.page',
+			`${'a'.repeat(120)}.redirects`,
+		]) {
+			it(`refuses the navigation key ${JSON.stringify(key)}`, async () => {
+				await assert.rejects(
+					setConfiguration({ operation: 'set_configuration', studio_navigation: { [key]: 'tucked' } }),
+					(error) =>
+						error.statusCode === 400 && /studio\.navigation has a key that is neither a tab key nor/.test(error.message)
+				);
+			});
+		}
+
 		it('accepts navigation as JSON text, and replaces the whole map', async () => {
 			await setConfiguration({ operation: 'set_configuration', studio_navigation: { logs: 'hidden', apis: 'hidden' } });
 			await setConfiguration({
@@ -533,11 +572,19 @@ studio:
 		for (const [fields, problem] of [
 			[{ studio_navigation: { logs: 'gone' } }, /studio\.navigation\.logs must be visible, tucked or hidden/],
 			[{ studio_navigation: 'hidden' }, /studio\.navigation must be a map/],
-			[{ studio_navigation: { Logs: 'hidden' } }, /studio\.navigation has a key that does not match/],
-			[{ studio_navigation: { 'Bad_Key!': null } }, /studio\.navigation has a key that does not match/],
+			[
+				{ studio_navigation: { Logs: 'hidden' } },
+				/studio\.navigation has a key that is neither a tab key nor <component>\.<pageId>/,
+			],
+			[
+				{ studio_navigation: { 'Bad_Key!': null } },
+				/studio\.navigation has a key that is neither a tab key nor <component>\.<pageId>/,
+			],
 			[{ studio_navigation: { logs: null } }, /studio\.navigation\.logs must be visible, tucked or hidden/],
-			[{ studio_landing: '' }, /studio\.landing must be a non-empty string/],
-			[{ studio_landing: { page: 'x' } }, /studio\.landing must be a non-empty string/],
+			[{ studio_landing: '' }, /studio\.landing must be a tab key or <component>\.<pageId>/],
+			[{ studio_landing: { page: 'x' } }, /studio\.landing must be a tab key or <component>\.<pageId>/],
+			[{ studio_landing: 'harper-redirects.Redirects' }, /studio\.landing must be a tab key or <component>\.<pageId>/],
+			[{ studio_landing: 'not a page' }, /studio\.landing must be a tab key or <component>\.<pageId>/],
 		]) {
 			it(`refuses ${JSON.stringify(fields)} without writing any part of the request`, async () => {
 				const before = readFileSync(getConfigFilePath(), 'utf8');
