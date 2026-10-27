@@ -188,14 +188,16 @@ function readRootStudioSettings(problems: string[]): Pick<StudioConfiguration, '
 async function componentDirectories(problems: string[]): Promise<[string, string][]> {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 	const directories = new Map<string, string>();
-	try {
-		for (const entry of await readdir(componentsRoot, { withFileTypes: true })) {
-			// The loader's own filter: Harper's staging, aside and lock directories are dot-prefixed.
-			if ((entry.isDirectory() || entry.isSymbolicLink()) && !entry.name.startsWith('.'))
-				directories.set(entry.name, join(componentsRoot, entry.name));
+	if (componentsRoot) {
+		try {
+			for (const entry of await readdir(componentsRoot, { withFileTypes: true })) {
+				// The loader's own filter: Harper's staging, aside and lock directories are dot-prefixed.
+				if ((entry.isDirectory() || entry.isSymbolicLink()) && !entry.name.startsWith('.'))
+					directories.set(entry.name, join(componentsRoot, entry.name));
+			}
+		} catch (error) {
+			if (error.code !== 'ENOENT') problems.push(`the components root could not be listed: ${error.message}`);
 		}
-	} catch (error) {
-		if (error.code !== 'ENOENT') problems.push(`the components root could not be listed: ${error.message}`);
 	}
 	const devApplication = process.env.RUN_HDB_APP;
 	if (devApplication && !directories.has(basename(devApplication)))

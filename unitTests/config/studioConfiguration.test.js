@@ -343,9 +343,11 @@ studio:
 			}
 		});
 
-		it('returns no pages when the components root does not exist', async () => {
-			env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, path.join(componentsRoot, 'missing'));
+		it('returns no pages when the components root does not exist or is not configured', async () => {
 			const { warnings, logger } = captureWarnings();
+			env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, path.join(componentsRoot, 'missing'));
+			assert.deepStrictEqual(await createStudioConfigurationReader(logger)(), { pages: [] });
+			env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, undefined);
 			assert.deepStrictEqual(await createStudioConfigurationReader(logger)(), { pages: [] });
 			assert.deepStrictEqual(warnings, []);
 		});
