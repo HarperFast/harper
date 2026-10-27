@@ -164,7 +164,6 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		match(unverified.stderr, /setup could not verify that job "deploy" excludes fork pull requests/);
 		strictEqual((await policyOf('unsafe')).enabled, false);
 
-		// Nothing to check, from a directory that is no checkout of the repository: refused unless overridden.
 		const unchecked = await setup('unsafe');
 		strictEqual(unchecked.code, 1);
 		match(unchecked.stderr, /Setup could not check \.github\/workflows\/preview\.yaml from a checkout of/);

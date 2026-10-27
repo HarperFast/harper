@@ -191,7 +191,6 @@ export function desiredPreviewIdentity(req: EnableRequest): { names: PreviewName
 	return { names, desired };
 }
 
-/** Enabled policies other than this identity's own that would match the same runs as one of `wanted`. */
 function rivalPolicies(names: PreviewNames, policies: any[], wanted: DesiredPolicy[]): string[] {
 	const ours = new Set([names.policy, names.cleanupPolicy]);
 	return wanted.flatMap((policy) => {

@@ -417,7 +417,7 @@ jobs:
 			);
 			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });
 			// Only a PR read as closed is dropped after a deploy, so a failed read never drops an open one.
-			assert.match(shaped, /if \[ "\$\(pr \| cut -d' ' -f1\)" = closed \]; then harper preview drop app=shop/);
+			assert.match(shaped, /if \[ "\$\{after%% \*\}" = closed \]; then harper preview drop app=shop/);
 		});
 	});
 
