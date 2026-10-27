@@ -49,7 +49,7 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	});
 
 	after(() => {
-		setMaxRetryDelayMs(previousMaxRetryDelay);
+		if (previousMaxRetryDelay !== undefined) setMaxRetryDelayMs(previousMaxRetryDelay);
 		process.removeListener('unhandledRejection', onUnhandled);
 	});
 
