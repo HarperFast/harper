@@ -532,7 +532,7 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 		});
 }
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
-// it cannot copy, so only a copyable record of plain data goes to several requests. The scan is bounded.
+// it cannot copy, so only a copyable record of plain data goes to several requests.
 function isSharableRecord(record: any): boolean {
 	try {
 		return entryMap.has(record) && hasPlainOwnValues(record, { nodes: 10_000 }, 0);
