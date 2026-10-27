@@ -272,7 +272,6 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 	});
 
 	describe('a timestamp-anchored log that retention empties while idle', () => {
-		// Keeps coverage only on the vector it was captured with, as both native backends do.
 		const coverageBackend = (id) => ({
 			id,
 			cursor: undefined,
@@ -426,7 +425,6 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			assert.strictEqual(backend.cursor.floors, undefined, 'the next commit anchors the log again');
 			assert.strictEqual(backend.resets, 1, 'a re-registration over the emptied log did not rebuild');
 
-			// The runner releases once idle; the next peer write re-acquires it and installs the durable cursor.
 			await caughtUp();
 			const releases = backend.shutdowns;
 			await waitFor(() => backend.shutdowns > releases, { timeout: 20_000 });
