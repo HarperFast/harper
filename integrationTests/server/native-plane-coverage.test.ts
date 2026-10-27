@@ -214,6 +214,16 @@ test(
 					if (result.status === 503) return false;
 					assert.equal(result.status, 200, JSON.stringify(result));
 					assert.equal(result.coverage, null);
+					// a waiting query that fails while the index recovers is cut off; any diagnostic it carried names why
+					if (result.aborted) {
+						const diagnostic = /\{"error":"([^"]*)/.exec(result.text)?.[1];
+						if (diagnostic)
+							assert.match(
+								diagnostic,
+								/^(DerivedIndexLagError|ServerError: The native HNSW index is (unavailable|rebuilding))/
+							);
+						return false;
+					}
 					if (result.body.some((record: any) => record.error)) {
 						for (const record of result.body.filter((record: any) => record.error))
 							assert.match(
