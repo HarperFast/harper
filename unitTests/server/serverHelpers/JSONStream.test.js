@@ -122,6 +122,27 @@ describe('Test JSONStream module ', () => {
 			assertFailed(await collect(streamAsJSON(rows())), '[{"n":0},{"error":"Error: boom"}', 'boom');
 		});
 
+		it('a row with a non-function then field is an ordinary row', async function () {
+			function* rows() {
+				yield { then: 'later' };
+			}
+			const result = await collect(streamAsJSON(rows()));
+			assert.strictEqual(result.ended, true);
+			assert.deepStrictEqual(JSON.parse(result.out), [{ then: 'later' }]);
+		});
+
+		it('a thenable whose then throws', async function () {
+			function* rows() {
+				yield { n: 0 };
+				yield {
+					then() {
+						throw new Error('boom');
+					},
+				};
+			}
+			assertFailed(await collect(streamAsJSON(rows())), '[{"n":0},{"error":"Error: boom"}', 'boom');
+		});
+
 		it('a row that fails to serialize', async function () {
 			function* rows() {
 				yield { n: 0 };

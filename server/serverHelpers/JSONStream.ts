@@ -109,8 +109,14 @@ class JSONStream extends Readable {
 				yield ']';
 				return;
 			}
-			if (object.then) {
-				yield object.then((object) => this.serialize(object));
+			if (typeof object.then === 'function') {
+				let promise;
+				try {
+					promise = object.then((object) => this.serialize(object));
+				} catch (error) {
+					throw elementFailure(error);
+				}
+				yield promise;
 			} else {
 				let json;
 				try {

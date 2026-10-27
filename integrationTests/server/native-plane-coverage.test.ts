@@ -46,9 +46,9 @@ test(
 				'Content-Type': 'application/json',
 				'Connection': 'close',
 			};
-			function harperLog(): string {
+			function lagLogLines(): number {
 				const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
-				return existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
+				return existsSync(logPath) ? readFileSync(logPath, 'utf8').split('DerivedIndexLagError').length - 1 : 0;
 			}
 			async function request(path: string, method = 'GET', body?: unknown) {
 				const response = await fetch(`${ctx.harper.httpURL}${path}`, {
@@ -92,21 +92,25 @@ test(
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
 			for (let start = 0; start < records.length; start += 500) {
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
-				assert(result.status < 300, JSON.stringify(result));
+				assert(result.status < 300 && !result.aborted, JSON.stringify(result));
 			}
 			for (const path of ['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/']) {
-				const logBefore = harperLog().length;
+				const lagLinesBefore = lagLogLines();
 				const shortWait = await query(1_000_000, 1, target, path);
 				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
 				assert.equal(shortWait.coverage, null);
-				// the diagnostic is best-effort, so a bare cut-off body must have logged the lag error during this query
-				if (shortWait.aborted)
+				// the diagnostic is best-effort, so a bare cut-off body must have logged the lag error itself; waiting for
+				// for its line here also keeps a late line out of the next query's count
+				if (shortWait.aborted) {
 					assert(
-						/\{"error":"DerivedIndexLagError/.test(shortWait.text) ||
-							(!shortWait.text.includes('{"error":') && harperLog().slice(logBefore).includes('DerivedIndexLagError')),
+						/\{"error":"DerivedIndexLagError/.test(shortWait.text) || !shortWait.text.includes('{"error":'),
 						JSON.stringify(shortWait)
 					);
-				else {
+					await waitFor(() => lagLogLines() > lagLinesBefore, {
+						timeout: 5000,
+						message: `no DerivedIndexLagError logged for ${JSON.stringify(shortWait)}`,
+					});
+				} else {
 					const errors = shortWait.body.filter((record: any) => record.error);
 					if (errors.length) {
 						assert.equal(errors.length, 1, JSON.stringify(shortWait));

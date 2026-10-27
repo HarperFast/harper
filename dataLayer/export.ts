@@ -164,10 +164,10 @@ export async function saveToLocal(filePath: string, sourceDataFormat: string, da
 	if (sourceDataFormat === JSON_TEXT) {
 		// so a failure never leaves a partial file at the path; an existing file keeps its mode, and a symlink
 		// keeps pointing at the replaced file
-		const existing = await fs.promises.stat(filePath).catch(() => undefined);
-		const target = existing ? await fs.promises.realpath(filePath) : filePath;
+		const target = await exportTarget(filePath);
+		const existing = await fs.promises.stat(target).catch(() => undefined);
 		const tempPath = `${target}.${randomUUID()}.tmp`;
-		const writeStream = fs.createWriteStream(tempPath, { flags: 'wx' });
+		const writeStream = fs.createWriteStream(tempPath, { flags: 'wx', mode: existing ? existing.mode & 0o777 : 0o666 });
 		try {
 			await pipeline(streamAsJSON(data), writeStream);
 			if (existing?.isFile()) await fs.promises.chmod(tempPath, existing.mode & 0o7777);
@@ -198,6 +198,18 @@ export async function saveToLocal(filePath: string, sourceDataFormat: string, da
 	}
 
 	throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
+}
+
+// the file a write to filePath lands on: through any symlink, including one whose target does not exist yet
+async function exportTarget(filePath: string): Promise<string> {
+	try {
+		return await fs.promises.realpath(filePath);
+	} catch {
+		const link = await fs.promises.lstat(filePath).catch(() => undefined);
+		return link?.isSymbolicLink()
+			? path.resolve(path.dirname(filePath), await fs.promises.readlink(filePath))
+			: filePath;
+	}
 }
 
 /**

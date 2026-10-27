@@ -82,6 +82,36 @@ describe('JSON export to a local file when its source fails', function () {
 		assert.strictEqual(fs.statSync(realPath).mode & 0o777, 0o600);
 	});
 
+	it('writes through a symlink whose target does not exist yet', async function () {
+		if (process.platform === 'win32') this.skip();
+		const realPath = path.join(dir, 'not-yet.json');
+		const linkPath = path.join(dir, 'dangling.json');
+		fs.symlinkSync(realPath, linkPath);
+		function* rows() {
+			yield { id: 1 };
+		}
+		await saveToLocal(linkPath, 'json', rows());
+		assert.strictEqual(fs.lstatSync(linkPath).isSymbolicLink(), true);
+		assert.deepStrictEqual(JSON.parse(fs.readFileSync(realPath, 'utf8')), [{ id: 1 }]);
+	});
+
+	it('never makes the rows readable wider than the file it replaces while writing', async function () {
+		if (process.platform === 'win32') this.skip();
+		const filePath = path.join(dir, 'private.json');
+		fs.writeFileSync(filePath, '[]');
+		fs.chmodSync(filePath, 0o600);
+		let tempMode;
+		async function* rows() {
+			yield { id: 1 };
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			const temp = fs.readdirSync(dir).find((name) => name.endsWith('.tmp'));
+			tempMode = fs.statSync(path.join(dir, temp)).mode & 0o777;
+			yield { id: 2 };
+		}
+		await saveToLocal(filePath, 'json', rows());
+		assert.strictEqual(tempMode & 0o077, 0);
+	});
+
 	it('replaces the file at the path when it succeeds', async function () {
 		const filePath = path.join(dir, 'replaced.json');
 		fs.writeFileSync(filePath, '[{"id":"previous"}]');
