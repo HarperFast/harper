@@ -159,9 +159,17 @@ const { transaction } = require('#src/resources/transaction');
 		}
 	});
 
-	for (const owned of [false, true])
-		it(`discards a delayed owner response after the read transaction closes (owned=${owned})`, async () => {
-			const Records = await declare('SlotClosedRead' + owned, `@sharded(slots: 10, slotFrom: "${owned ? 0 : 1}")`);
+	for (const [owned, indexed] of [
+		[false, true],
+		[true, true],
+		[false, false],
+	])
+		it(`discards a delayed owner response after the read transaction closes (owned=${owned}, indexed=${indexed})`, async () => {
+			const Records = await declare(
+				'SlotClosedRead' + owned + indexed,
+				`@sharded(slots: 10, slotFrom: "${owned ? 0 : 1}")`,
+				indexed ? undefined : 'body: String'
+			);
 			const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 			const { setDatabaseBaselineGuard } = require('#src/resources/databaseLiveGuard');
 			const root = Records.primaryStore.rootStore;
