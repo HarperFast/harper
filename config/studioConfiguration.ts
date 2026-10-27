@@ -32,10 +32,8 @@ interface WarningLogger {
 type ReadTextFile = (path: string, encoding: 'utf8') => Promise<string>;
 
 const KEY_PATTERN = /^[a-z0-9-]+$/;
-// A built-in tab, or `<component>.<pageId>` for a page a component declares. A page id holds no dot, so the last dot
-// separates the two, and a component name may hold dots of its own.
+// A page id holds no dot, so in `<component>.<pageId>` the last dot is the separator.
 const PAGE_KEY_PATTERN = /^(?:[a-z0-9-]+|[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[a-z0-9-]+)$/;
-const MAX_PAGE_KEY_LENGTH = 128;
 const NAVIGATION_STATES = new Set(['visible', 'tucked', 'hidden']);
 const PLACEMENTS = new Set(['tab', 'config']);
 const COMPONENT_READ_CONCURRENCY = 8;
@@ -49,7 +47,25 @@ function isMap(value: unknown): value is Record<string, unknown> {
 }
 
 function isPageKey(value: unknown): value is string {
-	return typeof value === 'string' && value.length <= MAX_PAGE_KEY_LENGTH && PAGE_KEY_PATTERN.test(value);
+	return typeof value === 'string' && PAGE_KEY_PATTERN.test(value);
+}
+
+// The config env layers split paths on dots, so a `<component>.<pageId>` key they set arrives as nested maps.
+function navigationEntries(
+	navigation: Record<string, unknown>,
+	problems: string[],
+	prefix = '',
+	visited = new Set<object>()
+): [string, unknown][] {
+	visited.add(navigation);
+	const entries: [string, unknown][] = [];
+	for (const [key, value] of Object.entries(navigation)) {
+		const path = prefix ? `${prefix}.${key}` : key;
+		if (!isMap(value)) entries.push([path, value]);
+		else if (visited.has(value)) problems.push('studio.navigation holds a value that refers to itself');
+		else entries.push(...navigationEntries(value, problems, path, visited));
+	}
+	return entries;
 }
 
 export function validateStudioNavigation(
@@ -63,7 +79,7 @@ export function validateStudioNavigation(
 	}
 	const valid: Record<string, StudioNavigationState> = {};
 	let count = 0;
-	for (const [tab, state] of Object.entries(navigation)) {
+	for (const [tab, state] of navigationEntries(navigation, problems)) {
 		if (!isPageKey(tab))
 			problems.push('studio.navigation has a key that is neither a tab key nor <component>.<pageId>');
 		else if (typeof state !== 'string' || !NAVIGATION_STATES.has(state))

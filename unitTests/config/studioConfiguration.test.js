@@ -103,7 +103,7 @@ studio:
 					[`${SECRET}_key`]: null,
 					status: null,
 					cluster: 'tucked',
-					config: { apiKey: SECRET },
+					config: [SECRET],
 				},
 				landing: { apiKey: SECRET },
 			});
@@ -510,7 +510,6 @@ studio:
 			'app/nested.page',
 			'harper-redirects.redirects!',
 			'@scope.page',
-			`${'a'.repeat(120)}.redirects`,
 		]) {
 			it(`refuses the navigation key ${JSON.stringify(key)}`, async () => {
 				await assert.rejects(
@@ -520,6 +519,31 @@ studio:
 				);
 			});
 		}
+
+		it('reads a <component>.<pageId> key an env layer nested on its dot', async () => {
+			setRootConfigEntry('studio', {
+				navigation: {
+					'logs': 'hidden',
+					'harper-redirects': { redirects: 'tucked' },
+					'my': { dotted: { app: { page: 'hidden' } } },
+				},
+			});
+			assert.deepStrictEqual((await getStudioConfiguration()).navigation, {
+				'logs': 'hidden',
+				'harper-redirects.redirects': 'tucked',
+				'my.dotted.app.page': 'hidden',
+			});
+		});
+
+		it('drops a nested navigation map a YAML alias makes refer to itself', async () => {
+			writeFileSync(
+				getConfigFilePath(),
+				`${readFileSync(getConfigFilePath(), 'utf8')}\nstudio:\n  navigation:\n    app: &loop\n      again: *loop\n    apis: hidden\n`
+			);
+			const { warnings, logger } = captureWarnings();
+			assert.deepStrictEqual((await createStudioConfigurationReader(logger)()).navigation, { apis: 'hidden' });
+			assert.match(warnings[0], /studio\.navigation holds a value that refers to itself/);
+		});
 
 		it('accepts navigation as JSON text, and replaces the whole map', async () => {
 			await setConfiguration({ operation: 'set_configuration', studio_navigation: { logs: 'hidden', apis: 'hidden' } });

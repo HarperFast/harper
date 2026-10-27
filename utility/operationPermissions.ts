@@ -31,7 +31,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 	],
 	/**
 	 * Elevated read-only access to server configuration, logs, and component views.
-	 * All ops here are SU-only and granted via the operations SU bypass.
+	 * All ops here but get_studio_configuration are SU-only and granted via the operations SU bypass.
 	 * Combine with `read_only` for a full studio/dashboard read role:
 	 * `operations: ['read_only', 'admin_read']`
 	 */

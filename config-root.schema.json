@@ -1033,7 +1033,6 @@
 	"definitions": {
 		"studioPageKey": {
 			"type": "string",
-			"maxLength": 128,
 			"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.[a-z0-9-]+)$",
 			"description": "A built-in tab key, or <component>.<pageId>: a component's name as get_components reports it, a dot, and the id of a page it declares."
 		},
