@@ -65,7 +65,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		const existing = (options.crossThreads === false ? allSameThreadSubscriptions : allSubscriptions)[path];
 		if (!(existing?.progressConsumers > 0 && existing.dispatchedThrough !== undefined))
 			startBound = localStartBound(table.primaryStore.rootStore);
-	} else if (options?.reportProgress && table.auditStore) committedThrough = newestCommittedKey(table.auditStore);
+	} else if (options?.reportProgress && table.auditStore && !startTime) {
+		// a read during a close flush arms a read-txn reset that throws on the next tick
+		if (table.auditStore.rootStore?.status === 'closing') throw closingError(table.auditStore, path);
+		committedThrough = newestCommittedKey(table.auditStore);
+	}
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
 		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);

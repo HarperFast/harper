@@ -11,7 +11,11 @@ const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
 const { Worker } = require('node:worker_threads');
 const mqttPacket = require('mqtt-packet');
-const { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
+const {
+	DatabaseClosingError,
+	DatabaseGenerationChangedError,
+	ResumeHistoryUnavailableError,
+} = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const commonUtility = require('#src/utility/lmdb/commonUtility');
@@ -2382,7 +2386,6 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		});
 	}
 
-	/** Subscribes `topic` with the JS clock shifted by `offset` ms, which no position may be taken from. */
 	async function subscribeWithClockOffset(context, session, subscription, offset) {
 		const realClock = commonUtility.getNextMonotonicTime;
 		commonUtility.getNextMonotonicTime = () => realClock() + offset;
@@ -2448,8 +2451,25 @@ describe('MQTT durable collection topics on retained delivery', function () {
 
 		const second = await connect(clientId);
 		await second.session.resume();
-		await waitFor(() => delivery(second.received, 'after'), { message: 'the later write was not replayed' });
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['after', 'marker'], `${topic} replays the later write alone`);
 		second.session.disconnect(true);
+	});
+
+	it('refuses a new durable topic while its LMDB store is closing, before reading its log', async function () {
+		if (isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const rootStore = T.auditStore.rootStore;
+		const { session } = await connect(`closing-${name}`);
+		const status = rootStore.status;
+		rootStore.status = 'closing';
+		try {
+			await assert.rejects(session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 0 }, true), DatabaseClosingError);
+		} finally {
+			rootStore.status = status;
+		}
+		session.disconnect(true);
 	});
 
 	it('resumes a topic subscribed while its log was empty with only what was written after', async () => {
