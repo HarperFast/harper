@@ -1,9 +1,5 @@
 # resources/ — Navigation Guide
 
-The Resource layer is Harper's universal abstraction: all queryable/mutable things (tables, caches, message topics, custom endpoints) extend `Resource`. Inbound protocols (REST, GraphQL, MQTT, NATS, WebSockets) all converge on this interface.
-
-**Read this when:** you're touching the read/write path, authorization, subscriptions, or table CRUD semantics.
-
 > **Navigation convention.** This guide references code by **symbol name** (e.g. `_writeUpdate`) and by **section marker** (e.g. `// #section: write-path-internals`). Jump in your editor via go-to-symbol, or `grep` for the section marker. Line numbers drift; symbols and section markers don't.
 
 ---
