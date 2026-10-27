@@ -137,7 +137,6 @@ jobs:
         timeout-minutes: 3
         run: npm run test:unit:apitests
 
-      # Split by file name so each half's budget stays spendable as the suite grows; see AGENTS.md "Resources".
       - name: 'Unit tests: resources (core a-m)'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 7
