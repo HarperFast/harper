@@ -10260,7 +10260,6 @@ export function makeTable(options): TableResourceClass {
 		if (filtersLength > 0 || !ids.hasEntries) {
 			let results = ids.map(function (this: any, idOrEntry) {
 				idFiltersApplied = null;
-				// only an asynchronous iteration can wait on a maybeAsync filter's Promise; a plain array maps eagerly
 				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
 					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry

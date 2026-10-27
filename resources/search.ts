@@ -1436,7 +1436,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						addRelated,
 						scan
 					).then(() => {
-						// a scan stopped by return() leaves partial mappings, which must not be yielded
+						// a stopped scan leaves partial mappings, which must not be yielded
 						joinedIterator = (scanStopped(scan) ? new Map() : joined).keys()[Symbol.iterator]();
 					});
 					return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : joinedIterator.next()));
