@@ -486,7 +486,7 @@
 			"description": "Harper Studio UI settings for the cluster, written with set_configuration (studio_navigation, studio_landing) and readable by every authenticated role through get_studio_configuration. Each node keeps its own copy, so write it on every node, or pass replicated: true. A UI choice only: server permissions are unchanged. An invalid entry is ignored with a logged warning.",
 			"properties": {
 				"navigation": {
-					"type": "object",
+					"type": ["object", "null"],
 					"description": "How Studio shows each built-in tab, or a component's page keyed <component>.<pageId>. A tab not listed is visible.",
 					"propertyNames": { "$ref": "#/definitions/studioPageKey" },
 					"properties": {
@@ -501,7 +501,7 @@
 					"additionalProperties": { "$ref": "#/definitions/studioNavigationState" }
 				},
 				"landing": {
-					"$ref": "#/definitions/studioPageKey",
+					"anyOf": [{ "$ref": "#/definitions/studioPageKey" }, { "type": "null" }],
 					"description": "The page Studio opens the cluster on: a built-in tab key, or <component>.<pageId> for a page a component declares."
 				}
 			}
