@@ -96,7 +96,6 @@ const monotonicClockBuffer: SharedArrayBuffer =
 	workerData?.monotonicClock ?? getEnvironmentData(MONOTONIC_CLOCK_KEY) ?? new SharedArrayBuffer(8);
 setEnvironmentData(MONOTONIC_CLOCK_KEY, monotonicClockBuffer);
 const lastTimeBits = new BigInt64Array(monotonicClockBuffer);
-let lastSeenBits = 0n;
 const timeFloat = new Float64Array(1);
 const timeBits = new BigInt64Array(timeFloat.buffer);
 export function getMonotonicClockBuffer(): SharedArrayBuffer {
@@ -120,13 +119,12 @@ setInterval(adjustStartTime, TIME_ADJUSTMENT_INTERVAL).unref();
 export function getNextMonotonicTime(this: any) {
 	timeFloat[0] = performance.now() + startTime;
 	const nowBits = timeBits[0];
-	let last = lastSeenBits;
+	let last = Atomics.load(lastTimeBits, 0);
 	for (;;) {
 		// positive doubles order like their bit patterns, and one more is the next representable double
 		const next = nowBits > last ? nowBits : last + 1n;
 		const witnessed = Atomics.compareExchange(lastTimeBits, 0, last, next);
 		if (witnessed === last) {
-			lastSeenBits = next;
 			timeBits[0] = next;
 			return timeFloat[0];
 		}
