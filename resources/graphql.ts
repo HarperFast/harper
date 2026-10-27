@@ -590,6 +590,10 @@ async function processGraphQLSchema(
 			} catch (error) {
 				if (error instanceof ResidencyPlacementError && error.statusCode === 503 && !(error as any).residencyMapBusy) {
 					typeDef.tableClass = loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+					if (declaration && !typeDef.tableClass?.residency)
+						harperLogger.warn?.(
+							`Sharding declaration for ${typeDef.database || 'data'}.${typeDef.table} could not activate: ${error.message}`
+						);
 					break;
 				}
 				if (!declaration || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;

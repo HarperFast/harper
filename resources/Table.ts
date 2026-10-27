@@ -18,6 +18,7 @@ import {
 	residencyOwners,
 	registerResidencyRoot,
 	residencyIsLocal,
+	capturedResidencyIsLocal,
 	requireConnectedResidencyOwner,
 	validateResidencyMapWrite,
 	acquireResidencyMapFence,
@@ -4323,7 +4324,8 @@ export function makeTable(options): TableResourceClass {
 							write,
 							residencyPolicy.byAttribute ? residencySlot : calculateResidencySlot(id),
 							options?.isReplay,
-							localShardingWrite
+							localShardingWrite,
+							transaction
 						);
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					// A base copy from a stub holder must not downgrade the same full record at a resident.
@@ -4453,7 +4455,8 @@ export function makeTable(options): TableResourceClass {
 								write,
 								residencyPolicy.byAttribute ? residencySlot : calculateResidencySlot(id),
 								options?.isReplay,
-								localShardingWrite
+								localShardingWrite,
+								transaction
 							)
 						: TableResource.getRecordResidency({ key: id, ...options });
 					let metadata = 0;
@@ -6072,15 +6075,12 @@ export function makeTable(options): TableResourceClass {
 						);
 					if (residencyPolicy?.byAttribute && !patchesStub) write.completeResidencyRecord = recordToStore;
 					if (residencyPolicy) {
-						write.requiresOwnerConfirmation = false;
+						if (!transaction?.isRetry) write.requiresOwnerConfirmation = false;
 						const slot =
 							residencyPolicy.byAttribute && patchesStub
 								? (options?.residencySlot ?? baseEntry.residencySlot)
 								: calculateResidencySlot(id, recordToStore);
-						const owners =
-							transaction?.isRetry && write.residencyOwners && write.residencyOwnerSlot === slot
-								? write.residencyOwners
-								: captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite);
+						const owners = captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite, transaction);
 						residencyId = undefined;
 						if (residencyPolicy.byAttribute) residencySlot = slot;
 						omitLocalRecord = patchesStub || !owners.includes(server.hostname);
@@ -6107,8 +6107,8 @@ export function makeTable(options): TableResourceClass {
 										write.commit = write.checkResidency = refuse;
 										throw error;
 									}
-								} else {
-									if (!transaction?.isRetry) requireConnectedResidencyOwner(databaseName, owners);
+								} else if (!transaction?.isRetry) {
+									requireConnectedResidencyOwner(databaseName, owners);
 									const committer = committedBy ?? transaction;
 									write.requiresOwnerConfirmation = true;
 									committer.requiresOwnerConfirmation = true;
@@ -6478,7 +6478,7 @@ export function makeTable(options): TableResourceClass {
 								503
 							);
 						const slot = residencySlot ?? calculateResidencySlot(id);
-						captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite);
+						captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite, transaction);
 					}
 					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId, residencySlot };
 					if (
@@ -10119,13 +10119,16 @@ export function makeTable(options): TableResourceClass {
 		return withLocalEntry(entry, id, context, options, withEntry);
 	}
 	function withLocalEntry(entry, id, context, options, withEntry) {
+		if (options.transaction?.isDone) return withEntry(null, id);
 		if (residencyPolicy && (!entry?.value || entry.metadataFlags & INVALIDATED)) {
 			const reason = databaseBaselineHoldReason(tableRootStore, context?.transaction);
 			if (reason) {
 				const slot = residencyPolicy.byAttribute ? entry?.residencySlot : calculateResidencySlot(id);
 				if (slot === undefined || residencyIsLocal(databaseName, slot, residencyPolicy.slots)) {
 					if (slot !== undefined && options.ensureLoaded && sourceLoad && context?.replicateFrom !== false)
-						return sourceLoad({ ...entry, key: id, residencySlot: slot }).then((loaded) => withEntry(loaded, id));
+						return sourceLoad({ ...entry, key: id, residencySlot: slot }).then((loaded) =>
+							withEntry(options.transaction?.isDone ? null : loaded, id)
+						);
 					throw new DatabaseShardingHeldError(databaseName, reason);
 				}
 			}
@@ -10150,11 +10153,13 @@ export function makeTable(options): TableResourceClass {
 		) {
 			const owners = residencyOwners(databaseName, calculateResidencySlot(id), residencyPolicy.slots);
 			if (!owners.includes(server.hostname) && sourceLoad)
-				return sourceLoad({ key: id, residency: owners }).then((entry) => withEntry(entry, id));
+				return sourceLoad({ key: id, residency: owners }).then((entry) =>
+					withEntry(options.transaction?.isDone ? null : entry, id)
+				);
 		}
 		if (options.ensureLoaded && needsResidentLoad(entry, context)) {
 			// load from other node
-			return sourceLoad(entry).then((entry) => withEntry(entry, id));
+			return sourceLoad(entry).then((entry) => withEntry(options.transaction?.isDone ? null : entry, id));
 		}
 		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
 		if (entry && context) {
@@ -10996,16 +11001,17 @@ export function makeTable(options): TableResourceClass {
 												: recordVersion;
 								}
 							}
+							let recordToStore = updatedRecord;
 							const slot = residencyPolicy && calculateResidencySlot(id, updatedRecord);
 							const residency = residencyPolicy
-								? captureResidencyOwners(sourceWrite, slot, false, true)
+								? captureResidencyOwners(sourceWrite, slot, false, true, transaction)
 								: residencyFromFunction(TableResource.getResidency(updatedRecord, context));
 							if (residency) {
 								if (!residency.includes(server.hostname)) {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
 									auditRecord = updatedRecord;
 									omitLocalRecord = true;
-									updatedRecord = (residencyPolicy ? !hasSecondaryIndices() : TableResource.getResidencyById)
+									recordToStore = (residencyPolicy ? !hasSecondaryIndices() : TableResource.getResidencyById)
 										? undefined
 										: residencyStub(auditRecord);
 								}
@@ -11018,7 +11024,7 @@ export function makeTable(options): TableResourceClass {
 							const writeAudit = (audit && (hasChanges || omitLocalRecord)) || null;
 							updateRecord(
 								id,
-								updatedRecord,
+								recordToStore,
 								existingEntry,
 								recordVersion,
 								omitLocalRecord ? INVALIDATED : 0,
@@ -11500,9 +11506,31 @@ export function makeTable(options): TableResourceClass {
 			if (reason) throw new DatabaseShardingHeldError(databaseName, reason);
 		}
 	}
-	function captureResidencyOwners(write: any, slot: number, replay = false, localWrite = false): readonly string[] {
+	function captureResidencyOwners(
+		write: any,
+		slot: number,
+		replay = false,
+		localWrite = false,
+		txn?: any
+	): readonly string[] {
 		// Crash replay restores local rows before peer discovery.
 		if (replay) return residencyIsLocal(databaseName, slot, residencyPolicy.slots) ? [server.hostname] : [];
+		if (txn?.isRetry && write.residencyTransaction === txn && write.residencyOwners) {
+			if (write.residencyOwnerSlot === slot) return write.residencyOwners;
+			if (localWrite && typeof txn.usesAbortMarkers === 'function' && txn.usesAbortMarkers() === true) {
+				const error = new ResidencyPlacementError(
+					`Slot changed during native retry for table ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)}; retry the write`,
+					409
+				);
+				(error as any).retryable = true;
+				throw error;
+			}
+			logger.warn?.(
+				`Slot changed during a logged retry without abort markers for ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)}; the new owners may not receive the complete record`
+			);
+			return capturedResidencyIsLocal(write.residencyOwners, slot) ? [server.hostname] : [];
+		}
+		write.residencyTransaction = txn;
 		const owners = residencyOwners(databaseName, slot, residencyPolicy.slots);
 		if (localWrite) assertLocalShardWrite(owners);
 		write.residencyOwners = owners;
@@ -11529,6 +11557,7 @@ export function makeTable(options): TableResourceClass {
 			stub ??= {};
 			stub[createdTimeProperty.name] = record[createdTimeProperty.name];
 		}
+		if (stub && residencyPolicy) stub[primaryKey] = record[primaryKey];
 		return stub;
 	}
 	function hasExpired(entry: Partial<Entry> | undefined): boolean {

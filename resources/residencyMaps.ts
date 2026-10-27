@@ -40,9 +40,17 @@ const caches = new WeakMap<
 const DECLARATION_KEY = Symbol.for('residency_declaration');
 const mapFences = new WeakMap<object, Map<string, { owner: object; references: number }>>();
 let placementGuard:
-	| ((database: string, owners?: readonly string[], requireConnected?: boolean, shard?: number, root?: object) => void)
+	| ((
+			database: string,
+			owners?: readonly string[],
+			requireConnected?: boolean,
+			shard?: number,
+			root?: object,
+			forDeclaration?: boolean
+	  ) => void)
 	| undefined;
 const ownerShards = new WeakMap<readonly string[], number>();
+const ownerPlacements = new WeakMap<readonly string[], { shards: Uint16Array; localShard: number }>();
 
 export function setResidencyPlacementGuard(guard: typeof placementGuard): void {
 	placementGuard = guard;
@@ -185,7 +193,8 @@ function assertResidencyConfiguration(
 	database: string,
 	hasMap: boolean,
 	forRecovery = false,
-	snapshot?: typeof configuration
+	snapshot?: typeof configuration,
+	forDeclaration = false
 ): void {
 	let current;
 	try {
@@ -196,7 +205,7 @@ function assertResidencyConfiguration(
 	const { shards, shard } = current;
 	if (!shards && !hasMap) residencyFailure(database, 'replication.shards is required before a map is installed');
 	if (shards && !shards.includes(shard)) residencyFailure(database, 'replication.shard is not in replication.shards');
-	if (!forRecovery) placementGuard?.(database);
+	if (!forRecovery) placementGuard?.(database, undefined, undefined, undefined, undefined, forDeclaration);
 }
 
 export function getResidencyMapTable(): any {
@@ -368,7 +377,7 @@ export async function prepareResidencyDeclaration(
 	});
 	compileResidencyPolicy(resolved);
 	const current = getResidencyConfiguration();
-	assertResidencyConfiguration(database, !!snapshot, false, current);
+	assertResidencyConfiguration(database, !!snapshot, false, current, true);
 	if (snapshot) {
 		if (snapshot.slots !== resolved.slots)
 			throw new ClientError(
@@ -431,9 +440,16 @@ export function residencyOwners(database: string, slot: number, slots: number): 
 			residencyFailure(database, 'local shard membership disagrees with replication.shard');
 		map.owners.set(shard, owners);
 		ownerShards.set(owners, shard);
+		ownerPlacements.set(owners, { shards: map.shards, localShard });
 	}
 	placementGuard?.(database, owners, undefined, shard);
 	return owners;
+}
+
+export function capturedResidencyIsLocal(owners: readonly string[], slot: number): boolean {
+	const placement = ownerPlacements.get(owners);
+	if (!placement) throw new Error('Missing captured shard placement for an admitted write');
+	return placement.shards[slot] === placement.localShard;
 }
 
 export function residencyIsLocal(database: string, slot: number, slots: number): boolean {

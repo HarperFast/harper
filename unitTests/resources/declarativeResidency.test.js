@@ -76,6 +76,301 @@ const { transaction } = require('#src/resources/transaction');
 		}
 	);
 
+	it('keeps a declarative local projection primary key in indexed selections', async () => {
+		const Records = await declare('SlotProjectionId', '@sharded(slots: 10, slotFrom: "1")');
+		await Records.put('projection-id', { id: 'projection-id', tag: 'indexed', body: 'complete' });
+		const stored = Records.primaryStore.getEntry('projection-id');
+		assert.ok(stored.metadataFlags & INVALIDATED);
+		assert.equal(stored.value.id, 'projection-id');
+		Records.sourcedFrom(
+			{ load: () => assert.fail('indexed selection must not fetch the complete body') },
+			{ intermediateSource: true }
+		);
+		const rows = [];
+		for await (const row of Records.search({
+			conditions: [{ attribute: 'tag', value: 'indexed' }],
+			select: ['id', 'tag'],
+		}))
+			rows.push({ ...row });
+		assert.deepEqual(rows, [{ id: 'projection-id', tag: 'indexed' }]);
+	});
+
+	it('keeps an external fill complete through a native retry before projecting it', async () => {
+		const Records = await declare(
+			'SlotFillRetry',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
+			'region: Int\ntag: String @indexed\nbody: String'
+		);
+		const binding = Object.values(require.cache).find(
+			(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
+		)?.exports;
+		assert.ok(binding);
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+		const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+		const nativeCommit = Transaction.prototype.commit;
+		const logicalCommit = DatabaseTransaction.prototype.commit;
+		let sourceTransaction, resolveCommit, rejectCommit;
+		const committed = new Promise((resolve, reject) => {
+			resolveCommit = resolve;
+			rejectCommit = reject;
+		});
+		const outcome = committed.then(
+			() => ({ ok: true }),
+			(error) => ({ error })
+		);
+		const attempts = [];
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db === Records.primaryStore.store.db) {
+				if (!attempts.length) binding.forceTryAgainForTesting(1);
+				attempts.push(this.id);
+			}
+			return nativeCommit.apply(this, args);
+		};
+		DatabaseTransaction.prototype.commit = function (...args) {
+			const result = logicalCommit.apply(this, args);
+			if (this === sourceTransaction) Promise.resolve(result).then(resolveCommit, rejectCommit);
+			return result;
+		};
+		Records.sourcedFrom({
+			async get(id, context) {
+				sourceTransaction = context.transaction;
+				return { id, region: 1, tag: 'indexed', body: 'source-complete' };
+			},
+		});
+		try {
+			assert.equal((await Records.get('source-retry')).body, 'source-complete');
+			const result = await Promise.race([
+				outcome,
+				new Promise((_, reject) => setTimeout(() => reject(new Error('source retry did not settle')), 5000).unref()),
+			]);
+			assert.ifError(result.error);
+			assert.ok(attempts.length >= 2, 'the native fill retried');
+			assert.equal(new Set(attempts).size, 1, 'the fill retains its native handle');
+			const stored = Records.primaryStore.getEntry('source-retry');
+			assert.equal(stored.residencySlot, 1);
+			assert.ok(stored.metadataFlags & INVALIDATED);
+			assert.equal(stored.value.id, 'source-retry');
+			assert.equal(stored.value.tag, 'indexed');
+			assert.equal(stored.value.body, undefined);
+		} finally {
+			binding.forceTryAgainForTesting(0);
+			Transaction.prototype.commit = nativeCommit;
+			DatabaseTransaction.prototype.commit = logicalCommit;
+		}
+	});
+
+	for (const owned of [false, true])
+		it(`discards a delayed owner response after the read transaction closes (owned=${owned})`, async () => {
+			const Records = await declare('SlotClosedRead' + owned, `@sharded(slots: 10, slotFrom: "${owned ? 0 : 1}")`);
+			const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+			const { setDatabaseBaselineGuard } = require('#src/resources/databaseLiveGuard');
+			const root = Records.primaryStore.rootStore;
+			setDatabaseBaselineGuard(root, () => (owned ? 'waiting for owner copy' : undefined));
+			let notifyEntered,
+				release,
+				pause = false;
+			const entered = new Promise((resolve) => {
+				notifyEntered = resolve;
+			});
+			const response = new Promise((resolve) => {
+				release = resolve;
+			});
+			Records.sourcedFrom(
+				{
+					load(entry) {
+						const result = { key: entry.key, value: { id: entry.key, tag: 'fetched', body: 'complete' }, version: 10 };
+						if (!pause) return Promise.resolve(result);
+						notifyEntered();
+						return response.then(() => result);
+					},
+				},
+				{ intermediateSource: true }
+			);
+			const logical = new DatabaseTransaction({ scopeOwned: true });
+			const context = { transaction: logical };
+			logical.setContext(context);
+			try {
+				assert.equal((await Records.getResource('control', {}, { ensureLoaded: true })).getRecord().body, 'complete');
+				pause = true;
+				const reading = Records.getResource('closed', context, { ensureLoaded: true });
+				await Promise.race([
+					entered,
+					new Promise((_, reject) => setTimeout(() => reject(new Error('owner read did not start')), 5000).unref()),
+				]);
+				logical.abort();
+				release();
+				assert.equal((await reading).getRecord(), null, 'a closed read must not materialize a later owner response');
+			} finally {
+				release();
+				logical.abort();
+				setDatabaseBaselineGuard(root, () => undefined);
+			}
+		});
+
+	for (const mode of ['delete', 'invalidate', 'relocate'])
+		it(`settles an admitted native ${mode} retry after live placement changes`, async () => {
+			const Records = await declare('SlotControlRetry' + mode, '@sharded(slots: 10, slotFrom: "0")');
+			await Records.put('row', { id: 'row', tag: 'indexed', body: 'complete' });
+			const binding = Object.values(require.cache).find(
+				(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
+			)?.exports;
+			assert.ok(binding);
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const original = Transaction.prototype.commit;
+			const attempts = [];
+			let laterGuardCalls = 0;
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db === Records.primaryStore.store.db) {
+					if (!attempts.length) {
+						binding.forceTryAgainForTesting(1);
+						setResidencyPlacementGuard(() => {
+							laterGuardCalls++;
+							throw new Error('placement changed after native submission');
+						});
+					}
+					attempts.push(this.id);
+				}
+				return original.apply(this, args);
+			};
+			try {
+				const context = {};
+				await Promise.race([
+					transaction(context, async () => {
+						if (mode === 'delete') await Records.delete('row');
+						else {
+							const row = await Records.getResource('row', context);
+							if (mode === 'invalidate') row._writeInvalidate('row', { tag: 'indexed' });
+							else row._writeRelocate('row', {});
+						}
+					}),
+					new Promise((_, reject) => setTimeout(() => reject(new Error(mode + ' retry did not settle')), 5000).unref()),
+				]);
+				assert.ok(attempts.length >= 2, 'the native handle retried');
+				assert.equal(new Set(attempts).size, 1);
+				assert.equal(laterGuardCalls, 0, 'a retry never re-enters live admission');
+				const stored = Records.primaryStore.getEntry('row');
+				if (mode === 'delete') assert.ok(!stored?.value);
+				else if (mode === 'invalidate') assert.ok(stored.metadataFlags & INVALIDATED);
+				else assert.equal(stored.value.body, 'complete');
+				await assert.rejects(
+					async () => Records.put('new', { id: 'new', tag: 'fresh' }),
+					/placement changed after native submission/
+				);
+			} finally {
+				binding.forceTryAgainForTesting(0);
+				Transaction.prototype.commit = original;
+				setResidencyPlacementGuard(undefined);
+			}
+		});
+
+	it('preserves the logged transaction on an unsupported changed-slot retry (known delivery gap)', async function () {
+		if (
+			typeof require('../rocksdbBindings.mts').rocksdbBindings().Transaction.prototype.usesAbortMarkers === 'function'
+		)
+			return this.skip();
+		const Records = await declare(
+			'SlotRetryOnlyTransition',
+			'@sharded(slots: 10, by: "region", slotFrom: "region === 0 ? 0 : zone")',
+			'region: Int @indexed\nzone: Int @indexed\nbody: String'
+		);
+		const id = 'retry-only';
+		await Records.put(id, { id, region: 0, zone: 0, body: 'original' });
+		const binding = Object.values(require.cache).find(
+			(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
+		)?.exports;
+		assert.ok(binding);
+		const { Transaction, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
+		const original = Transaction.prototype.commit;
+		let originalId;
+		const attempts = [],
+			confirmations = [];
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db !== Records.primaryStore.store.db) return original.apply(this, args);
+			attempts.push(this.id);
+			const first = originalId === undefined;
+			if (first) originalId = this.id;
+			const result = original.apply(this, args);
+			if (!first) return result;
+			const changeBase = () => transaction({}, () => Records.put(id, { id, region: 2, zone: 0, body: 'concurrent' }));
+			return result.then(
+				async (outcome) => {
+					assert.equal(outcome, constants.RETRY_NOW_VALUE);
+					await changeBase();
+					return outcome;
+				},
+				async (error) => {
+					assert.equal(error.code, 'ERR_TRY_AGAIN');
+					await changeBase();
+					throw error;
+				}
+			);
+		};
+		setResidencyPlacementGuard(() => {});
+		replicationConfirmation((_database, version, count, owners) => {
+			confirmations.push({ version, count, owners });
+			return Promise.resolve();
+		});
+		try {
+			await Promise.race([
+				transaction({ timestamp: Date.now() + 60_000 }, async () => {
+					await Records.patch(id, { zone: 1 });
+					binding.forceTryAgainForTesting(1);
+				}),
+				new Promise((_, reject) =>
+					setTimeout(() => reject(new Error('retry-only transition did not settle')), 5000).unref()
+				),
+			]);
+			assert.ok(attempts.filter((id) => id === originalId).length >= 2);
+			const row = Records.primaryStore.getEntry(id);
+			const audit = [...Records.auditStore.getRange({ start: 1, log: 0 })]
+				.filter((entry) => entry.tableId === Records.tableId && entry.recordId === id)
+				.map((entry) => ({ type: entry.type, slot: entry.residencySlot, value: entry.getValue(Records.primaryStore) }));
+			console.log(
+				'RETRY_ONLY_TRANSITION',
+				JSON.stringify({ slot: row.residencySlot, flags: row.metadataFlags, value: row.value, audit, confirmations })
+			);
+			assert.equal(row.residencySlot, 1);
+			assert.ok(row.metadataFlags & INVALIDATED);
+			assert.equal(row.value.body, undefined);
+			assert.ok(
+				audit.every((entry) => entry.slot === 0),
+				'every durable append targets the original local slot'
+			);
+			assert.ok(
+				audit.some((entry) => entry.type === 'patch' && entry.value.zone === 1 && entry.value.body === undefined)
+			);
+		} finally {
+			binding.forceTryAgainForTesting(0);
+			Transaction.prototype.commit = original;
+			setResidencyPlacementGuard(undefined);
+		}
+	});
+
+	for (const markers of [undefined, false, true])
+		it(`refuses a changed-slot native retry only with captured abort markers (${markers})`, async () => {
+			const Records = await declare(
+				'SlotRetryMarkerGate' + String(markers),
+				'@sharded(slots: 10, by: "region", slotFrom: "region === 0 ? 0 : zone")',
+				'region: Int @indexed\nzone: Int @indexed\nbody: String'
+			);
+			const native = require('../rocksdbBindings.mts').rocksdbBindings();
+			const descriptor = Object.getOwnPropertyDescriptor(native.Transaction.prototype, 'usesAbortMarkers');
+			Object.defineProperty(native.Transaction.prototype, 'usesAbortMarkers', {
+				configurable: true,
+				value: markers === undefined ? undefined : () => markers,
+			});
+			try {
+				await require('./fixtures/slotRetryAbort.cjs').abortMove(
+					Records,
+					{ transaction, ...native, setResidencyPlacementGuard, replicationConfirmation },
+					markers === true
+				);
+			} finally {
+				if (descriptor) Object.defineProperty(native.Transaction.prototype, 'usesAbortMarkers', descriptor);
+				else delete native.Transaction.prototype.usesAbortMarkers;
+			}
+		});
+
 	it('persists the policy and places a main-thread write without an application hook', async () => {
 		const Records = await declare('SlotKeys', '@sharded(slots: 10, slotFrom: "Number(id.slice(-1))")');
 		await Records.put('key1', { id: 'key1', tag: 'indexed', body: 'complete' });
@@ -837,15 +1132,20 @@ const { transaction } = require('#src/resources/transaction');
 			}, /local-only write cannot deliver/);
 			assert.deepEqual(Buffer.from(Replica.primaryStore.getBinary('replica-refused')), before);
 		});
-		for (const fullUpdate of [true, false])
-			it(`settles an already-submitted local-only native retry after its base slot changes (full=${fullUpdate})`, async () => {
+		for (const [fullUpdate, localOnly] of [
+			[true, true],
+			[false, true],
+			[true, false],
+			[false, false],
+		])
+			it(`settles an already-submitted native retry after its base slot changes (full=${fullUpdate}, localOnly=${localOnly})`, async () => {
 				if (!fullUpdate)
-					await loadGQLSchema(`type SlotLocalOnlyRetryReplica @table(database: "slots_test", replicaExpiration: 60)
+					await loadGQLSchema(`type SlotLocalOnlyRetryReplica${localOnly} @table(database: "slots_test", replicaExpiration: 60)
 					@sharded(slots: 10, by: "region", slotFrom: "region") {
 					id: ID @primaryKey region: Int @indexed body: String
 				}`);
-				const RetryRecords = fullUpdate ? Records : databases.slots_test.SlotLocalOnlyRetryReplica;
-				const id = 'local-only-retry-' + fullUpdate;
+				const RetryRecords = fullUpdate ? Records : databases.slots_test['SlotLocalOnlyRetryReplica' + localOnly];
+				const id = 'local-only-retry-' + fullUpdate + '-' + localOnly;
 				await RetryRecords.put(id, { id, region: remoteSlot, body: 'original' });
 				const binding = Object.values(require.cache).find(
 					(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
@@ -854,7 +1154,8 @@ const { transaction } = require('#src/resources/transaction');
 				const { Transaction, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
 				const original = Transaction.prototype.commit;
 				let originalId,
-					changedBase = false;
+					changedBase = false,
+					laterGuardCalls = 0;
 				const attempts = [];
 				Transaction.prototype.commit = function (...args) {
 					if (this.store?.db !== RetryRecords.primaryStore.store.db) return original.apply(this, args);
@@ -866,6 +1167,10 @@ const { transaction } = require('#src/resources/transaction');
 					const changeBase = async () => {
 						await transaction({}, () => RetryRecords.put(id, { id, region: localSlot, body: 'concurrent' }));
 						assert.equal(RetryRecords.primaryStore.getEntry(id).residencySlot, localSlot);
+						setResidencyPlacementGuard(() => {
+							laterGuardCalls++;
+							throw new Error('placement changed after native submission');
+						});
 						changedBase = true;
 					};
 					return result.then(
@@ -882,7 +1187,7 @@ const { transaction } = require('#src/resources/transaction');
 					);
 				};
 				setResidencyPlacementGuard(() => {});
-				replicationConfirmation(() => assert.fail('a local-only retry has no replicable append to confirm'));
+				replicationConfirmation(() => assert.fail('a retry must preserve its admission-time no-confirmation decision'));
 				const context = { timestamp: Date.now() + 60_000 };
 				const retryBases = [];
 				try {
@@ -893,7 +1198,7 @@ const { transaction } = require('#src/resources/transaction');
 								id,
 								fullUpdate ? { id, region: remoteSlot, body: 'submitted' } : { body: 'submitted' },
 								fullUpdate,
-								{ localOnly: true }
+								{ localOnly }
 							);
 							await resource.save();
 							const write = context.transaction.writes.find((write) => write?.key === id);
@@ -908,6 +1213,7 @@ const { transaction } = require('#src/resources/transaction');
 							setTimeout(() => reject(new Error('local-only retry did not settle')), 5000).unref()
 						),
 					]);
+					assert.equal(laterGuardCalls, 0, 'native retry does not re-enter live admission');
 					assert.equal(changedBase, true, JSON.stringify({ attempts, originalId, retryBases }));
 					assert.ok(retryBases.includes(localSlot), 'the retry sees the concurrently changed slot');
 					assert.ok(
@@ -927,6 +1233,7 @@ const { transaction } = require('#src/resources/transaction');
 				} finally {
 					binding.forceTryAgainForTesting(0);
 					Transaction.prototype.commit = original;
+					setResidencyPlacementGuard(undefined);
 				}
 			});
 		for (const mode of ['copy', 'replication', 'source'])
@@ -997,6 +1304,87 @@ const { transaction } = require('#src/resources/transaction');
 		} finally {
 			binding.forceTryAgainForTesting(0);
 			Transaction.prototype.commit = original;
+		}
+	});
+
+	it('keeps the admitted confirmation after a concurrent base removes its slot transition', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const Records = await declare(
+			'SlotRetryConfirmationBase',
+			'@sharded(slots: 10, by: "region", slotFrom: "region")',
+			'region: Int @indexed'
+		);
+		await Records.put('moved', { id: 'moved', region: 0 });
+		const binding = Object.values(require.cache).find(
+			(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
+		)?.exports;
+		assert.ok(binding, 'the native engine exposes its commit-failure seam');
+		const { Transaction, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
+		const original = Transaction.prototype.commit;
+		const attempts = [];
+		let originalId,
+			laterGuardCalls = 0;
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db !== Records.primaryStore.store.db) return original.apply(this, args);
+			attempts.push(this.id);
+			const first = originalId === undefined;
+			if (first) originalId = this.id;
+			const result = original.apply(this, args);
+			if (!first) return result;
+			const changeBase = async () => {
+				const { REPLICATION_APPLY } = require('#src/resources/databaseLiveGuard');
+				const context = { sourceApply: true, [REPLICATION_APPLY]: true };
+				await transaction(context, async () => {
+					const resource = await Records.getResource('moved', context);
+					await resource._writeUpdate('moved', { id: 'moved', region: 1 }, true, {
+						localOnly: true,
+						isNotification: true,
+					});
+				});
+				assert.equal(Records.primaryStore.getEntry('moved').residencySlot, 1);
+				setResidencyPlacementGuard(() => {
+					laterGuardCalls++;
+					throw new Error('placement changed after native submission');
+				});
+			};
+			return result.then(
+				async (outcome) => {
+					assert.equal(outcome, constants.RETRY_NOW_VALUE);
+					await changeBase();
+					return outcome;
+				},
+				async (error) => {
+					assert.equal(error.code, 'ERR_TRY_AGAIN');
+					await changeBase();
+					throw error;
+				}
+			);
+		};
+		setResidencyPlacementGuard(() => {});
+		const confirmations = [];
+		replicationConfirmation((_database, version, count, owners) => {
+			confirmations.push({ version, count, owners });
+			return Promise.resolve();
+		});
+		try {
+			await Promise.race([
+				transaction({ timestamp: Date.now() + 60_000 }, async () => {
+					await Records.put('moved', { id: 'moved', region: 1 });
+					binding.forceTryAgainForTesting(1);
+				}),
+				new Promise((_, reject) => setTimeout(() => reject(new Error('native retry did not settle')), 5000).unref()),
+			]);
+			assert.ok(attempts.length >= 2, 'native TryAgain forces a retry');
+			assert.ok(attempts.filter((id) => id === originalId).length >= 2);
+			assert.equal(laterGuardCalls, 0);
+			assert.equal(confirmations.length, 1);
+			assert.equal(confirmations[0].count, 1);
+			assert.deepEqual(confirmations[0].owners, [['slot-owner']]);
+			assert.equal(confirmations[0].version, Records.primaryStore.getEntry('moved').version);
+		} finally {
+			binding.forceTryAgainForTesting(0);
+			Transaction.prototype.commit = original;
+			setResidencyPlacementGuard(undefined);
 		}
 	});
 
