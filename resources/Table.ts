@@ -5919,7 +5919,7 @@ export function makeTable(options): TableResourceClass {
 							// is the backstop).
 							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
 								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
-						} else if (precedesExisting > 0 || (!isRocksDB && precedesExisting === 0 && !priorWritesSkipped(write))) {
+						} else if (precedesExisting > 0 || (!isRocksDB && precedesExisting === 0 && followsAppliedWrite(write))) {
 							// Newer than the committed head, or on LMDB tied after an unskipped earlier write: applies in order.
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
@@ -5935,7 +5935,7 @@ export function makeTable(options): TableResourceClass {
 								precedesExisting === 0 ||
 								existingRecord == null ||
 								(existingEntry.receivedIdentityRefs &&
-									priorWritesSkipped(write) &&
+									!followsAppliedWrite(write) &&
 									auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
 							) {
 								write.skipped = true;
@@ -10824,13 +10824,6 @@ export function makeTable(options): TableResourceClass {
 			if (!prior.skipped) return true;
 		}
 		return false;
-	}
-
-	function priorWritesSkipped(write: any): boolean {
-		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
-			if (!prior.skipped) return false;
-		}
-		return true;
 	}
 
 	// The commit base is the committed record unless another write to the key already saved without being
