@@ -16,7 +16,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'lmdb-concurrent-crdt-add');
-const ROUNDS = Number(process.env.LMDB_CRDT_ADD_ROUNDS) || 20;
+const ROUNDS = Number(process.env.LMDB_CRDT_ADD_ROUNDS) || 50;
 const PATCHES_PER_ROUND = 400;
 const CONCURRENCY = 32;
 const DELTAS = [1, 2, 0, -1];
