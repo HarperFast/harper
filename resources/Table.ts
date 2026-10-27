@@ -2581,10 +2581,11 @@ export function makeTable(options): TableResourceClass {
 										nodeState.certifiedFrom = undefined;
 										qualifiersChanged = true;
 									}
-									// a floor certified with no generation belongs to none: level 2 starts from this certificate's
+									// a floor or start recorded with no generation belongs to none: level 2 starts from its own
 									if (typeof originGeneration === 'string' && typeof nodeState.originGeneration !== 'string') {
 										nodeState.closedFloor = undefined;
 										nodeState.relayable = false;
+										nodeState.certifiedFrom = undefined;
 									}
 									if (!(nodeState.closedFloor >= closedFloor)) {
 										nodeState.closedFloor = closedFloor;
@@ -2612,7 +2613,12 @@ export function makeTable(options): TableResourceClass {
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (nodeState.floorRevoked === true) continue;
-									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									// a route at level 1 still stands for the generation it last certified
+									if (
+										generation !== undefined &&
+										(nodeState.originGeneration ?? nodeState.lastGeneration) !== generation
+									)
+										continue;
 									if (generation === undefined && typeof nodeState.originGeneration !== 'string') {
 										// a level-1 floor has no generation to stay revoked within: clear it, and a later certificate floors again
 										if (nodeState.closedFloor !== undefined || nodeState.relayable) {
@@ -2638,7 +2644,11 @@ export function makeTable(options): TableResourceClass {
 								] of originRouteStates) {
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									if (
+										generation !== undefined &&
+										(nodeState.originGeneration ?? nodeState.lastGeneration) !== generation
+									)
+										continue;
 									if (
 										typeof certifiedFrom === 'number' &&
 										Number.isFinite(certifiedFrom) &&
