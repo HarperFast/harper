@@ -5640,7 +5640,6 @@ export function makeTable(options): TableResourceClass {
 							);
 						existingRecord = loadedEntry.value;
 					}
-					// a publish stages the record as it found it, which is no earlier change
 					const priorChange = priorStaged?.unchanged ? undefined : priorStaged;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -9448,7 +9447,6 @@ export function makeTable(options): TableResourceClass {
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
-			// a root-topic message has no record to carry forward
 			const keyed = id !== null;
 			const write: any = {
 				key: id,
@@ -11811,7 +11809,7 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
-	// Not stagedEntry: a publish restamps the record without staging it.
+	// Not stagedEntry: a relocate restamps the record without staging it, and a publish's restamp counts too.
 	function followsAppliedWrite(write: any): boolean {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
 			if (!prior.skipped) return true;
