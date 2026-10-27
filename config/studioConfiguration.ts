@@ -29,6 +29,8 @@ interface WarningLogger {
 	warn(message: string): void;
 }
 
+type ReadTextFile = (path: string, encoding: 'utf8') => Promise<string>;
+
 const KEY_PATTERN = /^[a-z0-9-]+$/;
 const NAVIGATION_STATES = new Set(['visible', 'tucked', 'hidden']);
 const PLACEMENTS = new Set(['tab', 'config']);
@@ -55,7 +57,6 @@ export function validateStudioNavigation(
 	let count = 0;
 	for (const [tab, state] of Object.entries(navigation)) {
 		if (!KEY_PATTERN.test(tab)) problems.push('studio.navigation has a key that does not match [a-z0-9-]+');
-		else if (state == null) continue;
 		else if (typeof state !== 'string' || !NAVIGATION_STATES.has(state))
 			problems.push(`studio.navigation.${tab} must be visible, tucked or hidden`);
 		else {
@@ -174,12 +175,12 @@ async function componentDirectories(problems: string[]): Promise<[string, string
 	return [...directories].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-async function readComponentStudioBlock(directory: string): Promise<unknown> {
+async function readComponentStudioBlock(directory: string, readTextFile: ReadTextFile): Promise<unknown> {
 	for (const fileName of COMPONENT_CONFIG_FILES) {
 		const configFilePath = join(directory, fileName);
 		let contents: string;
 		try {
-			contents = await readFile(configFilePath, 'utf8');
+			contents = await readTextFile(configFilePath, 'utf8');
 		} catch (error) {
 			if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
 			throw error;
@@ -202,15 +203,11 @@ async function mapBounded<T, R>(items: T[], limit: number, map: (item: T) => Pro
 	return results;
 }
 
-/**
- * A reader of the Studio configuration on this node's disk. Every scan reads the root config and each component's
- * config afresh, so it agrees on every thread and reflects a completed `set_configuration`, `deploy_component` or
- * `drop_component` without a restart. One scan runs at a time; a source's problems are logged when they change.
- */
-export function createStudioConfigurationReader(logger: WarningLogger) {
+/** One scan runs at a time; a source's problems are logged when they change. */
+export function createStudioConfigurationReader(logger: WarningLogger, readTextFile: ReadTextFile = readFile) {
 	let loggedProblems = new Map<string, string>();
 	let scanning: Promise<StudioConfiguration> | undefined;
-	let queued: Promise<StudioConfiguration> | undefined;
+	let followUp: { scan: Promise<StudioConfiguration>; start: () => void } | undefined;
 
 	function logChangedProblems(problemsBySource: Map<string, string[]>) {
 		const logged = new Map<string, string>();
@@ -236,7 +233,7 @@ export function createStudioConfigurationReader(logger: WarningLogger) {
 				const problems: string[] = [];
 				problemsBySource.set(component, problems);
 				try {
-					return validateStudioPages(component, await readComponentStudioBlock(directory), problems);
+					return validateStudioPages(component, await readComponentStudioBlock(directory, readTextFile), problems);
 				} catch (error) {
 					problems.push(`its config could not be read: ${error.message}`);
 					return [];
@@ -248,31 +245,37 @@ export function createStudioConfigurationReader(logger: WarningLogger) {
 		return configuration;
 	}
 
+	function startScan(): Promise<StudioConfiguration> {
+		const current = scan();
+		scanning = current;
+		// Registered before any caller's continuation, so the waiting callers' scan starts before anyone else's.
+		const handOff = () => {
+			const waiting = followUp;
+			followUp = undefined;
+			scanning = undefined;
+			waiting?.start();
+		};
+		current.then(handOff, handOff);
+		return current;
+	}
+
 	return function readStudioConfiguration(): Promise<StudioConfiguration> {
-		if (!scanning) {
-			scanning = scan().finally(() => {
-				scanning = undefined;
-			});
-			return scanning;
-		}
+		if (!scanning) return startScan();
 		// The scan in flight may have read before this caller's own write, so the caller waits for the next scan,
 		// which every caller arriving meanwhile shares.
-		queued ??= scanning
-			.then(
-				() => {},
-				() => {}
-			)
-			.then(() => {
-				queued = undefined;
-				return readStudioConfiguration();
+		if (!followUp) {
+			let start: () => void;
+			const next = new Promise<StudioConfiguration>((resolve) => {
+				start = () => resolve(startScan());
 			});
-		return queued;
+			followUp = { scan: next, start };
+		}
+		return followUp.scan;
 	};
 }
 
 const readStudioConfiguration = createStudioConfigurationReader(harperLogger);
 
-/** `get_studio_configuration`: open to every authenticated role, so it returns only the validated Studio keys. */
 export function getStudioConfiguration(): Promise<StudioConfiguration> {
 	return readStudioConfiguration();
 }

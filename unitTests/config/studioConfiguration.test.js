@@ -6,6 +6,7 @@ const { tmpdir } = require('node:os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } = require('node:fs');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');
+const { readFile } = require('node:fs/promises');
 const { setConfiguration, getConfigFilePath, initConfig } = require('#src/config/configUtils');
 const { createStudioConfigurationReader, getStudioConfiguration } = require('#src/config/studioConfiguration');
 const { preserveRootConfig, readRootConfig, setRootConfigEntry } = require('../rootConfigFixture.js');
@@ -417,15 +418,44 @@ studio:
 			assert.strictEqual(warnings.length, 1);
 		});
 
-		it('keep at most a few component configs open at once', async () => {
+		it('keep at most eight component configs open at once', async () => {
 			for (let index = 0; index < 60; index++)
 				writeComponent(
 					`component-${String(index).padStart(2, '0')}`,
 					`studio:\n  pages: [{ id: p, name: P${index}, placement: tab }]\n`
 				);
-			const read = createStudioConfigurationReader(captureWarnings().logger);
+			let open = 0;
+			let peak = 0;
+			const countingReadFile = async (filePath, encoding) => {
+				peak = Math.max(peak, ++open);
+				try {
+					return await readFile(filePath, encoding);
+				} finally {
+					open--;
+				}
+			};
+			const read = createStudioConfigurationReader(captureWarnings().logger, countingReadFile);
 			const results = await Promise.all(Array.from({ length: 20 }, () => read()));
 			for (const configuration of results) assert.strictEqual(configuration.pages.length, 60);
+			assert.ok(peak > 1 && peak <= 8, `peak concurrent reads was ${peak}`);
+		});
+
+		it('never let a caller that reads again on completion overtake callers already waiting', async () => {
+			const read = createStudioConfigurationReader(captureWarnings().logger);
+			writeComponent('app', 'studio:\n  pages: [{ id: p, name: P, placement: tab }]\n');
+			const first = read();
+			let waitingDone = false;
+			const waiting = read().then(() => (waitingDone = true));
+			let repeatScans = 0;
+			const repeating = (async () => {
+				await first;
+				while (!waitingDone && repeatScans < 5) {
+					repeatScans++;
+					await read();
+				}
+			})();
+			await Promise.all([waiting, repeating]);
+			assert.strictEqual(repeatScans, 1);
 		});
 	});
 
@@ -505,6 +535,7 @@ studio:
 			[{ studio_navigation: 'hidden' }, /studio\.navigation must be a map/],
 			[{ studio_navigation: { Logs: 'hidden' } }, /studio\.navigation has a key that does not match/],
 			[{ studio_navigation: { 'Bad_Key!': null } }, /studio\.navigation has a key that does not match/],
+			[{ studio_navigation: { logs: null } }, /studio\.navigation\.logs must be visible, tucked or hidden/],
 			[{ studio_landing: '' }, /studio\.landing must be a non-empty string/],
 			[{ studio_landing: { page: 'x' } }, /studio\.landing must be a non-empty string/],
 		]) {
@@ -527,6 +558,25 @@ studio:
 			});
 			assert.deepStrictEqual(readRootConfig().studio, { navigation: { logs: 'hidden' }, landing: 'databases' });
 		});
+
+		for (const [layer, pinned] of [
+			['HARPER_SET_CONFIG', { studio: null }],
+			['HARPER_CONFIG', { studio: false }],
+		]) {
+			it(`refuses a write ${layer} would replace at the next start by setting the whole studio block`, async () => {
+				const saved = process.env[layer];
+				process.env[layer] = JSON.stringify(pinned);
+				try {
+					await assert.rejects(
+						setConfiguration({ operation: 'set_configuration', studio_landing: 'logs' }),
+						(error) => error.statusCode === 409 && error.message.includes(layer)
+					);
+				} finally {
+					if (saved === undefined) delete process.env[layer];
+					else process.env[layer] = saved;
+				}
+			});
+		}
 
 		for (const layer of ['HARPER_SET_CONFIG', 'HARPER_CONFIG']) {
 			it(`refuses a write ${layer} would put back at the next start`, async () => {

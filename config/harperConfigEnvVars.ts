@@ -1035,8 +1035,9 @@ function composeEnvLayers(below: readonly string[], base: ConfigObject, above: r
 }
 
 /**
- * The first config env var, in precedence order, that names `path` or a key under it. Dotted top-level keys
- * ("models.embedding.default") compose into the nested block, so they count exactly like a nested key.
+ * The first config env var, in precedence order, that sets `path`, a key under it, or a value above it that replaces
+ * it. Dotted top-level keys ("models.embedding.default") compose into the nested block, so they count exactly like a
+ * nested key.
  */
 export function envLayerNaming(path: string): string | undefined {
 	for (const name of ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG']) {
@@ -1047,7 +1048,9 @@ export function envLayerNaming(path: string): string | undefined {
 			if (
 				parsed &&
 				typeof parsed === 'object' &&
-				Object.keys(flattenObject(parsed, '', false)).some((key) => key === path || key.startsWith(`${path}.`))
+				Object.keys(flattenObject(parsed, '', false)).some(
+					(key) => key === path || key.startsWith(`${path}.`) || path.startsWith(`${key}.`)
+				)
 			)
 				return name;
 		} catch {
