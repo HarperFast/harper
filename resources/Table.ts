@@ -761,8 +761,6 @@ const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
 const STRIP_BATCH_SIZE = 100;
 const STRIP_MAX_ATTEMPTS = 20;
 const STRIP_RETRY_BUDGET_MS = 30_000;
-// metadata flags that describe the record's state; the rest are re-derived from the payloads they announce
-const RECORD_STATE_FLAGS = INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
@@ -13102,7 +13100,8 @@ export function makeTable(options): TableResourceClass {
 			withoutBlobRelease(entry),
 			// a row a raw put stored has no version; RocksDB cannot decode a metadata word without one
 			entry.version ?? (isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime()),
-			entry.metadataFlags & RECORD_STATE_FLAGS,
+			// the record-state flags; the rest are re-derived from the payloads they announce
+			entry.metadataFlags & (INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY),
 			false,
 			{
 				expiresAt: entry.expiresAt,
