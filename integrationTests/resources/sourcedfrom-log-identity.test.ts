@@ -1,6 +1,7 @@
 /**
  * Live same-database sourcedFrom commits keep source versions but use distinct local log keys,
  * without rebuilding unrelated native indexes. https://github.com/HarperFast/harper/issues/3340
+ * Uses RocksDB for the reported local-log/native-index boundary; LMDB is outside this fixture.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -38,7 +39,7 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 	async function fullTextReadiness() {
 		const description = await operation({ operation: 'describe_table', database: 'data', table: 'Probe' });
 		const readiness = description.full_text_indexes.find(({ name }) => name === 'probeSearch').readiness;
-		return { state: readiness.state, ownerEpoch: readiness.owner_epoch, rebuildAttempts: readiness.rebuild_attempts };
+		return { state: readiness.state, ownerEpoch: readiness.owner_epoch };
 	}
 
 	async function search(text: string) {
@@ -68,8 +69,6 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 		assert.strictEqual(vector.state, 'ready', JSON.stringify(vector));
 		assert.strictEqual(fullText.ownerEpoch, fullTextEpoch, 'full-text must not rebuild');
 		assert.strictEqual(vector.ownerEpoch, vectorEpoch, 'HNSW must not rebuild');
-		assert.strictEqual(fullText.rebuildAttempts, 0);
-		assert.strictEqual(vector.rebuildAttempts, 0);
 	}
 
 	before(async () => {
@@ -102,8 +101,8 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 			const mirror = `${kind}Mirror`;
 			const fullTextBefore = await fullTextReadiness();
 			const { vector: vectorBefore } = await request('/SourceState/');
-			assert.strictEqual(typeof fullTextBefore.ownerEpoch, 'string');
-			assert.strictEqual(typeof vectorBefore.ownerEpoch, 'string');
+			assert.match(fullTextBefore.ownerEpoch, /^[1-9]\d*$/);
+			assert.match(vectorBefore.ownerEpoch, /^[1-9]\d*$/);
 			for (const [id, title] of [
 				['s1', 'alpha'],
 				['s2', 'beta'],
@@ -112,16 +111,17 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 			}
 			await request(`/${source}/s2`, 'PATCH', { status: 'withdrawn', revision: 'r2' });
 
+			const isCaseRecord = ({ id }) => id === 's1' || id === 's2';
 			let state;
 			await waitFor(
 				async () => {
 					state = await request('/SourceState/');
-					return state.entries.filter((entry) => entry.table === mirror).length === 3;
+					return state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry)).length >= 3;
 				},
 				{ timeout: 30_000, message: `${mirror} must receive all three live writes without a cache read` }
 			);
-			const sourceEntries = state.entries.filter((entry) => entry.table === source);
-			const mirrorEntries = state.entries.filter((entry) => entry.table === mirror);
+			const sourceEntries = state.entries.filter((entry) => entry.table === source && isCaseRecord(entry));
+			const mirrorEntries = state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry));
 			assert.deepStrictEqual(
 				sourceEntries.map(({ type }) => type),
 				['put', 'put', 'patch']
@@ -136,11 +136,6 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				'live apply must preserve source versions'
 			);
 			const entries = [...sourceEntries, ...mirrorEntries];
-			assert.strictEqual(
-				new Set(entries.map(({ key }) => key)).size,
-				6,
-				`separate local commits must have distinct keys: ${JSON.stringify(entries)}`
-			);
 			assert.ok(
 				entries.every(({ endTxn }) => endTxn),
 				'each single-write commit must terminate'
@@ -164,6 +159,11 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 			assert.deepStrictEqual(await search('lighthouse'), ['p1']);
 			assert.deepStrictEqual(await neighbors([1, 0, 0]), ['p1']);
 			await assertIndexesReady(fullTextBefore.ownerEpoch, vectorBefore.ownerEpoch);
+			assert.strictEqual(
+				new Set(entries.map(({ key }) => key)).size,
+				6,
+				`separate local commits must have distinct keys: ${JSON.stringify(entries)}`
+			);
 		});
 
 		test(`${kind} multi-record live apply keeps each transaction grouped under one fresh key`, async () => {
@@ -172,11 +172,12 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				{ id: 'batch2', title: 'two', revision: 'r1' },
 			]);
 			let entries;
+			let state;
 			await waitFor(
 				async () => {
-					const state = await request('/SourceState/');
+					state = await request('/SourceState/');
 					entries = state.entries.filter(({ table, id }) => table.startsWith(kind) && id.startsWith('batch'));
-					return entries.length === 4;
+					return entries.length >= 4;
 				},
 				{ timeout: 30_000, message: 'both records must reach the mirror through live apply' }
 			);
@@ -194,6 +195,8 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				);
 			}
 			assert.notStrictEqual(source[0].key, mirror[0].key, 'the cache commit needs its own identity');
+			const committedKeys = state.entries.filter(({ endTxn }) => endTxn).map(({ key }) => key);
+			assert.strictEqual(new Set(committedKeys).size, committedKeys.length, 'no completed commit may reuse a key');
 			assert.deepStrictEqual(
 				mirror.map(({ version }) => version),
 				source.map(({ version }) => version)

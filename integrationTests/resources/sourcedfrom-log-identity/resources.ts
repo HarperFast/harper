@@ -11,7 +11,7 @@ GenericMirror.sourcedFrom({
 		return record ? { ...record } : undefined;
 	},
 	async subscribe(options) {
-		const subscription = await GenericSource.subscribe({ ...options, crossThreads: true, omitCurrent: false });
+		const subscription = await GenericSource.subscribe({ ...options, crossThreads: true });
 		return (async function* () {
 			for await (const event of subscription) yield { ...event };
 		})();
@@ -27,7 +27,7 @@ export class SourceState extends Resource {
 		const names = ['DirectSource', 'DirectMirror', 'GenericSource', 'GenericMirror'];
 		const entries = [];
 		for (const entry of Probe.auditStore.getRange({ start: 1, log: 0 })) {
-			const name = names.find((name) => tables[name].tableId === entry.tableId);
+			const name = [...names, 'Probe'].find((name) => tables[name].tableId === entry.tableId);
 			if (name) {
 				entries.push({
 					table: name,
