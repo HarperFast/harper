@@ -1493,7 +1493,8 @@ function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
 // either way a stopped scan yields nothing more, not its partial mappings or ids
 const scanStopped = (scan) => scan.closed || scan.transaction?.isDone;
 async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean; transaction: any }) {
-	const iterator = rightIterable[Symbol.asyncIterator]();
+	// a custom index search can return a plain array
+	const iterator = (rightIterable[Symbol.asyncIterator] ?? rightIterable[Symbol.iterator]).call(rightIterable);
 	let done = false;
 	try {
 		while (!scanStopped(scan)) {
