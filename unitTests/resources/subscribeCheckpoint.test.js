@@ -607,7 +607,6 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 500]]) }), true);
 			assert.deepStrictEqual(row(7), { 3: 500 });
 			assert.ok(bumped());
-			// an unchanged retry still bumps, publishing a commit whose writer stopped before its bump
 			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 400]]) }), false);
 			assert.deepStrictEqual(row(7), { 3: 500 });
 			assert.ok(bumped());
