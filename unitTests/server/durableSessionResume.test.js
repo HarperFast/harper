@@ -9,19 +9,20 @@ const { getSession } = require('#src/server/DurableSubscriptionsSession');
 const { handleApplication, setTakeoverTimeoutForTests } = require('#src/server/mqtt');
 const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
+const { Worker } = require('node:worker_threads');
 const mqttPacket = require('mqtt-packet');
 const { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const commonUtility = require('#src/utility/lmdb/commonUtility');
+const { getOriginClosedFloor } = require('#src/resources/originClosedFloor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 const user = { username: 'mqtt-durable-test', role: { permission: { super_user: true } } };
 
 let sequence = 0;
-function topicTable() {
-	const name = `DurableTopic${++sequence}`;
+function topicTable(name = `DurableTopic${++sequence}`) {
 	const T = table({
 		table: name,
 		database: `durable_${name}`,
@@ -2444,6 +2445,78 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		await second.session.resume();
 		await waitFor(() => delivery(second.received, 'inflight'), { message: 'the in-flight write was not replayed' });
 		second.session.disconnect(true);
+	});
+
+	it('resumes with a write that was in flight when the topic was subscribed while another thread was mid-reservation', async function () {
+		if (!isRocksDB) this.skip(); // LMDB topics start at the JS clock
+		const name = `DurableTopic${++sequence}`;
+		const topic = `${name}/#`;
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		// the worker opens the database first, so main's certification tick cannot publish a floor before it parks
+		const worker = new Worker(require.resolve('../resources/originClosedFloor-thread.js'), {
+			workerData: {
+				mode: 'park-reserving',
+				gate,
+				tableName: name,
+				database: `durable_${name}`,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+				record: { id: 'parked', value: 'parked' },
+			},
+		});
+		const seen = [];
+		let failure;
+		worker.on('message', (message) => {
+			if (message.type === 'error') failure = new Error(message.message);
+			seen.push(message.type);
+		});
+		worker.on('error', (error) => (failure = error));
+		const exited = new Promise((resolve) => worker.once('exit', resolve));
+		const reached = (type) =>
+			waitFor(
+				() => {
+					if (failure) throw failure;
+					return seen.includes(type);
+				},
+				{ timeout: 20_000, message: `the worker never reported ${type}` }
+			);
+		const release = () => {
+			Atomics.store(gate, 0, 1);
+			Atomics.notify(gate, 0);
+		};
+		let commitInFlight;
+		try {
+			await reached('parked');
+			const { T } = topicTable(name);
+			commitInFlight = await heldTransaction(T, 'inflight');
+			const rootStore = T.primaryStore.rootStore;
+			// a JS-clock start would then be above the in-flight key
+			const nativeNow = rootStore.getMonotonicTimestamp();
+			await waitFor(() => commonUtility.getNextMonotonicTime() > nativeNow, 10_000);
+			assert.strictEqual(getOriginClosedFloor(rootStore), undefined, 'no floor is published yet');
+			const clientId = `mid-reservation-${name}`;
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+			first.session.disconnect(true);
+			await first.session.writes;
+			const savedStart = (await stored(clientId)).subscriptions[0].startTime;
+			await commitInFlight();
+			const inFlightKey = T.primaryStore.getEntry('inflight').version;
+			assert.ok(savedStart < inFlightKey, `the start ${savedStart} is above the in-flight key ${inFlightKey}`);
+			release();
+			await reached('committed');
+
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => delivery(second.received, 'inflight'), { message: 'the in-flight write was not replayed' });
+			await waitFor(() => delivery(second.received, 'parked'), {
+				message: "the parked thread's write was not replayed",
+			});
+			second.session.disconnect(true);
+		} finally {
+			release();
+			await commitInFlight?.();
+			await Promise.race([exited, worker.terminate()]);
+		}
 	});
 
 	it('keeps the position when a reload re-snapshot is acknowledged', async function () {
