@@ -55,22 +55,25 @@ function navigationEntries(
 	navigation: Record<string, unknown>,
 	problems: string[],
 	prefix = '',
-	visited = new Set<object>()
+	ancestors = new Set<object>()
 ): [string, unknown][] {
-	visited.add(navigation);
+	ancestors.add(navigation);
 	const entries: [string, unknown][] = [];
 	for (const [key, value] of Object.entries(navigation)) {
 		const path = prefix ? `${prefix}.${key}` : key;
-		if (!isMap(value)) entries.push([path, value]);
-		else if (visited.has(value)) problems.push('studio.navigation holds a value that refers to itself');
-		else entries.push(...navigationEntries(value, problems, path, visited));
+		if (!isMap(value) || Object.keys(value).length === 0) entries.push([path, value]);
+		else if (ancestors.has(value)) problems.push('studio.navigation holds a value that refers to itself');
+		else entries.push(...navigationEntries(value, problems, path, ancestors));
 	}
+	ancestors.delete(navigation);
 	return entries;
 }
 
+/** `acceptNested` is for reading what an env layer composed; a write takes `<component>.<pageId>` keys only. */
 export function validateStudioNavigation(
 	navigation: unknown,
-	problems: string[]
+	problems: string[],
+	acceptNested = true
 ): Record<string, StudioNavigationState> | undefined {
 	if (navigation == null) return undefined;
 	if (!isMap(navigation)) {
@@ -79,7 +82,7 @@ export function validateStudioNavigation(
 	}
 	const valid: Record<string, StudioNavigationState> = {};
 	let count = 0;
-	for (const [tab, state] of navigationEntries(navigation, problems)) {
+	for (const [tab, state] of acceptNested ? navigationEntries(navigation, problems) : Object.entries(navigation)) {
 		if (!isPageKey(tab))
 			problems.push('studio.navigation has a key that is neither a tab key nor <component>.<pageId>');
 		else if (typeof state !== 'string' || !NAVIGATION_STATES.has(state))

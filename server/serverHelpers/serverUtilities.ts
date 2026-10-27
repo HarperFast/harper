@@ -118,7 +118,7 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 ];
 
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
-	['set_configuration', new Set(['models'])],
+	['set_configuration', new Set(['models', terms.STUDIO_CONFIG_PARAMS.NAVIGATION, terms.STUDIO_CONFIG_PARAMS.LANDING])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
 ]);

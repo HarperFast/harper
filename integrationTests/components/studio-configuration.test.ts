@@ -1,11 +1,5 @@
-/**
- * get_studio_configuration: what Studio reads to show the pages components add and the tabs a cluster hides.
- *
- * Studio's own flow on a new cluster is deploy_component, then set_configuration of the root `studio` settings, then
- * get_studio_configuration — back to back, with no restart — so each step here reads straight after the write it
- * depends on. The operation is open to every authenticated role, which only an end-to-end call through the operations
- * API and a role's own credentials shows, and it reads disk, so a worker thread answers it the same as the main one.
- */
+// Studio calls deploy_component, set_configuration and get_studio_configuration back to back with no restart, so each
+// step reads straight after the write it depends on.
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { join, resolve } from 'node:path';

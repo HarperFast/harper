@@ -535,6 +535,19 @@ studio:
 			});
 		});
 
+		it('reads a navigation map two keys share through a YAML alias, and drops an empty one', async () => {
+			writeFileSync(
+				getConfigFilePath(),
+				`${readFileSync(getConfigFilePath(), 'utf8')}\nstudio:\n  navigation:\n    app-a: &shared\n      page: hidden\n    app-b: *shared\n    logs: {}\n`
+			);
+			const { warnings, logger } = captureWarnings();
+			assert.deepStrictEqual((await createStudioConfigurationReader(logger)()).navigation, {
+				'app-a.page': 'hidden',
+				'app-b.page': 'hidden',
+			});
+			assert.match(warnings[0], /studio\.navigation\.logs must be visible, tucked or hidden/);
+		});
+
 		it('drops a nested navigation map a YAML alias makes refer to itself', async () => {
 			writeFileSync(
 				getConfigFilePath(),
@@ -605,6 +618,11 @@ studio:
 				/studio\.navigation has a key that is neither a tab key nor <component>\.<pageId>/,
 			],
 			[{ studio_navigation: { logs: null } }, /studio\.navigation\.logs must be visible, tucked or hidden/],
+			[{ studio_navigation: { logs: {} } }, /studio\.navigation\.logs must be visible, tucked or hidden/],
+			[
+				{ studio_navigation: { 'harper-redirects': { redirects: 'tucked' } } },
+				/studio\.navigation\.harper-redirects must be visible, tucked or hidden/,
+			],
 			[{ studio_landing: '' }, /studio\.landing must be a tab key or <component>\.<pageId>/],
 			[{ studio_landing: { page: 'x' } }, /studio\.landing must be a tab key or <component>\.<pageId>/],
 			[{ studio_landing: 'harper-redirects.Redirects' }, /studio\.landing must be a tab key or <component>\.<pageId>/],

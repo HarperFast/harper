@@ -1356,7 +1356,7 @@ async function assertStudioSettingsValid(configFields) {
 		studioConfiguration ??= await import('./studioConfiguration.ts');
 		const value = castConfigValue(param, configFields[field]);
 		if (param === hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION)
-			studioConfiguration.validateStudioNavigation(value, problems);
+			studioConfiguration.validateStudioNavigation(value, problems, false);
 		else studioConfiguration.validateStudioLanding(value, problems);
 	}
 	if (problems.length > 0) throw new ClientError(`Unable to update config: ${problems.join('; ')}`, 400);
