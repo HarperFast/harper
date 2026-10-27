@@ -173,6 +173,29 @@ describe('HTTP method request admission', function () {
 					if (index >= 0) universalHeaders.splice(index, 1);
 				}
 			});
+			it('sends the default allow-headers when the configured value is not a valid header', async () => {
+				const previous = {
+					cors: env.get('http_cors'),
+					list: env.get('http_corsAccessList'),
+					allow: env.get('http_corsAccessControlAllowHeaders'),
+				};
+				try {
+					env.setProperty('http_cors', true);
+					env.setProperty('http_corsAccessList', ['https://queue.example']);
+					env.setProperty('http_corsAccessControlAllowHeaders', 'Accept\nInjected: value');
+					const send = createHandler(backend, 1);
+					const pending = send('GET');
+					spin(5);
+					const rejected = await send('GET');
+					assert.equal(rejected.status, 503);
+					assert.equal(rejected.headers.get('Access-Control-Allow-Headers'), 'Accept, Content-Type, Authorization');
+					await pending;
+				} finally {
+					env.setProperty('http_cors', previous.cors);
+					env.setProperty('http_corsAccessList', previous.list);
+					env.setProperty('http_corsAccessControlAllowHeaders', previous.allow);
+				}
+			});
 			it('admits reads while the write queue is shedding', async () => {
 				const send = createHandler(backend, 60_000, 0);
 				const writes = await backlog(send, 'POST');

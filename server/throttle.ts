@@ -71,7 +71,6 @@ export function throttle(
 		});
 	}
 }
-// One probe per thread: the delay belongs to the event loop, not to a listener (server/DESIGN.md).
 let loopProbePending = false;
 let loopIterationStart = 0;
 let callsSinceProbe = false;
@@ -83,10 +82,7 @@ function probeLoopIteration() {
 	} else loopProbePending = false;
 }
 
-/**
- * Runs fn synchronously, or answers with onLimitExceeded when the current event-loop iteration has already run
- * longer than maxLoopDelay ms. Calls are never queued or deferred.
- */
+/** Never queues or defers a call: it runs now or is rejected now (server/DESIGN.md). */
 export function rejectWhenLoopDelayed<A, B, R>(
 	fn: (a: A, b: B) => R,
 	onLimitExceeded: (a: A, b: B) => R,

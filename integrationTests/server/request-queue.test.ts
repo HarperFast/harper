@@ -38,6 +38,7 @@ for (const nativeBun of process.env.HARPER_RUNTIME === 'bun' ? [false, true] : [
 					body: await response.text(),
 					origin: response.headers.get('Access-Control-Allow-Origin'),
 					configured: response.headers.get('X-Queue-Test'),
+					vary: response.headers.get('Vary'),
 				};
 			};
 			const firstWave = Array.from({ length: 64 }, send);
@@ -50,6 +51,7 @@ for (const nativeBun of process.env.HARPER_RUNTIME === 'bun' ? [false, true] : [
 				assert.equal(response.body, 'Service unavailable, exceeded request queue limit');
 				assert.equal(response.origin, 'https://queue.example');
 				assert.equal(response.configured, 'present');
+				assert.match(response.vary ?? '', /origin/i);
 			}
 			for (const response of responses) assert([200, 503].includes(response.status));
 			const recovered = await fetch(url, { signal: AbortSignal.timeout(5000) });

@@ -761,25 +761,38 @@ function isReadMethod(method) {
 	return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
 }
 
-function readQueueRejectionHeaders(origin, isOperationsServer) {
-	const headers = new Headers({ 'content-type': 'text/plain' });
-	applyUniversalHeaders(headers);
+const DEFAULT_CORS_ALLOW_HEADERS = 'Accept, Content-Type, Authorization';
+
+// Resolved and validated once per listener: the 503 callbacks run outside the request handler's error handling.
+function readRejectionHeaders(isOperationsServer: boolean) {
 	const prefix = isOperationsServer ? 'operationsApi_network' : 'http';
-	if (env.get(prefix + '_cors')) {
-		addVaryHeader(headers, 'Origin');
-		const accessList = env.get(prefix + '_corsAccessList') ?? [];
-		if (origin && (accessList.includes(origin) || accessList.includes('*'))) {
-			headers.set('Access-Control-Allow-Origin', origin);
-			if (env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true)
-				headers.set('Access-Control-Allow-Credentials', 'true');
-			headers.set('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
-			headers.set(
-				'Access-Control-Allow-Headers',
-				env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization'
-			);
-		}
+	const cors = env.get(prefix + '_cors');
+	const accessList = env.get(prefix + '_corsAccessList') ?? [];
+	const allowCredentials = env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
+	let allowHeaders = env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? DEFAULT_CORS_ALLOW_HEADERS;
+	try {
+		for (const header of Array.isArray(allowHeaders) ? allowHeaders : [allowHeaders])
+			validateHeaderValue('Access-Control-Allow-Headers', '' + header);
+	} catch (error) {
+		harperLogger.error(
+			`Invalid http.corsAccessControlAllowHeaders, rejected reads send the default instead: ${errorToString(error)}`
+		);
+		allowHeaders = DEFAULT_CORS_ALLOW_HEADERS;
 	}
-	return headers;
+	return (origin: string | null | undefined) => {
+		const headers = new Headers({ 'content-type': 'text/plain' });
+		applyUniversalHeaders(headers);
+		if (cors) {
+			addVaryHeader(headers, 'Origin');
+			if (origin && (accessList.includes(origin) || accessList.includes('*'))) {
+				headers.set('Access-Control-Allow-Origin', origin);
+				if (allowCredentials) headers.set('Access-Control-Allow-Credentials', 'true');
+				headers.set('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
+				headers.set('Access-Control-Allow-Headers', allowHeaders);
+			}
+		}
+		return headers;
+	};
 }
 
 function throttleRequests(
@@ -802,6 +815,7 @@ function throttleRequests(
 					readRequestQueueLimit ?? 5000,
 					`HTTP read admission on port ${port}`
 				);
+	if (reads === handler && writes === handler) return handler;
 	return (request, response) => {
 		if (isReadMethod(request.method)) return reads(request, response);
 		if (queueWrites && checkAnalyticsEnabled()) request.receivedAt = performance.now();
@@ -839,7 +853,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					port,
 					isOperationsServer,
 					env.get(serverPrefix + '_requestQueueLimit'),
-					env.get(serverPrefix + '_readRequestQueueLimit')
+					env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
 				),
 			};
 			// Marker so the httpServers guard is satisfied and the caller has a truthy handle; the
@@ -1047,21 +1061,21 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				} else harperLogger.error(errorForLog(error));
 			}
 		};
+		const rejectionHeaders = readRejectionHeaders(isOperationsServer);
 		const queuedRequestHandler = throttleRequests(
 			port,
 			requestHandler,
 			(nodeRequest: IncomingMessage, nodeResponse: any) => {
 				// if the request queue is taking too long, we want to return an error
 				if (isReadMethod(nodeRequest.method)) {
-					for (const [name, value] of readQueueRejectionHeaders(nodeRequest.headers.origin, isOperationsServer))
-						nodeResponse.setHeader(name, value);
+					for (const [name, value] of rejectionHeaders(nodeRequest.headers.origin)) nodeResponse.setHeader(name, value);
 				}
 				nodeResponse.statusCode = 503;
 				nodeResponse.end('Service unavailable, exceeded request queue limit');
 				recordAction(true, 'service-unavailable', port);
 			},
 			env.get(serverPrefix + '_requestQueueLimit'),
-			env.get(serverPrefix + '_readRequestQueueLimit')
+			env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
 		);
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
@@ -1125,7 +1139,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						port,
 						isOperationsServer,
 						env.get(serverPrefix + '_requestQueueLimit'),
-						env.get(serverPrefix + '_readRequestQueueLimit')
+						env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
 					),
 				};
 				// Let onWebSocket() install its wsHandler on this mirror too
@@ -1319,6 +1333,7 @@ export function makeUwsHandler(
 		const body = await normalizeUwsBody(response.body, request.signal);
 		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
+	const rejectionHeaders = readRejectionHeaders(isOperationsServer);
 	return throttleRequests(
 		port,
 		handle,
@@ -1327,7 +1342,7 @@ export function makeUwsHandler(
 			return {
 				status: 503,
 				headers: isReadMethod(request.method)
-					? readQueueRejectionHeaders(request.headers.get('origin'), isOperationsServer)
+					? rejectionHeaders(request.headers.get('origin'))
 					: new Headers({ 'content-type': 'text/plain' }),
 				body: 'Service unavailable, exceeded request queue limit',
 			};
@@ -1605,6 +1620,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		// exclusive port, which lets tooling (e.g. the integration-test loopback pool) detect an
 		// address that's already in use instead of silently co-binding. Mirrors the Node path,
 		// which sets server.noReusePort for isOperationsServer (see above).
+		const rejectionHeaders = readRejectionHeaders(isOperationsServer);
 		const config: any = {
 			fetch: throttleRequests(
 				port,
@@ -1613,11 +1629,11 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					recordAction(true, 'service-unavailable', port);
 					return new Response('Service unavailable, exceeded request queue limit', {
 						status: 503,
-						headers: [...readQueueRejectionHeaders(request.headers.get('origin'), isOperationsServer)],
+						headers: [...rejectionHeaders(request.headers.get('origin'))],
 					});
 				},
 				undefined,
-				env.get(serverPrefix + '_readRequestQueueLimit'),
+				env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT),
 				false
 			),
 			reusePort: !isOperationsServer && process.platform !== 'darwin' && process.platform !== 'win32',

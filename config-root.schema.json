@@ -137,7 +137,7 @@
 				},
 				"readRequestQueueLimit": {
 					"oneOf": [{ "type": ["integer", "null"], "minimum": 0 }, { "const": false }],
-					"description": "Max event-loop delay (ms) before GET, HEAD and OPTIONS on http component listeners are rejected with 503: a read arriving after the current loop iteration has run longer than this is answered immediately without running its handler. Reads are never queued; admitted reads dispatch immediately. Not an in-flight concurrency limit, and blind to a stall that ended before the first read after an idle period. Default (also when null): 5000. false disables read admission. Use actual numbers/booleans, not quoted strings. A rejected OPTIONS preflight surfaces as a CORS failure in browsers because preflight requires a 2xx response. Takes effect on restart."
+					"description": "Max event-loop delay (ms) before GET, HEAD and OPTIONS are rejected with 503 on every HTTP listener, including the operations API: a read arriving after the current loop iteration has run longer than this is answered immediately without running its handler. Reads are never queued; admitted reads dispatch immediately. Not an in-flight concurrency limit, and blind to a stall that ended before the first read after an idle period. Default (also when null): 5000. false disables read admission. Use actual numbers/booleans, not quoted strings. A rejected OPTIONS preflight surfaces as a CORS failure in browsers because preflight requires a 2xx response. Takes effect on restart."
 				},
 				"keepAliveTimeout": { "type": "integer", "description": "Keep-alive inactivity timeout in ms. Default: 30000" },
 				"port": { "type": "integer", "description": "HTTP port. Default: 9926" },
