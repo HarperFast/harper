@@ -5437,6 +5437,8 @@ export function makeTable(options): TableResourceClass {
 							let oldestRetainedAuditTimeResolved = false;
 							dedupVersionCouldBeRetained = (version: number): boolean => {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
+								// an unnamed origin's entries sit in `local` under minted keys, never at its received key
+								if (options?.nodeId && auditStore.isLocalOrigin(options.nodeId)) return false;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
 									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
@@ -5523,6 +5525,8 @@ export function makeTable(options): TableResourceClass {
 							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
+							const headNodeId = nodeId;
+							const headLogKey = localTime;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
@@ -5644,23 +5648,23 @@ export function makeTable(options): TableResourceClass {
 									auditedVersion = auditRecord.version;
 									if (auditedVersion >= txnTime) {
 										if (auditedVersion === txnTime) {
-											precedesExisting = precedesExistingVersion(
+											let precedesAudited = precedesExistingVersion(
 												txnTime,
 												{ version: auditedVersion, localTime: localTime, key: id, nodeId: auditRecord.nodeId },
 												options?.nodeId
 											);
-											if (precedesExisting === 0) {
+											if (precedesAudited === 0) {
 												if (isRocksDB && localTime !== appendedLogKey && !identityIsNotKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
 													// Only for a write whose identity is its key. A write that carries a caller's value or
 													// an unmapped origin's key is filed in `local` under a minted key, so it never takes
 													// this branch: its equal version is a re-delivery.
-													precedesExisting = appendedLogKey > localTime ? 1 : -1;
+													precedesAudited = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
 													// the write itself, not proof that its primary-store mutation committed.
-													precedesExisting = 1;
+													precedesAudited = 1;
 												} else {
 													logger.debug?.(
 														'The transaction time and log key match the existing write, treating as duplicate',
@@ -5669,8 +5673,10 @@ export function makeTable(options): TableResourceClass {
 													write.skipped = true;
 													return;
 												}
+												if (precedesExisting === 0 && (nodeId ?? 0) === headNodeId && localTime === headLogKey)
+													precedesExisting = precedesAudited;
 											}
-											if (precedesExisting > 0) {
+											if (precedesAudited > 0) {
 												// if the existing version is older, we can skip this update
 												advanceToPreviousAudit(auditRecord);
 												continue;
@@ -10333,10 +10339,14 @@ export function makeTable(options): TableResourceClass {
 					if (nodeNameToId[node_name] === nodeId) updatedNodeName = node_name;
 					if (nodeNameToId[node_name] === existingNodeId) existingNodeName = node_name;
 				}
-				if (updatedNodeName > existingNodeName)
+				// Distinct ids never tie: callers read 0 as a re-delivery. A name can be missing (v4-era, or
+				// relayed before its name arrives).
+				if (updatedNodeName !== undefined && existingNodeName !== undefined)
 					// if the updated node name is greater (alphabetically), it wins (it doesn't precede the existing version)
-					return 1;
-				if (updatedNodeName === existingNodeName) return 0; // a tie
+					return updatedNodeName > existingNodeName ? 1 : -1;
+				if (updatedNodeName !== undefined) return 1;
+				if (existingNodeName !== undefined) return -1;
+				return nodeId > existingNodeId ? 1 : -1;
 			}
 			// transaction time is older than existing version, so we treat that as an update that loses to the existing record version
 			return -1;
