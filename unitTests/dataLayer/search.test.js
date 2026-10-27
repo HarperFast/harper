@@ -10,6 +10,8 @@ const { ClientError } = require('#src/utility/errors/hdbError');
 
 const TEST_DB = 'search_by_value_400_test';
 const TEST_TABLE = 'Product';
+const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+const BAD_ATTR_JOI_MSG = "'attribute' names cannot include backticks or forward slashes";
 
 const superUser = {
 	username: 'admin',
@@ -23,11 +25,7 @@ const superUser = {
 function assertBadRequest(err, expectedMessage) {
 	assert.equal(err instanceof ClientError, true);
 	assert.equal(err.statusCode, 400);
-	if (expectedMessage instanceof RegExp) {
-		assert.match(err.message, expectedMessage);
-	} else {
-		assert.equal(err.message, expectedMessage);
-	}
+	assert.equal(err.message, expectedMessage);
 	return true;
 }
 
@@ -43,7 +41,7 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 				id: ID @primaryKey
 				title: String @indexed
 				category: String
-				catalogSearch: FullText @fullText(fields: [{ name: "title" }])
+				${isRocksDB ? 'catalogSearch: FullText @fullText(fields: [{ name: "title" }])' : ''}
 			}
 		`);
 
@@ -78,38 +76,41 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 		);
 	});
 
-	it('returns a 400 ClientError for a super_user when search_by_value specifies a FullText index name as search_attribute', async () => {
-		assert.equal(
-			ProductTable.fullTextIndexes.some((idx) => idx.name === 'catalogSearch'),
-			true,
-			'expected FullText index catalogSearch to exist'
-		);
-		assert.equal(
-			ProductTable.attributes.some((a) => (a.attribute ?? a.name) === 'catalogSearch'),
-			false,
-			'FullText index name should not be a regular table attribute'
-		);
+	(isRocksDB ? it : it.skip)(
+		'returns a 400 ClientError for a super_user when search_by_value specifies a RocksDB FullText index name as search_attribute',
+		async () => {
+			assert.equal(
+				ProductTable.fullTextIndexes.some((idx) => idx.name === 'catalogSearch'),
+				true,
+				'expected FullText index catalogSearch to exist'
+			);
+			assert.equal(
+				ProductTable.attributes.some((a) => (a.attribute ?? a.name) === 'catalogSearch'),
+				false,
+				'FullText index name should not be a regular table attribute'
+			);
 
-		const payload = {
-			operation: 'search_by_value',
-			database: TEST_DB,
-			table: TEST_TABLE,
-			search_attribute: 'catalogSearch',
-			search_value: 'Shoe',
-			get_attributes: ['*'],
-			hdb_user: superUser,
-		};
+			const payload = {
+				operation: 'search_by_value',
+				database: TEST_DB,
+				table: TEST_TABLE,
+				search_attribute: 'catalogSearch',
+				search_value: 'Shoe',
+				get_attributes: ['*'],
+				hdb_user: superUser,
+			};
 
-		await assert.rejects(
-			() => search.searchByValue({ ...payload }),
-			(err) => assertBadRequest(err, "unknown attribute 'catalogSearch'")
-		);
+			await assert.rejects(
+				() => search.searchByValue({ ...payload }),
+				(err) => assertBadRequest(err, "unknown attribute 'catalogSearch'")
+			);
 
-		await assert.rejects(
-			() => serverUtilities.operation({ ...payload }, { user: superUser }, true),
-			(err) => assertBadRequest(err, "unknown attribute 'catalogSearch'")
-		);
-	});
+			await assert.rejects(
+				() => serverUtilities.operation({ ...payload }, { user: superUser }, true),
+				(err) => assertBadRequest(err, "unknown attribute 'catalogSearch'")
+			);
+		}
+	);
 
 	it('returns a 400 ClientError for a super_user when search_by_value fails schema validation', async () => {
 		const payload = {
@@ -124,12 +125,12 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 
 		await assert.rejects(
 			() => search.searchByValue({ ...payload }),
-			(err) => assertBadRequest(err, /attribute/)
+			(err) => assertBadRequest(err, BAD_ATTR_JOI_MSG)
 		);
 
 		await assert.rejects(
 			() => serverUtilities.operation({ ...payload }, { user: superUser }, true),
-			(err) => assertBadRequest(err, /attribute/)
+			(err) => assertBadRequest(err, BAD_ATTR_JOI_MSG)
 		);
 	});
 

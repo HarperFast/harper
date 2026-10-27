@@ -452,7 +452,7 @@ export class ResourceBridge extends BridgeMethods {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 		const validationError = searchValidator(searchObject, 'hashes');
 		if (validationError) {
-			throw validationError.statusCode ? validationError : new ClientError(validationError.message);
+			throwSearchValidationError(validationError);
 		}
 		return getRecords(searchObject);
 	}
@@ -481,7 +481,7 @@ export class ResourceBridge extends BridgeMethods {
 
 		const validationError = searchValidator(searchObject, 'value');
 		if (validationError) {
-			throw validationError.statusCode ? validationError : new ClientError(validationError.message);
+			throwSearchValidationError(validationError);
 		}
 
 		const table = getTable(searchObject);
@@ -735,6 +735,10 @@ export class ResourceBridge extends BridgeMethods {
 		}
 		return lmdbGetBackup(getBackupObj);
 	}
+}
+
+function throwSearchValidationError(validationError: any): never {
+	throw validationError.statusCode ? validationError : new ClientError(validationError.message);
 }
 
 function getSelect({ get_attributes }: any, table: any) {
