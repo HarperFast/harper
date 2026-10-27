@@ -13,7 +13,7 @@ import {
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
-import { LOCAL_ONLY, purgeAgedLogs } from './auditStore.ts';
+import { LOCAL_ONLY, COPIED_RECORD, purgeAgedLogs } from './auditStore.ts';
 import { asBinary } from './asBinary.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -303,6 +303,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					originatingOperation,
 					version,
 					localOnly: (extendedType & LOCAL_ONLY) !== 0,
+					copyFrame: (extendedType & COPIED_RECORD) !== 0,
 				};
 				writes++;
 				stagedWrites++;

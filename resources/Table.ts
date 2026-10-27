@@ -7,6 +7,7 @@
 import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS, THREAD_TYPES } from '../utility/hdbTerms.ts';
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
+import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -223,6 +224,7 @@ import {
 	removeEntry,
 	PENDING_LOCAL_TIME,
 	VERSION_REUSED,
+	FULL_WRITE_HEAD,
 	RecordObject,
 	type Entry,
 	type StructureCounts,
@@ -644,6 +646,18 @@ export const INVALIDATED = 1;
 // a complete record, or counted as a resident. Exclusive with INVALIDATED; the stub's residencyId stays.
 export const REPLICA = 4;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
+export { FULL_WRITE_HEAD };
+/**
+ * The log key of a flagged row's head write, which with the writer identifies that write on every node that
+ * applied it, or undefined when the row is not flagged. A flagged row's only log-key ref is its head's.
+ */
+export function fullWriteHeadKey(
+	metadataFlags: number,
+	entry: { version?: number; additionalAuditRefs?: Array<{ version: number }> }
+): number | undefined {
+	if (!(metadataFlags & FULL_WRITE_HEAD)) return undefined;
+	return entry.additionalAuditRefs?.[0]?.version ?? entry.version;
+}
 export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
 const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
@@ -1042,7 +1056,7 @@ interface TableResourceClass {
 	/**
 	 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`; resolves true when stored.
 	 */
-	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean>;
+	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string; fullWriteHead?: number }): Promise<boolean>;
 	/**
 	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 	 * `observedExpiresAt` is the expiry of the entry the caller read (`null` when it had none); omitted, only the version is checked.
@@ -2217,6 +2231,8 @@ export function makeTable(options): TableResourceClass {
 						// entry or out-of-order resequencing (harper-pro#480). Only set for copy frames (between
 						// COPY_START and COPY_COMPLETE); post-copy audit-replay frames apply normally.
 						isCopyApply: event.isCopyApply,
+						// any base-copy frame carries the source row's current body, not the write logged at its version
+						copyFrame: event.copyFrame,
 						async: true,
 					};
 					const id = event.id;
@@ -4471,16 +4487,29 @@ export function makeTable(options): TableResourceClass {
 		 * untouched: the row keeps the stub's residency and canonical identity, gets no audit entry and never
 		 * replicates. Resolves true when the replica was stored.
 		 */
-		static _storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean> {
+		static _storeReplica(
+			existingEntry: Entry,
+			entry: Entry & { originNode?: string; fullWriteHead?: number }
+		): Promise<boolean> {
 			if (
 				TableResource.getResidencyById ||
 				!replicaExpirationMs ||
+				disposed ||
+				maintenanceClosed ||
+				droppingTable ||
 				!existingEntry?.residencyId ||
 				entry?.value == null ||
-				entry.version == null
+				!answersStub(existingEntry, entry.value, entry.version, entry.originNode, entry.fullWriteHead)
 			)
 				return Promise.resolve(false);
-			return writeReplica(existingEntry.key, entry.value, entry.version, entry.expiresAt, entry.originNode);
+			return writeReplica(
+				existingEntry.key,
+				entry.value,
+				entry.version,
+				entry.expiresAt,
+				entry.originNode,
+				entry.fullWriteHead
+			);
 		}
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
@@ -5413,6 +5442,19 @@ export function makeTable(options): TableResourceClass {
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
 						let belowAuditFloor = false;
+						let auditFloor: number | undefined;
+						if (audit && precedesExisting < 0) {
+							// A newer full write supersedes this one, which is where the walk below stops when the head's
+							// entry is retained and this write is above the floor; otherwise that reconciliation decides.
+							const headKey = fullWriteHeadKey(existingEntry.metadataFlags, existingEntry);
+							if (headKey !== undefined) {
+								auditFloor = getAuditFloor(auditStore);
+								if (Number.isFinite(auditFloor) && txnTime >= auditFloor && headKey >= auditFloor) {
+									write.skipped = true;
+									return;
+								}
+							}
+						}
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -5556,7 +5598,7 @@ export function makeTable(options): TableResourceClass {
 							// Infinity, which fails closed for a cursor check but has to fail OPEN here — walk rather than
 							// discard. RocksDB only: LMDB keeps its exact, unbounded reconciliation.
 							if (isRocksDB && precedesExisting < 0) {
-								const auditFloor = getAuditFloor(auditStore);
+								auditFloor ??= getAuditFloor(auditStore);
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
@@ -6081,7 +6123,19 @@ export function makeTable(options): TableResourceClass {
 							isRocksDB
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
-							omitLocalRecord ? INVALIDATED : 0,
+							(omitLocalRecord ? INVALIDATED : 0) |
+								(isRocksDB &&
+								audit &&
+								fullUpdate &&
+								precedesExisting >= 0 &&
+								!incrementalUpdateToApply &&
+								!isCopyApply &&
+								!options?.copyFrame &&
+								// a ref this write did not add (a tie inherits the prior head's) would hide which write is the head
+								(additionalAuditRefs.length === 0 ||
+									(additionalAuditRefs.length === 1 && additionalAuditRefs[0].version === appendedLogKey))
+									? FULL_WRITE_HEAD
+									: 0),
 							// copy-apply rows are snapshots, not transactions: write the record + indices but no audit entry
 							isCopyApply ? false : audit,
 							{
@@ -6102,6 +6156,7 @@ export function makeTable(options): TableResourceClass {
 								receivedIdentityRefs,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
+								copyFrame: options?.copyFrame,
 							},
 							type,
 							false,
@@ -6304,7 +6359,7 @@ export function makeTable(options): TableResourceClass {
 							null,
 							existingEntry,
 							txnTime,
-							0,
+							isRocksDB && audit ? FULL_WRITE_HEAD : 0,
 							audit,
 							{
 								user: (context as any)?.user,
@@ -11839,7 +11894,9 @@ export function makeTable(options): TableResourceClass {
 		if (typeof stored === 'number' && stored - Date.now() > replicaExpirationMs * (1 - replicaRefreshFraction))
 			return Promise.resolve(false);
 		const current: Entry = primaryStore.getEntry(id);
-		if (!(current?.metadataFlags & REPLICA)) return Promise.resolve(false);
+		// a replica kept without a full-write certificate (an earlier build's) runs out its lifetime
+		if (!(current?.metadataFlags & REPLICA) || !(current.metadataFlags & FULL_WRITE_HEAD))
+			return Promise.resolve(false);
 		const deadline = replicaDeadlineFor(current.expiresAt);
 		if (typeof stored === 'number' && deadline <= stored) return Promise.resolve(false);
 		return trackMaintenanceCommit(Promise.resolve(store.put(id, deadline)).then(() => true));
@@ -11848,19 +11905,19 @@ export function makeTable(options): TableResourceClass {
 	 * Store a resident's complete record as a REPLICA row, in its own transaction, with its deadline
 	 * entry. The row keeps the stub's canonical identity: version, origin and audit refs, so history and
 	 * conflict ordering are unchanged and a later stub for the key still wins, and the record's own
-	 * expiry exactly as the resident reported it. Refuses when the key no longer holds a stub or
-	 * replica, or holds one as new as the response.
+	 * expiry exactly as the resident reported it.
 	 */
 	function writeReplica(
 		id: Id,
 		body: any,
 		responseVersion: number,
-		residentExpiresAt?: number,
-		originNode?: string
+		residentExpiresAt: number | undefined,
+		originNode: string | undefined,
+		fullWriteHead: number
 	): Promise<boolean> {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
 		const preCommit = startPreCommitBlobsForRecord(body, primaryStore.rootStore);
-		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
+		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode, fullWriteHead);
 		// the blob transfer is not a maintenance commit: closing maintenance waits for the row, not the stream.
 		// Only files this write creates are released on a refusal; files received out of band stay with
 		// their receiver, which keeps them while another fetch may still share them
@@ -11880,7 +11937,7 @@ export function makeTable(options): TableResourceClass {
 			() => {
 				let stored: Promise<boolean>;
 				try {
-					stored = storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
+					stored = storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode, fullWriteHead);
 				} catch (error) {
 					releaseUnused();
 					throw error;
@@ -11901,8 +11958,9 @@ export function makeTable(options): TableResourceClass {
 		id: Id,
 		body: any,
 		responseVersion: number,
-		residentExpiresAt?: number,
-		originNode?: string
+		residentExpiresAt: number | undefined,
+		originNode: string | undefined,
+		fullWriteHead: number
 	): Promise<boolean> {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode() || !replicaExpirationMs)
 			return Promise.resolve(false);
@@ -11912,33 +11970,25 @@ export function makeTable(options): TableResourceClass {
 		let committed = false;
 		try {
 			const current: Entry = primaryStore.getEntry(id, options);
-			if (!current?.residencyId || !(current.metadataFlags & (INVALIDATED | REPLICA))) return Promise.resolve(false);
-			if (responseVersion < current.version) return Promise.resolve(false);
-			if (current.metadataFlags & REPLICA && responseVersion === current.version) return Promise.resolve(false);
-			// Two writers can share a timestamp; the stub holds the winner. An answer at that timestamp is
-			// kept only when it names the same writer: a loser's body would never be corrected, and an
-			// answer with no writer (an older responder) or an unmapped origin cannot be told apart.
-			if (responseVersion === current.version) {
-				const stubWriter = current.nodeId ? getNodeNameForId(auditStore, current.nodeId, true) : server.hostname;
-				if (!originNode || !stubWriter || originNode !== stubWriter) return Promise.resolve(false);
-			}
+			if (
+				!current?.residencyId ||
+				!(current.metadataFlags & INVALIDATED) ||
+				!answersStub(current, body, responseVersion, originNode, fullWriteHead)
+			)
+				return Promise.resolve(false);
 			const rowExpiresAt = rowExpiresAtFor(body, residentExpiresAt);
 			const deadline = replicaDeadlineFor(rowExpiresAt);
 			const writeOptions = {
 				expiresAt: rowExpiresAt,
 				residencyId: current.residencyId,
 				recordNodeId: current.nodeId,
-				additionalAuditRefs: current.additionalAuditRefs,
 				transaction,
 			};
-			// A stub has no inputs for computed indexes, so their committed entries are kept as an
-			// invalidation keeps them. The replaced body's blobs are released only once the write is known
-			// to have committed (the encoder would otherwise unlink them before a write that may still lose).
-			const preserveComputed = Boolean(current.metadataFlags & INVALIDATED);
+			// The replaced row's blobs are released only once the write is known to have committed (the encoder
+			// would otherwise unlink them before a write that may still lose).
 			const base = withoutBlobRelease(current);
 			if (hasDerivedIndexRegistration(auditStore, tableId)) reserveLocalKey(primaryStore.rootStore, transaction);
-			updateIndices(id, current.value, body, options, preserveComputed, preserveComputed);
-			updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
+			updateRecord(id, body, base, current.version, REPLICA | FULL_WRITE_HEAD, false, writeOptions, 'put', true);
 			store.putSync(id, deadline, options);
 			const completion = commitRawTransaction(transaction);
 			committed = true;
@@ -11972,6 +12022,30 @@ export function makeTable(options): TableResourceClass {
 				transaction.abort();
 			}
 		}
+	}
+	/**
+	 * Whether an answer is the stub's own write, in a state no later fold can change: the resident's full-write
+	 * head (`fullWriteHead`), logged at the stub's version by the stub's writer (by name; an answer with no
+	 * writer, or an unmapped origin, cannot be told apart), with the stored index fields the stub keeps. The stub
+	 * must carry no audit ref: a ref is a fold, or the head of another write at the same version that hides the
+	 * one logged at it.
+	 */
+	function answersStub(
+		stub: Entry,
+		body: any,
+		version: number,
+		originNode: string | undefined,
+		fullWriteHead: unknown
+	) {
+		if (version !== stub.version || fullWriteHead !== stub.version) return false;
+		if (stub.additionalAuditRefs?.length || stub.receivedIdentityRefs?.length) return false;
+		if (!originNode || originNode !== (stub.nodeId ? getNodeNameForId(auditStore, stub.nodeId, true) : server.hostname))
+			return false;
+		for (const name in indices) {
+			if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
+			if (!isDeepStrictEqual(body[name], stub.value?.[name])) return false;
+		}
+		return true;
 	}
 	/** A raw handle's commit under coordinated retry resolves RETRY_NOW on a conflict; that is a loss, not a commit. */
 	function commitRawTransaction(transaction: RocksTransaction): Promise<boolean> {
@@ -12156,7 +12230,18 @@ export function makeTable(options): TableResourceClass {
 			return Promise.resolve(false);
 		}
 		updateIndices(entry.key, entry.value, stub, { transaction }, true, false);
-		updateRecord(entry.key, stub, base, entry.version, INVALIDATED, false, writeOptions, 'invalidate', false, null);
+		updateRecord(
+			entry.key,
+			stub,
+			base,
+			entry.version,
+			INVALIDATED | (entry.metadataFlags & FULL_WRITE_HEAD),
+			false,
+			writeOptions,
+			'invalidate',
+			false,
+			null
+		);
 		return commitRawTransaction(transaction as RocksTransaction).then(releaseBlobs);
 	}
 	function warnWriterKeptResident(residency: string[]) {

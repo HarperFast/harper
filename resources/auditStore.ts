@@ -1239,6 +1239,13 @@ export const HAS_ADDITIONAL_AUDIT_REFS = 0x4000;
  * lower-byte action region (which extendedType forbids) and within the always-32-bit metadata form.
  */
 export const LOCAL_ONLY = 0x8000;
+/**
+ * Marks a put that applied a base-copy frame (`copyFrame`): its record is the source row's body, not the
+ * write logged at its version. Relays forward the entry's bytes unchanged, and receivers and crash replay
+ * map the flag back to `copyFrame`, so no node certifies the row as a full-write head. Clear of the record
+ * bits the copy walk mirrors into this word; an older reader ignores it.
+ */
+export const COPIED_RECORD = 0x100000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -1305,7 +1312,8 @@ function isDecodableAction(action: number) {
 		HAS_EXPIRATION_EXTENDED_TYPE |
 		HAS_BLOBS |
 		HAS_ADDITIONAL_AUDIT_REFS |
-		LOCAL_ONLY;
+		LOCAL_ONLY |
+		COPIED_RECORD;
 	return (action & 0xf) !== 0 && !(action & ~knownActionFlags);
 }
 

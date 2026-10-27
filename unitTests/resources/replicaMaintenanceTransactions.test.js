@@ -51,6 +51,7 @@ describe('Replica maintenance transaction lifetime', function () {
 				value: { id: entry.key, name: 'indexed', body: 'complete' },
 				version: entry.version,
 				originNode: server.hostname,
+				fullWriteHead: entry.version,
 			}),
 			true
 		);
