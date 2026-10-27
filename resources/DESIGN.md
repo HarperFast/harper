@@ -882,33 +882,7 @@ and the cascade gains no crash or cross-store atomicity from this.
 
 ## A related-table read uses the related table's own database link (`Table.ts` relationship resolvers, `search.ts` join)
 
-A native read transaction belongs to one database; RocksDB rejects it on another database's store
-("Transaction belongs to a different database") and LMDB silently reads the wrong data. A
-`@relationship` may target a table in another database, so every read of a related table takes its
-transaction from that table (`relatedTable._readTxnForContext(context)` / `_txnForContext`), never
-from the `txnForContext` closure of the table that declared the relationship. Point reads take it
-per call. A search join (`?vault.name==x`) scans the related index lazily, after REST has committed
-the request, so the join takes a lease on the related link when it runs (`search.ts`
-`leaseRelatedReadTxn`, `DatabaseTransaction.leaseReadTxn`), kept on the search's `filtered` object,
-and `Table.search` releases the leases with its own handle (`onDone`, the counting drain, the error
-path). A search that runs no cross-database join allocates nothing for this. A lease is registered
-on its own link, never as the outer results: abandoned-read cleanup on that link releases only that
-link. A search spans its holder link and its leased links, and either side can scan for several
-monitor ticks with the other idle: a drained join map or an inner scan whose rows are filtered or
-sorted on the holder side, a filtered related index scan that yields an event turn per rejected
-entry on the other. An intermediate hop of a multi-hop join has no activity of its own while the
-last hop scans. So the RocksDB monitor treats a search's links (its holder and every link it leases)
-as one: each is renewed while any of them showed its own range activity in the current or previous
-tick. It consumes a partner's range flag into that tick stamp itself, since a link whose handle
-`save()` adopted is never walked and its flag would never clear. Only range activity stamps a link,
-never a renewal, or two leases held in opposite directions would keep each other alive. A search
-whose own transaction has no handle takes no leases; its join reads the latest committed state, as
-the source does. LMDB needs none of this: a lease holds its own reference on a reference-counted
-snapshot. A same-database related table reuses the caller's transaction; a join reached without the
-search's lease inputs reads another database's latest committed state rather than a foreign handle.
-A related read after the request committed takes a handle-free transaction, so a projection resolved
-then sees the latest state, not the join's snapshot (harper#3603). Each database is read at its own
-snapshot; a cross-database read is not one consistent snapshot.
+A native read transaction belongs to one database (RocksDB rejects a foreign one; LMDB reads the wrong data), so every read of a related table takes its transaction from that table (`_readTxnForContext` / `_txnForContext`), never from the declaring table's `txnForContext`. A join into another database scans after REST commits the request, so it leases that link's handle when it runs (`search.ts` `leaseRelatedReadTxn`, `DatabaseTransaction.leaseReadTxn`); the leases live on the search's `filtered` object and `Table.search` releases them with its own handle. Either side of a search can scan for ticks with the other idle (a drained join map, a filtered or sorted source, a related scan yielding per rejected entry, the middle hop of a multi-hop join), so the RocksDB monitor renews a search's holder and leased links together while any of them showed its own range activity this tick or the last, consuming the flag of a link it never walks (a `save()`-adopted handle). Renewals never count, so abandoned opposite-direction leases are reaped. LMDB snapshots are reference-counted and need none of this. A related read after commit takes a handle-free transaction and sees the latest state (harper#3603); each database is read at its own snapshot.
 
 ## `enc:v1:` env values decrypt through a registered decryptor, and skip non-fatally without one (`resources/loadEnv.ts`, `resources/secretDecryptor.ts`, `utility/envFile.ts`)
 
