@@ -840,6 +840,12 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				let g2Token;
 				await waitFor(() => (g2Token = subscription.checkpoint())?.members === members(g2));
 				assert.strictEqual(await admits(T, g2Token), true);
+				// a copy bound over g2's route voids it, and g1's higher floor on the relay is no fallback
+				const rootStore = T.primaryStore.rootStore;
+				await writeCopyBounds(rootStore, relay, { raise: new Map([[origin, floor - 1000]]) });
+				await refuses(T, g2Token, 'a copy bound covers the g2 route');
+				await writeCopyBounds(rootStore, relay, { release: [[]] });
+				assert.strictEqual(await admits(T, g2Token), true);
 				await send(origin, { originFloorRevocations: [[origin, g2]] });
 				await refuses(T, g2Token, "g2's revocation is not hidden by g1's higher floor");
 				subscription.end();
