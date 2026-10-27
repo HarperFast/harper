@@ -211,7 +211,8 @@ realpath gaps), and files a natively loaded dependency loads itself are outside 
 
 A bare or `node_modules` import in the compartment `importHook` is a native `import()`. For a CommonJS
 module, `dynamicCjsExports` copies the enumerable `module.exports` data properties the namespace lacks
-(leaving accessors uninvoked and skipping any Proxy trap that throws) while every namespace key and the native
+(leaving accessors uninvoked, skipping any Proxy trap that throws, and skipping a callable `then`, which
+would make a re-exporting namespace thenable) while every namespace key and the native
 `default` stay as they were (#3485). The module is found through its `require.cache` entry because Node 22
 gives a CommonJS namespace no `'module.exports'` key. `normalizeImportedModule` is not used here: it is a
 no-op on Node 22, and where the key exists it rebuilds the exports from enumerable properties, dropping names
