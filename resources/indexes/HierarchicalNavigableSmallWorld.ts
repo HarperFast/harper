@@ -1015,15 +1015,21 @@ export class HierarchicalNavigableSmallWorld {
 					.update(Buffer.from(nativeVector.buffer, nativeVector.byteOffset, nativeVector.byteLength))
 					.digest('base64url')
 			: undefined;
-		if (
-			oldNodeId != null &&
-			signature &&
-			storedMapping.signature === signature &&
-			!pendingMapping &&
-			!storedMapping.pending
-		) {
-			this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
-			return;
+		if (oldNodeId != null && signature && storedMapping.signature === signature) {
+			if (!storedMapping.pending) {
+				this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
+				return;
+			}
+			// A replay re-delivers values this process already inserted (a rebuild's scan overlaps its log
+			// replay). Replacing the node would tombstone it, and the plane does not re-link the neighbours
+			// that routed through it. Only an in-memory mapping proves the node is in this plane; one read
+			// back from storage may predate a crash that lost it, so that case still re-inserts.
+			if (pendingMapping) {
+				const mapping = { id: oldNodeId, previousId: durableNodeId, signature, version, pending: true };
+				this.indexStore.putSync(safeKey, mapping);
+				this.pendingDerivedMappings.set(pendingKey, { ...mapping, primaryKey });
+				return;
+			}
 		}
 		let plane = vector ? this.getPlane(vector.length, true) : this.getPlane();
 		if (plane?.invalidated()) {
