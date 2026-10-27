@@ -303,7 +303,7 @@ The sharing cuts both ways: the caller's mutations are visible to the **commit**
 
 ## getFromSource() waiters share a fill that stored nothing
 
-A same-thread waiter that finds nothing valid in the store after the leader unlocks serves the leader's entry instead of calling the source again. Only a fill that resolved, committed and kept its write publishes one, and only if the record is copyable plain data (no stream, iterator, Headers or blob; checked once, within a budget) and the source did not set `noCacheStore` (per-request; preset on read-only nodes and dropping tables). A record a request-level `noCacheStore` kept out of the store goes only to waiters that asked for `noCacheStore` too. Failures, stale-on-error answers and other threads' waiters are never shared. Pinned by `unitTests/resources/sourceFillCoalescing.test.js`.
+A same-thread waiter that finds nothing valid in the store after the leader unlocks serves the leader's entry instead of calling the source again. Only a fill that resolved, committed and kept its write publishes one, and only if the record is copyable plain data (no stream, iterator, Headers or blob; checked once, within a budget) and the source did not set `noCacheStore` (per-request; preset on read-only nodes and dropping tables). A record a request-level `noCacheStore` kept out of the store goes only to waiters that asked for `noCacheStore` too. Failures, stale-on-error answers, a fill from another `source` and other threads' waiters are never shared. Pinned by `unitTests/resources/sourceFillCoalescing.test.js`.
 
 ## getFromSource() keeps source versions separate from fill ordering
 
