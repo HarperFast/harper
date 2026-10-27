@@ -1325,7 +1325,6 @@ export function transformForSelect(select, resource) {
 		return transform(value);
 	}
 	function nestedTransform(property) {
-		// only a relationship target projects through a table's resolvers; plain JSON and @computed results get none
 		const targetResource =
 			propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
 				? propertyResolvers[property.name]?.definition?.tableClass
