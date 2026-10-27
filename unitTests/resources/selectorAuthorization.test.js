@@ -44,6 +44,16 @@ const selectors = {
 	braced: () => new RequestTarget('?select(id,child{id,secret,leaf{id,secret}})').select[1],
 	query: () => new RequestTarget('?select(id,child[select(id,secret,leaf[select(id,secret)])])').select[1],
 };
+const assertUnchanged = (selection, original) => {
+	assert.deepStrictEqual(structuredClone(selection), original);
+	const checkSymbols = (value) => {
+		if (value && typeof value === 'object') {
+			assert.deepStrictEqual(Object.getOwnPropertySymbols(value), []);
+			for (const nested of Object.values(value)) checkSymbols(nested);
+		}
+	};
+	checkSymbols(selection);
+};
 const freeze = (value) => {
 	if (value && typeof value === 'object') {
 		for (const nested of Object.values(value)) freeze(nested);
@@ -113,7 +123,7 @@ describe('relationship selector authorization isolation', function () {
 					const selection = createSelection();
 					const original = structuredClone(selection);
 					for (const user of users) assert.deepStrictEqual(await read(method, selection, user), expected(user));
-					assert.deepStrictEqual(structuredClone(selection), original);
+					assertUnchanged(selection, original);
 				});
 			}
 			it(`${method} accepts a frozen ${shape} selector without changing it`, async function () {
@@ -127,14 +137,14 @@ describe('relationship selector authorization isolation', function () {
 			selection.forceNulls = true;
 			const original = structuredClone(selection);
 			assert.deepStrictEqual(await read(method, selection, restrictedUser), expected(restrictedUser));
-			assert.deepStrictEqual(structuredClone(selection), original);
+			assertUnchanged(selection, original);
 		});
 		it(`${method} retains explicit trusted nested permission controls`, async function () {
 			const selection = selectors.object();
 			selection.checkPermission = restrictedUser.role.permission;
 			const original = structuredClone(selection);
 			assert.deepStrictEqual(await read(method, selection, broadUser), expected(restrictedUser));
-			assert.deepStrictEqual(structuredClone(selection), original);
+			assertUnchanged(selection, original);
 		});
 		it(`${method} still omits a related table the caller cannot read`, async function () {
 			const deniedUser = {
@@ -143,7 +153,7 @@ describe('relationship selector authorization isolation', function () {
 			const selection = selectors.object();
 			const original = structuredClone(selection);
 			assert.deepStrictEqual(await read(method, selection, deniedUser), { id: 'p1' });
-			assert.deepStrictEqual(structuredClone(selection), original);
+			assertUnchanged(selection, original);
 		});
 	}
 });
