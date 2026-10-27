@@ -162,9 +162,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	removeWrite(operation: TransactionWrite) {
-		const index = this.writes.indexOf(operation);
-		if (index > -1) this.writes[index] = null;
-		this.ownedWrites?.delete(operation);
+		// a later write to the key must not count a removed one as its predecessor
+		this.detachWrite(operation);
 	}
 
 	/**
