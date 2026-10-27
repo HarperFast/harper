@@ -33,7 +33,8 @@ const assert = require('node:assert');
 		let openError;
 		if (mode === 'inspect') {
 			try {
-				index = await binding.openNativeFullTextReader(options);
+				const reader = await binding.openNativeFullTextReader(options);
+				await reader.close();
 			} catch (error) {
 				openError = error.code;
 			}
