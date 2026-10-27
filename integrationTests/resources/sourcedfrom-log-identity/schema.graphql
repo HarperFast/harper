@@ -1,0 +1,32 @@
+type DirectSource @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	status: String
+	revision: String
+}
+
+type DirectMirror @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	revision: String
+}
+
+type GenericSource @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	status: String
+	revision: String
+}
+
+type GenericMirror @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	revision: String
+}
+
+type Probe @table(audit: true) @export {
+	id: ID @primaryKey
+	body: String
+	probeSearch: FullText @fullText(fields: [{ name: "body" }])
+	vector: [Float] @indexed(type: "HNSW", nativePlane: true, distance: "cosine")
+}
