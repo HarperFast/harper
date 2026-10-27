@@ -137,7 +137,7 @@ describe('HNSW native plane file-primary delivery', function () {
 		for (const method of ['insert', 'remove']) {
 			const native = plane[method];
 			plane[method] = function (...args) {
-				calls.push(method);
+				calls.push(method === 'remove' ? `remove ${args[0]}` : method);
 				return native.apply(this, args);
 			};
 		}
@@ -327,10 +327,15 @@ describe('HNSW native plane file-primary delivery', function () {
 		const published = mapping().id;
 		const vector = makeVector(id + 1);
 		index.applyDerivedValue(id, vector, 2);
+		const staged = mapping().id;
 		index.pendingDerivedMappings.clear();
 		assert.equal(mapping().pending, true);
 		const mutations = nativeMutations(() => index.applyDerivedValue(id, vector, 2));
-		assert.equal(mutations.at(-1), 'insert', 'a stored pending mapping does not prove its node survived');
+		assert.deepStrictEqual(
+			mutations,
+			[...new Set([published, staged])].map((nodeId) => `remove ${nodeId}`).concat('insert'),
+			'a stored pending mapping does not prove its node survived: both nodes go, then a fresh insert'
+		);
 		assert.equal(mapping().previousId, published);
 		await index.flushDerived();
 		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
