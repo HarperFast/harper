@@ -9,3 +9,10 @@ type Plain @table(database: "readonlyttl") @export {
 	id: ID @primaryKey
 	name: String
 }
+
+# A caching table, so REST honors Cache-Control on it; each row points at the Session record with the same id.
+type SessionRef @table(database: "readonlyttl") @export {
+	id: ID @primaryKey
+	sessionId: ID
+	session: Session @relationship(from: sessionId)
+}

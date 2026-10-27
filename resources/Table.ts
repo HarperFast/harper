@@ -2878,7 +2878,8 @@ export function makeTable(options): TableResourceClass {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
 							// dictates not to go to source
-							if (!this.doesExist()) throw new ServerError('Entry is not cached', 504);
+							if (!this.doesExist() || isHiddenExpiry(entry?.expiresAt))
+								throw new ServerError('Entry is not cached', 504);
 							if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 						} else if (resourceOptions?.ensureLoaded) {
 							const loadingFromSource = ensureLoadedFromSource(
@@ -3798,7 +3799,8 @@ export function makeTable(options): TableResourceClass {
 									// don't go into the loading from source condition, but HTTP spec says to
 									// return 504 (rather than 404) if there is no content and the cache-control header
 									// dictates not to go to source
-									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+									if (!entry?.value || isHiddenExpiry(entry.expiresAt))
+										throw new ServerError('Entry is not cached', 504);
 									if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 								} else if (ensureLoaded) {
 									const loadingFromSource = ensureLoadedFromSource(
@@ -7198,6 +7200,7 @@ export function makeTable(options): TableResourceClass {
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
+							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;
 							return {
 								[primaryKey]: entry.key,
 								message: 'This entry has expired',
@@ -9977,8 +9980,13 @@ export function makeTable(options): TableResourceClass {
 		}
 		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
 		if (entry && context) {
-			if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-			if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
+			const newerVersion = entry.version > (context.lastModified || 0);
+			const firstRefresh = entry.localTime && !context.lastRefreshed;
+			// last, because it may read the clock
+			if ((newerVersion || firstRefresh) && !isHiddenExpiry(entry.expiresAt)) {
+				if (newerVersion) context.lastModified = entry.version;
+				if (firstRefresh) context.lastRefreshed = entry.localTime;
+			}
 		}
 		return withEntry(entry, id);
 	}
@@ -10137,12 +10145,12 @@ export function makeTable(options): TableResourceClass {
 		// target may be a primitive id on instance-API calls, which can't hold the flag
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 	}
-	function isHiddenExpiry(expiresAt: number | undefined, now = Date.now()) {
-		return !hasSourceGet && expiresAt != undefined && expiresAt < now;
+	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
+		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
 	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
-			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+			if (!entry?.value || isHiddenExpiry(entry.expiresAt)) throw new ServerError('Entry is not cached', 504);
 			return;
 		}
 		if (needsResidentLoad(entry, context))
