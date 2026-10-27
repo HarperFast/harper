@@ -92,15 +92,13 @@ export function getIndexedValues(this: any, value: any, indexNulls?: any) {
 }
 
 const MONOTONIC_CLOCK_KEY = 'harper.monotonicClock';
-// One clock word for every thread in the process, holding the bit pattern of the last time issued. LMDB keys
-// its audit log by the transaction time, so two threads issuing the same time would make two writes one.
 const monotonicClockBuffer: SharedArrayBuffer =
 	workerData?.monotonicClock ?? getEnvironmentData(MONOTONIC_CLOCK_KEY) ?? new SharedArrayBuffer(8);
 setEnvironmentData(MONOTONIC_CLOCK_KEY, monotonicClockBuffer);
 const lastTimeBits = new BigInt64Array(monotonicClockBuffer);
+let lastSeenBits = 0n;
 const timeFloat = new Float64Array(1);
 const timeBits = new BigInt64Array(timeFloat.buffer);
-/** The shared clock word, for handing to worker threads that are created from this one. */
 export function getMonotonicClockBuffer(): SharedArrayBuffer {
 	return monotonicClockBuffer;
 }
@@ -122,12 +120,14 @@ setInterval(adjustStartTime, TIME_ADJUSTMENT_INTERVAL).unref();
 export function getNextMonotonicTime(this: any) {
 	timeFloat[0] = performance.now() + startTime;
 	const nowBits = timeBits[0];
-	let last = Atomics.load(lastTimeBits, 0);
+	// usually still current, and a stale guess just fails the exchange, which returns the current word
+	let last = lastSeenBits;
 	for (;;) {
 		// positive doubles order like their bit patterns, and one more is the next representable double
 		const next = nowBits > last ? nowBits : last + 1n;
 		const witnessed = Atomics.compareExchange(lastTimeBits, 0, last, next);
 		if (witnessed === last) {
+			lastSeenBits = next;
 			timeBits[0] = next;
 			return timeFloat[0];
 		}

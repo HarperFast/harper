@@ -42,24 +42,26 @@ describe('getNextMonotonicTime', function () {
 	it('never returns the same time on two threads, and increases on each', async function () {
 		const gate = new SharedArrayBuffer(8);
 		const gateView = new Int32Array(gate);
-		const workers = [false, false, false, true].map(
-			(nested) =>
-				new Worker(minterSource, {
+		const workers = [];
+		try {
+			let failure;
+			const results = [false, false, false, true].map((nested) => {
+				const worker = new Worker(minterSource, {
 					eval: true,
 					workerData: { gate, nested, commonUtility: COMMON_UTILITY, calls: CALLS_PER_THREAD },
-				})
-		);
-		try {
-			const results = workers.map(
-				(worker) =>
-					new Promise((resolve, reject) => {
-						worker.once('message', resolve);
-						worker.once('error', reject);
-						worker.once('exit', (code) => reject(new Error(`minter exited with ${code} before reporting`)));
-					})
-			);
+				});
+				workers.push(worker);
+				return new Promise((resolve, reject) => {
+					const fail = (error) => reject((failure ??= error));
+					worker.once('message', resolve);
+					worker.once('error', fail);
+					worker.once('exit', (code) => fail(new Error(`minter exited with ${code} before reporting`)));
+				});
+			});
+			for (const result of results) result.catch(() => {}); // a failure is rethrown from `failure` or the join
 			const deadline = Date.now() + 30_000;
 			while (Atomics.load(gateView, 1) < workers.length) {
+				if (failure) throw failure;
 				if (Date.now() > deadline) assert.fail('minters did not reach the start gate');
 				await new Promise((resolve) => setTimeout(resolve, 5));
 			}

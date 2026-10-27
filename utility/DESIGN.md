@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), comparing which file a log descriptor is on (`logging/`), or changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`).
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), comparing which file a log descriptor is on (`logging/`), changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`), or minting times with `getNextMonotonicTime` (`lmdb/commonUtility.ts`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -98,4 +98,4 @@ Startup, install, restart, stop, upgrade and status messages about the local ins
 
 ## Local times are unique across threads (`utility/lmdb/commonUtility.ts` `getNextMonotonicTime`)
 
-Every thread of a process mints from one clock word, a `SharedArrayBuffer` holding the bit pattern of the last time issued, advanced by compare-and-swap to `max(now, last + 1 ulp)`. Same-node writes with equal versions are treated as re-deliveries (`precedesExistingVersion`), and LMDB keys its audit log by that version, so two threads issuing one time would silently drop the second write. The word reaches workers through `setEnvironmentData` and the `monotonicClock` workerData provider in `server/threads/manageThreads.ts`. A worker spawned outside Harper from a thread that never loaded the module gets a clock of its own. Uniqueness is per process and per run, not across restarts or clock rollback. Enforced by `unitTests/utility/lmdb/monotonicTime.test.js` and `integrationTests/database/lmdb-concurrent-crdt-add.test.ts`.
+Every thread of a process mints from one clock word, a `SharedArrayBuffer` holding the bit pattern of the last time issued, advanced by compare-and-swap to `max(now, last + 1 ulp)`. Same-node writes with equal versions are treated as re-deliveries (`precedesExistingVersion`), and LMDB keys its audit log by that version, so two threads issuing one time would silently drop the second write. The word reaches workers through `setEnvironmentData` and the `monotonicClock` workerData provider in `server/threads/manageThreads.ts`. Environment data is inherited transitively, so only a thread lineage in which no ancestor loaded the module (never the case under Harper, whose `manageThreads.ts` loads it on the main thread) or another process has a clock of its own. Uniqueness is per process and per run, not across restarts or clock rollback. Enforced by `unitTests/utility/lmdb/monotonicTime.test.js` and `integrationTests/database/lmdb-concurrent-crdt-add.test.ts`.

@@ -1,14 +1,10 @@
 /**
- * Concurrent CRDT `add` PATCHes to one record on LMDB with several worker threads must all apply.
- *
- * Each worker minted transaction times from its own clock, so two workers could commit the same record at
- * the same time. LMDB keys its audit log by that time, and the audit walk took the second write for a
- * re-delivery of the first: it was skipped while its request still answered 204, losing one delta.
+ * Concurrent CRDT `add` PATCHes to one record on LMDB with several worker threads must all apply: a
+ * transaction time shared by two threads made the second write look like a re-delivery (harper#262).
  *
  *   npm run test:integration -- "integrationTests/database/lmdb-concurrent-crdt-add.test.ts"
  *   LMDB_CRDT_ADD_ROUNDS=200 … to run more rounds
- */
-import { suite, test, before, after } from 'node:test';
+ */ import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok } from 'node:assert';
 import { request } from 'node:http';
 import { resolve } from 'node:path';
@@ -20,6 +16,7 @@ const ROUNDS = Number(process.env.LMDB_CRDT_ADD_ROUNDS) || 50;
 const PATCHES_PER_ROUND = 400;
 const CONCURRENCY = 32;
 const DELTAS = [1, 2, 0, -1];
+const WORKERS = 4;
 
 // One connection per request, so the kernel spreads the requests over every worker's listener.
 function send(url: string, method: string, auth: string, body?: unknown): Promise<{ status: number; body: string }> {
@@ -70,32 +67,28 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: { threads: { count: 4 } },
+				config: { threads: { count: WORKERS } },
 				env: { HARPER_STORAGE_ENGINE: 'lmdb' },
 			});
 			httpURL = ctx.harper.httpURL;
 			const { username, password } = ctx.harper.admin;
 			auth = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
+			// Every worker must be serving before the rounds start, or early rounds run on fewer threads.
+			const threads = new Set<number>();
 			const deadline = Date.now() + 60_000;
-			for (;;) {
-				const probe = await send(`${httpURL}/WorkerThread/`, 'GET', auth).catch(() => undefined);
-				if (probe?.status === 200) break;
-				if (Date.now() > deadline) throw new Error('the WorkerThread route never became ready');
-				await sleep(250);
+			while (threads.size < WORKERS) {
+				if (Date.now() > deadline) throw new Error(`only threads ${[...threads]} served /WorkerThread/ within 60s`);
+				await inParallel(32, 16, async () => {
+					const response = await send(`${httpURL}/WorkerThread/`, 'GET', auth).catch(() => undefined);
+					const threadId = response?.status === 200 ? JSON.parse(response.body).threadId : undefined;
+					if (typeof threadId === 'number') threads.add(threadId);
+				});
+				if (threads.size < WORKERS) await sleep(250);
 			}
 		});
 
 		after(async () => {
 			await teardownHarper(ctx);
-		});
-
-		test('requests reach more than one worker thread', async () => {
-			const threads = new Set<number>();
-			await inParallel(64, 16, async () => {
-				const response = await send(`${httpURL}/WorkerThread/`, 'GET', auth);
-				threads.add(JSON.parse(response.body).threadId);
-			});
-			ok(threads.size > 1, `all requests were served by thread ${[...threads]}`);
 		});
 
 		test(`${ROUNDS} rounds of ${PATCHES_PER_ROUND} concurrent add PATCHes each sum exactly`, async () => {
