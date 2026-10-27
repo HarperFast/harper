@@ -4,8 +4,8 @@ const testUtils = require('../testUtils.js');
 const assert = require('node:assert');
 const { createHash, randomUUID } = require('node:crypto');
 const {
+	appendFileSync,
 	chmodSync,
-	copyFileSync,
 	createWriteStream,
 	existsSync,
 	mkdirSync,
@@ -40,9 +40,9 @@ const {
 const { blobSnapshotDir } = require('#src/dataLayer/blobBackup');
 const { readBackupManifest } = require('#src/dataLayer/backupManifest');
 const { ARCHIVE_MANIFEST_ENTRY } = require('#src/dataLayer/backupArchiveManifest');
+const { fileIdentity } = require('#src/utility/fileIdentity');
 const backupImport = require('#src/dataLayer/backupImport');
 const {
-	IMPORT_SOURCE_DIR,
 	IMPORT_STAGING_DIR,
 	importBackup,
 	importBackupJob,
@@ -72,11 +72,8 @@ function stagingEntries(databaseName) {
 	return existsSync(stagingRoot(databaseName)) ? readdirSync(stagingRoot(databaseName)) : [];
 }
 
-function placeInImport(databaseName, archivePath, name) {
-	const dir = join(backupDirForDatabase(databaseName), IMPORT_SOURCE_DIR);
-	mkdirSync(dir, { recursive: true });
-	copyFileSync(archivePath, join(dir, name));
-	return join(dir, name);
+function serverFile(archivePath) {
+	return { server_path: archivePath, server_path_identity: fileIdentity(statSync(archivePath)) };
 }
 
 // The code under test reads these through their module objects (or a class prototype) at call time, so
@@ -210,19 +207,19 @@ describeUnlessLmdb('import_backup', function () {
 		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	describe('source_file', function () {
+	describe('server_path', function () {
 		afterEach(function () {
 			for (const name of [IMPORTED, FOREIGN]) rmSync(backupDirForDatabase(name), { recursive: true, force: true });
 		});
 
-		it('turns a staged .tar.gz into a verified managed backup that restores records and blob bytes', async function () {
-			placeInImport(IMPORTED, gzArchive, 'source.tar.gz');
-			const result = await importBackupJob({ ...SU, database: IMPORTED, source_file: 'source.tar.gz' });
+		it('turns a server-side .tar.gz into a verified managed backup that restores records and blob bytes', async function () {
+			const before = readFileSync(gzArchive);
+			const result = await importBackupJob({ ...SU, database: IMPORTED, ...serverFile(gzArchive) });
 
 			assert.strictEqual(result.identified, true);
 			assert.deepStrictEqual(result.tables, ['Items']);
 			assert.strictEqual(result.digest, sha256(gzArchive));
-			assert.strictEqual(result.imported_from, `${IMPORT_SOURCE_DIR}/source.tar.gz`);
+			assert.strictEqual(result.imported_from, gzArchive);
 			assert.strictEqual(result.blobs, true);
 			assert.strictEqual(result.blob_root_count, 1);
 			assert.deepStrictEqual(result.missing_roles, []);
@@ -236,7 +233,7 @@ describeUnlessLmdb('import_backup', function () {
 
 			const manifest = await readBackupManifest(backupDirForDatabase(IMPORTED), result.backup_id);
 			assert.deepStrictEqual(manifest.tables, ['Items']);
-			assert.strictEqual(manifest.imported_from, `${IMPORT_SOURCE_DIR}/source.tar.gz`);
+			assert.strictEqual(manifest.imported_from, gzArchive);
 			assert.strictEqual(manifest.digest, sha256(gzArchive));
 			assert.deepStrictEqual(manifest.producer, gzManifest);
 			assert.ok(
@@ -244,10 +241,7 @@ describeUnlessLmdb('import_backup', function () {
 				'the archive blob is in the backup snapshot under its root index'
 			);
 			assert.deepStrictEqual(stagingEntries(IMPORTED), [], 'staging is removed');
-			assert.ok(
-				existsSync(join(backupDirForDatabase(IMPORTED), IMPORT_SOURCE_DIR, 'source.tar.gz')),
-				'.import is read only'
-			);
+			assert.ok(readFileSync(gzArchive).equals(before), 'the archive is left in place, unchanged');
 
 			await restoreBackup({ ...SU, database: IMPORTED, backup_id: result.backup_id, target_database: RESTORED });
 			const Restored = await waitFor(() => getDatabases()[RESTORED]?.Items, {
@@ -259,8 +253,7 @@ describeUnlessLmdb('import_backup', function () {
 
 		it('imports a plain .tar into a database that does not exist locally, and restores it in place', async function () {
 			assert.strictEqual(getDatabases()[FOREIGN], undefined, 'precondition: no such local database');
-			placeInImport(FOREIGN, tarArchive, 'foreign.tar');
-			const result = await importBackupJob({ ...SU, database: FOREIGN, source_file: 'foreign.tar' });
+			const result = await importBackupJob({ ...SU, database: FOREIGN, ...serverFile(tarArchive) });
 			assert.strictEqual(result.identified, true);
 			assert.strictEqual(result.digest, sha256(tarArchive));
 			const manifest = await readBackupManifest(backupDirForDatabase(FOREIGN), result.backup_id);
@@ -277,9 +270,8 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		it('refuses an archive whose sha256 does not match the pinned one, leaving nothing behind', async function () {
-			placeInImport(IMPORTED, gzArchive, 'pinned.tar.gz');
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, source_file: 'pinned.tar.gz', sha256: 'ab'.repeat(32) }),
+				importBackupJob({ ...SU, database: IMPORTED, ...serverFile(gzArchive), sha256: 'ab'.repeat(32) }),
 				(error) => error.statusCode === 400 && /sha256/.test(error.message)
 			);
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
@@ -288,7 +280,7 @@ describeUnlessLmdb('import_backup', function () {
 			const result = await importBackupJob({
 				...SU,
 				database: IMPORTED,
-				source_file: 'pinned.tar.gz',
+				...serverFile(gzArchive),
 				sha256: sha256(gzArchive).toUpperCase(),
 			});
 			assert.strictEqual(result.digest, sha256(gzArchive));
@@ -300,10 +292,9 @@ describeUnlessLmdb('import_backup', function () {
 			assert.strictEqual(first.name, ARCHIVE_MANIFEST_ENTRY);
 			const stripped = join(tempDir, 'pre-manifest.tar');
 			writeFileSync(stripped, tar.subarray(second.offset));
-			placeInImport(IMPORTED, stripped, 'pre-manifest.tar');
 
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, source_file: 'pre-manifest.tar' }),
+				importBackupJob({ ...SU, database: IMPORTED, ...serverFile(stripped) }),
 				(error) => error.statusCode === 400 && /first entry must be harper-backup\.json/.test(error.message)
 			);
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
@@ -312,7 +303,7 @@ describeUnlessLmdb('import_backup', function () {
 			const result = await importBackupJob({
 				...SU,
 				database: IMPORTED,
-				source_file: 'pre-manifest.tar',
+				...serverFile(stripped),
 				accept_incompatible_backup: true,
 			});
 			assert.strictEqual(result.identified, false);
@@ -329,9 +320,8 @@ describeUnlessLmdb('import_backup', function () {
 				{ header: { name: 'CURRENT' }, body: 'MANIFEST-000001\n' },
 				{ header: { name: 'escape', type: 'symlink', linkname: '/etc/passwd' } },
 			]);
-			placeInImport(IMPORTED, linked, 'symlink.tar');
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, source_file: 'symlink.tar' }),
+				importBackupJob({ ...SU, database: IMPORTED, ...serverFile(linked) }),
 				(error) => error.statusCode === 400 && /symlink entry/.test(error.message)
 			);
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
@@ -342,79 +332,111 @@ describeUnlessLmdb('import_backup', function () {
 			const gz = readFileSync(gzArchive);
 			const truncated = join(tempDir, 'truncated.tar.gz');
 			writeFileSync(truncated, gz.subarray(0, Math.floor(gz.length / 2)));
-			placeInImport(IMPORTED, truncated, 'truncated.tar.gz');
-			await assert.rejects(importBackupJob({ ...SU, database: IMPORTED, source_file: 'truncated.tar.gz' }));
+			await assert.rejects(importBackupJob({ ...SU, database: IMPORTED, ...serverFile(truncated) }));
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
 			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
 		});
 
-		it('refuses a source_file not in .import/ before creating a job, creating .import/ and naming file= for a local archive', async function () {
-			const importDir = join(backupDirForDatabase(IMPORTED), IMPORT_SOURCE_DIR);
-			rmSync(importDir, { recursive: true, force: true });
+		describe('a path the request does not describe', function () {
 			const jobs = require('#src/server/jobs/jobs');
-			const addedJobs = [];
-			const restoreAddJob = replaceProperty(jobs, 'addJob', async (json) => {
-				addedJobs.push(json);
-				throw new Error('no job should be created');
-			});
-			try {
-				await assert.rejects(
-					importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, source_file: 'later.tar.gz' }),
-					(error) =>
-						error.statusCode === 404 &&
-						error.message.includes(`No archive named 'later.tar.gz' in ${importDir}`) &&
-						error.message.includes(`use 'file=<path>' from the CLI`)
-				);
-			} finally {
-				restoreAddJob();
-			}
-			assert.deepStrictEqual(addedJobs, []);
-			assert.ok(statSync(importDir).isDirectory(), '.import/ was created');
-			// the job checks again, for an archive removed after the request was accepted
-			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, source_file: 'later.tar.gz' }),
-				(error) => error.statusCode === 404
-			);
+			let restoreAddJob;
+			let addedJobs;
 
-			placeInImport(IMPORTED, gzArchive, 'later.tar.gz');
-			const result = await importBackupJob({ ...SU, database: IMPORTED, source_file: 'later.tar.gz' });
-			assert.strictEqual(result.imported_from, `${IMPORT_SOURCE_DIR}/later.tar.gz`);
+			beforeEach(function () {
+				addedJobs = [];
+				restoreAddJob = replaceProperty(jobs, 'addJob', async (json) => {
+					addedJobs.push(json);
+					throw new Error('no job should be created');
+				});
+			});
+
+			afterEach(function () {
+				restoreAddJob();
+			});
+
+			async function assertRefusedBeforeAJob(fields) {
+				await assert.rejects(
+					importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, ...fields }),
+					(error) =>
+						error.statusCode === 412 &&
+						error.message.includes(`file=<path>`) &&
+						error.message.includes(fields.server_path)
+				);
+				assert.deepStrictEqual(addedJobs, [], 'no job was created');
+			}
+
+			it('answers 412 for a path that does not exist', async function () {
+				const gone = join(tempDir, 'gone.tar');
+				writeFileSync(gone, 'x');
+				const fields = serverFile(gone);
+				rmSync(gone);
+				await assertRefusedBeforeAJob(fields);
+				await assertRefusedBeforeAJob({
+					server_path: join(tempDir, 'never-existed.tar'),
+					server_path_identity: { dev: 1, ino: 2, size: 3, mtime_ms: 4 },
+				});
+			});
+
+			it('answers 412 for an identity that does not match the file', async function () {
+				const { server_path, server_path_identity } = serverFile(gzArchive);
+				await assertRefusedBeforeAJob({
+					server_path,
+					server_path_identity: { ...server_path_identity, size: server_path_identity.size + 1 },
+				});
+				await assertRefusedBeforeAJob({
+					server_path,
+					server_path_identity: { ...server_path_identity, ino: server_path_identity.ino + 1 },
+				});
+			});
+
+			it('answers 412 for a directory', async function () {
+				await assertRefusedBeforeAJob({
+					server_path: tempDir,
+					server_path_identity: fileIdentity(statSync(tempDir)),
+				});
+			});
+
+			it('answers 412 from the job when the file changed after the request was accepted', async function () {
+				const changing = join(tempDir, 'changing.tar.gz');
+				writeFileSync(changing, readFileSync(gzArchive));
+				const fields = serverFile(changing);
+				appendFileSync(changing, 'x');
+				await assert.rejects(
+					importBackupJob({ ...SU, database: IMPORTED, ...fields }),
+					(error) => error.statusCode === 412 && error.message.includes('file=<path>')
+				);
+				assert.deepStrictEqual(stagingEntries(IMPORTED), []);
+				assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+			});
 		});
 
-		it('refuses a source_file that is a symlink out of .import/', async function () {
-			const importDir = join(backupDirForDatabase(IMPORTED), IMPORT_SOURCE_DIR);
-			mkdirSync(importDir, { recursive: true });
+		it('imports through a symlink when the identity is of its target', async function () {
+			const link = join(tempDir, 'link.tar.gz');
+			rmSync(link, { force: true });
 			try {
-				symlinkSync(gzArchive, join(importDir, 'escape.tar.gz'));
+				symlinkSync(gzArchive, link);
 			} catch (error) {
 				// Windows needs Developer Mode or an elevated token to create a symlink
 				if (process.platform === 'win32' && error.code === 'EPERM') this.skip();
 				throw error;
 			}
-			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, source_file: 'escape.tar.gz' }),
-				(error) => error.statusCode === 400 && /is not a file inside/.test(error.message)
-			);
-			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, source_file: 'absent.tar.gz' }),
-				(error) => error.statusCode === 404
-			);
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
-			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+			const fields = { server_path: link, server_path_identity: fileIdentity(statSync(gzArchive)) };
+			const result = await importBackupJob({ ...SU, database: IMPORTED, ...fields });
+			assert.strictEqual(result.imported_from, link);
+			assert.strictEqual(result.digest, sha256(gzArchive));
 		});
 
 		const canChmod = process.platform !== 'win32' && process.getuid?.() !== 0;
 		(canChmod ? it : it.skip)(
 			'removes the converted engine backup and its blob snapshot when the completion manifest cannot be written',
 			async function () {
-				placeInImport(IMPORTED, gzArchive, 'source.tar.gz');
 				const backupDir = backupDirForDatabase(IMPORTED);
 				const manifestsDir = join(backupDir, 'manifests');
 				mkdirSync(manifestsDir, { recursive: true });
 				chmodSync(manifestsDir, 0o555);
 				try {
 					await assert.rejects(
-						importBackupJob({ ...SU, database: IMPORTED, source_file: 'source.tar.gz' }),
+						importBackupJob({ ...SU, database: IMPORTED, ...serverFile(gzArchive) }),
 						/EACCES|permission denied/i
 					);
 				} finally {
@@ -1116,13 +1138,11 @@ describeUnlessLmdb('import_backup', function () {
 		}
 
 		beforeEach(function () {
-			mkdirSync(join(backupDirForDatabase(DB), IMPORT_SOURCE_DIR), { recursive: true });
-			writeFileSync(join(backupDirForDatabase(DB), IMPORT_SOURCE_DIR, 'operator.tar.gz'), 'operator file');
 			area('imported', { owner: 'import', import_id: 'imported' });
 			area('thread-7', { owner: 'thread', thread_id: 7, process_instance: manageThreads.processIncarnation });
 			area('thread-8', { owner: 'thread', thread_id: 8, process_instance: manageThreads.processIncarnation });
 			area('earlier-process', { owner: 'thread', thread_id: 7, process_instance: 'an-earlier-process' });
-			// a url, s3 or source_file import in flight: its staging has no owner record
+			// a url, s3 or server_path import in flight: its staging has no owner record
 			area('in-flight-pull');
 		});
 
@@ -1135,7 +1155,7 @@ describeUnlessLmdb('import_backup', function () {
 			assert.deepStrictEqual(stagingEntries(DB).sort(), ['earlier-process', 'imported', 'in-flight-pull', 'thread-8']);
 		});
 
-		it('keeps every area the predicate claims and never removes .staging or .import', function () {
+		it('keeps every area the predicate claims and never removes .staging', function () {
 			assert.strictEqual(
 				sweepImportStaging(() => true),
 				0
@@ -1146,10 +1166,6 @@ describeUnlessLmdb('import_backup', function () {
 				5
 			);
 			assert.ok(existsSync(stagingRoot(DB)), '.staging itself stays');
-			assert.strictEqual(
-				readFileSync(join(backupDirForDatabase(DB), IMPORT_SOURCE_DIR, 'operator.tar.gz'), 'utf8'),
-				'operator file'
-			);
 		});
 
 		it('at startup removes every area, once per process', function () {
@@ -1167,12 +1183,15 @@ describeUnlessLmdb('import_backup', function () {
 describe('import_backup validation', function () {
 	const ok = { ...SU, database: 'importvalidation' };
 	const s3 = { bucket: 'b', key: 'k', region: 'us-east-1', credentials: { secret: 'S3_CREDS' } };
+	const identity = { dev: 1, ino: 2, size: 3, mtime_ms: 4.5 };
+	const serverPath = join(tmpdir(), 'a.tar');
+	const filler = { server_path: serverPath, server_path_identity: identity };
 	const accepted = [
-		{ source_file: 'archive.tar.gz' },
+		{ ...filler },
 		{ url: 'https://example.com/a.tar.gz?X-Amz-Signature=x' },
 		{ s3 },
 		{ s3: { bucket: 'b', key: 'k', credentials: { secret: 'S3_CREDS' } } },
-		{ source_file: 'a.tar', declared_size: 0, sha256: 'A'.repeat(64), accept_incompatible_backup: true },
+		{ ...filler, declared_size: 0, sha256: 'A'.repeat(64), accept_incompatible_backup: true },
 		{ staging_id: randomUUID() },
 	];
 	for (const fields of accepted) {
@@ -1183,12 +1202,31 @@ describe('import_backup validation', function () {
 
 	const refused = [
 		['no source', {}, /exactly one source/],
-		['two sources', { source_file: 'a.tar', url: 'https://example.com/a.tar' }, /exactly one source/],
-		['an empty source_file', { source_file: '' }, /source_file/],
-		['a source_file with a slash', { source_file: 'sub/a.tar' }, /source_file/],
-		['a source_file with a backslash', { source_file: 'sub\\a.tar' }, /source_file/],
-		['a source_file of ..', { source_file: '..' }, /source_file/],
-		['a non-string source_file', { source_file: 7 }, /source_file/],
+		['two sources', { ...filler, url: 'https://example.com/a.tar' }, /exactly one source/],
+		['a relative server_path', { ...filler, server_path: 'a.tar' }, /server_path/],
+		['a non-string server_path', { ...filler, server_path: 7 }, /server_path/],
+		['a server_path without an identity', { server_path: serverPath }, /server_path_identity/],
+		[
+			'an identity missing a key',
+			{ ...filler, server_path_identity: { dev: 1, ino: 2, size: 3 } },
+			/server_path_identity/,
+		],
+		[
+			'an identity with an extra key',
+			{ ...filler, server_path_identity: { ...identity, extra: 1 } },
+			/server_path_identity/,
+		],
+		[
+			'an identity with a non-number',
+			{ ...filler, server_path_identity: { ...identity, size: '3' } },
+			/server_path_identity/,
+		],
+		['an identity and no source', { server_path_identity: identity }, /exactly one source/],
+		[
+			'an identity beside another source',
+			{ url: 'https://example.com/a.tar', server_path_identity: identity },
+			/only for a 'server_path'/,
+		],
 		['an http url', { url: 'http://example.com/a.tar' }, /https/],
 		['a non-string url', { url: 7 }, /https/],
 		['an s3 that is not an object', { s3: 'bucket/key' }, /bucket and a key/],
@@ -1205,17 +1243,13 @@ describe('import_backup validation', function () {
 		],
 		['a secret beside inline keys', { s3: { ...s3, credentials: { secret: 'n', secretAccessKey: 'SK' } } }, /inline/],
 		['a credentials string', { s3: { ...s3, credentials: 'S3_CREDS' } }, /inline keys are refused/],
-		['a negative declared_size', { source_file: 'a.tar', declared_size: -1 }, /declared_size/],
-		['a fractional declared_size', { source_file: 'a.tar', declared_size: 1.5 }, /declared_size/],
-		['a string declared_size', { source_file: 'a.tar', declared_size: '10' }, /declared_size/],
-		['a short sha256', { source_file: 'a.tar', sha256: 'abc' }, /sha256/],
-		['a non-hex sha256', { source_file: 'a.tar', sha256: 'g'.repeat(64) }, /sha256/],
-		[
-			'a non-boolean accept_incompatible_backup',
-			{ source_file: 'a.tar', accept_incompatible_backup: 'true' },
-			/boolean/,
-		],
-		['a database that escapes the backups root', { source_file: 'a.tar', database: '../system' }, /database/i],
+		['a negative declared_size', { ...filler, declared_size: -1 }, /declared_size/],
+		['a fractional declared_size', { ...filler, declared_size: 1.5 }, /declared_size/],
+		['a string declared_size', { ...filler, declared_size: '10' }, /declared_size/],
+		['a short sha256', { ...filler, sha256: 'abc' }, /sha256/],
+		['a non-hex sha256', { ...filler, sha256: 'g'.repeat(64) }, /sha256/],
+		['a non-boolean accept_incompatible_backup', { ...filler, accept_incompatible_backup: 'true' }, /boolean/],
+		['a database that escapes the backups root', { ...filler, database: '../system' }, /database/i],
 		['a staging_id that is a path', { staging_id: '../../elsewhere' }, /staging_id/],
 	];
 	for (const [label, fields, pattern] of refused) {
@@ -1240,7 +1274,12 @@ describe('import_backup validation', function () {
 	};
 	for (const [label, permission] of Object.entries(nonSuperUsers)) {
 		it(`refuses ${label} with a 403, in the validator and the handler`, async function () {
-			const request = { hdb_user: { username: 'joe', role: { permission } }, database: 'x', source_file: 'a.tar' };
+			const request = {
+				hdb_user: { username: 'joe', role: { permission } },
+				database: 'x',
+				server_path: serverPath,
+				server_path_identity: identity,
+			};
 			assert.throws(
 				() => validateImportBackup(request),
 				(error) => error.statusCode === 403
@@ -1260,7 +1299,7 @@ describe('import_backup operation logging', function () {
 		const body = {
 			operation: 'import_backup',
 			database: 'db',
-			source_file: 'a.tar',
+			server_path: '/a.tar',
 			url: 'https://example.com/a?X-Amz-Signature=sekrit',
 			URL: 'https://example.com/a?X-Amz-Signature=sekrit',
 			s3: { bucket: 'b', key: 'k', credentials: { secret: 'S3_CREDS' } },
@@ -1269,7 +1308,7 @@ describe('import_backup operation logging', function () {
 		assert.deepStrictEqual(serverUtilities.redactForOperationLog(body), {
 			operation: 'import_backup',
 			database: 'db',
-			source_file: 'a.tar',
+			server_path: '/a.tar',
 		});
 		const other = { operation: 'csv_url_load', url: 'https://example.com/a.csv' };
 		assert.deepStrictEqual(serverUtilities.redactForOperationLog(other), other, 'only import_backup drops url');
@@ -1340,6 +1379,8 @@ describe('import_backup CLI', function () {
 	let server;
 	let target;
 	let received;
+	let requests;
+	let jsonStatus;
 	let tempDir;
 	let originalExit;
 	let originalConsoleError;
@@ -1348,6 +1389,22 @@ describe('import_backup CLI', function () {
 	before(async function () {
 		tempDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.import-cli-'));
 		server = http.createServer((req, res) => {
+			const finish = (record, status, body) => {
+				received = record;
+				requests.push(record);
+				res.writeHead(status, { 'content-type': 'application/json' });
+				res.end(JSON.stringify(body));
+			};
+			const started = { message: 'Starting job', job_id: 'job-1' };
+			if ((req.headers['content-type'] ?? '').startsWith('application/json')) {
+				const chunks = [];
+				req.on('data', (chunk) => chunks.push(chunk));
+				req.on('end', () => {
+					const record = { headers: req.headers, json: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
+					finish(record, jsonStatus, jsonStatus === 200 ? started : { error: 'not the same file' });
+				});
+				return;
+			}
 			const parts = [];
 			const parser = busboy({ headers: req.headers });
 			parser.on('field', (name, value) => parts.push({ kind: 'field', name, value }));
@@ -1356,11 +1413,7 @@ describe('import_backup CLI', function () {
 				stream.on('data', (chunk) => chunks.push(chunk));
 				stream.on('end', () => parts.push({ kind: 'file', name, info, bytes: Buffer.concat(chunks) }));
 			});
-			parser.on('close', () => {
-				received = { headers: req.headers, parts };
-				res.writeHead(200, { 'content-type': 'application/json' });
-				res.end(JSON.stringify({ message: 'Starting job', job_id: 'job-1' }));
-			});
+			parser.on('close', () => finish({ headers: req.headers, parts }, 200, started));
 			req.pipe(parser);
 		});
 		await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -1374,6 +1427,8 @@ describe('import_backup CLI', function () {
 
 	beforeEach(function () {
 		received = undefined;
+		requests = [];
+		jsonStatus = 200;
 		originalExit = process.exit;
 		process.exit = (code) => {
 			throw new Error(`process.exit(${code})`);
@@ -1396,56 +1451,115 @@ describe('import_backup CLI', function () {
 			true
 		);
 
-	it('uploads a plain tar as the last multipart part, declaring its size', async function () {
-		const archive = join(tempDir, 'db.tar');
-		writeFileSync(archive, Buffer.alloc(3000, 't'));
-		await send(archive);
-		assert.match(received.headers['content-type'], /^multipart\/form-data; boundary=/);
-		const kinds = received.parts.map((part) => part.kind);
-		assert.deepStrictEqual(kinds.slice(-1), ['file'], 'the file part comes last');
-		assert.ok(kinds.slice(0, -1).every((kind) => kind === 'field'));
-		const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
-		assert.strictEqual(fields.operation, 'import_backup');
-		assert.strictEqual(fields.database, 'db');
-		assert.strictEqual(fields.declared_size, '3000');
-		for (const local of ['file', 'auth_password', 'target', '_uploadFile', '_multipart']) {
-			assert.strictEqual(fields[local], undefined, `${local} is not sent`);
+	describe('with a local target', function () {
+		it('sends the path and its identity as JSON, not the bytes', async function () {
+			const archive = join(tempDir, 'local.tar');
+			writeFileSync(archive, Buffer.alloc(3000, 'l'));
+			await send(archive);
+			assert.strictEqual(requests.length, 1);
+			assert.match(received.headers['content-type'], /^application\/json/);
+			assert.strictEqual(received.json.operation, 'import_backup');
+			assert.strictEqual(received.json.server_path, archive);
+			assert.deepStrictEqual(received.json.server_path_identity, fileIdentity(statSync(archive)));
+			assert.strictEqual(received.parts, undefined, 'no multipart payload');
+			for (const local of ['file', '_uploadInstead', '_uploadFile', '_multipart', 'auth_password']) {
+				assert.strictEqual(received.json[local], undefined, `${local} is not sent`);
+			}
+		});
+
+		it('uploads the archive when the server answers 412', async function () {
+			const archive = join(tempDir, 'moved.tar.gz');
+			writeFileSync(archive, Buffer.alloc(500, 'm'));
+			jsonStatus = 412;
+			await send(archive);
+			assert.strictEqual(requests.length, 2);
+			assert.strictEqual(requests[0].json.server_path, archive);
+			const [, upload] = requests;
+			assert.match(upload.headers['content-type'], /^multipart\/form-data; boundary=/);
+			const fields = Object.fromEntries(upload.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
+			assert.strictEqual(fields.declared_size, '500');
+			for (const local of ['server_path', 'server_path_identity', 'file']) {
+				assert.strictEqual(fields[local], undefined, `${local} is not sent`);
+			}
+			const [file] = upload.parts.filter((part) => part.kind === 'file');
+			assert.strictEqual(file.name, 'payload');
+			assert.ok(file.bytes.equals(readFileSync(archive)));
+		});
+	});
+
+	describe('isLocalTarget', function () {
+		for (const local of ['http://localhost:9925/', 'http://127.0.0.1:9925', 'http://[::1]:9925', 'localhost:9925']) {
+			it(`is true for ${local}`, function () {
+				assert.strictEqual(cliOperations.isLocalTarget(local), true);
+			});
 		}
-		const [file] = received.parts.filter((part) => part.kind === 'file');
-		assert.strictEqual(file.name, 'payload');
-		assert.strictEqual(file.info.filename, 'db.tar');
-		assert.strictEqual(file.info.mimeType, 'application/x-tar');
-		assert.ok(file.bytes.equals(readFileSync(archive)));
+		for (const remote of ['https://example.com', 'http://10.0.0.5:9925', 'http://0.0.0.0:9925', 'http://']) {
+			it(`is false for ${remote}`, function () {
+				assert.strictEqual(cliOperations.isLocalTarget(remote), false);
+			});
+		}
 	});
 
-	// the server compares declared_size with the bytes it spools, which for a compressed archive are its own
-	it("declares a compressed archive's own size, the bytes the server spools", async function () {
-		const archive = join(tempDir, 'db.tar.gz');
-		writeFileSync(archive, Buffer.alloc(100, 'g'));
-		await send(archive);
-		const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
-		assert.strictEqual(fields.declared_size, '100');
-		const [file] = received.parts.filter((part) => part.kind === 'file');
-		assert.strictEqual(file.info.mimeType, 'application/gzip');
-		assert.ok(file.bytes.equals(readFileSync(archive)));
-	});
+	// 0.0.0.0 reaches this machine's server without being named localhost or 127.x
+	(process.platform === 'win32' ? describe.skip : describe)('with a non-local target', function () {
+		beforeEach(function () {
+			target = `http://0.0.0.0:${server.address().port}`;
+		});
+		afterEach(function () {
+			target = `http://127.0.0.1:${server.address().port}`;
+		});
 
-	it('keeps a declared_size the operator passed', async function () {
-		const archive = join(tempDir, 'db.tar.gz');
-		writeFileSync(archive, Buffer.alloc(100, 'g'));
-		await cliOperations.cliOperations(
-			{
-				operation: 'import_backup',
-				database: 'db',
-				file: archive,
-				declared_size: 4096,
-				target,
-				auth_username: 'admin',
-				auth_password: 'pw',
-			},
-			true
-		);
-		const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
-		assert.strictEqual(fields.declared_size, '4096');
+		it('uploads a plain tar as the last multipart part, declaring its size', async function () {
+			const archive = join(tempDir, 'db.tar');
+			writeFileSync(archive, Buffer.alloc(3000, 't'));
+			await send(archive);
+			assert.match(received.headers['content-type'], /^multipart\/form-data; boundary=/);
+			const kinds = received.parts.map((part) => part.kind);
+			assert.deepStrictEqual(kinds.slice(-1), ['file'], 'the file part comes last');
+			assert.ok(kinds.slice(0, -1).every((kind) => kind === 'field'));
+			const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
+			assert.strictEqual(fields.operation, 'import_backup');
+			assert.strictEqual(fields.database, 'db');
+			assert.strictEqual(fields.declared_size, '3000');
+			for (const local of ['file', 'auth_password', 'target', '_uploadFile', '_multipart']) {
+				assert.strictEqual(fields[local], undefined, `${local} is not sent`);
+			}
+			const [file] = received.parts.filter((part) => part.kind === 'file');
+			assert.strictEqual(file.name, 'payload');
+			assert.strictEqual(file.info.filename, 'db.tar');
+			assert.strictEqual(file.info.mimeType, 'application/x-tar');
+			assert.ok(file.bytes.equals(readFileSync(archive)));
+		});
+
+		// the server compares declared_size with the bytes it spools, which for a compressed archive are its own
+		it("declares a compressed archive's own size, the bytes the server spools", async function () {
+			const archive = join(tempDir, 'db.tar.gz');
+			writeFileSync(archive, Buffer.alloc(100, 'g'));
+			await send(archive);
+			const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
+			assert.strictEqual(fields.declared_size, '100');
+			const [file] = received.parts.filter((part) => part.kind === 'file');
+			assert.strictEqual(file.info.mimeType, 'application/gzip');
+			assert.ok(file.bytes.equals(readFileSync(archive)));
+		});
+
+		it('keeps a declared_size the operator passed', async function () {
+			const archive = join(tempDir, 'db.tar.gz');
+			writeFileSync(archive, Buffer.alloc(100, 'g'));
+			await cliOperations.cliOperations(
+				{
+					operation: 'import_backup',
+					database: 'db',
+					file: archive,
+					declared_size: 4096,
+					target,
+					auth_username: 'admin',
+					auth_password: 'pw',
+				},
+				true
+			);
+			const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
+			assert.strictEqual(fields.declared_size, '4096');
+		});
 	});
 });

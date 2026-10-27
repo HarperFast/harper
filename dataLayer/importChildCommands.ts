@@ -14,7 +14,8 @@ import { extractArchive, tallyArchive } from './archiveExtraction.ts';
 import { withBackupRepositoryLock } from './backupRepository.ts';
 import { blobSnapshotDir, copyTree, deleteBlobSnapshot, fsyncTree } from './blobBackup.ts';
 import { deleteBackupManifest, writeBackupManifest, type BackupManifest } from './backupManifest.ts';
-import { resolveImportSourceFile } from './backupImport.ts';
+import { resolveServerPath } from './backupImport.ts';
+import type { FileIdentity } from '../utility/fileIdentity.ts';
 import { verifyBackupFiles } from './rocksdbBackup.ts';
 
 const FETCH_TOTAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -26,7 +27,8 @@ export interface ImportArchiveArgs {
 	backupDir: string;
 	importId: string;
 	stagingDir: string;
-	sourceFile?: string;
+	serverPath?: string;
+	serverPathIdentity?: FileIdentity;
 	url?: string;
 	s3?: { bucket: string; key: string; region?: string; credentials?: { accessKeyId: string; secretAccessKey: string } };
 	sha256?: string;
@@ -133,8 +135,8 @@ export async function importArchive(args: ImportArchiveArgs) {
 	mkdirSync(stagingDir, { recursive: true });
 	const ledger = new DiskLedger();
 	let archivePath: string;
-	if (args.sourceFile !== undefined) {
-		archivePath = resolveImportSourceFile(backupDir, args.sourceFile);
+	if (args.serverPath !== undefined) {
+		archivePath = resolveServerPath(args.serverPath, args.serverPathIdentity!);
 	} else {
 		archivePath = join(stagingDir, 'archive');
 		if (args.url !== undefined) {
@@ -188,7 +190,7 @@ export async function importArchive(args: ImportArchiveArgs) {
 			allowMissingManifest: args.acceptIncompatible,
 			acceptIncompatible: args.acceptIncompatible,
 		});
-		if (args.sourceFile === undefined) rmSync(archivePath, { force: true });
+		if (args.serverPath === undefined) rmSync(archivePath, { force: true });
 		await validateTransactionLogs(treeDir);
 		const tables = provenTables(treeDir, databaseName);
 		const blobIndices = archiveBlobRootIndices(treeDir);

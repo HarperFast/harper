@@ -9,7 +9,7 @@ import * as YAML from 'yaml';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
-import { buildRequest, cliOperations, resolveRequestOptions } from './cliOperations.ts';
+import { buildRequest, cliOperations, isLocalTarget, resolveRequestOptions } from './cliOperations.ts';
 import { loadCredentials, normalizeTarget } from './cliCredentials.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { httpRequest } from '../utility/common_utils.ts';
@@ -98,22 +98,6 @@ export async function runBackupCommand(command: string): Promise<void> {
 			throw new Error(`Unknown backup command '${command}'`);
 	}
 	console.log(YAML.stringify(result).trim());
-}
-
-/**
- * Whether the target of a saved `last_target` is the local instance (localhost / loopback). A
- * `harper login` against a local server saves `http://localhost:9925/`, which must NOT be treated as
- * a remote target — otherwise the offline backup commands would try to reach a stopped local server
- * instead of falling back to direct file access.
- */
-function isLocalTarget(target: string): boolean {
-	try {
-		const url = new URL(target.includes('://') ? target : `http://${target}`);
-		const host = url.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
-		return host === 'localhost' || host === '::1' || host.startsWith('127.');
-	} catch {
-		return false;
-	}
 }
 
 /**

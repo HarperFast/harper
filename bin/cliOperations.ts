@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
+import { fileIdentity } from '../utility/fileIdentity.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
@@ -198,6 +199,34 @@ async function* wrapPackagingStream(stream: Readable, projectPath: string): Asyn
  * mistyped-`setup` case it guards against is real.
  */
 const OPERATIONS_TAKING_A_TOKEN = new Set(['exchange_oidc_token']);
+
+/** A multipart body carrying `req._uploadFile` as the `payload` part, with the operation fields before it. */
+function uploadFileBody(req: any, options: any): Readable {
+	const multipart = buildMultipartBody(operationFields(req), {
+		name: 'payload',
+		filename: path.basename(req._uploadFile),
+		contentType: /\.(tgz|gz)$/i.test(req._uploadFile) ? 'application/gzip' : 'application/x-tar',
+		stream: fs.createReadStream(req._uploadFile),
+	});
+	options.headers['Content-Type'] = multipart.contentType;
+	options.headers['Transfer-Encoding'] = 'chunked';
+	return multipart.stream;
+}
+
+/**
+ * Whether a target is this machine (localhost / loopback). A `harper login` against a local server
+ * saves `http://localhost:9925/`. A loopback URL can still be a tunnel to another machine, so a caller
+ * that depends on sharing a filesystem has to prove it.
+ */
+export function isLocalTarget(target: string): boolean {
+	try {
+		const url = new URL(target.includes('://') ? target : `http://${target}`);
+		const host = url.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+		return host === 'localhost' || host === '::1' || host.startsWith('127.');
+	} catch {
+		return false;
+	}
+}
 
 function operationFields(req: any): any {
 	const keepsToken = OPERATIONS_TAKING_A_TOKEN.has(req?.operation);
@@ -579,12 +608,20 @@ export function prepareDeployByRef(req: any): void {
 }
 
 const PREPARE_OPERATION: any = {
-	import_backup: async (req) => {
+	import_backup: async (req, target) => {
 		if (req.file === undefined) return;
 		const archivePath = path.resolve(String(req.file));
-		const archiveSize = (await fs.promises.stat(archivePath)).size;
-		req.declared_size ??= archiveSize;
+		const stats = await fs.promises.stat(archivePath);
 		delete req.file;
+		// a local server reads the file where it is; it refuses with 412 when it does not see this very
+		// file (a tunnel, a container), and the CLI then uploads it
+		if (!target || isLocalTarget(target.resolvedTarget)) {
+			req.server_path = archivePath;
+			req.server_path_identity = fileIdentity(stats);
+			req._uploadInstead = archivePath;
+			return;
+		}
+		req.declared_size ??= stats.size;
 		req._uploadFile = archivePath;
 		req._multipart = true;
 	},
@@ -913,7 +950,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 	let options: any, target: any;
 	try {
 		({ options, target } = await resolveRequestOptions(req));
-		await PREPARE_OPERATION[req.operation]?.(req);
+		await PREPARE_OPERATION[req.operation]?.(req, target);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
 		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always
@@ -952,15 +989,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			req._multipart && !req._uploadFile ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
 		let body;
 		if (req._uploadFile) {
-			const multipart = buildMultipartBody(operationFields(req), {
-				name: 'payload',
-				filename: path.basename(req._uploadFile),
-				contentType: /\.(tgz|gz)$/i.test(req._uploadFile) ? 'application/gzip' : 'application/x-tar',
-				stream: fs.createReadStream(req._uploadFile),
-			});
-			options.headers['Content-Type'] = multipart.contentType;
-			options.headers['Transfer-Encoding'] = 'chunked';
-			body = multipart.stream;
+			body = uploadFileBody(req, options);
 		} else if (req._multipart) {
 			// Create the package stream here — after the renderer exists — so we can pass
 			// renderer.countUploadBytes as the onBytes callback. Both progress and total are
@@ -1006,6 +1035,15 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			body = operationFields(req);
 		}
 		let response: any = await httpRequest(options, body);
+		if (response.statusCode === 412 && req._uploadInstead) {
+			console.error(`The server does not see ${req._uploadInstead} on its own disk; uploading it`);
+			delete req.server_path;
+			delete req.server_path_identity;
+			req.declared_size ??= (await fs.promises.stat(req._uploadInstead)).size;
+			req._uploadFile = req._uploadInstead;
+			delete req._uploadInstead;
+			response = await httpRequest(options, uploadFileBody(req, options));
+		}
 
 		// endUpload() is called from the counter Transform's flush callback in tapUploadStream
 		// once all multipart bytes have flowed through. For SSE deploys, httpRequest resolves

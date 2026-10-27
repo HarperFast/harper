@@ -290,13 +290,15 @@ protocol, because "the files were copied" was never proof that the restored gene
   is what lets a crashed offline `system` restore finish. Directory fsync is a no-op where
   unsupported (Windows); the evidence reports `durability: 'no-directory-fsync'` there.
 
-## `import_backup`: roots, staging and the import pipeline (`dataLayer/backupImport.ts`, `dataLayer/importChildCommands.ts`)
+## `import_backup`: sources, staging and the import pipeline (`dataLayer/backupImport.ts`, `dataLayer/importChildCommands.ts`)
 
-- **Two roots.** Archives are read from `<backupsRoot>/<db>/.import/` (an operator mount, possibly
-  read-only); everything Harper writes goes to `<backupsRoot>/<db>/.staging/<importId>/`. Harper
-  creates either directory but only ever removes `<importId>` entries, since either may be a mount
-  point. A `source_file` is resolved by `realpath` and must stay inside `.import/`; the operation
-  checks it before creating a job, so a missing archive fails the request, and the job checks again.
+- **Sources and the one root.** Everything Harper writes goes to
+  `<backupsRoot>/<db>/.staging/<importId>/`; Harper creates `.staging` but only ever removes
+  `<importId>` entries, since it may be a mount point. A `server_path` archive is read in place, never
+  copied or removed, and only when `server_path_identity` (device, inode, size, mtime) matches it: a
+  remote caller cannot know those, so a match proves the caller shares this filesystem. A mismatch and
+  a missing file both answer 412, before any job exists, and the CLI's `file=` then uploads instead;
+  the job checks the identity again before it reads.
 - **Staging ownership.** An upload is spooled raw — no gzip or tar work on the serving thread —
   into staging owned by the receiving thread, and handed to the import (owner rewritten) before the
   job row exists; the main thread sweeps a dead thread's staging on its exit, and startup sweeps all

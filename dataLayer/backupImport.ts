@@ -2,15 +2,16 @@
  * `import_backup`: turns a `get_backup` archive into a verified managed backup in the database's
  * repository — no restore, no restart. Three sources, one pipeline once the bytes are on disk:
  *
- * - `source_file`: an archive already under `<backupsRoot>/<db>/.import/`, typically a mount the
- *   operator attached (it may be read-only; nothing is written there);
  * - a multipart upload, spooled raw — no gzip or tar work on the serving thread — into staging;
+ * - `server_path`: a file on this machine, read in place (never copied or removed), accepted only
+ *   when `server_path_identity` matches it, which a caller can know only from this machine; the
+ *   CLI's `file=` sends it for a local server and uploads otherwise;
  * - `url` (https) or `s3`, fetched by the job.
  *
  * Extraction, validation, conversion and verification all run in the bounded restore child, whose
  * instance slot is the one-import-at-a-time rule and whose OS-released locks survive a dead job
- * thread. Staging lives at `<backupsRoot>/<db>/.staging/<importId>/`; Harper creates `.import` and
- * `.staging` but only ever removes `<importId>` entries, since either may be a mount point.
+ * thread. Staging lives at `<backupsRoot>/<db>/.staging/<importId>/`; Harper creates `.staging` but
+ * only ever removes `<importId>` entries, since it may be a mount point.
  */
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -20,11 +21,11 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
 	statSync,
+	type Stats,
 } from 'node:fs';
-import { join, sep } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import { isMainThread, parentPort, threadId } from 'node:worker_threads';
@@ -34,6 +35,7 @@ import { writeFileDurably, fsyncDirectory } from '../utility/durableFile.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { redactUrl } from '../utility/safeFetch.ts';
+import { fileIdentity, isFileIdentity, sameFileIdentity, type FileIdentity } from '../utility/fileIdentity.ts';
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import { DiskLedger, ledgerMeter } from './diskLedger.ts';
@@ -45,7 +47,6 @@ import {
 	requireSuperUser,
 } from './rocksdbBackup.ts';
 
-export const IMPORT_SOURCE_DIR = '.import';
 export const IMPORT_STAGING_DIR = '.staging';
 const OWNER_FILE = 'owner.json';
 const SPOOL_FILE = 'archive';
@@ -61,7 +62,7 @@ export function importStagingDir(databaseName: string, importId: string): string
 
 /** Redacts an import request for logs and job rows shown back to the caller. */
 export function describeImportSource(request: any): string {
-	if (request.source_file !== undefined) return `${IMPORT_SOURCE_DIR}/${request.source_file}`;
+	if (request.server_path !== undefined) return request.server_path;
 	if (request.url !== undefined) return redactUrl(request.url);
 	if (request.s3 !== undefined) return `s3://${request.s3.bucket}/${request.s3.key}`;
 	return 'upload';
@@ -72,7 +73,7 @@ function isUpload(payload: unknown): payload is Readable {
 }
 
 function countSources(request: any): number {
-	const fields = ['source_file', 'url', 's3', 'staging_id'].filter((field) => request[field] !== undefined).length;
+	const fields = ['server_path', 'url', 's3', 'staging_id'].filter((field) => request[field] !== undefined).length;
 	return fields + (isUpload(request.payload) ? 1 : 0);
 }
 
@@ -82,17 +83,23 @@ export function validateImportBackup(request: any): void {
 	getDatabaseName(request);
 	requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
 	if (countSources(request) !== 1) {
-		throw new ClientError(`import_backup needs exactly one source: source_file, a multipart upload, url, or s3`);
+		throw new ClientError(
+			`import_backup needs exactly one source: file=<path> from the CLI (or a multipart 'payload' upload), url, or s3`
+		);
 	}
 	// the job removes this directory when it finishes, so it must name an area spoolUpload created
 	if (request.staging_id !== undefined && !IMPORT_ID_PATTERN.test(request.staging_id)) {
 		throw new ClientError(`'staging_id' is not a staged upload`);
 	}
-	if (request.source_file !== undefined) {
-		const name = request.source_file;
-		if (typeof name !== 'string' || name === '' || name.includes('/') || name.includes('\\') || name === '..') {
-			throw new ClientError(`'source_file' must be the name of a file in ${IMPORT_SOURCE_DIR}/`);
+	if (request.server_path !== undefined) {
+		if (typeof request.server_path !== 'string' || !isAbsolute(request.server_path)) {
+			throw new ClientError(`'server_path' must be an absolute path`);
 		}
+		if (!isFileIdentity(request.server_path_identity)) {
+			throw new ClientError(`'server_path' needs 'server_path_identity': { dev, ino, size, mtime_ms } of the file`);
+		}
+	} else if (request.server_path_identity !== undefined) {
+		throw new ClientError(`'server_path_identity' is only for a 'server_path'`);
 	}
 	if (request.url !== undefined && (typeof request.url !== 'string' || !request.url.startsWith('https://'))) {
 		throw new ClientError(`'url' must be an https URL`);
@@ -129,26 +136,24 @@ export function validateImportBackup(request: any): void {
 }
 
 /**
- * The archive under `.import/`, refusing any name that resolves outside it, links included. A missing
- * `.import/` is created, so an operator finds where to place the archive.
+ * A `server_path` archive, only when it is the very file its identity describes: a missing file and a
+ * different one answer alike (412), so a caller on another machine learns nothing about this one's
+ * files, and the CLI knows to upload instead.
  */
-export function resolveImportSourceFile(backupDir: string, sourceFile: string): string {
-	const importRoot = join(backupDir, IMPORT_SOURCE_DIR);
-	mkdirSync(importRoot, { recursive: true });
-	const root = realpathSync(importRoot);
-	let resolved: string;
+export function resolveServerPath(serverPath: string, identity: FileIdentity): string {
+	let stats: Stats | undefined;
 	try {
-		resolved = realpathSync(join(importRoot, sourceFile));
+		stats = statSync(serverPath);
 	} catch {
+		stats = undefined;
+	}
+	if (!stats?.isFile() || !sameFileIdentity(fileIdentity(stats), identity)) {
 		throw new ClientError(
-			`No archive named '${sourceFile}' in ${importRoot}. 'source_file' names an archive already on the server in that directory; to send a local archive, use 'file=<path>' from the CLI or upload it as the multipart 'payload'`,
-			404
+			`'${serverPath}' is not the file the request describes on this server; send it with file=<path> from the CLI or as a multipart upload`,
+			412
 		);
 	}
-	if (!resolved.startsWith(root + sep) || !statSync(resolved).isFile()) {
-		throw new ClientError(`'${sourceFile}' is not a file inside ${importRoot}`);
-	}
-	return resolved;
+	return serverPath;
 }
 
 function writeOwner(dir: string, owner: Record<string, unknown>): void {
@@ -211,9 +216,7 @@ export async function importBackup(request: any): Promise<{ message: string; job
 		throw new ClientError(`'staging_id' and 'upload_digest' are set by the server for an upload`);
 	}
 	validateImportBackup(request);
-	if (request.source_file !== undefined) {
-		resolveImportSourceFile(backupDirForDatabase(getDatabaseName(request)), request.source_file);
-	}
+	if (request.server_path !== undefined) resolveServerPath(request.server_path, request.server_path_identity);
 	const { executeJob } = await import('../server/serverHelpers/serverUtilities.ts');
 	if (!isUpload(request.payload)) {
 		// a presigned URL is a bearer credential, and the job row outlives the job in every system backup
@@ -337,7 +340,8 @@ export async function importBackupJob(request: any) {
 				backupDir,
 				importId,
 				stagingDir: importStagingDir(databaseName, importId),
-				sourceFile: request.source_file,
+				serverPath: request.server_path,
+				serverPathIdentity: request.server_path_identity,
 				url: request.url,
 				s3,
 				// an upload's own digest pins the bytes the job reads back from staging
@@ -357,7 +361,7 @@ export async function importBackupJob(request: any) {
 /**
  * Removes staging that no live import owns: a thread-owned area whose thread is gone (on its exit),
  * and, at boot, any area whose owner is not a running job. `owner` is undefined for an area with no
- * owner record — a pull or `source_file` import in flight, or an upload whose record is not yet written.
+ * owner record — a pull or `server_path` import in flight, or an upload whose record is not yet written.
  */
 export function sweepImportStaging(isOwned: (owner: any) => boolean): number {
 	let removed = 0;
