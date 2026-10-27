@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { getDatabaseGeneration, readAuditEntry } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
-const { deliveryCertified } = require('#src/resources/transactionBroadcast');
+const { deliveryCertified, setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -92,6 +92,65 @@ describe('Certified subscription progress', function () {
 			message: () => `progress ${subscription.progress()} < ${key}`,
 		});
 		subscription.end();
+	});
+
+	it('a held same-thread registry leaves every write to the cross-thread subscriber on its thread', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const crossThread = [];
+		const across = await T.subscribe({
+			omitCurrent: true,
+			reportProgress: true,
+			listener: (event) => crossThread.push(event.id),
+		});
+		const sameThread = await T.subscribe({ omitCurrent: true, reportProgress: true, crossThreads: false });
+		let commitHeld;
+		const held = transaction({}, async (context) => {
+			await T.put('held', { value: 'held' }, context);
+			await new Promise((resolve) => (commitHeld = resolve));
+		});
+		await waitFor(() => commitHeld);
+		await T.put('a', { value: 1 });
+		await T.put('b', { value: 2 });
+		commitHeld();
+		await held;
+		await T.put('c', { value: 3 });
+		await waitFor(() => ['a', 'b', 'held', 'c'].every((id) => crossThread.includes(id)), {
+			message: () => `the cross-thread subscriber received ${crossThread}`,
+		});
+		const key = T.primaryStore.getEntry('c').version;
+		await waitFor(() => across.progress() >= key && sameThread.progress() >= key);
+		across.end();
+		sameThread.end();
+	});
+
+	it('a same-thread registry re-captures on its own timer when a held write aborts', async () => {
+		setOriginCaptureIntervalForTests(50);
+		try {
+			const T = tableInOwnDatabase();
+			await T.put('seed', { value: 0 });
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, crossThreads: false });
+			let abort;
+			const aborted = transaction({}, async (context) => {
+				await T.put('doomed', { value: 'doomed' }, context);
+				await new Promise((resolve) => (abort = resolve));
+				throw new Error('abort the held write');
+			}).catch(() => {});
+			await waitFor(() => abort);
+			await T.put('a', { value: 1 });
+			const key = T.primaryStore.getEntry('a').version;
+			await waitFor(() => subscription.progress() !== undefined);
+			assert.ok(subscription.progress() < key, 'the held write holds progress');
+			abort();
+			await aborted;
+			await waitFor(() => subscription.progress() >= key, {
+				timeout: 5_000,
+				message: 'progress did not catch up after the abort',
+			});
+			subscription.end();
+		} finally {
+			setOriginCaptureIntervalForTests(5000);
+		}
 	});
 
 	it('does not register a new subscription at a watermark left from earlier tracking', async () => {

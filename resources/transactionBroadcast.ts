@@ -310,6 +310,21 @@ function certifyProgress(subscriptions: any, readEntries: boolean): void {
 		subscriptions.recheckedCeiling = ceiling;
 		subscriptions.recheckPending = true;
 	}
+	// a same-thread registry runs no capture tick, so a hold that ends in an abort is re-captured on its own timer
+	if (ceiling < through && subscriptions.sameThread && !subscriptions.recaptureTimer) {
+		subscriptions.recaptureTimer = setTimeout(() => {
+			subscriptions.recaptureTimer = undefined;
+			if (
+				subscriptions.dispatching ||
+				subscriptions.notifyScheduled ||
+				subscriptions.auditStore?.rootStore?.status === 'closed'
+			)
+				return;
+			subscriptions.notifyScheduled = true;
+			notifyFromTransactionData(subscriptions, [], true);
+		}, originCaptureInterval);
+		subscriptions.recaptureTimer.unref?.();
+	}
 }
 
 /**
@@ -664,7 +679,9 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		if (!yielded && subscriptions.recheckPending && !subscriptions.notifyScheduled) {
 			subscriptions.recheckPending = false;
 			subscriptions.notifyScheduled = true;
-			setImmediate(() => notifyFromTransactionData(subscriptions, auditStore.subscriptionLogRange, true));
+			// a same-thread follow-up only re-captures: the shared log range is the cross-thread registry's to drain
+			const follow = subscriptions.sameThread ? [] : auditStore.subscriptionLogRange;
+			setImmediate(() => notifyFromTransactionData(subscriptions, follow, true));
 		}
 	}
 }

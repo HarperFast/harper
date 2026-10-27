@@ -302,16 +302,15 @@ class ThreadRegistry {
 		return result;
 	}
 
+	lowestOutstanding(): number {
+		return this.minKey();
+	}
+
 	/**
 	 * The lowest bound over owned slots, negated while any slot is pending: a reservation in progress (its
 	 * magnitude still bounds that thread), or a `0` — the initial word of a slot whose claimer has not stored
 	 * its first bound, and so has reserved nothing yet. A reused slot's stale word in that window only errs low.
 	 */
-	/** This thread's lowest outstanding reservation, or Infinity. */
-	lowestOutstanding(): number {
-		return this.minKey();
-	}
-
 	minBound(): number {
 		let min = Infinity;
 		let pending = false;

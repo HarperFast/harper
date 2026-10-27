@@ -2695,6 +2695,8 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		await ackAll(session, received);
 		const state = session.topics.get(topic);
 		const databaseSubscriptions = state.subscription.subscriptions.tables.envs;
+		// the pass that dispatched 'after' was held by the open write, so it scheduled a follow-up pass: let it settle
+		await waitFor(() => !databaseSubscriptions.notifyScheduled && !databaseSubscriptions.recheckPending);
 		// the commit's notify pass is held back: its reservation is released, its records are still unread
 		databaseSubscriptions.notifyScheduled = true;
 		try {
