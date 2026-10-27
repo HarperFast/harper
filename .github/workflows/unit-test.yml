@@ -42,6 +42,8 @@ jobs:
       matrix:
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
         shard: [main, components, server, resources-core-a-q, resources-core-r-z, resources-indexes, lmdb]
+        # harper#3349: LMDB segfaults intermittently in this shard, and every leg gates `Unit Test`.
+        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"shard":"lmdb","node-version":24}]' || '[]') }}
         # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
         # each shard's test-step cap is what turns a wedged suite into a reported failure
         # (harper#2587, harper#2017). `test:unit:lmdb` chains its own resources/apitests/bin runs
@@ -55,7 +57,7 @@ jobs:
         # The resources shards partition the suite by file name, so a file added later lands in
         # exactly one of them; AGENTS.md carries the pattern. They are the only default-engine run
         # of that tree as a whole — `hnsw-plane` below and the Windows gate each run one file out
-        # of it — so a partition these globs stop making is a hole nothing else closes.
+        # of it — so `check:unit-partition` in the lint job fails a glob edit that drops or doubles a file.
         include:
           - shard: main
             script: test:unit:main:core
