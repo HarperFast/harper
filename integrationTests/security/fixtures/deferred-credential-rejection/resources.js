@@ -6,12 +6,8 @@ export class PublicNotice extends tables.PublicNotice {
 	}
 }
 
-<<<<<<< HEAD
 export const REJECTED_SESSION_USER = 'expired-staff';
 export const FAULTING_SESSION_USER = 'faulting-staff';
-=======
-const REJECTED_SESSION_USER = 'expired-staff';
-const FAULTING_SESSION_USER = 'faulting-staff';
 // a real hdb_user (the suite creates it) that this component's server.getUser refuses
 const BLOCKED_USER = 'blocked-staff';
 
@@ -25,7 +21,6 @@ export class GetUserCalls extends Resource {
 		return { calls: getUserCalls.get(target.id) ?? 0 };
 	}
 }
->>>>>>> 0974ce0db (Settle deferred credential rejections on legacy Fastify routes and challenge every authentication 401)
 
 const coreGetUser = server.getUser;
 server.getUser = async function (username, password, request) {

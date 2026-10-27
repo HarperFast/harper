@@ -13,22 +13,11 @@ import { realExit } from './threads/workerProcessGuard.ts';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
 // installs server.getUser/authenticateUser
 import '../security/user.ts';
-<<<<<<< HEAD
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.js';
-=======
-import getServerOptions from './fastifyRoutes/helpers/getServerOptions.ts';
-import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.ts';
-import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.ts';
-import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.ts';
-<<<<<<< HEAD
-import { authenticationChallenge, isCredentialRejection } from '../security/deferredAuthentication.ts';
->>>>>>> 0974ce0db (Settle deferred credential rejections on legacy Fastify routes and challenge every authentication 401)
-=======
 import { authenticationChallengeForError } from '../security/deferredAuthentication.ts';
->>>>>>> a57058f4a (Carry the deferred strategy's challenge onto a settled legacy rejection)
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
 import { registerFastifyInstance } from './http.ts';

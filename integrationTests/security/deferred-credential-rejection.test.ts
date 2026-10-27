@@ -55,12 +55,8 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-<<<<<<< HEAD
-				config: {},
-=======
 				// one thread, so the fixture's per-process server.getUser counter sees every call
-				config: { mcp: { application: { mountPath: '/mcp' } }, threads: { count: 1 } },
->>>>>>> 0974ce0db (Settle deferred credential rejections on legacy Fastify routes and challenge every authentication 401)
+				config: { threads: { count: 1 } },
 				env: {
 					HARPER_BUILTIN_COMPONENTS:
 						'deferredAuthAppCatchAll=@/integrationTests/security/fixtures/deferred-credential-rejection/appCatchAll.js',
