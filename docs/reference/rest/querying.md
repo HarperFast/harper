@@ -126,6 +126,8 @@ Constructing from JavaScript:
 let url = `/Product/?rating=5&[${tags.map(encodeURIComponent).join('|')}]`;
 ```
 
+These root-level brackets group conditions. Brackets after a relationship name inside `select()`, such as `select(id,products[limit(1)])`, instead form a [nested relationship query](#filtering-and-paging-each-relationship).
+
 Groups can be nested for complex conditions:
 
 ```http
@@ -140,13 +142,14 @@ Harper supports special query functions using call syntax, included in the query
 
 Specify which properties to include in the response.
 
-| Syntax                                 | Returns                                     |
-| -------------------------------------- | ------------------------------------------- |
-| `?select(property)`                    | Values of a single property directly        |
-| `?select(property1,property2)`         | Objects with only the specified properties  |
-| `?select([property1,property2])`       | Arrays of property values                   |
-| `?select(property1,)`                  | Objects with a single specified property    |
-| `?select(property{subProp1,subProp2})` | Nested objects with specific sub-properties |
+| Syntax                                 | Returns                                                                                                                |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `?select(property)`                    | Values of a single property directly                                                                                   |
+| `?select(property1,property2)`         | Objects with only the specified properties                                                                             |
+| `?select([property1,property2])`       | Arrays of property values                                                                                              |
+| `?select(property1,)`                  | Objects with a single specified property                                                                               |
+| `?select(property{subProp1,subProp2})` | Nested objects with specific sub-properties                                                                            |
+| `?select(id,products[limit(1)])`       | Parents with a constrained relationship selection; see [relationship options](#filtering-and-paging-each-relationship) |
 
 **Examples**:
 
@@ -157,7 +160,7 @@ GET /Product/?brand.name=Microsoft&select(name,brand{name})
 
 ### `limit(end)` or `limit(start,end)`
 
-Limit the number of results returned, with an optional starting offset.
+Return records in the zero-based window from `start` (inclusive) to `end` (exclusive). `limit(end)` starts at zero; `limit(start,end)` returns at most `end - start` records. The same window semantics apply inside relationship selections.
 
 ```http
 GET /Product/?rating=gt=3&inStock=true&select(rating,name)&limit(20)
@@ -179,7 +182,7 @@ GET /Product/?sort(+rating,-price)
 
 Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer` request header (`Prefer: count=exact`) so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
-Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the `limit()` must be a non-negative integer no larger than **10,000**, and the requested window (offset + limit) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
+Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the page size (`end - start`, or `end` in the one-argument form) must be a non-negative integer no larger than **10,000**, and the window end (`offset + page size`) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
 
 ### Requesting a count
 
@@ -270,7 +273,297 @@ GET /Product/?brand.name=Microsoft&select(name,brand{name})
 GET /Product/?name=Keyboard&select(name,brand{name,id})
 ```
 
-When selecting without a filter on the related table, this acts as a LEFT JOIN — the relationship property is omitted if the foreign key is null or references a non-existent record.
+Selecting a relationship without an outer dot-syntax filter on it behaves as a LEFT JOIN: parents remain present even when there are no related records. For a singular foreign key that is null or references a missing record, the relationship property is omitted. An outer filter such as `products.price=ge=number:30` instead removes parents without a qualifying product and also narrows the selected products. A filter inside `select(...,products[...])` only narrows the projected products; it does not remove a parent. See the [worked scenarios](#filtering-and-paging-each-relationship) below.
+
+### Filtering and Paging Each Relationship
+
+:::note Pending release
+
+Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+
+:::
+
+Use square brackets inside `select()` to apply conditions, sort, and pagination to each parent's related records.
+
+**An outer relationship filter also narrows that relationship's nested results.** For example, `products.price=ge=number:30` selects brands with a qualifying product and restricts their selected products to those costing at least 30. **You do not need to repeat that price filter inside `products[...]`.** Add a nested condition only when you want to narrow the already-eligible products further without removing their parents.
+
+The following scenarios use this self-contained schema, including string product IDs and an indexed price field. In a fresh application, use this schema instead of the earlier Brand/Product example; do not combine the two definitions:
+
+```graphql
+type Brand @table @export {
+	id: Int @primaryKey
+	name: String @indexed
+	products: [Product] @relationship(to: "brandId")
+}
+
+type Product @table @export {
+	id: ID @primaryKey
+	brandId: Int @indexed
+	name: String
+	price: Int @indexed
+}
+```
+
+Use this sample data:
+
+| Brand ID | Brand         | Product ID | Product  | Price |
+| -------- | ------------- | ---------- | -------- | ----- |
+| 42       | Acme          | p1         | Cable    | 10    |
+| 42       | Acme          | p2         | Keyboard | 35    |
+| 42       | Acme          | p3         | Dock     | 60    |
+| 43       | Budget Basics | p4         | Mouse    | 15    |
+| 44       | Studio Gear   | p5         | Stand    | 45    |
+| 44       | Studio Gear   | p6         | Monitor  | 120   |
+
+Each response below contains only the requested fields. Parent order is shown for this sample; the nested `sort(price)` orders products within each brand, not the brands themselves.
+
+#### Keep every brand; show its cheapest product costing at least 30
+
+The price filter is inside the relationship selection, so Budget Basics remains in the response with an empty product list.
+
+```http
+GET /Brand/?select(id,name,products[price=ge=number:30&sort(price)&limit(1)&select(id,name,price)])
+```
+
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 43,
+		"name": "Budget Basics",
+		"products": []
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+#### Return only qualifying brands; inherit the price filter
+
+The outer price filter removes Budget Basics and also removes cheaper products from the nested candidates. The nested selection only needs sorting, a limit, and a projection; repeating the price filter is unnecessary.
+
+```http
+GET /Brand/?products.price=ge=number:30&select(id,name,products[sort(price)&limit(1)&select(id,name,price)])
+```
+
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+#### Use a stricter condition for the displayed products
+
+Both Acme and Studio Gear qualify because each has a product costing at least 30. The additional nested condition displays only products costing at least 100. Acme remains with an empty array: the nested condition does not remove a parent. It further narrows the inherited candidates; it cannot restore products excluded by the outer filter.
+
+```http
+GET /Brand/?products.price=ge=number:30&select(id,name,products[price=ge=number:100&sort(price)&limit(1)&select(id,name,price)])
+```
+
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": []
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p6",
+				"name": "Monitor",
+				"price": 120
+			}
+		]
+	}
+]
+```
+
+#### Page through each brand's qualifying products
+
+After the outer price filter and per-brand sort, `limit(1,2)` skips the first eligible product and returns the second for each qualifying brand. Acme returns Dock, not Keyboard; Studio Gear returns Monitor, not Stand. The offset applies independently to each brand.
+
+```http
+GET /Brand/?products.price=ge=number:30&select(id,name,products[sort(price)&limit(1,2)&select(id,name,price)])
+```
+
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p3",
+				"name": "Dock",
+				"price": 60
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p6",
+				"name": "Monitor",
+				"price": 120
+			}
+		]
+	}
+]
+```
+
+#### Bound parent pages and use stable sorting
+
+The examples above focus on child selection. For a production collection, also limit the parents: a nested `limit(1)` bounds products per brand, not the number of brands. For example, return up to 20 qualifying brands with one product each:
+
+```http
+GET /Brand/?products.price=ge=number:30&sort(name,id)&limit(0,20)&select(id,name,products[sort(price,id)&limit(1)&select(id,name,price)])
+```
+
+With the sample data, the response is:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+The outer `sort(name,id)` orders brands; the nested `sort(price,id)` orders products within each brand. Use a unique field such as `id` as the final sort key so equal names or prices have a deterministic order. This does not prevent records moving between offset pages when data changes between requests.
+
+Keep relationship lookup fields and outer filter fields indexed, and project only the fields the client needs. The sample schema indexes `brandId`, `price`, and `Brand.name`. Nested sorting can use an unindexed child field because it orders the already-related candidates. A child sort may still collect and sort all eligible related records before returning its page; an index on `price` does not guarantee an index-ordered nested scan. Keep parent pages small and consider a separately paginated child endpoint for very large relationships. Unsorted nested limits can stop early, but are appropriate only when child order does not matter.
+
+#### Combine OR filters with child sorting and pagination
+
+Always group OR conditions inside the relationship selection when combining them with query functions, then separate the sort, page, and projection options with `&`. This request selects products costing less than $30 **or** at least $60, sorts each brand's matches by descending price (then `id`), skips its first match, and returns at most one more:
+
+```http
+GET /Brand/?sort(name,id)&limit(0,20)&select(id,name,products[[price=lt=number:30|price=ge=number:60]&sort(-price,id)&limit(1,2)&select(id,name,price)])
+```
+
+The literal `|` is the OR operator in the query syntax; encode individual values rather than the assembled expression. The inner `[price=lt=number:30|price=ge=number:60]` groups only the price conditions; the following `sort()`, `limit()`, and `select()` options apply to the combined matches.
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p1",
+				"name": "Cable",
+				"price": 10
+			}
+		]
+	},
+	{
+		"id": 43,
+		"name": "Budget Basics",
+		"products": []
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": []
+	}
+]
+```
+
+Acme's matching products sort to Dock ($60), then Cable ($10), so `limit(1,2)` returns Cable. Budget Basics and Studio Gear each have only one match, leaving an empty child page after the offset. All three brands remain because these are nested filters; there is no outer relationship filter to remove parents. Use `limit(0,3)` to see the unskipped matches: Acme returns Dock and Cable, Budget Basics returns Mouse, and Studio Gear returns Monitor.
+
+#### Nested option reference
+
+| Nested option      | Behavior                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Conditions         | Qualify children of the selected relationship; combine with `&` (AND), `\|` (OR), and [groups](#grouping). |
+| `sort(price)`      | Order that parent's eligible children before pagination.                                                   |
+| `limit(end)`       | Return at most `end` children per parent.                                                                  |
+| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                                           |
+| `select(id,price)` | Project fields from returned children; omit it to return whole child records.                              |
+
+Use a non-negative safe-integer window; invalid bounds such as negative or fractional values return HTTP 400; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, pagination alone preserves missing target positions; adding conditions or a sort drops missing targets. Child conditions and sort fields remain subject to read permissions.
+
+A condition that traverses another relationship qualifies the immediate child; it does not narrow that child's projected descendants. To filter or page grandchildren, put those constraints on the grandchild's own bracket selection. Outer join restrictions are still inherited.
+
+For source-backed caches, eligibility and sort keys use local cached entries, as in a top-level table query. Returned children can refresh from source; a refreshed child that no longer matches, or has been deleted, does not consume offset or limit. A locally rejected child is not fetched to discover whether its source value now matches. Ordering is not recomputed from refreshed source values.
+
+Unsorted pagination can stop when the requested page is filled. Sorting or a predicate with few matches can still examine all related candidates; a small output limit does not guarantee a small scan.
+
+Nested filters require a table-backed relationship. Filters on plain JSON projections or custom non-table resources, and full-text predicates inside a relationship selection, return HTTP 400 instead of being silently ignored. Projection-only selections and sorting/pagination of plain JSON arrays remain supported. Earlier versions accepted nested filters and pagination but could silently ignore them and return all related children; this correction can reduce child arrays and reject previously ignored unsupported options.
+
+The [Resource API](../resources/resource-api.md#constraining-related-records) accepts the same options in a nested selection object.
 
 ### Many-to-Many Relationships
 
