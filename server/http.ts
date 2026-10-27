@@ -761,24 +761,13 @@ function isReadMethod(method) {
 	return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
 }
 
-const DEFAULT_CORS_ALLOW_HEADERS = 'Accept, Content-Type, Authorization';
-
-// Resolved and validated once per listener: the 503 callbacks run outside the request handler's error handling.
 function readRejectionHeaders(isOperationsServer: boolean) {
 	const prefix = isOperationsServer ? 'operationsApi_network' : 'http';
 	const cors = env.get(prefix + '_cors');
 	const accessList = env.get(prefix + '_corsAccessList') ?? [];
 	const allowCredentials = env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
-	let allowHeaders = env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? DEFAULT_CORS_ALLOW_HEADERS;
-	try {
-		for (const header of Array.isArray(allowHeaders) ? allowHeaders : [allowHeaders])
-			validateHeaderValue('Access-Control-Allow-Headers', '' + header);
-	} catch (error) {
-		harperLogger.error(
-			`Invalid http.corsAccessControlAllowHeaders, rejected reads send the default instead: ${errorToString(error)}`
-		);
-		allowHeaders = DEFAULT_CORS_ALLOW_HEADERS;
-	}
+	const allowHeaders =
+		env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
 	return (origin: string | null | undefined) => {
 		const headers = new Headers({ 'content-type': 'text/plain' });
 		applyUniversalHeaders(headers);

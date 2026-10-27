@@ -319,6 +319,17 @@ export function configValidator(configJson, skipFsValidation = false) {
 	const threadsConstraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
 	const rootConstraints = string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').empty(null).default(setDefaultRoot);
 	const pemFileConstraints = string.optional().empty(null);
+	const corsAllowHeadersConstraints = Joi.custom((value, helpers) => {
+		try {
+			for (const header of Array.isArray(value) ? value : [value])
+				validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
+			return value;
+		} catch {
+			return helpers.error('any.invalid');
+		}
+	})
+		.allow(null)
+		.optional();
 
 	const storagePathConstraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 	const tlsConstraints = Joi.object({
@@ -492,18 +503,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 			webSocket: boolean.optional(),
 			requireAuthentication: boolean.optional(),
 		}),
+		// flattenConfig() lets customFunctions.network override http, so its copy is what listeners serve
+		customFunctions: Joi.object({
+			network: Joi.object({ corsAccessControlAllowHeaders: corsAllowHeadersConstraints }).allow(null),
+		}).allow(null),
 		http: Joi.object({
-			corsAccessControlAllowHeaders: Joi.custom((value, helpers) => {
-				try {
-					for (const header of Array.isArray(value) ? value : [value])
-						validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
-					return value;
-				} catch {
-					return helpers.error('any.invalid');
-				}
-			})
-				.allow(null)
-				.optional(),
+			corsAccessControlAllowHeaders: corsAllowHeadersConstraints,
 			readRequestQueueLimit: Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
 				.prefs({ convert: false })
 				.optional(),

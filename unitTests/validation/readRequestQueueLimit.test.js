@@ -7,11 +7,13 @@ const { resolve } = require('node:path');
 const { parse } = require('yaml');
 const { configValidator } = require('#src/validation/configValidator');
 
-function validate(limit, allowHeaders) {
+function validate(limit, allowHeaders, legacyAllowHeaders) {
 	const config = parse(readFileSync(resolve(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
 	config.rootPath = resolve(__dirname, '../envDir');
 	config.http.readRequestQueueLimit = limit;
 	config.http.corsAccessControlAllowHeaders = allowHeaders;
+	if (legacyAllowHeaders !== undefined)
+		config.customFunctions = { network: { corsAccessControlAllowHeaders: legacyAllowHeaders } };
 	return configValidator(config, true);
 }
 
@@ -46,4 +48,13 @@ describe('read queue CORS header configuration', () => {
 			assert(error?.details.some((detail) => detail.path.join('.') === 'http.corsAccessControlAllowHeaders'));
 		});
 	}
+	it('rejects an invalid customFunctions.network override, which listeners serve over http', () => {
+		const { error } = validate(undefined, 'Accept', 'Accept\nInjected: value');
+		assert(
+			error?.details.some((detail) => detail.path.join('.') === 'customFunctions.network.corsAccessControlAllowHeaders')
+		);
+	});
+	it('accepts a valid customFunctions.network override', () => {
+		assert.ifError(validate(undefined, 'Accept', ['Accept', 'Content-Type']).error);
+	});
 });
