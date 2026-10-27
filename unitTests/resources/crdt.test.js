@@ -558,6 +558,26 @@ describe('crdt getRecordAtTime', () => {
 			assert.ok(Object.hasOwn(getRecordAtTime(current, 25, store, 1, 'Q'), 'status'));
 		});
 
+		it('does not fill a field from writes older than an invalidate', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'S', status: 'initial' }, previousVersion: 0 },
+				{ version: 20, type: 'invalidate', value: { id: 'S', status: 'open' }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { status: 'closed' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'S', status: 'closed' }, 30);
+			assert.notStrictEqual(getRecordAtTime(current, 25, store, 1, 'S').status, 'initial');
+		});
+
+		it('rebuilds a snapshot older than a newer invalidate from history, not from its stub', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'R', a: 1, b: 2 }, previousVersion: 0 },
+				{ version: 12, type: 'patch', value: { a: 3 }, previousVersion: 10 },
+				{ version: 20, type: 'invalidate', value: { id: 'R', a: 3 }, previousVersion: 12 },
+			]);
+			const current = currentEntry({ id: 'R', a: 3 }, 20);
+			assert.deepStrictEqual(getRecordAtTime(current, 12, store, 1, 'R'), { id: 'R', a: 3, b: 2 });
+		});
+
 		it('keeps the reversed value of a key the surviving history cannot settle when the base was pruned', () => {
 			const store = makeStore([
 				// version 10 (put { id: 'G', v: 1, score: 1, count: 3 }) was pruned by audit retention

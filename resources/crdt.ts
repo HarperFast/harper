@@ -197,8 +197,8 @@ function reconstructForward(
 	// Collect the in-range entries (at or before `timestamp`) back to a base boundary, newest-first.
 	// The boundary is a full `put` (snapshot) or a `delete` (everything older is erased); a record
 	// whose first write was a `patch` has no put and bottoms out at the start of history. Only
-	// `put`/`patch` contribute to the value, matching the reverse walk's switch (other partial types
-	// such as `invalidate` are ignored).
+	// `put`/`patch` contribute to the value; other partial types such as `invalidate` are ignored by a
+	// whole-record caller and end a partial one's history.
 	const entries = [];
 	let truncated = false;
 	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
@@ -228,8 +228,10 @@ function reconstructForward(
 			} else if (auditEntry.type === 'patch') {
 				entries.push(auditEntry);
 			} else if (partial && auditEntry.type === 'invalidate') {
-				// an invalidate stores only a stub (projection and indexed fields), so a field it lacks is unknown, not absent
+				// an invalidate replaced the record with a stub (projection and indexed fields): older writes
+				// no longer describe it, and a field the stub lacks is unknown, not absent
 				partial.truncated = true;
+				break;
 			}
 		}
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
@@ -344,6 +346,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		switch (auditEntry.type) {
 			case 'put':
 			case 'delete':
+			case 'invalidate': // the newer stub lacks unindexed fields, so it cannot be reversed from
 				replaced = true;
 				break;
 			case 'patch':
