@@ -923,8 +923,8 @@ function processEnvVar(
 					: undefined;
 				const currentValue = getNestedValue(fileConfig, path);
 
-				// Skip if path has a tracked source that's not HARPER_DEFAULT_CONFIG
-				if (currentSource && currentSource !== 'HARPER_DEFAULT_CONFIG') {
+				// Skip if the path, an ancestor or a descendant has a tracked source that's not HARPER_DEFAULT_CONFIG
+				if (hasRespectedSource(state, path, ['user', 'default', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'])) {
 					continue;
 				}
 

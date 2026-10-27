@@ -1068,6 +1068,17 @@ describe('install storage.engine resolution', () => {
 		);
 	});
 
+	it('keeps applications omitted for a dev mode install from an HDB_CONFIG template without it', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		process.env.DEFAULTS_MODE = 'dev';
+		const rootPath = await runInstall();
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(Object.hasOwn(writtenParsed, 'applications'), false);
+		assert.strictEqual(writtenParsed.localStudio.enabled, true);
+	});
+
 	it('restores a pre-seeded HDB_CONFIG and preserves pre-existing files inside rootPath on rollback via backup rename or writeFileSync fallback', async () => {
 		const rootPath = path.join(tempBaseDir, 'hdb');
 		const preExistingComponentFile = path.join(rootPath, 'components', 'my-app', 'index.js');

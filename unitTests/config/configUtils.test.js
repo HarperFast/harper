@@ -15,6 +15,7 @@ const common_utils = require('#src/utility/common_utils');
 const testUtils = require('../testUtils.js');
 const { clearRootPath } = require('../bootPropsFixture.js');
 const hdbTerms = require('#src/utility/hdbTerms');
+const { applyRuntimeEnvConfig } = require('#src/config/harperConfigEnvVars');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = require('#src/utility/errors/commonErrors');
 // configUtils imports `configValidator` as a named export; stub it on the shared
@@ -2306,6 +2307,8 @@ describe('Test configUtils module', () => {
 				expect(configJson.threads.count).to.equal(4);
 				expect(configJson.threads.debug).to.equal(true);
 				expect(configJson.http.mtls).to.equal(false);
+				const runtimeConfig = applyRuntimeEnvConfig(configJson, HDB_ROOT);
+				plainAssert.equal(runtimeConfig.http.mtls, false);
 			} finally {
 				if (origDefaultConfig === undefined) {
 					delete process.env.HARPER_DEFAULT_CONFIG;
@@ -2347,6 +2350,8 @@ describe('Test configUtils module', () => {
 				expect(configJson.http.securePort).to.equal(9926);
 				expect(configJson.myComponent).to.deep.equal({});
 				expect(configJson.operationsApi.tls).to.deep.equal({});
+				const runtimeConfig = applyRuntimeEnvConfig(configJson, HDB_ROOT);
+				plainAssert.deepEqual(runtimeConfig.operationsApi.tls, {});
 			} finally {
 				if (origDefaultConfig === undefined) {
 					delete process.env.HARPER_DEFAULT_CONFIG;
@@ -2354,6 +2359,52 @@ describe('Test configUtils module', () => {
 					process.env.HARPER_DEFAULT_CONFIG = origDefaultConfig;
 				}
 				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('leaves listener and CORS defaults out of sections an HDB_CONFIG template authored', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-tls-only.yaml');
+			fs.writeFileSync(
+				hdbConfigTemplatePath,
+				'storage:\n  engine: lmdb\nmqtt:\n  network:\n    securePort: 8883\noperationsApi:\n  network:\n    securePort: 9925\n',
+				'utf8'
+			);
+
+			try {
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig({ ROOTPATH: HDB_ROOT }, hdbConfigTemplatePath)
+				);
+
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				plainAssert.equal(configJson.mqtt.network.securePort, 8883);
+				plainAssert.equal(Object.hasOwn(configJson.mqtt.network, 'port'), false);
+				plainAssert.equal(Object.hasOwn(configJson.mqtt, 'webSocket'), false);
+				plainAssert.equal(configJson.mqtt.requireAuthentication, true);
+				plainAssert.equal(Object.hasOwn(configJson.operationsApi.network, 'cors'), false);
+				plainAssert.equal(Object.hasOwn(configJson.operationsApi.network, 'corsAccessList'), false);
+				plainAssert.equal(typeof configJson.operationsApi.network.domainSocket, 'string');
+			} finally {
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('createConfigFile() leaves paths HARPER_DEFAULT_CONFIG supplies sourced to it', () => {
+			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ http: { corsAccessList: ['https://default.example'] } });
+
+			try {
+				config_utils_rw.createConfigFile({ ROOTPATH: HDB_ROOT, HTTP_CORSACCESSLIST: ['https://leader.example'] });
+
+				const state = JSON.parse(fs.readFileSync(path.join(HDB_ROOT, 'backup', '.harper-config-state.json'), 'utf8'));
+				plainAssert.equal(state.sources['http.corsAccessList'], 'HARPER_DEFAULT_CONFIG');
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				plainAssert.deepEqual(configJson.http.corsAccessList, ['https://default.example']);
+			} finally {
+				if (origDefaultConfig === undefined) {
+					delete process.env.HARPER_DEFAULT_CONFIG;
+				} else {
+					process.env.HARPER_DEFAULT_CONFIG = origDefaultConfig;
+				}
 			}
 		});
 	});

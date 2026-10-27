@@ -334,7 +334,22 @@ function matchesFileContent(filePath, content): boolean {
 	}
 }
 
-function backfillMissingDefaults(targetDoc: _YAML.Document, defaultsDoc: _YAML.Document, prefix: string[] = []): void {
+// Defaults whose presence opens a listener or widens cross-origin access. Under a root section the template
+// authored, an omitted one stays omitted, so it stays off as it did before templates were backfilled.
+const NESTED_BACKFILL_OPT_IN_PATHS = [
+	'mqtt.network.port',
+	'mqtt.network.securePort',
+	'mqtt.webSocket',
+	'operationsApi.network.cors',
+	'operationsApi.network.corsAccessList',
+];
+
+function backfillMissingDefaults(
+	targetDoc: _YAML.Document,
+	defaultsDoc: _YAML.Document,
+	templateRootKeys: Set<string>,
+	prefix: string[] = []
+): void {
 	const defaultsNode = prefix.length === 0 ? defaultsDoc.contents : defaultsDoc.getIn(prefix, true);
 	if (!YAML.isMap(defaultsNode)) return;
 	for (const pair of defaultsNode.items) {
@@ -342,14 +357,26 @@ function backfillMissingDefaults(targetDoc: _YAML.Document, defaultsDoc: _YAML.D
 		const keyPath = [...prefix, key];
 		if (!targetDoc.hasIn(keyPath)) {
 			if (prefix.length === 0 && !REQUIRED_ROOT_CONFIG_KEYS.has(key)) continue;
+			const dotPath = keyPath.join('.');
+			const skipOptIn = prefix.length > 0 && templateRootKeys.has(prefix[0]);
+			if (skipOptIn && NESTED_BACKFILL_OPT_IN_PATHS.includes(dotPath)) continue;
 			const defaultNode = defaultsDoc.getIn(keyPath, true);
 			const defaultVal =
 				defaultNode && typeof (defaultNode as any).toJSON === 'function'
 					? (defaultNode as any).toJSON()
 					: defaultsDoc.getIn(keyPath);
+			if (skipOptIn) {
+				for (const optInPath of NESTED_BACKFILL_OPT_IN_PATHS) {
+					if (optInPath.startsWith(`${dotPath}.`)) {
+						const parts = optInPath.slice(dotPath.length + 1).split('.');
+						const parent = parts.slice(0, -1).reduce((node, part) => node?.[part], defaultVal);
+						if (parent && typeof parent === 'object') delete parent[parts[parts.length - 1]];
+					}
+				}
+			}
 			targetDoc.setIn(keyPath, targetDoc.createNode(defaultVal));
 		} else if (YAML.isMap(pair.value) && YAML.isMap(targetDoc.getIn(keyPath, true))) {
-			backfillMissingDefaults(targetDoc, defaultsDoc, keyPath);
+			backfillMissingDefaults(targetDoc, defaultsDoc, templateRootKeys, keyPath);
 		}
 	}
 }
@@ -441,12 +468,20 @@ function clearScalarAncestors(configDoc: _YAML.Document, splitParam: string[], u
 	}
 }
 
-function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
+function composeInstallConfig(
+	args,
+	{
+		baseConfigPath,
+		defaultedArgKeys,
+		argsAreUserAuthored = true,
+	}: { baseConfigPath?: string; defaultedArgKeys?: Set<string>; argsAreUserAuthored?: boolean } = {}
+): StagedInstallConfig {
 	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
 
 	let configDoc = defaultDoc;
 	const userPaths = new Set<string>();
+	let templateRootKeys: Set<string>;
 	if (baseConfigPath) {
 		configDoc = parseYamlDoc(baseConfigPath);
 		if (configDoc.errors?.length > 0) {
@@ -459,8 +494,10 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 			configDoc.deleteIn(['threads']);
 			configDoc.setIn(['threads', 'count'], threadCount);
 		}
-		collectLeafDotPaths(configDoc.toJSON(), [], userPaths, defaultDoc);
-		backfillMissingDefaults(configDoc, defaultDoc);
+		const templateJson = configDoc.toJSON();
+		collectLeafDotPaths(templateJson, [], userPaths, defaultDoc);
+		templateRootKeys = new Set(Object.keys(templateJson ?? {}));
+		backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys);
 	}
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
@@ -496,7 +533,13 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 					[...splitParam],
 					value !== null && typeof value === 'object' ? configDoc.createNode(value) : value
 				);
-				if (value !== undefined && value !== null && value !== '' && !defaultedArgKeys?.has(arg)) {
+				if (
+					argsAreUserAuthored &&
+					value !== undefined &&
+					value !== null &&
+					value !== '' &&
+					!defaultedArgKeys?.has(arg)
+				) {
 					userPaths.add(splitParam.join('.'));
 				}
 			} catch (err) {
@@ -517,14 +560,14 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 		deferStateCommit: true,
 	});
 	// A root section the template omitted but an arg or env layer introduced still needs its sibling defaults
-	if (baseConfigPath) backfillMissingDefaults(configDoc, defaultDoc);
+	if (baseConfigPath) backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys);
 
 	return { configDoc, commitEnvConfigState };
 }
 
 // Leaves configObj unset until writeStagedInstallConfig() finishes so pre-file readers still see "uninstalled".
 export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
-	const staged = composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
+	const staged = composeInstallConfig(args, { baseConfigPath, defaultedArgKeys });
 	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
 	return staged;
 }
@@ -565,7 +608,9 @@ export function writeStagedInstallConfig(
  * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
  */
 export function createConfigFile(args, skipFsValidation = false) {
-	const staged = composeInstallConfig(args);
+	// Callers such as harper-pro's clone pass whole flattened configs, not operator choices, so
+	// HARPER_DEFAULT_CONFIG must keep ownership of the paths it supplies.
+	const staged = composeInstallConfig(args, { argsAreUserAuthored: false });
 	writeStagedInstallConfig(staged, undefined, skipFsValidation);
 }
 

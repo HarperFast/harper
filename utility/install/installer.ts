@@ -690,6 +690,11 @@ export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Docu
 				continue;
 			}
 
+			// Adding it would bring the stock `applications` section (spawn list included) into a template that
+			// omits it; an unset allowedDirectory already allows any directory.
+			if (cfg === CONFIG_PARAMS.APPLICATIONS_ALLOWEDDIRECTORY && baseDoc && !baseDoc.has('applications')) {
+				continue;
+			}
 			if (getConfigured(cfg) === undefined) {
 				args[cfg] = DEV_MODE_CONFIG[cfg];
 				defaultedKeys?.add(cfg);
