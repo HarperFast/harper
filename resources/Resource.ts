@@ -86,7 +86,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	/** The per-method request contract, when this resource was built via `withSchema`. */
 	static requestContract?: Contract;
 	/** Per-verb `{ query?, body? }` input schemas derived from the request contract, read by OpenAPI/MCP. */
-	static inputSchemas?: { [verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment } };
+	static inputSchemas?: {
+		[verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment; bodyRequired?: boolean };
+	};
 
 	/**
 	 * Declare a per-method request contract and get back a Resource subclass typed by it. Extend the
