@@ -29,6 +29,7 @@ import {
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
 import sortBy from 'lodash/sortBy.js';
@@ -13073,12 +13074,17 @@ export function makeTable(options): TableResourceClass {
 		return commitRawTransaction(transaction).then((committed) => {
 			if (committed) return Promise.all(completions);
 			if (attempt >= STRIP_MAX_ATTEMPTS)
-				throw new Error(
-					`Could not remove ${names.join(', ')} from ${tableName}: a batch of records conflicted with other writes ${attempt} times; run drop_attribute again`
+				throw new ServerError(
+					`Could not remove ${names.join(', ')} from ${tableName}: a batch of records conflicted with other writes ${attempt} times; run drop_attribute again`,
+					503
 				);
-			return stripBatch(keys, names, attempt + 1);
+			// randomized so two strips crossing on the same keys stop retrying in lockstep
+			return sleep(Math.ceil(Math.min(attempt * 20, 1000) * Math.random())).then(() =>
+				stripBatch(keys, names, attempt + 1)
+			);
 		});
 	}
+
 	function stripRecord(key: Id, entry: Entry | undefined, names: string[], transaction?: RocksTransaction) {
 		const record = entry?.value;
 		if (record == null || typeof record !== 'object' || !names.some((name) => Object.hasOwn(record, name))) return;
