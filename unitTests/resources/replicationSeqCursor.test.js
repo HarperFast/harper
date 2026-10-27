@@ -174,6 +174,8 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 						return false;
 					},
 				},
+				{ type: 'put', id: 3, value: { id: 3, name: 'repeat' }, timestamp: now },
+				{ type: 'end_txn', localTime: now, timestamp: now, remoteNodeIds: [47], txnStream, onFailure: () => false },
 				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
 				{
 					type: 'end_txn',
@@ -197,6 +199,11 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				timeout: 5000,
 				message: 'the next cursor still records',
 			});
+			assert.equal(
+				spy.staged.filter(({ value }) => value.seqId === now).length,
+				2,
+				'the repeated position wrote again'
+			);
 			assert.equal(failures.length, 1);
 			assert.match(failures[0].error.message, /forced cursor commit failure/);
 			assert.equal(failures[0].afterCommit, true, 'onCommit already ran, so the source must not release twice');
