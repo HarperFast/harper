@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793094317735,
+  "lastUpdate": 1793094322517,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -31035,6 +31035,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 801.2,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "105250e1157fa3dd0d0b0de79c75097be41c0163",
+          "message": "Make concurrent sourcedFrom misses share one source call when nothing gets cached (#3417)\n\n* Test that concurrent same-key source misses share one source call\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Share a source fill that stored nothing with same-key waiters\n\nA waiter on getFromSource's tryLock re-read the store after the leader's\nunlock and called the source again whenever nothing valid was stored, so\nconcurrent misses whose source reported the record absent, or whose fill\nran under noCacheStore, made one origin call per waiter in sequence. The\nleader now records its resolved entry once its fill commits with the write\nkept, and a same-thread waiter serves it when the store still has nothing\nvalid. Failed and stale-on-error fills are not shared.\n\nRefs #1398\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Integration-test REST coalescing of concurrent 404s and no-store reads\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Keep per-request and failed fills out of the shared outcome\n\nA source that sets noCacheStore on its own context has marked its response\nper-request, so that response is no longer shared with other waiters. An\nunstored record goes only to a waiter that would not have stored it either,\nso a caching waiter behind a no-store leader fills the cache itself. The\nshared entry is now taken only at resolve(), so a fill that fails while\npreparing the record (a non-extensible source object) is not shared.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Share no fill whose source context carries noCacheStore\n\nOn a read-only node or a dropping table, noCacheStore is preset on the\nsource context, so a source's own per-request opt-out cannot be told apart\nfrom it there; such fills are no longer shared. Widen the REST test's\norigin hold so all reads overlap one fill on a slow runner.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Publish a fill as stored only once its staged write commits; gate test bursts\n\nA table drop could abort a fill after its source write was allocated but\nbefore it was staged, and the fill was then published as stored. The fill's\nwrite now counts only once it is staged and its commit callback kept it.\n\nThe unit and REST tests now hold the first source call of a burst until\nevery other read has parked on the record lock, instead of relying on a\nfixed delay.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Fail a test burst whose reads never all park, naming the count\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Compare absent reads as null in the coalescing test\n\nNode 22's loose deepEqual does not treat null and undefined as equal, and\nan absent record reads back as null.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01T9ub6mcFSCB8x9He8FS35Z\nDispatch-Task: harper-sourcedfrom-negative-miss-coalescing\n\n* Keep Headers-carrying and stale-entry fills out of the shared outcome\n\nA record whose headers is a Headers-like object is not shared: the response\nmerge writes into it in place, which would leak one request's response\nheaders into another's. A no-store leader that finds the origin reports a\nrecord absent while an older entry is stored now marks the fill unstored, so\na caching waiter refetches and stages the delete instead of keeping the\nstale entry.\n\nThe REST test's gate deadline is now below the lock timeout so its\ndiagnostic wins, and the helper keeps the body of an unexpected status.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n* Share only records a response cannot mutate for another request\n\nThe Headers-like guard left two shapes open: a raw one-shot stream body\nwithout a status, and a record a response cannot copy (it assigns a Headers\nonto the shared object, which the next request then merges into in place).\nEligibility is now an allow-list: a copyable record without a body or a\nHeaders-like headers, or an absent answer.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n* Keep passthrough contentType/data streams out of the shared outcome\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n* Share a fill only when its record is plain data\n\nReplace the per-shape guards (body, Headers-like headers, passthrough\ncontentType, untracked records) with one invariant: a record goes to several\nrequests only if every value in it is plain data, scanned within a bounded\nbudget. That also covers a one-shot iterator held anywhere in the record,\nwhich the shape guards missed. A record of plain data with a text body or\nplain headers is now shared too.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n* Scan a record for sharing only when a waiter needs it, and by descriptor\n\nThe plain-data scan ran on every source fill and was read only when a waiter\nfound the store invalid, so it moves to that waiter and is memoized on the\nfill; the default miss path pays nothing. The scan now walks own keys by\ndescriptor, so a symbol-keyed iterator, a non-enumerable body and a getter\nall refuse sharing (without invoking the getter), and a sparse array is\nbounded by its length.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n* Keep the sharing scan from throwing in the lock callback and walk arrays by descriptor\n\nA revoked proxy or a throwing trap made the scan throw inside the lock\nwaiter's callback, stranding that waiter; it now counts as not plain data.\nArrays go through the same descriptor walk, so an own Symbol.iterator, an\nArray subclass or an index getter refuse sharing, and holes cost nothing\nbecause only present keys are visited.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n* Shorten the source-fill sharing note to its invariant\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n* Name the source guard in the sharing note\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b559cdc403fbab978032ffbc8604051f\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-27T03:09:28Z",
+          "url": "https://github.com/HarperFast/harper/commit/105250e1157fa3dd0d0b0de79c75097be41c0163"
+        },
+        "date": 1793094321072,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3498.6,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3498.6,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 454.1,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1217.4,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1548.9,
             "unit": "ms"
           }
         ]
