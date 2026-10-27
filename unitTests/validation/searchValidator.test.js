@@ -491,32 +491,36 @@ describe('Test searchValidator module', () => {
 		}
 	});
 
-	it('allows null value in search_by_value and rejects array value such as ["*"]', () => {
-		assert.strictEqual(
-			searchValidator(
+	it('allows null, Date, BigInt, and unsafe numbers in search_by_value and rejects array or plain object value such as ["*"]', () => {
+		for (const validValue of [null, '', 'abc', 0, Number.MAX_SAFE_INTEGER + 100, true, new Date('2025-01-01T00:00:00Z'), 123n]) {
+			assert.strictEqual(
+				searchValidator(
+					{
+						schema: 'searchValidatorTest',
+						table: 'test',
+						attribute: 'name',
+						value: validValue,
+						get_attributes: ['id', 'name'],
+					},
+					'value'
+				),
+				undefined
+			);
+		}
+
+		for (const invalidValue of [['*'], {}]) {
+			const err = searchValidator(
 				{
 					schema: 'searchValidatorTest',
 					table: 'test',
 					attribute: 'name',
-					value: null,
+					value: invalidValue,
 					get_attributes: ['id', 'name'],
 				},
 				'value'
-			),
-			undefined
-		);
-
-		const err = searchValidator(
-			{
-				schema: 'searchValidatorTest',
-				table: 'test',
-				attribute: 'name',
-				value: ['*'],
-				get_attributes: ['id', 'name'],
-			},
-			'value'
-		);
-		assert.ok(err instanceof Error);
-		assert.strictEqual(err.message, "'value' must be one of [string, number, boolean, null]");
+			);
+			assert.ok(err instanceof Error);
+			assert.strictEqual(err.message, "'value' must not be an array or object");
+		}
 	});
 });

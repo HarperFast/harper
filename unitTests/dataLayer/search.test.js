@@ -312,12 +312,12 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 
 		await assert.rejects(
 			() => search.searchByValue({ ...payload }),
-			(err) => assertBadRequest(err, "'value' must be one of [string, number, boolean, null]")
+			(err) => assertBadRequest(err, "'value' must not be an array or object")
 		);
 
 		await assert.rejects(
 			() => serverUtilities.operation({ ...payload }, { user: superUser }, true),
-			(err) => assertBadRequest(err, "'value' must be one of [string, number, boolean, null]")
+			(err) => assertBadRequest(err, "'value' must not be an array or object")
 		);
 	});
 });
