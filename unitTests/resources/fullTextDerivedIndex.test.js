@@ -237,6 +237,22 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('drops cursor coverage from a publication that carries mutations under the same vector', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		backend.deliver(batch(1n, [], cursor(10)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		const coverage = { local: { sequence: 3, offset: 4 } };
+		backend.publishCoverage(coverage, 1n);
+		await waitFor(() => engine.publications.length === 2);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(10)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 3);
+		assert.strictEqual(decodeFullTextCursorPayload(engine.publications[2]).coverage, undefined);
+		await backend.shutdown(1n);
+	});
+
 	it('publishes query coverage in the native cursor', async () => {
 		const engine = new FakeEngine();
 		const { backend, publicationChanges } = makeBackend(lifecycle({ state: 'missing' }, [engine]));

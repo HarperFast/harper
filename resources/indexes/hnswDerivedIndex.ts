@@ -74,6 +74,8 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	#scheduled = false;
 	#appliedCursor?: DerivedIndexCursor;
 	#appliedEpoch?: bigint;
+	/** A record applied since coverage was published: the graph reflects more than that coverage covers. */
+	#appliedPastCoverage = false;
 	#flushRequested = false;
 	#flushing?: Promise<void>;
 	#interruptBarrierAfter = 0;
@@ -107,6 +109,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		if (!cursor) throw new Error('Cannot publish native index coverage without a durable cursor');
 		if (cursor.coverage && sameDerivedIndexPositions(cursor.coverage, positions)) return;
 		this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, { ...cursor, coverage: positions });
+		this.#appliedPastCoverage = false;
 	}
 
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult {
@@ -181,6 +184,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			const records = batch.records;
 			while (this.#position < records.length && performance.now() < until) {
 				try {
+					this.#appliedPastCoverage = true;
 					this.#apply(records[this.#position++]);
 				} catch (error) {
 					this.#queue.length = 0;
@@ -247,7 +251,10 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			if (epoch !== undefined && !host.isOwnerEpoch(epoch)) return;
 			if (cursor) {
 				const durable = this.getDurableCursor();
-				const coverage = durable && sameDerivedIndexCursorVector(durable, cursor) ? durable.coverage : undefined;
+				const coverage =
+					durable && !this.#appliedPastCoverage && sameDerivedIndexCursorVector(durable, cursor)
+						? durable.coverage
+						: undefined;
 				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...cursor, coverage } : cursor);
 			}
 		})();

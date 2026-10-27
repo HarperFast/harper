@@ -296,9 +296,11 @@ reflects every commit at or before C and none after. And purge deletes only file
 before the flush witness W (`lastFlushedPosition`, `txn.state`, never moved backwards). If W is exactly
 C, every reflected commit was flushed (so it is in the primary store; a log tail lost at power loss
 would leave W short of C), and nothing after C was flushed (so nothing the index has not reflected was
-purged). The other accepted shape is C at offset 0 of W's next sequence: an idle owner recaptured the
-tail after the purge retired W's segment, which a purge does only once that segment is flushed to its
-end. `lastCommittedPosition` is not a witness, because retirement moves it to the next sequence. The
+purged). The other accepted shape is C at offset 0 of W's next sequence with W's segment gone from the
+inventory: an idle owner recaptured the tail after the purge retired that segment, which a purge removes
+only once it is flushed to its end. A size rotation also puts C there while the segment is still on disk
+and maybe unflushed, so a retained segment rejects. `lastCommittedPosition` is not a witness, because
+retirement moves it to the next sequence. The
 log is then converted to a floor from the file inventory and read from its beginning like any
 floor-anchored log. The inventory comes from a `getStats` call made before the one supplying W: one
 call reads the flush position before the inventory, so it can pair a stale W with an inventory that a
@@ -309,8 +311,12 @@ capture is persisted (`CoverageCapture.bound`): a turn that reads entries can re
 its capture, and its vector then reflects commits past the captured position. Persisting also requires
 that nothing accepted beyond the durable vector carries a mutation, because HNSW stores coverage with its
 durable vector and full-text with its newest accepted one. Both backends keep coverage on a cursor write
-only when the new vector is the same (`sameDerivedIndexCursorVector`), never carrying it onto a vector that
-reflects more. The converted vector reaches the backend as an empty `#pendingBatch` delivered before any
+only when the new vector is the same (`sameDerivedIndexCursorVector`) and no record was applied since the
+coverage (HNSW `#appliedPastCoverage`, full-text `#hasStagedMutations`): a transaction's first chunks
+arrive under the vector it has not completed yet. Coverage persisted by a build from before these rules
+may lag its vector; the first install after the upgrade trusts it, so a power loss under the old build
+that dropped a newer anchor at exactly that coverage would resume over rows the primary store lost. That
+needs three coincidences in a one-time window and is accepted rather than stamping a codec field. The converted vector reaches the backend as an empty `#pendingBatch` delivered before any
 log work, so the saved vector stays `#offeredCursors[0]` until the conversion is durable (no
 `cursor-unoffered`), and a crash before then repeats the proof. The proof is sufficient, not necessary:
 a write after the purge that was flushed before the install, coverage that lags its vector, or uncommitted

@@ -276,21 +276,21 @@ describe('DerivedIndexRuntime', () => {
 	it('persists the idle capture on the pass that sees its vector become durable', async () => {
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
 		store.committedPosition = { sequence: 1, offset: 64 };
+		// A wall-clock time, so a cadence reset to zero clears the throttle as it does in production.
+		store.rootStore.getMonotonicTimestamp = () => Date.now();
 		const backend = new FakeBackend('idle-durable-coverage', cursor(10), () => DERIVED_INDEX_ACCEPTED);
 		const persisted = [];
 		backend.publishCoverage = (positions) => persisted.push({ positions, cursor: backend.cursor });
 		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
 			idleGraceMilliseconds: 60_000,
-			maxFlushAgeMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 60_000,
 		});
 		runtime.register(registration(backend));
 
-		await waitFor(() => backend.deliveries.length === 1);
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await waitFor(() => runtime.getMetrics(backend.id)?.acceptedMutations === 1);
 		backend.cursor = backend.deliveries[0].through;
 		backend.stateChange();
-		// Well inside the cadence, so the coverage timer cannot be what persists it.
-		await waitFor(() => persisted.some(({ cursor }) => cursor.logs.local === 20), { timeout: 500 });
+		await waitFor(() => persisted.some(({ cursor }) => cursor.logs.local === 20), { timeout: 5000 });
 		await runtime.stop();
 	});
 
