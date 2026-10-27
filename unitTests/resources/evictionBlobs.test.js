@@ -272,9 +272,9 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		};
 	}
 
-	function rereferenced(Table, blob) {
+	function referenceGeneration(Table, blob) {
 		const { table: holdState, slot } = getBlobHoldStateForTesting(Table.primaryStore.rootStore, getFileId(blob));
-		return Atomics.load(holdState, slot + REREFERENCED);
+		return Atomics.load(holdState, slot + REFERENCE_GENERATION);
 	}
 
 	it('evict() keeps a record whose expiry a resequenced write renewed from the table expiration', async function () {
@@ -453,7 +453,7 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		assert.equal(merged.expiresAt, read.expiresAt, 'precondition: the expiry is unchanged');
 		const filePath = getFilePathForBlob(blob);
 		assert.ok(filePath && existsSync(filePath), 'precondition: the blob is file-backed');
-		assert.equal(rereferenced(Table, blob), 1, 'precondition: the write that references the file marked it');
+		assert.ok(referenceGeneration(Table, blob) > 0, 'precondition: the write recorded its reference');
 
 		let conflicts = 0;
 		Transaction.prototype.commit = function (...args) {
@@ -477,8 +477,11 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		await delay(RECLAMATION_SETTLE_MS);
 		assert.ok(Table.primaryStore.getEntry('unchanged'), 'the abandoned batch removed nothing');
 		assert.equal(getFileId(Table.primaryStore.getEntry('gained')?.value.blob), getFileId(blob));
-		// queue-independent: queueing a reclamation clears the re-reference
-		assert.equal(rereferenced(Table, blob), 1, 'the abandoned batch must not queue the blob for reclamation');
+		assert.equal(
+			getBlobHoldStateForTesting(Table.primaryStore.rootStore, getFileId(blob)).pendingReclamation,
+			false,
+			'the abandoned batch must not queue the blob for reclamation'
+		);
 		assert.ok(existsSync(filePath), 'an abandoned batch must not reclaim the blob of a record it left in place');
 	});
 });
