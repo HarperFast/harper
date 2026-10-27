@@ -309,8 +309,10 @@ export async function dropAttribute(dropAttributeObject: any) {
 		);
 	}
 
+	const targetTable = getDatabases()[dropAttributeObject.schema][dropAttributeObject.table];
 	if (
-		dropAttributeObject.attribute === getDatabases()[dropAttributeObject.schema][dropAttributeObject.table].primaryKey
+		dropAttributeObject.attribute === targetTable.primaryKey ||
+		dropAttributeObject.attribute === targetTable.attributes.find((attribute) => attribute.isPrimaryKey)?.name
 	) {
 		throw new ClientError('You cannot drop a hash attribute');
 	}

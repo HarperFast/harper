@@ -95,6 +95,31 @@ describe('the primary key cannot be dropped', () => {
 			assert.strictEqual(bridgeCalls, 0);
 		});
 
+		it('rejects the flagged primary key when it differs from the storage key', async () => {
+			const Table = await createDynamicTable('DynamicDropDivergedKey');
+			// Without schemaDefined, table() lets another attribute take the flag while records stay keyed by 'id'.
+			table({
+				table: 'DynamicDropDivergedKey',
+				database: DATABASE,
+				attributes: [{ name: 'sku', isPrimaryKey: true }, { name: 'name' }, { name: 'price' }],
+			});
+			assert.strictEqual(Table.primaryKey, 'id');
+			assert.strictEqual(Table.attributes.find((attribute) => attribute.isPrimaryKey)?.name, 'sku');
+			await Table.put({ id: 'item-2', sku: 'SKU-2', price: 20 });
+			let bridgeCalls = 0;
+			harperBridge.dropAttribute = () => {
+				bridgeCalls++;
+			};
+			try {
+				await assert.rejects(() => dropAttribute('DynamicDropDivergedKey', 'sku'), isPrimaryKeyRejection);
+			} finally {
+				delete harperBridge.dropAttribute;
+			}
+			assert.strictEqual(bridgeCalls, 0);
+			await assert.rejects(() => Table.removeAttributes(['sku']), isPrimaryKeyRejection);
+			assert.strictEqual(Table.primaryStore.getSync('item-2').sku, 'SKU-2');
+		});
+
 		it('still drops an ordinary attribute and strips it from the stored records', async () => {
 			const Table = await createDynamicTable('DynamicDropOrdinary');
 			const result = await dropAttribute('DynamicDropOrdinary', 'price');
