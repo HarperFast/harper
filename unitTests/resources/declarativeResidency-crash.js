@@ -195,6 +195,25 @@ if (require.main === module) {
 					/replication.shard/
 				);
 				await assert.rejects(bridge.getBackup({ database }), /replication.shard/);
+				const SQLSearch = require('#src/dataLayer/SQLSearch').default;
+				const { convertSQLToAST } = require('#src/sqlTranslator/index');
+				const SelectValidator = require('#src/sqlTranslator/SelectValidator').default;
+				for (const query of [
+					`SELECT body FROM \`${database}\`.CrashSlots`,
+					`SELECT body FROM \`${database}\`.CrashSlots WHERE id = 'local'`,
+					`SELECT IIF(region = 0, body, 'other') FROM \`${database}\`.CrashSlots`,
+				]) {
+					const validated = new SelectValidator(convertSQLToAST(query).ast.statements[0]);
+					validated.validate();
+					const { statement, attributes } = validated;
+					await assert.rejects(new SQLSearch(statement, attributes).search(), (error) => {
+						assert.equal(error.statusCode, 503, 'quarantine retains its SQL refusal status');
+						assert.equal(error.code, 'DATABASE_SHARDING_BLOCKED');
+						assert.equal(error.retryable, false);
+						assert.match(error.message, /repair the configuration and restart this node/);
+						return true;
+					});
+				}
 				const tail = () =>
 					Array.from(
 						Blocked.auditStore.getRange({ startFromLastFlushed: true, readUncommitted: true }),

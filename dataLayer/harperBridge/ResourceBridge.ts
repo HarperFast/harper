@@ -1,7 +1,13 @@
 import searchValidator from '../../validation/searchValidator.ts';
 import { randomUUID } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
-import { handleHDBError, ClientError, DatabaseShardingHeldError, hdbErrors } from '../../utility/errors/hdbError.ts';
+import {
+	handleHDBError,
+	ClientError,
+	DatabaseClosingError,
+	DatabaseShardingHeldError,
+	hdbErrors,
+} from '../../utility/errors/hdbError.ts';
 import {
 	table,
 	getDatabases,
@@ -790,7 +796,10 @@ function getRecords(searchObject, returnKeyValue?) {
 							record = await table.get({ id, lazy, select } as any, context);
 							record = record && collapseData(record);
 						} catch (error) {
-							if (error instanceof DatabaseShardingHeldError) {
+							if (
+								error instanceof DatabaseShardingHeldError ||
+								(error instanceof DatabaseClosingError && error.code === 'DATABASE_SHARDING_BLOCKED')
+							) {
 								finishedIteration();
 								throw error;
 							}

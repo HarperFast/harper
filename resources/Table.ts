@@ -4553,6 +4553,7 @@ export function makeTable(options): TableResourceClass {
 					return trackMaintenanceCommit(
 						demotion.catch((error) => {
 							if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned demotion of busy replica', id);
+							else if (error instanceof DatabaseShardingHeldError) logger.trace?.('Error demoting replica', id, error);
 							else logger.warn?.('Error demoting replica', id, error);
 						})
 					);
@@ -4608,6 +4609,7 @@ export function makeTable(options): TableResourceClass {
 						(transaction as any).abort();
 					} catch {}
 					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+					else if (error instanceof DatabaseShardingHeldError) logger.trace?.('Error evicting record', id, error);
 					else logger.warn?.('Error evicting record', id, error);
 				};
 				const commit = commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore);
@@ -11733,6 +11735,7 @@ export function makeTable(options): TableResourceClass {
 					},
 					(error) => {
 						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned replica write of busy record', id);
+						else if (error instanceof DatabaseShardingHeldError) logger.trace?.('Error storing replica', id, error);
 						else logger.warn?.('Error storing replica', id, error);
 						return false;
 					}

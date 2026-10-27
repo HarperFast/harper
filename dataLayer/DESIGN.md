@@ -352,10 +352,14 @@ parenthesized predicates are handled by `sqlEngine` v2, so only queries v2 still
 
 An incomplete owner may return present bodies, but it must refuse owned misses and collection
 reads until its baseline is certified. SQL fetch and result-stage wrappers preserve
-`DatabaseShardingHeldError`, including its 503 status, retryable flag, and recovery reason.
+`DatabaseShardingHeldError` and permanent `DATABASE_SHARDING_BLOCKED` refusals, including their
+503 status, retryable flag, and recovery or restart reason.
 Replacing it with a generic search error hides the operator action required to resume reads.
 `ResourceBridge.getRecords` also preserves this refusal instead of returning a message row,
 settling its transaction before rejecting `next()`. Unexpected SQL failures retain the existing
 generic response. Real baseline guards exercise
 scan, key, predicate, and aggregate query shapes in `unitTests/resources/shardingBaseline.test.js`;
 the Pro bootstrap suite checks the operations HTTP response after a lost origin is diagnosed.
+
+The unclean-exit fixture also checks permanent quarantine through scan, key, and legacy `IIF`
+queries before and after a worker starts with repaired configuration.
