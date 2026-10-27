@@ -157,6 +157,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 		node.hole !== true &&
 		node.floorRevoked !== true &&
 		typeof node.certifiedFrom === 'number' &&
+		!(node.certifiedFrom > node.closedFloor) &&
 		!(node.certifiedFrom <= copyBounds.get(node.id)!);
 	for (const { key, value } of dbisDb.getRange({ start: SEQ_KEY, end: [SEQ_KEY, Buffer.from([0xff])] })) {
 		const nodes = value?.nodes;
@@ -232,7 +233,6 @@ function qualifies(state: OriginState): boolean {
 		state.hole !== true &&
 		state.floorRevoked !== true &&
 		typeof state.certifiedFrom === 'number' &&
-		// an own start raised above a copy's bound qualifies only once the floor passes it
 		!(state.certifiedFrom > state.floor!)
 	);
 }

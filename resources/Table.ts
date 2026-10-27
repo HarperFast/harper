@@ -2399,7 +2399,6 @@ export function makeTable(options): TableResourceClass {
 										nodeState.hole = true;
 										qualifiersChanged = true;
 									}
-									// the receiver's own route covering every table again, after a copy that ran with partial coverage
 									if (
 										fullCoverage === true &&
 										typeof nodeState.originGeneration === 'string' &&
