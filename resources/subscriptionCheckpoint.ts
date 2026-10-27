@@ -231,7 +231,9 @@ function qualifies(state: OriginState): boolean {
 		state.partialHistory !== true &&
 		state.hole !== true &&
 		state.floorRevoked !== true &&
-		typeof state.certifiedFrom === 'number'
+		typeof state.certifiedFrom === 'number' &&
+		// an own start raised above a copy's bound qualifies only once the floor passes it
+		!(state.certifiedFrom > state.floor!)
 	);
 }
 

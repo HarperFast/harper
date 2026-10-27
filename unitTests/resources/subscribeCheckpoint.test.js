@@ -540,6 +540,9 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			belowOwn.end();
 			T.dbisDB.putSync([COPY_BOUND_KEY, 79], { 0: floor });
 			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
+			bumpOriginStateEpoch(T.primaryStore.rootStore);
+			await sleep(400);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'no capture while the own floor is below its start');
 			T.dbisDB.removeSync([COPY_BOUND_KEY, 79]);
 			for (const malformed of [
 				{ [peerId]: 'not a version' },
