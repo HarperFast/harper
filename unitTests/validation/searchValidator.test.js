@@ -490,4 +490,33 @@ describe('Test searchValidator module', () => {
 			assert.match(err.message, /^unknown attribute '/);
 		}
 	});
+
+	it('allows null value in search_by_value and rejects array value such as ["*"]', () => {
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					attribute: 'name',
+					value: null,
+					get_attributes: ['id', 'name'],
+				},
+				'value'
+			),
+			undefined
+		);
+
+		const err = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				attribute: 'name',
+				value: ['*'],
+				get_attributes: ['id', 'name'],
+			},
+			'value'
+		);
+		assert.ok(err instanceof Error);
+		assert.strictEqual(err.message, "'value' must be one of [string, number, boolean, null]");
+	});
 });

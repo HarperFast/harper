@@ -48,6 +48,7 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 		ProductTable = databases[TEST_DB][TEST_TABLE];
 		await ProductTable.put({ id: 'shoe-1', title: 'Trail Runner Shoe', category: 'footwear' });
 		await ProductTable.put({ id: 'hat-1', title: 'Sun Hat', category: 'headwear' });
+		await ProductTable.put({ id: 'null-1', title: null, category: null });
 	});
 
 	after(async () => {
@@ -245,5 +246,78 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 			wildcardRes.push(rec);
 		}
 		assert.deepEqual(wildcardRes, [{ id: 'shoe-1' }]);
+	});
+
+	it('returns null-valued rows when search_by_value specifies search_value: null, matching search_by_conditions with equals null', async () => {
+		for (const attr of ['title', 'category']) {
+			const directRes = [];
+			for await (const rec of await search.searchByValue({
+				operation: 'search_by_value',
+				database: TEST_DB,
+				table: TEST_TABLE,
+				search_attribute: attr,
+				search_value: null,
+				get_attributes: ['id', 'title', 'category'],
+				hdb_user: superUser,
+			})) {
+				directRes.push(rec);
+			}
+
+			const opValueRes = [];
+			for await (const rec of await serverUtilities.operation(
+				{
+					operation: 'search_by_value',
+					database: TEST_DB,
+					table: TEST_TABLE,
+					search_attribute: attr,
+					search_value: null,
+					get_attributes: ['id', 'title', 'category'],
+				},
+				{ user: superUser },
+				true
+			)) {
+				opValueRes.push(rec);
+			}
+
+			const opConditionsRes = [];
+			for await (const rec of await serverUtilities.operation(
+				{
+					operation: 'search_by_conditions',
+					database: TEST_DB,
+					table: TEST_TABLE,
+					get_attributes: ['id', 'title', 'category'],
+					conditions: [{ search_attribute: attr, search_type: 'equals', search_value: null }],
+				},
+				{ user: superUser },
+				true
+			)) {
+				opConditionsRes.push(rec);
+			}
+
+			assert.deepEqual(directRes, [{ id: 'null-1', title: null, category: null }]);
+			assert.deepEqual(opValueRes, opConditionsRes);
+		}
+	});
+
+	it('returns a 400 ClientError when search_by_value specifies ["*"] as search_value', async () => {
+		const payload = {
+			operation: 'search_by_value',
+			database: TEST_DB,
+			table: TEST_TABLE,
+			search_attribute: 'title',
+			search_value: ['*'],
+			get_attributes: ['*'],
+			hdb_user: superUser,
+		};
+
+		await assert.rejects(
+			() => search.searchByValue({ ...payload }),
+			(err) => assertBadRequest(err, "'value' must be one of [string, number, boolean, null]")
+		);
+
+		await assert.rejects(
+			() => serverUtilities.operation({ ...payload }, { user: superUser }, true),
+			(err) => assertBadRequest(err, "'value' must be one of [string, number, boolean, null]")
+		);
 	});
 });

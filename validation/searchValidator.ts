@@ -131,7 +131,7 @@ const searchByValueSchema = Joi.object({
 	schema: hdbDatabase,
 	table: hdbTable,
 	attribute: hdbSchemaTable,
-	value: Joi.any().required(),
+	value: Joi.alternatives(Joi.string().allow(''), Joi.number(), Joi.boolean(), null).required(),
 	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdbSchemaTable, Joi.object())).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),

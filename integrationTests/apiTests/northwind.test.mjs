@@ -6958,6 +6958,57 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
+		test('NoSQL search by value with search_value null matches search_by_conditions equals null', async () => {
+			let conditionsBody;
+			await client
+				.req()
+				.send({
+					operation: 'search_by_conditions',
+					schema: `northnwd`,
+					table: `employees`,
+					get_attributes: ['employeeid', 'hireDate'],
+					conditions: [{ search_attribute: 'hireDate', search_type: 'equals', search_value: null }],
+				})
+				.expect((r) => {
+					conditionsBody = r.body;
+					assert.ok(
+						r.body.some((row) => row.employeeid === 2 && row.hireDate === null),
+						r.text
+					);
+				})
+				.expect(200);
+
+			await client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					schema: `northnwd`,
+					table: `employees`,
+					search_attribute: 'hireDate',
+					search_value: null,
+					get_attributes: ['employeeid', 'hireDate'],
+				})
+				.expect((r) => {
+					assert.deepEqual(r.body, conditionsBody, r.text);
+				})
+				.expect(200);
+		});
+
+		test('NoSQL search by value with search_value ["*"] returns 400', async () => {
+			await client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					schema: `northnwd`,
+					table: `employees`,
+					search_attribute: 'hireDate',
+					search_value: ['*'],
+					get_attributes: ['employeeid', 'hireDate'],
+				})
+				.expect((r) => assert.equal(r.body.error, "'value' must be one of [string, number, boolean, null]", r.text))
+				.expect(400);
+		});
+
 		test('update NoSQL one employee record with no hash attribute', async () => {
 			await client
 				.req()

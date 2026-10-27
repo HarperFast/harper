@@ -489,7 +489,7 @@ export class ResourceBridge extends BridgeMethods {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
 		let value: any = searchObject.value;
-		if (value.includes?.('*')) {
+		if (typeof value === 'string' && value.includes('*')) {
 			if (value.startsWith('*')) {
 				if (value.endsWith('*')) {
 					if (value !== '*') {
@@ -738,7 +738,7 @@ export class ResourceBridge extends BridgeMethods {
 }
 
 function throwSearchValidationError(validationError: any): never {
-	throw validationError.statusCode ? validationError : new ClientError(validationError.message);
+	throw typeof validationError.statusCode === 'number' ? validationError : new ClientError(validationError.message);
 }
 
 function getSelect({ get_attributes }: any, table: any) {
