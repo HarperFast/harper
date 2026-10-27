@@ -80,7 +80,6 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)](resources/DESIGN.md#this-nodes-short-id-is-0-confirmed-per-audit-store-nodeidmappingts-getthisnodeid) — Audited writes skip re-reading the id-mapping record while the node name is unchanged; the per-worker confirmation expires so another worker's remap is picked up.
 - [Query primary-key identity is the stored encoding (`search.ts` `CandidateKeySet`)](resources/DESIGN.md#query-primary-key-identity-is-the-stored-encoding-searchts-candidatekeyset) — Queries compare primary keys by `writeKeyId`, never a joined string or object identity; the id filter, OR union and `'...'` alias follow it.
 - [Validation keeps a patch operation and coerces only its operand (`Table.ts` `validate`)](resources/DESIGN.md#validation-keeps-a-patch-operation-and-coerces-only-its-operand-tablets-validate) — A top-level, registered, numeric `__op__` envelope survives validation with its operand coerced in place; nested envelopes are not operations.
-- [A data loader hash is trusted only for the record it names (`dataLoader.ts` `getHashKey`, `legacyHashReader`)](resources/DESIGN.md#a-data-loader-hash-is-trusted-only-for-the-record-it-names-dataloaderts-gethashkey-legacyhashreader) — Digest keys are disjoint from earlier versions' `table:id` keys; an earlier entry counts only when it matches the record's content and names its table unambiguously.
 
 ## resources/audit-retention.md — audit retention and cleanup
 

@@ -118,7 +118,9 @@ function getHashKey(database: string | undefined, tableName: string, recordId: a
  * the record unless another table wrote the same key: refused when a name contains `:`, when a default-database
  * table is named like the key's prefix, and, for a named database, when the default database has a same-named
  * table that those versions would have written the file's records to instead. Not detectable: keys a since-dropped
- * table named like a prefix wrote, and an old `-0` row's entry matching a `0` row (JSON writes both as `0`).
+ * table named like a prefix wrote, and an old `-0` row's entry matching a `0` row (JSON writes both as `0`). A
+ * record with no matching entry is never overwritten, even when identical to its seed row, and legacy entries are
+ * never modified (pinned by `unitTests/resources/dataLoaderRecordIdentity.test.js`).
  */
 function legacyHashReader(
 	trackingTable: any,
