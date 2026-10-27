@@ -1017,7 +1017,7 @@ export class HierarchicalNavigableSmallWorld {
 			: undefined;
 		if (oldNodeId != null && signature && storedMapping.signature === signature) {
 			if (!storedMapping.pending) {
-				this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
+				if (storedMapping.version !== version) this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
 				return;
 			}
 			// Replacing would tombstone a node the plane does not re-link around. Only an in-memory pending
