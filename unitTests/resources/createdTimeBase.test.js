@@ -118,8 +118,8 @@ describe('@createdTime follows the record a write lands on', function () {
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
-		Item = table({ database: 'test', table: 'CreatedTimeBase', attributes, audit: true });
-		Replica = table({ database: 'test', table: 'CreatedTimeBaseReplica', attributes, audit: true });
+		Item = table({ database: 'createdTimeBase', table: 'CreatedTimeBase', attributes, audit: true });
+		Replica = table({ database: 'createdTimeBase', table: 'CreatedTimeBaseReplica', attributes, audit: true });
 	});
 
 	describe('over an invalidation stub of a record that was never stored', () => {
