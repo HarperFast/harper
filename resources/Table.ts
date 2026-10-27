@@ -3831,8 +3831,11 @@ export function makeTable(options): TableResourceClass {
 					// or if there are relationships, we need to ensure that the user has permission to read from the related table
 					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!target) target = {} as any;
-					if (select) {
-						const selectArray = Array.isArray(select) ? select : [select];
+					const selectArray = select ? (Array.isArray(select) ? select : [select]) : null;
+					if (
+						selectArray &&
+						!(attribute_permissions?.length > 0 && selectArray.length === 1 && selectArray[0] === '*')
+					) {
 						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
 						(target as any).select = selectArray
 							.map((property: any) => {
@@ -3881,21 +3884,6 @@ export function makeTable(options): TableResourceClass {
 								}
 							})
 							.filter(Boolean);
-						if (
-							(target as any).select.length === 0 &&
-							Array.isArray(target) &&
-							attrsForType &&
-							selectArray.every((p: any) => !propertyResolvers[p?.name || p]?.definition?.tableClass)
-						) {
-							(target as any).select = attribute_permissions
-								.filter(
-									(attribute) =>
-										attribute.read &&
-										!fullTextFieldNames?.has(attribute.attribute_name) &&
-										!propertyResolvers[attribute.attribute_name]
-								)
-								.map((attribute) => attribute.attribute_name);
-						}
 					} else {
 						target.select = attribute_permissions
 							.filter(

@@ -726,6 +726,38 @@ describe('REST and operations API select projection fixes', function () {
 					child: { id: 'c1' },
 				},
 			]);
+
+			const scopedStarBraceSingle = await restGet('/Parent/p1?select(id,child{*})', {}, scopedChildUser);
+			assert.strictEqual(scopedStarBraceSingle.status, 200);
+			assert.deepStrictEqual(scopedStarBraceSingle.body, {
+				id: 'p1',
+				child: { id: 'c1', label: 'child-label-v1' },
+			});
+
+			const scopedStarBracketSingle = await restGet('/Parent/p1?select(id,child[select(*)])', {}, scopedChildUser);
+			assert.strictEqual(scopedStarBracketSingle.status, 200);
+			assert.deepStrictEqual(scopedStarBracketSingle.body, {
+				id: 'p1',
+				child: { id: 'c1', label: 'child-label-v1' },
+			});
+
+			const scopedDeniedFieldBrace = await restGet('/Parent/p1?select(id,child{parentId})', {}, scopedChildUser);
+			assert.strictEqual(scopedDeniedFieldBrace.status, 200);
+			assert.deepStrictEqual(scopedDeniedFieldBrace.body, {
+				id: 'p1',
+				child: {},
+			});
+
+			const scopedDeniedFieldBracket = await restGet(
+				'/Parent/p1?select(id,child[select(parentId)])',
+				{},
+				scopedChildUser
+			);
+			assert.strictEqual(scopedDeniedFieldBracket.status, 200);
+			assert.deepStrictEqual(scopedDeniedFieldBracket.body, {
+				id: 'p1',
+				child: {},
+			});
 		});
 
 		it('applies bracketed sort, offset, limit, and select consistently to plain-JSON arrays across single-record and collection GET', async function () {
