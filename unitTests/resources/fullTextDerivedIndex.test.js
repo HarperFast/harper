@@ -230,7 +230,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).coverage }, covered.coverage);
-		// Coverage is resume evidence for the vector it was captured with, so a moved vector drops it.
 		backend.deliver(batch(1n, [], cursor(20)));
 		backend.flush();
 		await waitFor(() => engine.publications.length === 2);

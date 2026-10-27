@@ -1380,7 +1380,12 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 			await waitFor(() => backend.cursor.logs.local === 9, { timeout: 5000 });
 			assert.strictEqual(backend.resets.length, 0);
-			assert.deepStrictEqual(backend.deliveries[0].through, { format: 1, logs: {}, floors: { local: 4 } });
+			assert.deepStrictEqual(backend.deliveries[0].through, {
+				format: 1,
+				logs: {},
+				floors: { local: 4 },
+				coverage: { local: coverage },
+			});
 			assert.strictEqual(backend.deliveries[0].records.length, 0);
 			assert.strictEqual(store.rangeCalls.at(-1).startByLog.has('local'), false, 'the log is read from its floor');
 			assert.strictEqual(backend.applied.get('b').kind, 'record');
@@ -1390,8 +1395,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 	});
 
 	it('samples the floor before the flush witness', async () => {
-		// One getStats call can pair a flush position read before a flush and purge with the file
-		// inventory after it; only a witness sampled after the floor proves nothing past coverage was lost.
 		let calls = 0;
 		const store = purgedAnchorStore(() =>
 			++calls === 1 ? emptiedStats(covered) : emptiedStats({ sequence: 4, offset: 10 })

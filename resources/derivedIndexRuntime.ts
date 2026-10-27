@@ -1135,7 +1135,8 @@ class DerivedIndexRunner {
 			this.#openRange(recovered);
 			// Ahead of any log work, so the saved vector stays offered until the conversion is durable.
 			const { batch } = this.#newChunk(false);
-			batch.through = recovered;
+			// The conversion reflects the same commits, so the bound coverage still describes it.
+			batch.through = cursor.coverage ? { ...recovered, coverage: cursor.coverage } : recovered;
 			this.#pendingBatch = batch;
 		}
 		return this.#checkRangeHealth();
@@ -1742,6 +1743,8 @@ class DerivedIndexRunner {
 			}
 		}
 		if (offeredIndex > 0) {
+			// The backend dropped coverage with the old vector; the next bound capture may persist at once.
+			this.#lastPersistedCoverageTime = 0n;
 			this.#offeredCursors.splice(0, offeredIndex);
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
