@@ -1436,7 +1436,6 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						addRelated,
 						scan
 					).then(() => {
-						// a stopped scan leaves partial mappings, which must not be yielded
 						joinedIterator = (scanStopped(scan) ? new Map() : joined).keys()[Symbol.iterator]();
 					});
 					return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : joinedIterator.next()));
@@ -1488,9 +1487,7 @@ function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
 	}
 	return results;
 }
-// A stopped scan yields nothing more, not its partial mappings or ids. Its join iterator was returned, or the
-// read snapshot was released (teardown runs onDone() without returning it): RocksDB's guard then throws the
-// expired-snapshot error a range read would, and an LMDB transaction reports isDone.
+// see the sorted iterator's stopped() in Table.transformToOrderedSelect
 function scanStopped(scan: JoinScan) {
 	if (scan.closed) return true;
 	scan.checkActive?.();
@@ -1531,7 +1528,11 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 			add(entry, record);
 		}
 	} finally {
-		if (!done) iterator.return?.()?.catch?.(ignoreReturnFailure);
+		// a close that throws (likeliest right after a snapshot is released) must not replace the scan's error
+		if (!done)
+			try {
+				iterator.return?.()?.catch?.(ignoreReturnFailure);
+			} catch {}
 	}
 }
 function someRelatedMatch(entries, match, start: number) {
@@ -1609,6 +1610,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 				return { done: true, value: undefined };
 			},
 			throw() {
+				scan.closed = true;
 				return joinedIterator?.throw?.();
 			},
 		};

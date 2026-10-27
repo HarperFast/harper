@@ -6844,7 +6844,16 @@ export function makeTable(options): TableResourceClass {
 					const checkActive = getReadTransactionGuard(readTxn);
 					const stopped = () => {
 						if (closed) return true;
-						checkActive?.();
+						try {
+							checkActive?.();
+						} catch (error) {
+							// a rejected next() is never followed by return(), so close the range iterator here
+							closed = true;
+							try {
+								dbIterator.return?.()?.catch?.(() => {});
+							} catch {}
+							throw error;
+						}
 						return readTxn?.isDone;
 					};
 					const dbOrderedAttribute = (sort as any).dbOrderedAttribute;
@@ -10172,20 +10181,33 @@ export function makeTable(options): TableResourceClass {
 	// must settle to what the relationship resolver returns with returnEntry
 	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
 		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
-		let pending = false;
 		const entries = [];
+		for (let i = 0; i < keys.length; i++) {
+			const key = keys[i];
+			const entry = key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options);
+			entries.push(entry);
+			if (entry?.then)
+				return loadRemainingRelatedEntries(keys, i + 1, entries, relatedTable, options).then((entries) =>
+					settleRelatedEntries(entries, filterMissing)
+				);
+		}
+		return settleRelatedEntries(entries, filterMissing);
+	}
+	// Once one related read has to go to storage, the rest are read at most RELATED_READS_IN_FLIGHT at a time:
+	// a row with thousands of related ids must not queue them all ahead of every other request's background reads
+	async function loadRemainingRelatedEntries(keys: any[], start: number, entries: any[], relatedTable, options) {
 		try {
-			for (const key of keys) {
-				const entry = key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options);
-				if (entry?.then) pending = true;
-				entries.push(entry);
+			for (let i = start; i < keys.length; i++) {
+				if ((i - start) % RELATED_READS_IN_FLIGHT === 0) await Promise.all(entries.slice(i - RELATED_READS_IN_FLIGHT));
+				const key = keys[i];
+				entries.push(key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options));
 			}
+			return await Promise.all(entries);
 		} catch (error) {
-			if (pending) Promise.all(entries).catch(() => {});
+			// the reads still pending would otherwise reject unobserved
+			Promise.all(entries).catch(() => {});
 			throw error;
 		}
-		if (pending) return Promise.all(entries).then((entries) => settleRelatedEntries(entries, filterMissing));
-		return settleRelatedEntries(entries, filterMissing);
 	}
 	function settleRelatedEntries(entries: any[], filterMissing?: boolean) {
 		if (TableResource.loadAsInstance === false) for (const entry of entries) freezeRecord(entry?.value);
@@ -11823,6 +11845,7 @@ function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, versio
 	return -1;
 }
 
+const RELATED_READS_IN_FLIGHT = 16;
 // for filtering
 function exists(value) {
 	return value != null;

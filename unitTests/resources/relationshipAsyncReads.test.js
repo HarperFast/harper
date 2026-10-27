@@ -65,11 +65,13 @@ describe('Queries read related records asynchronously', () => {
 		// shares parent-1's child, for sorts with ties
 		await ColdParent.put({ id: 'parent-4', childId: 'child-1', childIds: [] });
 		await ColdParent.put({ id: 'parent-null', childId: null, childIds: null });
+		// more related ids than may be read at once (RELATED_READS_IN_FLIGHT)
+		await ColdParent.put({ id: 'parent-wide', childIds: Array.from({ length: 40 }, (_, i) => 'child-' + (i % 4)) });
 	});
 
 	function instrumentReads(Table, simulateCold) {
 		const store = Table.primaryStore;
-		const reads = { sync: 0, async: 0, promised: 0 };
+		const reads = { sync: 0, async: 0, promised: 0, inFlight: 0, maxInFlight: 0 };
 		const originals = {};
 		let depth = 0; // count only the outermost call, not one store method calling another
 		const instrument = (method, isAsync) => {
@@ -90,7 +92,13 @@ describe('Queries read related records asynchronously', () => {
 				reads.async++;
 				if (simulateCold) {
 					const settled = result;
-					result = new Promise((resolve, reject) => setImmediate(() => Promise.resolve(settled).then(resolve, reject)));
+					reads.maxInFlight = Math.max(reads.maxInFlight, ++reads.inFlight);
+					result = new Promise((resolve, reject) =>
+						setImmediate(() => {
+							reads.inFlight--;
+							Promise.resolve(settled).then(resolve, reject);
+						})
+					);
 				}
 				if (result?.then) reads.promised++;
 				return result;
@@ -176,6 +184,18 @@ describe('Queries read related records asynchronously', () => {
 				assert.deepEqual(results[0].children, [{ name: 'child 6' }, { name: 'child 10' }]);
 				assert.equal(childReads.sync, 0);
 				assert.equal(childReads.promised, 3);
+			});
+
+			it('many-to-many with more related records than may be read at once', async function () {
+				const results = await collect(
+					ColdParent.search({
+						conditions: [{ attribute: 'id', value: 'parent-wide' }],
+						select: ['id', { name: 'children', select: ['id'] }],
+					})
+				);
+				assert.equal(results[0].children.length, 40);
+				assert.equal(results[0].children[5].id, 'child-1');
+				assert(childReads.maxInFlight <= 16, `at most 16 related reads in flight (${childReads.maxInFlight})`);
 			});
 
 			it('many-to-many sorted', async function () {
