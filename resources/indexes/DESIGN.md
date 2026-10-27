@@ -288,42 +288,26 @@ durable advance publishes coverage or ready — the one path every catch-up publ
 against the newest accepted vector, since a log anchored there was proven past its floor when read. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
 once; its runtime and HNSW drop the field on clone and judge the log by the old rule.
 
-Retention also purges the file holding a log's **timestamp anchor** once the log is idle and flushed,
-so the next install (a restart, or the first acquisition after an idle release) finds that boundary
-`missing` although nothing committed after it. `#recoverPurgedAnchors` proves that case instead of
-condemning, from two facts. Persisted `coverage` C is **bound** to the vector stored with it: the index
-reflects every commit at or before C and none after. And purge deletes only files lying wholly at or
-before the flush witness W (`lastFlushedPosition`, `txn.state`, never moved backwards). If W is exactly
-C, every reflected commit was flushed (so it is in the primary store; a log tail lost at power loss
-would leave W short of C), and nothing after C was flushed (so nothing the index has not reflected was
-purged). The other accepted shape is C at offset 0 of W's next sequence with W's segment gone from the
-inventory: an idle owner recaptured the tail after the purge retired that segment, which a purge removes
-only once it is flushed to its end. A size rotation also puts C there while the segment is still on disk
-and maybe unflushed, so a retained segment rejects. `lastCommittedPosition` is not a witness, because
-retirement moves it to the next sequence. The
-log is then converted to a floor from the file inventory and read from its beginning like any
-floor-anchored log. The inventory comes from a `getStats` call made before the one supplying W: one
-call reads the flush position before the inventory, so it can pair a stale W with an inventory that a
-later flush and purge of an uncovered entry has shrunk, putting the floor past that entry.
+Retention also purges the file holding a log's **timestamp anchor** once the log is idle and flushed, so
+the next install finds that boundary `missing` although nothing committed after it.
+`#recoverPurgedAnchors` proves this harmless instead of condemning. Persisted `coverage` C is **bound**:
+the index reflects every commit at or before C and none after. Purge deletes only files wholly at or
+before the flush witness W (`lastFlushedPosition`, never moved backwards). If W equals C, every reflected
+commit is flushed (a tail lost at power loss leaves W short of C) and nothing unreflected was purged. C at
+offset 0 of W's next sequence is also accepted, but only with W's segment gone from the inventory: a purge
+removes a segment only once fully flushed, while a size rotation leaves it on disk. The log is then read
+from a floor taken from an inventory sampled in an earlier `getStats` call than W, because one call reads
+the flush position before the inventory.
 
-Binding is what makes coverage usable as resume evidence, so three rules hold it. Only an idle pass's
-capture is persisted (`CoverageCapture.bound`): a turn that reads entries can read some appended after
-its capture, and its vector then reflects commits past the captured position. Persisting also requires
-that nothing accepted beyond the durable vector carries a mutation, because HNSW stores coverage with its
-durable vector and full-text with its newest accepted one. Both backends keep coverage on a cursor write
-only when the new vector is the same (`sameDerivedIndexCursorVector`) and no record was applied since the
-coverage (HNSW `#appliedPastCoverage`, full-text `#hasStagedMutations`), and once one was, the cursor they
-write is stripped of any coverage it carries: a transaction's first chunks arrive under the vector it has
-not completed yet, or with no vector at all. What remains is the window between a native flush and its
-cursor write, which no ordering closes and which the anchor-present resume shares. Coverage persisted by a build from before these rules
-may lag its vector; the first install after the upgrade trusts it, so a power loss under the old build
-that dropped a newer anchor at exactly that coverage would resume over rows the primary store lost. That
-needs three coincidences in a one-time window and is accepted rather than stamping a codec field. The converted vector reaches the backend as an empty `#pendingBatch` delivered before any
-log work, so the saved vector stays `#offeredCursors[0]` until the conversion is durable (no
-`cursor-unoffered`), and a crash before then repeats the proof. The proof is sufficient, not necessary:
-a write after the purge that was flushed before the install, coverage that lags its vector, or uncommitted
-entries between the anchor and C, all rebuild. Any other failure in the same range (corrupt frame, failed
-log, `incomplete`, `duplicate`, or an unproven sibling log) still condemns.
+Binding rules: only an idle pass's capture is persisted (`CoverageCapture.bound`), since a turn that reads
+entries can read some appended after its capture; persisting also needs no mutation accepted past the
+durable vector. Backends keep coverage only for the same vector with nothing applied since, and strip it
+from any cursor they write after applying records (HNSW `#appliedPastCoverage`, full-text
+`#hasStagedMutations`). The conversion is an empty `#pendingBatch` carrying the old coverage (it reflects
+the same commits), so the saved vector stays offered until it is durable. Anything else rebuilds: a
+flushed post-purge write, lagging coverage, other range failures, an unproven sibling. Accepted: coverage
+persisted by an older build, and the window between a native flush and its cursor write, both reachable
+only with a power loss (#3673).
 
 ### Offered versus durable progress
 
