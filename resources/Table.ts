@@ -61,6 +61,7 @@ import {
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
+	getReadTransactionGuard,
 	ImmediateTransaction,
 	priorStagedWrite,
 	isJoinableScope,
@@ -10208,7 +10209,7 @@ export function makeTable(options): TableResourceClass {
 			if (residency) {
 				if (!residency.includes(server.hostname) && sourceLoad) {
 					// this record is not on this node, so we shouldn't load it here
-					return sourceLoad({ key: id, residency }).then(withEntry);
+					return loadResidentRecord({ key: id, residency }, id, options, withEntry);
 				}
 			}
 		}
@@ -10301,6 +10302,14 @@ export function makeTable(options): TableResourceClass {
 		if (entry?.then) return entry.then((entry) => withLocalEntry(entry, id, context, options, withEntry));
 		return withLocalEntry(entry, id, context, options, withEntry);
 	}
+	function loadResidentRecord(entry, id, options, withEntry) {
+		// Capture the owner before yielding: abort releases the context, and RocksDB handles do not expose isDone.
+		const checkActive = options.transaction && getReadTransactionGuard(options.transaction);
+		return sourceLoad(entry).then((loaded) => {
+			checkActive?.();
+			return withEntry(options.transaction?.isDone ? null : loaded, id);
+		});
+	}
 	function withLocalEntry(entry, id, context, options, withEntry) {
 		if (options.transaction?.isDone) return withEntry(null, id);
 		if (residencyPolicy && (!entry?.value || entry.metadataFlags & INVALIDATED)) {
@@ -10309,9 +10318,7 @@ export function makeTable(options): TableResourceClass {
 				const slot = residencyPolicy.byAttribute ? entry?.residencySlot : calculateResidencySlot(id);
 				if (slot === undefined || residencyIsLocal(databaseName, slot, residencyPolicy.slots)) {
 					if (slot !== undefined && options.ensureLoaded && sourceLoad && context?.replicateFrom !== false)
-						return sourceLoad({ ...entry, key: id, residencySlot: slot }).then((loaded) =>
-							withEntry(options.transaction?.isDone ? null : loaded, id)
-						);
+						return loadResidentRecord({ ...entry, key: id, residencySlot: slot }, id, options, withEntry);
 					throw new DatabaseShardingHeldError(databaseName, reason);
 				}
 			}
@@ -10336,13 +10343,11 @@ export function makeTable(options): TableResourceClass {
 		) {
 			const owners = residencyOwners(databaseName, calculateResidencySlot(id), residencyPolicy.slots);
 			if (!owners.includes(server.hostname) && sourceLoad)
-				return sourceLoad({ key: id, residency: owners }).then((entry) =>
-					withEntry(options.transaction?.isDone ? null : entry, id)
-				);
+				return loadResidentRecord({ key: id, residency: owners }, id, options, withEntry);
 		}
 		if (options.ensureLoaded && needsResidentLoad(entry, context)) {
 			// load from other node
-			return sourceLoad(entry).then((entry) => withEntry(options.transaction?.isDone ? null : entry, id));
+			return loadResidentRecord(entry, id, options, withEntry);
 		}
 		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
 		if (entry && context) {

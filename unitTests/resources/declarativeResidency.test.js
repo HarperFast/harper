@@ -199,7 +199,7 @@ const { transaction } = require('#src/resources/transaction');
 				]);
 				logical.abort();
 				release();
-				assert.equal((await reading).getRecord(), null, 'a closed read must not materialize a later owner response');
+				await assert.rejects(reading, (error) => error.name === 'ReadSnapshotExpiredError' && error.statusCode === 503);
 			} finally {
 				release();
 				logical.abort();
@@ -1380,7 +1380,14 @@ const { transaction } = require('#src/resources/transaction');
 			assert.equal(confirmations.length, 1);
 			assert.equal(confirmations[0].count, 1);
 			assert.deepEqual(confirmations[0].owners, [['slot-owner']]);
-			assert.equal(confirmations[0].version, Records.primaryStore.getEntry('moved').version);
+			const moved = [...Records.auditStore.getRange({ start: 1, log: 0 })].find(
+				(entry) =>
+					entry.tableId === Records.tableId &&
+					entry.recordId === 'moved' &&
+					entry.getValue(Records.primaryStore).region === 1
+			);
+			assert.ok(moved);
+			assert.equal(confirmations[0].version, moved.txnLogKey, 'confirmation follows the durable audit position');
 		} finally {
 			binding.forceTryAgainForTesting(0);
 			Transaction.prototype.commit = original;
