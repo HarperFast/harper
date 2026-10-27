@@ -6877,10 +6877,13 @@ export function makeTable(options): TableResourceClass {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
-					(transformToRecord as any).return?.();
-					txn.unregisterReadIterator(results);
-					if (readTxn) txn.doneReadTxn(readTxnGeneration);
-					releaseRelatedLeases(filtered);
+					try {
+						(transformToRecord as any).return?.();
+						txn.unregisterReadIterator(results);
+						if (readTxn) txn.doneReadTxn(readTxnGeneration);
+					} finally {
+						releaseRelatedLeases(filtered);
+					}
 				};
 				// Recorded ownership: if the request dies before anything consumes these results, the
 				// transaction closes them itself rather than leaving its read snapshot pinned.
@@ -6889,8 +6892,11 @@ export function makeTable(options): TableResourceClass {
 				results.getColumns = getColumns;
 				return results;
 			} catch (error) {
-				if (readTxn) txn.doneReadTxn(readTxnGeneration);
-				releaseRelatedLeases(filtered);
+				try {
+					if (readTxn) txn.doneReadTxn(readTxnGeneration);
+				} finally {
+					releaseRelatedLeases(filtered);
+				}
 				throw error;
 			}
 		}
