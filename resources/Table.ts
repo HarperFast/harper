@@ -669,6 +669,7 @@ function isSameIdAllocation(a: any, b: any): boolean {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
+const SORT_PROBE = Symbol('sortProbe');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
@@ -3832,11 +3833,8 @@ export function makeTable(options): TableResourceClass {
 					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!target) target = {} as any;
 					const selectArray = select ? (Array.isArray(select) ? select : [select]) : null;
-					if (
-						selectArray &&
-						!(attribute_permissions?.length > 0 && selectArray.length === 1 && selectArray[0] === '*')
-					) {
-						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+					const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+					if (selectArray) {
 						(target as any).select = selectArray
 							.map((property: any) => {
 								const propertyName = property.name || property;
@@ -3864,9 +3862,13 @@ export function makeTable(options): TableResourceClass {
 											if (segments.length === 0) continue;
 											let sortSelect: any = segments[segments.length - 1];
 											for (let i = segments.length - 2; i >= 0; i--) {
-												sortSelect = { name: segments[i], select: [sortSelect] };
+												sortSelect = { name: segments[i], select: [sortSelect], [SORT_PROBE]: true };
 											}
-											const sortProbe: any = { select: [sortSelect], checkPermission: property.checkPermission };
+											const sortProbe: any = {
+												select: [sortSelect],
+												checkPermission: property.checkPermission,
+												[SORT_PROBE]: true,
+											};
 											if (!relatedResource.allowRead(user, sortProbe, context)) return false;
 											for (let cur = sortProbe.select; Array.isArray(cur); cur = cur[0]?.select) {
 												if (cur.length === 0) return false;
@@ -3884,7 +3886,15 @@ export function makeTable(options): TableResourceClass {
 								}
 							})
 							.filter(Boolean);
-					} else {
+					}
+					if (
+						attrsForType &&
+						(!selectArray ||
+							(selectArray.length > 0 &&
+								(target as any).select.length === 0 &&
+								!(target as any)[SORT_PROBE] &&
+								selectArray.every((p: any) => !propertyResolvers[p?.name || p]?.definition?.tableClass)))
+					) {
 						target.select = attribute_permissions
 							.filter(
 								(attribute) =>

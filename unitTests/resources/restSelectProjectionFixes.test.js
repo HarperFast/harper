@@ -711,14 +711,25 @@ describe('REST and operations API select projection fixes', function () {
 				},
 			};
 
-			const scopedSubsetSingle = await restGet('/Parent/p1?select(id,child{id})', {}, scopedChildUser);
+			const scopedSubsetSingle = await restGet('/Parent/p1?select(id,child{id,parentId})', {}, scopedChildUser);
 			assert.strictEqual(scopedSubsetSingle.status, 200);
 			assert.deepStrictEqual(scopedSubsetSingle.body, {
 				id: 'p1',
 				child: { id: 'c1' },
 			});
 
-			const scopedSubsetCollection = await restGet('/Parent/?id=p1&select(id,child{id})', {}, scopedChildUser);
+			const scopedSubsetBracketSingle = await restGet(
+				'/Parent/p1?select(id,child[select(id,parentId)])',
+				{},
+				scopedChildUser
+			);
+			assert.strictEqual(scopedSubsetBracketSingle.status, 200);
+			assert.deepStrictEqual(scopedSubsetBracketSingle.body, {
+				id: 'p1',
+				child: { id: 'c1' },
+			});
+
+			const scopedSubsetCollection = await restGet('/Parent/?id=p1&select(id,child{id,parentId})', {}, scopedChildUser);
 			assert.strictEqual(scopedSubsetCollection.status, 200);
 			assert.deepStrictEqual(scopedSubsetCollection.body, [
 				{
@@ -745,7 +756,7 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(scopedDeniedFieldBrace.status, 200);
 			assert.deepStrictEqual(scopedDeniedFieldBrace.body, {
 				id: 'p1',
-				child: {},
+				child: { id: 'c1', label: 'child-label-v1' },
 			});
 
 			const scopedDeniedFieldBracket = await restGet(
@@ -756,8 +767,16 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(scopedDeniedFieldBracket.status, 200);
 			assert.deepStrictEqual(scopedDeniedFieldBracket.body, {
 				id: 'p1',
-				child: {},
+				child: { id: 'c1', label: 'child-label-v1' },
 			});
+
+			const scopedDeniedSortSingle = await restGet(
+				'/Parent/p1?select(id,children[sort(parentId)])',
+				{},
+				scopedChildUser
+			);
+			assert.strictEqual(scopedDeniedSortSingle.status, 200);
+			assert.deepStrictEqual(scopedDeniedSortSingle.body, { id: 'p1' });
 		});
 
 		it('applies bracketed sort, offset, limit, and select consistently to plain-JSON arrays across single-record and collection GET', async function () {
