@@ -162,12 +162,16 @@ export async function saveToLocal(filePath: string, sourceDataFormat: string, da
 	}
 
 	if (sourceDataFormat === JSON_TEXT) {
-		// written beside the target and renamed into place, so a failure never leaves a partial file at the path
-		const tempPath = `${filePath}.${randomUUID()}.tmp`;
+		// so a failure never leaves a partial file at the path; an existing file keeps its mode, and a symlink
+		// keeps pointing at the replaced file
+		const existing = await fs.promises.stat(filePath).catch(() => undefined);
+		const target = existing ? await fs.promises.realpath(filePath) : filePath;
+		const tempPath = `${target}.${randomUUID()}.tmp`;
 		const writeStream = fs.createWriteStream(tempPath, { flags: 'wx' });
 		try {
 			await pipeline(streamAsJSON(data), writeStream);
-			await fs.promises.rename(tempPath, filePath);
+			if (existing?.isFile()) await fs.promises.chmod(tempPath, existing.mode & 0o7777);
+			await fs.promises.rename(tempPath, target);
 		} catch (error) {
 			if (!writeStream.closed) await once(writeStream, 'close');
 			await fs.promises.unlink(tempPath).catch(() => {});

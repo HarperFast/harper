@@ -66,6 +66,22 @@ describe('JSON export to a local file when its source fails', function () {
 		assert.strictEqual(fs.readFileSync(filePath, 'utf8'), '[{"id":"previous"}]');
 	});
 
+	it('keeps the mode of the file it replaces, and writes through a symlink', async function () {
+		if (process.platform === 'win32') this.skip();
+		const realPath = path.join(dir, 'real.json');
+		const linkPath = path.join(dir, 'link.json');
+		fs.writeFileSync(realPath, '[]');
+		fs.chmodSync(realPath, 0o600);
+		fs.symlinkSync(realPath, linkPath);
+		function* rows() {
+			yield { id: 1 };
+		}
+		await saveToLocal(linkPath, 'json', rows());
+		assert.strictEqual(fs.lstatSync(linkPath).isSymbolicLink(), true);
+		assert.deepStrictEqual(JSON.parse(fs.readFileSync(realPath, 'utf8')), [{ id: 1 }]);
+		assert.strictEqual(fs.statSync(realPath).mode & 0o777, 0o600);
+	});
+
 	it('replaces the file at the path when it succeeds', async function () {
 		const filePath = path.join(dir, 'replaced.json');
 		fs.writeFileSync(filePath, '[{"id":"previous"}]');
