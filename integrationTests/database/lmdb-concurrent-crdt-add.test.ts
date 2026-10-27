@@ -74,7 +74,6 @@ suite(
 			httpURL = ctx.harper.httpURL;
 			const { username, password } = ctx.harper.admin;
 			auth = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
-			// Every worker must be serving before the rounds start, or early rounds run on fewer threads.
 			const threads = new Set<number>();
 			const deadline = Date.now() + 60_000;
 			while (threads.size < WORKERS) {

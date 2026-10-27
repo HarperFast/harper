@@ -56,7 +56,7 @@ describe('getNextMonotonicTime', function () {
 					worker.once('error', fail);
 					worker.once('exit', (code) => fail(new Error(`minter exited with ${code} before reporting`)));
 				});
-				result.catch(() => {}); // a failure is rethrown from `failure` or the join
+				result.catch(() => {});
 				return result;
 			});
 			const deadline = Date.now() + 30_000;
