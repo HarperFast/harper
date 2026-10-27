@@ -488,6 +488,20 @@ describe('Reads of residency stubs', function () {
 		assert.deepEqual(calls, []);
 	});
 
+	it('keeps the primary key on a patched stub, so an index-only select stays local', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Records.getResource('record', context, { ensureLoaded: false });
+			resource._writeUpdate('record', { name: 'patched' }, false);
+			resource.save();
+		});
+		assert.ok(Records.primaryStore.getEntry('record').metadataFlags & INVALIDATED, 'premise: the patch keeps the stub');
+		assert.deepEqual(await query(['id', 'name'], [{ attribute: 'name', value: 'patched' }]), [
+			{ id: 'record', name: 'patched' },
+		]);
+		assert.deepEqual(calls, []);
+	});
+
 	it('replaces indexed values when an existing stub is invalidated again', async () => {
 		const context = {};
 		await transaction(context, async () => {
@@ -627,6 +641,183 @@ describe('Reads of residency stubs', function () {
 		}))
 			records.push(record);
 		assert.deepEqual(records, [{ id: 'computed' }]);
+	});
+
+	describe('writes over a stub on a table with a computed index', () => {
+		let Computed;
+		before(() => {
+			Computed = table({
+				database: 'test',
+				table: 'ResidencyComputedWrites',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'sku', indexed: true },
+					{ name: 'name' },
+					{ name: 'upper', indexed: true, computed: true },
+					{ name: 'skuKey', indexed: true, computed: true },
+				],
+				audit: true,
+			});
+			// `name` is not indexed, so no stub carries the resolver's input; `sku` is, so `skuKey` resolves over a stub
+			Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+			Computed.setComputedAttribute('skuKey', (record) => record.sku.toLowerCase());
+		});
+		const indexedKeys = (attribute, id) =>
+			Array.from(Computed.indices[attribute].getRange({}))
+				.filter(({ value }) => value === id)
+				.map(({ key }) => key);
+		async function invalidate(id, context) {
+			const resource = await Computed.getResource(id, context, { ensureLoaded: false });
+			resource._writeInvalidate(id);
+		}
+
+		for (const staged of [false, true]) {
+			const where = staged ? 'a stub staged earlier in the transaction' : 'a committed stub';
+			async function overStub(id, write) {
+				await Computed.put(id, { id, sku: 'A', name: 'old' });
+				const context = {};
+				await transaction(context, async () => {
+					await invalidate(id, context);
+					if (staged) await write(context);
+				});
+				if (staged) return;
+				assert.ok(Computed.primaryStore.getEntry(id).metadataFlags & INVALIDATED, 'premise: a stub');
+				await write({});
+			}
+
+			it(`a put over ${where} indexes the new computed value`, async () => {
+				const id = `put-${staged ? 'staged' : 'committed'}`;
+				await overStub(id, (context) => Computed.put(id, { id, sku: 'B', name: 'new' }, context));
+				const entry = Computed.primaryStore.getEntry(id);
+				assert.ok(!(entry.metadataFlags & INVALIDATED));
+				assert.equal(entry.value.name, 'new');
+				assert.ok(indexedKeys('upper', id).includes('NEW'));
+				assert.deepEqual(indexedKeys('sku', id), ['B']);
+				assert.deepEqual(indexedKeys('skuKey', id), ['b']);
+			});
+
+			it(`a delete of ${where} removes it`, async () => {
+				const id = `delete-${staged ? 'staged' : 'committed'}`;
+				await overStub(id, (context) => Computed.delete(id, context));
+				assert.equal(Computed.primaryStore.getEntry(id)?.value ?? null, null);
+				assert.deepEqual(indexedKeys('sku', id), []);
+				assert.deepEqual(indexedKeys('skuKey', id), []);
+			});
+		}
+
+		it('a write over a stub indexes a computed value equal to the one guessed over the stub', async () => {
+			const Labeled = table({
+				database: 'test',
+				table: 'ResidencyComputedGuess',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name' },
+					{ name: 'label', indexed: true, computed: true },
+				],
+				audit: true,
+			});
+			Labeled.setComputedAttribute('label', (record) => record.name ?? 'unnamed');
+			await Labeled.put('guessed', { id: 'guessed', name: 'named' });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Labeled.getResource('guessed', context, { ensureLoaded: false });
+				resource._writeInvalidate('guessed');
+			});
+			await Labeled.put('guessed', { id: 'guessed' });
+			const labels = Array.from(Labeled.indices.label.getRange({}))
+				.filter(({ value }) => value === 'guessed')
+				.map(({ key }) => key);
+			assert.ok(labels.includes('unnamed'), `the new computed value was not indexed: ${JSON.stringify(labels)}`);
+		});
+
+		it('evicting a stub whose computed vector cannot be resolved removes its graph node and every edge to it', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			const Embedded = table({
+				database: 'test',
+				table: 'ResidencyComputedVectors',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'angle', type: 'Float' },
+					{
+						name: 'embedding',
+						type: 'Array',
+						computed: true,
+						indexed: { type: 'HNSW', nativePlane: false, quantization: 'none' },
+					},
+				],
+			});
+			Embedded.setComputedAttribute('embedding', (record) => [
+				Math.cos(record.angle.valueOf()),
+				Math.sin(record.angle.valueOf()),
+			]);
+			for (let i = 0; i < 8; i++) await Embedded.put(`v${i}`, { id: `v${i}`, angle: i / 4 });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Embedded.getResource('v3', context, { ensureLoaded: false });
+				resource._writeInvalidate('v3');
+			});
+			const stub = Embedded.primaryStore.getEntry('v3');
+			assert.ok(stub.metadataFlags & INVALIDATED, 'premise: a stub');
+			await Embedded.evict('v3', stub.value, stub.version);
+			const graph = Embedded.indices.embedding;
+			assert.equal(graph.getSync('v3'), undefined, 'the evicted record keeps a graph node');
+			const dangling = [];
+			for (const { key, value: node } of graph.getRange({})) {
+				if (typeof key !== 'number' || node?.level === undefined) continue;
+				for (let level = 0; level <= node.level; level++)
+					for (const { id: neighbor } of node[level] ?? [])
+						if (graph.getSync(neighbor)?.level === undefined) dangling.push(`${key}->${neighbor}`);
+			}
+			assert.deepEqual(dangling, [], 'a graph node was removed without its neighbors being cleaned up');
+		});
+
+		it('a write over a stub indexes every new value of a computed array, including ones the guess shares', async () => {
+			const Tagged = table({
+				database: 'test',
+				table: 'ResidencyComputedTags',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'tags', type: 'Array' },
+					{ name: 'labels', type: 'Array', indexed: true, computed: true },
+				],
+				audit: true,
+			});
+			Tagged.setComputedAttribute('labels', (record) => record.tags ?? ['shared']);
+			await Tagged.put('tagged', { id: 'tagged', tags: ['old'] });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Tagged.getResource('tagged', context, { ensureLoaded: false });
+				resource._writeInvalidate('tagged');
+			});
+			await Tagged.put('tagged', { id: 'tagged', tags: ['shared', 'new'] });
+			const labels = Array.from(Tagged.indices.labels.getRange({}))
+				.filter(({ value }) => value === 'tagged')
+				.map(({ key }) => key);
+			assert.ok(
+				labels.includes('shared') && labels.includes('new'),
+				`a new computed value is missing from the index: ${JSON.stringify(labels)}`
+			);
+		});
+
+		it('a write over a stub still fails when the new record cannot be resolved', async () => {
+			const id = 'unresolvable';
+			await Computed.put(id, { id, sku: 'A', name: 'old' });
+			const context = {};
+			await transaction(context, () => invalidate(id, context));
+			await assert.rejects(async () => Computed.put(id, { id, sku: 'B' }), TypeError);
+		});
+
+		it('evicting a stub removes it', async () => {
+			await Computed.put('evicted', { id: 'evicted', sku: 'A', name: 'old' });
+			const context = {};
+			await transaction(context, () => invalidate('evicted', context));
+			const stub = Computed.primaryStore.getEntry('evicted');
+			assert.ok(stub.metadataFlags & INVALIDATED, 'premise: a stub');
+			await Computed.evict('evicted', stub.value, stub.version);
+			assert.equal(Computed.primaryStore.getEntry('evicted')?.value ?? undefined, undefined);
+			assert.deepEqual(indexedKeys('sku', 'evicted'), []);
+			assert.deepEqual(indexedKeys('skuKey', 'evicted'), []);
+		});
 	});
 
 	it('loads resolver inputs when an indexed query selects a computed index', async () => {

@@ -1124,12 +1124,13 @@ export class HierarchicalNavigableSmallWorld {
 			// if the new entry is closer to the entry point than the old one
 			oldNode = { ...this.safeGetSync(nodeId, options) };
 		} else {
-			// If this key already has a graph node — which happens
-			// when runIndexing re-feeds an already-indexed record after a crash/restart — load it
-			// and treat the call as an update rather than a fresh insert. Without this, the absent
-			// existingVector causes oldNode = {} → a new random level, connections overwritten,
-			// and old-connection cleanup skipped, leaving dangling reverse edges and wrong levels.
-			const storedNode = nodeId && vector ? this.safeGetSync(nodeId, options) : undefined;
+			// If this key already has a graph node — which happens when runIndexing re-feeds an
+			// already-indexed record after a crash/restart, or when the caller cannot know the old
+			// vector (a computed vector over a residency stub) — load it and treat the call as an
+			// update or removal of that node. Without this, the absent existingVector causes
+			// oldNode = {} → a new random level, connections overwritten, and old-connection cleanup
+			// skipped, leaving dangling reverse edges and wrong levels.
+			const storedNode = nodeId ? this.safeGetSync(nodeId, options) : undefined;
 			if (storedNode && storedNode.level !== undefined) {
 				// Treat as an update: carry forward the stored graph state so cleanup and level
 				// assignment below use the real existing connections instead of starting fresh.

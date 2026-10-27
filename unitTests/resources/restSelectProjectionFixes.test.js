@@ -493,23 +493,26 @@ describe('REST and operations API select projection fixes', function () {
 			});
 		});
 
-		it('returns 400 across collection search and single-record GET when bracketed filter conditions appear in select()', async function () {
+		it('filters bracketed relationship selections across collection and single-record entry forms', async function () {
 			for (const query of [
 				'select(children[label=child-label-v1])',
 				'select(id,children[label=child-label-v1])',
 				'select(children[label=child-label-v1],id)',
 			]) {
-				const collectionRes = await restGet(`/Parent/?id=p1&${query}`);
-				assert.strictEqual(collectionRes.status, 400, `expected 400 for collection ?${query}`);
-
-				const singleRes = await restGet(`/Parent/p1?${query}`);
-				assert.strictEqual(singleRes.status, 400, `expected 400 for single-record ?${query}`);
-
-				const instanceTrueRes = await restGet(`/ParentInstanceTrue/p1?${query}`);
-				assert.strictEqual(instanceTrueRes.status, 400, `expected 400 for loadAsInstance=true ?${query}`);
-
-				const staticFalseRes = await restGet(`/ParentStaticFalse/p1?${query}`);
-				assert.strictEqual(staticFalseRes.status, 400, `expected 400 for loadAsInstance=false ?${query}`);
+				for (const route of ['Parent', 'ParentInstanceTrue', 'ParentStaticFalse']) {
+					const single = await restGet(`/${route}/p1?${query}`);
+					assert.strictEqual(single.status, 200, `${route} ${query}`);
+					assert.deepStrictEqual(
+						single.body.children.map((child) => child.id),
+						['c1']
+					);
+				}
+				const collection = await restGet(`/Parent/?id=p1&${query}`);
+				assert.strictEqual(collection.status, 200, query);
+				assert.deepStrictEqual(
+					collection.body[0].children.map((child) => child.id),
+					['c1']
+				);
 			}
 		});
 

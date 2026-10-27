@@ -225,6 +225,49 @@ describe('Queries read related records asynchronously', () => {
 				assert.equal(parentReads.sync, 0);
 				assert.equal(parentReads.promised, 1);
 			});
+
+			it('many-to-many with nested conditions and a limit, skipping a missing record', async function () {
+				const results = await collect(
+					ColdParent.search({
+						conditions: [{ attribute: 'id', value: 'parent-2' }],
+						select: [
+							'id',
+							{
+								name: 'children',
+								conditions: [{ attribute: 'label', comparator: 'starts_with', value: 'label' }],
+								limit: 1,
+								select: ['name'],
+							},
+						],
+					})
+				);
+				assert.deepEqual(results[0].children, [{ name: 'child 6' }]);
+				assert.equal(childReads.sync, 0);
+				assert(childReads.promised > 0);
+			});
+
+			it('many-to-one with a nested condition', async function () {
+				const results = await collect(
+					ColdParent.search({
+						conditions: [{ attribute: 'id', value: 'parent-0' }],
+						select: ['id', { name: 'child', conditions: [{ attribute: 'name', value: 'child 0' }], select: ['name'] }],
+					})
+				);
+				assert.deepEqual(results[0].child, { name: 'child 0' });
+				assert.equal(childReads.sync, 0);
+				assert.equal(childReads.promised, 1);
+			});
+
+			it('one-to-many with a limit', async function () {
+				const results = await collect(
+					ColdChild.search({
+						conditions: [{ attribute: 'id', value: 'child-1' }],
+						select: ['id', { name: 'parents', limit: 1, select: ['id'] }],
+					})
+				);
+				assert.equal(results[0].parents.length, 1);
+				assert.equal(parentReads.sync, 0);
+			});
 		});
 
 		describe('filter', function () {

@@ -561,7 +561,7 @@ describe('Test configUtils module', () => {
 			authentication_refreshtokentimeout: '30d',
 			applications_moduleloader: 'vm',
 			applications_dependencyloader: false,
-			applications_lockdown: 'freeze',
+			applications_lockdown: 'seal-after-load',
 			applications_allowedspawncommands: 'freeze',
 			http_cors: false,
 			http_corsaccesslist: [null],

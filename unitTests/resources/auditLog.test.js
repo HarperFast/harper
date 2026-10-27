@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, tables } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
 const { open } = require('lmdb');
 const {
 	setAuditRetention,
@@ -27,6 +28,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const { transaction } = require('#src/resources/transaction');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
 const harperLogger = require('#js/utility/logging/harper_logger');
 const { logger } = require('#src/utility/logging/logger');
@@ -1007,6 +1009,116 @@ describe('Audit log', () => {
 			['v1', 'v2', 'v3', 'v4', 'v5']
 		);
 	});
+	describe('history before a patch that first wrote a field', () => {
+		const add = (value) => ({ __op__: 'add', value });
+		const fieldsAt = (value) => ({
+			name: value.name,
+			hasExtra: Object.hasOwn(value, 'extra'),
+			hasCount: Object.hasOwn(value, 'count'),
+			count: value.count,
+			total: value.total,
+		});
+
+		it('leaves out a later plain field and a later add-established counter', async () => {
+			const id = 'absent-before-later-patch';
+			await AuditedTable.put(id, { name: 'v1' });
+			await AuditedTable.patch(id, { name: 'v2' });
+			await AuditedTable.patch(id, { extra: 'later', count: add(5) });
+			const history = await AuditedTable.getHistoryOfRecord(id);
+			assert.deepStrictEqual(
+				history.map((entry) => entry.type),
+				['put', 'patch', 'patch']
+			);
+			assert.deepStrictEqual(fieldsAt(history[1].value), {
+				name: 'v2',
+				hasExtra: false,
+				hasCount: false,
+				count: undefined,
+				total: undefined,
+			});
+			assert.strictEqual(history[2].value.extra, 'later');
+			assert.strictEqual(history[2].value.count, 5);
+			const byHash = await new ResourceBridge().readAuditLog({
+				schema: AuditedTable.databaseName,
+				table: 'AuditedTable',
+				search_type: 'hash_value',
+				search_values: [id],
+			});
+			assert.strictEqual(fieldsAt(byHash[id][1].records[0]).hasExtra, false);
+			assert.strictEqual(fieldsAt(byHash[id][1].records[0]).hasCount, false);
+			const tableWide = [];
+			for await (const entry of AuditedTable.getHistory()) if (entry.id === id) tableWide.push(entry);
+			assert.deepStrictEqual(fieldsAt(tableWide[1].value), fieldsAt(history[1].value));
+			// a later put switches this time to the forward rebuild; the snapshot must not change with it
+			await AuditedTable.put(id, { name: 'v3' });
+			const afterPut = await AuditedTable.getHistoryOfRecord(id);
+			assert.deepStrictEqual(fieldsAt(afterPut[1].value), fieldsAt(history[1].value));
+			assert.strictEqual(afterPut[1].value.id, history[1].value.id);
+		});
+
+		it('keeps the fields a random-access struct record held then', async () => {
+			await loadGQLSchema(`type AuditedStructHistory @table(randomAccessFields: true, audit: true) {
+				id: ID @primaryKey
+				name: String
+				count: Int
+				extra: String
+			}`);
+			const StructTable = tables.AuditedStructHistory;
+			assert.strictEqual(StructTable.primaryStore.encoder.randomAccessStructure, true);
+			await StructTable.put('s', { name: 'v1', count: 1 });
+			await StructTable.patch('s', { name: 'v2' });
+			await StructTable.patch('s', { extra: 'later', count: 7 });
+			const history = await StructTable.getHistoryOfRecord('s');
+			assert.deepStrictEqual({ ...history[1].value }, { id: 's', name: 'v2', count: 1 });
+		});
+
+		it('restores the null a later add established its counter from', async () => {
+			const id = 'null-before-later-add';
+			await AuditedTable.put(id, { name: 'v1', count: null });
+			await AuditedTable.patch(id, { name: 'v2' });
+			await AuditedTable.patch(id, { count: add(5) });
+			const history = await AuditedTable.getHistoryOfRecord(id);
+			assert.strictEqual(history[1].value.name, 'v2');
+			assert.strictEqual(history[1].value.count, null);
+			assert.strictEqual(history[2].value.count, 5);
+		});
+
+		it('keeps the best-effort value of a field the history cannot settle once the base put is pruned', async () => {
+			const id = 'pruned-before-later-add';
+			await AuditedTable.put(id, { name: 'v1', total: 10, count: 3 });
+			await AuditedTable.patch(id, { name: 'v2', count: null });
+			await AuditedTable.patch(id, { total: add(2.5), count: add(4) });
+			const auditStore = AuditedTable.primaryStore.rootStore.auditStore;
+			let baseKey;
+			for (const entry of auditStore.getRange({ start: 1 })) {
+				if (entry.tableId === AuditedTable.tableId && entry.recordId === id && entry.type === 'put')
+					baseKey = entry.txnLogKey;
+			}
+			assert(baseKey, 'the base put is in the log');
+			// stand in for audit retention having removed the base put
+			const get = auditStore.get;
+			auditStore.get = function (key, tableId, recordId, nodeId) {
+				return key === baseKey ? undefined : get.call(this, key, tableId, recordId, nodeId);
+			};
+			let history;
+			try {
+				history = await AuditedTable.getHistoryOfRecord(id);
+			} finally {
+				auditStore.get = get;
+			}
+			assert.deepStrictEqual(
+				history.map((entry) => entry.type),
+				['put', 'patch', 'patch']
+			);
+			assert.deepStrictEqual(fieldsAt(history[1].value), {
+				name: 'v2',
+				hasExtra: false,
+				hasCount: true,
+				count: null,
+				total: 10,
+			});
+		});
+	});
 	// LMDB assigns each record's own localTime via lmdb-js's native monotonic clock, independent of
 	// the application-supplied `version` (e.g. a replicated/out-of-order write's origin timestamp,
 	// which can be backdated relative to this node's clock). previousVersion must point at the prior
@@ -1676,7 +1788,7 @@ describe('Audit log', () => {
 		assert.strictEqual(store.nodeLogs[0], fakeLog, 'nodeLogs[0] must be the local log');
 	});
 
-	it('a numeric log id with no log misses without creating one', async function () {
+	it('a numeric log id with no log reads where put files it, without creating one', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // numeric log ids are RocksDB-only
 		const auditStore = AuditedTable.auditStore;
 		const id = 'numeric-log-miss';
@@ -1704,11 +1816,44 @@ describe('Audit log', () => {
 		);
 
 		const unknownNodeId = auditStore.loadLogs().length + 1000;
-		assert.equal(auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId), undefined);
+		assert.equal(
+			auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId),
+			undefined,
+			'another origin’s entry in `local` is not this id’s'
+		);
 		const range = auditStore.getRange({ start: 1, log: unknownNodeId });
-		assert.deepEqual(Array.from(range), []);
+		assert.ok(
+			Array.from(range).some((entry) => entry.recordId === id),
+			'an unnamed id reads `local`'
+		);
 		assert.equal(range.failedLogs.size, 0);
 		assert.equal(range.exactStartFailures.size, 0);
+		const unnamedId = 'numeric-log-unnamed';
+		const unnamedContext = { source: {}, sourceApply: true, timestamp: peerTime };
+		await transaction(unnamedContext, async () => {
+			const resource = await AuditedTable.getResource(unnamedId, unnamedContext);
+			return resource._writeUpdate(unnamedId, { name: unnamedId }, true, {
+				isNotification: true,
+				nodeId: unknownNodeId,
+				version: peerTime,
+			});
+		});
+		const unnamedEntry = Array.from(auditStore.getRange({ start: 1, log: unknownNodeId })).find(
+			(entry) => entry.recordId === unnamedId
+		);
+		assert.equal(unnamedEntry?.nodeId, unknownNodeId);
+		assert.equal(
+			auditStore.get(unnamedEntry.txnLogKey, AuditedTable.tableId, unnamedId, unknownNodeId)?.recordId,
+			unnamedId,
+			'an unnamed id finds its own entry in `local`'
+		);
+		assert.equal(auditStore.get(unnamedEntry.txnLogKey, AuditedTable.tableId, unnamedId, unknownNodeId + 1), undefined);
+		const namedNodeId = getIdOfRemoteNode('numeric-log-named-without-log', auditStore);
+		assert.deepEqual(
+			Array.from(auditStore.getRange({ start: 1, log: namedNodeId })),
+			[],
+			'a named id reads only its own log'
+		);
 		assert.ok(
 			!auditStore.rootStore.listLogs().includes(String(unknownNodeId)),
 			`reading by node id ${unknownNodeId} must not create a transaction log named after it`

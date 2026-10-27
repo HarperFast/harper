@@ -6,6 +6,8 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
+const { INVALIDATED } = require('#src/resources/Table');
 
 // Exercises the RocksDB batched-eviction path in Table.ts's cleanup scan: when more than
 // EVICTION_BATCH_SIZE (100) records are evictable in a single scan, removals are coalesced into
@@ -145,6 +147,43 @@ describe('Batched eviction (RocksDB)', () => {
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 		}
+	});
+
+	it('evicts the rest of a batch that holds a stub on a computed-index table', async function () {
+		const Computed = table({
+			table: 'EvictBatchComputed',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+		});
+		// `name` is not indexed, so the stub does not carry the resolver's input
+		Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+		Computed.setTTLExpiration(HOLD);
+		const ids = ['row-1', 'row-2', 'row-3', 'stub'];
+		for (const id of ids.slice(0, 3)) await Computed.put(id, { id, name: id });
+		// a non-resident receive stores a stub that carries the record expiry, so the scan evicts it
+		Computed.setResidency(() => ['batch-peer']);
+		try {
+			const context = { source: {}, sourceApply: true, timestamp: Date.now() };
+			await transaction(context, async () => {
+				const resource = await Computed.getResource('stub', context);
+				resource._writeUpdate('stub', { id: 'stub', name: 'stub' }, true, {
+					isNotification: true,
+					nodeId: 1,
+					version: context.timestamp,
+				});
+			});
+		} finally {
+			Computed.setResidency(undefined);
+		}
+		const stub = Computed.primaryStore.getEntry('stub');
+		assert.ok(stub.metadataFlags & INVALIDATED && stub.expiresAt > 0, 'premise: an expiring stub');
+		await evictAndWait(Computed, ids);
+		const resident = ids.filter((id) => Computed.primaryStore.getSync(id) !== undefined);
+		assert.deepEqual(resident, [], 'a stub must not keep its batch from being evicted');
 	});
 
 	it('does not re-arm cleanup after maintenance closes', async function () {

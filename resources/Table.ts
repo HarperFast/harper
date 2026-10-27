@@ -40,6 +40,7 @@ import {
 	convertToComparableKeys,
 } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
+import { assertNestedQueryOptions, hasNestedQueryOptions } from './Resource.ts';
 import {
 	DatabaseTransaction,
 	ImmediateTransaction,
@@ -143,6 +144,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 	resolveComparator,
+	filterByType,
 	fullTextComparatorMode,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
@@ -229,7 +231,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
-import { commutativeOpsOf, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
+import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -297,6 +299,7 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
+const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
@@ -646,6 +649,7 @@ export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
 const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
+class PoolWorkerResolverRefusal extends Error {}
 let minReplicaScanIntervalMs = MIN_REPLICA_SCAN_INTERVAL_MS;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
@@ -1042,8 +1046,15 @@ interface TableResourceClass {
 	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean>;
 	/**
 	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
+	 * `observedExpiresAt` is the expiry of the entry the caller read (`null` when it had none); omitted, only the version is checked.
 	 */
-	evict(id: any, existingRecord: any, existingVersion: any, observedDeadline?: number): Promise<unknown>;
+	evict(
+		id: any,
+		existingRecord: any,
+		existingVersion: any,
+		observedDeadline?: number,
+		observedExpiresAt?: number | null
+	): Promise<unknown>;
 	/**
 	 * Static entry point: `Table.lock(id, options?, context?)` — creates an instance in the given,
 	 * ambient, or a fresh context and delegates to the instance lock(). This shadows Resource.static
@@ -1056,6 +1067,23 @@ interface TableResourceClass {
 	 */
 	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions, context?: any): Promise<any>;
 	operation(operation: any, context: any): any;
+	/** @internal */
+	_prepareRelationshipSelection(
+		attribute: any,
+		context: any,
+		filtered?: any,
+		ensureLoaded?: boolean
+	): (record: any, entry?: any, isSync?: boolean) => any;
+	/** @internal */
+	_prepareQueryConditions(
+		conditions: any,
+		operator: any,
+		target: any,
+		context: any,
+		nested?: boolean
+	): { conditions: any; includeFullTextHighlights: boolean };
+	/** @internal */
+	_assertNestedReadAccess(name: any, context: any, target: any): void;
 	/**
 	 * This is responsible for ordering and select()ing the attributes/properties from returned entries
 	 */
@@ -1200,6 +1228,7 @@ interface TableResourceClass {
 	cleanup(): void;
 	closeMaintenance(deadline?: number): Promise<void>;
 	resumeMaintenance(): void;
+	/** @internal */
 	_readTxnForContext(context: any): (LMDBReadTransaction | RocksTransaction) & {
 		openTimer?: number;
 		retryRisk?: number;
@@ -1310,6 +1339,20 @@ function cloneConditions(conditions: any[]): any[] {
 		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
 		return copy;
 	});
+}
+
+function copySelection(select) {
+	if (Array.isArray(select)) {
+		const copy = Object.assign([], select);
+		for (let index = 0; index < copy.length; index++) copy[index] = copySelection(copy[index]);
+		return copy;
+	}
+	if (!select || typeof select !== 'object') return select;
+	const copy = { ...select };
+	if (copy.select) copy.select = copySelection(copy.select);
+	if (copy.sort && typeof copy.sort === 'object') copy.sort = copySelection(copy.sort);
+	if (copy.next) copy.next = copySelection(copy.next);
+	return copy;
 }
 
 function selectRequestsProperty(select: any, propertyName: string): boolean {
@@ -2877,7 +2920,8 @@ export function makeTable(options): TableResourceClass {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
 							// dictates not to go to source
-							if (!this.doesExist()) throw new ServerError('Entry is not cached', 504);
+							if (!this.doesExist() || isHiddenExpiry(entry?.expiresAt))
+								throw new ServerError('Entry is not cached', 504);
 							if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 						} else if (resourceOptions?.ensureLoaded) {
 							const loadingFromSource = ensureLoadedFromSource(
@@ -3735,6 +3779,7 @@ export function makeTable(options): TableResourceClass {
 		get(target?: any): any {
 			const constructor: any = this.constructor;
 			if (target?.parseError) throw target.parseError;
+			assertNestedQueryOptions(target?.select, constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
 			if (fullTextFieldNames) {
 				assertRecordField(
@@ -3797,7 +3842,8 @@ export function makeTable(options): TableResourceClass {
 									// don't go into the loading from source condition, but HTTP spec says to
 									// return 504 (rather than 404) if there is no content and the cache-control header
 									// dictates not to go to source
-									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+									if (!entry?.value || isHiddenExpiry(entry.expiresAt))
+										throw new ServerError('Entry is not cached', 504);
 									if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 								} else if (ensureLoaded) {
 									const loadingFromSource = ensureLoadedFromSource(
@@ -3916,13 +3962,7 @@ export function makeTable(options): TableResourceClass {
 											if (cur.length === 0) return [];
 										}
 									}
-									if (
-										!property.select &&
-										!property.sort &&
-										property.limit === undefined &&
-										property.offset === undefined
-									)
-										return [property.name];
+									if (!property.select && !hasNestedQueryOptions(property)) return [property.name];
 								}
 								return [property];
 							}
@@ -4288,9 +4328,26 @@ export function makeTable(options): TableResourceClass {
 						partialRecord[name] =
 							incomingValue === undefined && !options?.residencyId ? existingRecord?.[name] : incomingValue;
 					}
+					// a refill takes its created time from the stub, so a cache invalidation carries it forward too
+					const createdTime = createdTimeProperty?.name;
+					if (
+						createdTime &&
+						partialRecord &&
+						!options?.residencyId &&
+						partialRecord[createdTime] === undefined &&
+						existingRecord?.[createdTime] != null
+					)
+						partialRecord[createdTime] = existingRecord[createdTime];
 					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
 					// Computed indexes need the full record's inputs; keep them as committed until a full write.
-					updateIndices(id, existingRecord, partialRecord, transaction && { transaction }, true);
+					updateIndices(
+						id,
+						existingRecord,
+						partialRecord,
+						transaction && { transaction },
+						true,
+						Boolean((priorStagedOp?.stagedEntry ?? existingEntry)?.metadataFlags & INVALIDATED)
+					);
 					dropReplicaDeadline(id, existingEntry, transaction);
 					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					updateRecord(
@@ -4370,11 +4427,7 @@ export function makeTable(options): TableResourceClass {
 					let newRecord = null;
 					const existingRecord = existingEntry?.value;
 					if (residency && !residency.includes(server.hostname)) {
-						for (const name in indices) {
-							if (!newRecord) newRecord = {};
-							// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-							newRecord[name] = existingRecord[name];
-						}
+						newRecord = existingRecord ? residencyStub(existingRecord, id) : null;
 						metadata = INVALIDATED;
 					} else {
 						newRecord = existingRecord;
@@ -4433,7 +4486,7 @@ export function makeTable(options): TableResourceClass {
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
-		static evict(id, existingRecord, existingVersion, observedDeadline?: number) {
+		static evict(id, existingRecord, existingVersion, observedDeadline?: number, observedExpiresAt?: number | null) {
 			if (maintenanceClosed || isReadOnlyMode()) return Promise.resolve();
 			let entry;
 			let removedRecordWithBlobs;
@@ -4453,6 +4506,13 @@ export function makeTable(options): TableResourceClass {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
+				// a replica sweep call is validated by its deadline in demoteReplica instead
+				if (
+					observedDeadline === undefined &&
+					observedExpiresAt !== undefined &&
+					reusedVersionChangedExpiry(entry, observedExpiresAt)
+				)
+					return;
 				if (observedDeadline !== undefined && !(entry?.metadataFlags & REPLICA)) return Promise.resolve();
 				if (isRocksDB && entry?.metadataFlags & REPLICA && entry.version === existingVersion) {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
@@ -4474,7 +4534,7 @@ export function makeTable(options): TableResourceClass {
 					// Capture both promises so a real write failure on either resolves through evict()'s catch
 					// below rather than escaping as an unhandled rejection from the fire-and-forget callers.
 					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
-						updateIndices(id, entry.value, null);
+						updateIndices(id, entry.value, null, undefined, false, Boolean(entry.metadataFlags & INVALIDATED));
 					});
 					const removal = removeEntry(primaryStore, entry, existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
@@ -4482,7 +4542,7 @@ export function makeTable(options): TableResourceClass {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
 						reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
 					// the entry read in this transaction, not the caller's copy: a resequenced write can reuse its version
-					updateIndices(id, entry.value, null, options);
+					updateIndices(id, entry.value, null, options, false, Boolean(entry.metadataFlags & INVALIDATED));
 					stageDerivedIndexEviction(transaction as RocksTransaction, id, existingVersion);
 					// not removeEntry: it queues blob reclamation at staging, and this commit can still conflict
 					primaryStore.removeSync(id, options);
@@ -5438,6 +5498,8 @@ export function makeTable(options): TableResourceClass {
 							let oldestRetainedAuditTimeResolved = false;
 							dedupVersionCouldBeRetained = (version: number): boolean => {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
+								// an unnamed origin's entries sit in `local` under minted keys, never at its received key
+								if (options?.nodeId && auditStore.isLocalOrigin(options.nodeId)) return false;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
 									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
@@ -5524,6 +5586,8 @@ export function makeTable(options): TableResourceClass {
 							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
 							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
+							const headNodeId = nodeId;
+							const headLogKey = localTime;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
@@ -5645,23 +5709,23 @@ export function makeTable(options): TableResourceClass {
 									auditedVersion = auditRecord.version;
 									if (auditedVersion >= txnTime) {
 										if (auditedVersion === txnTime) {
-											precedesExisting = precedesExistingVersion(
+											let precedesAudited = precedesExistingVersion(
 												txnTime,
 												{ version: auditedVersion, localTime: localTime, key: id, nodeId: auditRecord.nodeId },
 												options?.nodeId
 											);
-											if (precedesExisting === 0) {
+											if (precedesAudited === 0) {
 												if (isRocksDB && localTime !== appendedLogKey && !identityIsNotKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
 													// Only for a write whose identity is its key. A write that carries a caller's value or
 													// an unmapped origin's key is filed in `local` under a minted key, so it never takes
 													// this branch: its equal version is a re-delivery.
-													precedesExisting = appendedLogKey > localTime ? 1 : -1;
+													precedesAudited = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
 													// the write itself, not proof that its primary-store mutation committed.
-													precedesExisting = 1;
+													precedesAudited = 1;
 												} else {
 													logger.debug?.(
 														'The transaction time and log key match the existing write, treating as duplicate',
@@ -5670,8 +5734,10 @@ export function makeTable(options): TableResourceClass {
 													write.skipped = true;
 													return;
 												}
+												if (precedesExisting === 0 && (nodeId ?? 0) === headNodeId && localTime === headLogKey)
+													precedesExisting = precedesAudited;
 											}
-											if (precedesExisting > 0) {
+											if (precedesAudited > 0) {
 												// if the existing version is older, we can skip this update
 												advanceToPreviousAudit(auditRecord);
 												continue;
@@ -5922,7 +5988,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (omitLocalRecord) {
 						auditRecordToStore ??= recordToStore;
-						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore);
+						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore, id);
 					}
 					if (expiresAt == undefined) {
 						// A schema @expiresAt attribute makes the record field authoritative over the table
@@ -5954,7 +6020,16 @@ export function makeTable(options): TableResourceClass {
 							}
 						})()
 					);
-					updateIndices(id, existingRecord, recordToStore, transaction && { transaction }, omitLocalRecord);
+					// an id-based omission writes no row (the stored one, if any, stays), so its indexes stay too
+					if (!omitLocalRecord || recordToStore !== undefined)
+						updateIndices(
+							id,
+							existingRecord,
+							recordToStore,
+							transaction && { transaction },
+							omitLocalRecord,
+							Boolean(baseEntry?.metadataFlags & INVALIDATED)
+						);
 					dropReplicaDeadline(id, existingEntry, transaction);
 
 					// Preserve an addressable audit head when the record and log clocks diverge, and always for a write
@@ -6002,7 +6077,8 @@ export function makeTable(options): TableResourceClass {
 						updateRecord(
 							id,
 							storeRecord ? recordToStore : undefined,
-							storeRecord ? existingEntry : { ...existingEntry, value: undefined },
+							// with no record stored (audit-only, or an id-based omission) the stored row and its blobs stay
+							storeRecord && recordToStore !== undefined ? existingEntry : { ...existingEntry, value: undefined },
 							isRocksDB
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
@@ -6038,16 +6114,19 @@ export function makeTable(options): TableResourceClass {
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
-							write.stagedEntry = omitLocalRecord
-								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
-								: { value: recordToStore };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
-							// then owns their lifetime; and any record an earlier write in this transaction
-							// stored is now replaced, so mark those writes for the superseded-blob cleanup
+							// then owns their lifetime
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
-							// only the nearest staged prior needs marking: anything older was already
-							// superseded by its own staged successor earlier in this commit round
-							if (priorStagedOp) priorStagedOp.superseded = true;
+							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
+							if (recordToStore !== undefined) {
+								write.stagedEntry = omitLocalRecord
+									? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
+									: { value: recordToStore };
+								// any record an earlier write in this transaction stored is now replaced, so mark those
+								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
+								// anything older was already superseded by its own staged successor earlier in this round
+								if (priorStagedOp) priorStagedOp.superseded = true;
+							}
 						}
 					}
 				},
@@ -6211,7 +6290,14 @@ export function makeTable(options): TableResourceClass {
 						write.skipped = true;
 						return;
 					}
-					updateIndices(id, existingRecord, null, transaction && { transaction });
+					updateIndices(
+						id,
+						existingRecord,
+						null,
+						transaction && { transaction },
+						false,
+						Boolean((priorStaged ?? existingEntry)?.metadataFlags & INVALIDATED)
+					);
 					dropReplicaDeadline(id, existingEntry, transaction);
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -6261,6 +6347,7 @@ export function makeTable(options): TableResourceClass {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
@@ -6410,136 +6497,8 @@ export function makeTable(options): TableResourceClass {
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
 			let syntheticOrderCondition;
-			let includeFullTextHighlights = false;
 			const filtered = {};
 
-			function prepareConditions(conditions: any[], operator: string) {
-				// some validation:
-				switch (operator) {
-					case 'and':
-					case undefined:
-						if (conditions.length < 1) throw new Error('An "and" operator requires at least one condition');
-						break;
-					case 'or':
-						if (conditions.length < 2) throw new Error('An "or" operator requires at least two conditions');
-						break;
-					default:
-						throw new Error('Invalid operator ' + operator);
-				}
-				for (const condition of conditions) {
-					if (condition.conditions) {
-						condition.conditions = prepareConditions(condition.conditions, condition.operator);
-						continue;
-					}
-					// Normalize `not_X` comparator forms passed in via structured queries.
-					// The REST parser already does this, but programmatic callers may
-					// pass `not_in`, `not_starts_with`, etc. directly.
-					if (condition.comparator) {
-						const resolved = resolveComparator(condition.comparator);
-						if (resolved.negated) {
-							condition.comparator = resolved.comparator;
-							condition.negated = true;
-						}
-					}
-					const attribute_name = condition[0] ?? condition.attribute;
-					const fullTextMode =
-						TableResource.fullTextIndexes.length > 0 ||
-						Array.isArray(attribute_name) ||
-						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
-							? fullTextComparatorMode(condition.comparator)
-							: undefined;
-					if (!fullTextMode && (fullTextFieldNames || hasRelationships)) assertFullTextRecordField(attribute_name);
-					const fullTextDefinition =
-						fullTextMode && typeof attribute_name === 'string'
-							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
-							: undefined;
-					if (fullTextMode && Array.isArray(attribute_name))
-						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
-					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
-					if (fullTextDefinition) {
-						const fields = condition.fields;
-						if (fields !== undefined) {
-							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
-								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
-							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
-						} else assertFullTextReadAccess(context, target, fullTextDefinition);
-						const value = condition[1] ?? condition.value;
-						if (typeof value !== 'string' || value.length === 0)
-							throw new ClientError(
-								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
-								400
-							);
-						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
-						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
-						if (fields !== undefined) {
-							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
-							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
-								throw new ClientError(
-									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
-									400
-								);
-						}
-						condition.includeHighlights =
-							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
-						if (condition.includeHighlights && !fullTextDefinition.highlighting)
-							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
-						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
-							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
-						includeFullTextHighlights ||= condition.includeHighlights;
-						continue;
-					}
-					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
-					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
-						// Plain JSON nested path: the leaf may not be declared in the
-						// schema. Fall back to the root attribute so we can validate
-						// existence without requiring the inner structure to be typed.
-						attribute = findAttribute(attributes, attribute_name[0]);
-					}
-					if (!attribute) {
-						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
-							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
-						// Do auto-coercion or coercion as required by the attribute type.
-						// Skipped for nested paths into plain JSON — the root attribute's
-						// type is not the leaf type, so coercion would be wrong.
-						const isNestedPathRoot =
-							Array.isArray(attribute_name) && attribute_name.length > 1 && !attribute.relationship;
-						if (!isNestedPathRoot) {
-							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
-							else condition[1] = coerceTypedValues(condition[1], attribute);
-						}
-					}
-					if (condition.chainedConditions) {
-						if (condition.operator === 'or')
-							throw new ClientError('Chaining a condition with |= is not supported, use | with the attribute name');
-						if (condition.operator && condition.operator !== 'and')
-							throw new ClientError(`Unknown chained condition operator ${condition.operator}`);
-						if (condition.chainedConditions.length !== 1)
-							throw new ClientError('Chaining more than one condition onto a condition is not supported');
-						const chained = condition.chainedConditions[0];
-						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
-						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
-						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
-						const lower = chainedIsLower ? chained : condition;
-						const upper = chainedIsLower ? condition : chained;
-						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
-						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
-						if (
-							(lowerComparator !== 'gt' && lowerComparator !== 'ge') ||
-							(upperComparator !== 'lt' && upperComparator !== 'le')
-						) {
-							throw new ClientError(
-								'Invalid chained condition, only a greater than and a less than condition can be chained together'
-							);
-						}
-						condition.comparator = (lowerComparator + upperComparator) as any;
-						condition.value = [lower.value, upper.value];
-					}
-				}
-				return conditions;
-			}
 			function orderConditions(conditions: Condition[], operator: string) {
 				if (target.enforceExecutionOrder) return conditions; // don't rearrange conditions
 				for (const condition of conditions) {
@@ -6551,14 +6510,10 @@ export function makeTable(options): TableResourceClass {
 				if (conditions.length > 1 && operator !== 'or') return sortBy(conditions, estimateCondition(TableResource));
 				else return conditions;
 			}
-			function coerceTypedValues(value: any, attribute: Attribute) {
-				if (Array.isArray(value)) {
-					return value.map((value) => coerceType(value, attribute));
-				}
-				return coerceType(value, attribute);
-			}
 			const operator = target.operator;
-			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
+			const prepared = TableResource._prepareQueryConditions(conditions, operator, target, context);
+			conditions = prepared.conditions;
+			const includeFullTextHighlights = prepared.includeFullTextHighlights;
 			let sort = typeof target.sort === 'object' && target.sort;
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
@@ -6817,9 +6772,12 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 						} finally {
-							// We own the iteration here (no results.onDone consumer), so release the read
-							// transaction unconditionally — including when the drain throws — or the snapshot leaks.
-							if (readTxn) txn.doneReadTxn(readTxnGeneration);
+							// Count pages have no streaming onDone consumer to release their cursors.
+							try {
+								(transformToRecord as any).return?.();
+							} finally {
+								if (readTxn) txn.doneReadTxn(readTxnGeneration);
+							}
 						}
 						let total: number | null;
 						if (wantExact) {
@@ -6858,6 +6816,7 @@ export function makeTable(options): TableResourceClass {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
+					(transformToRecord as any).return?.();
 					txn.unregisterReadIterator(results);
 					if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				};
@@ -6871,6 +6830,439 @@ export function makeTable(options): TableResourceClass {
 				if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				throw error;
 			}
+		}
+		static _prepareRelationshipSelection(
+			attribute,
+			context,
+			filtered?,
+			ensureLoaded = true
+		): (record: any, entry?: any, isSync?: boolean) => any {
+			if (attribute.conditions !== undefined && !Array.isArray(attribute.conditions))
+				throw new ClientError('Nested conditions must be an array');
+			const resolver = propertyResolvers[attribute.name];
+			const targetTable = resolver.definition.tableClass;
+			const offset = attribute.offset ?? 0;
+			const limit = attribute.limit ?? Infinity;
+			if (
+				!Number.isSafeInteger(offset) ||
+				offset < 0 ||
+				(attribute.limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0))
+			)
+				throw new ClientError('Nested limit and offset must be non-negative safe integers');
+			const filterMap = filtered?.[attribute.name];
+			const childFiltered = Object.assign(Object.create(null), filterMap);
+			const rejectUnsupported = (conditions) => {
+				for (const condition of conditions) {
+					if (condition.conditions) rejectUnsupported(condition.conditions);
+					else if (fullTextComparatorMode(condition.comparator))
+						throw new ClientError('Full-text predicates are not supported in relationship selections');
+				}
+			};
+			rejectUnsupported(attribute.conditions || []);
+			const conditions = targetTable._prepareQueryConditions(
+				cloneConditions(attribute.conditions || []),
+				attribute.operator,
+				attribute,
+				context,
+				true
+			).conditions;
+			for (let sort = typeof attribute.sort === 'object' && attribute.sort; sort; sort = sort.next)
+				targetTable._assertNestedReadAccess(sort.attribute, context, attribute);
+			const compile = (conditions, operator) => {
+				const predicates = conditions.map((condition) => {
+					if (condition.conditions) return compile(condition.conditions, condition.operator);
+					const predicate = filterByType(
+						condition,
+						targetTable,
+						context,
+						null,
+						(condition.attribute ?? condition[0]) === targetTable.primaryKey
+					);
+					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
+					return predicate;
+				});
+				return operator === 'or'
+					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
+					: (record, entry) => predicates.every((predicate) => predicate(record, entry));
+			};
+			const predicate = conditions.length ? compile(conditions, attribute.operator) : undefined;
+			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
+			if (limit === 0)
+				return (record) => {
+					if (resolver.from && !resolver.to && record[resolver.from] == null) return record[resolver.from];
+					return plural ? [] : undefined;
+				};
+			let transform;
+			let offsetGuard;
+			let transformReadTxn;
+			const active = new Set<() => void>();
+			let selectionStopped = false;
+			const relationshipSelection = (record, entry?, isSync = false) => {
+				if (selectionStopped) return undefined;
+				const readsKeys =
+					!isSync && (filterMap ? !filterMap.hasMappings && resolver.toMany : Boolean(resolver.resolveKeys));
+				let value;
+				if (filterMap?.hasMappings) {
+					const key = resolver.from ? record[resolver.from] : flattenKey(entry?.key ?? record[primaryKey]);
+					value = filterMap.get(key) || [];
+				} else if (filterMap) value = filterMap.fromRecord?.(record, isSync);
+				else if (readsKeys) value = resolver.resolveKeys(record, context);
+				else value = resolver(record, context, entry, true, undefined, undefined, true);
+				return when(value, (value) => {
+					if (selectionStopped) return undefined;
+					if (value == null) return value;
+					const many = readsKeys
+						? resolver.toMany
+						: Array.isArray(value) ||
+							typeof value[Symbol.iterator] === 'function' ||
+							typeof value[Symbol.asyncIterator] === 'function';
+					const readTxn = targetTable._readTxnForContext(context);
+					const source = readsKeys
+						? new ExtendedIterable(many ? value : [value]).map((key) =>
+								when(targetTable.primaryStore.getEntry(key, { transaction: readTxn, async: true }), freezeRelatedEntry)
+							)
+						: many
+							? value
+							: [value];
+					const skipMissing = readsKeys && resolver.filterMissing;
+					let candidates = new ExtendedIterable();
+					candidates.iterate = (options) => {
+						const sourceIterator =
+							options?.async && source[Symbol.asyncIterator]
+								? source[Symbol.asyncIterator]()
+								: source[Symbol.iterator]();
+						let ended = false;
+						return {
+							next: () => (stopped || ended ? { done: true } : sourceIterator.next()),
+							return: () => {
+								if (ended) return { done: true };
+								return when(sourceIterator.return?.() || { done: true }, (result) => {
+									ended = true;
+									return result;
+								});
+							},
+						};
+					};
+					const readCandidate = (candidate) =>
+						when(candidate, (candidate) => {
+							if (stopped) return SKIP;
+							if (candidate == null) return predicate || skipMissing ? SKIP : candidate;
+							const entry =
+								typeof candidate === 'object' && candidate.key !== undefined
+									? candidate
+									: targetTable.primaryStore.getEntry(candidate, { transaction: readTxn });
+							return when(entry, (entry) =>
+								predicate && (!entry?.value || !predicate(entry.value, entry)) ? SKIP : entry
+							);
+						});
+					let examined = 0;
+					candidates = candidates.map((candidate) => {
+						if (!isSync && (++examined & (COUNT_YIELD_INTERVAL - 1)) === 0)
+							return new Promise((resolve) => setImmediate(resolve)).then(() => readCandidate(candidate));
+						return readCandidate(candidate);
+					});
+					let select = attribute.select || (Array.isArray(attribute) ? attribute : undefined);
+					const sort = typeof attribute.sort === 'object' && attribute.sort;
+					let nestedSort = false;
+					for (let order = sort; order; order = order.next) nestedSort ||= Array.isArray(order.attribute);
+					if (nestedSort) select = copySelection(select);
+					const ordered = targetTable.transformToOrderedSelect(
+						candidates,
+						select,
+						sort,
+						context,
+						readTxn,
+						(entry) => entry
+					);
+					if (!transform || transformReadTxn !== readTxn || nestedSort) {
+						transform = targetTable.transformEntryForSelect(
+							select,
+							context,
+							readTxn,
+							childFiltered,
+							ensureLoaded,
+							Boolean(predicate),
+							predicate
+						);
+						offsetGuard =
+							predicate && offset
+								? targetTable.transformEntryForSelect(
+										undefined,
+										context,
+										readTxn,
+										undefined,
+										ensureLoaded,
+										true,
+										predicate
+									)
+								: undefined;
+						transformReadTxn = readTxn;
+					}
+					const projectEntry = transform;
+					const checkOffsetEntry = offsetGuard;
+					const iterator = ordered[isSync ? Symbol.iterator : Symbol.asyncIterator]();
+					const results = [];
+					const txn = txnForContext(context);
+					let stopped = false;
+					let closed = false;
+					let closing;
+					const close = () => {
+						stopped = true;
+						if (closed) return;
+						if (closing) return closing;
+						const complete = () => {
+							closed = true;
+							active.delete(owned.onDone);
+							txn.unregisterReadIterator(owned);
+						};
+						const failed = (error) => {
+							closing = undefined;
+							txn.registerReadIterator(owned);
+							throw error;
+						};
+						try {
+							const returned = iterator.return?.();
+							if (typeof returned?.then === 'function') return (closing = returned.then(complete, failed));
+							complete();
+						} catch (error) {
+							return failed(error);
+						}
+					};
+					const owned = {
+						onDone: () => {
+							(projectEntry as any).return?.();
+							(checkOffsetEntry as any)?.return?.();
+							const completion = close();
+							if (typeof completion?.catch === 'function')
+								completion.catch((error) => logger.warn?.('Failed to close a nested relationship iterator', error));
+						},
+					};
+					active.add(owned.onDone);
+					txn.registerReadIterator(owned);
+					let skipped = 0;
+					const finish = () => when(close(), () => (many ? results : results[0]));
+					const fail = (error) => {
+						const rethrow = () => {
+							throw error;
+						};
+						let completion;
+						try {
+							completion = close();
+						} catch {
+							throw error;
+						}
+						if (typeof completion?.then === 'function') return completion.then(rethrow, rethrow);
+						throw error;
+					};
+					const advance = () => {
+						if (stopped) return finish();
+						try {
+							return consume(iterator.next());
+						} catch (error) {
+							return fail(error);
+						}
+					};
+					const consume = (iteration) => {
+						try {
+							if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
+							while (!iteration.done && !stopped) {
+								if (skipped < offset) {
+									const checked = checkOffsetEntry
+										? checkOffsetEntry.call({ isSync }, iteration.value)
+										: iteration.value;
+									if (typeof checked?.then === 'function')
+										return checked.then((value) => {
+											if (stopped) return finish();
+											if (value !== SKIP) skipped++;
+											return advance();
+										}, fail);
+									if (checked !== SKIP) skipped++;
+								} else {
+									const projected = projectEntry.call({ isSync }, iteration.value);
+									if (typeof projected?.then === 'function')
+										return projected.then((value) => {
+											if (stopped) return finish();
+											if (value !== SKIP) results.push(value);
+											return results.length >= limit ? finish() : advance();
+										}, fail);
+									if (projected !== SKIP) results.push(projected);
+									if (results.length >= limit) return finish();
+								}
+								iteration = iterator.next();
+								if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
+							}
+							return finish();
+						} catch (error) {
+							return fail(error);
+						}
+					};
+					return advance();
+				});
+			};
+			(relationshipSelection as any).return = () => {
+				selectionStopped = true;
+				for (const close of [...active]) {
+					try {
+						close();
+					} catch (error) {
+						logger.warn?.('Failed to close a nested relationship iterator', error);
+					}
+				}
+			};
+			return relationshipSelection;
+		}
+		static _assertNestedReadAccess(name, context, target) {
+			if (!target.checkPermission) return;
+			const permission = getTablePermissions(context?.user, target);
+			if (permission?.isSuperUser) return;
+			const path = Array.isArray(name) ? name : [name ?? primaryKey];
+			const readable = permission?.attribute_permissions;
+			if (!permission?.read || (readable?.length && !attributesAsObject(readable, 'read')[path[0]]))
+				throw new AccessViolation(context?.user);
+			if (path.length > 1)
+				propertyResolvers[path[0]]?.definition?.tableClass?._assertNestedReadAccess(path.slice(1), context, target);
+		}
+		static _prepareQueryConditions(conditions, operator, target, context, nested = false) {
+			let includeFullTextHighlights = false;
+			const QueryError = nested ? ClientError : Error;
+			function prepareConditions(conditions: any[], operator: string) {
+				// some validation:
+				switch (operator) {
+					case 'and':
+					case undefined:
+						if (conditions.length < 1) throw new QueryError('An "and" operator requires at least one condition');
+						break;
+					case 'or':
+						if (conditions.length < 2) throw new QueryError('An "or" operator requires at least two conditions');
+						break;
+					default:
+						throw new QueryError('Invalid operator ' + operator);
+				}
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						condition.conditions = prepareConditions(condition.conditions, condition.operator);
+						continue;
+					}
+					// Normalize `not_X` comparator forms passed in via structured queries.
+					// The REST parser already does this, but programmatic callers may
+					// pass `not_in`, `not_starts_with`, etc. directly.
+					if (condition.comparator) {
+						const resolved = resolveComparator(condition.comparator);
+						if (resolved.negated) {
+							condition.comparator = resolved.comparator;
+							condition.negated = true;
+						}
+					}
+					const attribute_name = condition[0] ?? condition.attribute;
+					if (nested) TableResource._assertNestedReadAccess(attribute_name, context, target);
+					const fullTextMode =
+						TableResource.fullTextIndexes.length > 0 ||
+						Array.isArray(attribute_name) ||
+						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
+							? fullTextComparatorMode(condition.comparator)
+							: undefined;
+					if (!fullTextMode && (fullTextFieldNames || hasRelationships)) assertFullTextRecordField(attribute_name);
+					const fullTextDefinition =
+						fullTextMode && typeof attribute_name === 'string'
+							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
+							: undefined;
+					if (fullTextMode && Array.isArray(attribute_name))
+						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
+					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
+					if (fullTextDefinition) {
+						const fields = condition.fields;
+						if (fields !== undefined) {
+							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
+						} else assertFullTextReadAccess(context, target, fullTextDefinition);
+						const value = condition[1] ?? condition.value;
+						if (typeof value !== 'string' || value.length === 0)
+							throw new ClientError(
+								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
+								400
+							);
+						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
+						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
+						if (fields !== undefined) {
+							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
+							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+								throw new ClientError(
+									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
+									400
+								);
+						}
+						condition.includeHighlights =
+							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
+						if (condition.includeHighlights && !fullTextDefinition.highlighting)
+							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
+						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
+							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
+						includeFullTextHighlights ||= condition.includeHighlights;
+						continue;
+					}
+					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
+					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
+						// Plain JSON nested path: the leaf may not be declared in the
+						// schema. Fall back to the root attribute so we can validate
+						// existence without requiring the inner structure to be typed.
+						attribute = findAttribute(attributes, attribute_name[0]);
+					}
+					if (!attribute) {
+						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
+							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
+					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
+						// Do auto-coercion or coercion as required by the attribute type.
+						// Skipped for nested paths into plain JSON — the root attribute's
+						// type is not the leaf type, so coercion would be wrong.
+						const isNestedPathRoot =
+							Array.isArray(attribute_name) && attribute_name.length > 1 && !attribute.relationship;
+						if (!isNestedPathRoot) {
+							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+							else condition[1] = coerceTypedValues(condition[1], attribute);
+						}
+					}
+					if (condition.chainedConditions) {
+						if (condition.operator === 'or')
+							throw new ClientError('Chaining a condition with |= is not supported, use | with the attribute name');
+						if (condition.operator && condition.operator !== 'and')
+							throw new ClientError(`Unknown chained condition operator ${condition.operator}`);
+						if (condition.chainedConditions.length !== 1)
+							throw new ClientError('Chaining more than one condition onto a condition is not supported');
+						const chained = condition.chainedConditions[0];
+						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
+						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
+						const lower = chainedIsLower ? chained : condition;
+						const upper = chainedIsLower ? condition : chained;
+						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
+						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
+						if (
+							(lowerComparator !== 'gt' && lowerComparator !== 'ge') ||
+							(upperComparator !== 'lt' && upperComparator !== 'le')
+						) {
+							throw new ClientError(
+								'Invalid chained condition, only a greater than and a less than condition can be chained together'
+							);
+						}
+						condition.comparator = (lowerComparator + upperComparator) as any;
+						condition.value = [lower.value, upper.value];
+					}
+				}
+				return conditions;
+			}
+			function coerceTypedValues(value: any, attribute: Attribute) {
+				if (Array.isArray(value)) {
+					return value.map((value) => coerceType(value, attribute));
+				}
+				return coerceType(value, attribute);
+			}
+			return {
+				conditions: conditions.length > 0 || operator ? prepareConditions(conditions, operator) : conditions,
+				includeFullTextHighlights,
+			};
 		}
 		/**
 		 * This is responsible for ordering and select()ing the attributes/properties from returned entries
@@ -7172,14 +7564,27 @@ export function makeTable(options): TableResourceClass {
 				checkLoaded = true;
 			}
 			let transformCache;
+			let relationshipSelections;
+			for (const attribute of Array.isArray(select) ? select : []) {
+				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
+					(relationshipSelections ||= Object.create(null))[attribute.name] = this._prepareRelationshipSelection(
+						attribute,
+						context,
+						filtered,
+						ensure_loaded
+					);
+				}
+			}
 			const source = this.source;
 			const resourceClass = this;
+			let selectionStopped = false;
 			const lazy = select?.length < 4;
 			const syncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded };
 			// loadLocalRecord sets `async` on the options of an async load, so sync loads need their own
 			const asyncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded, async: true };
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
+				if (selectionStopped) return SKIP;
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
@@ -7207,6 +7612,7 @@ export function makeTable(options): TableResourceClass {
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
+							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;
 							return {
 								[primaryKey]: entry.key,
 								message: 'This entry has expired',
@@ -7250,6 +7656,15 @@ export function makeTable(options): TableResourceClass {
 						const resolver = propertyResolvers?.[attribute_name];
 						let value;
 						if (resolver) {
+							const selection = relationshipSelections?.[attribute_name];
+							if (selection) {
+								const selected = selection(record, entry, this.isSync);
+								if (typeof selected?.then === 'function') {
+									if (!promises) promises = [];
+									promises.push(selected.then((value) => callback(value, attribute_name)));
+								} else callback(selected, attribute_name);
+								return;
+							}
 							const filterMap = filtered?.[attribute_name];
 							if (filterMap) {
 								if (filterMap.hasMappings) {
@@ -7424,6 +7839,12 @@ export function makeTable(options): TableResourceClass {
 					return selected;
 				}
 				return record;
+			};
+			(transform as any).return = () => {
+				selectionStopped = true;
+				for (const cache of [relationshipSelections, transformCache]) {
+					if (cache) for (const child of Object.values(cache)) (child as any).return?.();
+				}
 			};
 			return transform;
 		}
@@ -8591,9 +9012,8 @@ export function makeTable(options): TableResourceClass {
 			};
 			const validateValue = (value, attribute: Attribute, name) => {
 				if (attribute.type && value != null) {
-					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
-						if (typeof value !== 'object') {
+						if (typeof value !== 'object' || Array.isArray(value)) {
 							addError(
 								name,
 								'type',
@@ -8601,31 +9021,35 @@ export function makeTable(options): TableResourceClass {
 									attribute.type ? ' (' + attribute.type + ')' : ''
 								}`
 							);
-						}
-						const properties = attribute.properties;
-						for (let i = 0, l = properties.length; i < l; i++) {
-							const attribute = properties[i];
-							if (attribute.relationship || attribute.computed) {
-								if (record.hasOwnProperty(attribute.name)) {
-									addError(
-										`${name}.${attribute.name}`,
-										'computed',
-										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
-									);
+						} else {
+							const properties = attribute.properties;
+							let changes;
+							for (let i = 0, l = properties.length; i < l; i++) {
+								const attribute = properties[i];
+								if (attribute.relationship || attribute.computed) {
+									// a tracked sub-object holds assignments in its pending changes, not as own properties
+									changes ??= (typeof value.getChanges === 'function' && value.getChanges()) || false;
+									if (Object.hasOwn(value, attribute.name) || (changes && Object.hasOwn(changes, attribute.name))) {
+										addError(
+											`${name}.${attribute.name}`,
+											'computed',
+											`Computed property ${name}.${attribute.name} may not be directly assigned a value`
+										);
+									}
+									continue;
 								}
-								continue;
+								const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
+								if (updated !== undefined) value[attribute.name] = updated;
 							}
-							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
-							if (updated) value[attribute.name] = updated;
-						}
-						if (attribute.sealed && value != null && typeof value === 'object') {
-							for (const key in value) {
-								if (!properties.find((property) => property.name === key)) {
-									addError(
-										`${name}.${key}`,
-										'unknown_property',
-										`Property ${key} is not allowed within object in property ${name}`
-									);
+							if (attribute.sealed) {
+								for (const key in value) {
+									if (!properties.find((property) => property.name === key)) {
+										addError(
+											`${name}.${key}`,
+											'unknown_property',
+											`Property ${key} is not allowed within object in property ${name}`
+										);
+									}
 								}
 							}
 						}
@@ -8710,7 +9134,7 @@ export function makeTable(options): TableResourceClass {
 										for (let i = 0, l = value.length; i < l; i++) {
 											const element = value[i];
 											const updated = validateValue(element, attribute.elements, name + '[*]');
-											if (updated) value[i] = updated;
+											if (updated !== undefined) value[i] = updated;
 										}
 									}
 								} else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be an Array`);
@@ -8736,8 +9160,41 @@ export function makeTable(options): TableResourceClass {
 					continue;
 				}
 				if (!patch || attribute.name in record) {
-					const updated = validateValue(record[attribute.name], attribute, attribute.name);
-					if (updated !== undefined) record[attribute.name] = updated;
+					const name = attribute.name;
+					const value = record[name];
+					if (patch && typeof value === 'object' && value?.__op__) {
+						// A patch operation (`{ __op__: 'add', value }`) is applied at commit, and only on top-level
+						// properties, so it stays in the record with its operand coerced.
+						const operand = value.value;
+						if (!crdtOperations[value.__op__]) {
+							addError(name, 'type', `Operation ${stringify(value.__op__)} in property ${name} is not supported`);
+						} else if (attribute.type && !OPERATION_TYPES.has(attribute.type)) {
+							addError(
+								name,
+								'type',
+								`Operation ${value.__op__} in property ${name} requires a numeric property, not ${attribute.type}`
+							);
+						} else if (
+							typeof operand !== 'bigint' &&
+							!Number.isFinite(operand) &&
+							!(attribute.type === 'BigInt' && typeof operand === 'string')
+						) {
+							addError(
+								name,
+								'type',
+								`Value ${stringify(operand)} for operation ${value.__op__} in property ${name} must be numeric`
+							);
+						} else {
+							const coerced = validateValue(operand, attribute, name);
+							if (coerced !== undefined) {
+								if (Object.isFrozen(value)) record[name] = { __op__: value.__op__, value: coerced };
+								else value.value = coerced;
+							}
+						}
+					} else {
+						const updated = validateValue(value, attribute, name);
+						if (updated !== undefined) record[name] = updated;
+					}
 				}
 			}
 			if (sealed) {
@@ -9088,15 +9545,24 @@ export function makeTable(options): TableResourceClass {
 									attribute.elements.definition.tableClass,
 									{ allowFullScan: false }
 								) as any;
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (
+								object,
+								context,
+								entry,
+								returnEntry?,
+								_sort?,
+								_comparing?,
+								lazy?
+							) => {
 								const relatedTable = attribute.elements.definition.tableClass;
 								if (returnEntry) {
-									return searchRelated(object, context).map((entry) => {
+									const candidates = searchRelated(object, context).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
 										return relatedTable.primaryStore.getEntry(entry, {
 											transaction: txnForContext(context).getReadTxn(),
 										});
-									}).asArray;
+									});
+									return lazy ? candidates : candidates.asArray;
 								}
 								const id = object[relationship.from ? relationship.from : primaryKey];
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
@@ -9126,7 +9592,15 @@ export function makeTable(options): TableResourceClass {
 					} else if (relationship.from) {
 						const definition = attribute.definition || attribute.elements?.definition;
 						if (definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (
+								object,
+								context,
+								entry,
+								returnEntry?,
+								_sort?,
+								_comparing?,
+								lazy?
+							) => {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
 								if (attribute.elements) {
@@ -9144,7 +9618,7 @@ export function makeTable(options): TableResourceClass {
 									const store = definition.tableClass.primaryStore;
 									const method = returnEntry ? 'getEntry' : 'getSync';
 									const options = { transaction: txnForContext(context).getReadTxn() };
-									const results = normalizedIds.map((id) => {
+									const results = (lazy ? new ExtendedIterable(normalizedIds) : normalizedIds).map((id) => {
 										const value = store[method](id, options);
 										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
@@ -9171,21 +9645,23 @@ export function makeTable(options): TableResourceClass {
 									object[relationship.from] = attribute.elements ? [targetId] : targetId;
 								}
 							};
-							attribute.resolve.resolveKeys = (object) => {
+							attribute.resolve.resolveKeys = (object, context) => {
 								const ids = object[relationship.from];
-								if (ids == null || !attribute.elements || Array.isArray(ids)) return ids;
-								return [ids];
+								if (ids == null) return ids;
+								const keys = !attribute.elements || Array.isArray(ids) ? ids : [ids];
+								if (!attribute.elements || keys.length > 0) markRelatedReadUncacheable(context);
+								return keys;
 							};
 							attribute.resolve.loadEntries = (object, context) => {
-								const keys = attribute.resolve.resolveKeys(object);
+								const keys = attribute.resolve.resolveKeys(object, context);
 								if (keys == null) return keys;
 								if (keys.length === 0 && attribute.elements) return [];
-								markRelatedReadUncacheable(context);
 								if (attribute.elements)
 									return loadRelatedEntries(keys, definition.tableClass, context, relationship.filterMissing);
 								return loadRelatedEntry(keys, definition.tableClass, context);
 							};
 							attribute.resolve.toMany = Boolean(attribute.elements);
+							attribute.resolve.filterMissing = Boolean(attribute.elements && relationship.filterMissing);
 							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
 							attribute.resolve.from = relationship.from;
 						} else {
@@ -9217,7 +9693,7 @@ export function makeTable(options): TableResourceClass {
 						if (userResolver) return userResolver(value, context, entry);
 						// a pool worker would otherwise maintain this index with undefined values, silently
 						if (indices[attribute.name] && isDedicatedPoolWorker())
-							throw new Error(
+							throw new PoolWorkerResolverRefusal(
 								`Computed index "${attribute.name}" of table "${tableName}" is resolved by application code, which this replication worker does not run`
 							);
 						if (warnedUnresolvedComputed.has(attribute.name)) return;
@@ -9726,7 +10202,25 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 	return TableResource;
-	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
+	function resolveOverStub(resolver: (record: any) => any, stub: any, name: string) {
+		try {
+			return resolver(stub);
+		} catch (error) {
+			// raised by this attribute's resolver or by one it reads through, the refusal must surface
+			if (error instanceof PoolWorkerResolverRefusal) throw error;
+			logger.trace?.(`No prior value for computed index ${name} of ${tableName} over a stub`, error);
+		}
+	}
+	// For preserveComputed and existingIsStub (an INVALIDATED base is a projection, not a record) see
+	// resources/DESIGN.md, residency stubs.
+	function updateIndices(
+		id: any,
+		existingRecord: any,
+		record: any,
+		options: any,
+		preserveComputed: boolean,
+		existingIsStub: boolean
+	) {
 		let hasChanges;
 		// iterate the entries from the record
 		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
@@ -9745,8 +10239,15 @@ export function makeTable(options): TableResourceClass {
 			// that is present but whose attribute is null is a different case (record is a truthy object) and
 			// still indexes under null. See harper#1894 (F-149).
 			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
-			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
-			if (value === existingValue && !isIndexing) {
+			const overStub = existingIsStub && resolver && primaryStore.encoder.resolvedAttributeNames?.has(key);
+			const existingValue =
+				existingRecord &&
+				(resolver
+					? overStub
+						? resolveOverStub(resolver, existingRecord, key)
+						: resolver(existingRecord)
+					: existingRecord[key]);
+			if (value === existingValue && !isIndexing && !overStub) {
 				continue;
 			}
 			if (index.customIndex) {
@@ -9766,8 +10267,9 @@ export function makeTable(options): TableResourceClass {
 				valuesToAdd = valuesToAdd
 					? valuesToAdd.filter((value) => {
 							if (setToRemove.has(value)) {
-								// if the value is retained, we don't need to remove or add it, so remove it from the set
+								// a retained value is not removed, and not re-added unless the old value was a guess over a stub
 								setToRemove.delete(value);
+								return overStub;
 							} else {
 								// keep in the list of values to add to index
 								return true;
@@ -9954,8 +10456,13 @@ export function makeTable(options): TableResourceClass {
 		}
 		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
 		if (entry && context) {
-			if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-			if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
+			const newerVersion = entry.version > (context.lastModified || 0);
+			const firstRefresh = entry.localTime && !context.lastRefreshed;
+			// last, because it may read the clock
+			if ((newerVersion || firstRefresh) && !isHiddenExpiry(entry.expiresAt)) {
+				if (newerVersion) context.lastModified = entry.version;
+				if (firstRefresh) context.lastRefreshed = entry.localTime;
+			}
 		}
 		return withEntry(entry, id);
 	}
@@ -10114,12 +10621,12 @@ export function makeTable(options): TableResourceClass {
 		// target may be a primitive id on instance-API calls, which can't hold the flag
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 	}
-	function isHiddenExpiry(expiresAt: number | undefined, now = Date.now()) {
-		return !hasSourceGet && expiresAt != undefined && expiresAt < now;
+	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
+		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
 	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
-			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+			if (!entry?.value || isHiddenExpiry(entry.expiresAt)) throw new ServerError('Entry is not cached', 504);
 			return;
 		}
 		if (needsResidentLoad(entry, context))
@@ -10166,7 +10673,7 @@ export function makeTable(options): TableResourceClass {
 				// nulling the shared cached entry would not hide the record from LMDB's weak reference
 				if (isReadOnlyMode()) return ABSENT_ENTRY;
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
-				TableResource.evict(entry.key, entry.value, entry.version);
+				TableResource.evict(entry.key, entry.value, entry.version, undefined, entry.expiresAt);
 				entry.value = null;
 				return {
 					then(callback) {
@@ -10465,6 +10972,14 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
+	// Not stagedEntry: a publish restamps the record without staging it.
+	function followsAppliedWrite(write: any): boolean {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (!prior.skipped) return true;
+		}
+		return false;
+	}
+
 	// The commit base is the committed record unless another write to the key already saved without being
 	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
@@ -10505,10 +11020,14 @@ export function makeTable(options): TableResourceClass {
 					if (nodeNameToId[node_name] === nodeId) updatedNodeName = node_name;
 					if (nodeNameToId[node_name] === existingNodeId) existingNodeName = node_name;
 				}
-				if (updatedNodeName > existingNodeName)
+				// Distinct ids never tie: callers read 0 as a re-delivery. A name can be missing (v4-era, or
+				// relayed before its name arrives).
+				if (updatedNodeName !== undefined && existingNodeName !== undefined)
 					// if the updated node name is greater (alphabetically), it wins (it doesn't precede the existing version)
-					return 1;
-				if (updatedNodeName === existingNodeName) return 0; // a tie
+					return updatedNodeName > existingNodeName ? 1 : -1;
+				if (updatedNodeName !== undefined) return 1;
+				if (existingNodeName !== undefined) return -1;
+				return nodeId > existingNodeId ? 1 : -1;
 			}
 			// transaction time is older than existing version, so we treat that as an update that loses to the existing record version
 			return -1;
@@ -10740,6 +11259,26 @@ export function makeTable(options): TableResourceClass {
 						isRocksDB && updatedRecord && existingVersion != null
 							? Math.max(sourceVersion, existingVersion)
 							: sourceVersion;
+					// before resolve(): a write that is not skipped commits at exactly resolvedVersion
+					if (updatedRecord) {
+						if (updatedTimeProperty) {
+							updatedRecord[updatedTimeProperty.name] =
+								updatedTimeProperty.type === 'Date'
+									? new Date(resolvedVersion)
+									: updatedTimeProperty.type === 'String'
+										? new Date(resolvedVersion).toISOString()
+										: resolvedVersion;
+						}
+						if (assignCreatedTime) {
+							updatedRecord[createdTimeProperty.name] =
+								existingRecord?.[createdTimeProperty.name] ??
+								(createdTimeProperty.type === 'Date'
+									? new Date(resolvedVersion)
+									: createdTimeProperty.type === 'String'
+										? new Date(resolvedVersion).toISOString()
+										: resolvedVersion);
+						}
+					}
 					const resolvedEntry: Entry = {
 						key: id,
 						version: resolvedVersion,
@@ -10752,9 +11291,7 @@ export function makeTable(options): TableResourceClass {
 						residencyId: 0,
 					} as any;
 					// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
-					// are available on the immediately-resolved entry. We mutate the prototype
-					// in-place rather than copying so that the commit callback (which adds
-					// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
+					// are available on the immediately-resolved entry.
 					if (updatedRecord && updatedRecord.constructor === Object) {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
@@ -10822,9 +11359,12 @@ export function makeTable(options): TableResourceClass {
 						// resolving the same tie could keep different values at the same version.
 						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
 						if (
-							racedVersion !== existingVersion &&
-							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
-							(existingVersion != null || !updatedRecord || !replacesRacedRecord)
+							// The source wrote this key through its context: that write is ahead of the fill in this
+							// transaction, and LMDB's optimistic path reads existingEntry as committed, which cannot show it.
+							(!isRocksDB && followsAppliedWrite(sourceWrite)) ||
+							(racedVersion !== existingVersion &&
+								// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
+								(existingVersion != null || !updatedRecord || !replacesRacedRecord))
 						) {
 							logger.trace?.(
 								`Discarding resolved record from source with id: ${id}, source version: ${sourceVersion}, current version: ${racedVersion}`
@@ -10836,55 +11376,57 @@ export function makeTable(options): TableResourceClass {
 						const recordVersion =
 							isRocksDB && racedVersion != null ? Math.max(sourceVersion, racedVersion) : sourceVersion;
 						const txnLogKey = isRocksDB ? transaction?.getTimestamp?.() : recordVersion;
-						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
-						dropReplicaDeadline(id, existingEntry, transaction);
+						// never reassign updatedRecord: a retried commit starts again from the source's answer
+						let recordToStore = updatedRecord;
+						let auditRecord: any;
+						let omitLocalRecord = false;
+						let residencyId: number;
 						if (updatedRecord) {
+							// a first fill replacing a record that landed during the source call keeps its created time,
+							// as a put would; copied, since the caller already holds updatedRecord
+							const racedCreatedTime =
+								assignCreatedTime && existingVersion == null ? currentRecord?.[createdTimeProperty.name] : undefined;
+							if (racedCreatedTime != null) {
+								recordToStore = Object.setPrototypeOf({ ...updatedRecord }, Object.getPrototypeOf(updatedRecord));
+								recordToStore[createdTimeProperty.name] = racedCreatedTime;
+								const fillEntry = entryMap.get(updatedRecord);
+								if (fillEntry) entryMap.set(recordToStore, fillEntry);
+							}
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
-							let auditRecord: any;
-							let omitLocalRecord = false;
-							let residencyId: number;
-							if (updatedTimeProperty) {
-								updatedRecord[updatedTimeProperty.name] =
-									updatedTimeProperty.type === 'Date'
-										? new Date(recordVersion)
-										: updatedTimeProperty.type === 'String'
-											? new Date(recordVersion).toISOString()
-											: recordVersion;
-							}
-							if (assignCreatedTime) {
-								const existingCreatedTime = currentRecord?.[createdTimeProperty.name];
-								if (existingCreatedTime != null) {
-									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
-								} else {
-									updatedRecord[createdTimeProperty.name] =
-										createdTimeProperty.type === 'Date'
-											? new Date(recordVersion)
-											: createdTimeProperty.type === 'String'
-												? new Date(recordVersion).toISOString()
-												: recordVersion;
-								}
-							}
-							const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
+							const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 							if (residency) {
 								if (!residency.includes(server.hostname)) {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
-									auditRecord = updatedRecord;
+									auditRecord = recordToStore;
 									omitLocalRecord = true;
-									updatedRecord = TableResource.getResidencyById ? undefined : residencyStub(auditRecord);
+									recordToStore = TableResource.getResidencyById ? undefined : residencyStub(auditRecord, id);
 								}
 								residencyId = getResidencyId(residency);
 							}
+						}
+						// an id-based omission writes no row (the stored one, if any, stays), so its indexes stay too
+						if (!omitLocalRecord || recordToStore !== undefined)
+							updateIndices(
+								id,
+								currentRecord,
+								recordToStore,
+								transaction && { transaction },
+								omitLocalRecord,
+								Boolean(existingEntry?.metadataFlags & INVALIDATED)
+							);
+						dropReplicaDeadline(id, existingEntry, transaction);
+						if (updatedRecord) {
 							logger.trace?.(
 								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
-							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 							const writeAudit = (audit && (hasChanges || omitLocalRecord)) || null;
 							updateRecord(
 								id,
-								updatedRecord,
-								existingEntry,
+								recordToStore,
+								// an id-based omission stores no row, so the stored one keeps its blobs
+								recordToStore === undefined ? { ...existingEntry, value: undefined } : existingEntry,
 								recordVersion,
 								omitLocalRecord ? INVALIDATED : 0,
 								writeAudit,
@@ -11022,7 +11564,7 @@ export function makeTable(options): TableResourceClass {
 	// into a fresh transaction (dropping the now-changed record) and otherwise skip the batch, leaving
 	// those records for the next cleanup cycle.
 	function createEvictionBatcher() {
-		type EvictItem = { type: 'evict' | 'tombstone'; key: any; version: number };
+		type EvictItem = { type: 'evict' | 'tombstone'; key: any; version: number; expiresAt: number | undefined };
 		let pending: EvictItem[] = [];
 		const inFlight = new Set<Promise<void>>();
 
@@ -11034,12 +11576,15 @@ export function makeTable(options): TableResourceClass {
 			for (const item of items) {
 				const entry = primaryStore.getEntry(item.key, options);
 				if (!entry || entry.version !== item.version) continue; // gone or changed since the scan; leave for next cycle
+				if (reusedVersionChangedExpiry(entry, item.expiresAt)) continue;
 				if (item.type === 'tombstone') {
 					if (entry.value != null) continue; // resurrected since the scan
 				} else {
 					if (entry.value == null) continue; // already removed
+					// a same-version write can add these after the scan routed the record here
+					if (entry.metadataFlags & (HAS_BLOBS | REPLICA)) continue;
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
-					updateIndices(item.key, entry.value, null, options);
+					updateIndices(item.key, entry.value, null, options, false, Boolean(entry.metadataFlags & INVALIDATED));
 					stageDerivedIndexEviction(transaction, item.key, entry.version);
 				}
 				removeEntry(primaryStore, entry, options);
@@ -11100,8 +11645,8 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		return {
-			add(type: 'evict' | 'tombstone', key: any, version: number): Promise<void> | void {
-				pending.push({ type, key, version });
+			add(type: 'evict' | 'tombstone', key: any, version: number, expiresAt: number | undefined): Promise<void> | void {
+				pending.push({ type, key, version, expiresAt });
 				if (pending.length >= EVICTION_BATCH_SIZE) {
 					const items = pending;
 					pending = [];
@@ -11238,12 +11783,12 @@ export function makeTable(options): TableResourceClass {
 											// Blob-bearing records stay on the per-record evict() path, which reclaims their blob
 											// files only after its own commit; the batcher's removeEntry would queue them at staging.
 											if (batcher && !(action === 'evict' && metadataFlags & (HAS_BLOBS | REPLICA))) {
-												await batcher.add(action, key, version);
+												await batcher.add(action, key, version, expiresAt);
 											} else {
 												const resolution =
 													action === 'tombstone'
 														? removeEntry(primaryStore, entry, version)
-														: TableResource.evict(key, record, version);
+														: TableResource.evict(key, record, version, undefined, expiresAt);
 												if (resolution) {
 													await outstandingCleanupOperations[cleanupIndex];
 													outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
@@ -11321,7 +11866,13 @@ export function makeTable(options): TableResourceClass {
 								if (backpressure) await backpressure;
 							} else if (recordEntry.value[expiresAtName] < Date.now()) {
 								// make sure the record hasn't changed and won't change while removing
-								const eviction = TableResource.evict(id, recordEntry.value, recordEntry.version);
+								const eviction = TableResource.evict(
+									id,
+									recordEntry.value,
+									recordEntry.version,
+									undefined,
+									recordEntry.expiresAt ?? null
+								);
 								if (eviction) {
 									const backpressure = trackInFlight(eviction);
 									if (backpressure) await backpressure;
@@ -11355,14 +11906,14 @@ export function makeTable(options): TableResourceClass {
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
 		);
 	}
-	function residencyStub(record: any) {
-		let stub = null;
+	function residencyStub(record: any, id: Id) {
+		const stub = primaryKey ? { [primaryKey]: id } : {};
 		for (const name in indices) {
-			stub ??= {};
+			// reading a computed name would run its resolver; a stub keeps no computed values
+			if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
 			stub[name] = record[name];
 		}
 		if (createdTimeProperty && record[createdTimeProperty.name] != null) {
-			stub ??= {};
 			stub[createdTimeProperty.name] = record[createdTimeProperty.name];
 		}
 		return stub;
@@ -11571,7 +12122,7 @@ export function makeTable(options): TableResourceClass {
 			const preserveComputed = Boolean(current.metadataFlags & INVALIDATED);
 			const base = withoutBlobRelease(current);
 			if (hasDerivedIndexRegistration(auditStore, tableId)) reserveLocalKey(primaryStore.rootStore, transaction);
-			updateIndices(id, current.value, body, options, preserveComputed);
+			updateIndices(id, current.value, body, options, preserveComputed, preserveComputed);
 			updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
 			store.putSync(id, deadline, options);
 			const completion = commitRawTransaction(transaction);
@@ -11769,8 +12320,7 @@ export function makeTable(options): TableResourceClass {
 	 * have committed.
 	 */
 	function demoteReplica(entry: Entry, transaction: any, observedDeadline?: number): Promise<unknown> {
-		const stub = residencyStub(entry.value) ?? {};
-		if (primaryKey) stub[primaryKey] = entry.key;
+		const stub = residencyStub(entry.value, entry.key);
 		const base = withoutBlobRelease(entry);
 		const store = openReplicaDeadlines();
 		const writeOptions = {
@@ -11790,7 +12340,7 @@ export function makeTable(options): TableResourceClass {
 			(transaction as any).abort();
 			return Promise.resolve(false);
 		}
-		updateIndices(entry.key, entry.value, stub, { transaction }, true);
+		updateIndices(entry.key, entry.value, stub, { transaction }, true, false);
 		updateRecord(entry.key, stub, base, entry.version, INVALIDATED, false, writeOptions, 'invalidate', false, null);
 		return commitRawTransaction(transaction as RocksTransaction).then(releaseBlobs);
 	}
@@ -11856,6 +12406,10 @@ export function makeTable(options): TableResourceClass {
 	}
 }
 
+// a reused version names more than one stored value (RecordEncoder.ts VERSION_REUSED)
+function reusedVersionChangedExpiry(entry: Entry, observedExpiresAt: number | null | undefined): boolean {
+	return Boolean(entry.metadataFlags & VERSION_REUSED) && (entry.expiresAt ?? null) !== (observedExpiresAt ?? null);
+}
 function attributesAsObject(attribute_permissions, type) {
 	const attrObject = attribute_permissions.attr_object || (attribute_permissions.attr_object = {});
 	let attrsForType = attrObject[type];

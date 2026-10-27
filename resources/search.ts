@@ -2578,9 +2578,6 @@ function parseBlock(query, expectedEnd) {
 						attribute = null;
 					}
 				} else {
-					if (value && entry.conditions.length) {
-						recordError('conditions/comparisons are not allowed in a property list');
-					}
 					query.push(entry);
 				}
 				if (queryString[lastIndex] === ',') {
