@@ -133,7 +133,6 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 			return (((performance.now() - start) / samples) * 1e6).toFixed(0).padStart(6);
 		};
 		const settled = time();
-		// layout from originClosedFloor.ts: 8 header words (the slot limit is word 5), then 1024 owner words
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
 		while (Atomics.load(words, 8 + slot) !== 0n || Atomics.load(words, 8 + 1024 + slot * 8) !== 0n) slot--;

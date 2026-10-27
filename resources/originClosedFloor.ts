@@ -307,6 +307,11 @@ class ThreadRegistry {
 	 * magnitude still bounds that thread), or a `0` — the initial word of a slot whose claimer has not stored
 	 * its first bound, and so has reserved nothing yet. A reused slot's stale word in that window only errs low.
 	 */
+	/** This thread's lowest outstanding reservation, or Infinity. */
+	lowestOutstanding(): number {
+		return this.minKey();
+	}
+
 	minBound(): number {
 		let min = Infinity;
 		let pending = false;
@@ -486,6 +491,21 @@ export function localStartBound(rootStore: RocksDatabase): { atOrAbove: number }
 	const closed = sampleClosedBounds(rootStore);
 	const bound = Math.max(closed.bound, published);
 	return bound <= closed.sample ? { atOrAbove: bound } : { above: closed.sample };
+}
+
+/**
+ * `localStartBound` for a reader that sees only this thread's commits: the bound is this thread's own lowest
+ * outstanding reservation, read without the shared scan; `proposed` is still raised, so a handle minted earlier
+ * cannot be admitted below the sample afterwards.
+ */
+export function threadStartBound(rootStore: RocksDatabase): { atOrAbove: number } | { above: number } | undefined {
+	if (rootStore.status === 'closed') return;
+	const registry = registryFor(rootStore);
+	const words = registry.words;
+	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
+	storeMax(words, WORD_PROPOSED, sample);
+	const bound = registry.lowestOutstanding();
+	return bound <= sample ? { atOrAbove: bound } : { above: sample };
 }
 
 function sampleClosedBounds(rootStore: RocksDatabase): { sample: number; bound: number; settled: boolean } {

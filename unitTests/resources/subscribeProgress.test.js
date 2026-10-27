@@ -72,12 +72,22 @@ describe('Certified subscription progress', function () {
 		assert.strictEqual(databaseRegistry.progressConsumers, 0, 'ending twice uncounts once');
 	});
 
-	it('a same-thread progress subscription follows its own raw watermark', async () => {
+	it('a same-thread progress subscription follows its watermark, held below a write this thread still has open', async () => {
 		const T = tableInOwnDatabase();
 		await T.put('seed', { value: 0 });
 		const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, crossThreads: false });
+		let commitHeld;
+		const held = transaction({}, async (context) => {
+			await T.put('held', { value: 'held' }, context);
+			await new Promise((resolve) => (commitHeld = resolve));
+		});
+		await waitFor(() => commitHeld);
 		await T.put('a', { value: 1 });
 		const key = T.primaryStore.getEntry('a').version;
+		await waitFor(() => subscription.progress() !== undefined);
+		assert.ok(subscription.progress() < key, `progress ${subscription.progress()} passed the held write below ${key}`);
+		commitHeld();
+		await held;
 		await waitFor(() => subscription.progress() >= key, {
 			message: () => `progress ${subscription.progress()} < ${key}`,
 		});

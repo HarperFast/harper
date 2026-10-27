@@ -12,7 +12,6 @@ const {
 	epoch,
 	tableName,
 	writes,
-	// a paced writer keeps six of every seven transactions open for a few ms
 	paced = true,
 	database = 'test',
 	attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],

@@ -2,7 +2,7 @@ import { basename } from 'node:path';
 import { warn } from '../utility/logging/harper_logger.ts';
 import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
-import { ORIGIN_FLOOR_TICK_MS, localStartBound } from './originClosedFloor.ts';
+import { ORIGIN_FLOOR_TICK_MS, localStartBound, threadStartBound } from './originClosedFloor.ts';
 import {
 	captureCertifiedFloors,
 	positionBefore,
@@ -66,10 +66,9 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	// sampled before the log is opened or drained, so a commit the subscriber could miss is above it
 	let startBound: ReturnType<typeof localStartBound>;
 	let committedThrough: number | undefined;
+	// always, since the drain below can end the last progress consumer and clear the mark the start would take
 	if (options?.reportProgress && table.auditStore?.reusableIterable) {
-		const existing = (options.crossThreads === false ? allSameThreadSubscriptions : allSubscriptions)[path];
-		if (!(existing?.progressConsumers > 0 && existing.certifiedThrough !== undefined))
-			startBound = localStartBound(table.primaryStore.rootStore);
+		startBound = (options.crossThreads === false ? threadStartBound : localStartBound)(table.primaryStore.rootStore);
 	} else if (options?.reportProgress && table.auditStore && !startTime) {
 		// a read during a close flush arms a read-txn reset that throws on the next tick
 		if (table.auditStore.rootStore?.status === 'closing') throw closingError(table.auditStore, path);
@@ -159,13 +158,12 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
 		subscription.reportsProgress = true;
 		subscription.registeredThrough = databaseSubscriptions.certifiedThrough;
-		// the registration drain can end the last consumer, which clears the mark the gate above relied on
-		if (subscription.registeredThrough === undefined && startBound === undefined)
-			startBound = localStartBound(table.primaryStore.rootStore);
 		if (subscription.registeredThrough === undefined && startBound)
 			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
-		if (dbisDb && !databaseSubscriptions.originFloorTimer) startOriginTracking(databaseSubscriptions, dbisDb);
+		// the tick's pass drains the shared log range, which belongs to the cross-thread registry
+		if (dbisDb && !databaseSubscriptions.sameThread && !databaseSubscriptions.originFloorTimer)
+			startOriginTracking(databaseSubscriptions, dbisDb);
 	} else if (committedThrough !== undefined) subscription.localResumeStart = committedThrough;
 	return subscription;
 }
@@ -277,8 +275,9 @@ export function deliveryCertified(subscription: any): boolean {
 }
 
 /**
- * The key below which every local write has been dispatched to every subscriber registered at the time and
- * none can still land: the newest fully dispatched transaction, held at the ceiling the dispatching pass
+ * The key below which every local write the registry delivers (every thread's for the cross-thread registry,
+ * this thread's for a `crossThreads: false` one) has been dispatched to every subscriber registered at the time,
+ * and none can still land: the newest fully dispatched transaction, held at the ceiling the dispatching pass
  * captured (`localCeiling`). Undefined before a pass has certified one since progress tracking began.
  */
 export function certifiedThrough(subscription: any): number | undefined {
@@ -291,23 +290,23 @@ export function certifiedThrough(subscription: any): number | undefined {
  * above its bound. A reservation is released a microtask after its commit settles and its entry is read only by
  * the next pass, so a scan after a drain, or on a read, would take a released key for a dispatched one.
  */
-function localCeiling(auditStore: any): number | undefined {
+function localCeiling(auditStore: any, sameThread: boolean): number | undefined {
 	const rootStore = auditStore?.rootStore;
 	if (!rootStore || rootStore.status === 'closed') return;
-	const bound = localStartBound(rootStore);
+	const bound = (sameThread ? threadStartBound : localStartBound)(rootStore);
 	if (bound === undefined) return;
 	return 'above' in bound ? bound.above : positionBefore(bound.atOrAbove);
 }
 
-function certifyProgress(subscriptions: any): void {
+function certifyProgress(subscriptions: any, readEntries: boolean): void {
 	const through = subscriptions.dispatchedThrough;
 	const ceiling = subscriptions.passCeiling;
 	if (through === undefined || ceiling === undefined) return;
 	const certified = ceiling < through ? ceiling : through;
 	if (!(subscriptions.certifiedThrough >= certified)) subscriptions.certifiedThrough = certified;
 	// a commit's own pass can capture before its reservation is released, which lands after the commit settles:
-	// one follow-up pass per hold re-captures, so a committed write certifies itself without another commit
-	if (ceiling < through && !(subscriptions.recheckedCeiling >= ceiling)) {
+	// a pass that dispatched entries and was held gets one follow-up pass, whose capture sees the release
+	if (ceiling < through && (readEntries || !(subscriptions.recheckedCeiling >= ceiling))) {
 		subscriptions.recheckedCeiling = ceiling;
 		subscriptions.recheckPending = true;
 	}
@@ -476,11 +475,9 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	subscriptions.passYielded = false;
 	try {
 		if (freshPass)
-			subscriptions.passCeiling = !trackProgress
-				? undefined
-				: subscriptions.sameThread
-					? Infinity
-					: localCeiling(auditStore);
+			subscriptions.passCeiling = trackProgress
+				? localCeiling(auditStore, subscriptions.sameThread === true)
+				: undefined;
 		while (true) {
 			let result;
 			try {
@@ -635,7 +632,8 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
 			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}
-		if (trackProgress && !iteratorFailed && rangeFailures(auditLogIterable) === 0) certifyProgress(subscriptions);
+		if (trackProgress && !iteratorFailed && rangeFailures(auditLogIterable) === 0)
+			certifyProgress(subscriptions, progressKey !== undefined);
 		subscriptions.passCeiling = undefined;
 		subscriptions.pendingProgressKey = undefined;
 		if (subscriptions.passCapture !== undefined) {
@@ -662,13 +660,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		subscriptions.dispatching = false;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.
-		if (allowYield && !yielded) {
-			subscriptions.notifyScheduled = false;
-			if (subscriptions.recheckPending) {
-				subscriptions.recheckPending = false;
-				subscriptions.notifyScheduled = true;
-				setImmediate(() => notifyFromTransactionData(subscriptions, auditStore.subscriptionLogRange, true));
-			}
+		if (allowYield && !yielded) subscriptions.notifyScheduled = false;
+		if (!yielded && subscriptions.recheckPending && !subscriptions.notifyScheduled) {
+			subscriptions.recheckPending = false;
+			subscriptions.notifyScheduled = true;
+			setImmediate(() => notifyFromTransactionData(subscriptions, auditStore.subscriptionLogRange, true));
 		}
 	}
 }
