@@ -5560,9 +5560,10 @@ export function makeTable(options): TableResourceClass {
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
-						// A publish or relocate saves when it is added, so it can restamp the head after this deferred write
-						// was staged; with no unskipped write before this one, order it against the committed head instead.
-						if (!audit && precedesExisting === 0 && priorWritesSkipped(write))
+						// A publish or relocate of this transaction saves when it is added and restamps the head, before or
+						// after this deferred write, so a tie it made says nothing about this write: order it against the
+						// committed head. LMDB commits pass no committedBy, so it keeps the predecessor exception below.
+						if (isRocksDB && !audit && precedesExisting === 0)
 							precedesExisting = precedesExistingVersion(
 								txnTime,
 								identityBase(write, existingEntry, committedBy),
@@ -5918,9 +5919,8 @@ export function makeTable(options): TableResourceClass {
 							// is the backstop).
 							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
 								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
-						} else if (precedesExisting > 0 || (precedesExisting === 0 && !priorWritesSkipped(write))) {
-							// A publish or relocate of this transaction restamped the head without staging it: the tie is program
-							// order, so this write applies as an in-order one does.
+						} else if (precedesExisting > 0 || (!isRocksDB && precedesExisting === 0 && !priorWritesSkipped(write))) {
+							// Newer than the committed head, or on LMDB tied after an unskipped earlier write: applies in order.
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
