@@ -6902,7 +6902,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					get_attributes: ['*'],
 				})
 				.expect((r) => assert.equal(r.body.error, "'hash_values' must be an array", r.text))
-				.expect(500);
+				.expect(400);
 		});
 
 		test('NoSQL search by hash get_attributes bad data type', async () => {
@@ -6916,7 +6916,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					get_attributes: '*',
 				})
 				.expect((r) => assert.equal(r.body.error, "'get_attributes' must be an array", r.text))
-				.expect(500);
+				.expect(400);
 		});
 
 		test('update NoSQL employee with falsey attributes', async () => {
