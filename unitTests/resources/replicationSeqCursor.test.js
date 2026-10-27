@@ -169,8 +169,8 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 					timestamp: now,
 					remoteNodeIds: [47],
 					txnStream,
-					onFailure: (error) => {
-						failures.push(error);
+					onFailure: (error, position, afterCommit) => {
+						failures.push({ error, afterCommit });
 						return false;
 					},
 				},
@@ -198,7 +198,8 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				message: 'the next cursor still records',
 			});
 			assert.equal(failures.length, 1);
-			assert.match(failures[0].message, /forced cursor commit failure/);
+			assert.match(failures[0].error.message, /forced cursor commit failure/);
+			assert.equal(failures[0].afterCommit, true, 'onCommit already ran, so the source must not release twice');
 		} finally {
 			spy.restore();
 			release();

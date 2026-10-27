@@ -2615,7 +2615,7 @@ export function makeTable(options): TableResourceClass {
 										} catch (error) {
 											// the transaction landed but its position and route state did not: the source that attached
 											// them must learn it, or it counts them as recorded
-											if (event.onFailure && (await event.onFailure(error, failurePosition))) stream.held = true;
+											if (event.onFailure && (await event.onFailure(error, failurePosition, true))) stream.held = true;
 											throw error;
 										}
 									continue;
