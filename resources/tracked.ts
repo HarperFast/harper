@@ -543,7 +543,7 @@ export function hasChanges(target) {
 				} else return true;
 			} else return true;
 		}
-		// own properties are merged into the stored record by updateAndFreeze/collapseData
+		// own properties that differ from the record are part of the patch (collapseChanges)
 		for (const key of ownKeys) {
 			if (!sameValue(target[key], source?.[key])) return true;
 		}
@@ -618,7 +618,11 @@ export function addToChanges(target, property: string, value: number | bigint) {
 	if (changes && Object.hasOwn(changes, property)) {
 		const prior = changes[property];
 		// a tracked wrapper that was only read is not a prior value
-		if (prior?.getRecord && prior.getRecord() === target.getRecord?.()?.[property] && !hasChanges(prior))
+		if (
+			typeof prior?.getRecord === 'function' &&
+			prior.getRecord() === target.getRecord?.()?.[property] &&
+			!hasChanges(prior)
+		)
 			target.set(property, new Addition(value));
 		else if (prior?.__op__ === 'add') target.set(property, new Addition(crdtOperations.addValues(prior.value, value)));
 		else target.set(property, crdtOperations.addValues(prior, value));

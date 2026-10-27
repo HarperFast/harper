@@ -594,6 +594,42 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			assert.strictEqual(saved.title, 'full');
 			assert.strictEqual(saved.dynamicCount, 108);
 		});
+		it('a full update keeps an own value when its addTo throws', async () => {
+			await QA1955Table.put('add-own-full-throw', { title: 't' });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('add-own-full-throw', ctx);
+				rec.update({ title: 'full' }, true);
+				rec.dynamicCount = 100n;
+				assert.throws(() => rec.addTo('dynamicCount', 0.5), RangeError);
+				rec.addTo('dynamicCount', 1n);
+			});
+			assert.strictEqual((await QA1955Table.get('add-own-full-throw')).dynamicCount, 101n);
+		});
+		it('addTo after only reading an object field replaces the read value with the delta', async () => {
+			await QA1955Table.put('add-after-read', { title: 't', dynamicObject: { a: 1 } });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('add-after-read', ctx);
+				assert.strictEqual(rec.dynamicObject.a, 1);
+				rec.addTo('dynamicObject', 5);
+			});
+			const auditedValue = [...QA1955Table.auditStore.getRange({ start: 1 })]
+				.filter((entry) => entry.tableId === QA1955Table.tableId && entry.recordId === 'add-after-read')
+				.map((entry) => entry.getValue(QA1955Table.primaryStore)?.dynamicObject)
+				.at(-1);
+			assert.strictEqual(auditedValue?.__op__, 'add');
+			assert.strictEqual(auditedValue.value, 5);
+		});
+		it('addTo folds into an assigned value whose getRecord property is not a function', async () => {
+			await QA1955Table.put('add-getrecord-data', { title: 't' });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('add-getrecord-data', ctx);
+				rec.title = 'changed';
+				rec.set('dynamicValue', { getRecord: 1 });
+				assert.doesNotThrow(() => rec.addTo('dynamicValue', 5));
+				rec.dynamicValue = 3;
+			});
+			assert.strictEqual((await QA1955Table.get('add-getrecord-data')).dynamicValue, 3);
+		});
 	});
 
 	describe('Reading untracked object values', () => {
