@@ -153,6 +153,58 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('reports a failed cursor commit to the end_txn that carried it, so its source re-sends what it attached', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		const failures = [];
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorFailureReportTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				{
+					type: 'end_txn',
+					localTime: now,
+					timestamp: now,
+					remoteNodeIds: [47],
+					txnStream,
+					onFailure: (error) => {
+						failures.push(error);
+						return false;
+					},
+				},
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				{
+					type: 'end_txn',
+					localTime: now + 1,
+					timestamp: now + 1,
+					remoteNodeIds: [47],
+					txnStream,
+					onFailure: () => false,
+				},
+			],
+			held
+		);
+		let failNext = true;
+		const spy = spyOnCursorWrites(ReplicatedTable, (transaction) => {
+			if (!failNext) return;
+			failNext = false;
+			transaction.commit = () => Promise.reject(new Error('forced cursor commit failure'));
+		});
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 47)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the next cursor still records',
+			});
+			assert.equal(failures.length, 1);
+			assert.match(failures[0].message, /forced cursor commit failure/);
+		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
 	it('merges per-origin cursors attached at commit, even when the sequence does not advance', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));

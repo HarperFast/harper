@@ -2610,7 +2610,14 @@ export function makeTable(options): TableResourceClass {
 											event.originRouteStates?.length > 0 ||
 											event.originFloorRevocations?.length > 0)
 									)
-										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
+										try {
+											await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
+										} catch (error) {
+											// the transaction landed but its position and route state did not: the source that attached
+											// them must learn it, or it counts them as recorded
+											if (event.onFailure && (await event.onFailure(error, failurePosition))) stream.held = true;
+											throw error;
+										}
 									continue;
 								}
 								if (txnInProgress) {
