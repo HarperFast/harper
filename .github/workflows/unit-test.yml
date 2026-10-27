@@ -108,7 +108,7 @@ jobs:
         run: npm run test:types # strict tsc over unitTests/types/ — asserts the shipped public types
 
       - name: Benchmark unit tests
-        if: matrix.shard == 'main'
+        if: matrix.shard == 'main' && matrix.node-version == 26
         timeout-minutes: 3
         run: npm run test:bench # pure-logic tests for benchmarks/ converters; doesn't need a running Harper instance
 
