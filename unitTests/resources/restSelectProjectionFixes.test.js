@@ -10,7 +10,7 @@ const Resources = require('#src/resources/Resources');
 const { handleApplication: handleRest } = require('#src/server/REST');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const opAuth = require('#src/utility/operation_authorization');
-const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
 require('#src/server/serverHelpers/serverUtilities');
 
 const superUser = { role: { permission: { super_user: true } } };
@@ -534,6 +534,28 @@ describe('REST and operations API select projection fixes', function () {
 				nonSuperCollectionRes.body[0].children.map((c) => c.id),
 				['c2']
 			);
+
+			const nonSuperBraceSingleRes = await restGet(
+				'/Parent/p1?select(child{id,label},children{id,label})',
+				{},
+				nonSuperUser
+			);
+			assert.strictEqual(nonSuperBraceSingleRes.status, 200);
+			assert.deepStrictEqual(nonSuperBraceSingleRes.body, {
+				child: { id: 'c1', label: 'child-label-v1' },
+				children: [
+					{ id: 'c1', label: 'child-label-v1' },
+					{ id: 'c2', label: 'child-label-v2' },
+				],
+			});
+
+			const nonSuperBraceCollectionRes = await restGet('/Parent/?id=p1&select(child{id,label})', {}, nonSuperUser);
+			assert.strictEqual(nonSuperBraceCollectionRes.status, 200);
+			assert.deepStrictEqual(nonSuperBraceCollectionRes.body, [
+				{
+					child: { id: 'c1', label: 'child-label-v1' },
+				},
+			]);
 		});
 
 		it('returns 400 on single-record Table GET when a non-select query parameter has a FIQL parse error', async function () {

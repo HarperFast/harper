@@ -3854,6 +3854,7 @@ export function makeTable(options): TableResourceClass {
 										const relatedResource = new relatedTable(undefined, context);
 										if (!relatedResource.allowRead(user, property, context)) return false;
 										if (
+											!Array.isArray(property) &&
 											!property.select &&
 											!property.sort &&
 											property.limit === undefined &&

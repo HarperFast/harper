@@ -3,8 +3,6 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { parseQuery } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { spawnSync } = require('node:child_process');
-const path = require('node:path');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Parsing queries', () => {
 	before(function () {});
