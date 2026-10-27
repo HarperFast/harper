@@ -247,7 +247,7 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(new Set(results).size, 20);
 	});
 
-	it('do not share a record whose hazard sits behind a symbol, a hidden key, a hole or a getter', async function () {
+	it('do not share a record whose hazard sits behind a symbol, a hidden key, a hole, a getter or a dead proxy', async function () {
 		const shapes = [
 			(attempt) => ({ name: 'symbol ' + attempt, data: { [Symbol.asyncIterator]: () => (async function* () {})() } }),
 			(attempt) =>
@@ -257,6 +257,15 @@ describe('Concurrent source misses on one key', function () {
 				}),
 			(attempt) => ({ name: 'sparse ' + attempt, rows: Object.assign([], { 1_700_000_000: 1 }) }),
 			(attempt) => Object.defineProperty({ name: 'getter ' + attempt }, 'late', { get: () => ({}), enumerable: true }),
+			(attempt) => ({
+				name: 'iterable ' + attempt,
+				rows: Object.assign([1], { [Symbol.iterator]: () => [][Symbol.iterator]() }),
+			}),
+			(attempt) => {
+				const { proxy, revoke } = Proxy.revocable([], {});
+				revoke();
+				return { name: 'revoked ' + attempt, rows: proxy };
+			},
 		];
 		respond = (id, attempt) => Object.assign(shapes[attempt % shapes.length](attempt), { id });
 		const results = outcomes(

@@ -534,7 +534,11 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
 // it cannot copy, so only a copyable record of plain data goes to several requests. The scan is bounded.
 function isSharableRecord(record: any): boolean {
-	return entryMap.has(record) && hasPlainOwnValues(record, { nodes: 10_000 }, 0);
+	try {
+		return entryMap.has(record) && hasPlainOwnValues(record, { nodes: 10_000 }, 0);
+	} catch {
+		return false; // a revoked proxy or a throwing trap is not plain data, and this runs in a lock callback
+	}
 }
 function hasPlainOwnValues(object: any, budget: { nodes: number }, depth: number): boolean {
 	for (const key of Reflect.ownKeys(object)) {
@@ -551,7 +555,11 @@ function isPlainData(value: any, budget: { nodes: number }, depth: number): bool
 	if (type === 'function' || type === 'symbol') return false;
 	if (type !== 'object') return true;
 	if (Array.isArray(value))
-		return value.length <= budget.nodes && value.every((element) => isPlainData(element, budget, depth + 1));
+		return (
+			value.length <= budget.nodes &&
+			Object.getPrototypeOf(value) === Array.prototype &&
+			hasPlainOwnValues(value, budget, depth)
+		);
 	if (ArrayBuffer.isView(value) || value instanceof Date) return true;
 	const prototype = Object.getPrototypeOf(value);
 	return (prototype === Object.prototype || prototype === null) && hasPlainOwnValues(value, budget, depth);
