@@ -91,10 +91,24 @@ const throwInSave = () => {
 
 function failSaves(handle, ...faults) {
 	const store = handle.saveStore;
+	const encoder = handle.db.encoder;
 	const original = store.transactionSync;
+	const originalSave = encoder.saveStructures;
 	let depth = 0;
+	let saving = false;
+	encoder.saveStructures = function (...args) {
+		saving = true;
+		try {
+			return originalSave.apply(this, args);
+		} finally {
+			saving = false;
+		}
+	};
 	store.transactionSync = function (callback, options) {
-		if (faults.length > 0 && depth === handle.saveDepth) return faults.shift()();
+		if (faults.length > 0 && depth === handle.saveDepth) {
+			assert.ok(saving, 'precondition: the injected fault hits the structure save, not the write');
+			return faults.shift()();
+		}
 		depth++;
 		try {
 			return original.call(this, callback, options);
@@ -104,6 +118,7 @@ function failSaves(handle, ...faults) {
 	};
 	return () => {
 		store.transactionSync = original;
+		encoder.saveStructures = originalSave;
 		assert.strictEqual(faults.length, 0, 'precondition: every injected structure-save fault was reached');
 	};
 }
@@ -227,7 +242,6 @@ describe('RecordEncoder discards structures from a structure save that did not c
 				const restore = failSaves(writer, throwInSave);
 				assert.throws(() => writer.put('bad', { alpha: 1, beta: 2 }), /injected structure-save failure/);
 				restore();
-				// The peer mints the id the failed save would have taken, for a different shape.
 				peer.put('kp', { p: 'hello', q: 'world' });
 				assert.deepEqual(writer.get('kp'), { p: 'hello', q: 'world' }, 'read before the writer encodes again');
 				writer.put('k2', { alpha: 1, beta: 2 });

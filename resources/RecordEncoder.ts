@@ -525,9 +525,9 @@ export class RecordEncoder extends StructonEncoder {
 				// We must report a non-commit as `false` (not the buggy `undefined`, which msgpackr
 				// reads as success and then writes a record referencing a structure that was never
 				// saved → later "Record id is not defined" on decode). Returning `false` makes msgpackr
-				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
-				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
-				// trie, re-mints, and re-saves — so the record always references a persisted structure.
+				// re-pack; `discardUncommittedStructures` has already marked the dictionaries for reload,
+				// so the re-pack reloads the durable structures, re-mints, and re-saves — so the record
+				// always references a persisted structure.
 				const sharedStructuresKey = this.isRocksDB
 					? [Symbol.for('structures'), this.name]
 					: targetStore.store.sharedStructuresKey;
