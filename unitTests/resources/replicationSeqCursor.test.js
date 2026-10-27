@@ -606,6 +606,41 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('writes the sequence id of a position whose earlier end_txn failed in its onCommit (harper#3669)', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const endTxn = (localTime, onCommit) => ({
+			type: 'end_txn',
+			localTime,
+			timestamp: localTime,
+			remoteNodeIds: [46],
+			onCommit,
+		});
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorFailedCommitTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				endTxn(now),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				endTxn(now + 1, () => {
+					throw new Error('forced onCommit failure');
+				}),
+				{ type: 'put', id: 3, value: { id: 3, name: 'third' }, timestamp: now + 1 },
+				endTxn(now + 1),
+			],
+			held
+		);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 46)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the repeat of the failed position recorded its sequence id',
+			});
+		} finally {
+			release();
+		}
+	});
+
 	it('continues replication after teardown denies a cursor commit', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
