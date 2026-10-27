@@ -332,6 +332,71 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('clears a level-1 floor on a genless revocation and restores a level-2 route coverage from a route mark', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		const update = (fields) => ({
+			type: 'end_txn',
+			localTime: now,
+			timestamp: now,
+			remoteNodeIds: [52],
+			txnStream,
+			onFailure: () => false,
+			...fields,
+		});
+		const floors = (list) => {
+			const event = update({});
+			event.onCommit = () => {
+				event.originFloors = list;
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorLevelOneRevocationTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				floors([
+					[11, now - 20, true],
+					[12, now - 20, true, 'gen-1', false],
+				]),
+				// a level-1 floor is cleared, not revoked, so a later certificate floors the route again
+				update({ originFloorRevocations: [11] }),
+				floors([[11, now - 15, false]]),
+				// coverage comes back only for a level-2 row, and only through the mark's own element
+				update({ originRouteStates: [[12, undefined, undefined, undefined, 'gen-1']] }),
+				update({ originRouteStates: [[11, undefined, undefined, undefined, undefined, true]] }),
+				update({ originRouteStates: [[12, undefined, undefined, undefined, 'gen-0', true]] }),
+				update({ originRouteStates: [[12, undefined, undefined, undefined, 'gen-1', true]] }),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				update({ localTime: now + 1, timestamp: now + 1 }),
+			],
+			held
+		);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 52)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the frame after the revocation and coverage updates recorded its sequence id',
+			});
+			const nodes = readCursor(ReplicatedTable, 52).nodes.map((node) => ({ ...node }));
+			assert.deepEqual(
+				nodes.find((node) => node.id === 11),
+				{
+					id: 11,
+					closedFloor: now - 15,
+					relayable: false,
+				}
+			);
+			const levelTwo = nodes.find((node) => node.id === 12);
+			assert.equal(levelTwo.fullCoverage, true);
+			assert.equal(levelTwo.floorRevoked, undefined);
+			assert.equal(levelTwo.closedFloor, now - 20);
+		} finally {
+			release();
+		}
+	});
+
 	it('repairs a scalar whose write failed, on a repeat frame whose origin cursors did not change', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));

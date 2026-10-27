@@ -3,7 +3,12 @@ import { warn } from '../utility/logging/harper_logger.ts';
 import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { ORIGIN_FLOOR_TICK_MS, localStartBound } from './originClosedFloor.ts';
-import { captureCertifiedFloors, positionBefore, type CertifiedFloors } from './subscriptionCheckpoint.ts';
+import {
+	captureCertifiedFloors,
+	positionBefore,
+	readOriginStateEpoch,
+	type CertifiedFloors,
+} from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
 
@@ -199,7 +204,10 @@ function stopOriginTracking(databaseSubscriptions: any) {
 export function certifiedFloors(subscription: any): CertifiedFloors | undefined {
 	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
 	if (!subscription.reportsProgress || !databaseSubscriptions || databaseSubscriptions.progressStopped) return;
-	return databaseSubscriptions.certifiedFloors ?? undefined;
+	const floors: CertifiedFloors | undefined = databaseSubscriptions.certifiedFloors ?? undefined;
+	// a qualifier or copy bound committed after the capture read may void what it certified
+	if (floors && floors.epoch !== readOriginStateEpoch(databaseSubscriptions.auditStore?.rootStore)) return;
+	return floors;
 }
 
 function rangeFailures(range: any): number {

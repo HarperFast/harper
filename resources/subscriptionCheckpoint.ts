@@ -23,6 +23,7 @@ export interface SubscriptionCheckpoint {
 /** The event-origin tag a progress-reporting subscription carries on each event: the origin's local node id. */
 export const ORIGIN_ID = Symbol.for('subscription-origin');
 const SEQ_KEY = Symbol.for('seq');
+export const COPY_BOUND_KEY = Symbol.for('copyBound');
 const EPOCH_BUFFER = 'origin-state-epoch';
 const epochWords = new WeakMap<object, Int32Array>();
 
@@ -98,6 +99,28 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 	return digest.toString('hex');
 }
 
+/**
+ * The highest record version an audit-less base copy wrote here, per origin, over every copying peer's
+ * `[copyBound, peerId]` row (`{ [localOriginId]: version }`, written only by that peer's copy). This node's log of
+ * the origin lacks those rows, so no route certified from at or below the bound holds the origin complete. A
+ * malformed row throws: a bound read as absent would admit.
+ */
+export function readCopyBounds(dbisDb: any): Map<number, number> {
+	const bounds = new Map<number, number>();
+	for (const { value } of dbisDb.getRange({ start: COPY_BOUND_KEY, end: [COPY_BOUND_KEY, Buffer.from([0xff])] })) {
+		if (!value || typeof value !== 'object') throw new Error('A copy bound row is unreadable');
+		for (const key in value) {
+			const originId = Number(key);
+			const bound = value[key];
+			if (!Number.isInteger(originId) || typeof bound !== 'number' || !Number.isFinite(bound)) {
+				throw new Error(`A copy bound row holds a malformed entry for origin ${key}`);
+			}
+			if (!(bounds.get(originId) >= bound)) bounds.set(originId, bound);
+		}
+	}
+	return bounds;
+}
+
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
@@ -116,6 +139,17 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 	const published = originFloorsDurable(auditStore.rootStore) ? getOriginClosedFloor(auditStore.rootStore) : undefined;
 	if (published) own.floor = published.floor;
 	states.set(0, own);
+	const copyBounds = readCopyBounds(dbisDb);
+	// a copy that wrote the origin's rows without log entries at or above the route's start leaves its prefix incomplete
+	const routeCertifies = (node: any) =>
+		isValidFloor(node.closedFloor) &&
+		typeof node.originGeneration === 'string' &&
+		node.fullCoverage === true &&
+		node.partialHistory !== true &&
+		node.hole !== true &&
+		node.floorRevoked !== true &&
+		typeof node.certifiedFrom === 'number' &&
+		!(node.certifiedFrom <= copyBounds.get(node.id)!);
 	for (const { key, value } of dbisDb.getRange({ start: SEQ_KEY, end: [SEQ_KEY, Buffer.from([0xff])] })) {
 		const nodes = value?.nodes;
 		if (!Array.isArray(nodes) || typeof key?.[1] !== 'number') continue;
@@ -130,16 +164,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				rows.set(node.id, []);
 			}
 			rows.get(node.id)!.push({ node, seqId: rowSeqId });
-			if (
-				isValidFloor(node.closedFloor) &&
-				typeof node.originGeneration === 'string' &&
-				node.fullCoverage === true &&
-				node.partialHistory !== true &&
-				node.hole !== true &&
-				node.floorRevoked !== true &&
-				typeof node.certifiedFrom === 'number' &&
-				!(state.floor >= node.closedFloor)
-			) {
+			if (routeCertifies(node) && !(state.floor >= node.closedFloor)) {
 				// the route that certified the floor is the one whose prefix below it is complete: another whole
 				// route's start says nothing about this one, since their coverage can be disjoint
 				state.floor = node.closedFloor;
@@ -173,15 +198,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 			state.generation = current;
 			for (const { node } of nodeRows) {
 				if (node.originGeneration !== current) continue;
-				if (
-					isValidFloor(node.closedFloor) &&
-					node.fullCoverage === true &&
-					node.partialHistory !== true &&
-					node.hole !== true &&
-					node.floorRevoked !== true &&
-					typeof node.certifiedFrom === 'number' &&
-					!(state.floor >= node.closedFloor)
-				) {
+				if (routeCertifies(node) && !(state.floor >= node.closedFloor)) {
 					state.floor = node.closedFloor;
 					state.certifiedFrom = node.certifiedFrom;
 					state.fullCoverage = true;
@@ -223,6 +240,8 @@ export interface CertifiedFloors {
 	/** By local origin node id. */
 	origins: Map<number, OriginState>;
 	capturedAt: number;
+	/** The origin-state epoch read before the capture: a qualifier or copy bound committed since may void it. */
+	epoch: number;
 }
 
 /**
@@ -230,13 +249,14 @@ export interface CertifiedFloors {
  * a qualifying floor, or nothing is captured.
  */
 export function captureCertifiedFloors(auditStore: any, dbisDb: any): CertifiedFloors | undefined {
+	const epoch = readOriginStateEpoch(auditStore.rootStore);
 	const states = readOriginStates(auditStore, dbisDb);
 	if (states.size > MAX_ORIGINS) return;
 	for (const state of states.values()) if (!qualifies(state)) return;
 	const byName = new Map<string, OriginState>();
 	for (const state of states.values()) byName.set(state.name, state);
 	for (const name of knownLogNames(auditStore)) if (!byName.has(name)) return;
-	return { origins: states, capturedAt: Date.now() };
+	return { origins: states, capturedAt: Date.now(), epoch };
 }
 
 const KEY_SCRATCH = new Float64Array(1);

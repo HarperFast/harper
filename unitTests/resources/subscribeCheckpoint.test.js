@@ -9,7 +9,9 @@ const { getThisNodeName } = require('#src/server/nodeName');
 const { transaction } = require('#src/resources/transaction');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const {
+	COPY_BOUND_KEY,
 	MAX_OVERLAP_MS,
+	bumpOriginStateEpoch,
 	encodeCheckpoint,
 	membersDigest,
 	positionBefore,
@@ -502,6 +504,40 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			await assert.rejects(T.subscribe({ resume: both, omitCurrent: true }), (error) => error.statusCode === 410);
 			// an older token that never certified it is refused too: a revoked route cannot be shown whole
 			await assert.rejects(T.subscribe({ resume: checkpoint, omitCurrent: true }), (error) => error.statusCode === 410);
+			subscription.end();
+		});
+		it('refuses a route a copy bound covers, certifies nothing under it, and admits once the route starts above it', async () => {
+			const T = tableInOwnDatabase();
+			const listener = collector();
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => listener.values().includes('a'));
+			await sleep(2);
+			const floor = certify(T);
+			const route = { closedFloor: floor, originGeneration: 'copied-generation', fullCoverage: true };
+			const peerId = writeSeqRow(T, 'copied-peer', { ...route, certifiedFrom: floor - 1000 });
+			const members = membersDigest([...ownMembers(T), ['copied-peer', 'copied-generation']]);
+			let token;
+			await waitFor(() => (token = subscription.checkpoint())?.members === members);
+			const resumed = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
+			assert.strictEqual(await resumed.resumeVerified, true);
+			resumed.end();
+			// another peer's copy wrote the origin's rows without log entries up to the route's start
+			T.dbisDB.putSync([COPY_BOUND_KEY, 77], { [peerId]: floor - 1000 });
+			bumpOriginStateEpoch(T.primaryStore.rootStore);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'a capture from before the bound is not used');
+			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
+			await sleep(400);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'no capture qualifies the covered route');
+			// the route proves its prefix again from above the bound
+			writeSeqRow(T, 'copied-peer', { ...route, certifiedFrom: floor - 999 });
+			const again = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
+			assert.strictEqual(await again.resumeVerified, true);
+			again.end();
+			await waitFor(() => subscription.checkpoint()?.members === members);
+			// an unreadable bound fails closed
+			T.dbisDB.putSync([COPY_BOUND_KEY, 78], { [peerId]: 'not a version' });
+			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }));
 			subscription.end();
 		});
 	});
