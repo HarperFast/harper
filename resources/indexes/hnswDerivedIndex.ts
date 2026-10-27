@@ -74,7 +74,6 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	#scheduled = false;
 	#appliedCursor?: DerivedIndexCursor;
 	#appliedEpoch?: bigint;
-	/** A record applied since coverage was published: the graph reflects more than that coverage covers. */
 	#appliedPastCoverage = false;
 	#flushRequested = false;
 	#flushing?: Promise<void>;
@@ -141,6 +140,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	reset(_epoch: bigint): Promise<void> {
 		this.#dropQueue();
 		this.#appliedCursor = undefined;
+		this.#appliedPastCoverage = false;
 		this.#resetting = (async () => {
 			await this.#flushing;
 			this.#index.indexStore.removeSync(DERIVED_INDEX_CURSOR_KEY);
@@ -184,6 +184,8 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			const records = batch.records;
 			while (this.#position < records.length && performance.now() < until) {
 				try {
+					// Fences the coverage-stripping write in #runFlush before this batch completes.
+					this.#appliedEpoch = batch.ownerEpoch;
 					this.#appliedPastCoverage = true;
 					this.#apply(records[this.#position++]);
 				} catch (error) {
