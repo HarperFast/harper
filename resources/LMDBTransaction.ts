@@ -1,5 +1,6 @@
 import {
 	DatabaseTransaction,
+	confirmsNothing,
 	closeWriteInstance,
 	deferForCommitInFlight,
 	describeCommitIdentity,
@@ -248,11 +249,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
 			let completion;
+			write.stagedAudit = 'none';
 			try {
 				completion = write.commit(txnTime, write.entry, retries);
 			} finally {
 				closeWriteInstance(write);
 			}
+			if (write.skipped) write.stagedAudit = undefined;
 			if (typeof completion?.then === 'function') {
 				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
 				// or the exclusive transaction resolves), so handle rejection here to keep the gap from
@@ -439,13 +442,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 	 * entry this commit did not store predates it — a write that lost to a newer entry, or an out-of-order
 	 * patch that only appended audit — so the newest is this commit's own position whenever a write stored a
 	 * record, and otherwise the entry that superseded its writes, as on RocksDB. A concurrent later write can
-	 * only raise it. Writes that opt out (audit-only markers) and unaudited tables (no local time, nothing
-	 * appended for peers to acknowledge) are not considered.
+	 * only raise it. Writes that opt out or stage nothing replicable (including unaudited and local-only
+	 * writes) are not considered.
 	 */
 	private confirmationPosition(): number | undefined {
 		let position: number | undefined;
 		for (const write of this.writes) {
-			if (!write || write.skipReplicationConfirmation) continue;
+			if (!write || confirmsNothing(write)) continue;
 			const localTime = write.store.getEntry(write.key)?.localTime;
 			if (localTime && !(position >= localTime)) position = localTime;
 		}
