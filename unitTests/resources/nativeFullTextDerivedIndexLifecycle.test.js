@@ -1,6 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { execFileSync } = require('node:child_process');
+const { previousFullTextProcess } = require('./fixtures/fullTextUpgradeHelpers.cjs');
 const { toBufferKey } = require('ordered-binary');
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
@@ -620,18 +620,6 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(binding.opens[0].limits.maxQueuedBytes, 2048);
 	});
 });
-
-function previousFullTextProcess(mode, options, documents, payload) {
-	return JSON.parse(
-		execFileSync(process.execPath, [path.join(__dirname, 'fixtures/fullTextUpgradeProcess.cjs')], {
-			input: JSON.stringify({ mode, options, documents, payload }),
-			encoding: 'utf8',
-			timeout: 15_000,
-			maxBuffer: 1024 * 1024,
-			env: { ...process.env, FULLTEXT_PREFER_LOCAL_BUILD: '' },
-		})
-	);
-}
 
 function upgradeNativeOptions(configuration, lifecycle) {
 	return {

@@ -329,7 +329,14 @@ jobs:
         run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || (await binding.runtimeInfo()).queryApiVersion !== 4) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and query API 4 contract');"
 
       - name: Native full-text lifecycle test
-        run: npx mocha unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTableSearch.test.js --forbid-pending --fail-zero
+        run: >-
+          npx mocha
+          unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js
+          unitTests/resources/nativeFullTextTableSearch.test.js
+          unitTests/resources/nativeFullTextSchemaUpgrade.test.js
+          unitTests/resources/nativeFullTextUpgradeWorkers.test.js
+          unitTests/resources/nativeFullTextUpgradeCrash.test.js
+          --forbid-pending --fail-zero
 
   # The one required check for this workflow: branch protection names this job rather than the
   # legs, so legs can be added or renamed without touching the ruleset. `always()` rather than
