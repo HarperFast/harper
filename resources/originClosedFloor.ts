@@ -362,6 +362,28 @@ export function publishOriginFloor(rootStore: RocksDatabase, floor: number): voi
  * `null`: a thread was mid-reservation on every read; the caller retries after a yield, not a tick.
  */
 export function certifyOriginFloor(rootStore: RocksDatabase): number | null | undefined {
+	const closed = sampleClosedBounds(rootStore);
+	if (closed === null) return null;
+	const candidate = Math.min(closed.sample, closed.bound);
+	if (toBits(candidate) <= Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED)) return;
+	return candidate;
+}
+
+/**
+ * Where a new local reader starts so it skips no key reserved now or later: `atOrAbove` is the lowest
+ * outstanding reservation (the start is just below it), and `above` is a sample every later key exceeds.
+ * While a thread stays mid-reservation, the published floor, beneath which nothing appends.
+ */
+export function localStartBound(rootStore: RocksDatabase): { atOrAbove: number } | { above: number } | undefined {
+	// a closed store's registry is retired; recreating it would retain the closed store
+	if (rootStore.status === 'closed') return;
+	const closed = sampleClosedBounds(rootStore);
+	if (closed !== null) return closed.bound <= closed.sample ? { atOrAbove: closed.bound } : { above: closed.sample };
+	const published = fromBits(Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED));
+	return published > 0 ? { atOrAbove: published } : undefined;
+}
+
+function sampleClosedBounds(rootStore: RocksDatabase): { sample: number; bound: number } | null {
 	const registry = registryFor(rootStore);
 	const words = registry.words;
 	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
@@ -369,9 +391,7 @@ export function certifyOriginFloor(rootStore: RocksDatabase): number | null | un
 	let bound = 0;
 	for (let attempt = 0; attempt < SENTINEL_RETRIES && bound === 0; attempt++) bound = registry.minBound();
 	if (bound === 0) return null;
-	const candidate = Math.min(sample, bound);
-	if (toBits(candidate) <= Atomics.load(words, WORD_PUBLISHED)) return;
-	return candidate;
+	return { sample, bound };
 }
 
 export function getOriginClosedFloor(
