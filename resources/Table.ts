@@ -4091,6 +4091,7 @@ export function makeTable(options): TableResourceClass {
 								if (relatedTable) {
 									// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
 									if (!property.name) property = { name: property };
+									else property = Array.isArray(property) ? Object.assign([], property) : { ...property };
 									if (Array.isArray(property) && !(property as any).select)
 										(property as any).select = Array.from(property);
 									if (!property.checkPermission && (target as any).checkPermission)
