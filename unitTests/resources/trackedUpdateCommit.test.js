@@ -626,9 +626,8 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				rec.title = 'changed';
 				rec.set('dynamicValue', { getRecord: 1 });
 				assert.doesNotThrow(() => rec.addTo('dynamicValue', 5));
-				rec.dynamicValue = 3;
 			});
-			assert.strictEqual((await QA1955Table.get('add-getrecord-data')).dynamicValue, 3);
+			assert.strictEqual((await QA1955Table.get('add-getrecord-data')).dynamicValue, 5);
 		});
 	});
 

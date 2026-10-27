@@ -4407,8 +4407,8 @@ export function makeTable(options): TableResourceClass {
 					// a full update stores its changes, not own properties, so an own value moves into them
 					const own = Object.hasOwn(this, property);
 					const sum = addValues(own ? this[property] : this.getProperty(property), value);
-					if (own) delete this[property];
 					(this as any).set(property, sum);
+					if (own) delete this[property];
 				} else {
 					if (!this.#savingOperation) (this as any).update();
 					addToChanges(this, property, value);
