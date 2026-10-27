@@ -1764,8 +1764,8 @@ class DerivedIndexRunner {
 
 	#publishCoverage(capture: CoverageCapture) {
 		if (!this.#owned || this.#rebuilding || Atomics.load(this.#shared().epoch, 0) !== this.#ownerEpoch) return;
-		// The clock may already hold this capture's time: a reconcile publishes a capture before the idle pass
-		// that binds it, and only then can it be persisted.
+		// The clock may already hold this capture's time: the reconcile loop runs before its splice, so it
+		// counts the newly durable entry's mutations and only advances the clock; the retry after it persists.
 		const advancesClock = capture.time > Atomics.load(this.#shared().coverage, 0);
 		// Persisted coverage is resume evidence (#recoverPurgedAnchors): it must reflect exactly the commits
 		// the vector a backend stores it with reflects, so only a bound capture with no mutations past it.
