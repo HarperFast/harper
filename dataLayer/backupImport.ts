@@ -14,8 +14,17 @@
  */
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+} from 'node:fs';
+import { join, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import { isMainThread, parentPort, threadId } from 'node:worker_threads';
@@ -119,6 +128,29 @@ export function validateImportBackup(request: any): void {
 	}
 }
 
+/**
+ * The archive under `.import/`, refusing any name that resolves outside it, links included. A missing
+ * `.import/` is created, so an operator finds where to place the archive.
+ */
+export function resolveImportSourceFile(backupDir: string, sourceFile: string): string {
+	const importRoot = join(backupDir, IMPORT_SOURCE_DIR);
+	mkdirSync(importRoot, { recursive: true });
+	const root = realpathSync(importRoot);
+	let resolved: string;
+	try {
+		resolved = realpathSync(join(importRoot, sourceFile));
+	} catch {
+		throw new ClientError(
+			`No archive named '${sourceFile}' in ${importRoot}. 'source_file' names an archive already on the server in that directory; to send a local archive, use 'file=<path>' from the CLI or upload it as the multipart 'payload'`,
+			404
+		);
+	}
+	if (!resolved.startsWith(root + sep) || !statSync(resolved).isFile()) {
+		throw new ClientError(`'${sourceFile}' is not a file inside ${importRoot}`);
+	}
+	return resolved;
+}
+
 function writeOwner(dir: string, owner: Record<string, unknown>): void {
 	writeFileDurably(join(dir, OWNER_FILE), JSON.stringify(owner), `${OWNER_FILE}.tmp`);
 }
@@ -179,6 +211,9 @@ export async function importBackup(request: any): Promise<{ message: string; job
 		throw new ClientError(`'staging_id' and 'upload_digest' are set by the server for an upload`);
 	}
 	validateImportBackup(request);
+	if (request.source_file !== undefined) {
+		resolveImportSourceFile(backupDirForDatabase(getDatabaseName(request)), request.source_file);
+	}
 	const { executeJob } = await import('../server/serverHelpers/serverUtilities.ts');
 	if (!isUpload(request.payload)) {
 		// a presigned URL is a bearer credential, and the job row outlives the job in every system backup

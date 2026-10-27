@@ -295,7 +295,8 @@ protocol, because "the files were copied" was never proof that the restored gene
 - **Two roots.** Archives are read from `<backupsRoot>/<db>/.import/` (an operator mount, possibly
   read-only); everything Harper writes goes to `<backupsRoot>/<db>/.staging/<importId>/`. Harper
   creates either directory but only ever removes `<importId>` entries, since either may be a mount
-  point. A `source_file` is resolved by `realpath` and must stay inside `.import/`.
+  point. A `source_file` is resolved by `realpath` and must stay inside `.import/`; the operation
+  checks it before creating a job, so a missing archive fails the request, and the job checks again.
 - **Staging ownership.** An upload is spooled raw — no gzip or tar work on the serving thread —
   into staging owned by the receiving thread, and handed to the import (owner rewritten) before the
   job row exists; the main thread sweeps a dead thread's staging on its exit, and startup sweeps all

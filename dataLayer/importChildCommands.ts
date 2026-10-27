@@ -1,18 +1,8 @@
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash } from 'node:crypto';
-import {
-	createReadStream,
-	createWriteStream,
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	realpathSync,
-	rmSync,
-	statSync,
-	statfsSync,
-} from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statfsSync } from 'node:fs';
 import { rename } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { RocksDatabase, backups, validateTransactionLogStore } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -24,7 +14,7 @@ import { extractArchive, tallyArchive } from './archiveExtraction.ts';
 import { withBackupRepositoryLock } from './backupRepository.ts';
 import { blobSnapshotDir, copyTree, deleteBlobSnapshot, fsyncTree } from './blobBackup.ts';
 import { deleteBackupManifest, writeBackupManifest, type BackupManifest } from './backupManifest.ts';
-import { IMPORT_SOURCE_DIR } from './backupImport.ts';
+import { resolveImportSourceFile } from './backupImport.ts';
 import { verifyBackupFiles } from './rocksdbBackup.ts';
 
 const FETCH_TOTAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -42,26 +32,6 @@ export interface ImportArchiveArgs {
 	sha256?: string;
 	acceptIncompatible: boolean;
 	importedFrom: string;
-}
-
-/**
- * The archive under `.import/`, refusing any name that resolves outside it, links included. A missing
- * `.import/` is created, so an operator finds where to place the archive.
- */
-function resolveSourceFile(backupDir: string, sourceFile: string): string {
-	const importRoot = join(backupDir, IMPORT_SOURCE_DIR);
-	mkdirSync(importRoot, { recursive: true });
-	const root = realpathSync(importRoot);
-	let resolved: string;
-	try {
-		resolved = realpathSync(join(importRoot, sourceFile));
-	} catch {
-		throw new ClientError(`No archive named '${sourceFile}' in ${importRoot}`, 404);
-	}
-	if (!resolved.startsWith(root + sep) || !statSync(resolved).isFile()) {
-		throw new ClientError(`'${sourceFile}' is not a file inside ${importRoot}`);
-	}
-	return resolved;
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -164,7 +134,7 @@ export async function importArchive(args: ImportArchiveArgs) {
 	const ledger = new DiskLedger();
 	let archivePath: string;
 	if (args.sourceFile !== undefined) {
-		archivePath = resolveSourceFile(backupDir, args.sourceFile);
+		archivePath = resolveImportSourceFile(backupDir, args.sourceFile);
 	} else {
 		archivePath = join(stagingDir, 'archive');
 		if (args.url !== undefined) {

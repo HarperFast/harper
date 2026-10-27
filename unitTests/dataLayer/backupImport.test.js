@@ -348,14 +348,33 @@ describeUnlessLmdb('import_backup', function () {
 			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
 		});
 
-		it('creates a missing .import/ and refuses the source_file it cannot yet hold', async function () {
+		it('refuses a source_file not in .import/ before creating a job, creating .import/ and naming file= for a local archive', async function () {
 			const importDir = join(backupDirForDatabase(IMPORTED), IMPORT_SOURCE_DIR);
 			rmSync(importDir, { recursive: true, force: true });
+			const jobs = require('#src/server/jobs/jobs');
+			const addedJobs = [];
+			const restoreAddJob = replaceProperty(jobs, 'addJob', async (json) => {
+				addedJobs.push(json);
+				throw new Error('no job should be created');
+			});
+			try {
+				await assert.rejects(
+					importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, source_file: 'later.tar.gz' }),
+					(error) =>
+						error.statusCode === 404 &&
+						error.message.includes(`No archive named 'later.tar.gz' in ${importDir}`) &&
+						error.message.includes(`use 'file=<path>' from the CLI`)
+				);
+			} finally {
+				restoreAddJob();
+			}
+			assert.deepStrictEqual(addedJobs, []);
+			assert.ok(statSync(importDir).isDirectory(), '.import/ was created');
+			// the job checks again, for an archive removed after the request was accepted
 			await assert.rejects(
 				importBackupJob({ ...SU, database: IMPORTED, source_file: 'later.tar.gz' }),
-				(error) => error.statusCode === 404 && error.message.includes(`No archive named 'later.tar.gz' in ${importDir}`)
+				(error) => error.statusCode === 404
 			);
-			assert.ok(statSync(importDir).isDirectory(), '.import/ was created');
 
 			placeInImport(IMPORTED, gzArchive, 'later.tar.gz');
 			const result = await importBackupJob({ ...SU, database: IMPORTED, source_file: 'later.tar.gz' });
