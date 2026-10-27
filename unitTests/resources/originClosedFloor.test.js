@@ -191,19 +191,39 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	});
 
 	it('a slot still being claimed constrains nothing', () => {
-		// buffer layout from originClosedFloor.ts: 5 header words, 1024 owner words, then one bound per 8 words
+		// buffer layout from originClosedFloor.ts: 8 header words (the slot limit is word 5), 1024 owner words, then
+		// one bound per 8 words
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
-		while (Atomics.load(words, 5 + slot) !== 0n || Atomics.load(words, 4 + 1025 + slot * 8) !== 0n) slot--;
-		Atomics.store(words, 5 + slot, 1n << 30n);
+		while (Atomics.load(words, 8 + slot) !== 0n || Atomics.load(words, 8 + 1024 + slot * 8) !== 0n) slot--;
+		const limitBefore = Atomics.load(words, 5);
+		Atomics.store(words, 8 + slot, 1n << 30n);
+		Atomics.store(words, 5, BigInt(slot + 1));
 		try {
 			const start = localStartBound(rootStore);
 			const bound = 'atOrAbove' in start ? start.atOrAbove : start.above;
 			assert(bound > 0 && bound < Infinity, `a claim in progress must not reach the start: ${bound}`);
 			assert.strictEqual(certifyOriginFloor(rootStore), null, 'certification still waits for the claimer');
 		} finally {
-			Atomics.store(words, 5 + slot, 0n);
+			Atomics.store(words, 8 + slot, 0n);
+			Atomics.store(words, 5, limitBefore);
 		}
+	});
+
+	it('a scan reaches a slot another thread claimed: the slot limit is raised with the claim (worker thread)', async () => {
+		await Tbl.put({ id: 'main-slot', n: 1 }); // main owns a slot first, so the worker's is a later one
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { next } = startWorker({ mode: 'park', gate, tableName });
+		const { threadId: workerThreadId } = await next('ready');
+		const { key } = await next('reserved');
+		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
+		let workerSlot = -1;
+		for (let slot = 0; slot < 1024; slot++)
+			if (Atomics.load(words, 8 + slot) === BigInt(workerThreadId + 1)) workerSlot = slot;
+		assert(workerSlot > 0, `the worker's slot ${workerSlot} is not a later one`);
+		const limit = Number(Atomics.load(words, 5));
+		assert(limit > workerSlot, `the slot limit ${limit} does not cover the worker's slot ${workerSlot}`);
+		assert(startsAtOrBelow(localStartBound(rootStore), key), "the worker's parked key is below the start");
 	});
 
 	it('advances and persists on an idle database', async () => {

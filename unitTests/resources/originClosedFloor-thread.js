@@ -12,6 +12,8 @@ const {
 	epoch,
 	tableName,
 	writes,
+	// a writer holds every seventh transaction open for a few ms; `paced: false` writes flat out
+	paced = true,
 	database = 'test',
 	attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 	record = { id: 'parked-reserving', n: 1 },
@@ -47,7 +49,7 @@ async function run() {
 			return nativeCommit.call(this);
 		};
 		for (let n = 0; n < writes; n++) {
-			const hold = n % 7;
+			const hold = paced ? n % 7 : 0;
 			await transaction({}, async () => {
 				await Tbl.put({ id: `w${threadId}-${n}`, n });
 				if (hold) await new Promise((resolve) => setTimeout(resolve, hold));

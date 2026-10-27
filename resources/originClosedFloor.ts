@@ -26,7 +26,12 @@ const WORD_RATCHET = 2;
 // the process, since any later hand-back to load-only admission races a fallback still in flight.
 const WORD_STRICT = 3;
 const WORD_INITIAL_CEILING = 4;
-const HEADER_WORDS = 5;
+// One past the highest slot ever claimed: a bounds scan stops there. Raised when a slot is claimed, before
+// the claimer reads `proposed`; a sampler raises `proposed` before it loads this, so a claim the sampler's scan
+// misses admits only keys above the sampler's value.
+const WORD_SLOT_LIMIT = 5;
+// the header is one 64-byte line
+const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
 const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
@@ -62,13 +67,16 @@ export function timestampAbove(value: number): number {
 	return fromBits(toBits(value) + 1n);
 }
 
-function storeMax(words: BigInt64Array, index: number, value: number): number {
-	const bits = toBits(value);
+function storeMaxWord(words: BigInt64Array, index: number, bits: bigint): bigint {
 	for (;;) {
 		const current = Atomics.load(words, index);
-		if (current >= bits) return fromBits(current);
-		if (Atomics.compareExchange(words, index, current, bits) === current) return value;
+		if (current >= bits) return current;
+		if (Atomics.compareExchange(words, index, current, bits) === current) return bits;
 	}
+}
+
+function storeMax(words: BigInt64Array, index: number, value: number): number {
+	return fromBits(storeMaxWord(words, index, toBits(value)));
 }
 
 type Reservation = { registry: ThreadRegistry; key: number; released: boolean; aroundCallerValue: boolean };
@@ -105,6 +113,7 @@ class ThreadRegistry {
 			if (Atomics.compareExchange(this.words, index, 0n, owner) === 0n) {
 				Atomics.store(this.words, boundIndex(slot), INFINITY_BITS);
 				this.settledBound = Infinity;
+				storeMaxWord(this.words, WORD_SLOT_LIMIT, BigInt(slot + 1));
 				return slot;
 			}
 		}
@@ -297,7 +306,8 @@ class ThreadRegistry {
 	minBound(): number {
 		let min = Infinity;
 		let pending = false;
-		for (let slot = 0; slot < SLOTS; slot++) {
+		const limit = Number(Atomics.load(this.words, WORD_SLOT_LIMIT));
+		for (let slot = 0; slot < limit; slot++) {
 			if (Atomics.load(this.words, THREAD_WORDS_OFFSET + slot) === 0n) continue;
 			const bits = Atomics.load(this.words, boundIndex(slot));
 			if (bits > 0n) {

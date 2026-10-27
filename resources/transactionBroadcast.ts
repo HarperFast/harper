@@ -68,7 +68,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	let committedThrough: number | undefined;
 	if (options?.reportProgress && table.auditStore?.reusableIterable) {
 		const existing = (options.crossThreads === false ? allSameThreadSubscriptions : allSubscriptions)[path];
-		if (!(existing?.progressConsumers > 0 && existing.dispatchedThrough !== undefined))
+		if (!(existing?.progressConsumers > 0 && existing.certifiedThrough !== undefined))
 			startBound = localStartBound(table.primaryStore.rootStore);
 	} else if (options?.reportProgress && table.auditStore && !startTime) {
 		// a read during a close flush arms a read-txn reset that throws on the next tick
@@ -78,6 +78,8 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
 		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);
+		// fed by this thread's own commits only, so its watermark certifies nothing about other threads' writes
+		databaseSubscriptions.sameThread = true;
 		listenToCommits(table.primaryStore, table.auditStore);
 	} else {
 		databaseSubscriptions = allSubscriptions[path] || (allSubscriptions[path] = []);
@@ -157,7 +159,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		if (!databaseSubscriptions.progressConsumers) startProgressTracking(databaseSubscriptions, table.auditStore);
 		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
 		subscription.reportsProgress = true;
-		subscription.registeredThrough = databaseSubscriptions.dispatchedThrough;
+		subscription.registeredThrough = databaseSubscriptions.certifiedThrough;
 		if (subscription.registeredThrough === undefined && startBound)
 			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
@@ -237,6 +239,7 @@ function startProgressTracking(databaseSubscriptions: any, auditStore: any) {
 	databaseSubscriptions.pendingProgressKey = undefined;
 	// a key left by an earlier stretch of tracking does not cover what was dispatched untracked since
 	databaseSubscriptions.dispatchedThrough = undefined;
+	databaseSubscriptions.certifiedThrough = undefined;
 	// the log store ends a failed log's iteration quietly, and nothing after lost records can be certified
 	if (rangeFailures(auditStore.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
 }
@@ -271,11 +274,35 @@ export function deliveryCertified(subscription: any): boolean {
 }
 
 /**
- * The key of the newest transaction every record of which has been dispatched to every subscriber
- * registered at the time, or undefined before any has been since progress tracking began.
+ * The key below which every local write has been dispatched to every subscriber registered at the time and
+ * none can still land: the newest fully dispatched transaction, held at the ceiling the dispatching pass
+ * captured (`localCeiling`). Undefined before a pass has certified one since progress tracking began.
  */
 export function dispatchedThrough(subscription: any): number | undefined {
-	return subscription.subscriptions?.tables?.envs?.dispatchedThrough;
+	return subscription.subscriptions?.tables?.envs?.certifiedThrough;
+}
+
+/**
+ * Captured before a pass drains the log: a local key at or below it was committed before the capture, so the
+ * drain reads it; a key reserved later is above the capture's sample, and one outstanding at the capture is
+ * above its bound. A reservation is released a microtask after its commit settles and its entry is read only by
+ * the next pass, so a scan after a drain, or on a read, would take a released key for a dispatched one.
+ */
+function localCeiling(auditStore: any): number | undefined {
+	const rootStore = auditStore?.rootStore;
+	if (!rootStore || rootStore.status === 'closed') return;
+	const bound = localStartBound(rootStore);
+	if (bound === undefined) return;
+	return 'above' in bound ? bound.above : positionBefore(bound.atOrAbove);
+}
+
+/** After a complete drain: the raw watermark, held at the pass's ceiling; never lowered. */
+function certifyProgress(subscriptions: any): void {
+	const through = subscriptions.dispatchedThrough;
+	const ceiling = subscriptions.passCeiling;
+	if (through === undefined || ceiling === undefined) return;
+	const certified = ceiling < through ? ceiling : through;
+	if (!(subscriptions.certifiedThrough >= certified)) subscriptions.certifiedThrough = certified;
 }
 
 /**
@@ -435,10 +462,13 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	let trackProgress = subscriptions.progressConsumers > 0 && !subscriptions.progressStopped;
 	let progressKey = trackProgress ? subscriptions.pendingProgressKey : undefined;
 	// the floors a fresh pass starts with are certified once it drains; a continuation keeps its pass's capture
-	if (!subscriptions.passYielded) subscriptions.passCapture = subscriptions.capturedFloors;
+	const freshPass = !subscriptions.passYielded;
+	if (freshPass) subscriptions.passCapture = subscriptions.capturedFloors;
 	subscriptions.dispatching = true;
 	subscriptions.passYielded = false;
 	try {
+		if (freshPass)
+			subscriptions.passCeiling = trackProgress && !subscriptions.sameThread ? localCeiling(auditStore) : undefined;
 		while (true) {
 			let result;
 			try {
@@ -591,8 +621,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		}
 		subscriptions.pendingTxnSubscribers = null;
 		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
-			advanceProgress(subscriptions, progressKey, auditLogIterable);
+			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}
+		// a pass that read every entry to the end certifies up to the ceiling it captured
+		if (trackProgress && !iteratorFailed && rangeFailures(auditLogIterable) === 0) certifyProgress(subscriptions);
+		subscriptions.passCeiling = undefined;
 		subscriptions.pendingProgressKey = undefined;
 		if (subscriptions.passCapture !== undefined) {
 			// a pass that read every entry appended before its capture certifies the capture's floors

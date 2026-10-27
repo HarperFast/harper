@@ -133,19 +133,87 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 			return (((performance.now() - start) / samples) * 1e6).toFixed(0).padStart(6);
 		};
 		const settled = time();
-		// a slot whose claimer has not stored its first bound: the layout is originClosedFloor.ts's
+		// a slot whose claimer has not stored its first bound: the layout is originClosedFloor.ts's (8 header words,
+		// the slot limit at word 5)
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
-		while (Atomics.load(words, 5 + slot) !== 0n || Atomics.load(words, 4 + 1025 + slot * 8) !== 0n) slot--;
-		Atomics.store(words, 5 + slot, 1n << 30n);
+		while (Atomics.load(words, 8 + slot) !== 0n || Atomics.load(words, 8 + 1024 + slot * 8) !== 0n) slot--;
+		const limitBefore = Atomics.load(words, 5);
+		Atomics.store(words, 8 + slot, 1n << 30n);
+		Atomics.store(words, 5, BigInt(slot + 1));
 		let pending;
 		try {
 			pending = time();
 		} finally {
-			Atomics.store(words, 5 + slot, 0n);
+			Atomics.store(words, 8 + slot, 0n);
+			Atomics.store(words, 5, limitBefore);
 		}
 		console.log('');
 		console.log(`  localStartBound, settled      ${settled} ns`);
 		console.log(`  localStartBound, pending      ${pending} ns`);
+	});
+
+	// A progress pass raises `proposed` with every capture (harper#3112), a word every writer thread reads per
+	// reservation: writer throughput with the main thread capturing continuously, against an idle main thread.
+	it('writer threads while the main thread captures the registration sample continuously', async function () {
+		const { Worker } = require('node:worker_threads');
+		const threads = 4;
+		const writesPerThread = 20_000;
+		const epoch = new Int32Array(new SharedArrayBuffer(4));
+		const run = async (capturing) => {
+			const done = [];
+			for (let t = 0; t < threads; t++) {
+				const worker = new Worker(__dirname + '/originClosedFloor-thread.js', {
+					workerData: {
+						mode: 'writer',
+						epoch,
+						tableName: 'OriginFloorBench',
+						writes: writesPerThread,
+						paced: false,
+						attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'payload' }],
+					},
+				});
+				done.push(
+					new Promise((resolve, reject) => {
+						worker.on('message', (message) => {
+							if (message.type === 'done') resolve(worker.terminate());
+							if (message.type === 'error') reject(new Error(message.message));
+						});
+						worker.on('error', reject);
+					})
+				);
+			}
+			const start = performance.now();
+			let captures = 0;
+			let finished = false;
+			Promise.all(done).then(() => (finished = true));
+			while (!finished) {
+				if (capturing) {
+					for (let n = 0; n < 1000; n++) floor.localStartBound(rootStore);
+					captures += 1000;
+				}
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+			return { ms: performance.now() - start, captures };
+		};
+		await run(false);
+		const idle = [];
+		const busy = [];
+		for (let round = 0; round < ROUNDS; round++) {
+			idle.push(await run(false));
+			busy.push(await run(true));
+		}
+		const best = (runs) => Math.min(...runs.map((r) => r.ms));
+		const writes = threads * writesPerThread;
+		const idleMs = best(idle);
+		const busyMs = best(busy);
+		const captureRate = Math.max(...busy.map((r) => r.captures / (r.ms / 1000)));
+		console.log('');
+		console.log(
+			`  ${threads} writer threads, main idle       ${perSecond(writes, idleMs)} op/s\n` +
+				`  ${threads} writer threads, main capturing  ${perSecond(writes, busyMs)} op/s ` +
+				`(${(((busyMs - idleMs) / idleMs) * 100).toFixed(1)}%, ${(((busyMs - idleMs) / writes) * 1e6).toFixed(0)} ns/write; ` +
+				`${captureRate.toFixed(0)} captures/s)`
+		);
 	});
 });
