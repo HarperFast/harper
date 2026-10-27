@@ -9,7 +9,7 @@ const { statusForComponent, internal: statusInternal } = require('#src/component
 const { Resources } = require('#src/resources/Resources');
 const { table, databases } = require('#src/resources/databases');
 const { removeBranches } = require('#src/resources/branchDatabase');
-const { scopedBindings } = require('#src/security/jsLoader');
+const { bindIsolatedApplicationGlobals, scopedBindings } = require('#src/security/jsLoader');
 const { server } = require('#src/server/Server');
 const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
 
@@ -78,6 +78,55 @@ describe('componentLoader branch scope ownership', () => {
 		await child.databases[BASE].Records.put({ id: 'nested' });
 		assert.ok(await Records.get('nested'));
 		assert.strictEqual(await Source.get('nested'), null);
+	});
+
+	describe('the bare databases and tables globals (harper#3053)', () => {
+		let savedGlobals;
+		beforeEach(() => {
+			savedGlobals = { databases: globalThis.databases, tables: globalThis.tables };
+		});
+		afterEach(() => {
+			if (savedGlobals) Object.assign(globalThis, savedGlobals);
+		});
+
+		async function loadBranched(appName, mode) {
+			await moduleAt(directory, '', 'export const bareDatabases = databases;\n');
+			const applicationScope = new ApplicationScope(appName, resources, server);
+			if (mode) applicationScope.mode = mode;
+			const loaded = await loadComponent(directory, resources, 'test', {
+				applicationScope,
+				appName,
+				branchedDatabases: [BASE],
+			});
+			return { applicationScope, loaded, Records: applicationScope.branches.get(BASE).tables.Records };
+		}
+
+		(isLMDB ? it.skip : it)("resolve to the branch in the application's own dedicated worker", async () => {
+			const { applicationScope, Records } = await loadBranched('isolated-owner');
+			assert.strictEqual(globalThis.databases, savedGlobals.databases, 'a shared worker keeps the base globals');
+
+			assert.strictEqual(bindIsolatedApplicationGlobals(applicationScope, 'isolated-owner'), true);
+			assert.strictEqual(globalThis.databases[BASE].Records, Records);
+			assert.strictEqual(globalThis.databases.system, databases.system, 'an unbranched name is the base');
+			await globalThis.databases[BASE].Records.put({ id: 'bare' });
+			assert.ok(await Records.get('bare'));
+			assert.strictEqual(await Source.get('bare'), null);
+		});
+
+		(isLMDB ? it.skip : it)("stay the base in another application's dedicated worker", async () => {
+			const { applicationScope } = await loadBranched('isolated-other');
+			assert.strictEqual(bindIsolatedApplicationGlobals(applicationScope, 'someone-else'), false);
+			assert.strictEqual(globalThis.databases, savedGlobals.databases);
+		});
+
+		(isLMDB ? it.skip : it)(
+			'resolve to the branch under the vm loader, which gives the application its own global',
+			async () => {
+				const { loaded, Records } = await loadBranched('vm-owner', 'vm');
+				assert.strictEqual(loaded.bareDatabases[BASE].Records, Records);
+				assert.strictEqual(globalThis.databases, savedGlobals.databases, "the thread's global is untouched");
+			}
+		);
 	});
 
 	it('fails before importing a module when its supplied scope cannot prepare the declared branch', async () => {

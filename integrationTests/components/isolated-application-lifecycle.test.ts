@@ -82,141 +82,187 @@ async function writeDropper(dir: string) {
 	);
 }
 
+function lifecycleHarness(ctx: ContextWithHarper) {
+	let packageDir: string;
+
+	/** A tarball, which installs as a tree of its own; a `file:` directory installs as a link, which is not certified. */
+	async function packageTarball(project: string, release: Release): Promise<string> {
+		const sourceRoot = join(packageDir, `${project}-${release.version}-source`);
+		await mkdir(join(sourceRoot, 'package'), { recursive: true });
+		await writeRelease(join(sourceRoot, 'package'), project, release);
+		const tarball = join(packageDir, `${project}-${release.version}.0.0.tgz`);
+		await writeFile(tarball, Buffer.from(await targz(sourceRoot), 'base64'));
+		return `file:${tarball}`;
+	}
+
+	const auth = () =>
+		`Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
+
+	async function rawOperation(body: Record<string, unknown>): Promise<{ status: number; body: any }> {
+		const response = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'authorization': auth() },
+			body: JSON.stringify(body),
+		});
+		return { status: response.status, body: await response.json().catch(() => undefined) };
+	}
+
+	async function deployIsolated(project: string, release: Release, isolated = true) {
+		return rawOperation({
+			operation: 'deploy_component',
+			project,
+			package: await packageTarball(project, release),
+			isolated,
+			restart: true,
+		});
+	}
+
+	async function threads(): Promise<ThreadInfo[]> {
+		const info = await sendOperation(ctx.harper, { operation: 'system_information', attributes: ['threads'] });
+		ok(Array.isArray(info.threads), 'system_information reports threads');
+		return (info.threads as ThreadInfo[]).filter((thread) => thread.name === 'http');
+	}
+
+	const ids = (list: ThreadInfo[]) => list.map((thread) => thread.threadId).sort((a, b) => a - b);
+	const pool = (list: ThreadInfo[]) => ids(list.filter((thread) => !thread.application));
+	const dedicatedTo = (list: ThreadInfo[], application: string) =>
+		list.filter((thread) => thread.application === application);
+	const othersThan = (list: ThreadInfo[], application: string) =>
+		ids(list.filter((thread) => thread.application !== application));
+
+	const socketsDir = () => join(ctx.harper.dataRootDir, 'sockets');
+	async function mirrorsOf(application: string): Promise<string[]> {
+		return (await readdir(socketsDir()).catch(() => [] as string[])).filter((name) =>
+			name.startsWith(`app-${application}-`)
+		);
+	}
+
+	async function waitFor<T>(probe: () => Promise<T>, accept: (value: T) => boolean, what: string, ms = 30000) {
+		const deadline = Date.now() + ms;
+		let last: T;
+		do {
+			last = await probe();
+			if (accept(last)) return last;
+			await sleep(200);
+		} while (Date.now() < deadline);
+		throw new Error(`${what}: ${JSON.stringify(last)}`);
+	}
+
+	/** Holds for `ms`: what a stopped worker's restarted copy would undo, it would undo within that window. */
+	async function staysTrue(probe: () => Promise<boolean>, what: string, ms = 3000) {
+		const deadline = Date.now() + ms;
+		while (Date.now() < deadline) {
+			ok(await probe(), what);
+			await sleep(200);
+		}
+	}
+
+	function requestMirror(application: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> {
+		return mirrorsOf(application).then(
+			(mirrors) =>
+				new Promise((resolveRequest, reject) => {
+					const mirror = mirrors.find((name) => name.endsWith(':9927.sock'));
+					if (!mirror) return reject(new Error(`no HTTPS mirror for ${application} among ${mirrors.join(', ')}`));
+					const req = request(
+						{ socketPath: join(socketsDir(), mirror), path, method, headers: { authorization: auth() } },
+						(res) => {
+							let data = '';
+							res.on('data', (chunk) => (data += chunk));
+							res.on('end', () => resolveRequest({ status: res.statusCode ?? 0, body: data }));
+						}
+					);
+					req.on('error', reject);
+					req.end();
+				})
+		);
+	}
+
+	async function dropOnWorker(body: Record<string, unknown>): Promise<any> {
+		const response = await fetch(new URL('/WorkerDrop', ctx.harper.httpURL), {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'authorization': auth() },
+			body: JSON.stringify(body),
+		});
+		const text = await response.text();
+		strictEqual(response.status, 200, text);
+		return JSON.parse(text);
+	}
+
+	async function served(application: string, version: number) {
+		const response = await waitFor(
+			() =>
+				requestMirror(application, `/${resourceName(application)}`).catch((error) => ({
+					status: 0,
+					body: String(error),
+				})),
+			(answer) => answer.status === 200,
+			`${application} never answered through its mirror`
+		);
+		const body = JSON.parse(response.body);
+		strictEqual(body.application, application);
+		strictEqual(body.version, version);
+		return body;
+	}
+
+	async function prepare(): Promise<string> {
+		packageDir = await mkdtemp(join(tmpdir(), 'isolated-lifecycle-'));
+		const dataRootDir = await mkdtemp(
+			join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
+		);
+		ctx.harper = { dataRootDir } as any;
+		return dataRootDir;
+	}
+
+	async function teardown() {
+		await teardownHarper(ctx);
+		if (packageDir) await rm(packageDir, { recursive: true, force: true });
+	}
+
+	return {
+		prepare,
+		teardown,
+		packageTarball,
+		rawOperation,
+		deployIsolated,
+		threads,
+		ids,
+		pool,
+		dedicatedTo,
+		othersThan,
+		mirrorsOf,
+		waitFor,
+		staysTrue,
+		requestMirror,
+		dropOnWorker,
+		served,
+	};
+}
+
 suite(
 	'one isolated application starts and stops without touching the other workers',
 	{ skip: UNSUPPORTED_HERE },
 	(ctx: ContextWithHarper) => {
-		let packageDir: string;
-
-		/** A tarball, which installs as a tree of its own; a `file:` directory installs as a link, which is not certified. */
-		async function packageTarball(project: string, release: Release): Promise<string> {
-			const sourceRoot = join(packageDir, `${project}-${release.version}-source`);
-			await mkdir(join(sourceRoot, 'package'), { recursive: true });
-			await writeRelease(join(sourceRoot, 'package'), project, release);
-			const tarball = join(packageDir, `${project}-${release.version}.0.0.tgz`);
-			await writeFile(tarball, Buffer.from(await targz(sourceRoot), 'base64'));
-			return `file:${tarball}`;
-		}
-
-		const auth = () =>
-			`Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
-
-		async function rawOperation(body: Record<string, unknown>): Promise<{ status: number; body: any }> {
-			const response = await fetch(ctx.harper.operationsAPIURL, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json', 'authorization': auth() },
-				body: JSON.stringify(body),
-			});
-			return { status: response.status, body: await response.json().catch(() => undefined) };
-		}
-
-		async function deployIsolated(project: string, release: Release, isolated = true) {
-			return rawOperation({
-				operation: 'deploy_component',
-				project,
-				package: await packageTarball(project, release),
-				isolated,
-				restart: true,
-			});
-		}
-
-		async function threads(): Promise<ThreadInfo[]> {
-			const info = await sendOperation(ctx.harper, { operation: 'system_information', attributes: ['threads'] });
-			ok(Array.isArray(info.threads), 'system_information reports threads');
-			return (info.threads as ThreadInfo[]).filter((thread) => thread.name === 'http');
-		}
-
-		const ids = (list: ThreadInfo[]) => list.map((thread) => thread.threadId).sort((a, b) => a - b);
-		const pool = (list: ThreadInfo[]) => ids(list.filter((thread) => !thread.application));
-		const dedicatedTo = (list: ThreadInfo[], application: string) =>
-			list.filter((thread) => thread.application === application);
-		const othersThan = (list: ThreadInfo[], application: string) =>
-			ids(list.filter((thread) => thread.application !== application));
-
-		const socketsDir = () => join(ctx.harper.dataRootDir, 'sockets');
-		async function mirrorsOf(application: string): Promise<string[]> {
-			return (await readdir(socketsDir()).catch(() => [] as string[])).filter((name) =>
-				name.startsWith(`app-${application}-`)
-			);
-		}
-
-		async function waitFor<T>(probe: () => Promise<T>, accept: (value: T) => boolean, what: string, ms = 30000) {
-			const deadline = Date.now() + ms;
-			let last: T;
-			do {
-				last = await probe();
-				if (accept(last)) return last;
-				await sleep(200);
-			} while (Date.now() < deadline);
-			throw new Error(`${what}: ${JSON.stringify(last)}`);
-		}
-
-		/** Holds for `ms`: what a stopped worker's restarted copy would undo, it would undo within that window. */
-		async function staysTrue(probe: () => Promise<boolean>, what: string, ms = 3000) {
-			const deadline = Date.now() + ms;
-			while (Date.now() < deadline) {
-				ok(await probe(), what);
-				await sleep(200);
-			}
-		}
-
-		function requestMirror(
-			application: string,
-			path: string,
-			method = 'GET'
-		): Promise<{ status: number; body: string }> {
-			return mirrorsOf(application).then(
-				(mirrors) =>
-					new Promise((resolveRequest, reject) => {
-						const mirror = mirrors.find((name) => name.endsWith(':9927.sock'));
-						if (!mirror) return reject(new Error(`no HTTPS mirror for ${application} among ${mirrors.join(', ')}`));
-						const req = request(
-							{ socketPath: join(socketsDir(), mirror), path, method, headers: { authorization: auth() } },
-							(res) => {
-								let data = '';
-								res.on('data', (chunk) => (data += chunk));
-								res.on('end', () => resolveRequest({ status: res.statusCode ?? 0, body: data }));
-							}
-						);
-						req.on('error', reject);
-						req.end();
-					})
-			);
-		}
-
-		async function dropOnWorker(body: Record<string, unknown>): Promise<any> {
-			const response = await fetch(new URL('/WorkerDrop', ctx.harper.httpURL), {
-				method: 'POST',
-				headers: { 'content-type': 'application/json', 'authorization': auth() },
-				body: JSON.stringify(body),
-			});
-			const text = await response.text();
-			strictEqual(response.status, 200, text);
-			return JSON.parse(text);
-		}
-
-		async function served(application: string, version: number) {
-			const response = await waitFor(
-				() =>
-					requestMirror(application, `/${resourceName(application)}`).catch((error) => ({
-						status: 0,
-						body: String(error),
-					})),
-				(answer) => answer.status === 200,
-				`${application} never answered through its mirror`
-			);
-			const body = JSON.parse(response.body);
-			strictEqual(body.application, application);
-			strictEqual(body.version, version);
-			return body;
-		}
+		const {
+			prepare,
+			teardown,
+			packageTarball,
+			rawOperation,
+			deployIsolated,
+			threads,
+			ids,
+			pool,
+			dedicatedTo,
+			othersThan,
+			mirrorsOf,
+			waitFor,
+			staysTrue,
+			requestMirror,
+			dropOnWorker,
+			served,
+		} = lifecycleHarness(ctx);
 
 		before(async () => {
-			packageDir = await mkdtemp(join(tmpdir(), 'isolated-lifecycle-'));
-			const dataRootDir = await mkdtemp(
-				join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
-			);
-			ctx.harper = { dataRootDir } as any;
+			const dataRootDir = await prepare();
 			await cp(resolve(import.meta.dirname, 'fixtures/isolated-app-two'), join(dataRootDir, 'components', SIBLING), {
 				recursive: true,
 				dereference: true,
@@ -226,10 +272,7 @@ suite(
 			await waitFor(threads, (list) => dedicatedTo(list, SIBLING).length === 1, 'the sibling never got its worker');
 		});
 
-		after(async () => {
-			await teardownHarper(ctx);
-			if (packageDir) await rm(packageDir, { recursive: true, force: true });
-		});
+		after(teardown);
 
 		test('the first deploy of a new isolated application starts only its own worker, certified', async () => {
 			const before = await threads();
@@ -463,6 +506,72 @@ suite(
 			const after = await waitFor(threads, (list) => dedicatedTo(list, 'preview_broken').length === 1, 'no worker');
 			deepStrictEqual(othersThan(after, 'preview_broken'), ids(before));
 			await served('preview_broken', 2);
+		});
+	}
+);
+
+suite(
+	'the threads.maxIsolated budget counts only the applications that get a dedicated worker',
+	{ skip: UNSUPPORTED_HERE },
+	(ctx: ContextWithHarper) => {
+		const { prepare, teardown, rawOperation, deployIsolated, threads, ids, dedicatedTo, othersThan, waitFor, served } =
+			lifecycleHarness(ctx);
+		let refusedRelease: string;
+
+		before(async () => {
+			await prepare();
+			await startHarper(ctx, {
+				config: { threads: { count: POOL, maxIsolated: 1 }, tls: { unixDomainSockets: true } },
+			});
+		});
+
+		after(teardown);
+
+		test('a first release that failed closed holds no place in the budget', async () => {
+			const broken = await deployIsolated('budget_broken', { version: 1, throwAtLoad: true });
+			strictEqual(broken.status, 400, JSON.stringify(broken.body));
+			strictEqual(broken.body.certification?.failed_closed, true, JSON.stringify(broken.body));
+			refusedRelease = broken.body.deployment_id;
+			ok(typeof refusedRelease === 'string', JSON.stringify(broken.body));
+
+			const before = await threads();
+			const { status, body } = await deployIsolated('budget_next', { version: 1 });
+			strictEqual(status, 200, JSON.stringify(body));
+			strictEqual(body.certification, 'certified', JSON.stringify(body));
+			const after = await waitFor(
+				threads,
+				(list) => dedicatedTo(list, 'budget_next').length === 1,
+				'budget_next got no worker'
+			);
+			deepStrictEqual(othersThan(after, 'budget_next'), ids(before), 'every other worker kept its thread');
+			strictEqual((await served('budget_next', 1)).threadId, dedicatedTo(after, 'budget_next')[0].threadId);
+		});
+
+		test('neither its fixed release nor its refused one is admitted while another application holds the only place', async () => {
+			const fixed = await deployIsolated('budget_broken', { version: 2 });
+			strictEqual(fixed.status, 409, JSON.stringify(fixed.body));
+			match(JSON.stringify(fixed.body), /threads\.maxIsolated/);
+
+			const again = await rawOperation({
+				operation: 'deploy_component',
+				project: 'budget_broken',
+				deployment_id: refusedRelease,
+				restart: true,
+			});
+			strictEqual(again.status, 409, JSON.stringify(again.body));
+			match(JSON.stringify(again.body), /threads\.maxIsolated/);
+
+			deepStrictEqual(dedicatedTo(await threads(), 'budget_broken'), []);
+			await served('budget_next', 1);
+		});
+
+		test('and its fixed release is admitted once that place is free', async () => {
+			const dropped = await rawOperation({ operation: 'drop_component', project: 'budget_next' });
+			strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+			const { status, body } = await deployIsolated('budget_broken', { version: 2 });
+			strictEqual(status, 200, JSON.stringify(body));
+			strictEqual(body.certification, 'certified', JSON.stringify(body));
+			await served('budget_broken', 2);
 		});
 	}
 );

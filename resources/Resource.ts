@@ -30,6 +30,7 @@ import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
+import { compareKeys } from 'ordered-binary';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -86,7 +87,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	/** The per-method request contract, when this resource was built via `withSchema`. */
 	static requestContract?: Contract;
 	/** Per-verb `{ query?, body? }` input schemas derived from the request contract, read by OpenAPI/MCP. */
-	static inputSchemas?: { [verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment } };
+	static inputSchemas?: {
+		[verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment; bodyRequired?: boolean };
+	};
 
 	/**
 	 * Declare a per-method request contract and get back a Resource subclass typed by it. Extend the
@@ -125,10 +128,21 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
 	 */
 	static get = transactional(
-		function (resource: any, query: RequestTarget, _request: Context, _data: any) {
+		function (resource: any, query: RequestTarget, request: Context, _data: any) {
+			const loadAsInstance = resource.constructor.loadAsInstance;
+			if (loadAsInstance && query?.select) {
+				if ((query as any).parseError) throw (query as any).parseError;
+				assertNestedQueryOptions(query.select, resource.constructor);
+			}
 			const result = resource.get?.(query);
+			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
+			if (loadAsInstance === false) {
+				return result?.then
+					? result.then((result: any) => authorizeSearchResult(result, request?.user))
+					: authorizeSearchResult(result, request?.user);
+			}
 			// for the new API we always apply select in the instance method
-			if (!resource.constructor.loadAsInstance) return result;
+			if (!loadAsInstance) return result;
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
@@ -1011,7 +1025,7 @@ function transactional(
 }
 
 function authorizeSearchResult(result: any, user: any) {
-	const authorization = result?.[SEARCH_AUTHORIZATION];
+	const authorization = result?.[SEARCH_AUTHORIZATION] ?? (result?.headers && result.data?.[SEARCH_AUTHORIZATION]);
 	return authorization
 		? when(authorization, (state: any) => {
 				if (state && typeof state === 'object') {
@@ -1168,36 +1182,7 @@ export function allowedMethods(resource: any) {
  */
 function selectFromObject(object, propertyResolvers, context) {
 	// TODO: eventually we will do aggregate functions here
-	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
-	if (record) {
-		const ownData = object.getChanges?.();
-		return (property) => {
-			let value, resolver;
-			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
-				return value;
-			}
-			if (ownData && property in ownData) {
-				return ownData[property];
-			} else if (
-				propertyResolvers &&
-				Object.hasOwn(propertyResolvers, property) &&
-				(resolver = propertyResolvers[property])
-			) {
-				return resolver(object, context);
-			} else return record[property];
-		};
-	} else if (propertyResolvers) {
-		return (property) => {
-			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
-			if (resolver) return resolver(object, context);
-			const value = object[property];
-			return typeof value === 'function' ? undefined : value;
-		};
-	} else
-		return (property) => {
-			const value = object[property];
-			return typeof value === 'function' ? undefined : value;
-		};
+	return (property) => readPropertyFromObject(object, property, propertyResolvers, context);
 }
 export function hasNestedQueryOptions(property) {
 	return (
@@ -1215,7 +1200,11 @@ export function assertNestedQueryOptions(select, resource) {
 	for (const property of Array.isArray(select) ? select : []) {
 		if (!property || typeof property !== 'object') continue;
 		const related = resource?.propertyResolvers?.[property.name]?.definition?.tableClass;
-		if (hasNestedQueryOptions(property) && (!resource?._prepareRelationshipSelection || !related))
+		if (
+			((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
+				property.operator !== undefined) &&
+			(!resource?._prepareRelationshipSelection || !related)
+		)
 			throw new ClientError('Nested query constraints require a relationship attribute');
 		assertNestedQueryOptions(property.select || (Array.isArray(property) ? property : undefined), related);
 	}
@@ -1246,7 +1235,7 @@ export function transformForSelect(select, resource) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return resolveSelectedArray(object.map(transform));
-			return selectFromObject(object, propertyResolvers, context)(select);
+			return readPropertyFromObject(object, select, propertyResolvers, context);
 		};
 	else if (typeof select === 'object') {
 		// if it is an array, return an array
@@ -1293,6 +1282,12 @@ export function transformForSelect(select, resource) {
 				});
 			let promises;
 			for (const property of select) {
+				if (property === '*') {
+					for (const key in object) {
+						selectedData[key] = object[key];
+					}
+					continue;
+				}
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {
@@ -1316,19 +1311,138 @@ export function transformForSelect(select, resource) {
 						return selection(typeof object.getRecord === 'function' ? object.getRecord() || object : object);
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
-					if (!subTransforms) subTransforms = Object.create(null);
-					// TODO: Get the resource, cache this transform, and apply above
-					let transform = subTransforms[property.name];
+					if (!subTransforms) subTransforms = new WeakMap();
+					let transform = subTransforms.get(property);
 					if (!transform) {
-						const resource =
+						const subSelect = property.select ?? (Array.isArray(property) ? property : null);
+						const targetResource =
 							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
 								? propertyResolvers[property.name]?.definition?.tableClass
 								: undefined;
-						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
+						const innerTransform =
+							subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
+								? transformForSelect(subSelect, targetResource)
+								: (v) => v;
+						const sort = typeof property.sort === 'object' ? property.sort : null;
+						const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
+						const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
+						if (sort || offset !== undefined || limit !== undefined) {
+							const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
+							for (let clause = sort; clause; clause = clause.next) {
+								sortClauses.push(clause);
+							}
+							const applySubQuery = (resolvedValue) => {
+								if (!resolvedValue || typeof resolvedValue !== 'object' || resolvedValue instanceof Date)
+									return resolvedValue;
+								if (typeof resolvedValue.then === 'function') return resolvedValue.then(applySubQuery);
+								if (Array.isArray(resolvedValue)) {
+									return innerTransform(sortAndSliceArray(resolvedValue, sortClauses, offset, limit, targetResource));
+								}
+								return innerTransform(resolvedValue);
+							};
+							transform = applySubQuery;
+						} else {
+							transform = innerTransform;
+						}
+						subTransforms.set(property, transform);
 					}
 					return transform(value);
 				} else return getProperty(property);
 			} else return property;
 		};
 	}
+}
+
+export function sortAndSliceArray(
+	resolvedValue: any[],
+	sortClauses: { attribute: string | string[]; descending?: boolean }[],
+	offset: number | undefined,
+	limit: number | undefined,
+	targetResource?: any,
+	context?: any
+): any[] {
+	let ordered = resolvedValue;
+	const clauseCount = sortClauses.length;
+	if (clauseCount > 0 && resolvedValue.length > 1) {
+		const resolvers = targetResource?.propertyResolvers;
+		const ctx = context ?? targetResource?.getContext?.();
+		const n = resolvedValue.length;
+		const orderedKeys: any[][] = new Array(clauseCount);
+		for (let c = 0; c < clauseCount; c++) {
+			const attr = sortClauses[c].attribute;
+			const col = new Array(n);
+			for (let i = 0; i < n; i++) {
+				col[i] = getComparableKey(resolvedValue[i], attr, resolvers, ctx);
+			}
+			orderedKeys[c] = col;
+		}
+		const positions = new Array<number>(n);
+		for (let i = 0; i < n; i++) positions[i] = i;
+		positions.sort((posA, posB) => {
+			for (let c = 0; c < clauseCount; c++) {
+				const keys = orderedKeys[c];
+				const diff = sortClauses[c].descending
+					? compareKeys(keys[posB], keys[posA])
+					: compareKeys(keys[posA], keys[posB]);
+				if (diff !== 0) return diff;
+			}
+			return 0;
+		});
+		ordered = new Array(n);
+		for (let i = 0; i < n; i++) ordered[i] = resolvedValue[positions[i]];
+	}
+	if (offset !== undefined || limit !== undefined) {
+		const start = offset ?? 0;
+		ordered = ordered.slice(start, limit !== undefined ? start + limit : undefined);
+	}
+	return ordered;
+}
+
+export function convertToComparableKeys(value) {
+	if (value instanceof Date) return value.getTime();
+	if (Array.isArray(value)) return value.map(convertToComparableKeys);
+	return value;
+}
+
+function readPropertyFromObject(object, property, propertyResolvers, context) {
+	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
+	if (record) {
+		let value, resolver;
+		if (Object.hasOwn(object, property) && typeof (value = object[property]) !== 'function') {
+			return value;
+		}
+		const ownData = object.getChanges?.();
+		if (ownData && property in ownData) {
+			return ownData[property];
+		}
+		if (propertyResolvers && Object.hasOwn(propertyResolvers, property) && (resolver = propertyResolvers[property])) {
+			return resolver(object, context);
+		}
+		return record[property];
+	}
+	if (propertyResolvers) {
+		const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
+		if (resolver) return resolver(object, context);
+	}
+	const value = object[property];
+	return typeof value === 'function' ? undefined : value;
+}
+
+function getComparableKey(item, attribute, resolvers, ctx) {
+	if (item == null || typeof item !== 'object') return undefined;
+	if (Array.isArray(attribute)) {
+		let value = item;
+		let currentResolvers = resolvers;
+		for (const part of attribute) {
+			if (value == null || typeof value !== 'object') return undefined;
+			value = readPropertyFromObject(value, part, currentResolvers, ctx);
+			currentResolvers =
+				currentResolvers && Object.hasOwn(currentResolvers, part)
+					? (currentResolvers[part]?.definition || currentResolvers[part]?.elements?.definition)?.tableClass
+							?.propertyResolvers
+					: undefined;
+		}
+		return convertToComparableKeys(value);
+	}
+	return convertToComparableKeys(readPropertyFromObject(item, attribute, resolvers, ctx));
 }

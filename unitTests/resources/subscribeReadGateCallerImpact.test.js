@@ -349,7 +349,8 @@ describe('Subscribe read gate: caller impact', () => {
 				close: (code, reason) => closes.push({ code, reason }),
 				send: () => {},
 				on: (event, handler) => (handlers[event] = handler),
-				_socket: {},
+				// REST's WebSocket close path detaches its drain listener from the underlying net.Socket
+				_socket: new EventEmitter(),
 			};
 			// an admitted upgrade streams until the socket closes, so wait for the refusal rather than the listener
 			const listening = wsListener(

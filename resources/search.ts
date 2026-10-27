@@ -98,15 +98,7 @@ export function executeConditions(
 			const nextResults = executeCondition(condition);
 			results = results.concat(nextResults);
 		}
-		const returnedIds = new Set();
-		const deduped = results.filter((entry) => {
-			const id = entry.key ?? entry;
-			if (returnedIds.has(id))
-				// skip duplicate ids
-				return false;
-			returnedIds.add(id);
-			return true;
-		});
+		const deduped = distinctKeys(results);
 		// Record guards must hold on the OR union too — loading each surviving record and dropping the
 		// ones the guards reject (transformToEntries loads the record to evaluate a filter). Without this
 		// a row filter would be bypassed by any OR query.
@@ -477,9 +469,39 @@ export class CandidateKeySet {
 		}
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
+	addIfAbsent(primaryKey: Id): boolean {
+		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
+			if (this.has(primaryKey)) return false;
+			this.add(primaryKey);
+			return true;
+		}
+		if (typeof primaryKey === 'bigint') {
+			const number = Number(primaryKey);
+			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
+			this.#holdsBigInt = true;
+		}
+		const identity = writeKeyId(primaryKey);
+		if (this.#encoded.has(identity)) return false;
+		this.#encoded.add(identity);
+		return true;
+	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
+}
+
+export function distinctKeys(entries: any): any {
+	if (Array.isArray(entries)) {
+		const returned = new CandidateKeySet();
+		return entries.filter((entry) => returned.addIfAbsent(entry.key ?? entry));
+	}
+	const distinct = new ExtendedIterable();
+	(distinct as any).iterate = (options) => {
+		const returned = new CandidateKeySet();
+		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
+		return entries.map((entry) => (returned.addIfAbsent(entry.key ?? entry) ? entry : SKIP)).iterate(options);
+	};
+	return distinct;
 }
 
 interface CandidateKeyScan {
@@ -551,9 +573,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// null, not searchByIndex's `true`: `true` sorts ABOVE null and false, so starting there
-			// would drop indexed rows the record predicate's compareKeys admits — an omission the
-			// post-filter cannot undo.
+			// Inclusive null, where searchByIndex starts just above it: the record predicate's compareKeys
+			// admits indexed nulls, and an omission here is one the post-filter cannot undo.
 			start = null;
 			end = value;
 			break;
@@ -598,21 +619,21 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
 	let estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. Only
-	// lt/le widen below that, and the block they add is read FIRST and can dwarf the rest of the
+	// estimateRangeCondition measures the range searchByIndex would run, which excludes the null
+	// block. Only lt/le scan from null, and that block is read FIRST and can dwarf the rest of the
 	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
 	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
 	// per-query cost this is here to avoid. The other comparators' own estimates already cover
 	// whatever they start at.
 	if (comparator === 'lt' || comparator === 'le') {
-		let belowTrue: number | undefined;
+		let nulls: number | undefined;
 		try {
-			belowTrue = index.estimateCount?.({ start: null, end: true })?.count;
+			nulls = index.estimateCount?.({ start: null, end: null, inclusiveEnd: true })?.count;
 		} catch {
 			return undefined;
 		}
-		if (!(belowTrue >= 0)) return undefined;
-		estimatedCount += belowTrue;
+		if (!(nulls >= 0)) return undefined;
+		estimatedCount += nulls;
 	}
 	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
@@ -964,25 +985,34 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
+	// A primary store keeps symbol-keyed metadata (0x02) below `false` and opens at `true`, as it always
+	// has; a secondary index starts just above its null block, which `true` would overshoot past `false`.
+	const openStart = isPrimaryKey ? true : null;
+	const openStartExclusive = !isPrimaryKey;
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
+	const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
 	if (value instanceof Date) value = value.getTime();
 	if (searchCondition.negated) {
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
 		// and exclude matching rows in the filter. Without overriding the range,
 		// the bounded index iteration would only visit *included* rows.
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 		needFullScan = true;
 	} else if (fullTextMode) {
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 	} else
-		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
+		switch (resolvedComparator) {
 			case 'lt':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				break;
 			case 'le':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				inclusiveEnd = true;
 				break;
@@ -1005,7 +1035,8 @@ export function searchByIndex(
 			case 'starts_with':
 				start = value.toString();
 				if (start.length === 0) {
-					start = true;
+					start = openStart;
+					exclusiveStart = openStartExclusive;
 					needFullScan = true;
 				} else stringPrefix = true;
 				break;
@@ -1013,15 +1044,17 @@ export function searchByIndex(
 			case 'gele':
 			case 'gelt':
 			case 'gtlt':
-			case 'gtle':
+			case 'gtle': {
+				rangeBounds(comparator, value);
 				start = value[0];
-				if (start instanceof Date) start = start.getTime();
 				end = value[1];
+				if (start instanceof Date) start = start.getTime();
 				if (end instanceof Date) end = end.getTime();
 				inclusiveEnd =
-					(comparator as any) === 'gele' || (comparator as any) === 'gtle' || (comparator as any) === 'between';
-				exclusiveStart = (comparator as any) === 'gtlt' || (comparator as any) === 'gtle';
+					resolvedComparator === 'gele' || resolvedComparator === 'gtle' || resolvedComparator === 'between';
+				exclusiveStart = resolvedComparator === 'gtlt' || resolvedComparator === 'gtle';
 				break;
+			}
 			case 'equals':
 			case undefined:
 				start = value;
@@ -1033,7 +1066,8 @@ export function searchByIndex(
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
 				// `value` is expected to be an array (empty array matches no rows).
 				if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			case 'ne':
@@ -1047,7 +1081,8 @@ export function searchByIndex(
 			case 'contains':
 			case 'ends_with':
 				// we have to revert to full table scan here
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			default:
@@ -1494,7 +1529,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 	});
 }
 
-const ALTERNATE_COMPARATOR_NAMES = {
+export const ALTERNATE_COMPARATOR_NAMES = {
 	'eq': 'equals',
 	'greater_than': 'gt',
 	'greaterThan': 'gt',
@@ -1520,9 +1555,9 @@ const ALTERNATE_COMPARATOR_NAMES = {
 	'...': 'between',
 };
 
-// Comparators whose value is a list (array) of values. Used to recognize the
+// Canonical comparators whose value is a list (array) of values. Used to recognize the
 // REST `(v1,v2,...)` value syntax during parsing.
-const LIST_VALUE_COMPARATORS = new Set(['in', 'between']);
+const LIST_VALUE_COMPARATORS = new Set(['in', 'between', 'gele', 'gelt', 'gtlt', 'gtle']);
 
 // Base comparators that accept the `not_` prefix to produce a negated form.
 // `not_equal` is an existing alias for `ne` and keeps its existing semantics.
@@ -1561,6 +1596,11 @@ export function resolveComparator(comparator: string | undefined): {
 		}
 	}
 	return { comparator, negated: false };
+}
+
+function rangeBounds(comparator: string, value: any) {
+	if (!Array.isArray(value) || value.length !== 2)
+		throw new ClientError(`"${comparator}" comparator requires a two-element array value`);
 }
 
 /**
@@ -1669,12 +1709,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// if there is a single id we are looking for, we can create a new search condition that the
 								// attribute comparator could eventually use to create a recursive id set
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
-								for (const id of nextFilter.idFilter.idSet) {
-									searchCondition = {
-										attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-										value: id,
-									};
-								}
+								searchCondition = {
+									attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+									value: nextFilter.idFilter.onlyId,
+								};
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
 								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
 							} else
@@ -1746,6 +1784,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'gtlt':
 		case 'gtle':
 		case 'gelt': {
+			rangeBounds(comparator, value);
 			if (value[0] instanceof Date) value[0] = value[0].getTime();
 			if (value[1] instanceof Date) value[1] = value[1].getTime();
 			const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
@@ -1852,13 +1891,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 							(id) => Table.primaryStore.getSync(id)[(recordFilter as any).to]
 						);
 					} else {
-						matchingIds = (searchResults as any).map(flattenKey);
+						matchingIds = searchResults as any;
 					}
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
-					const idSet = new Set(matchingIds);
-					recordFilter.idFilter = (id) => idSet.has(flattenKey(id));
+					const idSet = new CandidateKeySet();
+					let firstId: Id | undefined;
+					for (const id of matchingIds) {
+						if (idSet.size === 0) firstId = id;
+						idSet.add(id);
+					}
+					recordFilter.idFilter = (id) => idSet.has(id);
 					(recordFilter.idFilter as any).idSet = idSet;
+					// the set holds encoded identities; the singleton relationship lookup needs the key itself
+					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
 				}
 			}
 			return matches;
@@ -1887,12 +1933,13 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	let range;
 	switch (searchType) {
 		case 'lt':
-			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
-			// index's `[null, primaryKey]` entries are outside the executed range
-			range = { start: true, end: value };
+			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
+			range = isPrimaryKey ? { start: true, end: value } : { start: null, exclusiveStart: true, end: value };
 			break;
 		case 'le':
-			range = { start: true, end: value, inclusiveEnd: true };
+			range = isPrimaryKey
+				? { start: true, end: value, inclusiveEnd: true }
+				: { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };
@@ -2109,10 +2156,15 @@ export function estimateCondition(table) {
 	}
 	return estimateConditionForTable;
 }
-class SyntaxViolation extends Violation {}
+class SyntaxViolation extends Violation {
+	statusCode = 400;
+}
 const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
-const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
+const VALUE_PARSER = /([^&|=[\]{}]*)([[\]{}]|[&|]=?|=|)/g;
+// Inside a `(...)` group a value may hold one level of balanced parentheses (the `(v1,v2)` list syntax), and an
+// unmatched `)` closes the group
+const PAREN_VALUE_PARSER = /((?:[^&|=()[\]{}]|\([^&|=()[\]{}]*\))*)([()[\]{}]|[&|]=?|=|)/g;
 const FIQL_OPERATOR_NAME = /^[a-zA-Z_][a-zA-Z_0-9]*$/;
 let lastIndex;
 let currentQuery;
@@ -2133,10 +2185,8 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 			parseBlock(currentQuery, '');
 			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
 			if ((currentQuery as any).parseErrorMessage) {
-				(currentQuery as any).parseError = new SyntaxViolation((query as any).parseErrorMessage);
-				if (!query) throw (currentQuery as any).parseError;
+				(currentQuery as any).parseError = new SyntaxViolation((currentQuery as any).parseErrorMessage);
 			}
-			return currentQuery;
 		} catch (error) {
 			error.statusCode = 400;
 			error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
@@ -2147,6 +2197,8 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 				throw error;
 			}
 		}
+		if (!query && (currentQuery as any).parseError) throw (currentQuery as any).parseError;
+		return currentQuery;
 	} else {
 		return query ?? new URLSearchParams(queryToParse);
 	}
@@ -2161,16 +2213,27 @@ function parseBlock(query, expectedEnd) {
 	let parser = QUERY_PARSER;
 	let match;
 	let attribute, comparator, expectingDelimiter, expectingValue;
+	let comparatorChosen = false;
 	let valueDecoder: any = decodeURIComponent;
 	let lastBinaryOperator;
 	while ((match = parser.exec(queryString))) {
 		lastIndex = parser.lastIndex;
+		if (match[0] === '' && lastIndex < queryString.length) {
+			recordError(`unexpected character '${queryString[lastIndex]}'`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		const [, value, operator] = match;
 		if (expectingDelimiter) {
 			if (value) recordError(`expected operator, but encountered '${value}'`);
 			expectingDelimiter = false;
 			expectingValue = false;
 		} else expectingValue = true;
+		if (attribute != null && (operator === '(' || operator === '[' || operator === '{')) {
+			recordError(`unexpected '${operator}' in a value`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		let entry;
 		switch (operator) {
 			case '=':
@@ -2178,8 +2241,10 @@ function parseBlock(query, expectedEnd) {
 					// FIQL operator like =gt= or =starts_with= — accept any identifier
 					// (letters, digits, underscores). Unknown comparator names are
 					// caught at execution time with a clearer error.
-					if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
+					if (comparatorChosen) recordError(`unexpected FIQL operator ${value} after comparator ${comparator}`);
+					else if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
 					else recordError(`invalid FIQL operator ${value}`);
+					comparatorChosen = true;
 					valueDecoder = fullTextComparatorMode(resolveComparator(comparator).comparator)
 						? decodeURIComponent
 						: typedDecoding;
@@ -2187,6 +2252,8 @@ function parseBlock(query, expectedEnd) {
 					// standard equal comparison
 					valueDecoder = decodeURIComponent; // use strict decoding
 					comparator = 'equals'; // strict equals
+					comparatorChosen = false;
+					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 					if (!value) recordError(`attribute must be specified before equality comparator`);
 					attribute = decodeProperty(value);
 				}
@@ -2202,6 +2269,8 @@ function parseBlock(query, expectedEnd) {
 			case '===':
 			case '!==':
 				comparator = SYMBOL_OPERATORS[operator];
+				comparatorChosen = true;
+				if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 				valueDecoder = COERCIBLE_OPERATORS[comparator] ? typedDecoding : decodeURIComponent;
 				if (!value) recordError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
@@ -2214,26 +2283,10 @@ function parseBlock(query, expectedEnd) {
 			case undefined:
 				if (attribute == null) {
 					if (attribute === undefined) {
-						if (expectedEnd)
-							recordError(
-								`expected '${expectedEnd}', but encountered ${operator[0] ? "'" + operator[0] + "'" : 'end of string'}}`
-							);
+						if (expectedEnd && operator) recordError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
 						recordError(`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`);
 					}
-				} else {
-					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
-					const condition = buildCondition(attribute, comparator, value, valueDecoder);
-					if (attribute === '') {
-						// this is a nested condition
-						const lastCondition = query.conditions[query.conditions.length - 1];
-						lastCondition.chainedConditions = lastCondition.chainedConditions || [];
-						lastCondition.chainedConditions.push(condition);
-						lastCondition.operator = lastBinaryOperator;
-					} else {
-						assignOperator(query, lastBinaryOperator);
-						query.conditions.push(condition);
-					}
-				}
+				} else addCondition(query, attribute, comparator, comparatorChosen, value, valueDecoder, lastBinaryOperator);
 				if (operator === '&') {
 					lastBinaryOperator = 'and';
 					attribute = undefined;
@@ -2243,9 +2296,11 @@ function parseBlock(query, expectedEnd) {
 				} else if (operator === '&=') {
 					lastBinaryOperator = 'and';
 					attribute = '';
+					comparatorChosen = false;
 				} else if (operator === '|=') {
 					lastBinaryOperator = 'or';
 					attribute = '';
+					comparatorChosen = false;
 				}
 				break;
 			case ',':
@@ -2268,11 +2323,22 @@ function parseBlock(query, expectedEnd) {
 					case 'limit':
 						switch (args.length) {
 							case 1:
-								query.limit = +args[0];
+								query.limit = args[0] === '' ? NaN : +args[0];
+								if (!Number.isInteger(query.limit) || query.limit < 0) {
+									recordError('limit must be a non-negative integer');
+								}
 								break;
 							case 2:
-								query.offset = +args[0];
-								query.limit = args[1] - query.offset;
+								query.offset = args[0] === '' ? NaN : +args[0];
+								query.limit = (args[1] === '' ? NaN : +args[1]) - query.offset;
+								if (
+									!Number.isInteger(query.offset) ||
+									query.offset < 0 ||
+									!Number.isInteger(query.limit) ||
+									query.limit < 0
+								) {
+									recordError('limit and offset must be non-negative integers');
+								}
 								break;
 							default:
 								recordError('limit must have 1 or 2 arguments');
@@ -2282,7 +2348,7 @@ function parseBlock(query, expectedEnd) {
 						if (Array.isArray(args[0]) && args.length === 1 && !(args[0] as any).name) {
 							query.select = args[0];
 							query.select.asArray = true;
-						} else if (args.length === 1) query.select = args[0];
+						} else if (args.length === 1 && !(args[0] as any).name) query.select = args[0];
 						else if (args.length === 2 && args[1] === '') query.select = args.slice(0, 1);
 						else query.select = args;
 						break;
@@ -2301,7 +2367,11 @@ function parseBlock(query, expectedEnd) {
 				attribute = null;
 				break;
 			case '{':
-				if (query.conditions) recordError('property sets are not allowed in a queries');
+				if (query.conditions) {
+					recordError('property sets are not allowed in a query');
+					lastIndex = queryString.length;
+					return query;
+				}
 				if (!value) recordError('property sets must have a defined parent property name');
 				// this is interpreted as property{subProperty}
 				QUERY_PARSER.lastIndex = lastIndex;
@@ -2328,6 +2398,7 @@ function parseBlock(query, expectedEnd) {
 						// handle the case of a query parameter like property[]=value, using the standard equal behavior
 						valueDecoder = decodeURIComponent; // use strict decoding
 						comparator = 'equals'; // strict equals
+						comparatorChosen = false;
 						attribute = decodeProperty(value);
 						parser.lastIndex = ++lastIndex;
 						break;
@@ -2335,7 +2406,9 @@ function parseBlock(query, expectedEnd) {
 						query.conditions.push(entry);
 						attribute = null;
 					}
-				} else query.push(entry);
+				} else {
+					query.push(entry);
+				}
 				if (queryString[lastIndex] === ',') {
 					parser.lastIndex = ++lastIndex;
 				} else expectingDelimiter = true;
@@ -2347,10 +2420,16 @@ function parseBlock(query, expectedEnd) {
 					// assert that it is expected
 					if (query.conditions) {
 						// finish condition
-						if (attribute) {
-							const condition = buildCondition(attribute, comparator || 'equals', value, valueDecoder);
-							assignOperator(query, lastBinaryOperator);
-							query.conditions.push(condition);
+						if (attribute != null) {
+							addCondition(
+								query,
+								attribute,
+								comparator || 'equals',
+								comparatorChosen,
+								value,
+								valueDecoder,
+								lastBinaryOperator
+							);
 						} else if (value) {
 							recordError('no attribute or comparison specified');
 						}
@@ -2363,13 +2442,31 @@ function parseBlock(query, expectedEnd) {
 			default:
 				recordError(`unexpected operator '${operator}'`);
 		}
-		if (expectedEnd !== ')') {
-			parser = attribute ? VALUE_PARSER : QUERY_PARSER;
-			parser.lastIndex = lastIndex;
+		parser = attribute == null ? QUERY_PARSER : expectedEnd === ')' ? PAREN_VALUE_PARSER : VALUE_PARSER;
+		parser.lastIndex = lastIndex;
+		if (lastIndex === queryString.length) {
+			// a condition still pending at the end of the string is finished by one more (empty) token
+			if (attribute != null && operator) continue;
+			if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
+			return query;
 		}
-		if (lastIndex === queryString.length) return query;
 	}
 	if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
+}
+function addCondition(query, attribute, comparator, comparatorChosen, value, valueDecoder, lastBinaryOperator) {
+	if (!query.conditions) return recordError('conditions/comparisons are not allowed in a property list');
+	if (attribute === '' && !comparatorChosen) return recordError('a chained condition needs a FIQL comparator');
+	const condition = buildCondition(attribute, comparator, value, valueDecoder);
+	if (attribute === '') {
+		const lastCondition = query.conditions[query.conditions.length - 1];
+		if (lastCondition?.attribute == null) return recordError('a chained condition must follow a comparison');
+		lastCondition.chainedConditions = lastCondition.chainedConditions || [];
+		lastCondition.chainedConditions.push(condition);
+		lastCondition.operator = lastBinaryOperator;
+	} else {
+		assignOperator(query, lastBinaryOperator);
+		query.conditions.push(condition);
+	}
 }
 function assignOperator(query, lastBinaryOperator) {
 	if (query.conditions.length > 0) {
@@ -2433,7 +2530,7 @@ function buildCondition(
 	const { comparator: resolvedComparator, negated } = resolveComparator(rawComparator);
 	let value: any;
 	if (
-		LIST_VALUE_COMPARATORS.has(resolvedComparator as string) &&
+		LIST_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[resolvedComparator] ?? resolvedComparator) &&
 		rawValue.length >= 2 &&
 		rawValue.charCodeAt(0) === 0x28 /* ( */ &&
 		rawValue.charCodeAt(rawValue.length - 1) === 0x29 /* ) */

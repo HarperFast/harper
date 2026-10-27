@@ -171,4 +171,34 @@ suite('Schema enforcement features', { skip: skipSuite }, (ctx) => {
 		}
 		assert.deepEqual(swept, ['1', '2', '3']);
 	});
+
+	test('[String] @indexed: a range with a plain-column select projects each record once', async () => {
+		const full = await client.reqRest('/TaggedItem/?tags=ge=alpha').expect(200);
+		const selected = await client.reqRest('/TaggedItem/?tags=ge=alpha&select(id,label)').expect(200);
+		assert.ok(Array.isArray(selected.body), selected.text);
+		assert.deepEqual(
+			selected.body,
+			full.body.map(({ id, label }) => ({ id, label })),
+			selected.text
+		);
+	});
+
+	test('[String] @indexed: a paged range sweep with a plain-column select returns each record once', async () => {
+		const pageSize = 2;
+		const swept = [];
+		for (let offset = 0; offset < 10; offset += pageSize) {
+			const r = await client
+				.reqRest(`/TaggedItem/?tags=ge=alpha&select(id,label)&limit(${offset},${offset + pageSize})`)
+				.expect(200);
+			assert.ok(Array.isArray(r.body), r.text);
+			if (r.body.length === 0) break;
+			assert.ok(r.body.length <= pageSize, `page at offset ${offset} exceeded its limit: ${r.text}`);
+			swept.push(...r.body);
+		}
+		assert.deepEqual(swept, [
+			{ id: '1', label: 'alpha-beta' },
+			{ id: '2', label: 'beta-gamma' },
+			{ id: '3', label: 'gamma-delta' },
+		]);
+	});
 });

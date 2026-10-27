@@ -618,13 +618,16 @@ describe('nested relationship constraints', function () {
 	});
 	for (const id of [undefined, 'p1']) {
 		it(`rejects unsupported plain JSON query constraints before reading ${id || 'a collection'}`, async function () {
-			const target = { select: ['id', { name: 'metadata', limit: 1, select: ['label'] }] };
+			const target = {
+				select: ['id', { name: 'metadata', conditions: [{ attribute: 'label', value: 'kept' }], select: ['label'] }],
+			};
 			await assert.rejects(
 				async () => {
 					if (id) await Parent.get({ id, ...target });
 					else for await (const row of Parent.search(target)) void row;
 				},
-				(error) => error.statusCode === 400
+				(error) =>
+					error.statusCode === 400 && error.message === 'Nested query constraints require a relationship attribute'
 			);
 		});
 	}
@@ -633,9 +636,15 @@ describe('nested relationship constraints', function () {
 			async () =>
 				Parent.get({
 					id: 'p1',
-					select: [{ name: 'metadata', select: [{ name: 'tags', limit: 1, select: ['label'] }] }],
+					select: [
+						{
+							name: 'metadata',
+							select: [{ name: 'tags', conditions: [{ attribute: 'label', value: 'kept' }], select: ['label'] }],
+						},
+					],
 				}),
-			(error) => error.statusCode === 400
+			(error) =>
+				error.statusCode === 400 && error.message === 'Nested query constraints require a relationship attribute'
 		);
 	});
 	it('does not mutate caller selection objects when a nested sort propagates to a relationship', async function () {

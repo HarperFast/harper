@@ -174,8 +174,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    main queues a withdrawal of its slot that stops any worker still in it, which the rollout's close waits for while the
    release stays registered, so a fixed redeploy neither arms nor reconciles before it (not awaited by the decision
    itself, since the worker it stops can be the requester, whose deploy answers only once it reads the decision); and the
-   reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`; refusals that cannot be read start no
-   new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
+   reconcile, boot and deploy admission, which ask one selector (`admittedIsolatedApplications` in
+   `server/threads/isolatedApplications.ts`), refuse it, so it holds no place in `threads.maxIsolated` (refusals that cannot be read start no new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
    the component it is live for, so an unreadable sidecar never lets a refused release load; retention pins its
    predecessor the same way, and pins everything when a record can be attributed to no one. When even the record
    write fails, main refuses it in memory, bound to that deployment id so a later release
@@ -409,10 +409,8 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 - `unset-package` — a payload build removes `package`, `install` and `credentials` and keeps the rest
   (`isolated`, `urlPath`, `host`, `branchedDatabases`), removing the entry if nothing remains. "No package"
   is an opinion: left in place, a cold install resolves the old package over the payload release that is
-  live. This is a behaviour change operators can see. A payload deploy keeps those four but cannot set them,
-  since its build declares no entry, so `deploy_component` refuses each one without a `package` (400) rather
-  than drop it: a dropped `branchedDatabases` would leave the application reading and writing the base
-  databases it asked to fork (harper#3044). Accepting them is harper#3043.
+  live. This is a behaviour change operators can see. A payload deploy setting any of those four (harper#3043) owns all
+  four (as set, else as the entry has them), so a canary restore puts back the replaced release's routing.
 - `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
   clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
   writer.
@@ -544,14 +542,16 @@ later activation displaces it, it becomes dormant again under the same id, withi
 `deployment_stagingRetention_maxCount`. A node holding neither answers 404 (#2315 step 5). Four pieces:
 
 - **Provenance rides the tree.** `buildCandidateApplication` writes `.harper-deployment.json` — `{ v, component,
-deploymentId }` — at the top of every candidate it extracts, after the install and before `.complete`, replacing
-  any marker the payload carried. It moves with the tree through the commit rename, so the live tree always names
-  the build that made it live, and anything else that replaces the directory replaces the marker too: it is
-  absent, never stale. A `file:` link gets none, since its target is not the deploy's to write, and a live link
-  has no provenance whatever its target holds. The tree is the component's own to write, which is why the marker
-  carries only an id: nothing published on activation comes from it. A component rewriting its own marker can
-  mislabel only its own releases. `package_component` and `get_components` leave the top-level marker out; a
-  deeper file of that name is the component's.
+deploymentId }` — at the top of every candidate it extracts, after the install and before `.complete`, replacing any
+  marker the payload carried. It moves with the tree through the commit rename, so the live tree always names the
+  build that made it live, and anything else that replaces the directory replaces the marker too: it is absent, never
+  stale. A `file:` link gets none, since its target is not the deploy's to write, and a live link has no provenance
+  whatever its target holds. The tree is the component's own to write, which is why the marker carries only an id and
+  a preview's metadata: nothing published on activation comes from it. A component rewriting its own marker can
+  mislabel only its own releases. `package_component` and `get_components` leave the top-level marker out; a deeper
+  file of that name is the component's. That metadata (harper#3048, `expiresAt` required) is what the leader's sweep
+  reads to drop an expired preview, with `drop_component` `ifDeploymentId` under the component lock, and what
+  `admitPreviewActivation` counts to cap previews per app (`previews.ts`).
 - **The id's record outlives the swap.** A build whose caller declared what it publishes (`describeArtifact` — every
   `deploy_component`) writes `.artifact.json` before `.complete`, as a stage does, and a committed activation
   keeps `.deploy-staging/<id>` minus its tree and journal: `.component`, `.complete`, `.artifact.json`. That
@@ -755,7 +755,7 @@ is still loaded there, and one deployed without a restart never was. So main add
 the restart takes its turn, only if a pool worker may hold that application (`poolMayHold` in
 `server/threads/manageThreads.js`, from what each worker's loader reported), which is also how an isolation flip
 restarts the pool. A named restart reconciles only that application's dedicated worker, never another one a
-`restart: false` deploy left pending; a pool restart reconciles every one, as before (harper#3045).
+`restart: false` deploy left pending; a pool restart reconciles every one, as before (harper#3045). Because a named reconcile stops no other worker, deploy admission also counts every dedicated worker still running, except one whose refusal withdrew its slot (`isolatedApplicationAdmissionRefusal`).
 
 ## `drop_component`: main owns the whole-component drop
 
@@ -881,8 +881,8 @@ skipped only when it resolves to `PACKAGE_ROOT` (harper#3207), because a nested 
 as a component is that package's dependency, and the target does not reinstall a shipped `node_modules`.
 `scanPackageDirectory()` finds them in its async walk, so `tar-fs`'s synchronous `ignore` does no I/O and the size
 estimate leaves out exactly what the packer does. A scan is not a snapshot: a link created or replaced between the scan
-and the pack is classified by the tree the scan saw. `harperdb` is different: the loader only repairs a link that
-already exists, so omitting one loses it on the target (harper#2577).
+and the pack is classified by the tree the scan saw. A `harperdb` link to `PACKAGE_ROOT` cannot be omitted: the loader only repairs an existing one, and `installApplication` skips installing when `node_modules` exists (harper#2577).
+It ships as an empty 0755 directory the loader relinks, injected after the walk (`finalize: false` plus `finish`), because rewriting the link in `map` would keep its absolute `linkname` with a `/`-joined name; a directory entry over a live link would follow it.
 
 ## Deploy watcher generations preserve logical entry events
 

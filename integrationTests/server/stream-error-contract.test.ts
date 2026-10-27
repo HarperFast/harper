@@ -498,7 +498,7 @@ suite(
 			strictEqual(reuse.responses, 2, 'a keep-alive client must get both responses on one connection');
 		});
 
-		test('control: HEAD does not start or leak a streaming generator', { timeout: 20_000 }, async () => {
+		test('control: HEAD opens and closes a read stream once, not an event stream', { timeout: 20_000 }, async () => {
 			const before = await getProbeJson(restBase, { Authorization: authHeader });
 			const sse = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'head', {
 				method: 'HEAD',
@@ -517,9 +517,14 @@ suite(
 			strictEqual(envelopeReuse.serverClosedEarly, false);
 			strictEqual(envelopeReuse.responses, 2);
 			strictEqual(after.sseHealth.opened, before.sseHealth.opened);
-			strictEqual(after.iterHealth.closed, before.iterHealth.closed);
-			strictEqual(after.envelopeHead.opened, before.envelopeHead.opened);
-			strictEqual(after.envelopeHead.closed, before.envelopeHead.closed);
+			for (const counterName of ['iterHealth', 'envelopeHead']) {
+				strictEqual(after[counterName].opened - before[counterName].opened, 1, `${counterName} must open exactly once`);
+				strictEqual(
+					after[counterName].closed - before[counterName].closed,
+					1,
+					`${counterName} must close exactly once`
+				);
+			}
 		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
@@ -555,6 +560,16 @@ suite(
 			captures.push(cap);
 			assertStartupError(cap, 'QA890-iter-pre-yield');
 			strictEqual(cap.headers['content-encoding'], undefined);
+		});
+
+		test('ndjson: HEAD answers the pre-first-yield startup error status GET does', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterPreYield', () =>
+				rawCapture(restBase, '/IterPreYield/', 'application/x-ndjson', authHeader, 'ndjson', 'head-pre-first-yield', {
+					method: 'HEAD',
+				})
+			);
+			strictEqual(cap.status, 500);
+			strictEqual(cap.decodedBody, '');
 		});
 
 		test('ndjson: a mutating stream uses the in-band error contract instead of a retry-ambiguous 500', async () => {

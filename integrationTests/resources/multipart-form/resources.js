@@ -69,6 +69,20 @@ export class SchemaUpload extends Resource.withSchema({
 	}
 }
 
+export class SchemaRequiredBody extends Resource.withSchema({ patch: { body: t.array(t.string) } }) {
+	patch(_target, data) {
+		return { received: data };
+	}
+}
+
+export class SchemaOptionalBody extends Resource.withSchema({
+	patch: { body: t.object({ title: t.string }).optional },
+}) {
+	patch(_target, data) {
+		return { omitted: data === undefined };
+	}
+}
+
 export class UploadProgress extends Resource {
 	get(target) {
 		return progress.get(target.id) ?? { received: false };

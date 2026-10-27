@@ -69,6 +69,17 @@ operationsApi:
     securePort: 9925
 rootPath: null
 storage:
+  fullText:
+    requestBudgetMilliseconds: 5000
+    maxRawHitsPerRequest: 10000
+    maxResultsPerRequest: 10000
+    runtime:
+      maxResidentIndexes: 128
+      maxIndexingThreads: 128
+      maxSearchThreads: 256
+      maxWriterMemoryBytes: 4294967296
+      maxQueuedBytes: 8589934592
+      maxExpensiveSearches: 8
   writeAsync: false
   caching: true
   compression: true

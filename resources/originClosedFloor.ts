@@ -32,7 +32,7 @@ const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
 const boundIndex = (slot: number) => BOUND_WORDS_OFFSET + slot * BOUND_STRIDE;
 const BUFFER_KEY = 'origin-closed-floor';
 export const ORIGIN_FLOOR_TICK_MS = 5000;
-const SENTINEL_RETRIES = 8;
+const PENDING_RETRIES = 8;
 const MAX_TIMESTAMP = 8.64e15;
 
 export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
@@ -79,10 +79,14 @@ class ThreadRegistry {
 	private outstanding = 0;
 	private retired = false;
 	private released = 0;
+	private settledBound = Infinity;
 
 	constructor(rootStore: RocksDatabase) {
 		this.rootStore = rootStore;
 		this.words = new BigInt64Array(rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES)));
+		// a reservation's pending bound is `proposed` as it starts, so it must never be 0
+		if (Atomics.load(this.words, WORD_PROPOSED) === 0n)
+			storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());
 	}
 
 	private claimSlot(): number {
@@ -92,6 +96,7 @@ class ThreadRegistry {
 			if (Atomics.load(this.words, index) === owner) return slot;
 			if (Atomics.compareExchange(this.words, index, 0n, owner) === 0n) {
 				Atomics.store(this.words, boundIndex(slot), INFINITY_BITS);
+				this.settledBound = Infinity;
 				return slot;
 			}
 		}
@@ -167,7 +172,9 @@ class ThreadRegistry {
 	}
 
 	private publish(bound: number): void {
-		if (this.slot >= 0) Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
+		if (this.slot < 0) return;
+		this.settledBound = bound;
+		Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
 	}
 
 	/**
@@ -208,7 +215,10 @@ class ThreadRegistry {
 	reserve(handle: RocksTransaction, explicit: number | undefined): number {
 		const words = this.words;
 		if (this.slot < 0) this.slot = this.claimSlot();
-		this.publish(0);
+		// Pending until the key is decided, carrying a lower bound on it, negated: admission below compares the
+		// key against `proposed` after this store, and every outstanding key is at or above the settled bound.
+		const pending = Math.min(this.settledBound, fromBits(Atomics.load(words, WORD_PROPOSED)));
+		Atomics.store(words, boundIndex(this.slot), toBits(-pending));
 		try {
 			const current = handle.getTimestamp();
 			const bits = toBits(current);
@@ -247,22 +257,33 @@ class ThreadRegistry {
 		for (let slot = 0; slot < SLOTS; slot++) {
 			const owner = Atomics.load(this.words, THREAD_WORDS_OFFSET + slot);
 			if (owner === 0n) continue;
-			const bound = fromBits(Atomics.load(this.words, boundIndex(slot)));
+			const bound = Math.abs(fromBits(Atomics.load(this.words, boundIndex(slot))));
 			if (bound !== Infinity) result.push({ threadId: Number(owner & ~RETIRED_BIT) - 1, bound });
 		}
 		return result;
 	}
 
+	/**
+	 * The lowest bound over owned slots, negated while any slot is pending: a reservation in progress (its
+	 * magnitude still bounds that thread), or a `0` — the initial word of a slot whose claimer has not stored
+	 * its first bound, and so has reserved nothing yet. A reused slot's stale word in that window only errs low.
+	 */
 	minBound(): number {
 		let min = Infinity;
+		let pending = false;
 		for (let slot = 0; slot < SLOTS; slot++) {
 			if (Atomics.load(this.words, THREAD_WORDS_OFFSET + slot) === 0n) continue;
 			const bits = Atomics.load(this.words, boundIndex(slot));
-			if (bits === 0n) return 0;
-			const bound = fromBits(bits);
-			if (bound < min) min = bound;
+			if (bits > 0n) {
+				const bound = fromBits(bits);
+				if (bound < min) min = bound;
+				continue;
+			}
+			pending = true;
+			const bound = -fromBits(bits);
+			if (bound > 0 && bound < min) min = bound;
 		}
-		return min;
+		return pending ? -min : min;
 	}
 }
 
@@ -362,16 +383,37 @@ export function publishOriginFloor(rootStore: RocksDatabase, floor: number): voi
  * `null`: a thread was mid-reservation on every read; the caller retries after a yield, not a tick.
  */
 export function certifyOriginFloor(rootStore: RocksDatabase): number | null | undefined {
+	const closed = sampleClosedBounds(rootStore);
+	if (!closed.settled) return null;
+	const candidate = Math.min(closed.sample, closed.bound);
+	if (toBits(candidate) <= Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED)) return;
+	return candidate;
+}
+
+/**
+ * Where a new local reader starts so it skips no key reserved now or later: `atOrAbove` is the lowest
+ * outstanding reservation (the start is just below it), and `above` is a sample every later key exceeds.
+ * A thread still mid-reservation after the retries contributes the lower bound its slot carries.
+ */
+export function localStartBound(rootStore: RocksDatabase): { atOrAbove: number } | { above: number } | undefined {
+	// a closed store's registry is retired; recreating it would retain the closed store
+	if (rootStore.status === 'closed') return;
+	// A floor published before the sample bounds every key still outstanding at the scan, and is the tighter
+	// bound when a carried one is stale. One read after the scan could pass a key the scan saw commit meanwhile.
+	const published = fromBits(Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED));
+	const closed = sampleClosedBounds(rootStore);
+	const bound = Math.max(closed.bound, published);
+	return bound <= closed.sample ? { atOrAbove: bound } : { above: closed.sample };
+}
+
+function sampleClosedBounds(rootStore: RocksDatabase): { sample: number; bound: number; settled: boolean } {
 	const registry = registryFor(rootStore);
 	const words = registry.words;
 	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
 	storeMax(words, WORD_PROPOSED, sample);
-	let bound = 0;
-	for (let attempt = 0; attempt < SENTINEL_RETRIES && bound === 0; attempt++) bound = registry.minBound();
-	if (bound === 0) return null;
-	const candidate = Math.min(sample, bound);
-	if (toBits(candidate) <= Atomics.load(words, WORD_PUBLISHED)) return;
-	return candidate;
+	let bound = registry.minBound();
+	for (let attempt = 1; attempt < PENDING_RETRIES && bound < 0; attempt++) bound = registry.minBound();
+	return bound < 0 ? { sample, bound: -bound, settled: false } : { sample, bound, settled: true };
 }
 
 export function getOriginClosedFloor(
