@@ -221,7 +221,7 @@ describe('cross-database relationship search', function () {
 
 	it('keeps the source handle while a filtered related scan yields across monitor ticks', async function () {
 		if (Emp.primaryStore.path?.endsWith('.mdb')) this.skip();
-		setTxnExpiration(10);
+		setTxnExpiration(2);
 		try {
 			const context = {};
 			const results = await transaction(context, () =>
@@ -236,7 +236,7 @@ describe('cross-database relationship search', function () {
 			const started = performance.now();
 			const ids = [];
 			for await (const entry of results) ids.push(entry.id);
-			assert.ok(performance.now() - started > 30, 'the related scan must span several monitor ticks');
+			assert.ok(performance.now() - started > 10, 'the related scan must span several monitor ticks');
 			assert.deepStrictEqual(ids, ['s1']);
 		} finally {
 			setTxnExpiration(30000);
@@ -267,7 +267,7 @@ describe('cross-database relationship search', function () {
 
 	it('keeps an intermediate hop of a multi-hop join while the last hop scans', async function () {
 		if (Emp.primaryStore.path?.endsWith('.mdb')) this.skip();
-		setTxnExpiration(10);
+		setTxnExpiration(2);
 		try {
 			const context = {};
 			const results = await transaction(context, () =>
@@ -282,7 +282,7 @@ describe('cross-database relationship search', function () {
 			const started = performance.now();
 			const ids = [];
 			for await (const entry of results) ids.push(entry.id);
-			assert.ok(performance.now() - started > 30, 'the last hop must scan across several monitor ticks');
+			assert.ok(performance.now() - started > 10, 'the last hop must scan across several monitor ticks');
 			assert.deepStrictEqual(ids, ['s1']);
 		} finally {
 			setTxnExpiration(30000);
