@@ -936,16 +936,7 @@ paths; `unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists 
 
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
-`LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's
-`metadataFlags` — so a replication sender skips it by a bitmask test without decoding the value.
-Record mutations set both from `options.localOnly`. A publish applies the option only to its message
-audit entry and preserves the existing row bit, because a message does not change the row's replication
-eligibility. The static protocol verbs never carry the option; of the instance verbs only
-`publish(target, message, options)` forwards one. Crash replay re-derives it from the entry, because
-replay re-encodes the record but never re-appends its audit entry (replay transactions are `isRetry`).
-The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
-mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
-Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
+`LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's `metadataFlags` — so a replication sender skips it by a bitmask test without decoding the value. Record mutations set both from `options.localOnly`. A publish applies the option only to its message audit entry and preserves the existing row bit, because a message does not change the row's replication eligibility. The static protocol verbs never carry the option; of the instance verbs only `publish(target, message, options)` forwards one. Crash replay re-derives it from the entry, because replay re-encodes the record but never re-appends its audit entry (replay transactions are `isRetry`). The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are. Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
 
 ## A record's residency is the listed nodes plus the writer, and a patch over a stub stays a stub (`Table.ts` `_writeUpdate`, harper#2257)
 
@@ -1002,4 +993,4 @@ A query compares primary keys by the store's own key encoding (`writeKeyId`), ne
 
 ## Validation keeps a patch operation and coerces only its operand (`Table.ts` `validate`)
 
-A patch value `{ __op__: 'add', value }` (from `Table.patch` or `addTo`/`subtractFrom`) must reach the commit intact: `updateAndFreeze` applies it through `crdt.operations`, and the audit entry keeps it so out-of-order writes can be rebuilt. `validate` therefore admits an operation only on a top-level attribute (the commit applies none nested in a plain sub-object or array: there they fail the type check of a typed field, and under an untyped or `Any` field they are stored as data), only for a registered operation, only on a numeric (`Int`/`Long`/`Float`/`Number`/`BigInt`/`Any`) or untyped attribute, and only with a finite number or bigint operand (a string for `BigInt`). It coerces the operand in place, or replaces a frozen envelope with a new one. It never replaces the operation with the coerced scalar, which would turn an increment into an assignment. An operand whose validity depends on the stored value (a fraction onto a stored bigint, harper#3568) is not caught here. Coerced values are written back whenever they are not `undefined`, since `0n` is falsy. Pinned by `unitTests/resources/validation.test.js`.
+A top-level `{ __op__, value }` patch on a numeric (`Int`/`Long`/`Float`/`Number`/`BigInt`/`Any`) or untyped attribute whose `__op__` is in `crdt.operations` keeps its envelope (replacing it with a scalar turns an increment into an assignment, and `updateAndFreeze` applies no nested envelope) with its finite-number/bigint operand coerced in place or into a new envelope when frozen (`0n` included; stored-value checks are harper#3568), enforced by `unitTests/resources/validation.test.js` (harper#3577).
