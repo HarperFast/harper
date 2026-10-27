@@ -6,6 +6,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { INVALIDATED } = require('#src/resources/Table');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { hostname } = require('node:os');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -15,8 +16,6 @@ function indexedCreatedTimes(Table, id) {
 		.map(({ key }) => key);
 }
 
-// Counts the commits of `id` that fail their optimistic check and retry. Wraps the instance on LMDB and the
-// prototype on RocksDB, so it sees every write to the table.
 function watchConflicts(Table, id) {
 	const watch = { conflicts: 0 };
 	if (isLMDB) {
@@ -25,9 +24,10 @@ function watchConflicts(Table, id) {
 		primaryStore.ifVersion = function (key, version, callback, options) {
 			const resolution = originalIfVersion.call(this, key, version, callback, options);
 			if (key === id)
-				resolution.then((committed) => {
-					if (!committed) watch.conflicts++;
-				});
+				resolution.then(
+					(committed) => !committed && watch.conflicts++,
+					() => {}
+				);
 			return resolution;
 		};
 		watch.restore = () => (primaryStore.ifVersion = originalIfVersion);
@@ -50,8 +50,7 @@ function watchConflicts(Table, id) {
 	return watch;
 }
 
-// Stages `earlier` and then `later` in two open transactions, commits `earlier`, then `later`: `later`
-// takes the newer timestamp but read its base before `earlier` committed, so its commit conflicts
+// `later` takes the newer timestamp but reads its base before `earlier` commits, so its own commit conflicts
 // and the retry applies it, in order, over what `earlier` left.
 async function commitOverEarlier(Table, id, earlier, later) {
 	const staged = (write) => {
@@ -79,15 +78,13 @@ async function commitOverEarlier(Table, id, earlier, later) {
 	return { conflicts: watch.conflicts, earlierRecord };
 }
 
-// The entry a write logged, as a consumer of the log (replication, replay) would read it.
 function lastLoggedWrite(Table, id) {
 	let last;
 	for (const entry of Table.auditStore.getRange({ start: 1 })) if (entry.recordId === id) last = entry;
 	return { version: last.version, value: { ...last.getValue(Table.primaryStore) } };
 }
 
-// Applies a logged patch the way the replication apply loop does, from a peer's log, with a log key that
-// differs from the record version.
+// a log key unequal to the record version, as a write applied from a peer can carry
 async function applyFromPeer(Table, id, delta, version) {
 	const nodeId = getIdOfRemoteNode('created-time-peer', Table.auditStore);
 	const context = { source: {}, sourceApply: true, timestamp: version - 5 };
@@ -101,13 +98,14 @@ describe('@createdTime follows the record a write lands on', function () {
 	this.timeout(10_000);
 	let Item,
 		Replica,
+		Stringly,
 		sequence = 0;
 	const nextId = (label) => `${label}-${++sequence}`;
-	const attributes = [
+	const attributes = (createdAtType = 'Float') => [
 		{ name: 'id', isPrimaryKey: true },
 		{ name: 'name' },
 		{ name: 'sku', indexed: true },
-		{ name: 'createdAt', type: 'Float', assignCreatedTime: true, indexed: true },
+		{ name: 'createdAt', type: createdAtType, assignCreatedTime: true, indexed: true },
 		{ name: 'updatedAt', type: 'Float', assignUpdatedTime: true },
 	];
 	const recordOf = (Table, id) => {
@@ -118,8 +116,11 @@ describe('@createdTime follows the record a write lands on', function () {
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
-		Item = table({ database: 'createdTimeBase', table: 'CreatedTimeBase', attributes, audit: true });
-		Replica = table({ database: 'createdTimeBase', table: 'CreatedTimeBaseReplica', attributes, audit: true });
+		const define = (name, createdAtType) =>
+			table({ database: 'createdTimeBase', table: name, attributes: attributes(createdAtType), audit: true });
+		Item = define('CreatedTimeBase');
+		Replica = define('CreatedTimeBaseReplica');
+		Stringly = define('CreatedTimeBaseString', 'String');
 	});
 
 	describe('over an invalidation stub of a record that was never stored', () => {
@@ -157,6 +158,31 @@ describe('@createdTime follows the record a write lands on', function () {
 				assert.deepEqual(indexedCreatedTimes(Item, id), [original]);
 			});
 		}
+	});
+
+	it('a patch over a residency stub logs no created time over the residents’ own', async () => {
+		const self = global.server.hostname || hostname();
+		const minter = nextId('minter');
+		Item.setResidency(() => ['created-time-resident', self]);
+		try {
+			await Item.put(minter, { id: minter, name: 'minter', sku: 'M' });
+		} finally {
+			Item.setResidency(undefined);
+		}
+		const { residencyId } = Item.primaryStore.getEntry(minter);
+		const id = nextId('elsewhere');
+		const version = Date.now();
+		const nodeId = getIdOfRemoteNode('created-time-peer', Item.auditStore);
+		const context = { source: {}, sourceApply: true, timestamp: version };
+		await transaction(context, async () => {
+			const resource = await Item.getResource(id, context);
+			resource._writeInvalidate(id, undefined, { residencyId, nodeId, version });
+		});
+		const stub = Item.primaryStore.getEntry(id);
+		assert.ok(stub.metadataFlags & INVALIDATED && stub.residencyId, 'the invalidation left a residency stub');
+		assert.equal(stub.value.createdAt, undefined);
+		await Item.patch(id, { name: 'local' });
+		assert.equal(lastLoggedWrite(Item, id).value.createdAt, undefined);
 	});
 
 	describe('a patch that recreates a deleted record', () => {
@@ -208,6 +234,14 @@ describe('@createdTime follows the record a write lands on', function () {
 				await Item.patch(id, { name: 'patched' }, context);
 			});
 			assertRecreated(Item, id);
+		});
+
+		it('formats the created time as its attribute’s type', async () => {
+			const id = nextId('string');
+			await Stringly.put(id, { id, name: 'original', sku: 'O' });
+			await Stringly.delete(id);
+			await Stringly.patch(id, { name: 'patched' });
+			assertRecreated(Stringly, id, new Date(Stringly.primaryStore.getEntry(id).version).toISOString());
 		});
 
 		it('leaves a live record’s created time and the caller’s delta alone', async () => {

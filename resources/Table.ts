@@ -643,14 +643,14 @@ function isPlainData(value: any, budget: { nodes: number }, depth: number): bool
 	const prototype = Object.getPrototypeOf(value);
 	return (prototype === Object.prototype || prototype === null) && hasPlainOwnValues(value, budget, depth);
 }
-// A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
-// records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
-// a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
-// (which reports as frozen and would spread into character/index keys).
 function timestampValue(attribute: Attribute, time: number): Date | string | number {
 	return attribute.type === 'Date' ? new Date(time) : attribute.type === 'String' ? new Date(time).toISOString() : time;
 }
 
+// A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
+// records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
+// a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
+// (which reports as frozen and would spread into character/index keys).
 function isFrozenRecordObject(value: any): boolean {
 	return (
 		value !== null &&
@@ -1758,7 +1758,8 @@ export function makeTable(options): TableResourceClass {
 		const missingKey = primaryKey && record[primaryKey] == null;
 		const missingCreatedTime = createdTimeProperty && record[createdTimeProperty.name] == null;
 		if (!missingKey && !missingCreatedTime) return record;
-		const completed = missingKey ? { [primaryKey]: id, ...record } : { ...record };
+		const completed = { ...record };
+		if (missingKey) completed[primaryKey] = id;
 		if (missingCreatedTime) completed[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
 		return Object.freeze(completed);
 	}
@@ -5728,10 +5729,12 @@ export function makeTable(options): TableResourceClass {
 								// the reloaded commit base, not the pre-read one: a full PUT racing a create
 								// would otherwise stamp a fresh created time over the real one
 								const base = write.entry;
-								// an invalidation stub of a record that was never stored has no created time to keep
+								// a cache stub without a created time was never stored; a residency stub's record lives on its residents
 								if (
 									base?.value &&
-									(base.value[createdTimeProperty.name] != null || !(base.metadataFlags & INVALIDATED))
+									(!(base.metadataFlags & INVALIDATED) ||
+										base.residencyId ||
+										base.value[createdTimeProperty.name] != null)
 								) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
@@ -6684,8 +6687,7 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
-					// A patch that creates the record: validate stamps one only if the base it read was absent too, and a
-					// conflict retry is not re-logged on RocksDB, so every consumer of the logged delta derives these here.
+					// RocksDB logs only the first attempt's delta, which lacks these when that attempt read a live record
 					if (!fullUpdate && existingRecord == null && recordToStore)
 						recordToStore = completeCreatedRecord(recordToStore, id, options?.version ?? txnTime);
 					this.#record = recordToStore;
