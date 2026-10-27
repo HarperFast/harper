@@ -137,9 +137,9 @@ suite('streamed JSON read past the open-transaction limit (harper#2392)', (ctx: 
 	});
 
 	function harperLog(): string {
-		const logDir = (ctx.harper as any).logDir as string | undefined;
-		const path = logDir && join(logDir, 'hdb.log');
-		return path && existsSync(path) ? readFileSync(path, 'utf8') : '';
+		// logDir is set only under HARPER_INTEGRATION_TEST_LOG_DIR; otherwise Harper logs under its root path
+		const path = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		return existsSync(path) ? readFileSync(path, 'utf8') : '';
 	}
 
 	test('control: an unstalled read returns every row as complete JSON', { timeout: 60_000 }, async () => {
