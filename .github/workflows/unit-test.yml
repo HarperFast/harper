@@ -29,7 +29,6 @@ concurrency:
   group: unit-test-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# PR and push runs cover Node 24 and 26; Node 22 runs nightly and on a manual "all" dispatch.
 jobs:
   unit-test:
     name: Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})

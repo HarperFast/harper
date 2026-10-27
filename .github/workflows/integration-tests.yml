@@ -65,8 +65,7 @@ jobs:
         id: set-node-versions
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
-            # PR pushes run the recommended Node version alone to keep the dev loop fast; push to
-            # main/release adds 24, and Node 22 runs only nightly and on a manual "all" dispatch.
+            # PR pushes run the recommended Node version alone to keep the dev loop fast.
             echo "node-versions=[26]" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" == "push" ]; then
             echo "node-versions=[24, 26]" >> $GITHUB_OUTPUT
