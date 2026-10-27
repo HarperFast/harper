@@ -114,7 +114,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
 		} catch (error) {
 			console.error(errorForLog(error));
 		}
-		loadRuntimeModule('dataLayer/backupImport').sweepImportStagingAtStartup();
+		loadRuntimeModule('dataLayer/restoreArchive').sweepImportStagingAtStartup();
 		jobOwnershipRuntimeModule
 			.reconcileInterruptedJobsOnce(restoreOwnedJobs)
 			.catch((error) => console.error(errorForLog(error)));

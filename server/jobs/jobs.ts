@@ -22,7 +22,6 @@ import * as hdbUtil from '../../utility/common_utils.ts';
 import { promisify } from 'node:util';
 import * as fileLoadValidator from '../../validation/fileLoadValidator.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
-import { validateImportBackup } from '../../dataLayer/backupImport.ts';
 import bulkDeleteValidator from '../../validation/bulkDeleteValidator.ts';
 import { deleteTransactionLogsBeforeValidator } from '../../validation/transactionLogValidator.ts';
 import { handleHDBError, ClientError } from '../../utility/errors/hdbError.ts';
@@ -143,9 +142,6 @@ export async function addJob(jsonBody: any) {
 			break;
 		case hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP:
 			await rocksdbBackup.validateRestoreBackup(jsonBody);
-			break;
-		case hdbTerms.OPERATIONS_ENUM.IMPORT_BACKUP:
-			validateImportBackup(jsonBody);
 			break;
 		default:
 			break;

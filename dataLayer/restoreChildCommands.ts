@@ -203,9 +203,9 @@ export async function runRestoreChildCommand(command: RestoreChildCommand, args:
 			return { ok: true };
 		case 'apply-and-prove':
 			return applyAndProve(args);
-		case 'import-archive': {
-			const { importArchive } = await import('./importChildCommands.ts');
-			return importArchive(args);
+		case 'stage-archive': {
+			const { stageArchive } = await import('./archiveStaging.ts');
+			return stageArchive(args);
 		}
 		case 'pre-restore-backup':
 			return {

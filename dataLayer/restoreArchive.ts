@@ -1,6 +1,8 @@
 /**
- * `import_backup`: turns a `get_backup` archive into a verified managed backup in the database's
- * repository — no restore, no restart. Three sources, one pipeline once the bytes are on disk:
+ * `restore_backup` from a `get_backup` archive instead of a managed backup. The archive is staged into
+ * a private, one-backup repository under `<backupsRoot>/<db>/.staging/<id>/repo` — never the
+ * database's own repository — and the restore then publishes from it exactly as from any backup.
+ * Sources:
  *
  * - a multipart upload, spooled raw — no gzip or tar work on the serving thread — into staging;
  * - `server_path`: a file on this machine, read in place (never copied or removed), accepted only
@@ -8,10 +10,10 @@
  *   CLI's `file=` sends it for a local server and uploads otherwise;
  * - `url` (https) or `s3`, fetched by the job.
  *
- * Extraction, validation, conversion and verification all run in the bounded restore child, whose
- * instance slot is the one-import-at-a-time rule and whose OS-released locks survive a dead job
- * thread. Staging lives at `<backupsRoot>/<db>/.staging/<importId>/`; Harper creates `.staging` but
- * only ever removes `<importId>` entries, since it may be a mount point.
+ * Extraction, validation and conversion run in the bounded restore child. A staging area lives while
+ * its job runs, and afterwards for as long as a pin in its repository is live — a failed restore that
+ * began replacing its target keeps its only source. Harper creates `.staging` but only ever removes
+ * `<id>` entries, since it may be a mount point.
  */
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -38,21 +40,17 @@ import { redactUrl } from '../utility/safeFetch.ts';
 import { fileIdentity, isFileIdentity, sameFileIdentity, type FileIdentity } from '../utility/fileIdentity.ts';
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
+import { hasLivePin } from './backupRepository.ts';
+import { stagedRepositoryDir } from './archiveStaging.ts';
 import { DiskLedger, ledgerMeter } from './diskLedger.ts';
-import {
-	backupDirForDatabase,
-	getBackupsRoot,
-	getDatabaseName,
-	requireBooleanOption,
-	requireSuperUser,
-} from './rocksdbBackup.ts';
+import { backupDirForDatabase, getBackupsRoot, getDatabaseName, requireSuperUser } from './rocksdbBackup.ts';
 
 export const IMPORT_STAGING_DIR = '.staging';
 const OWNER_FILE = 'owner.json';
 const SPOOL_FILE = 'archive';
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const SECRET_REQUEST_TIMEOUT_MS = 30_000;
-const IMPORT_CHILD_TIMEOUT_MS = 30 * 60 * 60 * 1000;
+const STAGE_CHILD_TIMEOUT_MS = 30 * 60 * 60 * 1000;
 const IMPORT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ALLOWED_S3_FIELDS = new Set(['bucket', 'key', 'region', 'credentials']);
 
@@ -60,8 +58,8 @@ export function importStagingDir(databaseName: string, importId: string): string
 	return join(backupDirForDatabase(databaseName), IMPORT_STAGING_DIR, importId);
 }
 
-/** Redacts an import request for logs and job rows shown back to the caller. */
-export function describeImportSource(request: any): string {
+/** Where an archive restore came from, redacted for logs, job rows and results. */
+export function describeArchiveSource(request: any): string {
 	if (request.server_path !== undefined) return request.server_path;
 	if (request.url !== undefined) return redactUrl(request.url);
 	if (request.s3 !== undefined) return `s3://${request.s3.bucket}/${request.s3.key}`;
@@ -72,20 +70,32 @@ function isUpload(payload: unknown): payload is Readable {
 	return typeof (payload as Readable)?.pipe === 'function';
 }
 
-function countSources(request: any): number {
+function countArchiveSources(request: any): number {
 	const fields = ['server_path', 'url', 's3', 'staging_id'].filter((field) => request[field] !== undefined).length;
 	return fields + (isUpload(request.payload) ? 1 : 0);
 }
 
-/** Request-time validation, before a job row exists: nothing secret-bearing is persisted unvalidated. */
-export function validateImportBackup(request: any): void {
-	requireSuperUser(request, hdbTerms.OPERATIONS_ENUM.IMPORT_BACKUP);
-	getDatabaseName(request);
-	requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
-	if (countSources(request) !== 1) {
-		throw new ClientError(
-			`import_backup needs exactly one source: file=<path> from the CLI (or a multipart 'payload' upload), url, or s3`
-		);
+/** Whether a restore names an archive rather than a managed backup. */
+export function hasArchiveSource(request: any): boolean {
+	return countArchiveSources(request) > 0 || request.server_path_identity !== undefined;
+}
+
+/**
+ * The archive half of a restore request, checked before any job row exists or any byte is spooled, so
+ * nothing secret-bearing is persisted unvalidated.
+ */
+export function validateArchiveSource(request: any): void {
+	const refuse = (message: string) => {
+		throw new ClientError(message);
+	};
+	if (countArchiveSources(request) > 1) {
+		refuse(`restore_backup takes one archive: file=<path> from the CLI (or a multipart 'payload' upload), url, or s3`);
+	}
+	if (request.backup_id !== undefined)
+		refuse(`'backup_id' names a managed backup; omit it when restoring from an archive`);
+	if (request.immutable_source !== undefined) refuse(`'immutable_source' does not apply to an archive`);
+	if (request.resume !== undefined || request.cancel !== undefined) {
+		refuse(`'resume' and 'cancel' act on a pending restore; send them without an archive`);
 	}
 	// the job removes this directory when it finishes, so it must name an area spoolUpload created
 	if (request.staging_id !== undefined && !IMPORT_ID_PATTERN.test(request.staging_id)) {
@@ -209,15 +219,20 @@ function processInstance(): string | undefined {
 	return loadRuntimeModule('server/threads/manageThreads').processIncarnation;
 }
 
-/** The operation: spools an upload if there is one, then queues the import job. */
-export async function importBackup(request: any): Promise<{ message: string; job_id: string }> {
-	requireSuperUser(request, hdbTerms.OPERATIONS_ENUM.IMPORT_BACKUP);
+/**
+ * The `restore_backup` operation. Without an archive it is the job as it always was; with one it checks
+ * the whole request first, spools an upload, and queues the job with the archive's staging named.
+ */
+export async function restoreBackupRequest(request: any): Promise<{ message: string; job_id: string }> {
+	requireSuperUser(request, hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP);
 	if (request.staging_id !== undefined || request.upload_digest !== undefined) {
 		throw new ClientError(`'staging_id' and 'upload_digest' are set by the server for an upload`);
 	}
-	validateImportBackup(request);
-	if (request.server_path !== undefined) resolveServerPath(request.server_path, request.server_path_identity);
 	const { executeJob } = await import('../server/serverHelpers/serverUtilities.ts');
+	if (!hasArchiveSource(request)) return executeJob(request);
+	const { validateRestoreBackup } = await import('./rocksdbBackup.ts');
+	await validateRestoreBackup(request);
+	if (request.server_path !== undefined) resolveServerPath(request.server_path, request.server_path_identity);
 	if (!isUpload(request.payload)) {
 		// a presigned URL is a bearer credential, and the job row outlives the job in every system backup
 		if (typeof request.url === 'string' && redactUrl(request.url) !== request.url) {
@@ -267,7 +282,7 @@ if (isMainThread) {
 			try {
 				sweepExitedThreadStaging(exitedThreadId);
 			} catch (error) {
-				logger.error('Could not sweep the import staging of an exited thread', error);
+				logger.error('Could not sweep the restore staging of an exited thread', error);
 			}
 		});
 		onMessageByType(hdbTerms.ITC_EVENT_TYPES.IMPORT_SECRET_REQUEST, async (message: any, port: any) => {
@@ -289,7 +304,7 @@ if (isMainThread) {
 			}
 		});
 	} catch (error) {
-		logger.debug?.('import_backup secret requests are unavailable on this process', error);
+		logger.debug?.('restore archive secret requests are unavailable on this process', error);
 	}
 }
 
@@ -303,16 +318,26 @@ async function rolesMissingLocally(roles: unknown): Promise<string[]> {
 		for await (const role of roleTable.search([])) existing.add(role.role ?? role.id);
 		return roles.filter((role) => typeof role === 'string' && !existing.has(role));
 	} catch (error) {
-		logger.debug?.('Could not compare imported role names with local roles', error);
+		logger.debug?.("Could not compare the archive's role names with local roles", error);
 		return [];
 	}
 }
 
-/** The job: everything after the bytes are on disk — or the fetch that puts them there — in the child. */
-export async function importBackupJob(request: any) {
-	const databaseName = getDatabaseName(request);
-	const backupDir = backupDirForDatabase(databaseName);
-	const importId: string = request.staging_id ?? randomUUID();
+/** A staged archive, ready to restore from like any managed backup. */
+export interface StagedArchive {
+	stagingDir: string;
+	backupDir: string;
+	backupId: number;
+	restoredFrom: string;
+	tables: string[];
+	compatibilityWaived: string[];
+	missingRoles: string[];
+}
+
+/** In the restore job: everything after the bytes are on disk — or the fetch that puts them there — in the child. */
+export async function stageArchiveForRestore(request: any, databaseName: string): Promise<StagedArchive> {
+	const stageId: string = request.staging_id ?? randomUUID();
+	const stagingDir = importStagingDir(databaseName, stageId);
 	let s3: Record<string, unknown> | undefined;
 	if (request.s3) {
 		s3 = { bucket: request.s3.bucket, key: request.s3.key, region: request.s3.region };
@@ -332,14 +357,13 @@ export async function importBackupJob(request: any) {
 			s3.credentials = parsed;
 		}
 	}
+	const restoredFrom = describeArchiveSource(request);
 	try {
-		const result: any = await runRestoreChild(
-			'import-archive',
+		const staged: any = await runRestoreChild(
+			'stage-archive',
 			{
 				databaseName,
-				backupDir,
-				importId,
-				stagingDir: importStagingDir(databaseName, importId),
+				stagingDir,
 				serverPath: request.server_path,
 				serverPathIdentity: request.server_path_identity,
 				url: request.url,
@@ -347,21 +371,61 @@ export async function importBackupJob(request: any) {
 				// an upload's own digest pins the bytes the job reads back from staging
 				sha256: request.sha256 ?? request.upload_digest ?? undefined,
 				acceptIncompatible: request.accept_incompatible_backup === true,
-				importedFrom: describeImportSource(request),
+				restoredFrom,
 			},
 			// a pull may itself take a day, before extraction and conversion
-			{ timeoutMs: IMPORT_CHILD_TIMEOUT_MS }
+			{ timeoutMs: STAGE_CHILD_TIMEOUT_MS }
 		);
-		return { ...result, missing_roles: await rolesMissingLocally(result.roles) };
-	} finally {
-		rmSync(importStagingDir(databaseName, importId), { recursive: true, force: true });
+		return {
+			stagingDir,
+			backupDir: staged.backupDir,
+			backupId: staged.backupId,
+			restoredFrom,
+			tables: staged.tables,
+			compatibilityWaived: staged.compatibility_waived ?? [],
+			missingRoles: await rolesMissingLocally(staged.roles),
+		};
+	} catch (error) {
+		rmSync(stagingDir, { recursive: true, force: true });
+		throw error;
 	}
 }
 
+/** The staging area holding a staged repository, or undefined for a managed backup's repository. */
+export function stagingDirOfRepository(backupDir: string): string | undefined {
+	const stagingDir = join(backupDir, '..');
+	return stagedRepositoryDir(stagingDir) === backupDir && join(stagingDir, '..').endsWith(IMPORT_STAGING_DIR)
+		? stagingDir
+		: undefined;
+}
+
 /**
- * Removes staging that no live import owns: a thread-owned area whose thread is gone (on its exit),
- * and, at boot, any area whose owner is not a running job. `owner` is undefined for an area with no
- * owner record — a pull or `server_path` import in flight, or an upload whose record is not yet written.
+ * Removes a staging area once nothing depends on it: no pin in its repository is live. A failed restore
+ * that began replacing its target keeps its pin live through the marker, so its source survives for the
+ * rerun; cleanup that cannot run now is left for the next sweep, never turned into a failed restore.
+ */
+export function releaseStagingIfUnowned(stagingDir: string): boolean {
+	try {
+		if (hasLivePin(stagedRepositoryDir(stagingDir))) return false;
+		rmSync(stagingDir, { recursive: true, force: true });
+		return true;
+	} catch (error) {
+		logger.warn(`Could not remove the restore staging area ${stagingDir}; the next sweep retries`, error);
+		return false;
+	}
+}
+
+/** Once a restore stops depending on a staged archive: removes its area when no pin keeps it. */
+export function releaseArchiveStaging(backupDir: string): void {
+	const stagingDir = stagingDirOfRepository(backupDir);
+	if (stagingDir) releaseStagingIfUnowned(stagingDir);
+}
+
+/**
+ * Removes staging that nothing owns: a thread-owned area whose thread is gone (on its exit), and, at
+ * boot, any area whose owner is not a running job. `owner` is undefined for an area with no owner
+ * record — a pull or `server_path` staging in flight, or an upload whose record is not yet written. An
+ * area whose repository holds a live pin is always kept: a restore depends on it.
  */
 export function sweepImportStaging(isOwned: (owner: any) => boolean): number {
 	let removed = 0;
@@ -378,7 +442,7 @@ export function sweepImportStaging(isOwned: (owner: any) => boolean): number {
 			} catch {
 				owner = undefined;
 			}
-			if (isOwned(owner)) continue;
+			if (isOwned(owner) || hasLivePin(stagedRepositoryDir(dir))) continue;
 			rmSync(dir, { recursive: true, force: true });
 			removed++;
 		}
@@ -400,14 +464,14 @@ export function resetImportStagingSweepForTesting(): void {
 	startupSweepRan = false;
 }
 
-/** Before anything serves: every import job of an earlier process is dead, so none of its staging is owned. */
+/** After startup recovery: every job of an earlier process is dead, so only a live pin keeps its staging. */
 export function sweepImportStagingAtStartup(): void {
 	if (startupSweepRan) return;
 	startupSweepRan = true;
 	try {
 		const removed = sweepImportStaging(() => false);
-		if (removed > 0) logger.info(`Removed ${removed} import staging area(s) left by an earlier process`);
+		if (removed > 0) logger.info(`Removed ${removed} restore staging area(s) left by an earlier process`);
 	} catch (error) {
-		logger.error('Could not sweep import staging at startup', error);
+		logger.error('Could not sweep restore staging at startup', error);
 	}
 }

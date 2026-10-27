@@ -290,34 +290,40 @@ protocol, because "the files were copied" was never proof that the restored gene
   is what lets a crashed offline `system` restore finish. Directory fsync is a no-op where
   unsupported (Windows); the evidence reports `durability: 'no-directory-fsync'` there.
 
-## `import_backup`: sources, staging and the import pipeline (`dataLayer/backupImport.ts`, `dataLayer/importChildCommands.ts`)
+## Restoring from an archive: a private staged repository (`dataLayer/restoreArchive.ts`, `dataLayer/archiveStaging.ts`)
 
-- **Sources and the one root.** Everything Harper writes goes to
-  `<backupsRoot>/<db>/.staging/<importId>/`; Harper creates `.staging` but only ever removes
-  `<importId>` entries, since it may be a mount point. A `server_path` archive is read in place, never
-  copied or removed, and only when `server_path_identity` (device, inode, size, mtime) matches it: a
-  remote caller cannot know those, so a match proves the caller shares this filesystem. A mismatch and
-  a missing file both answer 412, before any job exists, and the CLI's `file=` then uploads instead;
-  the job checks the identity again before it reads.
-- **Staging ownership.** An upload is spooled raw — no gzip or tar work on the serving thread —
-  into staging owned by the receiving thread, and handed to the import (owner rewritten) before the
-  job row exists; the main thread sweeps a dead thread's staging on its exit, and startup sweeps all
-  staging, since every earlier import job is dead by then.
-- **Everything else runs in the restore child**, whose slot is the one-import-at-a-time rule:
-  fetch (`safeFetch`, https only, address-pinned, redirects re-validated, URLs redacted to origin
-  and path), digest, tally, reserve the conversion peak in the ledger, extract through the entry
-  filter (`archiveExtraction.ts`: files and directories only, canonicalized-name collisions, entry
-  and size caps, a meter against gzip bombs), validate every transaction-log store strictly, prove
-  the catalogue's families, `db.backup()` into the repository, snapshot blobs by their recorded root
-  index, verify with the manifest still in memory, and write the completion manifest last — the
-  visibility gate `list_backups` reads — deleting the engine backup on any failure before it.
+- **Invariant.** A `restore_backup` from a `get_backup` archive never writes into the database's backup
+  repository except its own rollback copy. The child stages the archive into a one-backup repository
+  at `<backupsRoot>/<db>/.staging/<id>/repo`, and `publishRestore` / the restart route then run
+  unchanged with that as `backup_dir`, so the target is only ever written by `apply-and-prove`. The
+  receipt's `rollback_dir` (the real repository) is where the rollback copy goes and is pinned;
+  `restored_from` replaces the meaningless private `backup_id` in results.
+- **Sources.** A `server_path` archive is read in place, never copied or removed, and only when
+  `server_path_identity` (device, inode, size, mtime) matches: a remote caller cannot know those, so a
+  match proves a shared filesystem. A mismatch and a missing file both answer 412 before any job
+  exists, and the CLI's `file=` then uploads; the child checks again before reading. An upload is
+  spooled raw into thread-owned staging and handed to the job before the job row exists; `url`/`s3`
+  are fetched by the child. Harper creates `.staging` but only ever removes `<id>` entries.
+- **Staging lifetime is pin liveness.** An area lives while its job runs, then while any pin in its
+  repository is live (`hasLivePin`: target lock, marker, or any receipt, unreadable included). So a
+  failed attempt that began destroying its target keeps its only source — `cancel` drops the receipt
+  but keeps the marker and pins — and a rerun takes the target over (the target's own receipt
+  vouches for the marker's source) and releases the earlier area once it publishes. Releases happen
+  at finish, cancel, supersede, pre-destruction release and abandoned-claim drop; every sweep (thread
+  exit, startup after recovery) also skips pinned areas. Staging directories are fsynced before a
+  receipt can name them.
+- **The child's pipeline** is the bounded restore child's: fetch (`safeFetch`, https only,
+  address-pinned, redirects re-validated, URLs redacted), digest, tally, ledger reservation, extract
+  through the entry filter (`archiveExtraction.ts`), strict transaction-log validation, catalogue
+  proof, `db.backup()` into the private repository, blob snapshot by recorded root index, verify, and
+  the completion manifest last.
 - **The disk ledger (`diskLedger.ts`)** charges each device by its `statfs` id, never by path
   prefix. A sample re-bases only when it is newer than both the previous sample and the last
   charge, because a stale quota sample (re-read for up to ~90 s) cannot see bytes written after it.
   `ENOSPC`/`EDQUOT` from the writer stays authoritative.
 - **Credentials.** S3 accepts only a reference to a `processEnv` secret, resolved by a thread that
-  holds custody (the main thread answers a job worker that does not) and handed to the child over
-  IPC; the plaintext is never in the job row or a log.
+  holds custody and handed to the child over IPC; a presigned URL reaches the job only through the
+  transient, never the job row, and `url`/`s3`/`payload` never reach the operation log.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 

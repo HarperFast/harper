@@ -13,7 +13,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
-import * as backupImport from '../../dataLayer/backupImport.ts';
+import * as restoreArchive from '../../dataLayer/restoreArchive.ts';
 import * as opAuth from '../../utility/operation_authorization.ts';
 import * as jobs from '../jobs/jobs.ts';
 import * as terms from '../../utility/hdbTerms.ts';
@@ -120,7 +120,7 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
 	['set_configuration', new Set(['models'])],
 	// a presigned URL is a bearer credential, and an S3 object names its secret
-	['import_backup', new Set(['url', 's3', 'payload'])],
+	['restore_backup', new Set(['url', 's3', 'payload'])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
 ]);
@@ -841,11 +841,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.PURGE_BACKUPS, new OperationFunctionObject(rocksdbBackup.purgeBackups));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.RESTORE_BACKUP,
-		new OperationFunctionObject(executeJob, rocksdbBackup.restoreBackup)
-	);
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.IMPORT_BACKUP,
-		new OperationFunctionObject(backupImport.importBackup, backupImport.importBackupJob)
+		new OperationFunctionObject(restoreArchive.restoreBackupRequest, rocksdbBackup.restoreBackup)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 

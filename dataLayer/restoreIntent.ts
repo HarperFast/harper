@@ -35,9 +35,11 @@ import {
 } from './restoreMarker.ts';
 import {
 	RESTORE_RECEIPT_SUFFIX,
+	describeRestoreSource,
 	newRestoreReceipt,
 	readRestoreReceipt,
 	readRestoreReceiptFile,
+	rollbackDirOf,
 	removeRestoreReceipt,
 	removeUnreadableRestoreReceipt,
 	writeRestoreReceipt,
@@ -45,6 +47,7 @@ import {
 	type RestoreReceiptRead,
 } from './restoreReceipt.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
+import { releaseArchiveStaging } from './restoreArchive.ts';
 import type { RestoreEvidence } from './restoreChildCommands.ts';
 import {
 	finishCommittedRestore,
@@ -128,7 +131,13 @@ function deferredUntilRestart(receipt: RestoreReceipt, message: string): Deferre
 	return new DeferredJobCompletion(
 		RESTORE_INTENT_OWNER,
 		message,
-		{ database: receipt.database, backup_id: receipt.backup_id, operation_id: receipt.operation_id },
+		{
+			database: receipt.database,
+			...(receipt.restored_from !== undefined
+				? { restored_from: receipt.restored_from }
+				: { backup_id: receipt.backup_id }),
+			operation_id: receipt.operation_id,
+		},
 		requestDrainedRestart
 	);
 }
@@ -137,6 +146,9 @@ export interface RestartRestoreRequest {
 	databaseName: string;
 	databaseDir: string;
 	backupDir: string;
+	/** Where the rollback copy goes; defaults to `backupDir`, which for a staged archive is temporary. */
+	rollbackDir?: string;
+	restoredFrom?: string;
 	requestedBackupId?: number;
 	allowEngineOnly: boolean;
 	acceptIncompatible: boolean;
@@ -153,13 +165,14 @@ export interface RestartRestoreRequest {
  */
 export async function requestRestartRestore(request: RestartRestoreRequest): Promise<DeferredJobCompletion> {
 	const { databaseName, databaseDir, backupDir } = request;
+	const rollbackDir = request.rollbackDir ?? backupDir;
 	await finishOutstandingRestore(databaseDir);
 	const releaseMembership = await acquireMembershipFence();
 	let receipt!: RestoreReceipt;
 	let superseded: RestoreReceipt | undefined;
 	try {
 		assertNoReplicationPeers(databaseName);
-		if (request.retainPrevious) await assertRoomForPreRestoreBackup(databaseName, databaseDir, backupDir);
+		if (request.retainPrevious) await assertRoomForPreRestoreBackup(databaseName, databaseDir, rollbackDir);
 		await withBackupRepositoryLock(backupDir, databaseName, async () => {
 			const selected = await resolveCompleteBackup(
 				backupDir,
@@ -187,6 +200,9 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					}
 					if (existing.receipt.route === 'on_restart') superseded = existing.receipt;
 				}
+				// an inherited rollback copy stays where its own restore put it
+				const plannedRollbackDir =
+					superseded?.pre_restore_backup_id !== undefined ? rollbackDirOf(superseded) : rollbackDir;
 				// a restore that did not finish, or no database at all, leaves no generation to keep
 				const nothingToRetain = restoreMarkerPresent(databaseDir) || !existsSync(join(databaseDir, 'CURRENT'));
 				const planned = newRestoreReceipt({
@@ -197,6 +213,8 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					source_database: databaseName,
 					backup_dir: backupDir,
 					backup_id: selected.backupId,
+					...(request.restoredFrom !== undefined ? { restored_from: request.restoredFrom } : {}),
+					...(plannedRollbackDir !== backupDir ? { rollback_dir: plannedRollbackDir } : {}),
 					job_id: request.jobId,
 					requested_by: request.requestedBy,
 					retain_previous: superseded || nothingToRetain ? false : request.retainPrevious,
@@ -225,7 +243,8 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 				if (superseded) {
 					const supersededPinId = superseded.source_pin_id ?? restorePinId(databaseDir);
 					try {
-						if (supersededPinId !== sourcePinId) unpinBackup(backupDir, supersededPinId);
+						if (supersededPinId !== sourcePinId) unpinBackup(superseded.backup_dir, supersededPinId);
+						releaseArchiveStaging(superseded.backup_dir);
 					} catch (error) {
 						// once no receipt or marker names the database the pin lapses on its own
 						logger.warn(`Could not release the pin of superseded restore ${superseded.operation_id}`, error);
@@ -247,7 +266,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 	}
 	return deferredUntilRestart(
 		receipt,
-		`Restore of database '${databaseName}' from backup ${receipt.backup_id} runs at the next startup; restarting now`
+		`Restore of database '${databaseName}' from ${describeRestoreSource(receipt)} runs at the next startup; restarting now`
 	);
 }
 
@@ -310,6 +329,7 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 	} finally {
 		releaseRestoreLock(lock);
 	}
+	if (cancelled) releaseArchiveStaging(cancelled.backup_dir);
 	if (cancelled?.job_id && cancelled.state !== 'terminal') {
 		await settleRestoreJob(cancelled, hdbTerms.JOB_STATUS_ENUM.ERROR, 'Cancelled').catch((error) =>
 			logger.error(`Could not settle cancelled restore job ${cancelled!.job_id}`, error)
@@ -369,6 +389,7 @@ function dropAbandonedClaim(receipt: RestoreReceipt): boolean {
 			return false;
 		removeRestoreReceipt(lock, receipt.operation_id);
 		releaseReceiptPins(receipt);
+		releaseArchiveStaging(receipt.backup_dir);
 		logger.warn(
 			`Dropped the claim of a restore of '${receipt.database}' that stopped before replacing anything; the database loads as it was`
 		);
@@ -440,9 +461,10 @@ export async function recoverRestoresAtStartup(): Promise<Set<string>> {
 }
 
 async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreReceipt): Promise<RestoreReceipt> {
+	const rollbackDir = rollbackDirOf(receipt);
 	let backupId: number | undefined;
 	if (receipt.pre_restore_started_at !== undefined) {
-		for (const [id, manifest] of await readAllManifests(receipt.backup_dir)) {
+		for (const [id, manifest] of await readAllManifests(rollbackDir)) {
 			if (manifest.pre_restore_for === receipt.operation_id) backupId = id;
 		}
 	} else {
@@ -454,7 +476,7 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 			{
 				databaseName: receipt.database,
 				databasePath: receipt.database_path,
-				backupDir: receipt.backup_dir,
+				backupDir: rollbackDir,
 				operationId: receipt.operation_id,
 			},
 			{
@@ -469,18 +491,16 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 		));
 	}
 	const pinId = preRestorePinId(receipt.operation_id);
-	await withBackupRepositoryLock(receipt.backup_dir, receipt.database, async () => {
+	await withBackupRepositoryLock(rollbackDir, receipt.database, async () => {
 		// deletable until it is pinned, so the pin and the check that it still exists are one step
-		const engineBackupListed = (await listBackupsInDir(receipt.backup_dir)).some(
-			(backup) => backup.backupId === backupId
-		);
-		if (!engineBackupListed || !(await readBackupManifest(receipt.backup_dir, backupId!))) {
+		const engineBackupListed = (await listBackupsInDir(rollbackDir)).some((backup) => backup.backupId === backupId);
+		if (!engineBackupListed || !(await readBackupManifest(rollbackDir, backupId!))) {
 			throw new Error(
 				`The pre-restore backup ${backupId} of '${receipt.database}' was removed before it could be pinned`
 			);
 		}
 		pinBackup(
-			receipt.backup_dir,
+			rollbackDir,
 			pinId,
 			backupId!,
 			`rollback copy for the restore of '${receipt.database}'`,
@@ -568,14 +588,14 @@ async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 		receipt = writeRestoreReceipt(lock, { ...receipt, state: 'committed', evidence: { ...evidence } });
 		committed = true;
 		await finishCommittedRestore(lock, receipt);
-		logger.notify?.(`Restored database '${receipt.database}' from backup ${receipt.backup_id} at startup`);
+		logger.notify?.(`Restored database '${receipt.database}' from ${describeRestoreSource(receipt)} at startup`);
 		return true;
 	} catch (error: any) {
 		// Past the commit only bookkeeping failed, which the next startup finishes: counted as an attempt, it
 		// could turn a published restore terminal and fail its job.
 		if (committed) {
 			throw new Error(
-				`Restored database '${receipt.database}' from backup ${receipt.backup_id}, but could not finish its record; the next startup finishes it`,
+				`Restored database '${receipt.database}' from ${describeRestoreSource(receipt)}, but could not finish its record; the next startup finishes it`,
 				{ cause: error }
 			);
 		}

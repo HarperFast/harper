@@ -91,7 +91,8 @@ export async function runBackupCommand(command: string): Promise<void> {
 				request.allow_engine_only,
 				request.accept_incompatible_backup,
 				request.immutable_source,
-				request.accept_unverified_blobs
+				request.accept_unverified_blobs,
+				request.file === undefined ? undefined : String(request.file)
 			);
 			break;
 		default:

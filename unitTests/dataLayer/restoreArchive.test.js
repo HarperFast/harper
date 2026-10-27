@@ -5,7 +5,6 @@ const assert = require('node:assert');
 const { createHash, randomUUID } = require('node:crypto');
 const {
 	appendFileSync,
-	chmodSync,
 	createWriteStream,
 	existsSync,
 	mkdirSync,
@@ -21,35 +20,41 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
-const { gunzipSync } = require('node:zlib');
 const { pack: tarPack } = require('tar-stream');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
-const { closeDatabase, getDatabases, table } = require('#src/resources/databases');
+const { closeDatabase, getDatabases, resetDatabases, resolveDatabasePath, table } = require('#src/resources/databases');
+const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const { createBlob, getBlobPathsForDatabaseName, getFilePathForBlob } = require('#src/resources/blob');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	backupDirForDatabase,
 	createBackupStream,
 	getBackupsRoot,
+	createBackup,
 	listBackups,
 	listBackupsInDir,
 	restoreBackup,
-	verifyBackup,
+	restoreBackupOffline,
+	validateRestoreBackup,
 } = require('#src/dataLayer/rocksdbBackup');
-const { blobSnapshotDir } = require('#src/dataLayer/blobBackup');
 const { readBackupManifest } = require('#src/dataLayer/backupManifest');
 const { ARCHIVE_MANIFEST_ENTRY } = require('#src/dataLayer/backupArchiveManifest');
 const { fileIdentity } = require('#src/utility/fileIdentity');
-const backupImport = require('#src/dataLayer/backupImport');
+const { readRestoreReceipt, restoreReceiptPath } = require('#src/dataLayer/restoreReceipt');
+const { restoreMarkerPresent } = require('#src/dataLayer/restoreMarker');
+const { readBackupPins } = require('#src/dataLayer/backupRepository');
+const { recoverRestoresAtStartup, resetStartupRecoveryForTesting } = require('#src/dataLayer/restoreIntent');
+const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletion');
+const restoreArchive = require('#src/dataLayer/restoreArchive');
 const {
 	IMPORT_STAGING_DIR,
-	importBackup,
-	importBackupJob,
 	importStagingDir,
+	resetImportStagingSweepForTesting,
+	restoreBackupRequest,
 	sweepImportStaging,
-	validateImportBackup,
-} = backupImport;
+	sweepImportStagingAtStartup,
+} = restoreArchive;
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 const SU = { hdb_user: { username: 'admin', role: { permission: { super_user: true } } } };
@@ -96,13 +101,14 @@ function recordingCalls(implementation) {
 	return recorder;
 }
 
-// The repository as list_backups and the engine see it: an import that failed must leave neither.
+// The repository as list_backups and the engine see it: an archive restore never touches the database's own.
 async function repositoryState(databaseName) {
 	const backupDir = backupDirForDatabase(databaseName);
 	const engine = (await listBackupsInDir(backupDir)).map((backup) => backup.backupId);
 	const manifests = existsSync(join(backupDir, 'manifests')) ? readdirSync(join(backupDir, 'manifests')) : [];
+	const top = existsSync(backupDir) ? readdirSync(backupDir).filter((entry) => entry !== IMPORT_STAGING_DIR) : [];
 	const listed = engine.length ? (await listBackups({ ...SU, database: databaseName })).map((b) => b.backup_id) : [];
-	return { engine, manifests, listed };
+	return { engine, manifests, top, listed };
 }
 
 // A plain tar's entries as [header offset, name, size] — enough to cut and splice entries.
@@ -154,20 +160,112 @@ async function assertSameAsSource(Restored) {
 	assert.ok(restoredBlob.equals(sourceBlob) && restoredBlob.equals(BLOB_BYTES), "the blob bytes are the source's");
 }
 
-describeUnlessLmdb('import_backup', function () {
+describeUnlessLmdb('restore_backup from an archive', function () {
 	this.timeout(120000);
+	const restoreChildRunner = require('#src/dataLayer/restoreChildRunner');
+	const jobs = require('#src/server/jobs/jobs');
 	let tempDir;
 	let gzArchive;
 	let tarArchive;
 	let tarManifest;
-	let gzManifest;
 	let blobRelativePath;
+	let sequence = 0;
+	const created = [];
+	const seededJobs = [];
+
+	function freshName() {
+		const name = `restarc${process.pid}x${++sequence}`;
+		created.push(name);
+		return name;
+	}
+
+	// a live database that differs from the archive in every record and holds one the archive lacks
+	async function seedTarget(name) {
+		const Items = table({
+			table: 'Items',
+			database: name,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'label', indexed: true },
+				{ name: 'pad' },
+				{ name: 'attachment' },
+			],
+		});
+		await Items.put({ id: 'junk', label: 'junk' });
+		await Items.put({ id: 0, label: 'mutated', pad: 'mutated' });
+		await Items.primaryStore.rootStore.flush();
+		return Items;
+	}
+
+	async function assertRestored(name, { reload = false } = {}) {
+		if (reload) resetDatabases();
+		const Restored = await waitFor(() => getDatabases()[name]?.Items, {
+			timeout: 10000,
+			message: 'the restored database was never loaded',
+		});
+		assert.ok(!(await Restored.get('junk')), 'a record the archive lacks is gone');
+		await assertSameAsSource(Restored);
+	}
+
+	async function assertTargetUntouched(name, repositoryBefore) {
+		const dir = resolveDatabasePath(name);
+		const Items = getDatabases()[name].Items;
+		assert.strictEqual((await Items.get('junk')).label, 'junk', 'the target keeps its data');
+		assert.strictEqual((await Items.get(0)).label, 'mutated');
+		assert.strictEqual(readRestoreReceipt(dir).kind, 'absent', 'no receipt');
+		assert.strictEqual(restoreMarkerPresent(dir), false, 'no marker');
+		assert.deepStrictEqual(stagingEntries(name), [], 'staging is removed');
+		assert.deepStrictEqual(await repositoryState(name), repositoryBefore, "the database's own repository is unchanged");
+	}
+
+	function jobTable() {
+		return getDatabases().system[SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
+	}
+
+	async function seedJob() {
+		const id = randomUUID();
+		seededJobs.push(id);
+		await jobTable().put({
+			id,
+			type: 'restore_backup',
+			status: JOB_STATUS_ENUM.IN_PROGRESS,
+			deferred_to: 'restore-intent',
+			start_datetime: Date.now(),
+			created_datetime: Date.now(),
+		});
+		return id;
+	}
+
+	/** restore_backup as its job worker runs it: currentJobId() reads the worker's process name. */
+	async function requestRestore(name, options) {
+		const jobId = await seedJob();
+		const saved = process.env.PROCESS_NAME;
+		process.env.PROCESS_NAME = `JOB-${jobId}`;
+		try {
+			return { jobId, result: await restoreBackup({ ...SU, database: name, ...options }) };
+		} finally {
+			if (saved === undefined) delete process.env.PROCESS_NAME;
+			else process.env.PROCESS_NAME = saved;
+		}
+	}
+
+	async function boot(name) {
+		await closeDatabase(name);
+		resetStartupRecoveryForTesting();
+		return recoverRestoresAtStartup();
+	}
+
+	function receiptOf(dir) {
+		const read = readRestoreReceipt(dir);
+		assert.strictEqual(read.kind, 'valid', `expected a readable receipt, found ${JSON.stringify(read)}`);
+		return read.receipt;
+	}
 
 	before(async function () {
 		this.timeout(120000);
 		await testUtils.ensureSystemTables();
 		setMainIsWorker(true);
-		tempDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.backup-import-'));
+		tempDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.restore-archive-'));
 		const Items = table({
 			table: 'Items',
 			database: SOURCE,
@@ -194,13 +292,17 @@ describeUnlessLmdb('import_backup', function () {
 		await pipeline(createBackupStream(rootStore, SOURCE, true), createWriteStream(gzArchive));
 		await pipeline(createBackupStream(rootStore, SOURCE, false), createWriteStream(tarArchive));
 		tarManifest = firstEntryManifest(readFileSync(tarArchive));
-		gzManifest = firstEntryManifest(gunzipSync(readFileSync(gzArchive)));
 	});
 
 	after(async function () {
 		this.timeout(60000);
-		for (const name of [SOURCE, IMPORTED, FOREIGN, RESTORED]) {
+		for (const id of seededJobs)
+			await jobTable()
+				.delete(id)
+				.catch(() => {});
+		for (const name of [SOURCE, IMPORTED, FOREIGN, RESTORED, ...created]) {
 			await closeDatabase(name).catch(() => {});
+			rmSync(restoreReceiptPath(resolveDatabasePath(name)), { force: true });
 			for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
 			rmSync(backupDirForDatabase(name), { recursive: true, force: true });
 		}
@@ -208,137 +310,129 @@ describeUnlessLmdb('import_backup', function () {
 	});
 
 	describe('server_path', function () {
-		afterEach(function () {
-			for (const name of [IMPORTED, FOREIGN]) rmSync(backupDirForDatabase(name), { recursive: true, force: true });
+		it('restores the archive over a live database in place, adding nothing to its own repository', async function () {
+			const name = freshName();
+			await seedTarget(name);
+			const archiveBefore = readFileSync(gzArchive);
+			const repositoryBefore = await repositoryState(name);
+
+			const result = await restoreBackup({ ...SU, database: name, ...serverFile(gzArchive) });
+
+			assert.strictEqual(result.restored_from, gzArchive);
+			assert.strictEqual(result.backup_id, undefined, 'a private staged repository has no id worth reporting');
+			await assertRestored(name);
+			assert.deepStrictEqual(await repositoryState(name), repositoryBefore);
+			assert.deepStrictEqual(stagingEntries(name), []);
+			assert.ok(readFileSync(gzArchive).equals(archiveBefore), 'the archive is left in place, unchanged');
 		});
 
-		it('turns a server-side .tar.gz into a verified managed backup that restores records and blob bytes', async function () {
-			const before = readFileSync(gzArchive);
-			const result = await importBackupJob({ ...SU, database: IMPORTED, ...serverFile(gzArchive) });
-
-			assert.strictEqual(result.identified, true);
-			assert.deepStrictEqual(result.tables, ['Items']);
-			assert.strictEqual(result.digest, sha256(gzArchive));
-			assert.strictEqual(result.imported_from, gzArchive);
-			assert.strictEqual(result.blobs, true);
-			assert.strictEqual(result.blob_root_count, 1);
-			assert.deepStrictEqual(result.missing_roles, []);
-
-			const listed = await listBackups({ ...SU, database: IMPORTED });
-			assert.deepStrictEqual(
-				listed.map((backup) => [backup.backup_id, backup.blobs]),
-				[[result.backup_id, true]]
-			);
-			await verifyBackup({ ...SU, database: IMPORTED, backup_id: result.backup_id, verify_checksum: true });
-
-			const manifest = await readBackupManifest(backupDirForDatabase(IMPORTED), result.backup_id);
-			assert.deepStrictEqual(manifest.tables, ['Items']);
-			assert.strictEqual(manifest.imported_from, gzArchive);
-			assert.strictEqual(manifest.digest, sha256(gzArchive));
-			assert.deepStrictEqual(manifest.producer, gzManifest);
+		it('restores a plain .tar into a database that does not exist locally', async function () {
+			const name = freshName();
+			assert.strictEqual(getDatabases()[name], undefined, 'precondition: no such local database');
+			const result = await restoreBackup({ ...SU, database: name, ...serverFile(tarArchive) });
+			assert.strictEqual(result.restored_from, tarArchive);
+			await assertRestored(name);
+			assert.deepStrictEqual(stagingEntries(name), []);
 			assert.ok(
-				existsSync(join(blobSnapshotDir(backupDirForDatabase(IMPORTED), result.backup_id), '0', blobRelativePath)),
-				'the archive blob is in the backup snapshot under its root index'
+				existsSync(join(getBlobPathsForDatabaseName(name)[0], blobRelativePath)),
+				'the archive blob is restored into the database blob root'
 			);
-			assert.deepStrictEqual(stagingEntries(IMPORTED), [], 'staging is removed');
-			assert.ok(readFileSync(gzArchive).equals(before), 'the archive is left in place, unchanged');
-
-			await restoreBackup({ ...SU, database: IMPORTED, backup_id: result.backup_id, target_database: RESTORED });
-			const Restored = await waitFor(() => getDatabases()[RESTORED]?.Items, {
-				timeout: 10000,
-				message: 'the restored database was never loaded',
-			});
-			await assertSameAsSource(Restored);
 		});
 
-		it('imports a plain .tar into a database that does not exist locally, and restores it in place', async function () {
-			assert.strictEqual(getDatabases()[FOREIGN], undefined, 'precondition: no such local database');
-			const result = await importBackupJob({ ...SU, database: FOREIGN, ...serverFile(tarArchive) });
-			assert.strictEqual(result.identified, true);
-			assert.strictEqual(result.digest, sha256(tarArchive));
-			const manifest = await readBackupManifest(backupDirForDatabase(FOREIGN), result.backup_id);
-			assert.deepStrictEqual(manifest.producer, tarManifest);
-			assert.strictEqual(manifest.producer.database, SOURCE, 'the producer still names the database it came from');
-			await verifyBackup({ ...SU, database: FOREIGN, backup_id: result.backup_id });
-
-			await restoreBackup({ ...SU, database: FOREIGN, backup_id: result.backup_id });
-			const Restored = await waitFor(() => getDatabases()[FOREIGN]?.Items, {
-				timeout: 10000,
-				message: 'the restored database was never loaded',
+		it('restores into target_database and leaves the source database and its repository alone', async function () {
+			const target = freshName();
+			const repositoryBefore = await repositoryState(SOURCE);
+			const result = await restoreBackup({
+				...SU,
+				database: SOURCE,
+				target_database: target,
+				...serverFile(gzArchive),
 			});
-			await assertSameAsSource(Restored);
+			assert.strictEqual(result.restored_from, gzArchive);
+			await assertRestored(target);
+			assert.deepStrictEqual(await repositoryState(SOURCE), repositoryBefore);
+			assert.deepStrictEqual(stagingEntries(SOURCE), []);
+			assert.strictEqual(tarManifest.database, SOURCE);
+			const Source = getDatabases()[SOURCE].Items;
+			assert.strictEqual((await Source.get(0)).label, RECORDS[0].label, 'the source database is untouched');
 		});
 
-		it('refuses an archive whose sha256 does not match the pinned one, leaving nothing behind', async function () {
+		it('refuses an archive whose sha256 does not match the pinned one, leaving the target untouched', async function () {
+			const name = freshName();
+			await seedTarget(name);
+			const repositoryBefore = await repositoryState(name);
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, ...serverFile(gzArchive), sha256: 'ab'.repeat(32) }),
+				restoreBackup({ ...SU, database: name, ...serverFile(gzArchive), sha256: 'ab'.repeat(32) }),
 				(error) => error.statusCode === 400 && /sha256/.test(error.message)
 			);
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
-			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+			await assertTargetUntouched(name, repositoryBefore);
 			// the same pin, written in upper case, is the same digest
-			const result = await importBackupJob({
+			const result = await restoreBackup({
 				...SU,
-				database: IMPORTED,
+				database: name,
 				...serverFile(gzArchive),
 				sha256: sha256(gzArchive).toUpperCase(),
 			});
-			assert.strictEqual(result.digest, sha256(gzArchive));
+			assert.strictEqual(result.restored_from, gzArchive);
+			await assertRestored(name);
 		});
 
-		it('refuses a pre-manifest archive unless accept_incompatible_backup, which imports it unidentified', async function () {
+		it('refuses a pre-manifest archive unless accept_incompatible_backup', async function () {
 			const tar = readFileSync(tarArchive);
 			const [first, second] = tarEntries(tar);
 			assert.strictEqual(first.name, ARCHIVE_MANIFEST_ENTRY);
 			const stripped = join(tempDir, 'pre-manifest.tar');
 			writeFileSync(stripped, tar.subarray(second.offset));
+			const name = freshName();
+			await seedTarget(name);
+			const repositoryBefore = await repositoryState(name);
 
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, ...serverFile(stripped) }),
+				restoreBackup({ ...SU, database: name, ...serverFile(stripped) }),
 				(error) => error.statusCode === 400 && /first entry must be harper-backup\.json/.test(error.message)
 			);
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
-			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+			await assertTargetUntouched(name, repositoryBefore);
 
-			const result = await importBackupJob({
+			const result = await restoreBackup({
 				...SU,
-				database: IMPORTED,
+				database: name,
 				...serverFile(stripped),
 				accept_incompatible_backup: true,
 			});
-			assert.strictEqual(result.identified, false);
-			assert.strictEqual(result.blobs, true, 'blob roots found in the tree stand in for the missing manifest');
-			const manifest = await readBackupManifest(backupDirForDatabase(IMPORTED), result.backup_id);
-			assert.strictEqual(manifest.producer, undefined, 'no producer is invented for an unidentified archive');
-			await verifyBackup({ ...SU, database: IMPORTED, backup_id: result.backup_id });
+			assert.strictEqual(result.restored_from, stripped);
+			await assertRestored(name);
+			assert.deepStrictEqual(stagingEntries(name), []);
 		});
 
-		it('refuses an archive with a symlink entry and leaves nothing in staging or the repository', async function () {
+		it('refuses an archive with a symlink entry, leaving the target untouched', async function () {
 			const linked = join(tempDir, 'symlink.tar');
 			await packArchive(linked, [
 				{ header: { name: ARCHIVE_MANIFEST_ENTRY }, body: JSON.stringify(tarManifest) },
 				{ header: { name: 'CURRENT' }, body: 'MANIFEST-000001\n' },
 				{ header: { name: 'escape', type: 'symlink', linkname: '/etc/passwd' } },
 			]);
+			const name = freshName();
+			await seedTarget(name);
+			const repositoryBefore = await repositoryState(name);
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, ...serverFile(linked) }),
+				restoreBackup({ ...SU, database: name, ...serverFile(linked) }),
 				(error) => error.statusCode === 400 && /symlink entry/.test(error.message)
 			);
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
-			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+			await assertTargetUntouched(name, repositoryBefore);
 		});
 
-		it('refuses a truncated .tar.gz and leaves nothing behind', async function () {
+		it('refuses a truncated .tar.gz, leaving the target untouched', async function () {
 			const gz = readFileSync(gzArchive);
 			const truncated = join(tempDir, 'truncated.tar.gz');
 			writeFileSync(truncated, gz.subarray(0, Math.floor(gz.length / 2)));
-			await assert.rejects(importBackupJob({ ...SU, database: IMPORTED, ...serverFile(truncated) }));
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
-			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+			const name = freshName();
+			await seedTarget(name);
+			const repositoryBefore = await repositoryState(name);
+			await assert.rejects(restoreBackup({ ...SU, database: name, ...serverFile(truncated) }));
+			await assertTargetUntouched(name, repositoryBefore);
 		});
 
 		describe('a path the request does not describe', function () {
-			const jobs = require('#src/server/jobs/jobs');
 			let restoreAddJob;
 			let addedJobs;
 
@@ -356,7 +450,7 @@ describeUnlessLmdb('import_backup', function () {
 
 			async function assertRefusedBeforeAJob(fields) {
 				await assert.rejects(
-					importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, ...fields }),
+					restoreBackupRequest({ ...SU, operation: 'restore_backup', database: IMPORTED, ...fields }),
 					(error) =>
 						error.statusCode === 412 &&
 						error.message.includes(`file=<path>`) &&
@@ -401,16 +495,18 @@ describeUnlessLmdb('import_backup', function () {
 				writeFileSync(changing, readFileSync(gzArchive));
 				const fields = serverFile(changing);
 				appendFileSync(changing, 'x');
+				const name = freshName();
+				await seedTarget(name);
+				const repositoryBefore = await repositoryState(name);
 				await assert.rejects(
-					importBackupJob({ ...SU, database: IMPORTED, ...fields }),
+					restoreBackup({ ...SU, database: name, ...fields }),
 					(error) => error.statusCode === 412 && error.message.includes('file=<path>')
 				);
-				assert.deepStrictEqual(stagingEntries(IMPORTED), []);
-				assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+				await assertTargetUntouched(name, repositoryBefore);
 			});
 		});
 
-		it('imports through a symlink when the identity is of its target', async function () {
+		it('restores through a symlink when the identity is of its target', async function () {
 			const link = join(tempDir, 'link.tar.gz');
 			rmSync(link, { force: true });
 			try {
@@ -420,71 +516,202 @@ describeUnlessLmdb('import_backup', function () {
 				if (process.platform === 'win32' && error.code === 'EPERM') this.skip();
 				throw error;
 			}
+			const name = freshName();
 			const fields = { server_path: link, server_path_identity: fileIdentity(statSync(gzArchive)) };
-			const result = await importBackupJob({ ...SU, database: IMPORTED, ...fields });
-			assert.strictEqual(result.imported_from, link);
-			assert.strictEqual(result.digest, sha256(gzArchive));
+			const result = await restoreBackup({ ...SU, database: name, ...fields });
+			assert.strictEqual(result.restored_from, link);
+			await assertRestored(name);
 		});
 
-		const canChmod = process.platform !== 'win32' && process.getuid?.() !== 0;
-		(canChmod ? it : it.skip)(
-			'removes the converted engine backup and its blob snapshot when the completion manifest cannot be written',
-			async function () {
-				const backupDir = backupDirForDatabase(IMPORTED);
-				const manifestsDir = join(backupDir, 'manifests');
-				mkdirSync(manifestsDir, { recursive: true });
-				chmodSync(manifestsDir, 0o555);
+		describe('a failure after the target was destroyed', function () {
+			it('keeps the staged archive for the rerun, and releases it once the rerun publishes', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				const dir = resolveDatabasePath(name);
+				const realRun = restoreChildRunner.runRestoreChild;
+				const restoreRunner = replaceProperty(restoreChildRunner, 'runRestoreChild', (command, args, options) => {
+					if (command !== 'apply-and-prove') return realRun(command, args, options);
+					options.beforeDestruction();
+					return Promise.reject(new Error('apply failed after the purge'));
+				});
 				try {
 					await assert.rejects(
-						importBackupJob({ ...SU, database: IMPORTED, ...serverFile(gzArchive) }),
-						/EACCES|permission denied/i
+						restoreBackup({ ...SU, database: name, ...serverFile(gzArchive) }),
+						/apply failed after the purge/
 					);
 				} finally {
-					chmodSync(manifestsDir, 0o755);
+					restoreRunner();
 				}
-				assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
-				assert.ok(!existsSync(blobSnapshotDir(backupDir, 1)), 'the blob snapshot is removed');
-				assert.deepStrictEqual(stagingEntries(IMPORTED), [], 'and staging');
-			}
-		);
+
+				assert.strictEqual(restoreMarkerPresent(dir), true, 'the target stays blocked');
+				const failed = receiptOf(dir);
+				assert.strictEqual(failed.restored_from, gzArchive);
+				const [firstId] = stagingEntries(name);
+				assert.strictEqual(stagingEntries(name).length, 1, 'the only source of the restore survives');
+				const firstRepo = join(stagingRoot(name), firstId, 'repo');
+				assert.strictEqual(failed.backup_dir, firstRepo);
+				assert.ok(existsSync(firstRepo), 'its staged repository is intact');
+				assert.strictEqual(readBackupPins(firstRepo).length > 0, true, 'a pin keeps it');
+
+				resetImportStagingSweepForTesting();
+				sweepImportStagingAtStartup();
+				assert.deepStrictEqual(stagingEntries(name), [firstId], 'a startup sweep keeps a pinned staging area');
+
+				const result = await restoreBackup({ ...SU, database: name, ...serverFile(gzArchive) });
+				assert.strictEqual(result.restored_from, gzArchive);
+				await assertRestored(name);
+				assert.deepStrictEqual(stagingEntries(name), [], "the earlier attempt's staging is released too");
+				assert.strictEqual(readRestoreReceipt(dir).kind, 'absent');
+				assert.strictEqual(restoreMarkerPresent(dir), false);
+			});
+		});
+
+		describe('on_restart', function () {
+			it('keeps the staged archive through the job and a startup sweep, then restores it on boot with a rollback in the real repository', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				const dir = resolveDatabasePath(name);
+				const realRepository = backupDirForDatabase(name);
+				const repositoryBefore = await repositoryState(name);
+
+				const { jobId, result } = await requestRestore(name, { on_restart: true, ...serverFile(gzArchive) });
+
+				assert.ok(result instanceof DeferredJobCompletion);
+				const receipt = receiptOf(dir);
+				assert.strictEqual(receipt.state, 'pending');
+				assert.strictEqual(receipt.route, 'on_restart');
+				assert.strictEqual(receipt.restored_from, gzArchive);
+				assert.strictEqual(receipt.rollback_dir, realRepository);
+				const [stagingId] = stagingEntries(name);
+				assert.strictEqual(stagingEntries(name).length, 1);
+				assert.strictEqual(receipt.backup_dir, join(stagingRoot(name), stagingId, 'repo'));
+				assert.ok(existsSync(receipt.backup_dir));
+				assert.deepStrictEqual(
+					await repositoryState(name),
+					repositoryBefore,
+					'nothing is added to it before the restart'
+				);
+
+				await closeDatabase(name);
+				resetImportStagingSweepForTesting();
+				sweepImportStagingAtStartup();
+				assert.deepStrictEqual(
+					stagingEntries(name),
+					[stagingId],
+					'a pending receipt keeps its staging through the sweep'
+				);
+				resetDatabases();
+
+				await boot(name);
+
+				assert.strictEqual(readRestoreReceipt(dir).kind, 'absent');
+				await assertRestored(name, { reload: true });
+				assert.deepStrictEqual(stagingEntries(name), [], 'staging is released once the restore published');
+				const settled = await jobTable().get(jobId);
+				assert.strictEqual(settled.status, JOB_STATUS_ENUM.COMPLETE);
+				assert.strictEqual(settled.result.restored_from, gzArchive);
+				assert.strictEqual(settled.result.backup_id, undefined);
+
+				const rollbackId = settled.result.pre_restore_backup_id;
+				assert.ok(Number.isInteger(rollbackId), 'a rollback copy was taken');
+				assert.strictEqual(
+					(await readBackupManifest(realRepository, rollbackId)).pre_restore_for,
+					receipt.operation_id
+				);
+				const listed = await listBackups({ ...SU, database: name });
+				assert.deepStrictEqual(
+					listed.map((backup) => backup.backup_id),
+					[rollbackId]
+				);
+
+				await restoreBackup({ ...SU, database: name, backup_id: rollbackId });
+				const Items = await waitFor(() => getDatabases()[name]?.Items, { message: 'the database never reloaded' });
+				assert.strictEqual((await Items.get('junk')).label, 'junk', 'the pre-restore data is back');
+				assert.strictEqual((await Items.get(0)).label, 'mutated');
+				assert.ok(!(await Items.get('with-blob')));
+			});
+
+			it('removes the staging of a cancelled restore', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				const dir = resolveDatabasePath(name);
+				await requestRestore(name, { on_restart: true, ...serverFile(gzArchive) });
+				assert.strictEqual(stagingEntries(name).length, 1);
+
+				const cancelled = await restoreBackup({ ...SU, database: name, cancel: true });
+
+				assert.ok(cancelled);
+				assert.strictEqual(readRestoreReceipt(dir).kind, 'absent');
+				assert.deepStrictEqual(stagingEntries(name), []);
+				const Items = getDatabases()[name].Items;
+				assert.strictEqual((await Items.get('junk')).label, 'junk', 'the live database is untouched');
+			});
+		});
+
+		describe('offline', function () {
+			it('restores a closed database from the file, leaving no staging', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				await closeDatabase(name);
+				const archiveBefore = readFileSync(gzArchive);
+
+				const result = await restoreBackupOffline(
+					name,
+					undefined,
+					undefined,
+					undefined,
+					undefined,
+					undefined,
+					undefined,
+					gzArchive
+				);
+
+				assert.strictEqual(result.restored_from, gzArchive);
+				await assertRestored(name, { reload: true });
+				assert.deepStrictEqual(stagingEntries(name), []);
+				assert.ok(readFileSync(gzArchive).equals(archiveBefore));
+			});
+		});
 	});
 
 	describe('a multipart upload', function () {
-		const jobs = require('#src/server/jobs/jobs');
 		const jobRunner = require('#src/server/jobs/jobRunner');
 		let restoreParseMessage;
 		let queued;
+		let name;
 
-		beforeEach(function () {
+		beforeEach(async function () {
 			queued = [];
+			name = freshName();
+			await seedTarget(name);
 			// the job thread, run in this thread: what the job sees when it starts, then the job itself
 			restoreParseMessage = replaceProperty(jobRunner, 'parseMessage', async (message) => {
-				const stagingDir = message.json.staging_id && importStagingDir(IMPORTED, message.json.staging_id);
-				const read = (name) => stagingDir && existsSync(join(stagingDir, name)) && readFileSync(join(stagingDir, name));
+				const stagingDir = message.json.staging_id && importStagingDir(name, message.json.staging_id);
+				const read = (file) => stagingDir && existsSync(join(stagingDir, file)) && readFileSync(join(stagingDir, file));
 				const seen = {
 					json: message.json,
 					owner: read('owner.json') && JSON.parse(read('owner.json')),
 					archive: read('archive'),
 				};
 				queued.push(seen);
-				seen.result = await importBackupJob(message.json).catch((error) => error);
+				seen.result = await restoreBackup(message.json).catch((error) => error);
 			});
 		});
 
 		afterEach(function () {
 			restoreParseMessage?.();
-			rmSync(backupDirForDatabase(IMPORTED), { recursive: true, force: true });
 		});
 
 		const upload = (fields, payload = Readable.from([readFileSync(gzArchive)])) =>
-			importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, ...fields, payload });
+			restoreBackupRequest({ ...SU, operation: 'restore_backup', database: name, ...fields, payload });
 
-		it('spools the raw bytes to staging, hands staging to the import before queuing it, and removes it after', async function () {
+		it('spools the raw bytes to staging, hands staging to the restore before queuing it, and restores from it', async function () {
+			const repositoryBefore = await repositoryState(name);
 			const queuedJob = await upload({});
 			assert.strictEqual(queued.length, 1);
 			const [{ json, owner, archive, result }] = queued;
 			assert.ok(!(result instanceof Error), result?.stack);
-			assert.deepStrictEqual(owner, { owner: 'import', import_id: json.staging_id }, 'import-owned before the job ran');
+			assert.deepStrictEqual(owner, { owner: 'import', import_id: json.staging_id }, 'owned by the job before it ran');
 			assert.ok(archive.equals(readFileSync(gzArchive)), 'the raw upload, not inflated');
 			assert.strictEqual(json.upload_digest, sha256(gzArchive));
 			assert.strictEqual(json.payload, undefined, 'the stream is never part of the job request');
@@ -493,14 +720,11 @@ describeUnlessLmdb('import_backup', function () {
 			assert.strictEqual(row.request.staging_id, json.staging_id);
 			assert.strictEqual(row.request.payload, undefined);
 
-			assert.strictEqual(result.digest, sha256(gzArchive));
-			assert.strictEqual(result.imported_from, 'upload');
-			assert.deepStrictEqual(stagingEntries(IMPORTED), [], 'the spool is removed after the job');
-			const listed = await listBackups({ ...SU, database: IMPORTED });
-			assert.deepStrictEqual(
-				listed.map((backup) => backup.backup_id),
-				[result.backup_id]
-			);
+			assert.strictEqual(result.restored_from, 'upload');
+			assert.strictEqual(result.backup_id, undefined);
+			await assertRestored(name);
+			assert.deepStrictEqual(stagingEntries(name), [], 'the spool is removed after the job');
+			assert.deepStrictEqual(await repositoryState(name), repositoryBefore);
 		});
 
 		it('refuses an invalid request before spooling anything', async function () {
@@ -508,17 +732,19 @@ describeUnlessLmdb('import_backup', function () {
 				{ sha256: 'not-a-digest' },
 				{ accept_incompatible_backup: 'yes' },
 				{ url: 'https://example.com/a.tar.gz' },
+				{ backup_id: 1 },
+				{ immutable_source: true },
 				{ declared_size: -1 },
 			]) {
 				await assert.rejects(upload(fields), (error) => error.statusCode === 400, JSON.stringify(fields));
-				assert.deepStrictEqual(stagingEntries(IMPORTED), [], `nothing staged for ${JSON.stringify(fields)}`);
+				assert.deepStrictEqual(stagingEntries(name), [], `nothing staged for ${JSON.stringify(fields)}`);
 			}
 			assert.strictEqual(queued.length, 0);
 		});
 
 		it('refuses a declared size larger than the staging device has free, before writing', async function () {
 			await assert.rejects(upload({ declared_size: Number.MAX_SAFE_INTEGER }), (error) => error.statusCode === 507);
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
+			assert.deepStrictEqual(stagingEntries(name), []);
 		});
 
 		it('removes a spool whose upload fails part way', async function () {
@@ -529,7 +755,7 @@ describeUnlessLmdb('import_backup', function () {
 				},
 			});
 			await assert.rejects(upload({}, broken), /connection reset/);
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
+			assert.deepStrictEqual(stagingEntries(name), []);
 			assert.strictEqual(queued.length, 0);
 		});
 
@@ -542,19 +768,31 @@ describeUnlessLmdb('import_backup', function () {
 			} finally {
 				restoreAddJob();
 			}
-			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
+			assert.deepStrictEqual(stagingEntries(name), []);
+		});
+
+		it('removes the spool of an upload that fails before destruction', async function () {
+			const truncated = readFileSync(gzArchive).subarray(0, 4096);
+			const repositoryBefore = await repositoryState(name);
+			await upload({}, Readable.from([truncated]));
+			assert.ok(queued[0].result instanceof Error, 'the job failed');
+			await assertTargetUntouched(name, repositoryBefore);
 		});
 
 		// staging_id names the directory the job removes when it finishes; from a client it would name any directory
-		it('refuses a client-supplied staging_id instead of treating it as a staged upload', async function () {
+		it('refuses a client-supplied staging_id or upload_digest instead of treating it as a staged upload', async function () {
 			const victim = join(getBackupsRoot(), 'importvictim');
 			mkdirSync(victim, { recursive: true });
 			writeFileSync(join(victim, 'keep'), 'keep');
 			try {
 				const outcomes = [];
-				for (const stagingId of ['../../importvictim', randomUUID()]) {
+				for (const fields of [
+					{ staging_id: '../../importvictim' },
+					{ staging_id: randomUUID() },
+					{ upload_digest: 'ab'.repeat(32) },
+				]) {
 					outcomes.push(
-						await importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, staging_id: stagingId }).then(
+						await restoreBackupRequest({ ...SU, operation: 'restore_backup', database: name, ...fields }).then(
 							() => 'queued',
 							(error) => error
 						)
@@ -622,7 +860,7 @@ describeUnlessLmdb('import_backup', function () {
 		describe('bounded by the disk ledger', function () {
 			const safeFetch = require('#src/utility/safeFetch');
 			const { DiskLedger } = require('#src/dataLayer/diskLedger');
-			const { importArchive } = require('#src/dataLayer/importChildCommands');
+			const { stageArchive } = require('#src/dataLayer/archiveStaging');
 			const SHA = 'a'.repeat(64);
 			let restores;
 			let root;
@@ -644,9 +882,10 @@ describeUnlessLmdb('import_backup', function () {
 			};
 
 			const pull = () =>
-				importArchive({
+				stageArchive({
 					databaseName: IMPORTED,
-					backupDir: join(root, 'backups'),
+					acceptIncompatible: false,
+					restoredFrom: 'test',
 					stagingDir: join(root, 'staging'),
 					url: 'https://backups.example.com/db.tar.gz',
 					sha256: SHA,
@@ -686,9 +925,10 @@ describeUnlessLmdb('import_backup', function () {
 					recordingCalls(async () => {})
 				);
 				await assert.rejects(
-					importArchive({
+					stageArchive({
 						databaseName: IMPORTED,
-						backupDir: join(root, 'backups'),
+						acceptIncompatible: false,
+						restoredFrom: 'test',
 						stagingDir: join(root, 'staging'),
 						s3: {
 							bucket: 'b',
@@ -759,9 +999,10 @@ describeUnlessLmdb('import_backup', function () {
 				);
 
 				await assert.rejects(
-					importArchive({
+					stageArchive({
 						databaseName: IMPORTED,
-						backupDir: join(root, 'backups'),
+						acceptIncompatible: false,
+						restoredFrom: 'test',
 						stagingDir: join(root, 'staging'),
 						url: `https://127.0.0.1:${port}/db.tar.gz`,
 					}),
@@ -786,7 +1027,7 @@ describeUnlessLmdb('import_backup', function () {
 					`
 					const { workerData, parentPort } = require('node:worker_threads');
 					require(workerData.aws).getFileStreamFromS3 = () => new Promise(() => {});
-					const { importArchive } = require(workerData.importChildCommands);
+					const { stageArchive } = require(workerData.archiveStaging);
 					const pending = new Map();
 					let now = 0;
 					globalThis.setTimeout = (callback, ms = 0, ...args) => {
@@ -804,7 +1045,7 @@ describeUnlessLmdb('import_backup', function () {
 							timer.callback(...timer.args);
 						}
 					});
-					importArchive(workerData.args).then(
+					stageArchive(workerData.args).then(
 						() => parentPort.postMessage({ type: 'outcome' }),
 						(error) => parentPort.postMessage({ type: 'outcome', message: error.message, statusCode: error.statusCode })
 					);
@@ -813,10 +1054,11 @@ describeUnlessLmdb('import_backup', function () {
 						eval: true,
 						workerData: {
 							aws: require.resolve('#src/utility/AWS/AWSConnector'),
-							importChildCommands: require.resolve('#src/dataLayer/importChildCommands'),
+							archiveStaging: require.resolve('#src/dataLayer/archiveStaging'),
 							args: {
 								databaseName: IMPORTED,
-								backupDir: join(root, 'backups'),
+								acceptIncompatible: false,
+								restoredFrom: 'test',
 								stagingDir: join(root, 'staging'),
 								s3: {
 									bucket: 'b',
@@ -865,7 +1107,7 @@ describeUnlessLmdb('import_backup', function () {
 			);
 			let queued;
 			try {
-				queued = await importBackup({ ...SU, operation: 'import_backup', database: IMPORTED, url: signed });
+				queued = await restoreBackupRequest({ ...SU, operation: 'restore_backup', database: IMPORTED, url: signed });
 			} finally {
 				restoreStart();
 			}
@@ -931,7 +1173,7 @@ describeUnlessLmdb('import_backup', function () {
 		for (const host of ['127.0.0.1', 'localhost']) {
 			it(`refuses a loopback source (${host}) by policy, naming only the redacted URL`, async function () {
 				const url = `https://${host}:${port}/exports/db.tar.gz?X-Amz-Signature=sekrit-token#frag`;
-				const error = await importBackupJob({ ...SU, database: IMPORTED, url }).then(
+				const error = await restoreBackup({ ...SU, database: IMPORTED, url }).then(
 					() => assert.fail('a loopback pull must be refused'),
 					(error) => error
 				);
@@ -940,7 +1182,7 @@ describeUnlessLmdb('import_backup', function () {
 				assert.ok(!/sekrit|X-Amz|frag/.test(error.message), error.message);
 				assert.strictEqual(requests, 0, 'nothing connects to a denied address');
 				assert.deepStrictEqual(stagingEntries(IMPORTED), []);
-				assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+				assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], top: [], listed: [] });
 			});
 		}
 	});
@@ -1004,7 +1246,7 @@ describeUnlessLmdb('import_backup', function () {
 				throw new Error('S3 is not reachable from a unit test');
 			});
 			const request = { ...SU, database: IMPORTED, s3: s3('S3_CREDS') };
-			await assert.rejects(importBackupJob(request), /not reachable/);
+			await assert.rejects(restoreBackup(request), /not reachable/);
 			assert.deepStrictEqual(request.s3, s3('S3_CREDS'), 'the job request is not rewritten with the plaintext');
 			assert.deepStrictEqual(childArgs.s3, {
 				bucket: 'backups',
@@ -1012,11 +1254,11 @@ describeUnlessLmdb('import_backup', function () {
 				region: 'us-east-1',
 				credentials: JSON.parse(PLAINTEXT),
 			});
-			assert.strictEqual(childArgs.importedFrom, 's3://backups/db/archive.tar.gz');
+			assert.strictEqual(childArgs.restoredFrom, 's3://backups/db/archive.tar.gz');
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
 		});
 
-		it('gives the import child 30 hours, past the day a pull alone may take', async function () {
+		it('gives the stage child 30 hours, past the day a pull alone may take', async function () {
 			const child = replace(
 				restoreChildRunner,
 				'runRestoreChild',
@@ -1025,7 +1267,7 @@ describeUnlessLmdb('import_backup', function () {
 					throw new Error('no child in a unit test');
 				})
 			);
-			await assert.rejects(importBackupJob({ ...SU, database: IMPORTED, s3: s3('S3_CREDS') }), /no child/);
+			await assert.rejects(restoreBackup({ ...SU, database: IMPORTED, s3: s3('S3_CREDS') }), /no child/);
 			assert.strictEqual(child.calls.length, 1);
 			assert.strictEqual(child.calls[0][2]?.timeoutMs, 30 * 60 * 60 * 1000);
 		});
@@ -1039,11 +1281,11 @@ describeUnlessLmdb('import_backup', function () {
 				})
 			);
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, s3: s3('SCOPED') }),
+				restoreBackup({ ...SU, database: IMPORTED, s3: s3('SCOPED') }),
 				(error) => error.statusCode === 403
 			);
 			await assert.rejects(
-				importBackupJob({ ...SU, database: IMPORTED, s3: s3('NOT_JSON') }),
+				restoreBackup({ ...SU, database: IMPORTED, s3: s3('NOT_JSON') }),
 				(error) =>
 					error.statusCode === 400 && /NOT_JSON/.test(error.message) && !/not-json-plaintext/.test(error.message)
 			);
@@ -1057,7 +1299,7 @@ describeUnlessLmdb('import_backup', function () {
 			const worker = new Worker(
 				`
 				const { workerData, parentPort } = require('node:worker_threads');
-				const { importBackupJob } = require(workerData.backupImport);
+				const { stageArchiveForRestore } = require(workerData.restoreArchive);
 				// a manual clock: the deadline reads the global setTimeout when it is armed
 				const pending = new Map();
 				let now = 0;
@@ -1075,7 +1317,7 @@ describeUnlessLmdb('import_backup', function () {
 						timer.callback(...timer.args);
 					}
 				});
-				importBackupJob(workerData.request).then(
+				stageArchiveForRestore(workerData.request, workerData.request.database).then(
 					() => parentPort.postMessage({ type: 'outcome' }),
 					(error) => parentPort.postMessage({ type: 'outcome', message: error.message, statusCode: error.statusCode })
 				);
@@ -1083,7 +1325,7 @@ describeUnlessLmdb('import_backup', function () {
 				{
 					eval: true,
 					workerData: {
-						backupImport: require.resolve('#src/dataLayer/backupImport'),
+						restoreArchive: require.resolve('#src/dataLayer/restoreArchive'),
 						request: { ...SU, database: IMPORTED, s3: s3('S3_CREDS') },
 					},
 				}
@@ -1114,9 +1356,9 @@ describeUnlessLmdb('import_backup', function () {
 
 		it('persists only the secret name in the job row', async function () {
 			replace(jobRunner, 'parseMessage', async () => undefined);
-			const { job_id } = await importBackup({
+			const { job_id } = await restoreBackupRequest({
 				...SU,
-				operation: 'import_backup',
+				operation: 'restore_backup',
 				database: IMPORTED,
 				s3: s3('S3_CREDS'),
 			});
@@ -1151,7 +1393,7 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		it('on a thread exit, removes only the staging that thread was still writing', function () {
-			assert.strictEqual(backupImport.sweepExitedThreadStaging(7), 1);
+			assert.strictEqual(restoreArchive.sweepExitedThreadStaging(7), 1);
 			assert.deepStrictEqual(stagingEntries(DB).sort(), ['earlier-process', 'imported', 'in-flight-pull', 'thread-8']);
 		});
 
@@ -1169,18 +1411,18 @@ describeUnlessLmdb('import_backup', function () {
 		});
 
 		it('at startup removes every area, once per process', function () {
-			const backupImport = require('#src/dataLayer/backupImport');
-			backupImport.resetImportStagingSweepForTesting();
-			backupImport.sweepImportStagingAtStartup();
+			resetImportStagingSweepForTesting();
+			sweepImportStagingAtStartup();
 			assert.deepStrictEqual(stagingEntries(DB), []);
 			area('later');
-			backupImport.sweepImportStagingAtStartup();
+			sweepImportStagingAtStartup();
 			assert.deepStrictEqual(stagingEntries(DB), ['later'], 'a later call is a no-op');
 		});
 	});
 });
 
-describe('import_backup validation', function () {
+describe('restore_backup archive validation', function () {
+	const WITH_BACKUP = 'restarcvalidationbackup';
 	const ok = { ...SU, database: 'importvalidation' };
 	const s3 = { bucket: 'b', key: 'k', region: 'us-east-1', credentials: { secret: 'S3_CREDS' } };
 	const identity = { dev: 1, ino: 2, size: 3, mtime_ms: 4.5 };
@@ -1192,17 +1434,46 @@ describe('import_backup validation', function () {
 		{ s3 },
 		{ s3: { bucket: 'b', key: 'k', credentials: { secret: 'S3_CREDS' } } },
 		{ ...filler, declared_size: 0, sha256: 'A'.repeat(64), accept_incompatible_backup: true },
+		{ ...filler, on_restart: true },
+		{ ...filler, retain_previous: false, on_restart: true },
 		{ staging_id: randomUUID() },
 	];
 	for (const fields of accepted) {
-		it(`accepts ${JSON.stringify(fields)}`, function () {
-			validateImportBackup({ ...ok, ...fields });
+		it(`accepts ${JSON.stringify(fields)}`, async function () {
+			await validateRestoreBackup({ ...ok, ...fields });
 		});
 	}
 
+	after(async function () {
+		await closeDatabase(WITH_BACKUP).catch(() => {});
+		rmSync(backupDirForDatabase(WITH_BACKUP), { recursive: true, force: true });
+	});
+
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'still validates a restore with no archive against the latest backup',
+		async function () {
+			const name = WITH_BACKUP;
+			const Items = table({
+				table: 'Items',
+				database: name,
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			await Items.put({ id: 1 });
+			await Items.primaryStore.rootStore.flush();
+			await assert.rejects(validateRestoreBackup({ ...SU, database: name }), (error) => error.statusCode === 404);
+			await createBackup({ database: name });
+			await validateRestoreBackup({ ...SU, database: name });
+		}
+	);
+
 	const refused = [
-		['no source', {}, /exactly one source/],
-		['two sources', { ...filler, url: 'https://example.com/a.tar' }, /exactly one source/],
+		['two archives', { ...filler, url: 'https://example.com/a.tar' }, /takes one archive/],
+		['a url and an s3 archive', { url: 'https://example.com/a.tar', s3 }, /takes one archive/],
+		['an archive and a backup_id', { ...filler, backup_id: 1 }, /managed backup/],
+		['an archive and immutable_source', { ...filler, immutable_source: true }, /immutable_source/],
+		['an archive and resume', { ...filler, resume: true }, /'resume' and 'cancel'/],
+		['an archive and cancel', { ...filler, cancel: true }, /'resume' and 'cancel'/],
+		['on_restart with a target_database', { ...filler, on_restart: true, target_database: 'other' }, /target_database/],
 		['a relative server_path', { ...filler, server_path: 'a.tar' }, /server_path/],
 		['a non-string server_path', { ...filler, server_path: 7 }, /server_path/],
 		['a server_path without an identity', { server_path: serverPath }, /server_path_identity/],
@@ -1221,7 +1492,7 @@ describe('import_backup validation', function () {
 			{ ...filler, server_path_identity: { ...identity, size: '3' } },
 			/server_path_identity/,
 		],
-		['an identity and no source', { server_path_identity: identity }, /exactly one source/],
+		['an identity and no source', { server_path_identity: identity }, /only for a 'server_path'/],
 		[
 			'an identity beside another source',
 			{ url: 'https://example.com/a.tar', server_path_identity: identity },
@@ -1253,24 +1524,24 @@ describe('import_backup validation', function () {
 		['a staging_id that is a path', { staging_id: '../../elsewhere' }, /staging_id/],
 	];
 	for (const [label, fields, pattern] of refused) {
-		it(`refuses ${label} with a 400`, function () {
-			assert.throws(
-				() => validateImportBackup({ ...ok, ...fields }),
+		it(`refuses ${label} with a 400`, async function () {
+			await assert.rejects(
+				validateRestoreBackup({ ...ok, ...fields }),
 				(error) => error.statusCode === 400 && pattern.test(error.message)
 			);
 		});
 	}
 
-	it('never echoes a URL query in a refusal', function () {
-		assert.throws(
-			() => validateImportBackup({ ...ok, url: 'http://example.com/a.tar?X-Amz-Signature=sekrit' }),
+	it('never echoes a URL query in a refusal', async function () {
+		await assert.rejects(
+			validateRestoreBackup({ ...ok, url: 'http://example.com/a.tar?X-Amz-Signature=sekrit' }),
 			(error) => !error.message.includes('sekrit')
 		);
 	});
 
 	const nonSuperUsers = {
 		'a non-super_user role': { super_user: false },
-		'a role with import_backup in its operations allowlist': { super_user: false, operations: ['import_backup'] },
+		'a role with restore_backup in its operations allowlist': { super_user: false, operations: ['restore_backup'] },
 	};
 	for (const [label, permission] of Object.entries(nonSuperUsers)) {
 		it(`refuses ${label} with a 403, in the validator and the handler`, async function () {
@@ -1280,24 +1551,21 @@ describe('import_backup validation', function () {
 				server_path: serverPath,
 				server_path_identity: identity,
 			};
-			assert.throws(
-				() => validateImportBackup(request),
-				(error) => error.statusCode === 403
-			);
+			await assert.rejects(validateRestoreBackup(request), (error) => error.statusCode === 403);
 			await assert.rejects(
-				importBackup({ ...request, operation: 'import_backup' }),
+				restoreBackupRequest({ ...request, operation: 'restore_backup' }),
 				(error) => error.statusCode === 403
 			);
 		});
 	}
 });
 
-describe('import_backup operation logging', function () {
+describe('restore_backup operation logging', function () {
 	const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 
-	it('drops url, s3 and payload from an import_backup body, whatever their case', function () {
+	it('drops url, s3 and payload from a restore_backup body, whatever their case', function () {
 		const body = {
-			operation: 'import_backup',
+			operation: 'restore_backup',
 			database: 'db',
 			server_path: '/a.tar',
 			url: 'https://example.com/a?X-Amz-Signature=sekrit',
@@ -1306,12 +1574,12 @@ describe('import_backup operation logging', function () {
 			payload: Readable.from([]),
 		};
 		assert.deepStrictEqual(serverUtilities.redactForOperationLog(body), {
-			operation: 'import_backup',
+			operation: 'restore_backup',
 			database: 'db',
 			server_path: '/a.tar',
 		});
 		const other = { operation: 'csv_url_load', url: 'https://example.com/a.csv' };
-		assert.deepStrictEqual(serverUtilities.redactForOperationLog(other), other, 'only import_backup drops url');
+		assert.deepStrictEqual(serverUtilities.redactForOperationLog(other), other, 'only restore_backup drops url');
 	});
 
 	describe("executeJob's created-job log (real log file)", function () {
@@ -1336,7 +1604,7 @@ describe('import_backup operation logging', function () {
 		it('logs the job id and type, not the request that carries a presigned URL', async function () {
 			const marker = randomUUID();
 			const request = {
-				operation: 'import_backup',
+				operation: 'restore_backup',
 				database: 'db',
 				url: 'https://example.com/a.tar.gz?X-Amz-Signature=sekrit-presigned',
 			};
@@ -1346,7 +1614,7 @@ describe('import_backup operation logging', function () {
 			// the job row and the job thread stand in, so only executeJob's own log is in play
 			const restores = [
 				replaceProperty(jobs, 'addJob', async () => ({
-					createdJob: { id: marker, type: 'import_backup', request },
+					createdJob: { id: marker, type: 'restore_backup', request },
 				})),
 				replaceProperty(jobRunner, 'parseMessage', async () => undefined),
 			];
@@ -1372,7 +1640,7 @@ describe('import_backup operation logging', function () {
 	});
 });
 
-describe('import_backup CLI', function () {
+describe('restore_backup CLI', function () {
 	const http = require('node:http');
 	const busboy = require('busboy');
 	const cliOperations = require('#src/bin/cliOperations');
@@ -1447,7 +1715,7 @@ describe('import_backup CLI', function () {
 
 	const send = (file) =>
 		cliOperations.cliOperations(
-			{ operation: 'import_backup', database: 'db', file, target, auth_username: 'admin', auth_password: 'pw' },
+			{ operation: 'restore_backup', database: 'db', file, target, auth_username: 'admin', auth_password: 'pw' },
 			true
 		);
 
@@ -1458,7 +1726,7 @@ describe('import_backup CLI', function () {
 			await send(archive);
 			assert.strictEqual(requests.length, 1);
 			assert.match(received.headers['content-type'], /^application\/json/);
-			assert.strictEqual(received.json.operation, 'import_backup');
+			assert.strictEqual(received.json.operation, 'restore_backup');
 			assert.strictEqual(received.json.server_path, archive);
 			assert.deepStrictEqual(received.json.server_path_identity, fileIdentity(statSync(archive)));
 			assert.strictEqual(received.parts, undefined, 'no multipart payload');
@@ -1518,7 +1786,7 @@ describe('import_backup CLI', function () {
 			assert.deepStrictEqual(kinds.slice(-1), ['file'], 'the file part comes last');
 			assert.ok(kinds.slice(0, -1).every((kind) => kind === 'field'));
 			const fields = Object.fromEntries(received.parts.filter((p) => p.kind === 'field').map((p) => [p.name, p.value]));
-			assert.strictEqual(fields.operation, 'import_backup');
+			assert.strictEqual(fields.operation, 'restore_backup');
 			assert.strictEqual(fields.database, 'db');
 			assert.strictEqual(fields.declared_size, '3000');
 			for (const local of ['file', 'auth_password', 'target', '_uploadFile', '_multipart']) {
@@ -1548,7 +1816,7 @@ describe('import_backup CLI', function () {
 			writeFileSync(archive, Buffer.alloc(100, 'g'));
 			await cliOperations.cliOperations(
 				{
-					operation: 'import_backup',
+					operation: 'restore_backup',
 					database: 'db',
 					file: archive,
 					declared_size: 4096,

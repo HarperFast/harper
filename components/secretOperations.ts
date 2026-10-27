@@ -465,7 +465,7 @@ async function waitForSecretRow(table: any, name: string, waitMs: number): Promi
 
 /**
  * The plaintext of a `processEnv` secret, for a server-side consumer with no component to grant it to
- * (an `import_backup` pull). Scoped secrets are refused: a grant names a component, and nothing here
+ * (a `restore_backup` archive pull). Scoped secrets are refused: a grant names a component, and nothing here
  * is one. Never returned across the API boundary or written anywhere.
  */
 export async function resolveProcessSecret(name: string): Promise<string> {
@@ -473,7 +473,7 @@ export async function resolveProcessSecret(name: string): Promise<string> {
 	if (!row) throw new ClientError(`secret '${name}' does not exist`, HTTP_STATUS_CODES.NOT_FOUND);
 	if (!row.processEnv) {
 		throw new ClientError(
-			`secret '${name}' is scoped to components; import_backup can only use a processEnv secret`,
+			`secret '${name}' is scoped to components; restore_backup can only use a processEnv secret`,
 			HTTP_STATUS_CODES.FORBIDDEN
 		);
 	}

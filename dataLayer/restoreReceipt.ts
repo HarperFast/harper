@@ -36,6 +36,10 @@ export interface RestoreReceipt {
 	source_database: string;
 	backup_dir: string;
 	backup_id: number;
+	/** Where the rollback copy goes when it is not `backup_dir`: a staged archive's repository is temporary. */
+	rollback_dir?: string;
+	/** An archive restore's source, redacted; its `backup_id` names only a private staged repository. */
+	restored_from?: string;
 	job_id?: string;
 	retain_previous?: boolean;
 	pre_restore_started_at?: number;
@@ -103,6 +107,15 @@ export function readRestoreReceiptFile(receiptPath: string): RestoreReceiptRead 
 		return { kind: 'unreadable', reason: 'missing or malformed fields' };
 	}
 	return { kind: 'valid', receipt: parsed as RestoreReceipt };
+}
+
+export function rollbackDirOf(receipt: RestoreReceipt): string {
+	return receipt.rollback_dir ?? receipt.backup_dir;
+}
+
+/** What a restore restored, for messages: the archive it came from, or the managed backup's id. */
+export function describeRestoreSource(receipt: Pick<RestoreReceipt, 'restored_from' | 'backup_id'>): string {
+	return receipt.restored_from ?? `backup ${receipt.backup_id}`;
 }
 
 /** A receipt that is not `committed` — or that cannot be read — keeps the target undiscoverable. */

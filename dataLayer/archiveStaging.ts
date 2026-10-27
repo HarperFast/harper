@@ -4,7 +4,7 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync
 import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { RocksDatabase, backups, validateTransactionLogStore } from '@harperfast/rocksdb-js';
+import { RocksDatabase, validateTransactionLogStore } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { fsyncDirectory } from '../utility/durableFile.ts';
 import { safeFetchToFile } from '../utility/safeFetch.ts';
@@ -12,9 +12,9 @@ import { openRestoredGeneration, closeRestoredGeneration } from '../resources/da
 import { DiskLedger, ledgerMeter } from './diskLedger.ts';
 import { extractArchive, tallyArchive } from './archiveExtraction.ts';
 import { withBackupRepositoryLock } from './backupRepository.ts';
-import { blobSnapshotDir, copyTree, deleteBlobSnapshot, fsyncTree } from './blobBackup.ts';
-import { deleteBackupManifest, writeBackupManifest, type BackupManifest } from './backupManifest.ts';
-import { resolveServerPath } from './backupImport.ts';
+import { blobSnapshotDir, copyTree, fsyncTree } from './blobBackup.ts';
+import { writeBackupManifest, type BackupManifest } from './backupManifest.ts';
+import { resolveServerPath } from './restoreArchive.ts';
 import type { FileIdentity } from '../utility/fileIdentity.ts';
 import { verifyBackupFiles } from './rocksdbBackup.ts';
 
@@ -22,10 +22,8 @@ const FETCH_TOTAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const FETCH_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const PULL_CHARGE_BATCH_BYTES = 8 * 1024 * 1024;
 
-export interface ImportArchiveArgs {
+export interface StageArchiveArgs {
 	databaseName: string;
-	backupDir: string;
-	importId: string;
 	stagingDir: string;
 	serverPath?: string;
 	serverPathIdentity?: FileIdentity;
@@ -33,7 +31,7 @@ export interface ImportArchiveArgs {
 	s3?: { bucket: string; key: string; region?: string; credentials?: { accessKeyId: string; secretAccessKey: string } };
 	sha256?: string;
 	acceptIncompatible: boolean;
-	importedFrom: string;
+	restoredFrom: string;
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -51,7 +49,7 @@ function withTimeout<T>(ms: number, message: string, promise: Promise<T>): Promi
 }
 
 async function fetchFromS3(
-	s3: NonNullable<ImportArchiveArgs['s3']>,
+	s3: NonNullable<StageArchiveArgs['s3']>,
 	destination: string,
 	ledger: DiskLedger
 ): Promise<void> {
@@ -106,7 +104,7 @@ function provenTables(treeDir: string, databaseName: string): string[] {
 	const generation = openRestoredGeneration(treeDir, databaseName);
 	const tables = Object.keys(generation.tables);
 	const failures = closeRestoredGeneration(treeDir, generation);
-	if (failures.length > 0) throw new AggregateError(failures, 'The imported database did not close cleanly');
+	if (failures.length > 0) throw new AggregateError(failures, 'The archived database did not close cleanly');
 	return tables;
 }
 
@@ -124,15 +122,25 @@ async function snapshotArchiveBlobs(treeDir: string, backupDir: string, backupId
 	fsyncDirectory(join(snapshotDir, '..'));
 }
 
+/** The private repository a staged archive becomes: one backup, seen by nothing but its own restore. */
+export function stagedRepositoryDir(stagingDir: string): string {
+	return join(stagingDir, 'repo');
+}
+
 /**
  * Brings the archive onto disk, tallies it, reserves the peak it needs, extracts it under the entry
- * filter, proves its logs and catalogue, converts it into the repository, verifies the result with
- * the manifest still in memory, and publishes the completion manifest last — so a failure at any step
- * leaves nothing `list_backups` would show.
+ * filter, proves its logs and catalogue, and converts it into a one-backup repository inside its own
+ * staging area — never the database's repository — verified, with the completion manifest written
+ * last. A restore then publishes from that repository exactly as from any other.
  */
-export async function importArchive(args: ImportArchiveArgs) {
-	const { databaseName, backupDir, stagingDir } = args;
+export async function stageArchive(args: StageArchiveArgs) {
+	const { databaseName, stagingDir } = args;
+	const stagingRoot = join(stagingDir, '..');
+	mkdirSync(stagingRoot, { recursive: true });
+	fsyncDirectory(join(stagingRoot, '..'));
 	mkdirSync(stagingDir, { recursive: true });
+	fsyncDirectory(stagingRoot);
+	const repoDir = stagedRepositoryDir(stagingDir);
 	const ledger = new DiskLedger();
 	let archivePath: string;
 	if (args.serverPath !== undefined) {
@@ -178,10 +186,9 @@ export async function importArchive(args: ImportArchiveArgs) {
 
 	const treeDir = join(stagingDir, 'tree');
 	const tally = await tallyArchive(archivePath, { bsize: statfsSync(stagingDir).bsize });
-	// Before the first byte is written: extraction debits its own device as it goes, but the engine copy
-	// and the blob snapshot land in the repository, which may be another device.
-	const conversionHold = await ledger.reserve(backupDir, tally.bytes, tally.inodes);
-	let backupId: number;
+	// Before the first byte is written: extraction debits the staging device as it goes, and the engine
+	// copy and blob snapshot need as much again beside the tree.
+	const conversionHold = await ledger.reserve(stagingDir, tally.bytes, tally.inodes);
 	let extracted: Awaited<ReturnType<typeof extractArchive>>;
 	try {
 		mkdirSync(treeDir);
@@ -195,47 +202,41 @@ export async function importArchive(args: ImportArchiveArgs) {
 		const tables = provenTables(treeDir, databaseName);
 		const blobIndices = archiveBlobRootIndices(treeDir);
 		const hasBlobs = extracted.manifest ? extracted.manifest.blobs : blobIndices.length > 0;
-		backupId = await withBackupRepositoryLock(
-			backupDir,
+		const backupId = await withBackupRepositoryLock(
+			repoDir,
 			databaseName,
 			async () => {
+				// a destructive restore will depend on this repository surviving a power loss
+				fsyncDirectory(stagingDir);
 				const database = RocksDatabase.open(treeDir);
 				let id: number;
 				try {
-					id = await database.backup(backupDir, { transactionLogs: true });
+					id = await database.backup(repoDir, { transactionLogs: true });
 				} finally {
 					database.close();
 				}
-				try {
-					if (hasBlobs) await snapshotArchiveBlobs(treeDir, backupDir, id, blobIndices);
-					const candidate: BackupManifest = { backupId: id, blobs: hasBlobs, completedAt: Date.now() };
-					await verifyBackupFiles(backupDir, id, candidate, databaseName, false, true);
-					fsyncDirectory(backupDir);
-					await writeBackupManifest(backupDir, id, hasBlobs, extracted.manifest ?? undefined, {
-						tables,
-						imported_from: args.importedFrom,
-						digest,
-					});
-				} catch (error) {
-					await deleteBackupManifest(backupDir, id).catch(() => {});
-					await deleteBlobSnapshot(backupDir, id).catch(() => {});
-					await backups.delete(backupDir, id).catch(() => {});
-					throw error;
-				}
+				if (hasBlobs) await snapshotArchiveBlobs(treeDir, repoDir, id, blobIndices);
+				const candidate: BackupManifest = { backupId: id, blobs: hasBlobs, completedAt: Date.now() };
+				await verifyBackupFiles(repoDir, id, candidate, databaseName, false, true);
+				fsyncDirectory(repoDir);
+				await writeBackupManifest(repoDir, id, hasBlobs, extracted.manifest ?? undefined, {
+					tables,
+					imported_from: args.restoredFrom,
+					digest,
+				});
 				return id;
 			},
 			true
 		);
 		return {
-			database: databaseName,
-			backup_id: backupId,
+			backupDir: repoDir,
+			backupId,
 			tables,
 			identified: extracted.manifest !== null,
 			...(extracted.waived.length > 0 ? { compatibility_waived: extracted.waived } : {}),
 			digest,
-			imported_from: args.importedFrom,
+			restored_from: args.restoredFrom,
 			blobs: hasBlobs,
-			blob_root_count: blobIndices.length,
 			bytes: extracted.bytes,
 			roles: extracted.manifest?.roles ?? [],
 		};

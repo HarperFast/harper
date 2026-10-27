@@ -19,7 +19,7 @@ import * as delete_ from '../dataLayer/delete.ts';
 import readAuditLog from '../dataLayer/readAuditLog.ts';
 import getBackup from '../dataLayer/getBackup.ts';
 import * as rocksdbBackup from '../dataLayer/rocksdbBackup.ts';
-import * as backupImport from '../dataLayer/backupImport.ts';
+import * as restoreArchive from '../dataLayer/restoreArchive.ts';
 import * as user from '../security/user.ts';
 import * as role from '../security/role.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -243,14 +243,10 @@ requiredPermissions.set(
 	rocksdbBackup.restoreBackup.name,
 	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
 );
-// keyed by both: the handler spools an upload before it queues the job the dispatcher checks
+// the request handler spools an archive upload before it queues the job keyed above
 requiredPermissions.set(
-	backupImport.importBackup.name,
-	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.IMPORT_BACKUP)
-);
-requiredPermissions.set(
-	backupImport.importBackupJob.name,
-	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.IMPORT_BACKUP)
+	restoreArchive.restoreBackupRequest.name,
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
 );
 requiredPermissions.set(
 	schema.cleanupOrphanBlobs.name,

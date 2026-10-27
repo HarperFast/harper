@@ -1,7 +1,7 @@
 'use strict';
 
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, readdirSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { open, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join, relative, resolve, sep } from 'node:path';
@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, getRegistryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
+import { fileIdentity } from '../utility/fileIdentity.ts';
 import { publishRestore } from './restorePublication.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import { cancelRestartRestore, requestRestartRestore, resumeRestartRestore } from './restoreIntent.ts';
@@ -608,14 +609,18 @@ export async function verifyBackup(request: any) {
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
 	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readOnlineRestoreRequest(request);
+	const { hasArchiveSource, validateArchiveSource } = await import('./restoreArchive.ts');
+	const fromArchive = hasArchiveSource(request);
+	if (fromArchive) validateArchiveSource(request);
 	if (resume || cancel) return;
-	const backupDir = backupDirForDatabase(databaseName);
-	await resolveCompleteBackup(
-		backupDir,
-		request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
-		databaseName,
-		acceptIncompatible
-	);
+	if (!fromArchive) {
+		await resolveCompleteBackup(
+			backupDirForDatabase(databaseName),
+			request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
+			databaseName,
+			acceptIncompatible
+		);
+	}
 	// Only a loaded database that actually has tables can be validated as a single-root RocksDB
 	// store here (an empty/tableless database has no table to resolve a root store from, and an
 	// unloaded one recovering an interrupted restore isn't open yet); those cases are validated when
@@ -702,30 +707,74 @@ export async function restoreBackup(request: any) {
 			: resolveDatabasePath(targetDatabase);
 	if (cancel) return cancelRestartRestore(databaseName, databaseDir);
 	if (resume) return resumeRestartRestore(databaseName, databaseDir, currentJobId());
-	if (onRestart) {
-		return requestRestartRestore({
+	const { hasArchiveSource, releaseStagingIfUnowned, stageArchiveForRestore } = await import('./restoreArchive.ts');
+	const archive = hasArchiveSource(request) ? await stageArchiveForRestore(request, databaseName) : undefined;
+	try {
+		const source = {
+			backupDir: archive?.backupDir ?? backupDirForDatabase(databaseName),
+			requestedBackupId: archive?.backupId ?? requestedBackupId,
+			restoredFrom: archive?.restoredFrom,
+		};
+		if (onRestart) {
+			return await requestRestartRestore({
+				databaseName,
+				databaseDir,
+				...source,
+				rollbackDir: backupDirForDatabase(databaseName),
+				allowEngineOnly,
+				acceptIncompatible,
+				acceptUnverifiedBlobs,
+				retainPrevious,
+				jobId: currentJobId(),
+				requestedBy: request.hdb_user?.username,
+			});
+		}
+		const result = await restoreOnline(request, {
 			databaseName,
+			targetDatabase,
+			inPlace,
 			databaseDir,
-			backupDir: backupDirForDatabase(databaseName),
-			requestedBackupId,
+			...source,
 			allowEngineOnly,
 			acceptIncompatible,
 			acceptUnverifiedBlobs,
-			retainPrevious,
-			jobId: currentJobId(),
-			requestedBy: request.hdb_user?.username,
+			immutableSource,
 		});
+		return archive?.missingRoles.length ? { ...result, missing_roles: archive.missingRoles } : result;
+	} finally {
+		if (archive) releaseStagingIfUnowned(archive.stagingDir);
 	}
+}
+
+function restoreOnline(
+	request: any,
+	options: {
+		databaseName: string;
+		targetDatabase: string;
+		inPlace: boolean;
+		databaseDir: string;
+		backupDir: string;
+		requestedBackupId?: number;
+		restoredFrom?: string;
+		allowEngineOnly: boolean;
+		acceptIncompatible: boolean;
+		acceptUnverifiedBlobs: boolean;
+		immutableSource: boolean;
+	}
+) {
+	const { databaseName, targetDatabase, inPlace, databaseDir, backupDir, requestedBackupId, restoredFrom } = options;
+	const { allowEngineOnly, acceptIncompatible, acceptUnverifiedBlobs, immutableSource } = options;
 	const restoreToken = randomUUID();
 	return publishRestore({
 		route: 'online',
 		sourceDatabase: databaseName,
 		targetDatabase,
 		inPlace,
-		backupDir: backupDirForDatabase(databaseName),
+		backupDir,
 		databaseDir,
 		blobRoots: getBlobPathsForDatabaseName(targetDatabase),
 		requestedBackupId,
+		restoredFrom,
 		allowEngineOnly,
 		acceptIncompatible,
 		acceptUnverifiedBlobs,
@@ -1320,7 +1369,8 @@ export async function restoreBackupOffline(
 	allowEngineOnlyOption?: boolean,
 	acceptIncompatibleOption?: boolean,
 	immutableSourceOption?: boolean,
-	acceptUnverifiedBlobsOption?: boolean
+	acceptUnverifiedBlobsOption?: boolean,
+	archiveFile?: string
 ) {
 	// Validated the same way the online path validates them, so a malformed opt-in is refused rather
 	// than silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
@@ -1331,22 +1381,42 @@ export async function restoreBackupOffline(
 	validateDatabaseName(databaseName);
 	if (targetDatabase !== undefined) validateDatabaseName(targetDatabase);
 	const target = targetDatabase ?? databaseName;
-	return publishRestore({
-		route: 'offline',
-		sourceDatabase: databaseName,
-		targetDatabase: target,
-		inPlace: target === databaseName,
-		backupDir: backupDirForDatabase(databaseName),
-		databaseDir: resolveDatabasePath(target),
-		blobRoots: getBlobPathsForDatabaseName(target),
-		requestedBackupId,
-		allowEngineOnly,
-		acceptIncompatible,
-		acceptUnverifiedBlobs,
-		immutableSource,
-		checkPeers: target !== 'system',
-		probeEngineLock: true,
-	});
+	const restoreArchive = archiveFile === undefined ? undefined : await import('./restoreArchive.ts');
+	let archive: Awaited<ReturnType<NonNullable<typeof restoreArchive>['stageArchiveForRestore']>> | undefined;
+	if (restoreArchive) {
+		// the same process and machine: the file is read in place, as a local server reads it
+		const serverPath = resolve(archiveFile!);
+		const request = {
+			server_path: serverPath,
+			server_path_identity: fileIdentity(statSync(serverPath)),
+			accept_incompatible_backup: acceptIncompatible,
+			...(requestedBackupId !== undefined ? { backup_id: requestedBackupId } : {}),
+			...(immutableSource ? { immutable_source: true } : {}),
+		};
+		restoreArchive.validateArchiveSource(request);
+		archive = await restoreArchive.stageArchiveForRestore(request, databaseName);
+	}
+	try {
+		return await publishRestore({
+			route: 'offline',
+			sourceDatabase: databaseName,
+			targetDatabase: target,
+			inPlace: target === databaseName,
+			backupDir: archive?.backupDir ?? backupDirForDatabase(databaseName),
+			databaseDir: resolveDatabasePath(target),
+			blobRoots: getBlobPathsForDatabaseName(target),
+			requestedBackupId: archive?.backupId ?? requestedBackupId,
+			restoredFrom: archive?.restoredFrom,
+			allowEngineOnly,
+			acceptIncompatible,
+			acceptUnverifiedBlobs,
+			immutableSource,
+			checkPeers: target !== 'system',
+			probeEngineLock: true,
+		});
+	} finally {
+		if (archive) restoreArchive!.releaseStagingIfUnowned(archive.stagingDir);
+	}
 }
 
 /** Where each restore path calls this, and why, is in dataLayer/DESIGN.md (harper#2965). */
@@ -1398,7 +1468,9 @@ export async function verifyBackupFiles(
  * refuses a marked directory too and the marker keeps the pin live. A marker that records its source
  * proves ownership only by matching this repository; one written before sources were recorded falls
  * back to this repository's pin on the target, which a pin stranded past its own marker can still
- * vouch for. Restoring a database in place is not a claim on someone else's directory.
+ * vouch for. A rerun from a newly staged archive matches neither, so a marker that the target's own
+ * restore record also names proves the directory is that restore's debris. Restoring a database in
+ * place is not a claim on someone else's directory.
  */
 export function assertTargetClaimable(
 	target: { databaseDir: string; databaseName: string; inPlace: boolean },
@@ -1408,10 +1480,12 @@ export function assertTargetClaimable(
 	if (target.inPlace) return;
 	if (preexisting) {
 		const markerSource = readRestoringMarkerSource(target.databaseDir);
+		const recorded = readRestoreReceipt(target.databaseDir);
 		const ours =
 			markerSource === undefined
 				? readBackupPins(backupDir).some((pin) => pin.pin_id === restorePinId(target.databaseDir))
-				: markerSource === restoreSourceId(backupDir);
+				: markerSource === restoreSourceId(backupDir) ||
+					(recorded.kind === 'valid' && markerSource === restoreSourceId(recorded.receipt.backup_dir));
 		if (ours) return;
 	}
 	if (isMissingOrEmptyDir(target.databaseDir)) return;

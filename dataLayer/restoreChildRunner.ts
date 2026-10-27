@@ -17,7 +17,7 @@ const DEFAULT_HEAP_MB = 1024;
 const CHILD_BLOCK_CACHE_BYTES = 64 * 1024 * 1024;
 const CHILD_WRITE_BUFFER_BYTES = 32 * 1024 * 1024;
 
-export type RestoreChildCommand = 'verify' | 'apply-and-prove' | 'pre-restore-backup' | 'import-archive';
+export type RestoreChildCommand = 'verify' | 'apply-and-prove' | 'pre-restore-backup' | 'stage-archive';
 
 export interface ReceiptAuthorization {
 	databasePath: string;

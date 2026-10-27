@@ -608,7 +608,7 @@ export function prepareDeployByRef(req: any): void {
 }
 
 const PREPARE_OPERATION: any = {
-	import_backup: async (req, target) => {
+	restore_backup: async (req, target) => {
 		if (req.file === undefined) return;
 		const archivePath = path.resolve(String(req.file));
 		const stats = await fs.promises.stat(archivePath);

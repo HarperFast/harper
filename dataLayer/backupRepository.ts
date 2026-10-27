@@ -242,6 +242,11 @@ function pinIsLive(pin: BackupPin): boolean {
 	);
 }
 
+/** Whether anything still depends on this repository: a live restore pin, or a pin that cannot be read. */
+export function hasLivePin(backupDir: string): boolean {
+	return readBackupPins(backupDir).some((pin) => Number.isNaN(pin.backup_id) || pinIsLive(pin));
+}
+
 /** Release a claim. Missing is success — the goal is that nothing holds this backup any more. */
 export function unpinBackup(backupDir: string, pinId: string): void {
 	removeFileDurably(pinPath(backupDir, pinId));
