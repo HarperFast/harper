@@ -1363,22 +1363,28 @@ describe('DerivedIndexRuntime for native backends', () => {
 	});
 
 	it('resumes from a floor when retention purged the anchor but nothing past the coverage was flushed', async () => {
-		const store = purgedAnchorStore(emptiedStats(covered));
-		const backend = new AsyncBackend('purged-anchor', {
-			cursor: { format: 1, logs: { local: 7 }, coverage: { local: covered } },
-			applyDelay: 2,
-		});
-		const { runtime } = runtimeFor(store, purgedAnchorRecords(), { idleGraceMilliseconds: 1000 });
-		runtime.register(floorRegistration(backend));
+		// Emptied, and emptied then written again (the write is unflushed, so the witness has not moved).
+		for (const stats of [
+			emptiedStats(covered),
+			{ fileCount: 1, oldestSequenceNumber: 4, currentSequenceNumber: 4, lastFlushedPosition: covered },
+		]) {
+			const store = purgedAnchorStore(stats);
+			const backend = new AsyncBackend('purged-anchor', {
+				cursor: { format: 1, logs: { local: 7 }, coverage: { local: covered } },
+				applyDelay: 2,
+			});
+			const { runtime } = runtimeFor(store, purgedAnchorRecords(), { idleGraceMilliseconds: 1000 });
+			runtime.register(floorRegistration(backend));
 
-		await waitFor(() => backend.cursor.logs.local === 9, { timeout: 5000 });
-		assert.strictEqual(backend.resets.length, 0);
-		assert.deepStrictEqual(backend.deliveries[0].through, { format: 1, logs: {}, floors: { local: 4 } });
-		assert.strictEqual(backend.deliveries[0].records.length, 0);
-		assert.strictEqual(store.rangeCalls.at(-1).startByLog.has('local'), false, 'the log is read from its floor');
-		assert.strictEqual(backend.applied.get('b').kind, 'record');
-		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 9 } });
-		await runtime.stop();
+			await waitFor(() => backend.cursor.logs.local === 9, { timeout: 5000 });
+			assert.strictEqual(backend.resets.length, 0);
+			assert.deepStrictEqual(backend.deliveries[0].through, { format: 1, logs: {}, floors: { local: 4 } });
+			assert.strictEqual(backend.deliveries[0].records.length, 0);
+			assert.strictEqual(store.rangeCalls.at(-1).startByLog.has('local'), false, 'the log is read from its floor');
+			assert.strictEqual(backend.applied.get('b').kind, 'record');
+			assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 9 } });
+			await runtime.stop();
+		}
 	});
 
 	it('samples the floor before the flush witness', async () => {
@@ -1418,6 +1424,16 @@ describe('DerivedIndexRuntime for native backends', () => {
 				'witness past coverage',
 				{ format: 1, logs: { local: 7 }, coverage: { local: covered } },
 				emptiedStats({ sequence: 3, offset: 50 }),
+			],
+			[
+				'a tail lost before it reached disk',
+				{ format: 1, logs: { local: 7 }, coverage: { local: covered } },
+				{
+					fileCount: 1,
+					oldestSequenceNumber: 3,
+					currentSequenceNumber: 4,
+					lastFlushedPosition: { sequence: 3, offset: 20 },
+				},
 			],
 			[
 				'incomplete anchor',
@@ -2263,7 +2279,7 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		await transaction(canonical, () => Gated.put('g-source', { title: 'canonical' }, canonical));
 		assert.strictEqual((await Gated.get('g-source'))?.title, 'canonical');
 		assert.notStrictEqual(derivedIndexWriteRejection(Gated.auditStore, Gated.tableId), undefined, 'still tripped');
-		await waitFor(() => backend.deliveries.length >= 1, { timeout: 5000 });
+		await waitFor(() => backend.deliveries.length >= 2, { timeout: 5000 });
 
 		backend.cursor = backend.deliveries.at(-1).through;
 		backend.stateChange();

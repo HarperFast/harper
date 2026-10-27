@@ -1,6 +1,3 @@
-// What the suite needs that no operations-API surface exposes: the index's readiness and durable
-// cursor, the transaction log's positions, and a flush so retention has fully flushed files to purge.
-
 const table = () => tables.IdleProbe;
 
 export class IdleStatus extends Resource {

@@ -272,8 +272,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 	});
 
 	describe('a timestamp-anchored log that retention empties while idle', () => {
-		// Persists coverage inside the durable cursor and carries it into newer cursors, as both native
-		// backends do (hnswDerivedIndex.ts publishCoverage and its cursor write).
+		// Carries coverage into newer cursors, as both native backends do.
 		const coverageBackend = (id) => ({
 			id,
 			cursor: undefined,
@@ -359,7 +358,6 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 						...registerOptions,
 					},
 				});
-			// Caught up: the durable cursor anchors the peer log and its persisted coverage is the committed tail.
 			const caughtUp = (registered = backend) =>
 				waitFor(
 					() => {

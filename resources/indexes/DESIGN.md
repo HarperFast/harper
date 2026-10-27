@@ -295,9 +295,13 @@ condemning: the durable cursor covers every commit at or before its `coverage` p
 only at a committed tail with nothing uncommitted after it, persisted only once its offered cursor is
 durable, and carried into newer cursors by both backends), and purge deletes only files lying wholly at
 or before the flush witness (`lastFlushedPosition`, `txn.state`, never moved backwards). So while the
-witness is not past the covered position, nothing after it was lost, and the log is converted to a
+witness is not past the covered position, nothing after it was purged, and the log is converted to a
 floor taken from the current file inventory, then read from its beginning like any floor-anchored log.
-`lastCommittedPosition` is not a witness: retirement moves it to the next sequence. The inventory is
+The anchor must also be gone to a purge, not to a tail lost at power loss (a log append that was not on
+disk is lost, while a full-text publication is durable on its own schedule): a lost tail leaves the file
+holding the witness, a purge leaves no file at or below the witness's sequence, so a retained file there
+condemns. `lastCommittedPosition` is not a witness: retirement moves it to the next sequence, and an
+idle owner may republish coverage there after the purge, which the proof still accepts. The inventory is
 sampled before the witness, in two `getStats` calls: one call reads the flush position before the file
 inventory, so it can pair a stale witness with an inventory a flush and purge of an uncovered entry has
 since shrunk, and the floor would then sit past that entry. The converted vector reaches the backend as
