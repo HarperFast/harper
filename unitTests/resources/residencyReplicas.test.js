@@ -570,11 +570,12 @@ describeReplicas('Local replicas of residency stubs', function () {
 
 	it('keeps receivedIdentityRefs across admission and demotion so a re-delivered patch is not re-applied', async () => {
 		const Counters = table({
-			database: 'residencyReplicas',
+			database: 'residencyReplicasIdentityRefs',
 			table: 'ResidencyReplicasReceivedIdentityRefs',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'count', indexed: true }, { name: 'body' }],
 			audit: true,
 		});
+		Counters.dbisDB.putSync([Symbol.for('residency_by_id'), RESIDENCY_ID], [server.hostname + '-other']);
 		Counters.sourcedFrom(
 			class extends Resource {
 				static async load(entry) {

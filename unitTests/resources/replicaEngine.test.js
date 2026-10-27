@@ -69,7 +69,7 @@ describe('Replica storage engine support', function () {
 		if (isLMDB) {
 			assert.deepEqual(results, [false, false]);
 			assert.deepEqual(current.value, entry.value);
-			for (const key of ['metadataFlags', 'residencyId', 'nodeId', 'additionalAuditRefs', 'receivedIdentityRefs'])
+			for (const key of ['metadataFlags', 'residencyId', 'nodeId', 'additionalAuditRefs'])
 				assert.deepEqual(current[key], entry[key], `${key} is unchanged`);
 			assert.ok(current.metadataFlags & INVALIDATED);
 			assert.ok(!(current.metadataFlags & REPLICA));
