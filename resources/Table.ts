@@ -10824,6 +10824,7 @@ export function makeTable(options): TableResourceClass {
 	} = tablePrototype;
 	registerPrimitiveIdGet(TableResource, (id, context: any, resourceOptions) => {
 		if (
+			disposed ||
 			hasSourceGet ||
 			TableResource.loadAsInstance === false ||
 			(TableResource as any).getReturnMutable ||
@@ -11081,7 +11082,7 @@ export function makeTable(options): TableResourceClass {
 					// don't go into the loading from source condition, but HTTP spec says to
 					// return 504 (rather than 404) if there is no content and the cache-control header
 					// dictates not to go to source
-					// a primitive-id get has no instance (onlyIfCached was set while it read); a fresh one would hold entry.value
+					// a primitive-id get that went async has no instance (onlyIfCached can be set while it reads), so check the entry
 					if (!(resource ? resource.doesExist() : entry?.value) || isHiddenExpiry(entry?.expiresAt))
 						throw new ServerError('Entry is not cached', 504);
 					if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached

@@ -94,11 +94,17 @@ describe('Table.get by a primitive id', function () {
 		});
 
 		it('resolves a miss to null on both routes', async () => {
-			await inTransaction(async () => {
-				assert.strictEqual(await Records.get('missing'), null);
-				assert.strictEqual(await Records.get({ id: 'missing' }), null);
-				assert.strictEqual(await Records.get(404), null);
-			});
+			const calls = countPrimitiveGets(Records);
+			try {
+				await inTransaction(async () => {
+					assert.strictEqual(await Records.get('missing'), null);
+					assert.strictEqual(await Records.get({ id: 'missing' }), null);
+					assert.strictEqual(await Records.get(404), null);
+				});
+			} finally {
+				calls.restore();
+			}
+			assert.deepStrictEqual([...calls], ['handled', 'handled']);
 		});
 
 		it('throws the same synchronous ClientError for an invalid id', () =>
@@ -301,8 +307,9 @@ describe('Table.get by a primitive id', function () {
 			await assertNotHandled(Records, () =>
 				inTransaction(async (context) => {
 					context.onlyIfCached = true;
-					assert.throws(
-						() => Records.get('missing'),
+					// LMDB may prefetch first, so the 504 can arrive as a rejection rather than a throw
+					await assert.rejects(
+						async () => Records.get('missing'),
 						(error) => error.statusCode === 504
 					);
 				})
