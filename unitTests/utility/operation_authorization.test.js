@@ -1860,6 +1860,7 @@ describe('Test operations permissions', function () {
 			['super_user', { super_user: true }],
 			['a role allowlisting read_only', { super_user: false, operations: ['read_only'] }],
 			['a role allowlisting standard_user', { super_user: false, operations: ['standard_user'] }],
+			['a role allowlisting admin_read', { super_user: false, operations: ['admin_read'] }],
 			['a role allowlisting it by name', { super_user: false, operations: [operation] }],
 		]) {
 			it(`allows ${label}`, function () {
@@ -1867,7 +1868,7 @@ describe('Test operations permissions', function () {
 			});
 		}
 
-		for (const operations of [[], ['describe_all', 'user_info'], ['admin_read']]) {
+		for (const operations of [[], ['describe_all', 'user_info']]) {
 			it(`refuses a role whose allowlist ${JSON.stringify(operations)} omits it`, function () {
 				const result = op_auth.verifyPerms(
 					request({ super_user: false, operations }),

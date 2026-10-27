@@ -43,6 +43,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,
 		OPERATIONS_ENUM.GET_COMPONENTS,
 		OPERATIONS_ENUM.GET_COMPONENT_FILE,
+		OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 	],
 	/**
 	 * Everything in `read_only` plus full data manipulation (insert, update, upsert, delete)
