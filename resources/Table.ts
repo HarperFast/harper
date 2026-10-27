@@ -760,6 +760,7 @@ const UNREADABLE_LOG_REFUSAL =
 const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
 const STRIP_BATCH_SIZE = 100;
 const STRIP_MAX_ATTEMPTS = 20;
+const STRIP_RETRY_BUDGET_MS = 30_000;
 // metadata flags that describe the record's state; the rest are re-derived from the payloads they announce
 const RECORD_STATE_FLAGS = INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
@@ -13046,7 +13047,12 @@ export function makeTable(options): TableResourceClass {
 			}
 		);
 	}
-	function stripBatch(keys: Id[], names: string[], attempt = 1): Promise<unknown> {
+	function stripBatch(
+		keys: Id[],
+		names: string[],
+		attempt = 1,
+		deadline = Date.now() + STRIP_RETRY_BUDGET_MS
+	): Promise<unknown> {
 		const completions: Promise<unknown>[] = [];
 		const stripKeys = (transaction?: RocksTransaction) => {
 			for (const key of keys) {
@@ -13073,14 +13079,14 @@ export function makeTable(options): TableResourceClass {
 		}
 		return commitRawTransaction(transaction).then((committed) => {
 			if (committed) return Promise.all(completions);
-			if (attempt >= STRIP_MAX_ATTEMPTS)
+			if (attempt >= STRIP_MAX_ATTEMPTS || Date.now() > deadline)
 				throw new ServerError(
 					`Could not remove ${names.join(', ')} from ${tableName}: a batch of records conflicted with other writes ${attempt} times; run drop_attribute again`,
 					503
 				);
 			// randomized so two strips crossing on the same keys stop retrying in lockstep
 			return sleep(Math.ceil(Math.min(attempt * 20, 1000) * Math.random())).then(() =>
-				stripBatch(keys, names, attempt + 1)
+				stripBatch(keys, names, attempt + 1, deadline)
 			);
 		});
 	}
