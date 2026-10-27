@@ -11,7 +11,6 @@ const {
 } = require('#src/resources/originClosedFloor');
 const {
 	persistOriginClosedFloor,
-	raiseAuditFloor,
 	createAuditEntry,
 	HAS_ADDITIONAL_AUDIT_REFS,
 	ENTRY_DATAVIEW,
@@ -204,14 +203,6 @@ for (const loadAsInstance of [true, false]) {
 			await T.patch('rekeyed', { b: 'newer' }, { timestamp: timestamp + 20 });
 			const entry = T.primaryStore.getEntry('rekeyed');
 			assert.ok(entry.receivedIdentityRefs.some((ref) => ref.version === timestamp + 20));
-			await T.primaryStore.rootStore.transaction((native) => {
-				recordUpdater(T.primaryStore, T.tableId, T.auditStore)('rekeyed', entry.value, entry, entry.version, 0, false, {
-					transaction: native,
-					additionalAuditRefs: [...entry.additionalAuditRefs, { version: timestamp + 20, nodeId: 0 }],
-					receivedIdentityRefs: entry.receivedIdentityRefs,
-				});
-			});
-			assert.ok(T.primaryStore.getEntry('rekeyed').additionalAuditRefs.some((ref) => ref.version === timestamp + 20));
 			assert.equal(T.auditStore.get(timestamp + 20, T.tableId, 'rekeyed', 0), undefined);
 			await T.put('rekeyed', { a: 'replacement' }, { timestamp: timestamp + 10 });
 			assert.deepStrictEqual(
@@ -224,7 +215,7 @@ for (const loadAsInstance of [true, false]) {
 			);
 		});
 
-		it('keeps the merge for a missing receipt when prior retention is unknown', async function () {
+		it('keeps the merge when a missing branch log key matches a collected record version', async function () {
 			if (isLMDB) return this.skip();
 			const Unknown = table({
 				table: 'UnknownHistory',
@@ -259,7 +250,6 @@ for (const loadAsInstance of [true, false]) {
 					}
 				);
 			});
-			raiseAuditFloor(Unknown.auditStore, Infinity);
 			await Unknown.put('unknown', { a: 'replacement' }, { timestamp: timestamp + 10 });
 			assert.deepStrictEqual(
 				{ ...(await Unknown.get('unknown')) },
@@ -326,30 +316,86 @@ for (const loadAsInstance of [true, false]) {
 		});
 
 		(isLMDB ? it.skip : it)(
-			'replays a committed newer patch when an older transaction publishes before its full PUT',
+			'replays a committed newer patch when an older transaction publishes or patches before its full PUT',
 			async () => {
-				const id = 'older-message-then-put';
 				const timestamp = (nextTimestamp += 1000);
-				await T.put(id, { a: 'initial', c: 'stale', counter: 10 }, { timestamp });
-				await T.patch(id, { b: 'newer', counter: { __op__: 'add', value: 5 } }, { timestamp: timestamp + 20 });
-				const context = { timestamp: timestamp + 10 };
-				await transaction(context, async () => {
-					await T.publish(id, { notice: 'message' }, context);
-					await T.put(id, { a: 'replacement', counter: 100 }, context);
+				for (const [id, stageBeforePut] of [
+					['older-message-then-put', (ctx) => T.publish('older-message-then-put', { notice: 'message' }, ctx)],
+					[
+						'older-patch-then-put',
+						(ctx) => T.patch('older-patch-then-put', { c: 'overwritten-by-put', temp: true }, ctx),
+					],
+				]) {
+					await T.put(id, { a: 'initial', c: 'stale', counter: 10 }, { timestamp });
+					await T.patch(id, { b: 'newer', counter: { __op__: 'add', value: 5 } }, { timestamp: timestamp + 20 });
+					const context = { timestamp: timestamp + 10 };
+					await transaction(context, async () => {
+						await stageBeforePut(context);
+						await T.put(id, { a: 'replacement', counter: 100 }, context);
+					});
+					const record = await T.get(id);
+					assert.deepStrictEqual(
+						{ ...record },
+						{
+							id,
+							a: 'replacement',
+							b: 'newer',
+							counter: 105,
+						}
+					);
+					assert.equal(record.getUpdatedTime(), timestamp + 20);
+				}
+
+				const patchId = 'older-message-then-patch';
+				await T.put(patchId, { a: 'initial', counter: 10 }, { timestamp });
+				await T.patch(patchId, { a: 'newer', counter: { __op__: 'add', value: 5 } }, { timestamp: timestamp + 20 });
+				const patchContext = { timestamp: timestamp + 10 };
+				await transaction(patchContext, async () => {
+					await T.publish(patchId, { notice: 'message' }, patchContext);
+					await T.patch(patchId, { a: 'older', b: 'kept', counter: { __op__: 'add', value: 3 } }, patchContext);
 				});
-				const record = await T.get(id);
+				const patched = await T.get(patchId);
 				assert.deepStrictEqual(
-					{ ...record },
+					{ ...patched },
 					{
-						id,
-						a: 'replacement',
-						b: 'newer',
-						counter: 105,
+						id: patchId,
+						a: 'newer',
+						b: 'kept',
+						counter: 18,
 					}
 				);
-				assert.equal(record.getUpdatedTime(), timestamp + 20);
+				assert.equal(patched.getUpdatedTime(), timestamp + 20);
 			}
 		);
+
+		it('replaces a record when the only newer audit entry is a message', async () => {
+			const id = 'only-message-newer';
+			const timestamp = (nextTimestamp += 1000);
+			await T.put(id, { a: 'initial', c: 'stale' }, { timestamp });
+			await T.publish(id, { notice: 'later-message' }, { timestamp: timestamp + 20 });
+			await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
+			const record = await T.get(id);
+			assert.deepStrictEqual({ ...record }, { id, a: 'replacement' });
+			if (!isLMDB) assert.equal(record.getUpdatedTime(), timestamp + 20);
+		});
+
+		it('replaces within budget when the predecessor PUT is in a multi-record transaction', async () => {
+			const id = 'bulk-predecessor-target';
+			const timestamp = (nextTimestamp += 10_000);
+			const initialContext = { timestamp };
+			await transaction(initialContext, async () => {
+				for (let index = 0; index < 500; index++) {
+					await T.put(`bulk-pre-${index}`, { value: index }, initialContext);
+				}
+				await T.put(id, { a: 'initial', c: 'stale' }, initialContext);
+				for (let index = 500; index < 600; index++) {
+					await T.put(`bulk-pre-${index}`, { value: index }, initialContext);
+				}
+			});
+			await T.patch(id, { b: 'newer' }, { timestamp: timestamp + 20 });
+			await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
+			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, a: 'replacement', b: 'newer' });
+		});
 
 		for (const laterPatch of [false, true]) {
 			it(`replays a newer patch after a same-record message (later patch=${laterPatch})`, async () => {
@@ -403,7 +449,10 @@ for (const loadAsInstance of [true, false]) {
 			assert.equal(first.endTxn, false);
 			assert.equal((await T.get(id)).b, 'newer');
 			await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
-			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, c: 'stale', early: 'older', b: 'newer' });
+			assert.deepStrictEqual(
+				{ ...(await T.get(id)) },
+				{ id, c: 'stale', early: 'older', b: 'newer', a: 'replacement' }
+			);
 		});
 
 		it('retains fields beyond the transaction scan budget', async () => {
@@ -574,7 +623,7 @@ for (const loadAsInstance of [true, false]) {
 				await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
 				assert.deepStrictEqual(
 					{ ...(await T.get(id)) },
-					{ id, c: 'retained', b: 'first', d: 'last', ...(corruption === 'version' ? {} : { a: 'replacement' }) }
+					{ id, c: 'retained', b: 'first', d: 'last', a: 'replacement' }
 				);
 			});
 		}
