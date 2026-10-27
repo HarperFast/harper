@@ -205,6 +205,7 @@ class Transfer {
 
 	touch(): void {
 		clearTimeout(this.idleTimer);
+		if (this.failure) return;
 		this.idleTimer = setTimeout(
 			() => this.fail(timeout(`Fetch of ${this.redacted} received no data for ${this.idleTimeoutMs} ms`)),
 			this.idleTimeoutMs

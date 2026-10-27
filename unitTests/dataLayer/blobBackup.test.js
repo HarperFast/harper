@@ -387,7 +387,8 @@ describe('blobBackup', function () {
 			// fsyncTree reads it through the module object at call time; a directory fsync leaves no trace to observe
 			const original = durableFile.fsyncDirectory;
 			durableFile.fsyncDirectory = (directory) => {
-				flushed.push(directory);
+				// other suites' queued fsyncs can land while this one awaits
+				if (directory === dirname(rootA) || directory.startsWith(rootA)) flushed.push(directory);
 				return original(directory);
 			};
 			try {

@@ -83,7 +83,14 @@ export async function runBackupCommand(command: string): Promise<void> {
 		case OPERATIONS_ENUM.PURGE_BACKUPS:
 			result = await purgeBackupsOffline(databaseName, request.keep_count);
 			break;
-		case OPERATIONS_ENUM.RESTORE_BACKUP:
+		case OPERATIONS_ENUM.RESTORE_BACKUP: {
+			// dropping one would turn a cancel, or a restore of another source, into a restore of the latest backup
+			const needsServer = OFFLINE_RESTORE_UNSUPPORTED.filter((field) => request[field] !== undefined);
+			if (needsServer.length > 0) {
+				throw new ClientError(
+					`restore_backup ${needsServer.join(', ')} needs the server running; start Harper and rerun, or restore offline from backup_id= or file=`
+				);
+			}
 			result = await restoreBackupOffline(
 				databaseName,
 				request.backup_id,
@@ -95,11 +102,25 @@ export async function runBackupCommand(command: string): Promise<void> {
 				request.file === undefined ? undefined : String(request.file)
 			);
 			break;
+		}
 		default:
 			throw new Error(`Unknown backup command '${command}'`);
 	}
 	console.log(YAML.stringify(result).trim());
 }
+
+const OFFLINE_RESTORE_UNSUPPORTED = [
+	'url',
+	's3',
+	'server_path',
+	'server_path_identity',
+	'sha256',
+	'declared_size',
+	'on_restart',
+	'retain_previous',
+	'resume',
+	'cancel',
+];
 
 /**
  * Whether to route a backup command through the operation API rather than direct file access. An

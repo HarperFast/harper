@@ -57,6 +57,7 @@ import {
 	blobSnapshotDir,
 	blobsReadmeContent,
 	deleteBlobSnapshot,
+	fsyncTree,
 	purgeBlobSnapshots,
 	snapshotBlobs,
 	walkBlobFiles,
@@ -426,6 +427,8 @@ async function finalizeBackup(
 		// because that copy is the longest stretch an outside writer could remove it in.
 		await assertBackupStillPresent(backupDir, backupId, databaseName);
 		if (blobs) await snapshotBlobs(backupDir, backupId, blobRoots);
+		// a rollback copy is the only copy of the generation its restore destroys once the manifest says complete
+		if (blobs && details.pre_restore_for !== undefined) await fsyncTree(blobSnapshotDir(backupDir, backupId));
 		await assertBackupStillPresent(backupDir, backupId, databaseName);
 		await writeBackupManifest(
 			backupDir,

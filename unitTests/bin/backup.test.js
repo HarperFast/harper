@@ -264,4 +264,39 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 		assert.strictEqual(args[0], 'dev');
 		assert.strictEqual(args[5], true);
 	});
+
+	it('passes file= through to the offline restore', async () => {
+		cliCredentialsModule.loadCredentials = () => null;
+		processMgmtModule.getHdbPid = () => null;
+		trackRouting();
+		let args;
+		rocksdbBackupModule.restoreBackupOffline = async (...received) => {
+			args = received;
+			return {};
+		};
+		process.argv = ['node', 'harper', 'restore_backup', 'database=dev', 'file=./dev.tar.gz'];
+		await runBackupCommand('restore_backup');
+		assert.strictEqual(args[7], './dev.tar.gz');
+	});
+
+	for (const field of [
+		'url=https://example.com/a.tar.gz',
+		'cancel=true',
+		'resume=true',
+		'on_restart=true',
+		'sha256=' + 'a'.repeat(64),
+	]) {
+		it(`refuses ${field.split('=')[0]} offline instead of restoring the latest backup`, async () => {
+			cliCredentialsModule.loadCredentials = () => null;
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			process.argv = ['node', 'harper', 'restore_backup', 'database=dev', field];
+			await assert.rejects(runBackupCommand('restore_backup'), (error) => {
+				assert.strictEqual(error.statusCode, 400);
+				assert.match(error.message, new RegExp(`${field.split('=')[0]}.*needs the server running`));
+				return true;
+			});
+			assert.deepStrictEqual(calls, { offline: false, api: false });
+		});
+	}
 });

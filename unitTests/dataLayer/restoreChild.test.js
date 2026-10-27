@@ -97,8 +97,8 @@ describeUnlessLmdb('restore child', function () {
 	});
 
 	after(function () {
-		rmSync(tempDir, { recursive: true, force: true });
-		rmSync(backupDir, { recursive: true, force: true });
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+		if (backupDir) rmSync(backupDir, { recursive: true, force: true });
 	});
 
 	const verifyArgs = () => ({

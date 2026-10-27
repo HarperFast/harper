@@ -1,6 +1,5 @@
-import { loadRuntimeModule } from '../utility/packageUtils.js';
+import { loadRuntimeModule, RUNTIME_FILE_EXT, RUNTIME_SRC_ROOT } from '../utility/packageUtils.js';
 import { fork, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { getHdbBasePath, getConfigOverrides } from '../utility/environment/environmentManager.ts';
@@ -103,8 +102,7 @@ export function childExecArgv(parentExecArgv: string[]): string[] {
 }
 
 function childScriptPath(): string {
-	const compiled = join(__dirname, 'restoreChild.js');
-	return existsSync(compiled) ? compiled : join(__dirname, 'restoreChild.ts');
+	return join(RUNTIME_SRC_ROOT, 'dataLayer', `restoreChild${RUNTIME_FILE_EXT}`);
 }
 
 function capped(stream: NodeJS.ReadableStream | null): () => string {

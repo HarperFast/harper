@@ -415,21 +415,21 @@ async function finishWithLock(receipt: RestoreReceipt): Promise<void> {
 	}
 }
 
-let startupRecoveryRan = false;
+let startupOwnedJobs: Set<string> | undefined;
 
 export function resetStartupRecoveryForTesting(): void {
-	startupRecoveryRan = false;
+	startupOwnedJobs = undefined;
 }
 
 /**
  * Startup only, once per process: `loadRootComponents` also runs on every worker-replacing reload,
  * while the old workers still hold the databases. Returns the job ids still owned by a receipt, for
- * the interrupted-job sweep to leave alone.
+ * the interrupted-job sweep to leave alone — the same set on every later call, so a retried sweep
+ * keeps it.
  */
 export async function recoverRestoresAtStartup(): Promise<Set<string>> {
-	const owned = new Set<string>();
-	if (startupRecoveryRan) return owned;
-	startupRecoveryRan = true;
+	if (startupOwnedJobs) return startupOwnedJobs;
+	const owned = (startupOwnedJobs = new Set<string>());
 	let published = false;
 	for (const { file, read } of scanRestoreReceipts()) {
 		if (read.kind === 'absent') continue;

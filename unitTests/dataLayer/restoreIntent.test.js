@@ -35,7 +35,10 @@ const {
 	restoreBackupOffline,
 	restorePinId,
 } = require('#src/dataLayer/rocksdbBackup');
-const { readBackupManifest } = require('#src/dataLayer/backupManifest');
+const backupManifestModule = require('#src/dataLayer/backupManifest');
+const { readBackupManifest, writeBackupManifest } = backupManifestModule;
+const blobBackupModule = require('#src/dataLayer/blobBackup');
+const { blobSnapshotDir, fsyncTree } = blobBackupModule;
 const { backupPinsDir, readBackupPins } = require('#src/dataLayer/backupRepository');
 const {
 	acquireRestoreLock,
@@ -479,6 +482,34 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(settled.status, JOB_STATUS_ENUM.COMPLETE);
 			assert.strictEqual(settled.result.pre_restore_backup_id, undefined);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
+		it("flushes the rollback copy's blob snapshot before its manifest marks it complete", async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true });
+			await closeDatabase(fixture.name);
+			const { operation_id: operationId } = receiptOf(fixture.dir);
+			const events = [];
+			const restoreFsync = replaceExport(blobBackupModule, 'fsyncTree', async (root) => {
+				events.push(['fsync', root]);
+				return fsyncTree(root);
+			});
+			const restoreManifest = replaceExport(backupManifestModule, 'writeBackupManifest', async (dir, id, ...rest) => {
+				events.push(['manifest', id]);
+				return writeBackupManifest(dir, id, ...rest);
+			});
+			let id;
+			try {
+				id = await createPreRestoreBackup(fixture.name, fixture.dir, fixture.backupDir, operationId);
+			} finally {
+				restoreFsync();
+				restoreManifest();
+			}
+			assert.deepStrictEqual(events, [
+				['fsync', blobSnapshotDir(fixture.backupDir, id)],
+				['manifest', id],
+			]);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
 		it('adopts a pre-restore backup a crash left unjournaled instead of taking another', async function () {

@@ -115,9 +115,12 @@ async function loadRootComponents(isWorkerThread: any = false) {
 			console.error(errorForLog(error));
 		}
 		loadRuntimeModule('dataLayer/restoreArchive').sweepImportStagingAtStartup();
-		jobOwnershipRuntimeModule
-			.reconcileInterruptedJobsOnce(restoreOwnedJobs)
-			.catch((error) => console.error(errorForLog(error)));
+		// without the owned set the sweep would fail a pending restart restore's job as interrupted
+		if (restoreOwnedJobs) {
+			jobOwnershipRuntimeModule
+				.reconcileInterruptedJobsOnce(restoreOwnedJobs)
+				.catch((error) => console.error(errorForLog(error)));
+		}
 	}
 
 	await loadCertificates();

@@ -445,7 +445,7 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 			});
 
 			afterEach(function () {
-				restoreAddJob();
+				restoreAddJob?.();
 			});
 
 			async function assertRefusedBeforeAJob(fields) {
