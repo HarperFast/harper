@@ -277,10 +277,6 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				);
 			}
 
-			/**
-			 * `readyWithinMs` waits out a background rebuild of `count`, which Harper reports with the
-			 * documented retryable `503 INDEX_REBUILDING` until it lands; any other response fails at once.
-			 */
 			async function rangeAboveThreshold(readyWithinMs = 0): Promise<Array<{ id: number; count: number }>> {
 				const deadline = Date.now() + readyWithinMs;
 				for (;;) {
@@ -294,13 +290,15 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 							conditions: [{ search_attribute: 'count', search_type: 'greater_than', search_value: RANGE_THRESHOLD }],
 							get_attributes: ['id', 'count'],
 						})
-						.timeout(30_000);
+						.timeout(readyWithinMs ? Math.min(30_000, Math.max(1_000, deadline - Date.now())) : 30_000);
 					const rebuilding = response.status === 503 && response.body?.code === 'INDEX_REBUILDING';
-					if (!rebuilding || Date.now() >= deadline) {
-						strictEqual(response.status, 200, `range query over count => ${response.status}: ${response.text}`);
-						return response.body.map((row: DumpedRow) => ({ id: row.id, count: row.count }));
+					if (rebuilding && Date.now() < deadline) {
+						await sleep(250);
+						continue;
 					}
-					await sleep(250);
+					ok(!rebuilding || !readyWithinMs, `the count index was still rebuilding after ${readyWithinMs}ms`);
+					strictEqual(response.status, 200, `range query over count => ${response.status}: ${response.text}`);
+					return response.body.map((row: DumpedRow) => ({ id: row.id, count: row.count }));
 				}
 			}
 
