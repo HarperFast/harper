@@ -1,0 +1,98 @@
+require('../testUtils');
+const assert = require('assert');
+const { setupTestDBPath } = require('../testUtils');
+const { table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+
+const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+
+// Table.stripAttributeValues backs drop_attribute on dynamic tables; the built-server path is in
+// integrationTests/database/drop-attribute-dynamic-rewrite.test.ts.
+describe('Table.stripAttributeValues', () => {
+	let tableCount = 0;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+	const makeTable = (options = {}) =>
+		table({
+			table: `StripValues${tableCount++}`,
+			database: 'test',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			...options,
+		});
+	const readEntry = (Table, id) => Table.primaryStore.getEntry(id, { uncachedRead: true });
+
+	it('keeps the version, metadata and local time of each rewritten record', async () => {
+		const Table = makeTable({ expiration: 3600 });
+		for (let index = 0; index < 3; index++)
+			await Table.put(`row-${index}`, { id: `row-${index}`, a: index, keep: 'k' });
+		const before = ['row-0', 'row-1', 'row-2'].map((id) => readEntry(Table, id));
+		assert.ok(before.every((entry) => entry.expiresAt > Date.now()));
+
+		await Table.stripAttributeValues(['a']);
+
+		for (const previous of before) {
+			const entry = readEntry(Table, previous.key);
+			assert.deepStrictEqual({ ...entry.value }, { id: previous.key, keep: 'k' });
+			assert.strictEqual(entry.version, previous.version);
+			assert.strictEqual(entry.expiresAt, previous.expiresAt);
+			assert.strictEqual(entry.nodeId, previous.nodeId);
+			assert.strictEqual(entry.residencyId, previous.residencyId);
+			assert.deepStrictEqual(entry.additionalAuditRefs, previous.additionalAuditRefs);
+			assert.strictEqual(entry.metadataFlags & ~VERSION_REUSED, previous.metadataFlags);
+			if (isRocksDB) {
+				// the same version now names a different value, so no cache may vouch for the old one
+				assert.ok(entry.metadataFlags & VERSION_REUSED);
+			} else {
+				assert.ok(previous.localTime > 0);
+				assert.strictEqual(entry.localTime, previous.localTime);
+			}
+		}
+	});
+
+	it('leaves a deleted record deleted and a record without the attribute untouched', async () => {
+		const Table = makeTable();
+		await Table.put('gone', { id: 'gone', a: 1 });
+		await Table.put('without', { id: 'without', keep: 1 });
+		await Table.delete('gone');
+		const tombstone = readEntry(Table, 'gone');
+		assert.ok(tombstone && tombstone.value == null, 'an audited delete leaves a tombstone');
+		const untouched = Table.primaryStore.getBinary('without');
+
+		await Table.stripAttributeValues(['a']);
+
+		const after = readEntry(Table, 'gone');
+		assert.strictEqual(after.value, tombstone.value);
+		assert.strictEqual(after.version, tombstone.version);
+		assert.strictEqual(await Table.get('gone'), null);
+		assert.deepStrictEqual(Buffer.from(Table.primaryStore.getBinary('without')), Buffer.from(untouched));
+	});
+
+	it('two concurrent strips of different attributes both take effect', async () => {
+		const Table = makeTable();
+		const ids = ['c-0', 'c-1', 'c-2'];
+		for (const id of ids) await Table.put(id, { id, a: 1, b: 2, keep: 3 });
+
+		await Promise.all([Table.stripAttributeValues(['a']), Table.stripAttributeValues(['b'])]);
+
+		for (const id of ids) assert.deepStrictEqual({ ...readEntry(Table, id).value }, { id, keep: 3 });
+	});
+
+	it('strips more rows than one batch, typed-structure records included', async () => {
+		const Table = makeTable({ randomAccessFields: true });
+		const ids = Array.from({ length: 250 }, (_, index) => index);
+		for (const id of ids) Table.put(id, { id, a: `value-${id}`, keep: id * 2 });
+		await Table.put(ids.length, { id: ids.length, keep: 0 });
+
+		await Table.stripAttributeValues(['a']);
+
+		for (const id of ids) {
+			const record = await Table.get(id);
+			assert.strictEqual(record.a, undefined, `row ${id}`);
+			assert.strictEqual(record.keep, id * 2);
+		}
+	});
+});

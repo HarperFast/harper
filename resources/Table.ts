@@ -757,6 +757,9 @@ const RELOAD_REFUSAL =
 const UNREADABLE_LOG_REFUSAL =
 	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
+const STRIP_BATCH_SIZE = 100;
+// metadata flags that describe the record's state; the rest are re-derived from the payloads they announce
+const RECORD_STATE_FLAGS = INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
@@ -1219,6 +1222,8 @@ interface TableResourceClass {
 	get lockCoordinator(): LockCoordinator | undefined;
 	addAttributes(attributesToAdd: Attribute[]): Promise<any>;
 	removeAttributes(names: string[]): Promise<any>;
+	/** Delete the named properties from every stored record, in place (dynamic-table `drop_attribute`). */
+	stripAttributeValues(names: string[]): Promise<void>;
 	/**
 	 * Get the size of the table in bytes (based on amount of pages stored in the database)
 	 */
@@ -9924,6 +9929,22 @@ export function makeTable(options): TableResourceClass {
 			return (TableResource as any).indexingOperation;
 		}
 		/**
+		 * Rewrite each stored record without the named properties, keeping its version, metadata and (LMDB) local
+		 * time: no audit entry, nothing replicates. Each batch reads and writes its rows in one write transaction
+		 * (exclusive on LMDB, conflict-checked on RocksDB), so a concurrent write or strip is stripped, not reverted.
+		 * Blob files of stripped values are left for cleanup_orphan_blobs: this write is not flushed when it resolves.
+		 */
+		static async stripAttributeValues(names: string[]) {
+			let keys: Id[] = [];
+			for (const key of primaryStore.getKeys({ start: true, snapshot: false })) {
+				keys.push(key);
+				if (keys.length < STRIP_BATCH_SIZE) continue;
+				await stripBatch(keys, names);
+				keys = [];
+			}
+			if (keys.length > 0) await stripBatch(keys, names);
+		}
+		/**
 		 * Get the size of the table in bytes (based on amount of pages stored in the database)
 		 * @param options
 		 */
@@ -13024,6 +13045,55 @@ export function makeTable(options): TableResourceClass {
 				} catch {}
 				throw error;
 			}
+		);
+	}
+	function stripBatch(keys: Id[], names: string[]): Promise<unknown> {
+		const completions: Promise<unknown>[] = [];
+		const stripKeys = (transaction?: RocksTransaction) => {
+			for (const key of keys) {
+				const entry = primaryStore.getEntry(key, transaction && { transaction, uncachedRead: true });
+				const completion = stripRecord(key, entry, names, transaction);
+				if (completion?.then) {
+					// awaited below once the batch commits; until then a rejection must not go unhandled
+					completion.then(undefined, () => {});
+					completions.push(completion);
+				}
+			}
+		};
+		if (!isRocksDB) return primaryStore.transaction(() => stripKeys()).then(() => Promise.all(completions));
+		const transaction = new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
+		try {
+			stripKeys(transaction);
+		} catch (error) {
+			(transaction as any).abort();
+			throw error;
+		}
+		return commitRawTransaction(transaction).then((committed) =>
+			committed ? Promise.all(completions) : stripBatch(keys, names)
+		);
+	}
+	function stripRecord(key: Id, entry: Entry | undefined, names: string[], transaction?: RocksTransaction) {
+		const record = entry?.value;
+		if (record == null || typeof record !== 'object' || !names.some((name) => record[name] !== undefined)) return;
+		const stripped = { ...record };
+		for (const name of names) delete stripped[name];
+		return updateRecord(
+			key,
+			stripped,
+			withoutBlobRelease(entry),
+			entry.version,
+			entry.metadataFlags & RECORD_STATE_FLAGS,
+			false,
+			{
+				expiresAt: entry.expiresAt,
+				residencyId: entry.residencyId,
+				recordNodeId: entry.nodeId,
+				additionalAuditRefs: entry.additionalAuditRefs,
+				receivedIdentityRefs: entry.receivedIdentityRefs,
+				transaction,
+			},
+			'put',
+			true // on LMDB, keeps the local time while its audit entry exists
 		);
 	}
 	function withoutBlobRelease(entry: Entry): Entry {
