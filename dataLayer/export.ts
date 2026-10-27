@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
+import { once } from 'node:events';
 import * as hdbCommon from '../utility/common_utils.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -166,7 +167,8 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 		try {
 			await pipeline(streamAsJSON(data), writeStream);
 		} catch (error) {
-			// only a file this export opened (and so truncated) is its own to remove
+			// an open still in flight completes before 'close'; only a file this export opened is its own to remove
+			if (!writeStream.closed) await once(writeStream, 'close');
 			if (opened) await fs.promises.unlink(filePath).catch(() => {});
 			throw error;
 		}

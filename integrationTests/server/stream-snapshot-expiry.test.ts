@@ -10,7 +10,8 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, throws } from 'node:assert';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import net from 'node:net';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -135,6 +136,12 @@ suite('streamed JSON read past the open-transaction limit (harper#2392)', (ctx: 
 		await teardownHarper(ctx);
 	});
 
+	function harperLog(): string {
+		const logDir = (ctx.harper as any).logDir as string | undefined;
+		const path = logDir && join(logDir, 'hdb.log');
+		return path && existsSync(path) ? readFileSync(path, 'utf8') : '';
+	}
+
 	test('control: an unstalled read returns every row as complete JSON', { timeout: 60_000 }, async () => {
 		const cap = await stalledGet(httpURL, auth, { timeoutMs: 50_000 });
 		strictEqual(cap.status, 200);
@@ -157,8 +164,9 @@ suite('streamed JSON read past the open-transaction limit (harper#2392)', (ctx: 
 			strictEqual(cap.status, 200);
 			const received = rowCount(cap.body);
 			ok(received > 0 && received < ROWS, `expected a partial result, got ${received} of ${ROWS} rows`);
+			// the body's diagnostic element is best-effort, so the server log is the fallback evidence
 			ok(
-				cap.body.includes('ReadSnapshotExpiredError'),
+				cap.body.includes('ReadSnapshotExpiredError') || harperLog().includes('ReadSnapshotExpiredError'),
 				`the scan must have failed on the expired snapshot; body ends ${JSON.stringify(cap.body.slice(-300))}`
 			);
 			strictEqual(cap.sawTerminalChunk, false, 'a failed stream must not send the chunked terminator');

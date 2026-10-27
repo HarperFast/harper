@@ -134,6 +134,31 @@ describe('Test export.js', () => {
 			assert.strictEqual(fs.existsSync(file_name), false, 'a failed export must not leave a partial file');
 		});
 
+		it('a json export whose source fails before its file opens leaves no file', async function () {
+			const results = {
+				[Symbol.iterator]() {
+					return {
+						next() {
+							throw new Error('scan failed at once');
+						},
+					};
+				},
+			};
+			file_name = path.join(TMP_TEST_DIR, 'early_failure.json');
+			hdb_export.__set__('pSql', async () => results);
+			await assert.rejects(
+				export_local({
+					operation: 'export_local',
+					path: TMP_TEST_DIR,
+					filename: 'early_failure',
+					format: 'json',
+					search_operation: { operation: 'sql', sql: 'SELECT * FROM dev.breed' },
+				}),
+				/scan failed at once/
+			);
+			assert.strictEqual(fs.existsSync(file_name), false);
+		});
+
 		it('a json export that cannot open its target leaves what is there', async function () {
 			function* results() {
 				yield TEST_OBJECT;

@@ -93,8 +93,12 @@ test(
 				const shortWait = await query(1_000_000, 1, target, path);
 				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
 				assert.equal(shortWait.coverage, null);
+				// a cut-off body may or may not carry its best-effort diagnostic
 				if (shortWait.aborted)
-					assert.match(shortWait.text, /\{"error":"DerivedIndexLagError/, JSON.stringify(shortWait));
+					assert(
+						!shortWait.text.includes('{"error":') || /\{"error":"DerivedIndexLagError/.test(shortWait.text),
+						JSON.stringify(shortWait)
+					);
 				else {
 					const errors = shortWait.body.filter((record: any) => record.error);
 					if (errors.length) {

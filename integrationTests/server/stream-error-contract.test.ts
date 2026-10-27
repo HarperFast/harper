@@ -406,9 +406,13 @@ suite(
 			assertServerTerminated(cap);
 		}
 
-		function assertJsonArrayAborted(cap: RawCapture, expectedBody: string) {
+		// the diagnostic element is best-effort: Bun's response can drop it when the transfer is aborted
+		function assertJsonArrayAborted(cap: RawCapture, rows: string, diagnostic: string) {
 			strictEqual(cap.status, 200, `a failed JSON-array stream has already committed its 200, got ${cap.status}`);
-			strictEqual(cap.decodedBody, expectedBody);
+			ok(
+				cap.decodedBody === rows || cap.decodedBody === rows + diagnostic,
+				`expected ${JSON.stringify(rows)} and optionally ${JSON.stringify(diagnostic)}, got ${JSON.stringify(cap.decodedBody)}`
+			);
 			throws(() => JSON.parse(cap.decodedBody), SyntaxError);
 			strictEqual(cap.sawTerminalChunk, false, 'a failed JSON-array stream must not send the chunked terminator');
 			assertServerTerminated(cap);
@@ -598,7 +602,7 @@ suite(
 				`[QA-890][iterable-rest/pre] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
 			);
 			console.log(`[QA-890][iterable-rest/pre] socketEvents=\n  ${cap.socketEvents.join('\n  ')}`);
-			assertJsonArrayAborted(cap, '[{"error":"Error: QA890-iter-pre-yield"}');
+			assertJsonArrayAborted(cap, '[', '{"error":"Error: QA890-iter-pre-yield"}');
 		});
 
 		test('sse: delayed pre-first-yield throw becomes an error event', { timeout: 20_000 }, async () => {
@@ -649,7 +653,7 @@ suite(
 			console.log(
 				`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
 			);
-			assertJsonArrayAborted(cap, '[{"n":0},{"n":1},{"error":"Error: QA890-iter-mid-stream"}');
+			assertJsonArrayAborted(cap, '[{"n":0},{"n":1}', ',{"error":"Error: QA890-iter-mid-stream"}');
 		});
 
 		test('iterable-rest: a failed stream closes a keep-alive connection', { timeout: 20_000 }, async () => {
@@ -659,7 +663,7 @@ suite(
 				})
 			);
 			captures.push(cap);
-			assertJsonArrayAborted(cap, '[{"n":0},{"n":1},{"error":"Error: QA890-iter-mid-stream"}');
+			assertJsonArrayAborted(cap, '[{"n":0},{"n":1}', ',{"error":"Error: QA890-iter-mid-stream"}');
 		});
 
 		test('iterable-rest: a failed compressed stream is cut off too', { timeout: 20_000 }, async () => {
