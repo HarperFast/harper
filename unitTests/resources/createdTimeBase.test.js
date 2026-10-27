@@ -186,7 +186,6 @@ describe('@createdTime follows the record a write lands on', function () {
 	});
 
 	describe('a patch that recreates a deleted record', () => {
-		// the created time is the patch's record version, and exactly that one value is indexed
 		function assertRecreated(Table, id, version = Table.primaryStore.getEntry(id)?.version) {
 			const stored = Table.primaryStore.getEntry(id)?.value;
 			assert.ok(stored, 'the patch recreated the record');
