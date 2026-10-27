@@ -17,10 +17,9 @@ function filesOf(name) {
 	const command = scripts[name];
 	const runner = /^(mocha|node unitTests\/runTypeStripTests\.mts --source-only) /;
 	if (!runner.test(command ?? '')) throw new Error(`"${name}" is not a mocha or type-strip runner script: ${command}`);
-	const args = command
-		.replace(runner, '')
-		.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)
-		.map((arg) => arg.replace(/["']/g, ''));
+	const args = (command.replace(runner, '').match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map((arg) =>
+		arg.replace(/["']/g, '')
+	);
 	const options = loadOptions(args);
 	return new Set(
 		collectFiles({ ...options, spec: options._, file: [] }).files.map((file) => path.relative(repo, file))
@@ -46,8 +45,12 @@ for (const prefix of ['test:unit', 'test:unit:typestrip']) {
 }
 for (const [index, [shard, compiled]] of sets['test:unit'].entries()) {
 	const native = sets['test:unit:typestrip'][index][1];
-	if (compiled.size !== native.size || [...compiled].some((file) => !native.has(file)))
-		errors.push(`the compiled and type-strip resources:${shard} scripts select different files`);
+	const onlyCompiled = [...compiled].filter((file) => !native.has(file));
+	const onlyNative = [...native].filter((file) => !compiled.has(file));
+	if (onlyCompiled.length || onlyNative.length)
+		errors.push(
+			`the compiled and type-strip resources:${shard} scripts select different files; only compiled: ${onlyCompiled.join(', ') || 'none'}; only type-strip: ${onlyNative.join(', ') || 'none'}`
+		);
 }
 
 if (errors.length) {
