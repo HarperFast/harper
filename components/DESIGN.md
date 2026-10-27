@@ -174,8 +174,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    main queues a withdrawal of its slot that stops any worker still in it, which the rollout's close waits for while the
    release stays registered, so a fixed redeploy neither arms nor reconciles before it (not awaited by the decision
    itself, since the worker it stops can be the requester, whose deploy answers only once it reads the decision); and the
-   reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`; refusals that cannot be read start no
-   new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
+   reconcile, boot and deploy admission, which ask one selector (`admittedIsolatedApplications` in
+   `server/threads/isolatedApplications.ts`), refuse it, so it holds no place in `threads.maxIsolated` (refusals that cannot be read start no new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
    the component it is live for, so an unreadable sidecar never lets a refused release load; retention pins its
    predecessor the same way, and pins everything when a record can be attributed to no one. When even the record
    write fails, main refuses it in memory, bound to that deployment id so a later release
@@ -755,7 +755,7 @@ is still loaded there, and one deployed without a restart never was. So main add
 the restart takes its turn, only if a pool worker may hold that application (`poolMayHold` in
 `server/threads/manageThreads.js`, from what each worker's loader reported), which is also how an isolation flip
 restarts the pool. A named restart reconciles only that application's dedicated worker, never another one a
-`restart: false` deploy left pending; a pool restart reconciles every one, as before (harper#3045).
+`restart: false` deploy left pending; a pool restart reconciles every one, as before (harper#3045). Because a named reconcile stops no other worker, deploy admission also counts every dedicated worker still running, except one whose refusal withdrew its slot (`isolatedApplicationAdmissionRefusal`).
 
 ## `drop_component`: main owns the whole-component drop
 
