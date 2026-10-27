@@ -161,7 +161,6 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		if (subscription.registeredThrough === undefined && startBound)
 			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
-		// the tick's pass drains the shared log range, which belongs to the cross-thread registry
 		if (dbisDb && !databaseSubscriptions.sameThread && !databaseSubscriptions.originFloorTimer)
 			startOriginTracking(databaseSubscriptions, dbisDb);
 	} else if (committedThrough !== undefined) subscription.localResumeStart = committedThrough;
@@ -310,7 +309,12 @@ function certifyProgress(subscriptions: any, readEntries: boolean): void {
 		subscriptions.recheckedCeiling = ceiling;
 		subscriptions.recheckPending = true;
 	}
-	// a same-thread registry runs no capture tick, so a hold that ends in an abort is re-captured on its own timer
+	if (!(ceiling < through) && subscriptions.recaptureTimer) {
+		clearTimeout(subscriptions.recaptureTimer);
+		subscriptions.recaptureTimer = undefined;
+	}
+	// a same-thread registry runs no capture tick (its pass would drain the cross-thread registry's log range), so
+	// a hold that ends in an abort is re-captured on its own timer
 	if (ceiling < through && subscriptions.sameThread && !subscriptions.recaptureTimer) {
 		subscriptions.recaptureTimer = setTimeout(() => {
 			subscriptions.recaptureTimer = undefined;
@@ -679,7 +683,6 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		if (!yielded && subscriptions.recheckPending && !subscriptions.notifyScheduled) {
 			subscriptions.recheckPending = false;
 			subscriptions.notifyScheduled = true;
-			// a same-thread follow-up only re-captures: the shared log range is the cross-thread registry's to drain
 			setImmediate(() =>
 				notifyFromTransactionData(subscriptions, subscriptions.sameThread ? [] : auditStore.subscriptionLogRange, true)
 			);
