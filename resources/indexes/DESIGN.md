@@ -291,26 +291,31 @@ once; its runtime and HNSW drop the field on clone and judge the log by the old 
 Retention also purges the file holding a log's **timestamp anchor** once the log is idle and flushed,
 so the next install (a restart, or the first acquisition after an idle release) finds that boundary
 `missing` although nothing committed after it. `#recoverPurgedAnchors` proves that case instead of
-condemning: the durable cursor covers every commit at or before its `coverage` position (captured
-only at a committed tail with nothing uncommitted after it, persisted only once its offered cursor is
-durable, and carried into newer cursors by both backends), and purge deletes only files lying wholly at
-or before the flush witness (`lastFlushedPosition`, `txn.state`, never moved backwards). So while the
-witness is not past the covered position, nothing after it was purged, and the log is converted to a
-floor taken from the current file inventory, then read from its beginning like any floor-anchored log.
-The anchor must also be gone to a purge, not to a tail lost at power loss (a log append that was not on
-disk is lost, while a full-text publication is durable on its own schedule): a lost tail leaves the file
-holding the witness, a purge leaves no file at or below the witness's sequence, so a retained file there
-condemns. `lastCommittedPosition` is not a witness: retirement moves it to the next sequence, and an
-idle owner may republish coverage there after the purge, which the proof still accepts. The inventory is
-sampled before the witness, in two `getStats` calls: one call reads the flush position before the file
-inventory, so it can pair a stale witness with an inventory a flush and purge of an uncovered entry has
-since shrunk, and the floor would then sit past that entry. The converted vector reaches the backend as
-an empty `#pendingBatch` delivered before any log work, so the saved vector stays `#offeredCursors[0]`
-until the conversion is durable (no `cursor-unoffered`), and a crash before then repeats the proof.
-The proof is sufficient, not necessary: a write after the purge that was flushed before the install
-moves the witness past coverage and the index rebuilds, as does a cursor whose coverage predates its
-anchor. Any other failure in the same range (corrupt frame, failed log, `incomplete`, `duplicate`,
-or an unproven sibling log) still condemns.
+condemning, from two facts. Persisted `coverage` C is **bound** to the vector stored with it: the index
+reflects every commit at or before C and none after. And purge deletes only files lying wholly at or
+before the flush witness W (`lastFlushedPosition`, `txn.state`, never moved backwards). If W is exactly
+C, every reflected commit was flushed (so it is in the primary store; a log tail lost at power loss
+would leave W short of C), and nothing after C was flushed (so nothing the index has not reflected was
+purged). The other accepted shape is C at offset 0 of W's next sequence: an idle owner recaptured the
+tail after the purge retired W's segment, which a purge does only once that segment is flushed to its
+end. `lastCommittedPosition` is not a witness, because retirement moves it to the next sequence. The
+log is then converted to a floor from the file inventory and read from its beginning like any
+floor-anchored log. The inventory comes from a `getStats` call made before the one supplying W: one
+call reads the flush position before the inventory, so it can pair a stale W with an inventory that a
+later flush and purge of an uncovered entry has shrunk, putting the floor past that entry.
+
+Binding is what makes coverage usable as resume evidence, so three rules hold it. Only an idle pass's
+capture is persisted (`CoverageCapture.bound`): a turn that reads entries can read some appended after
+its capture, and its vector then reflects commits past the captured position. Persisting also requires
+that nothing accepted beyond the durable vector carries a mutation, because HNSW stores coverage with its
+durable vector and full-text with its newest accepted one. Both backends keep coverage on a cursor write
+only when the new vector is the same (`sameDerivedIndexCursorVector`), never carrying it onto a vector that
+reflects more. The converted vector reaches the backend as an empty `#pendingBatch` delivered before any
+log work, so the saved vector stays `#offeredCursors[0]` until the conversion is durable (no
+`cursor-unoffered`), and a crash before then repeats the proof. The proof is sufficient, not necessary:
+a write after the purge that was flushed before the install, coverage that lags its vector, or uncommitted
+entries between the anchor and C, all rebuild. Any other failure in the same range (corrupt frame, failed
+log, `incomplete`, `duplicate`, or an unproven sibling log) still condemns.
 
 ### Offered versus durable progress
 
@@ -707,8 +712,9 @@ cursor. Reconciliation publishes it only when that cursor, or a later entry in t
 is durable. Unrelated-only progress may publish without a new barrier only if **all** non-durable
 registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
 be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
-optional `coverage` field in the existing durable cursor value, preserved by later cursor writes and
-removed with the cursor before reset. No native file format changes.
+optional `coverage` field in the existing durable cursor value, kept by a later cursor write only while
+it keeps the same vector, persisted only from an idle pass's capture (see the purged-anchor paragraph under
+cursors), and removed with the cursor before reset. No native file format changes.
 
 Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic. The
 shared time can refresh sooner once its prefix is durable. A coverage-only write failure logs and skips

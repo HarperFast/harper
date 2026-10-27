@@ -134,6 +134,7 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 			`the fresh index's own rebuild line is the anchor: ${JSON.stringify(linesBefore)}`
 		);
 		await killHarper(ctx);
+		const restartedAt = new Date().toISOString();
 		await startHarper(ctx, OPTIONS);
 		noteLogDir();
 		await waitFor(async () => (await status()).readiness.state === 'ready', { timeout: 60_000 });
@@ -149,6 +150,10 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 			{ timeout: 60_000, message: 'the next commit did not anchor the log again' }
 		);
 
-		deepStrictEqual(rebuildLines().slice(linesBefore.length), [], 'the install after the restart condemned nothing');
+		deepStrictEqual(
+			rebuildLines().filter((line) => line.slice(0, restartedAt.length) >= restartedAt),
+			[],
+			'the install after the restart condemned nothing'
+		);
 	});
 });

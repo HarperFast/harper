@@ -242,6 +242,37 @@ describe('DerivedIndexRuntime', () => {
 		await runtime.stop();
 	});
 
+	it('persists only coverage captured on an idle pass', async () => {
+		// The turn that reads 20 captured the tail before 20 was appended; persisting that position with the
+		// vector anchoring 20 would let a resume skip past an entry the position never covered.
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const before = { sequence: 1, offset: 32 };
+		const after = { sequence: 1, offset: 64 };
+		let captures = 0;
+		store.rootStore.useLog = (name) => ({
+			name,
+			getStats: () => {
+				const position = ++captures === 1 ? before : after;
+				return { oldestSequenceNumber: 1, lastCommittedPosition: position, nextLogPosition: position };
+			},
+		});
+		const backend = new FakeBackend('idle-coverage', cursor(10));
+		const persisted = [];
+		backend.publishCoverage = (positions) => persisted.push({ positions, cursor: backend.cursor });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 1,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => persisted.length > 0);
+		assert.deepStrictEqual(
+			persisted.map(({ positions, cursor }) => [positions.local, cursor.logs.local]),
+			persisted.map(() => [after, 20])
+		);
+		await runtime.stop();
+	});
+
 	it('does not let a local setup failure replace peer-owned readiness', () => {
 		const store = new FakeLogStore(new Map());
 		publishDerivedIndexReadiness(store, 'peer-owned', 'ready');
