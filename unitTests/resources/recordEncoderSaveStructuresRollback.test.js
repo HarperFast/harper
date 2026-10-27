@@ -276,6 +276,7 @@ describe('RecordEncoder discards structures from a structure save that did not c
 			assert.throws(() => writer.put('w2', { other: 1 }), /injected structure-save failure/);
 			restore();
 			assert.ok(writer.db.encoder.structureUpdate, 'a failed save leaves the earlier unconsumed update');
+			assert.strictEqual(writer.db.encoder.typedStructs.length, 3, 'a failed save reloads the durable dictionary');
 		});
 	});
 

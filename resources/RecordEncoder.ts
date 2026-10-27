@@ -575,6 +575,13 @@ export class RecordEncoder extends StructonEncoder {
 				result = superSaveStructures.call(this, structures, isCompatible);
 			} catch (error) {
 				discardUncommittedStructures(this);
+				// No re-pack follows a throw, and harper-pro's LMDB replication sender ships this encoder's
+				// arrays without reloading, so reload now rather than leave them empty.
+				try {
+					this._mergeStructures(this.getStructures());
+				} catch {
+					// The discard's uninitialized marker still reloads on the next encode.
+				}
 				throw error;
 			}
 			// A decline still flags an update: a peer committed structures this encoder never flagged, and
