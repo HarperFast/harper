@@ -7628,7 +7628,6 @@ export function makeTable(options): TableResourceClass {
 			) {
 				checkLoaded = true;
 			}
-			// keyed by selector descriptor: one name can be selected twice with different sub-selects
 			let transformCache: Map<any, (value: any) => any>;
 			const selectsPrototype =
 				select === '__proto__' ||
