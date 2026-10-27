@@ -86,7 +86,6 @@ describe('Current-state subscription buffered mutations', () => {
 						assert.strictEqual(last.type, 'put');
 						assert.deepStrictEqual({ ...last.value }, { ...current });
 					} else {
-						// a publish leaves an invalidated stub invalidated
 						assert.strictEqual(last.type, change, 'the row must not remain at its scanned value');
 					}
 				}

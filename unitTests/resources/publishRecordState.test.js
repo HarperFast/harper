@@ -1,6 +1,3 @@
-// A publish adds a message to the audit log and leaves the record as it was: its value and indexes,
-// its expiration, residency id and stub/replica flags.
-// In a transaction it applies to what earlier writes to the key left, not to the pre-transaction record.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -54,7 +51,6 @@ describe('publish leaves the record unchanged', function () {
 		nodeA = getIdOfRemoteNode('publish-state-a', T.auditStore);
 	});
 
-	/** Apply one origin transaction's writes as replication does. */
 	function applyFromOrigin(id, writes, { version, nodeId }, Table = T) {
 		const context = { source: {}, sourceApply: true, timestamp: version };
 		return transaction(context, async () => {
