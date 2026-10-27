@@ -3,6 +3,7 @@
 const assert = require('assert');
 const path = require('node:path');
 const { startWorker, registerWorkerDataProvider } = require('#src/server/threads/manageThreads');
+const { getMonotonicClockBuffer, getNextMonotonicTime } = require('#src/utility/lmdb/commonUtility');
 
 const FIXTURE = path.join(__dirname, 'workerData-fixture.cjs');
 // Providers registered here filter on this worker name so they can never leak values into
@@ -75,6 +76,12 @@ describe('registerWorkerDataProvider', () => {
 			// built-ins are untouched
 			assert.equal(report.name, WORKER_NAME);
 			assert.equal(report.hasTicketKeys, true);
+			// the worker's clock is this thread's clock word, not a copy: a time minted here is visible there
+			getNextMonotonicTime();
+			assert.equal(
+				Atomics.load(new BigInt64Array(report.monotonicClock), 0),
+				Atomics.load(new BigInt64Array(getMonotonicClockBuffer()), 0)
+			);
 		} finally {
 			for (const unregister of unregisters) unregister();
 			if (worker) {

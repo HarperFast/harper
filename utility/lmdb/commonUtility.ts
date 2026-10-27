@@ -1,5 +1,6 @@
 'use strict';
 
+import { getEnvironmentData, setEnvironmentData, workerData } from 'node:worker_threads';
 import { LMDB_ERRORS_ENUM as LMDB_ERRORS } from '../errors/commonErrors.ts';
 import * as lmdbTerms from './terms.ts';
 
@@ -90,7 +91,19 @@ export function getIndexedValues(this: any, value: any, indexNulls?: any) {
 	return undefined;
 }
 
-let lastTime = 0; // reported time used to ensure monotonic time.
+const MONOTONIC_CLOCK_KEY = 'harper.monotonicClock';
+// One clock word for every thread in the process, holding the bit pattern of the last time issued. LMDB keys
+// its audit log by the transaction time, so two threads issuing the same time would make two writes one.
+const monotonicClockBuffer: SharedArrayBuffer =
+	workerData?.monotonicClock ?? getEnvironmentData(MONOTONIC_CLOCK_KEY) ?? new SharedArrayBuffer(8);
+setEnvironmentData(MONOTONIC_CLOCK_KEY, monotonicClockBuffer);
+const lastTimeBits = new BigInt64Array(monotonicClockBuffer);
+const timeFloat = new Float64Array(1);
+const timeBits = new BigInt64Array(timeFloat.buffer);
+/** The shared clock word, for handing to worker threads that are created from this one. */
+export function getMonotonicClockBuffer(): SharedArrayBuffer {
+	return monotonicClockBuffer;
+}
 let startTime = 0; // the start time of the (current time relative to performance time counter)
 function adjustStartTime(this: any) {
 	// calculate the start time
@@ -103,18 +116,21 @@ adjustStartTime();
 const TIME_ADJUSTMENT_INTERVAL = 60000;
 setInterval(adjustStartTime, TIME_ADJUSTMENT_INTERVAL).unref();
 /**
- * A monotonic timestamp that is guaranteed to be higher than the last call to this function.
- * Will use decimal microseconds as necessary to differentiate from previous calls without too much drift.
+ * A timestamp higher than any this function has returned on any thread of this process, so it is unique
+ * across threads. Uses fractional milliseconds as necessary to stay as close to clock time as possible.
  */
 export function getNextMonotonicTime(this: any) {
-	let now = performance.now() + startTime;
-	if (now > lastTime) {
-		// current time is higher than last time, can safely return it
-		lastTime = now;
-		return now;
+	timeFloat[0] = performance.now() + startTime;
+	const nowBits = timeBits[0];
+	let last = Atomics.load(lastTimeBits, 0);
+	for (;;) {
+		// positive doubles order like their bit patterns, and one more is the next representable double
+		const next = nowBits > last ? nowBits : last + 1n;
+		const witnessed = Atomics.compareExchange(lastTimeBits, 0, last, next);
+		if (witnessed === last) {
+			timeBits[0] = next;
+			return timeFloat[0];
+		}
+		last = witnessed;
 	}
-	// otherwise, we MUST return a higher time than last time, so we increase the time and return it.
-	// increment by as small of count as possible, to minimize how far we are from clock time
-	lastTime += 0.000488;
-	return lastTime;
 }
