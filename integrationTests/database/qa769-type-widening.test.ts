@@ -85,6 +85,8 @@ const FIVE_BILLION = 5000000000;
 const WORKER_COUNT = 4;
 
 const READY_TIMEOUT_MS = 120_000;
+const REBUILD_POLL_MS = 250;
+const MIN_REQUEST_MS = 1_000;
 const RESTART_TEST_TIMEOUT_MS = 300_000;
 
 // Written over the INSTALLED component copy mid-run; the fixture source on disk is never touched.
@@ -290,10 +292,10 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 							conditions: [{ search_attribute: 'count', search_type: 'greater_than', search_value: RANGE_THRESHOLD }],
 							get_attributes: ['id', 'count'],
 						})
-						.timeout(readyWithinMs ? Math.min(30_000, Math.max(1_000, deadline - Date.now())) : 30_000);
+						.timeout(readyWithinMs ? Math.min(30_000, Math.max(MIN_REQUEST_MS, deadline - Date.now())) : 30_000);
 					const rebuilding = response.status === 503 && response.body?.code === 'INDEX_REBUILDING';
-					if (rebuilding && Date.now() < deadline) {
-						await sleep(250);
+					if (rebuilding && deadline - Date.now() > REBUILD_POLL_MS + MIN_REQUEST_MS) {
+						await sleep(REBUILD_POLL_MS);
 						continue;
 					}
 					ok(!rebuilding || !readyWithinMs, `the count index was still rebuilding after ${readyWithinMs}ms`);
