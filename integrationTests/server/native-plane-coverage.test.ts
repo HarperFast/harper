@@ -52,11 +52,21 @@ test(
 					body: body === undefined ? undefined : JSON.stringify(body),
 					signal: AbortSignal.timeout(30_000),
 				});
-				const text = await response.text();
+				// a stream that fails after its head is cut off, so keep what arrived and parse only a complete body
+				let text = '';
+				let aborted = false;
+				const decoder = new TextDecoder();
+				try {
+					for await (const chunk of response.body ?? []) text += decoder.decode(chunk, { stream: true });
+				} catch {
+					aborted = true;
+				}
 				return {
 					status: response.status,
 					coverage: response.headers.get('harper-index-coverage'),
-					body: text ? JSON.parse(text) : undefined,
+					aborted,
+					text,
+					body: text && !aborted ? JSON.parse(text) : undefined,
 				};
 			}
 			const query = (tolerance?: unknown, wait?: unknown, queryTarget = target, path = '/PlaneProbe/') =>
@@ -82,11 +92,16 @@ test(
 				const shortWait = await query(1_000_000, 1, target, path);
 				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
 				assert.equal(shortWait.coverage, null);
-				const errors = shortWait.body.filter((record: any) => record.error);
-				if (errors.length) {
-					assert.equal(errors.length, 1, JSON.stringify(shortWait));
-					assert.match(errors[0].error, /^DerivedIndexLagError/);
-				} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
+				if (shortWait.aborted)
+					assert.match(shortWait.text, /\{"error":"DerivedIndexLagError/, JSON.stringify(shortWait));
+				else {
+					// a row error recovered through mapError stays a row value
+					const errors = shortWait.body.filter((record: any) => record.error);
+					if (errors.length) {
+						assert.equal(errors.length, 1, JSON.stringify(shortWait));
+						assert.match(errors[0].error, /^DerivedIndexLagError/);
+					} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
+				}
 			}
 			let progress: unknown;
 			try {
