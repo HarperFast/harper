@@ -142,7 +142,12 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		assert.match(stderr, new RegExp(`gh variable set HARPER_CLI_TARGET --repo ${REPO} --body ${audience}`));
 
 		const role = await findRole();
-		assert.deepStrictEqual(role.permission.operations.sort(), ['deploy_component', 'get_job', 'registration_info']);
+		assert.deepStrictEqual(role.permission.operations.sort(), [
+			'deploy_component',
+			'get_deployment',
+			'get_job',
+			'registration_info',
+		]);
 		assert.notStrictEqual(role.permission.super_user, true);
 
 		const user = await findUser();
@@ -158,7 +163,12 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			workflow_ref: `${REPO}/.github/workflows/deploy.yaml@refs/heads/main`,
 			environment: 'production',
 		});
-		assert.deepStrictEqual(policy.operations.sort(), ['deploy_component', 'get_job', 'registration_info']);
+		assert.deepStrictEqual(policy.operations.sort(), [
+			'deploy_component',
+			'get_deployment',
+			'get_job',
+			'registration_info',
+		]);
 		assert.strictEqual(policy.enabled, true);
 		assert.ok(!policy.invalid_reason, `unexpected invalid_reason: ${policy.invalid_reason}`);
 	});
@@ -171,7 +181,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		assert.deepStrictEqual({ role: await findRole(), user: await findUser(), policy: await findPolicy() }, before);
 	});
 
-	test('the role can poll its job but cannot read data or run other operations', async () => {
+	test('the role can follow its rollout but cannot read data or run other operations', async () => {
 		const password = 'Deploy-Setup-Test-Pw1';
 		await op({ operation: 'alter_user', username: NAME, password });
 		const header = 'Basic ' + Buffer.from(`${NAME}:${password}`).toString('base64');
@@ -179,6 +189,11 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			request(ctx.harper.operationsAPIURL).post('/').set('Authorization', header).send(body);
 
 		assert.strictEqual((await call({ operation: 'get_job', id: '00000000-0000-4000-8000-000000000000' })).status, 200);
+		// What `harper deploy restart=rolling` waits on; an unknown id is not a refusal.
+		assert.notStrictEqual(
+			(await call({ operation: 'get_deployment', deployment_id: '00000000-0000-4000-8000-000000000000' })).status,
+			403
+		);
 		// The CLI's version check before a deploy.
 		assert.strictEqual((await call({ operation: 'registration_info' })).status, 200);
 		assert.strictEqual((await call({ operation: 'describe_all' })).status, 403);
@@ -189,7 +204,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		const role = await findRole();
 		const widened = {
 			...role.permission,
-			operations: ['deploy_component', 'get_job', 'registration_info', 'add_user'],
+			operations: ['deploy_component', 'get_deployment', 'get_job', 'registration_info', 'add_user'],
 		};
 		await op({ operation: 'alter_role', id: role.id, role: NAME, permission: widened });
 		const policyBefore = await findPolicy();
@@ -201,6 +216,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		assert.deepStrictEqual((await findRole()).permission.operations.sort(), [
 			'add_user',
 			'deploy_component',
+			'get_deployment',
 			'get_job',
 			'registration_info',
 		]);

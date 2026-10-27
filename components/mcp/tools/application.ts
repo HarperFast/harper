@@ -227,6 +227,31 @@ function pathParamNames(path?: string): string[] {
 }
 
 /**
+ * Contract fragments mark nulls with OpenAPI 3.0's `nullable: true`, which JSON Schema 2020-12 (the MCP
+ * tool-schema dialect) ignores. Rewrite it at every depth as a `"null"` member of `type` (and of `enum`).
+ * A tool's root schema must stay `type: 'object'`, so a root `nullable` is dropped, not converted; so is
+ * every `nullable` under `allowNull: false` (query params, since a URL cannot carry null).
+ */
+function toJsonSchemaNullability(schema: unknown, root = false, allowNull = true): unknown {
+	if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
+	const { nullable, ...out } = schema as Record<string, unknown>;
+	if (out.properties && typeof out.properties === 'object') {
+		out.properties = Object.fromEntries(
+			Object.entries(out.properties).map(([key, sub]) => [key, toJsonSchemaNullability(sub, false, allowNull)])
+		);
+	}
+	if (out.items) out.items = toJsonSchemaNullability(out.items, false, allowNull);
+	if (nullable === true && !root && allowNull) {
+		if (out.type !== undefined) {
+			const types = Array.isArray(out.type) ? out.type : [out.type];
+			if (!types.includes('null')) out.type = [...types, 'null'];
+		}
+		if (Array.isArray(out.enum) && !out.enum.includes(null)) out.enum = [...out.enum, null];
+	}
+	return out;
+}
+
+/**
  * Build an MCP tool input schema from a resource's request contract (RFC 0001, Pillar 2): the path
  * params (always required strings) plus the verb's declared query and body fields, all off the shared
  * JsonSchemaFragment. Returns undefined when there is nothing contract-derived to advertise (the caller
@@ -242,13 +267,15 @@ function contractInputSchema(ResourceClass: ResourceClassLike, contractVerb: str
 		properties[param] = { type: 'string', description: `Path parameter :${param}.` };
 		required.push(param);
 	}
-	const merge = (fragment?: JsonSchemaFragmentLike) => {
+	const merge = (fragment: JsonSchemaFragmentLike | undefined, allowNull: boolean) => {
 		if (!fragment?.properties) return;
-		for (const [key, sub] of Object.entries(fragment.properties)) properties[key] = sub;
+		for (const [key, sub] of Object.entries(fragment.properties)) {
+			properties[key] = toJsonSchemaNullability(sub, false, allowNull);
+		}
 		for (const key of fragment.required ?? []) if (!required.includes(key)) required.push(key);
 	};
-	merge(input?.query);
-	merge(input?.body);
+	merge(input?.query, false);
+	merge(input?.body, true);
 	const schema: { type: string; properties: Record<string, unknown>; required?: string[] } = {
 		type: 'object',
 		properties,
@@ -279,7 +306,8 @@ function applyContractInputs(
 	if (queryProps && typeof setter === 'function') {
 		for (const key of Object.keys(queryProps)) {
 			const val = a[key];
-			if (val === undefined) continue;
+			// query schemas advertise no null (a URL cannot carry one); treat a stray null as omitted
+			if (val == null) continue;
 			if (Array.isArray(val) && typeof appender === 'function') {
 				for (const el of val) appender.call(target, key, String(el));
 			} else {
@@ -880,7 +908,10 @@ function registerVerbTools(ctx: ResourceContext): number {
 	// contract stores it by HTTP verb (`post`/`put`); fall back to the HTTP-verb key so a contract's
 	// `post.response`/`put.response` reaches the `create_*`/`update_*` output schema.
 	const overrideOutput = (verb: Verb): object | undefined =>
-		ResourceClass.outputSchemas?.[verb] ?? ResourceClass.outputSchemas?.[CONTRACT_VERB[verb]];
+		toJsonSchemaNullability(
+			ResourceClass.outputSchemas?.[verb] ?? ResourceClass.outputSchemas?.[CONTRACT_VERB[verb]],
+			true
+		) as object | undefined;
 	// When the resource carries a request contract (RFC 0001, Pillar 2), drive the tool INPUT schema off
 	// the contract (path params + declared query/body) instead of the generic table-attribute derivation.
 	// `search_*` is excluded: the contract has no `search` verb and the `search`/`query` static isn't

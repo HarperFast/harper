@@ -75,12 +75,12 @@
 		"test:unit:main:components": "mocha \"unitTests/components/**/*test.*js\"",
 		"test:unit:main:server": "mocha \"unitTests/server/**/*test.*js\"",
 		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
-		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb mocha unitTests/server/preconditions.test.js && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
+		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb mocha unitTests/server/preconditions.test.js unitTests/server/durableSessionResume.test.js && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
 		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:resources:core": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
 		"test:unit:resources:indexes": "mocha \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
-		"bench": "mocha \"unitTests/resources/caching-rocks-database.bench.js\" \"unitTests/resources/originClosedFloor.bench.js\" \"unitTests/resources/liveSubscriptionReauth.bench.js\"",
+		"bench": "mocha \"unitTests/resources/caching-rocks-database.bench.js\" \"unitTests/resources/indexRangeSelect.bench.js\" \"unitTests/resources/originClosedFloor.bench.js\" \"unitTests/resources/liveSubscriptionReauth.bench.js\"",
 		"test:unit:bin": "mocha \"unitTests/bin/**/*.js\"",
 		"test:unit:apitests": "node ./dist/bin/harper.js stop && mocha \"unitTests/apiTests/**/*-test.mjs\"",
 		"test:unit:logging": "mocha \"unitTests/utility/logging/*.js\"",
@@ -287,7 +287,7 @@
 		}
 	},
 	"optionalDependencies": {
-		"@harperfast/fulltext": "0.5.0",
+		"@harperfast/fulltext": "0.6.0",
 		"@harperfast/hnsw": "0.4.0",
 		"bufferutil": "4.1.0",
 		"segfault-handler": "1.3.0"

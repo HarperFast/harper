@@ -9,6 +9,14 @@ const token_auth = rewire('#js/security/tokenAuthentication');
 const password_function = require('#src/utility/password');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -268,8 +276,8 @@ describe('test authorize function for JWT', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		op_token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
-		r_token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
+		op_token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT, '-1');
+		r_token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		op_token_timeout();
 		r_token_timeout();

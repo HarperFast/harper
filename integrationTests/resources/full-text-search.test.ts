@@ -148,7 +148,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
 		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
 		assert.strictEqual(info.mutationBatchApiVersion, 5);
-		assert.strictEqual(info.queryApiVersion, 3);
+		assert.strictEqual(info.queryApiVersion, 4);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');
@@ -282,6 +282,43 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			rest.map(({ id }) => id),
 			page.map(({ id }) => id)
 		);
+	});
+
+	test('rejects removed paging functions before a collection delete can run', async () => {
+		for (const option of ['continuation()', 'continuation(token)', 'closeContinuation()']) {
+			for (const method of ['GET', 'DELETE']) {
+				const response = await fetch(`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&${option}`, {
+					method,
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(45000),
+				});
+				assert.strictEqual(response.ok, false);
+				assert.strictEqual((await response.json()).code, 'SyntaxViolation');
+			}
+		}
+		assert.deepStrictEqual(ids(await search(query('pagination'))), PAGE_IDS);
+	});
+
+	test('fills REST autocomplete pages after structured filtering and beyond the first native batch', async () => {
+		const all = await search(query('pagination'));
+		const expected = all
+			.filter(({ category }) => category === 'even')
+			.slice(0, 100)
+			.map(({ id }) => id);
+		for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+			const results = await request(
+				`/Product/?catalogSearch=${comparator}=pagin&category=even&limit(100)&select(id,title)`
+			);
+			assert.deepStrictEqual(
+				results.map(({ id }) => id),
+				expected
+			);
+			const larger = await request(`/Product/?catalogSearch=${comparator}=pagin&limit(150)&select(id,title)`);
+			assert.deepStrictEqual(
+				larger.map(({ id }) => id),
+				all.slice(0, 150).map(({ id }) => id)
+			);
+		}
 	});
 
 	test('preserves source permissions and row filters for non-admin searches', async () => {
@@ -578,4 +615,92 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForReady('Product');
 		await waitForIds(query('waterproof'), ['one', 'two']);
 	});
+	test(
+		'applies full-text request limits through set_configuration and worker restart',
+		{ skip: process.platform === 'win32' ? 'HTTP worker restart on Windows: HarperFast/harper#549' : false },
+		async () => {
+			async function restartWorkers() {
+				const { job_id } = await operation({ operation: 'restart_service', service: 'http_workers' });
+				assert(job_id);
+				const deadline = Date.now() + 60000;
+				let status;
+				do {
+					let job;
+					try {
+						[job] = await operation({ operation: 'get_job', id: job_id });
+					} catch (error) {
+						const code = (error as any)?.cause?.code ?? (error as any)?.code;
+						if (!['ECONNREFUSED', 'ECONNRESET', 'UND_ERR_SOCKET'].includes(code)) throw error;
+						assert.strictEqual(
+							ctx.harper.process.exitCode,
+							null,
+							`Harper exited during worker restart: ${ctx.harper.process.exitCode}`
+						);
+						assert.strictEqual(
+							ctx.harper.process.signalCode,
+							null,
+							`Harper stopped during worker restart: ${ctx.harper.process.signalCode}`
+						);
+					}
+					status = job?.status;
+					if (status === 'COMPLETE' || status === 'ERROR') break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 'COMPLETE');
+				await waitForReady('Product');
+			}
+			async function assertBudget(name: string) {
+				let status: number;
+				let body: string;
+				const deadline = Date.now() + 10000;
+				do {
+					const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
+						method: 'POST',
+						headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+						body: JSON.stringify(query('shoe', {}, { limit: 2 })),
+						signal: AbortSignal.timeout(5000),
+					});
+					status = response.status;
+					body = await response.text();
+					if (status === 400 && body.includes(name)) break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 400, body);
+				assert.ok(body.includes(name), body);
+			}
+			const original = (await operation({ operation: 'get_configuration' })).storage.fullText;
+			assert.ok(original, 'Installed configuration must include full-text defaults');
+			try {
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 500,
+					storage_fullText_maxResultsPerRequest: 1,
+					storage_fullText_requestBudgetMilliseconds: 1000,
+				});
+				const updated = (await operation({ operation: 'get_configuration' })).storage.fullText;
+				assert.strictEqual(updated.maxRawHitsPerRequest, 500);
+				assert.strictEqual(updated.maxResultsPerRequest, 1);
+				assert.strictEqual(updated.requestBudgetMilliseconds, 1000);
+				await restartWorkers();
+				await assertBudget('maxResultsPerRequest');
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 1,
+					storage_fullText_maxResultsPerRequest: 500,
+				});
+				await restartWorkers();
+				await assertBudget('maxRawHitsPerRequest');
+			} finally {
+				if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
+					await operation({
+						operation: 'set_configuration',
+						storage_fullText_maxRawHitsPerRequest: original.maxRawHitsPerRequest,
+						storage_fullText_maxResultsPerRequest: original.maxResultsPerRequest,
+						storage_fullText_requestBudgetMilliseconds: original.requestBudgetMilliseconds,
+					});
+					await restartWorkers();
+				}
+			}
+		}
+	);
 });

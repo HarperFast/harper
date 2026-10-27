@@ -404,6 +404,9 @@
 				"attribute": "install_fingerprint"
 			},
 			{
+				"attribute": "preview"
+			},
+			{
 				"attribute": "status"
 			},
 			{
@@ -435,6 +438,12 @@
 			},
 			{
 				"attribute": "activated_from"
+			},
+			{
+				"attribute": "restart_job_id"
+			},
+			{
+				"attribute": "source"
 			},
 			{
 				"attribute": "error"

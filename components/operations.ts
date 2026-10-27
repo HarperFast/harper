@@ -39,8 +39,12 @@ import {
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	dropComponentDirectory,
+	readDeploymentPreview,
+	readDeploymentProvenance,
 	retireComponentDirectory,
+	liveDeploymentIdOf,
 } from './Application.ts';
+import { deploymentOfLiveRelease } from './deploymentOperations.ts';
 const prepareApplication = _prepareApplication;
 import { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } from './componentPreparationLock.ts';
 import { DEPLOYMENT_PROVENANCE_FILE } from './deploymentProvenance.ts';
@@ -49,9 +53,14 @@ import {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
 	hasRootConfigEntry,
+	PAYLOAD_ROUTING_KEYS,
+	readRootConfigEntry,
 	withRootConfigPublicationLock,
 } from './rootConfigPublication.ts';
 import { server } from '../server/Server.ts';
+import { deploymentSource } from './deploymentSource.ts';
+import { missingEntryPointsWarning } from './declaredEntryPoints.ts';
+import { sweepFailedPayloads } from './payloadRetention.ts';
 import {
 	DeploymentRecorder,
 	awaitDeploymentRow,
@@ -60,6 +69,8 @@ import {
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } from './deploymentRecorder.ts';
 import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
+import { componentGrantConstraintRefusal, componentGrantOf, grantCoversComponent } from '../security/componentGrant.ts';
+import { admitPreviewActivation, assertPreviewCapacity } from './previews.ts';
 
 const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const DROP_ANSWER_MARGIN_MS = 60_000;
@@ -547,18 +558,28 @@ async function deployComponent(req?: any) {
 	// this thread's cached config may predate an earlier deploy that changed the entry without a restart
 	env.initSync(true);
 	const initiallyIsolated = isIsolatedApplication(req.project);
-	if (requestedIsolation !== undefined && !req.package) {
-		throw handleHDBError(
-			new Error(),
-			`'isolated' is only supported for package deployments; set it on the application's root config entry instead`,
-			HTTP_STATUS_CODES.BAD_REQUEST
-		);
-	}
-	if (req.branchedDatabases !== undefined && !req.package) {
-		throw handleHDBError(
-			new Error(),
-			`'branchedDatabases' is only supported for package deployments; set it on the application's root config entry instead`,
-			HTTP_STATUS_CODES.BAD_REQUEST
+	const ownsPayloadRouting = !req.package && PAYLOAD_ROUTING_KEYS.some((key) => req[key] !== undefined);
+	// Only the origin enforces a grant's constraints. A peer's request is marked by a symbol no caller can send;
+	// `_deploymentId` arrives in the body, so it cannot mark one.
+	const componentGrant = req[hdbTerms.REPLICATED_FROM] === undefined ? componentGrantOf(req.hdb_user) : undefined;
+	const assertGrantConstraints = (routing) => {
+		const refusal = componentGrant && componentGrantConstraintRefusal(componentGrant, req.project, routing);
+		if (refusal) throw new ClientError(refusal, HTTP_STATUS_CODES.FORBIDDEN);
+	};
+	const currentRouting = (isolated) => {
+		const entry = readRootConfigEntry(req.project) as { host?: string; branchedDatabases?: unknown } | undefined;
+		return { isolated, host: entry?.host, branchedDatabases: entry?.branchedDatabases };
+	};
+	if (componentGrant && !isActivation) {
+		const isolated = requestedIsolation ?? initiallyIsolated;
+		assertGrantConstraints(
+			req.package
+				? { isolated, host: req.host, branchedDatabases: req.branchedDatabases }
+				: {
+						...currentRouting(isolated),
+						...(req.host !== undefined && { host: req.host }),
+						...(req.branchedDatabases !== undefined && { branchedDatabases: req.branchedDatabases }),
+					}
 		);
 	}
 	// Only the originating node rejects admission: replicated peers must commit the same desired config,
@@ -596,6 +617,9 @@ async function deployComponent(req?: any) {
 	// refuse an activation whose artifact turns isolation OFF for a component whose present isolated state is
 	// itself the refusal — a 409 for the request that would fix it.
 	if (!isActivation) await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
+	if (req.preview && !isActivation && !isReplicatedExecution) {
+		await assertPreviewCapacity(req.project, req.preview.app);
+	}
 	const { ingestCredentials, resolveCredentials } = secretOperationsRuntimeModule;
 	// An activation resolves, fetches and installs nothing, so there is no credential for it to carry.
 	// The validator rejects one; this keeps the ingest itself off the path rather than relying on that.
@@ -618,6 +642,7 @@ async function deployComponent(req?: any) {
 	}
 	let wasIsolated;
 	let nowIsolated;
+	let declaredRouting;
 
 	// Create a hdb_deployment row up front so the deploy is observable and auditable
 	// even if the CLI disconnects. The row also holds the payload in a Blob attribute,
@@ -642,6 +667,8 @@ async function deployComponent(req?: any) {
 				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
 				// Reference form only — the rollback source for re-resolving the credential.
 				credentials: credentialReferences.length ? credentialReferences : null,
+				preview: req.preview ?? null,
+				source: deploymentSource(req.hdb_user?.deploySource, req.source),
 				emitter,
 				// Reuse the same `deployment_timeout` knob operators already have for the
 				// peer-side row/blob waits to size the origin's payload-ingest write
@@ -649,6 +676,8 @@ async function deployComponent(req?: any) {
 				ingestTimeoutMs: req.deployment_timeout,
 			});
 	if (recorder) req._deploymentId = recorder.deploymentId;
+	// Recorded once, on the row; peers have no use for what the client declared about itself.
+	delete req.source;
 
 	const emit = (event, data) => emitter?.emit(event, data);
 
@@ -665,6 +694,7 @@ async function deployComponent(req?: any) {
 	const installCapture = createInstallCapture();
 	let stagedOnOrigin = false;
 	let releaseRequester;
+	let entryPointWarning;
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -739,6 +769,7 @@ async function deployComponent(req?: any) {
 			// registry entries via a transient .npmrc, git-host entries via the in-memory credential
 			// socket the clone spawn talks to.
 			credentials: resolvedCredentials,
+			preview: req.preview,
 		});
 		// Reduce req.credentials to references only (never a token) before it can reach an error/log
 		// path or replication: references are what peers resolve from their own replicated hdb_secret
@@ -792,15 +823,29 @@ async function deployComponent(req?: any) {
 			// not the new row's.
 			artifactId: req.deployment_id ?? req._deploymentId,
 			mode,
-			describeArtifact: () => ({ rootConfig: declaredRootConfig, isolated: Boolean(nowIsolated) }),
+			describeArtifact: () => ({
+				rootConfig: declaredRootConfig,
+				routing: declaredRouting,
+				isolated: Boolean(nowIsolated),
+			}),
+			// The cap is the origin's: a peer makes live what the origin admitted.
+			aroundActivation: isReplicatedExecution
+				? undefined
+				: (candidateDirPath, activate) => admitPreviewActivation(req.project, candidateDirPath, activate),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
-				// A package artifact publishes its own root-config entry, so its recorded intent is what will
-				// be in force. A payload artifact owns no `isolated` key, so the effective configuration is the
-				// only authority there — a saved `false` must not admit past an isolation the operator set
-				// between the stage and this call.
-				nowIsolated = descriptor.rootConfig ? descriptor.isolated : wasIsolated;
+				// A package artifact publishes its own root-config entry, and a payload artifact that set routing owns
+				// those keys, so the recorded intent is what will be in force. Any other payload artifact owns no
+				// `isolated` key, so the effective configuration is the only authority there — a saved `false` must
+				// not admit past an isolation the operator set between the stage and this call.
+				nowIsolated = descriptor.rootConfig || descriptor.routing ? descriptor.isolated : wasIsolated;
+				const published = descriptor.rootConfig ?? descriptor.routing;
+				assertGrantConstraints(
+					published
+						? { isolated: nowIsolated, host: published.host, branchedDatabases: published.branchedDatabases }
+						: currentRouting(nowIsolated)
+				);
 				await assertIsolationAdmission(nowIsolated);
 			},
 			beforePrepare: async () => {
@@ -809,8 +854,21 @@ async function deployComponent(req?: any) {
 				wasIsolated = isIsolatedApplication(req.project);
 				nowIsolated = requestedIsolation ?? wasIsolated;
 				await assertIsolationAdmission(nowIsolated);
-				if (!isReplicatedExecution && req.package) req.isolated = nowIsolated;
-				if (!req.package) return;
+				if (!isReplicatedExecution && (req.package || ownsPayloadRouting)) req.isolated = nowIsolated;
+				if (!req.package) {
+					if (ownsPayloadRouting) declaredRouting = payloadRouting(req, nowIsolated);
+					assertGrantConstraints(
+						declaredRouting
+							? {
+									isolated: nowIsolated,
+									host: declaredRouting.host,
+									branchedDatabases: declaredRouting.branchedDatabases,
+								}
+							: currentRouting(nowIsolated)
+					);
+					return;
+				}
+				assertGrantConstraints({ isolated: nowIsolated, host: req.host, branchedDatabases: req.branchedDatabases });
 				const applicationConfig: any = { package: req.package };
 				if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
 					applicationConfig.install = {
@@ -826,7 +884,9 @@ async function deployComponent(req?: any) {
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 				declaredRootConfig = applicationConfig;
 			},
-			validateCandidate: async () => {
+			validateCandidate: async (candidateDirPath) => {
+				entryPointWarning = await missingEntryPointsWarning(req.project, candidateDirPath);
+				if (entryPointWarning) emit('warning', { message: entryPointWarning });
 				emit('phase', { phase: 'prepare', status: 'done' });
 			},
 			fingerprintInstall: !isActivation,
@@ -961,6 +1021,7 @@ async function deployComponent(req?: any) {
 			});
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.restartJobId = jobResponse.job_id;
+			if (recorder) recorder.row.restart_job_id = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, activating it on each other node in turn`;
 		} else if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
@@ -988,6 +1049,7 @@ async function deployComponent(req?: any) {
 			emit('phase', { phase: 'restart', status: 'done' });
 
 			response.restartJobId = jobResponse.job_id;
+			if (recorder) recorder.row.restart_job_id = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else {
 			// Deployed without restarting: for a component that had no directory before this
@@ -1073,8 +1135,9 @@ async function deployComponent(req?: any) {
 			// so dropping the tarball here is how a staged release becomes unrecoverable — no tree, no bytes,
 			// and a row still reporting `staged`. An operator can still reclaim it deliberately with
 			// delete_deployment_payload once they accept that.
+			// A preview is redeployed on every push, so its payload goes whatever its size.
 			const payloadSize = recorder.row.payload_size;
-			const retentionMaxSize = getPayloadRetentionMaxSize();
+			const retentionMaxSize = req.preview ? 0 : getPayloadRetentionMaxSize();
 			if (
 				mode !== 'stage' &&
 				typeof payloadSize === 'number' &&
@@ -1085,13 +1148,16 @@ async function deployComponent(req?: any) {
 				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
 			}
 			emit('phase', { phase: mode === 'stage' ? 'staged' : 'success', status: 'done' });
-			await recorder.finish(mode === 'stage' ? 'staged' : 'success');
+			// The activation job ends a rolling deploy's record once each other node has taken the release, or not.
+			await recorder.finish(mode === 'stage' ? 'staged' : rollingActivation ? 'rolling_out' : 'success');
+			if (rollingActivation) response.status = 'rolling_out';
 			if (mode === 'stage') {
 				response.message =
 					`Staged: ${application.name}. Deploy it with deploy_component ` + `deployment_id=${recorder.deploymentId}`;
 			}
 		}
 		if (installDrift) response.message = `${response.message} ${installDrift}`;
+		if (entryPointWarning) response.message = `${response.message} ${entryPointWarning}`;
 		if (mode !== 'stage') response.certification = certificationOutcome;
 		return response;
 	} catch (err) {
@@ -1138,12 +1204,30 @@ async function deployComponent(req?: any) {
 			} catch (finishErr) {
 				log.warn('Failed to record deployment failure row', finishErr);
 			}
+			// After the finish, so the failure just recorded counts as the project's newest and is kept.
+			if (!stagedOnOrigin) void sweepFailedPayloads({ project: req.project });
 		}
 		throw outErr;
 	} finally {
 		// A worker that asked for its own restart answers, or fails, before main replaces it.
 		await releaseRequester?.();
 	}
+}
+
+/**
+ * Every routing key a payload deploy owns once it sets any: what it sets, else what the entry holds now, `null`
+ * where neither has one. Owning all of them is what lets a restore of this release put back the routing it
+ * replaced, as a package release's whole entry does.
+ */
+function payloadRouting(req, nowIsolated) {
+	const entry = readRootConfigEntry(req.project);
+	const current: Record<string, any> = entry && typeof entry === 'object' ? entry : {};
+	return {
+		host: req.host ?? current.host ?? null,
+		urlPath: req.urlPath ?? current.urlPath ?? null,
+		isolated: nowIsolated ? true : null,
+		branchedDatabases: req.branchedDatabases ?? current.branchedDatabases ?? null,
+	};
 }
 
 /**
@@ -1345,7 +1429,7 @@ function isSystemDatabaseReplicated() {
  * Gets a JSON directory tree of the components dir and all nested files/folders
  * @returns {Promise<*>}
  */
-async function getComponents() {
+async function getComponents(req) {
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const rootConfig = configUtils.getConfiguration();
@@ -1399,7 +1483,16 @@ async function getComponents() {
 		name: componentsRoot.split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
+	const componentGrant = componentGrantOf(req?.hdb_user);
+	if (componentGrant)
+		results.entries = results.entries.filter((entry) => grantCoversComponent(componentGrant, entry.name));
 	const { getUnsatisfiedEnv } = componentSecretsRuntimeModule;
+	await Promise.all(
+		results.entries.map(async (entry) => {
+			const preview = await readDeploymentPreview(path.join(componentsRoot, entry.name), entry.name);
+			if (preview) entry.preview = preview;
+		})
+	);
 	for (let entry of results.entries) {
 		// Declared-but-unsatisfied `env:` expectations (#1550) — metadata only (name, description,
 		// required, reason, tier), never values — so Studio/deploy output can render configure-me.
@@ -1426,11 +1519,20 @@ async function getComponents() {
 	}
 
 	for (const component of results.entries) {
+		const liveDeploymentId = await liveDeploymentIdOf(componentsRoot, component.name).catch(() => undefined);
+		if (liveDeploymentId) component.deployment_id = liveDeploymentId;
+		const deployment = await deploymentOfLiveRelease(component.name, liveDeploymentId).catch((error) => {
+			log.debug(`Failed to read the deployment record of ${component.name} for get_components: ${error?.message}`);
+			return undefined;
+		});
+		if (deployment?.completed_at != null) component.deployed_at = deployment.completed_at;
 		try {
-			component.status = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
+			const { loadedAt, ...status } = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
 				component.name,
 				consolidatedStatuses
 			);
+			component.status = status;
+			if (loadedAt !== undefined) component.restarted_at = loadedAt;
 		} catch (error) {
 			log.debug(`Failed to get aggregated status for component ${component.name}: ${error.message}`);
 			component.status = {
@@ -1707,6 +1809,7 @@ async function dropComponent(req?: any) {
 				project: req.project,
 				restart: req.restart,
 				keepBranches: req.keepBranches,
+				ifDeploymentId: req.ifDeploymentId,
 				replicated: req.replicated,
 				startBy: Date.now() + DROP_START_BUDGET_MS,
 			},
@@ -1747,6 +1850,17 @@ async function dropApplication(request, requester?: any, answerEarly?: any) {
 				);
 			}
 			await assertNotCertifying(componentPath, project);
+			// Each node compares its own live release, so a peer that already has a newer one keeps it.
+			if (
+				req.ifDeploymentId !== undefined &&
+				(await readDeploymentProvenance(componentPath, project)) !== req.ifDeploymentId
+			) {
+				response = {
+					...nodeOutcome(false),
+					message: `Did not drop ${project}: its live release is not deployment ${req.ifDeploymentId}`,
+				};
+				return;
+			}
 			const present = (await fs.pathExists(componentPath)) || hasRootConfigEntry(project);
 			// a worker left running by a drop that failed after it removed the entry still counts
 			const running = (await manageThreads.getRunningIsolatedApplications()).includes(project);

@@ -18,6 +18,8 @@ import { findAndValidateUser, type User } from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import {
 	WORKLOAD_IDENTITY_CLAIM,
+	DEPLOY_SOURCE_CLAIM,
+	attachDeploySourceToUser,
 	attachWorkloadIdentityToUser,
 	isWorkloadIdentityPrincipal,
 	markTokenAsWorkloadIdentity,
@@ -30,19 +32,14 @@ import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 import * as env from '../utility/environment/environmentManager.ts';
-import { onStartup } from '../utility/lifecycle.ts';
 try {
 	env.initSync();
 } catch {
 	/* tolerate ESM cycle TDZ; bin entry will re-call later */
 }
 type StringValue = SignOptions['expiresIn'];
-let OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
-let REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
-onStartup(() => {
-	OPERATION_TOKEN_TIMEOUT = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
-	REFRESH_TOKEN_TIMEOUT = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
-});
+const operationTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
+const refreshTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 // Default lifetime of a login-purpose token (see TOKEN_TYPE.LOGIN below). It only exists to be
 // exchanged for a session cookie, so it defaults far shorter than an operation token; callers can
 // still override via expires_in.
@@ -245,7 +242,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
+			expiresIn: (authObj.expires_in ?? operationTokenTimeout()) as StringValue,
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.OPERATION,
 		} satisfies SignOptions
@@ -255,7 +252,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: REFRESH_TOKEN_TIMEOUT,
+			expiresIn: refreshTokenTimeout(),
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.REFRESH,
 		} satisfies SignOptions
@@ -314,7 +311,7 @@ async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
 		},
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
+			expiresIn: (authObj.expires_in ?? operationTokenTimeout()) as StringValue,
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.SCOPED,
 		} satisfies SignOptions
@@ -354,7 +351,7 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 		refreshedPayload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: OPERATION_TOKEN_TIMEOUT as StringValue,
+			expiresIn: operationTokenTimeout(),
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.OPERATION,
 		} satisfies SignOptions
@@ -375,13 +372,15 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
  */
 export async function createOperationToken(
 	user: { username: string; super_user: boolean; operations?: string[] },
-	expiresIn: StringValue
+	expiresIn: StringValue,
+	deploySource?: Record<string, unknown>
 ): Promise<string> {
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const payload: { username: string; super_user: boolean; operations?: string[] } = {
 		username: user.username,
 		super_user: user.super_user,
 	};
+	if (deploySource) payload[DEPLOY_SOURCE_CLAIM] = deploySource;
 	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
 	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
 	// what keeps this from failing open.
@@ -468,6 +467,7 @@ async function validateToken(token: string, tokenType: string, deferInvalidToken
 		// Provenance rides the same lift: the claim is signed, so a caller cannot strip it to look
 		// like a password-minted principal at createTokens.
 		attachWorkloadIdentityToUser(user, tokenVerified[WORKLOAD_IDENTITY_CLAIM]);
+		attachDeploySourceToUser(user, tokenVerified[DEPLOY_SOURCE_CLAIM]);
 
 		return user;
 	} catch (err) {

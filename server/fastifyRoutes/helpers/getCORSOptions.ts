@@ -1,5 +1,6 @@
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
+import { corsAccessListAllows } from '../../../utility/corsAccessList.ts';
 
 /**
  * Builds CORS options object to pass to cors plugin when/if it needs to be registered with Fastify
@@ -23,7 +24,7 @@ function getCORSOptions() {
 			propsCorsAccesslist[0] !== '*'
 		) {
 			corsOptions.origin = (origin, callback) => {
-				return callback(null, propsCorsAccesslist.indexOf(origin) !== -1);
+				return callback(null, corsAccessListAllows(propsCorsAccesslist, origin));
 			};
 		}
 	}

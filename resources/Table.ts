@@ -555,6 +555,7 @@ export function freezeRecord(value: any): void {
 	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
 		Object.freeze(value);
 }
+const identityEntry = (entry: Entry) => entry;
 // Returns a read-only VIEW of `record` for application predicate evaluation
 // without mutating the original. Locally-loaded records are already frozen by loadLocalRecord, so
 // this is a no-op there; the source-revalidation path hands back the SAME object its deferred
@@ -1171,6 +1172,7 @@ interface TableResourceClass {
 		[verb: string]: {
 			query?: JsonSchemaFragment;
 			body?: JsonSchemaFragment;
+			bodyRequired?: boolean;
 		};
 	};
 	withSchema<Base extends new (...args: any[]) => any, const C extends Contract>(
@@ -7035,6 +7037,10 @@ export function makeTable(options): TableResourceClass {
 			let transformCache;
 			const source = this.source;
 			const resourceClass = this;
+			const lazy = select?.length < 4;
+			const syncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded };
+			// loadLocalRecord sets `async` on the options of an async load, so sync loads need their own
+			const asyncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded, async: true };
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
@@ -7051,13 +7057,9 @@ export function makeTable(options): TableResourceClass {
 						entry = loadLocalRecord(
 							entry.key ?? entry,
 							context,
-							{
-								transaction: readTxn,
-								lazy: select?.length < 4,
-								ensureLoaded: checkLoaded,
-							},
+							this?.isSync ? syncLoadOptions : asyncLoadOptions,
 							this?.isSync,
-							(entry: Entry) => entry
+							identityEntry
 						);
 						if ((entry as any)?.then) return (entry as any).then(transform.bind(this));
 						record = entry?.value;
@@ -7234,7 +7236,10 @@ export function makeTable(options): TableResourceClass {
 									for (const key in record) {
 										selected[key] = record[key];
 									}
-								else
+								else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
+									const value = record[attribute];
+									selected[attribute] = value === undefined && forceNulls ? null : value;
+								} else
 									selectAttribute(attribute, (value, attribute_name) => {
 										if (value === undefined && forceNulls) value = null;
 										selected[attribute_name] = value;
@@ -7356,6 +7361,9 @@ export function makeTable(options): TableResourceClass {
 			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
+			const resnapshotsReload = !request.rawEvents && databaseName !== 'system';
+			// a re-snapshot waits for the history or snapshot in progress, whose older values would overwrite it
+			let reloadPending = false;
 			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
@@ -7399,9 +7407,10 @@ export function makeTable(options): TableResourceClass {
 					if (dropDuringReplay) return;
 					try {
 						if (isLockControlType(auditRecord.type)) return;
-						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
+						if (auditRecord.type === 'reload' && resnapshotsReload) {
 							// back-filled rows have no history, so a progress certificate cannot pass the marker
 							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+							if (pendingRealTimeQueue) return void (reloadPending = true);
 							return scheduleReloadResnapshot();
 						}
 						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
@@ -7552,17 +7561,11 @@ export function makeTable(options): TableResourceClass {
 			const checkResume = resuming
 				? (refusal?: Error): boolean => {
 						refusal ??= resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough);
-						if (!refusal) return true;
-						logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
-						try {
-							subscription.close(refusal);
-						} finally {
-							// a listener that throws on the refusal must not leave the subscription open
-							if (!subscription.closed) subscription.close();
-						}
-						return false;
+						return refusal ? refuseReplay(subscription, tableName, refusal) : true;
 					}
 				: undefined;
+			// request.reportProgress, not reportingProgress: an LMDB consumer keeps positions it gets no certificate for
+			const replayRefusesReload = checkResume !== undefined || (resnapshotsReload && request.reportProgress);
 			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
 			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
 			// in subscription.queue. Without this, the IIFE can fill the queue past
@@ -7712,12 +7715,17 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
-								if (checkResume && auditRecord.type === 'reload') {
-									// the rows a reload back-filled have no history, so no replay can deliver them
-									checkResume(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
-									return;
+								const isReload = auditRecord.type === 'reload';
+								// the rows a reload back-filled have no history, so no replay can deliver them
+								if (isReload && replayRefusesReload)
+									return void refuseReplay(subscription, tableName, new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+								const resnapshots = isReload && resnapshotsReload;
+								// the cursor passes a marker only once the current scope it calls for is handed off
+								if (reloadPending && !resnapshots) {
+									reloadPending = false;
+									if (!(await sendCurrentScope())) return;
 								}
-								if (handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
+								if (!reloadPending && handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
 									subscription!.startTime = handledTxnLogKey;
 								}
 								const id = auditRecord.recordId;
@@ -7725,7 +7733,9 @@ export function makeTable(options): TableResourceClass {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
-								if (thisId == null || isDescendantId(thisId, id)) {
+								// a marker is table-wide, as the live broadcast delivers it
+								if (resnapshots) reloadPending = true;
+								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
@@ -7741,6 +7751,24 @@ export function makeTable(options): TableResourceClass {
 									}
 								}
 								handledTxnLogKey = auditRecord.txnLogKey;
+							}
+							if (reloadPending) {
+								reloadPending = false;
+								// the finished cursor reads no more commits, so live ones wait behind the scan
+								pendingRealTimeQueue = [];
+								dropDuringReplay = false;
+								if (!(await sendCurrentScope())) return;
+								const replayedThrough = handledTxnLogKey;
+								pendingRealTimeQueue = pendingRealTimeQueue.filter(
+									(event) => (event.localTime ?? event.version) > replayedThrough
+								);
+								if (!includeSuperseded) {
+									let kept = 0;
+									for (const event of pendingRealTimeQueue) {
+										if (keepCurrentRecordEvent(event)) pendingRealTimeQueue[kept++] = event;
+									}
+									pendingRealTimeQueue.length = kept;
+								}
 							}
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
@@ -7763,7 +7791,7 @@ export function makeTable(options): TableResourceClass {
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
-								if (thisId == null || isDescendantId(thisId, id)) {
+								if (thisId == null || auditRecord.type === 'reload' || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
 									// ACCEPTED) — an all-deny rowFilter must not force a full walk of the retained
 									// audit log, even though it returns fewer than `count` accepted events. Counted
@@ -7777,6 +7805,16 @@ export function makeTable(options): TableResourceClass {
 										break;
 									}
 									cursorMaxTime = Math.max(cursorMaxTime, auditRecord.txnLogKey);
+									if (auditRecord.type === 'reload' && resnapshotsReload) {
+										if (replayRefusesReload)
+											return void refuseReplay(
+												subscription,
+												tableName,
+												new ResumeHistoryUnavailableError(RELOAD_REFUSAL)
+											);
+										reloadPending = true;
+										continue;
+									}
 									const historyEntry = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (!historyEntry) continue;
 									// Filter rows before they consume a previousCount slot.
@@ -7789,6 +7827,7 @@ export function makeTable(options): TableResourceClass {
 								}
 							} catch (error) {
 								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+								if (!isActive()) return;
 							}
 						}
 						for (let i = history.length; i > 0;) {
@@ -7829,9 +7868,7 @@ export function makeTable(options): TableResourceClass {
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
 							if (isHiddenExpiry(expiresAt, now)) continue;
-							const scanned: any = { id, localTime, value, version, type: 'put', size };
-							if (reportingProgress) scanned.fromScan = true;
-							if (!send(scanned)) return;
+							if (!send({ id, localTime, value, version, type: 'put', size, fromScan: true })) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
@@ -7937,9 +7974,7 @@ export function makeTable(options): TableResourceClass {
 					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value && !isHiddenExpiry(entry.expiresAt)) {
 						// if retain and it exists, send the current value first
-						const current: any = { id: thisId, ...entry, type: 'put' };
-						if (reportingProgress) current.fromScan = true;
-						if (!send(current)) return;
+						if (!send({ id: thisId, ...entry, type: 'put', fromScan: true })) return;
 					}
 				}
 				// now send any queued messages
@@ -7949,6 +7984,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					pendingRealTimeQueue = null;
 				}
+				if (reloadPending) scheduleReloadResnapshot();
 				settleResume?.(isActive());
 				goLive?.();
 			})();
@@ -8056,7 +8092,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						if (!value) continue; // skip tombstones
 						if (isHiddenExpiry(expiresAt, now)) continue;
-						yield { id, localTime, value, version, type: 'put', size };
+						yield { id, localTime, value, version, type: 'put', size, fromScan: true };
 						if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 							if ((await subscription.waitForDrain()) === false) return;
 							now = Date.now();
@@ -8064,7 +8100,8 @@ export function makeTable(options): TableResourceClass {
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && !isHiddenExpiry(entry.expiresAt))
+						yield { id: thisId, ...entry, type: 'put', fromScan: true };
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
@@ -8083,19 +8120,23 @@ export function makeTable(options): TableResourceClass {
 						// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
 						// the finally re-arm won't re-loop.
 						if (!subscription.subscriptions) return;
-						for await (const record of currentScopeRecords()) {
-							if (!subscription.subscriptions) return;
-							if (!send(record)) return;
-						}
+						if (!(await sendCurrentScope())) return;
 					}
 				} catch (error) {
-					harperLogger.error?.('Error in reload re-snapshot:', error);
+					// left open, it would stay past rows it never received
+					failSubscription(error);
 				} finally {
 					reloadResnapshotRunning = false;
 					// A marker that landed after the last pending-check but before we cleared the flag would
 					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
 					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
 				}
+			}
+			async function sendCurrentScope(): Promise<boolean> {
+				for await (const record of currentScopeRecords()) {
+					if (!send(record)) return false;
+				}
+				return isActive();
 			}
 			function scheduleReloadResnapshot() {
 				if (!subscription.subscriptions) return;
@@ -9611,41 +9652,6 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		// TODO: determine if we use lazy access properties
-		const whenPrefetched = () => {
-			if (context?.transaction?.stale) context.transaction.stale = false;
-			// if the transaction was closed, which can happen if we are iterating
-			// through query results and the iterator ends (abruptly)
-			if (options.transaction?.isDone) return withEntry(null, id);
-			if (!sync && options) {
-				options.async = true;
-				return when(primaryStore.getEntry(id, options), withLocalEntry);
-			} else {
-				return withLocalEntry(primaryStore.getEntry(id, options));
-			}
-		};
-		function withLocalEntry(entry) {
-			// skip recording reads for most system tables except hdb_analytics
-			// we want to track analytics reads in licensing, etc.
-			if (databaseName !== 'system' && (options.type === 'read' || !options.type)) {
-				harperLogger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
-				recordAction(entry?.size ?? 1, 'db-read', tableName, null);
-			}
-
-			// we need to freeze entry records to ensure the integrity of the cache;
-			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
-			// issues
-			freezeRecord(entry?.value);
-			if (options.ensureLoaded && needsResidentLoad(entry, context)) {
-				// load from other node
-				return sourceLoad(entry).then((entry) => withEntry(entry, id));
-			}
-			if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
-			if (entry && context) {
-				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-				if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
-			}
-			return withEntry(entry, id);
-		}
 		// To prefetch or not to prefetch is one of the biggest questions Harper has to make.
 		// Prefetching has important benefits as it allows any page fault to be executed asynchronously
 		// in the work threads, and it provides event turn yielding, allowing other async functions
@@ -9658,12 +9664,12 @@ export function makeTable(options): TableResourceClass {
 		// to evaluate if prefetching is a good idea.
 		// First, the caller can tell us. If the record is in our local cache, we use that as indication
 		// that we can get the value very quickly without a page fault.
-		if (sync || isRocksDB) return whenPrefetched();
+		if (sync || isRocksDB) return loadPrefetchedRecord(id, context, options, sync, withEntry);
 		// Next, we allow for non-prefetch mode where we can execute some gets without prefetching,
 		// but we will limit the number before we do another prefetch
 		if (untilNextPrefetch > 0) {
 			untilNextPrefetch--;
-			return whenPrefetched();
+			return loadPrefetchedRecord(id, context, options, sync, withEntry);
 		}
 		// Now, we are going to prefetch before loading, so need a promise:
 		return new Promise((resolve, reject) => {
@@ -9716,12 +9722,46 @@ export function makeTable(options): TableResourceClass {
 			}
 			function load() {
 				try {
-					resolve(whenPrefetched());
+					resolve(loadPrefetchedRecord(id, context, options, sync, withEntry));
 				} catch (error) {
 					reject(error);
 				}
 			}
 		});
+	}
+	function loadPrefetchedRecord(id, context, options, sync, withEntry) {
+		if (context?.transaction?.stale) context.transaction.stale = false;
+		// if the transaction was closed, which can happen if we are iterating
+		// through query results and the iterator ends (abruptly)
+		if (options.transaction?.isDone) return withEntry(null, id);
+		if (sync) return withLocalEntry(primaryStore.getEntry(id, options), id, context, options, withEntry);
+		options.async = true;
+		const entry = primaryStore.getEntry(id, options);
+		if (entry?.then) return entry.then((entry) => withLocalEntry(entry, id, context, options, withEntry));
+		return withLocalEntry(entry, id, context, options, withEntry);
+	}
+	function withLocalEntry(entry, id, context, options, withEntry) {
+		// skip recording reads for most system tables except hdb_analytics
+		// we want to track analytics reads in licensing, etc.
+		if (databaseName !== 'system' && (options.type === 'read' || !options.type)) {
+			harperLogger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
+			recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+		}
+
+		// we need to freeze entry records to ensure the integrity of the cache;
+		// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
+		// issues
+		freezeRecord(entry?.value);
+		if (options.ensureLoaded && needsResidentLoad(entry, context)) {
+			// load from other node
+			return sourceLoad(entry).then((entry) => withEntry(entry, id));
+		}
+		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
+		if (entry && context) {
+			if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
+			if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
+		}
+		return withEntry(entry, id);
 	}
 	function allowTableUpdate<Record extends object>(
 		resource: TableResource<Record>,
@@ -11592,8 +11632,19 @@ function rejectNaN(value: number) {
 	if (isNaN(value)) throw new SyntaxError(); // will set the message in the catch block with more context
 	return value;
 }
+function refuseReplay(subscription: any, tableName: string, refusal: Error): false {
+	logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
+	try {
+		subscription.close(refusal);
+	} finally {
+		// a listener that throws on the refusal must not leave the subscription open
+		if (!subscription.closed) subscription.close();
+	}
+	return false;
+}
 function isDescendantId(ancestorId, descendantId): boolean {
 	if (ancestorId == null) return true; // ancestor of all ids
+	if (descendantId == null) return false;
 	if (!Array.isArray(descendantId)) return ancestorId === descendantId || descendantId.startsWith?.(ancestorId);
 	if (Array.isArray(ancestorId)) {
 		let al = ancestorId.length;
