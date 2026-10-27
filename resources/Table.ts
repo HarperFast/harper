@@ -6844,16 +6844,7 @@ export function makeTable(options): TableResourceClass {
 					const checkActive = getReadTransactionGuard(readTxn);
 					const stopped = () => {
 						if (closed) return true;
-						try {
-							checkActive?.();
-						} catch (error) {
-							// a rejected next() is never followed by return(), so close the range iterator here
-							closed = true;
-							try {
-								dbIterator.return?.()?.catch?.(() => {});
-							} catch {}
-							throw error;
-						}
+						checkActive?.();
 						return readTxn?.isDone;
 					};
 					const dbOrderedAttribute = (sort as any).dbOrderedAttribute;
@@ -6900,92 +6891,103 @@ export function makeTable(options): TableResourceClass {
 					}
 					return {
 						async next() {
-							for (;;) {
-								if (stopped()) return { done: true, value: undefined };
-								let iteration: IteratorResult<any>;
-								if (sortedPositions) {
-									iteration = nextSorted();
-									if (iteration.done) {
-										if (dbDone) {
-											if (results.onDone) results.onDone();
-											return iteration;
+							try {
+								for (;;) {
+									if (stopped()) return { done: true, value: undefined };
+									let iteration: IteratorResult<any>;
+									if (sortedPositions) {
+										iteration = nextSorted();
+										if (iteration.done) {
+											if (dbDone) {
+												if (results.onDone) results.onDone();
+												return iteration;
+											}
+										} else {
+											const value = await transformToRecord.call(this, iteration.value);
+											if (stopped()) return { done: true, value: undefined };
+											if (value !== SKIP) return { value };
+											continue;
 										}
-									} else {
+									}
+									ordered = [];
+									orderedKeys = [];
+									for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
+									if (enqueuedEntryForNextGroup) {
+										const collecting = collect(enqueuedEntryForNextGroup);
+										if (collecting) await collecting;
+									}
+									// need to load all the entries into ordered
+									do {
+										if (stopped()) return { done: true, value: undefined };
+										iteration = await dbIterator.next();
+										if (stopped()) return { done: true, value: undefined };
+										if (iteration.done) {
+											dbDone = true;
+											if (!ordered.length) {
+												if (results.onDone) results.onDone();
+												return iteration;
+											} else break;
+										} else {
+											let entry = iteration.value;
+											if (entry?.then) {
+												entry = await entry;
+												if (stopped()) return { done: true, value: undefined };
+											}
+											if (entry === SKIP) continue;
+											if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
+											// if the index has already provided the first order of sorting, we only need to sort
+											// within each grouping
+											if (dbOrderedAttribute) {
+												let groupingValue = getAttributeValue(
+													entry,
+													dbOrderedAttribute,
+													context,
+													(sort as any).dbOrderedSort
+												);
+												if (groupingValue?.then) {
+													groupingValue = await groupingValue;
+													if (stopped()) return { done: true, value: undefined };
+												}
+												if (firstEntry) {
+													firstEntry = false;
+													lastGroupingValue = groupingValue;
+												} else if (groupingValue !== lastGroupingValue) {
+													lastGroupingValue = groupingValue;
+													enqueuedEntryForNextGroup = entry;
+													break;
+												}
+											}
+											const collecting = collect(entry);
+											if (collecting) await collecting;
+										}
+									} while (true);
+									if (stopped()) return { done: true, value: undefined };
+									if ((sort as any).isGrouped) {
+										// TODO: Return grouped results
+									}
+									sortedPositions = [];
+									for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
+									sortedPositions.sort(comparePositions);
+									sortedIndex = 0;
+									iteration = nextSorted();
+									if (!iteration.done) {
 										const value = await transformToRecord.call(this, iteration.value);
 										if (stopped()) return { done: true, value: undefined };
 										if (value !== SKIP) return { value };
 										continue;
 									}
+									if (results.onDone) results.onDone();
+									return iteration;
 								}
-								ordered = [];
-								orderedKeys = [];
-								for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
-								if (enqueuedEntryForNextGroup) {
-									const collecting = collect(enqueuedEntryForNextGroup);
-									if (collecting) await collecting;
+							} catch (error) {
+								// a rejected next() is never followed by return(), so close the range iterator here
+								if (!dbDone && !closed) {
+									closed = true;
+									try {
+										dbIterator.return?.()?.catch?.(() => {});
+									} catch {}
 								}
-								// need to load all the entries into ordered
-								do {
-									if (stopped()) return { done: true, value: undefined };
-									iteration = await dbIterator.next();
-									if (stopped()) return { done: true, value: undefined };
-									if (iteration.done) {
-										dbDone = true;
-										if (!ordered.length) {
-											if (results.onDone) results.onDone();
-											return iteration;
-										} else break;
-									} else {
-										let entry = iteration.value;
-										if (entry?.then) {
-											entry = await entry;
-											if (stopped()) return { done: true, value: undefined };
-										}
-										if (entry === SKIP) continue;
-										if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
-										// if the index has already provided the first order of sorting, we only need to sort
-										// within each grouping
-										if (dbOrderedAttribute) {
-											let groupingValue = getAttributeValue(
-												entry,
-												dbOrderedAttribute,
-												context,
-												(sort as any).dbOrderedSort
-											);
-											if (groupingValue?.then) {
-												groupingValue = await groupingValue;
-												if (stopped()) return { done: true, value: undefined };
-											}
-											if (firstEntry) {
-												firstEntry = false;
-												lastGroupingValue = groupingValue;
-											} else if (groupingValue !== lastGroupingValue) {
-												lastGroupingValue = groupingValue;
-												enqueuedEntryForNextGroup = entry;
-												break;
-											}
-										}
-										const collecting = collect(entry);
-										if (collecting) await collecting;
-									}
-								} while (true);
-								if (stopped()) return { done: true, value: undefined };
-								if ((sort as any).isGrouped) {
-									// TODO: Return grouped results
-								}
-								sortedPositions = [];
-								for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
-								sortedPositions.sort(comparePositions);
-								sortedIndex = 0;
-								iteration = nextSorted();
-								if (!iteration.done) {
-									const value = await transformToRecord.call(this, iteration.value);
-									if (stopped()) return { done: true, value: undefined };
-									if (value !== SKIP) return { value };
-									continue;
-								}
-								if (results.onDone) results.onDone();
-								return iteration;
+								throw error;
 							}
 						},
 						return() {
@@ -10196,9 +10198,14 @@ export function makeTable(options): TableResourceClass {
 	// Once one related read has to go to storage, the rest are read at most RELATED_READS_IN_FLIGHT at a time:
 	// a row with thousands of related ids must not queue them all ahead of every other request's background reads
 	async function loadRemainingRelatedEntries(keys: any[], start: number, entries: any[], relatedTable, options) {
+		const checkActive = getReadTransactionGuard(options.transaction);
 		try {
+			// entries[start - 1] is the read already in flight, so it counts toward the first window
 			for (let i = start; i < keys.length; i++) {
-				if ((i - start) % RELATED_READS_IN_FLIGHT === 0) await Promise.all(entries.slice(i - RELATED_READS_IN_FLIGHT));
+				if ((i - start + 1) % RELATED_READS_IN_FLIGHT === 0) {
+					await Promise.all(entries.slice(i - RELATED_READS_IN_FLIGHT));
+					checkActive?.();
+				}
 				const key = keys[i];
 				entries.push(key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options));
 			}

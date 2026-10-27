@@ -184,6 +184,11 @@ describe('Queries read related records asynchronously', () => {
 				assert.deepEqual(results[0].children, [{ name: 'child 6' }, { name: 'child 10' }]);
 				assert.equal(childReads.sync, 0);
 				assert.equal(childReads.promised, 3);
+				assert.equal(
+					childReads.maxInFlight,
+					3,
+					"a row's related reads should go to storage together, not one round trip at a time"
+				);
 			});
 
 			it('many-to-many with more related records than may be read at once', async function () {
@@ -195,7 +200,7 @@ describe('Queries read related records asynchronously', () => {
 				);
 				assert.equal(results[0].children.length, 40);
 				assert.equal(results[0].children[5].id, 'child-1');
-				assert(childReads.maxInFlight <= 16, `at most 16 related reads in flight (${childReads.maxInFlight})`);
+				assert.equal(childReads.maxInFlight, 16, 'at most 16 related reads in flight, and the window is used');
 			});
 
 			it('many-to-many sorted', async function () {
