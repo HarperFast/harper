@@ -475,7 +475,6 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			assert.equal(node(56, 56).originGeneration, 'gen-a');
 			assert.deepEqual(node(56, 56).replacedGenerations, ['gen-a', 'gen-b']);
 			assert.equal(node(56, 56).lastGeneration, undefined);
-			// a floor certified at level 1 is no level-2 floor, even back under the same generation
 			assert.equal(node(58, 58).closedFloor, now - 15);
 			for (const id of [57, 22]) {
 				assert.equal(node(57, id).originGeneration, 'gen-b');
