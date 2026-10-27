@@ -56,14 +56,19 @@ describe('published native full-text Table.search integration', () => {
 
 	afterEach(async () => {
 		const runtime = Product?.derivedIndexRuntime;
-		if (Product) Product.derivedIndexRuntime = undefined;
-		if (runtime) await runtime.close();
-		Product = undefined;
 		const relatedRuntime = Related?.derivedIndexRuntime;
+		if (Product) Product.derivedIndexRuntime = undefined;
 		if (Related) Related.derivedIndexRuntime = undefined;
-		if (relatedRuntime) await relatedRuntime.close();
+		Product = undefined;
 		Related = undefined;
-		setFullTextNativeBindingForTests(undefined);
+		try {
+			const results = await Promise.allSettled([runtime, relatedRuntime].map(async (runtime) => runtime?.close()));
+			const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+			if (errors.length === 1) throw errors[0];
+			if (errors.length > 1) throw new AggregateError(errors, 'Could not close full-text test runtimes');
+		} finally {
+			setFullTextNativeBindingForTests(undefined);
+		}
 	});
 
 	it('keeps custom iterable searches and re-evaluates later offset requests', async () => {
