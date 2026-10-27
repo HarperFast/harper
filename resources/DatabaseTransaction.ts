@@ -1012,9 +1012,7 @@ export class DatabaseTransaction implements Transaction {
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
-	// Read references held for searches running on other links (a join into this database), and the
-	// leases this link's searches hold on other links. A search spans its holder and its leased links,
-	// and either side can scan for a while with the other idle.
+	// Leases held on this link for searches on other links, and leases this link's searches hold.
 	declare readLeases?: Set<ReadLease>;
 	declare heldLeases?: Set<ReadLease>;
 	declare rangeActiveTick?: number;
@@ -4269,11 +4267,7 @@ export function deferForCommitInFlight(
 	return true;
 }
 
-/**
- * Record a link's range activity as this tick's stamp. Usually the link's own walk does it; a lease
- * partner's walk does it too, for a link the monitor never walks (a handle adopted by save()) whose flag
- * would otherwise never clear.
- */
+// A partner's walk calls this too: a link whose handle save() adopted is never walked itself.
 function consumeRangeActivity(txn: DatabaseTransaction): boolean {
 	if (txn.rangeReadActive) {
 		txn.rangeReadActive = false;
@@ -4282,9 +4276,8 @@ function consumeRangeActivity(txn: DatabaseTransaction): boolean {
 	return txn.rangeActiveTick >= monitorTick - 1;
 }
 
-// Every link of a search (its holder and each link it leases, an intermediate hop of a multi-hop join
-// included) is live while any of them scans. Only range activity counts, never a renewal: two leases
-// held in opposite directions must not keep each other alive once both searches are abandoned.
+// Only range activity counts, never a renewal, or two abandoned leases in opposite directions would
+// keep each other alive.
 function searchScanning(holder: DatabaseTransaction): boolean {
 	if (holder.searchScannedTick === monitorTick) return holder.searchScanning;
 	let scanning = consumeRangeActivity(holder);

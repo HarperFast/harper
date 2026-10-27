@@ -878,23 +878,10 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 	return distinct as any;
 }
 
-/**
- * Search for records or keys, based on the search condition, using an index if available. The four
- * leading parameters are required at every call site; everything optional is named, so a new
- * capability can be added without shifting positions at callers that don't use it.
- * @param searchCondition
- * @param transaction
- * @param reverse
- * @param Table
- * @param options
- */
-export const RELATED_LEASES = Symbol('relatedLeases');
+const RELATED_LEASES = Symbol('relatedLeases');
 
-/**
- * A join into another database scans that database's index lazily, after the request commits, so the
- * search's results hold a lease on that database's link until they are done; the leases live on the
- * search's `filtered` object, created on the first join that needs one, and `Table.search` releases them.
- */
+// The join scans another database's index after the request commits, so it leases that link's handle;
+// the leases live on the search's `filtered` object until `Table.search` releases them.
 function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, disableSnapshot, leaseHost) {
 	if (!holderReadTxn || !leaseHost || !context) return;
 	const holder = holderTable._txnForContext(context);
@@ -911,6 +898,16 @@ export function releaseRelatedLeases(leaseHost) {
 	if (leases) for (const lease of leases.values()) lease.onDone?.();
 }
 
+/**
+ * Search for records or keys, based on the search condition, using an index if available. The four
+ * leading parameters are required at every call site; everything optional is named, so a new
+ * capability can be added without shifting positions at callers that don't use it.
+ * @param searchCondition
+ * @param transaction
+ * @param reverse
+ * @param Table
+ * @param options
+ */
 export function searchByIndex(
 	searchCondition: DirectCondition,
 	transaction: any,
