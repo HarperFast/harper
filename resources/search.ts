@@ -2357,9 +2357,7 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
 			if ((currentQuery as any).parseErrorMessage) {
 				(currentQuery as any).parseError = new SyntaxViolation((currentQuery as any).parseErrorMessage);
-				if (!query) throw (currentQuery as any).parseError;
 			}
-			return currentQuery;
 		} catch (error) {
 			error.statusCode = 400;
 			error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
@@ -2370,6 +2368,8 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 				throw error;
 			}
 		}
+		if (!query && (currentQuery as any).parseError) throw (currentQuery as any).parseError;
+		return currentQuery;
 	} else {
 		return query ?? new URLSearchParams(queryToParse);
 	}
@@ -2494,11 +2494,22 @@ function parseBlock(query, expectedEnd) {
 					case 'limit':
 						switch (args.length) {
 							case 1:
-								query.limit = +args[0];
+								query.limit = args[0] === '' ? NaN : +args[0];
+								if (!Number.isInteger(query.limit) || query.limit < 0) {
+									recordError('limit must be a non-negative integer');
+								}
 								break;
 							case 2:
-								query.offset = +args[0];
-								query.limit = args[1] - query.offset;
+								query.offset = args[0] === '' ? NaN : +args[0];
+								query.limit = (args[1] === '' ? NaN : +args[1]) - query.offset;
+								if (
+									!Number.isInteger(query.offset) ||
+									query.offset < 0 ||
+									!Number.isInteger(query.limit) ||
+									query.limit < 0
+								) {
+									recordError('limit and offset must be non-negative integers');
+								}
 								break;
 							default:
 								recordError('limit must have 1 or 2 arguments');
@@ -2566,7 +2577,12 @@ function parseBlock(query, expectedEnd) {
 						query.conditions.push(entry);
 						attribute = null;
 					}
-				} else query.push(entry);
+				} else {
+					if (value && entry.conditions.length) {
+						recordError('conditions/comparisons are not allowed in a property list');
+					}
+					query.push(entry);
+				}
 				if (queryString[lastIndex] === ',') {
 					parser.lastIndex = ++lastIndex;
 				} else expectingDelimiter = true;

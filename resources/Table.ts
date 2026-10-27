@@ -30,7 +30,15 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.ts';
-import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads } from './Resource.ts';
+import {
+	Resource,
+	SEARCH_AUTHORIZATION,
+	WRITE_CONDITION,
+	transformForSelect,
+	sortAndSliceArray,
+	defaultAllowReads,
+	convertToComparableKeys,
+} from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -296,6 +304,7 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -323,8 +332,8 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 // (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
 const MAX_EXACT_COUNT_SCAN = 1_000_000;
 const MAX_EXACT_COUNT_MS = 1_000;
-// Largest page a `Prefer: count=` request will materialize. A request whose limit exceeds this (or is
-// not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
+// Largest page a `Prefer: count=` request will materialize. A target whose limit exceeds this (or is
+// not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
@@ -531,6 +540,39 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 				finishDroppedTableBlobSweep(rootStore, store, storeLabel);
 			}
 		});
+}
+// A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
+// it cannot copy, so only a copyable record of plain data goes to several requests.
+function isSharableRecord(record: any): boolean {
+	try {
+		return entryMap.has(record) && hasPlainOwnValues(record, { nodes: 10_000 }, 0);
+	} catch {
+		return false; // a revoked proxy or a throwing trap is not plain data, and this runs in a lock callback
+	}
+}
+function hasPlainOwnValues(object: any, budget: { nodes: number }, depth: number): boolean {
+	for (const key of Reflect.ownKeys(object)) {
+		if (typeof key === 'symbol') return false;
+		const descriptor = Object.getOwnPropertyDescriptor(object, key);
+		if (!('value' in descriptor) || !isPlainData(descriptor.value, budget, depth + 1)) return false;
+	}
+	return true;
+}
+function isPlainData(value: any, budget: { nodes: number }, depth: number): boolean {
+	if (--budget.nodes < 0 || depth > 32) return false;
+	if (value == null) return true;
+	const type = typeof value;
+	if (type === 'function' || type === 'symbol') return false;
+	if (type !== 'object') return true;
+	if (Array.isArray(value))
+		return (
+			value.length <= budget.nodes &&
+			Object.getPrototypeOf(value) === Array.prototype &&
+			hasPlainOwnValues(value, budget, depth)
+		);
+	if (ArrayBuffer.isView(value) || value instanceof Date) return true;
+	const prototype = Object.getPrototypeOf(value);
+	return (prototype === Object.prototype || prototype === null) && hasPlainOwnValues(value, budget, depth);
 }
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
@@ -1530,6 +1572,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
+	let sourceFills: Map<unknown, SourceFill> | undefined;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
@@ -3691,6 +3734,7 @@ export function makeTable(options): TableResourceClass {
 		 */
 		get(target?: any): any {
 			const constructor: any = this.constructor;
+			if (target?.parseError) throw target.parseError;
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
 			if (fullTextFieldNames) {
 				assertRecordField(
@@ -3779,7 +3823,7 @@ export function makeTable(options): TableResourceClass {
 								return transform(record);
 							}
 							if (target?.property) {
-								return record[target?.property];
+								return record?.[target.property];
 							}
 							return record;
 						}
@@ -3792,7 +3836,7 @@ export function makeTable(options): TableResourceClass {
 				// if we are not explicitly using getReturnMutable, return the frozen record
 				const record = this.#record;
 				const select = target?.select;
-				if (select && record != null) {
+				if (select && record != null && constructor.loadAsInstance !== true) {
 					const transform = transformForSelect(select, this.constructor);
 					return promiseNormalize(transform(record), target);
 				}
@@ -3822,37 +3866,10 @@ export function makeTable(options): TableResourceClass {
 					// or if there are relationships, we need to ensure that the user has permission to read from the related table
 					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!target) target = {} as any;
-					if (select) {
-						const selectArray = Array.isArray(select) ? select : [select];
-						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-						(target as any).select = selectArray
-							.map((property: any) => {
-								const propertyName = property.name || property;
-								if (
-									!attrsForType ||
-									attrsForType[propertyName] ||
-									fullTextFieldNames?.has(propertyName) ||
-									propertyName === '$score' ||
-									propertyName === '$highlights'
-								) {
-									const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
-									if (relatedTable) {
-										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
-										if (!property.name) property = { name: property };
-										if (!property.checkPermission && (target as any).checkPermission)
-											property.checkPermission = (target as any).checkPermission;
-										// Invoke the related table's allowRead on a properly-bound instance rather than
-										// `.call(null, ...)` so `this` is a valid resource of the related type.
-										const relatedResource = new relatedTable(undefined, context);
-										if (!relatedResource.allowRead(user, property, context)) return false;
-										if (!property.select) return property.name; // no select was applied, just return the name
-									}
-									return property;
-								}
-							})
-							.filter(Boolean);
-					} else {
-						target.select = attribute_permissions
+					const selectArray = select ? (Array.isArray(select) ? select : [select]) : null;
+					const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+					const permittedScalarAttributes = () =>
+						attribute_permissions
 							.filter(
 								(attribute) =>
 									attribute.read &&
@@ -3860,6 +3877,63 @@ export function makeTable(options): TableResourceClass {
 									!propertyResolvers[attribute.attribute_name]
 							)
 							.map((attribute) => attribute.attribute_name);
+					if (selectArray) {
+						(target as any).select = selectArray.flatMap((property: any) => {
+							if (property === '*' && attrsForType) return permittedScalarAttributes();
+							const propertyName = property.name || property;
+							if (
+								!attrsForType ||
+								attrsForType[propertyName] ||
+								fullTextFieldNames?.has(propertyName) ||
+								propertyName === '$score' ||
+								propertyName === '$highlights'
+							) {
+								const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
+								if (relatedTable) {
+									// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
+									if (!property.name) property = { name: property };
+									if (Array.isArray(property) && !(property as any).select)
+										(property as any).select = Array.from(property);
+									if (!property.checkPermission && (target as any).checkPermission)
+										property.checkPermission = (target as any).checkPermission;
+									// Invoke the related table's allowRead on a properly-bound instance rather than
+									// `.call(null, ...)` so `this` is a valid resource of the related type.
+									const relatedResource = new relatedTable(undefined, context);
+									if (!relatedResource.allowRead(user, property, context)) return [];
+									for (let s = typeof property.sort === 'object' ? property.sort : null; s; s = s.next) {
+										const segments = (Array.isArray(s.attribute) ? s.attribute : [s.attribute]).filter(Boolean);
+										if (segments.length === 0) continue;
+										let sortSelect: any = segments[segments.length - 1];
+										for (let i = segments.length - 2; i >= 0; i--) {
+											sortSelect = { name: segments[i], select: [sortSelect] };
+										}
+										const sortProbe: any = {
+											select: [sortSelect],
+											checkPermission: property.checkPermission,
+										};
+										if (!relatedResource.allowRead(user, sortProbe, context)) return [];
+										for (let cur = sortProbe.select; Array.isArray(cur); cur = cur[0]?.select) {
+											if (cur.length === 0) return [];
+										}
+									}
+									if (
+										!property.select &&
+										!property.sort &&
+										property.limit === undefined &&
+										property.offset === undefined
+									)
+										return [property.name];
+								}
+								return [property];
+							}
+							return [];
+						});
+					}
+					// Braced sub-selects (`related{name}`) are parsed as Array instances; when all listed fields
+					// in a braced sub-select are denied, fall back to the role's permitted scalar attributes
+					// ("Can query with selecting inaccessible attributes with (limited) permission", permissions.test.js).
+					if (attrsForType && (!selectArray || (Array.isArray(target) && (target as any).select.length === 0))) {
+						target.select = permittedScalarAttributes();
 					}
 					(target as any)[AUTHORIZATION_SELECT] = true;
 					return true;
@@ -6678,8 +6752,8 @@ export function makeTable(options): TableResourceClass {
 				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
 				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
 				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-				// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
-				// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
+				// oversized/non-finite/negative limit or offset (a bare collection GET, `{ limit: Infinity }`,
+				// `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window past the scan budget — falls through to the
 				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
 				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
 				const pageLimit = target.limit as number;
@@ -6993,12 +7067,13 @@ export function makeTable(options): TableResourceClass {
 						return() {
 							closed = true;
 							if (results.onDone) results.onDone();
-							return dbIterator.return();
+							return dbIterator.return?.() ?? { done: true, value: undefined };
 						},
-						throw() {
+						throw(error) {
 							closed = true;
 							if (results.onDone) results.onDone();
-							return dbIterator.throw();
+							if (dbIterator.throw) return dbIterator.throw(error);
+							throw error;
 						},
 					};
 				};
@@ -7193,7 +7268,7 @@ export function makeTable(options): TableResourceClass {
 								if (resolver.directReturn) return callback(value, attribute_name);
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
-									if (!transformCache) transformCache = {};
+									if (!transformCache) transformCache = Object.create(null);
 									// Use the target table's own read transaction; each table's readTxn is
 									// scoped to its RocksDB column family and cannot read another table's store.
 									const targetReadTxn =
@@ -7217,16 +7292,24 @@ export function makeTable(options): TableResourceClass {
 										));
 									if (Array.isArray(value)) {
 										const results = [];
-										const iterator = targetTable
-											.transformToOrderedSelect(
-												value,
-												attribute.select,
-												typeof attribute.sort === 'object' && attribute.sort,
-												context,
-												targetReadTxn,
-												transform
-											)
-											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
+										let orderedIterable = targetTable.transformToOrderedSelect(
+											value,
+											attribute.select,
+											typeof attribute.sort === 'object' && attribute.sort,
+											context,
+											targetReadTxn,
+											transform
+										);
+										const offset =
+											Number.isInteger(attribute.offset) && attribute.offset >= 0 ? attribute.offset : undefined;
+										const limit =
+											Number.isInteger(attribute.limit) && attribute.limit >= 0 ? attribute.limit : undefined;
+										if (offset !== undefined || limit !== undefined) {
+											const start = offset ?? 0;
+											const end = limit !== undefined ? start + limit : undefined;
+											orderedIterable = orderedIterable.slice(start, end);
+										}
+										const iterator = orderedIterable[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
 										const nextValue = (iteration: IteratorResult<any> & Promise<any>) => {
 											while (!iteration.done) {
 												if (iteration?.then) return iteration.then(nextValue);
@@ -7235,46 +7318,65 @@ export function makeTable(options): TableResourceClass {
 											}
 											callback(results, attribute_name);
 										};
-										const promised = nextValue(iterator.next());
-										// returned as well as collected: when this runs in a resolved value's continuation,
-										// Promise.all below has already read `promises`, so only the chain can make it wait
-										if (promised) (promises ??= []).push(promised);
-										return promised;
+										return nextValue(iterator.next());
 									} else {
 										value = transform.call(this, value);
 										if (value?.then) {
-											const promised = value.then((value: any) => callback(value, attribute_name));
-											(promises ??= []).push(promised);
-											return promised;
+											return value.then((value: any) => callback(value, attribute_name));
 										}
 									}
 								}
 								callback(value, attribute_name);
 							};
-							if (value?.then) {
+							const promised = value?.then ? value.then(handleResolvedValue) : handleResolvedValue(value);
+							if (promised?.then) {
 								if (!promises) promises = [];
-								promises.push(value.then(handleResolvedValue));
-							} else handleResolvedValue(value);
+								promises.push(promised);
+							}
 							return;
 						} else {
 							value = record[attribute_name];
 							if (value && typeof value === 'object' && attribute_name !== attribute) {
-								const subTransform = TableResource.transformEntryForSelect(
-									attribute.select || attribute,
-									context,
-									readTxn,
-									null
-								);
-								// Plain JSON nested values: arrays project per-element so that
-								// `select: [{ name: 'addresses', select: ['city'] }]` returns
-								// `addresses: [{ city }, { city }]` rather than a single object.
-								if (Array.isArray(value)) {
-									value = value.map((item) =>
-										item && typeof item === 'object' ? subTransform({ value: item } as any) : item
-									);
-								} else if (!(value instanceof Date)) {
-									value = subTransform({ value } as any);
+								if (!transformCache) transformCache = Object.create(null);
+								let applyPlainSubSelect = transformCache[attribute_name];
+								if (!applyPlainSubSelect) {
+									const subSelect = attribute.select || (Array.isArray(attribute) ? attribute : null);
+									const subTransform =
+										subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
+											? TableResource.transformEntryForSelect(subSelect, context, readTxn, null)
+											: null;
+									const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
+									for (
+										let clause = typeof attribute.sort === 'object' ? attribute.sort : null;
+										clause;
+										clause = clause.next
+									) {
+										sortClauses.push(clause);
+									}
+									const offset =
+										Number.isInteger(attribute.offset) && attribute.offset >= 0 ? attribute.offset : undefined;
+									const limit = Number.isInteger(attribute.limit) && attribute.limit >= 0 ? attribute.limit : undefined;
+									const hasWindowOrSort = sortClauses.length > 0 || offset !== undefined || limit !== undefined;
+									applyPlainSubSelect = transformCache[attribute_name] = (val: any) => {
+										// Plain JSON nested values: arrays project per-element so that
+										// `select: [{ name: 'addresses', select: ['city'] }]` returns
+										// `addresses: [{ city }, { city }]` rather than a single object.
+										if (Array.isArray(val)) {
+											if (hasWindowOrSort) {
+												val = sortAndSliceArray(val, sortClauses, offset, limit, undefined, context);
+											}
+											if (subTransform) {
+												val = val.map((item) =>
+													item && typeof item === 'object' ? subTransform({ value: item } as any) : item
+												);
+											}
+										} else if (subTransform && !(val instanceof Date)) {
+											val = subTransform({ value: val } as any);
+										}
+										return val;
+									};
 								}
+								value = applyPlainSubSelect(value);
 							}
 						}
 						callback(value, attribute_name);
@@ -9035,6 +9137,7 @@ export function makeTable(options): TableResourceClass {
 									// normalizedIds === ids is the record's own stored FK array, and returning it
 									// would let a caller's mutation (e.g. record.manyToMany.push(x)) alias into it
 									if (normalizedIds.length === 0) return [];
+									markRelatedReadUncacheable(context);
 									// getSync (not get): relationship accessors are a synchronous contract (as in v4);
 									// on RocksDB get() returns a Promise on a block-cache miss, which would leak an
 									// intermittent MaybePromise into user code
@@ -9048,6 +9151,7 @@ export function makeTable(options): TableResourceClass {
 									});
 									return relationship.filterMissing ? results.filter(exists) : results;
 								}
+								markRelatedReadUncacheable(context);
 								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'getSync'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});
@@ -9075,6 +9179,8 @@ export function makeTable(options): TableResourceClass {
 							attribute.resolve.loadEntries = (object, context) => {
 								const keys = attribute.resolve.resolveKeys(object);
 								if (keys == null) return keys;
+								if (keys.length === 0 && attribute.elements) return [];
+								markRelatedReadUncacheable(context);
 								if (attribute.elements)
 									return loadRelatedEntries(keys, definition.tableClass, context, relationship.filterMissing);
 								return loadRelatedEntry(keys, definition.tableClass, context);
@@ -10220,6 +10326,10 @@ export function makeTable(options): TableResourceClass {
 		if (TableResource.loadAsInstance === false) for (const entry of entries) freezeRecord(entry?.value);
 		return filterMissing ? entries.filter(exists) : entries;
 	}
+	function markRelatedReadUncacheable(context: Context) {
+		const ctx = context ?? contextStorage.getStore();
+		if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+	}
 	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
 		const entry = relatedTable.primaryStore.getEntry(key, {
 			transaction: txnForContext(context).getReadTxn(),
@@ -10425,6 +10535,8 @@ export function makeTable(options): TableResourceClass {
 			inheritedTimestamp ||
 			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
 		let whenResolved, timer;
+		const fillKey = writeKeyId(id);
+		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
 		// tryLock() will return true if we got the lock, and the callback won't be called.
@@ -10440,10 +10552,19 @@ export function makeTable(options): TableResourceClass {
 				!entry.value ||
 				entry.metadataFlags & (INVALIDATED | EVICTED) ||
 				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
-			)
+			) {
+				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
+				if (
+					outcome &&
+					(!heldFill.unstoredRecord || context?.noCacheStore) &&
+					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
+				) {
+					setLoadedFromSource(target, false);
+					whenResolved(outcome);
+				}
 				// try again — entry still not valid, need to actually fetch from source
-				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
-			else {
+				else whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
+			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
 				whenResolved(entry);
@@ -10461,6 +10582,12 @@ export function makeTable(options): TableResourceClass {
 		}
 		// lock acquired — this request will actually load from source
 		setLoadedFromSource(target, true);
+		const fill: SourceFill = { source };
+		(sourceFills ??= new Map()).set(fillKey, fill);
+		const releaseFill = () => {
+			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
+			primaryStore.unlock(id);
+		};
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
@@ -10485,7 +10612,8 @@ export function makeTable(options): TableResourceClass {
 		return new Promise((resolve, reject) => {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
-			let resolved;
+			let resolved, sharedEntry: Entry;
+			let stagedWrite: any;
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
@@ -10631,6 +10759,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
+					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -10840,11 +10969,16 @@ export function makeTable(options): TableResourceClass {
 				}
 				sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 				dbTxn.addWrite(sourceWrite);
+				stagedWrite = sourceWrite;
 			});
 			when(
 				commitPromise,
 				() => {
-					primaryStore.unlock(id);
+					if (sharedEntry && (!stagedWrite || stagedWrite.skipped === false)) {
+						fill.outcome = sharedEntry;
+						fill.unstoredRecord = !stagedWrite && (sharedEntry.value != null || existingEntry != null);
+					}
+					releaseFill();
 					if (removedRecordWithBlobs) {
 						try {
 							// a write committed since the removal may reference the same files again
@@ -10855,7 +10989,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
-					primaryStore.unlock(id);
+					releaseFill();
 					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
 						logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
@@ -11874,13 +12008,4 @@ function hasOtherProcesses(store) {
 			// if the pid from the reader list is different than ours, must be another process accessing the database
 			return +line.match(/\d+/)?.[0] != pid;
 		});
-}
-function convertToComparableKeys(a) {
-	if (a instanceof Date) {
-		return a.getTime();
-	}
-	if (Array.isArray(a)) {
-		return a.map(convertToComparableKeys);
-	}
-	return a;
 }

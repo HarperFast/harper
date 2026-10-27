@@ -6,7 +6,16 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 
-const { mode, gate, epoch, tableName, writes } = workerData ?? {};
+const {
+	mode,
+	gate,
+	epoch,
+	tableName,
+	writes,
+	database = 'test',
+	attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+	record = { id: 'parked-reserving', n: 1 },
+} = workerData ?? {};
 if (mode) run().catch((error) => parentPort.postMessage({ type: 'error', message: error.stack }));
 
 async function run() {
@@ -14,9 +23,9 @@ async function run() {
 	setMainIsWorker(true);
 	const Tbl = table({
 		table: tableName,
-		database: 'test',
+		database,
 		audit: true,
-		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		attributes,
 	});
 	parentPort.postMessage({ type: 'ready', threadId });
 	if (mode === 'hold') {
@@ -70,5 +79,42 @@ async function run() {
 			Atomics.wait(gate, 0, 0);
 		};
 		await transaction({}, () => Tbl.put({ id: 'parked', n: 1 }));
+	} else if (mode === 'park-reserving') {
+		parkInsideNextReservation('getTimestamp');
+		await transaction({}, () => Tbl.put(record));
+		parentPort.postMessage({ type: 'committed' });
+	} else if (mode === 'park-rekeying') {
+		// an explicit timestamp is never a key, so the reservation mints one and installs it: park there
+		parkInsideNextReservation('setTimestamp');
+		await transaction({ timestamp: Date.now() - 60_000 }, () => Tbl.put(record));
+		parentPort.postMessage({ type: 'committed' });
+	} else if (mode === 'hold-then-park-reserving') {
+		let commitHeld;
+		const held = transaction({}, async () => {
+			await Tbl.put({ id: 'held-outstanding', n: 1 });
+			await new Promise((resolve) => (commitHeld = resolve));
+		});
+		while (!commitHeld) await new Promise((resolve) => setImmediate(resolve));
+		parentPort.postMessage({ type: 'held' });
+		await new Promise((resolve) => parentPort.once('message', resolve));
+		parkInsideNextReservation('getTimestamp');
+		await transaction({}, () => Tbl.put(record));
+		commitHeld();
+		await held;
+		parentPort.postMessage({ type: 'committed' });
 	}
+}
+
+// Stops inside the reservation, while its slot still says pending: before the key is decided at
+// `getTimestamp`, after it at `setTimestamp`.
+function parkInsideNextReservation(method) {
+	const native = Transaction.prototype[method];
+	Transaction.prototype[method] = function (...args) {
+		if (/ThreadRegistry\.reserve\b/.test(new Error().stack)) {
+			Transaction.prototype[method] = native;
+			parentPort.postMessage({ type: 'parked' });
+			Atomics.wait(gate, 0, 0);
+		}
+		return native.apply(this, args);
+	};
 }
