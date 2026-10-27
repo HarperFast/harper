@@ -286,9 +286,11 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 		const state = states.get(nodeId)!;
 		state.generation = currentGeneration(nodeId, originEntries);
 		if (state.generation === undefined) continue;
-		// only rows of the current generation speak for the origin
+		// only rows of the current generation speak for the origin, a route at level 1 since included
 		for (const { node } of originEntries) {
-			if (node.originGeneration !== state.generation) continue;
+			if ((node.originGeneration ?? node.lastGeneration) !== state.generation) continue;
+			if (node.floorRevoked === true) state.floorRevoked = true;
+			if (node.hole === true) state.hole = true;
 			if (!(state.floor >= node.closedFloor) && routeCertifies(node)) {
 				// the route that certified the floor is the one whose prefix below it is complete: another whole
 				// route's start says nothing about this one, since their coverage can be disjoint
@@ -296,8 +298,6 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				state.certifiedFrom = node.certifiedFrom;
 				state.fullCoverage = true;
 			}
-			if (node.floorRevoked === true) state.floorRevoked = true;
-			if (node.hole === true) state.hole = true;
 		}
 	}
 	return states;
@@ -317,27 +317,29 @@ function currentGeneration(nodeId: number, originEntries: { node: any; routeId: 
 		if (routeId === nodeId) direct = node;
 		if (typeof node.originGeneration === 'string') named.add(node.originGeneration);
 	}
-	// kept across level-1 certificates, so a relayed row of a generation it left cannot become current again
+	// kept across level-1 certificates, so a relayed row of a generation it left cannot become current again; certified
+	// at level 2 by no row, it is current nowhere either
 	const latest = direct?.originGeneration ?? direct?.lastGeneration;
 	if (typeof latest !== 'string') return named.size === 1 ? named.values().next().value : undefined;
 	const replaced = Array.isArray(direct.replacedGenerations) ? direct.replacedGenerations : [];
 	// the origin certified a generation it had already left: its history is not one line
-	if (replaced.includes(latest)) return;
+	if (replaced.includes(latest) || !named.has(latest)) return;
 	for (const generation of named) if (generation !== latest && !replaced.includes(generation)) return;
 	return latest;
 }
 
 /**
  * `replaced` appended to the generations the direct route saw its origin leave, keeping the newest
- * `MAX_REPLACED_GENERATIONS`; a dropped one can only leave the origin unordered. A generation the route returns to stays
- * listed, so a reversal reads as the contradiction it is.
+ * `MAX_REPLACED_GENERATIONS`: a reversal to an older one than those goes unseen. A generation the origin returns to stays
+ * listed, never the one dropped, so a reversal reads as the contradiction it is.
  */
-export function withReplacedGeneration(replacedGenerations: unknown, replaced: string): string[] {
+export function withReplacedGeneration(replacedGenerations: unknown, replaced: string, current: string): string[] {
 	const generations = Array.isArray(replacedGenerations)
 		? replacedGenerations.filter((generation) => typeof generation === 'string' && generation !== replaced)
 		: [];
 	generations.push(replaced);
-	return generations.slice(-MAX_REPLACED_GENERATIONS);
+	while (generations.length > MAX_REPLACED_GENERATIONS) generations.splice(generations[0] === current ? 1 : 0, 1);
+	return generations;
 }
 
 function qualifies(state: OriginState): boolean {

@@ -432,7 +432,9 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				floors(56, [[56, now - 17, true, 'gen-b', true]]),
 				floors(56, [[56, now - 16, true]]),
 				floors(56, [[56, now - 15, true, 'gen-a', true]]),
-				// a restore after a level-1 certificate: the new generation's lower floor replaces the old one
+				floors(58, [[58, now - 20, true, 'gen-a', true]]),
+				floors(58, [[58, now - 10, true]]),
+				floors(58, [[58, now - 15, true, 'gen-a', true]]),
 				floors(57, [
 					[57, now - 20, true, 'gen-a', true],
 					[22, now - 20, true, 'gen-a', true],
@@ -449,11 +451,16 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				floors(54, [[54, now - 19, true, 'gen-b', true]]),
 				floors(54, [[54, now - 18, true, 'gen-a', true]]),
 				...generations.map((generation, index) => floors(55, [[55, now - 16 + index, true, generation, true]])),
+				// back to the oldest listed one: the transition that would drop it keeps it
+				...generations
+					.slice(0, 9)
+					.map((generation, index) => floors(59, [[59, now - 30 + index, true, generation, true]])),
+				floors(59, [[59, now - 20, true, 'gen-0', true]]),
 			],
 			held
 		);
 		try {
-			await waitFor(() => readCursor(ReplicatedTable, 55)?.seqId === localTime, {
+			await waitFor(() => readCursor(ReplicatedTable, 59)?.seqId === localTime, {
 				timeout: 5000,
 				message: 'the last generation change recorded its sequence id',
 			});
@@ -468,6 +475,8 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			assert.equal(node(56, 56).originGeneration, 'gen-a');
 			assert.deepEqual(node(56, 56).replacedGenerations, ['gen-a', 'gen-b']);
 			assert.equal(node(56, 56).lastGeneration, undefined);
+			// a floor certified at level 1 is no level-2 floor, even back under the same generation
+			assert.equal(node(58, 58).closedFloor, now - 15);
 			for (const id of [57, 22]) {
 				assert.equal(node(57, id).originGeneration, 'gen-b');
 				assert.equal(node(57, id).closedFloor, now - 15);
@@ -476,6 +485,9 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			assert.equal(node(57, 22).replacedGenerations, undefined);
 			assert.equal(node(55, 55).originGeneration, 'gen-9');
 			assert.deepEqual(node(55, 55).replacedGenerations, generations.slice(1, 9));
+			assert.equal(node(59, 59).originGeneration, 'gen-0');
+			assert.ok(node(59, 59).replacedGenerations.includes('gen-0'));
+			assert.equal(node(59, 59).replacedGenerations.length, 8);
 		} finally {
 			release();
 		}

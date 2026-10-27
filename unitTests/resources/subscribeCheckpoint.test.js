@@ -778,6 +778,10 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				route(origin, { closedFloor: floor, lastGeneration: g2, replacedGenerations: [g1] });
 				route(retained, healthy(g1, floor + 100));
 				await refuses(T, token, 'g1 is replaced while the direct route certifies at level 1');
+				route(retained, healthy(g2, floor));
+				assert.strictEqual(await admits(T, g2Token), true);
+				route(origin, { closedFloor: floor, lastGeneration: g2, replacedGenerations: [g1], hole: true });
+				await refuses(T, g2Token, 'a hole the direct route recorded under g2 counts after it dropped to level 1');
 				subscription.end();
 			});
 
@@ -838,7 +842,6 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				let token;
 				await waitFor(() => (token = subscription.checkpoint())?.members === members(g1));
 				assert.strictEqual(await admits(T, token), true);
-				// restored on a host whose clock is behind: the direct route certifies g2 below g1's floor
 				await certifyRoute(origin, g2, floor);
 				await refuses(T, token, 'the relay still holds g1 at a higher floor');
 				assert.deepStrictEqual(T.dbisDB.getSync([SEQ, origin]).nodes[0].replacedGenerations, [g1]);

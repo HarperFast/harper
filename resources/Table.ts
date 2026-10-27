@@ -2543,7 +2543,6 @@ export function makeTable(options): TableResourceClass {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-									// what the route last certified, whatever level-1 certificates came since
 									const previousGeneration = nodeState.originGeneration ?? nodeState.lastGeneration;
 									const generationChanged =
 										typeof originGeneration === 'string' &&
@@ -2557,7 +2556,8 @@ export function makeTable(options): TableResourceClass {
 										if (nodeId === event.remoteNodeIds[0]) {
 											nodeState.replacedGenerations = withReplacedGeneration(
 												nodeState.replacedGenerations,
-												previousGeneration
+												previousGeneration,
+												originGeneration
 											);
 										}
 										// a new history identity: what was certified under the old one is void, and the route
@@ -2580,6 +2580,11 @@ export function makeTable(options): TableResourceClass {
 										nodeState.fullCoverage = undefined;
 										nodeState.certifiedFrom = undefined;
 										qualifiersChanged = true;
+									}
+									// a floor certified with no generation belongs to none: level 2 starts from this certificate's
+									if (typeof originGeneration === 'string' && typeof nodeState.originGeneration !== 'string') {
+										nodeState.closedFloor = undefined;
+										nodeState.relayable = false;
 									}
 									if (!(nodeState.closedFloor >= closedFloor)) {
 										nodeState.closedFloor = closedFloor;
