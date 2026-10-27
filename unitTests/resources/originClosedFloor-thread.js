@@ -12,7 +12,7 @@ const {
 	epoch,
 	tableName,
 	writes,
-	// a writer holds every seventh transaction open for a few ms; `paced: false` writes flat out
+	// a paced writer keeps six of every seven transactions open for a few ms
 	paced = true,
 	database = 'test',
 	attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],

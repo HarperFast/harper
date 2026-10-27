@@ -133,8 +133,7 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 			return (((performance.now() - start) / samples) * 1e6).toFixed(0).padStart(6);
 		};
 		const settled = time();
-		// a slot whose claimer has not stored its first bound: the layout is originClosedFloor.ts's (8 header words,
-		// the slot limit at word 5)
+		// layout from originClosedFloor.ts: 8 header words (the slot limit is word 5), then 1024 owner words
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
 		while (Atomics.load(words, 8 + slot) !== 0n || Atomics.load(words, 8 + 1024 + slot * 8) !== 0n) slot--;
@@ -162,6 +161,7 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 		const epoch = new Int32Array(new SharedArrayBuffer(4));
 		const run = async (capturing) => {
 			const done = [];
+			const workers = [];
 			for (let t = 0; t < threads; t++) {
 				const worker = new Worker(__dirname + '/originClosedFloor-thread.js', {
 					workerData: {
@@ -173,6 +173,7 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 						attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'payload' }],
 					},
 				});
+				workers.push(worker);
 				done.push(
 					new Promise((resolve, reject) => {
 						worker.on('message', (message) => {
@@ -186,13 +187,22 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 			const start = performance.now();
 			let captures = 0;
 			let finished = false;
-			Promise.all(done).then(() => (finished = true));
-			while (!finished) {
-				if (capturing) {
-					for (let n = 0; n < 1000; n++) floor.localStartBound(rootStore);
-					captures += 1000;
+			let failure;
+			Promise.all(done).then(
+				() => (finished = true),
+				(error) => ((failure = error), (finished = true))
+			);
+			try {
+				while (!finished) {
+					if (capturing) {
+						for (let n = 0; n < 1000; n++) floor.localStartBound(rootStore);
+						captures += 1000;
+					}
+					await new Promise((resolve) => setImmediate(resolve));
 				}
-				await new Promise((resolve) => setImmediate(resolve));
+				if (failure) throw failure;
+			} finally {
+				for (const worker of workers) worker.terminate();
 			}
 			return { ms: performance.now() - start, captures };
 		};

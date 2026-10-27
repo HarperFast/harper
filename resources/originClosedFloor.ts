@@ -30,7 +30,6 @@ const WORD_INITIAL_CEILING = 4;
 // the claimer reads `proposed`; a sampler raises `proposed` before it loads this, so a claim the sampler's scan
 // misses admits only keys above the sampler's value.
 const WORD_SLOT_LIMIT = 5;
-// the header is one 64-byte line
 const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
@@ -287,9 +286,14 @@ class ThreadRegistry {
 		this.publish(this.minKey());
 	}
 
+	private slotLimit(): number {
+		return Math.min(Number(Atomics.load(this.words, WORD_SLOT_LIMIT)), SLOTS);
+	}
+
 	holders(): Array<{ threadId: number; bound: number }> {
 		const result = [];
-		for (let slot = 0; slot < SLOTS; slot++) {
+		const limit = this.slotLimit();
+		for (let slot = 0; slot < limit; slot++) {
 			const owner = Atomics.load(this.words, THREAD_WORDS_OFFSET + slot);
 			if (owner === 0n) continue;
 			const bound = Math.abs(fromBits(Atomics.load(this.words, boundIndex(slot))));
@@ -306,7 +310,7 @@ class ThreadRegistry {
 	minBound(): number {
 		let min = Infinity;
 		let pending = false;
-		const limit = Number(Atomics.load(this.words, WORD_SLOT_LIMIT));
+		const limit = this.slotLimit();
 		for (let slot = 0; slot < limit; slot++) {
 			if (Atomics.load(this.words, THREAD_WORDS_OFFSET + slot) === 0n) continue;
 			const bits = Atomics.load(this.words, boundIndex(slot));

@@ -72,6 +72,18 @@ describe('Certified subscription progress', function () {
 		assert.strictEqual(databaseRegistry.progressConsumers, 0, 'ending twice uncounts once');
 	});
 
+	it('a same-thread progress subscription follows its own raw watermark', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, crossThreads: false });
+		await T.put('a', { value: 1 });
+		const key = T.primaryStore.getEntry('a').version;
+		await waitFor(() => subscription.progress() >= key, {
+			message: () => `progress ${subscription.progress()} < ${key}`,
+		});
+		subscription.end();
+	});
+
 	it('does not register a new subscription at a watermark left from earlier tracking', async () => {
 		const T = tableInOwnDatabase();
 		await T.put('seed', { value: 0 });

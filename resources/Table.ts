@@ -108,7 +108,7 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription, certifiedFloors, dispatchedThrough } from './transactionBroadcast.ts';
+import { addSubscription, certifiedFloors, certifiedThrough } from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
 	ORIGIN_ID,
@@ -8817,7 +8817,7 @@ export function makeTable(options): TableResourceClass {
 				subscription.progress = () => {
 					if (!isActive()) return;
 					if (!progressLive) return beforeLive();
-					const dispatched = dispatchedThrough(subscription);
+					const dispatched = certifiedThrough(subscription);
 					if (progressFloor === undefined) return dispatched;
 					return dispatched === undefined || dispatched < progressFloor ? progressFloor : dispatched;
 				};

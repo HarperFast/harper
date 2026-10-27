@@ -2656,8 +2656,6 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		session.disconnect(true);
 	});
 
-	// harper#3112: a live position never passes a local key that is reserved but not committed, nor one that
-	// committed but whose records a notify pass has not dispatched yet.
 	it('holds the position below a local write that took its key before an acknowledged one, and replays it on resume', async function () {
 		if (!isRocksDB) this.skip(); // LMDB keys are assigned at commit
 		const { T, name } = topicTable();

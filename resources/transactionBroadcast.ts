@@ -78,7 +78,6 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
 		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);
-		// fed by this thread's own commits only, so its watermark certifies nothing about other threads' writes
 		databaseSubscriptions.sameThread = true;
 		listenToCommits(table.primaryStore, table.auditStore);
 	} else {
@@ -160,6 +159,9 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
 		subscription.reportsProgress = true;
 		subscription.registeredThrough = databaseSubscriptions.certifiedThrough;
+		// the registration drain can end the last consumer, which clears the mark the gate above relied on
+		if (subscription.registeredThrough === undefined && startBound === undefined)
+			startBound = localStartBound(table.primaryStore.rootStore);
 		if (subscription.registeredThrough === undefined && startBound)
 			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
@@ -240,6 +242,7 @@ function startProgressTracking(databaseSubscriptions: any, auditStore: any) {
 	// a key left by an earlier stretch of tracking does not cover what was dispatched untracked since
 	databaseSubscriptions.dispatchedThrough = undefined;
 	databaseSubscriptions.certifiedThrough = undefined;
+	databaseSubscriptions.recheckedCeiling = undefined;
 	// the log store ends a failed log's iteration quietly, and nothing after lost records can be certified
 	if (rangeFailures(auditStore.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
 }
@@ -278,7 +281,7 @@ export function deliveryCertified(subscription: any): boolean {
  * none can still land: the newest fully dispatched transaction, held at the ceiling the dispatching pass
  * captured (`localCeiling`). Undefined before a pass has certified one since progress tracking began.
  */
-export function dispatchedThrough(subscription: any): number | undefined {
+export function certifiedThrough(subscription: any): number | undefined {
 	return subscription.subscriptions?.tables?.envs?.certifiedThrough;
 }
 
@@ -296,13 +299,18 @@ function localCeiling(auditStore: any): number | undefined {
 	return 'above' in bound ? bound.above : positionBefore(bound.atOrAbove);
 }
 
-/** After a complete drain: the raw watermark, held at the pass's ceiling; never lowered. */
 function certifyProgress(subscriptions: any): void {
 	const through = subscriptions.dispatchedThrough;
 	const ceiling = subscriptions.passCeiling;
 	if (through === undefined || ceiling === undefined) return;
 	const certified = ceiling < through ? ceiling : through;
 	if (!(subscriptions.certifiedThrough >= certified)) subscriptions.certifiedThrough = certified;
+	// a commit's own pass can capture before its reservation is released, which lands after the commit settles:
+	// one follow-up pass per hold re-captures, so a committed write certifies itself without another commit
+	if (ceiling < through && !(subscriptions.recheckedCeiling >= ceiling)) {
+		subscriptions.recheckedCeiling = ceiling;
+		subscriptions.recheckPending = true;
+	}
 }
 
 /**
@@ -468,7 +476,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	subscriptions.passYielded = false;
 	try {
 		if (freshPass)
-			subscriptions.passCeiling = trackProgress && !subscriptions.sameThread ? localCeiling(auditStore) : undefined;
+			subscriptions.passCeiling = !trackProgress
+				? undefined
+				: subscriptions.sameThread
+					? Infinity
+					: localCeiling(auditStore);
 		while (true) {
 			let result;
 			try {
@@ -623,7 +635,6 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
 			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}
-		// a pass that read every entry to the end certifies up to the ceiling it captured
 		if (trackProgress && !iteratorFailed && rangeFailures(auditLogIterable) === 0) certifyProgress(subscriptions);
 		subscriptions.passCeiling = undefined;
 		subscriptions.pendingProgressKey = undefined;
@@ -651,7 +662,14 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		subscriptions.dispatching = false;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.
-		if (allowYield && !yielded) subscriptions.notifyScheduled = false;
+		if (allowYield && !yielded) {
+			subscriptions.notifyScheduled = false;
+			if (subscriptions.recheckPending) {
+				subscriptions.recheckPending = false;
+				subscriptions.notifyScheduled = true;
+				setImmediate(() => notifyFromTransactionData(subscriptions, auditStore.subscriptionLogRange, true));
+			}
+		}
 	}
 }
 /**
