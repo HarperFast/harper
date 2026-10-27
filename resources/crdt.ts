@@ -227,6 +227,9 @@ function reconstructForward(
 				break; // full snapshot reached; nothing older is needed
 			} else if (auditEntry.type === 'patch') {
 				entries.push(auditEntry);
+			} else if (partial && auditEntry.type === 'invalidate') {
+				// an invalidate stores only a stub (projection and indexed fields), so a field it lacks is unknown, not absent
+				partial.truncated = true;
 			}
 		}
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
@@ -383,7 +386,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	}
 	if (unknowns.size > 0 && auditTime > 0) {
 		const partial = { truncated: branched };
-		// null: no state-bearing write survives at or before `timestamp` (e.g. an invalidate after a delete)
+		// null: no put or patch survives at or before `timestamp` (e.g. only a message after a delete)
 		const priorRecord =
 			reconstructForward(
 				auditStore,
