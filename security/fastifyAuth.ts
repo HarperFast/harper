@@ -12,6 +12,11 @@ import * as _tokenAuthentication from './tokenAuthentication.ts';
 const tokenAuthentication = _tokenAuthentication;
 import { AccessViolation } from '../utility/errors/hdbError.ts';
 import { authentication } from './auth.ts';
+import {
+	bearerTokenRejection,
+	deferredCredentialRejectionError,
+	getAuthenticationRejectedInPlace,
+} from './deferredAuthentication.ts';
 
 passport.use(
 	new LocalStrategy(function (username, password, done) {
@@ -36,6 +41,8 @@ passport.deserializeUser(function (user, done) {
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
 
 export function authorize(req: any, res: any, next: any) {
+	const settledRejection = deferredCredentialRejectionError(req.raw?.baseRequest);
+	if (settledRejection) return next(settledRejection);
 	if (req.raw?.user != undefined) {
 		return next(null, req.raw.user);
 	}
@@ -74,6 +81,8 @@ export function authorize(req: any, res: any, next: any) {
 					req.raw.user = null;
 					return authorize(req, res, next);
 				}
+				const rejected = getAuthenticationRejectedInPlace(shimRequest);
+				if (rejected) return next(new Error(rejected.message));
 				const body = typeof response?.body === 'string' ? JSON.parse(response.body) : (response?.body ?? {});
 				return next(new Error(body.error ?? body));
 			},
@@ -102,6 +111,9 @@ export function authorize(req: any, res: any, next: any) {
 					req.raw.user = null;
 					return authorize(req, res, next);
 				}
+				// the in-place body is serialized for the negotiated content type, which need not be JSON
+				const rejected = getAuthenticationRejectedInPlace(req.raw.baseRequest);
+				if (rejected) return next(new Error(rejected.message));
 				const body = JSON.parse(response.body);
 				return next(new Error(body.error ?? body));
 			},
@@ -143,7 +155,7 @@ export function authorize(req: any, res: any, next: any) {
 						next(null, user);
 					})
 					.catch((e) => {
-						next(e);
+						next(bearerTokenRejection(e));
 					});
 			} else {
 				tokenAuthentication
@@ -152,7 +164,7 @@ export function authorize(req: any, res: any, next: any) {
 						next(null, user);
 					})
 					.catch((e) => {
-						next(e);
+						next(bearerTokenRejection(e));
 					});
 			}
 			break;
