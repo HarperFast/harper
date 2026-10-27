@@ -452,7 +452,7 @@ export class ResourceBridge extends BridgeMethods {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 		const validationError = searchValidator(searchObject, 'hashes');
 		if (validationError) {
-			throw validationError;
+			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
 		}
 		return getRecords(searchObject);
 	}
@@ -472,7 +472,14 @@ export class ResourceBridge extends BridgeMethods {
 
 	searchByValue(searchObject: SearchObject, comparator?: string) {
 		if (comparator && VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
-			throw new Error(`Value search comparator - ${comparator} - is not valid`);
+			throw handleHDBError(
+				new Error(),
+				`Value search comparator - ${comparator} - is not valid`,
+				400,
+				undefined,
+				undefined,
+				true
+			);
 		}
 		const obj = searchObject as any;
 		if (obj.select !== undefined) obj.get_attributes = obj.select;
@@ -481,7 +488,7 @@ export class ResourceBridge extends BridgeMethods {
 
 		const validationError = searchValidator(searchObject, 'value');
 		if (validationError) {
-			throw validationError;
+			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
 		}
 
 		const table = getTable(searchObject);
