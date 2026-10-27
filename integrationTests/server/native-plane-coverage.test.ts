@@ -95,14 +95,15 @@ test(
 				assert(result.status < 300, JSON.stringify(result));
 			}
 			for (const path of ['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/']) {
+				const logBefore = harperLog().length;
 				const shortWait = await query(1_000_000, 1, target, path);
 				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
 				assert.equal(shortWait.coverage, null);
-				// a cut-off body's diagnostic is best-effort; without it, the server log names the failure
+				// the diagnostic is best-effort, so a bare cut-off body must have logged the lag error during this query
 				if (shortWait.aborted)
 					assert(
 						/\{"error":"DerivedIndexLagError/.test(shortWait.text) ||
-							(!shortWait.text.includes('{"error":') && harperLog().includes('DerivedIndexLagError')),
+							(!shortWait.text.includes('{"error":') && harperLog().slice(logBefore).includes('DerivedIndexLagError')),
 						JSON.stringify(shortWait)
 					);
 				else {

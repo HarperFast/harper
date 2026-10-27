@@ -15,7 +15,9 @@ describe('JSON export to a local file when its source fails', function () {
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'export-json-failure-'));
 	});
 	afterEach(function () {
+		const leftovers = fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'));
 		fs.rmSync(dir, { recursive: true, force: true });
+		assert.deepStrictEqual(leftovers, [], 'a failed export must remove its temporary file');
 	});
 
 	it('rejects and leaves no file when the source throws mid-stream', async function () {
@@ -49,20 +51,28 @@ describe('JSON export to a local file when its source fails', function () {
 		}
 		const target = path.join(dir, 'existing.json');
 		fs.mkdirSync(path.join(target, 'kept'), { recursive: true });
-		await assert.rejects(saveToLocal(target, 'json', rows()), /EISDIR/);
+		await assert.rejects(saveToLocal(target, 'json', rows()));
 		assert.strictEqual(fs.existsSync(path.join(target, 'kept')), true);
 	});
 
-	it('leaves a file another export put at the same path after this one opened it', async function () {
-		const filePath = path.join(dir, 'shared.json');
-		async function* rows() {
+	it('leaves an existing file at the path unchanged', async function () {
+		const filePath = path.join(dir, 'existing.json');
+		fs.writeFileSync(filePath, '[{"id":"previous"}]');
+		function* rows() {
 			yield { id: 1 };
-			await new Promise((resolve) => setTimeout(resolve, 20));
-			fs.rmSync(filePath);
-			fs.writeFileSync(filePath, '[{"id":"other"}]');
 			throw new Error('scan failed');
 		}
 		await assert.rejects(saveToLocal(filePath, 'json', rows()), /scan failed/);
-		assert.strictEqual(fs.readFileSync(filePath, 'utf8'), '[{"id":"other"}]');
+		assert.strictEqual(fs.readFileSync(filePath, 'utf8'), '[{"id":"previous"}]');
+	});
+
+	it('replaces the file at the path when it succeeds', async function () {
+		const filePath = path.join(dir, 'replaced.json');
+		fs.writeFileSync(filePath, '[{"id":"previous"}]');
+		function* rows() {
+			yield { id: 1 };
+		}
+		await saveToLocal(filePath, 'json', rows());
+		assert.deepStrictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')), [{ id: 1 }]);
 	});
 });

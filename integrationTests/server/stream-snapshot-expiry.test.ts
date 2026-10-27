@@ -164,7 +164,6 @@ suite('streamed JSON read past the open-transaction limit (harper#2392)', (ctx: 
 			strictEqual(cap.status, 200);
 			const received = rowCount(cap.body);
 			ok(received > 0 && received < ROWS, `expected a partial result, got ${received} of ${ROWS} rows`);
-			// the body's diagnostic element is best-effort, so the server log is the fallback evidence
 			ok(
 				cap.body.includes('ReadSnapshotExpiredError') || harperLog().includes('ReadSnapshotExpiredError'),
 				`the scan must have failed on the expired snapshot; body ends ${JSON.stringify(cap.body.slice(-300))}`

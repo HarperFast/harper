@@ -11,6 +11,7 @@ import hdbLogger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import * as hdbCommon from '../utility/common_utils.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -161,19 +162,15 @@ export async function saveToLocal(filePath: string, sourceDataFormat: string, da
 	}
 
 	if (sourceDataFormat === JSON_TEXT) {
-		const writeStream = fs.createWriteStream(filePath);
-		let written: fs.Stats | undefined;
-		writeStream.once('open', (fd) => (written = fs.fstatSync(fd)));
+		// written beside the target and renamed into place, so a failure never leaves a partial file at the path
+		const tempPath = `${filePath}.${randomUUID()}.tmp`;
+		const writeStream = fs.createWriteStream(tempPath, { flags: 'wx' });
 		try {
 			await pipeline(streamAsJSON(data), writeStream);
+			await fs.promises.rename(tempPath, filePath);
 		} catch (error) {
-			// an open still in flight completes before 'close'; remove only the file this export opened, not one
-			// another export has since put at the same path
 			if (!writeStream.closed) await once(writeStream, 'close');
-			const current = written && (await fs.promises.lstat(filePath).catch(() => undefined));
-			if (current && current.ino === written.ino && current.dev === written.dev) {
-				await fs.promises.unlink(filePath).catch(() => {});
-			}
+			await fs.promises.unlink(tempPath).catch(() => {});
 			throw error;
 		}
 
