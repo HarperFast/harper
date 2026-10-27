@@ -1023,9 +1023,11 @@ export class HierarchicalNavigableSmallWorld {
 			// Replacing would tombstone a node the plane does not re-link around. Only an in-memory pending
 			// mapping proves its node is in this plane; one read back from storage may predate a crash.
 			if (pendingMapping) {
-				const mapping = { id: oldNodeId, previousId: durableNodeId, signature, version, pending: true };
-				this.indexStore.putSync(safeKey, mapping);
-				this.pendingDerivedMappings.set(pendingKey, { ...mapping, primaryKey });
+				if (pendingMapping.version !== version) {
+					const mapping = { id: oldNodeId, previousId: durableNodeId, signature, version, pending: true };
+					this.indexStore.putSync(safeKey, mapping);
+					this.pendingDerivedMappings.set(pendingKey, { ...mapping, primaryKey });
+				}
 				return;
 			}
 		}
