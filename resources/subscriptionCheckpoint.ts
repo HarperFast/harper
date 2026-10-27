@@ -215,7 +215,10 @@ export async function writeCopyBounds(
 			changed = true;
 		});
 	} else {
-		// resolves once its own transaction commits; a synchronous one nested in another could still be aborted with it
+		// one started inside another write transaction commits with that one, or, inside an executing batch, after it
+		// while that batch waits on this
+		if (rootStore.env?.writeTxn)
+			throw new Error('A copy bound commits in a transaction of its own, never inside another');
 		changed = await rootStore.transactionAsync(() => {
 			const { row, removals } = plan();
 			if (row) dbisDb.putSync(rowKey, row);
@@ -301,30 +304,27 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 }
 
 /**
- * The origin's generation its rows show current: the only one they name, or else the one its direct route saw
- * replace every other they name. A floor cannot order generations: floors sample the origin's clock, which a restore
- * can set back. A relayed route is no witness either: a restored relay can forward a generation older than one it
- * already forwarded. Undefined when nothing orders them, so the origin certifies nothing.
+ * The origin's generation its rows show current: the one its direct route last certified, when that route saw it
+ * replace every other generation the rows name, or else the only one they name. A floor cannot order generations:
+ * floors sample the origin's clock, which a restore can set back. A relayed route is no witness either: a restored
+ * relay can forward a generation older than one it already forwarded. Undefined when nothing orders them, so the
+ * origin certifies nothing.
  */
 function currentGeneration(nodeId: number, originEntries: { node: any; routeId: number }[]): string | undefined {
-	let named: string | undefined;
-	let conflicting = false;
+	const named = new Set<string>();
 	let direct: any;
 	for (const { node, routeId } of originEntries) {
 		if (routeId === nodeId) direct = node;
-		if (typeof node.originGeneration !== 'string') continue;
-		if (named === undefined) named = node.originGeneration;
-		else if (node.originGeneration !== named) conflicting = true;
+		if (typeof node.originGeneration === 'string') named.add(node.originGeneration);
 	}
-	if (!conflicting) return named;
-	const current = direct?.originGeneration;
-	const replaced = direct?.replacedGenerations;
-	if (typeof current !== 'string' || !Array.isArray(replaced) || replaced.includes(current)) return;
-	for (const { node } of originEntries) {
-		const generation = node.originGeneration;
-		if (typeof generation === 'string' && generation !== current && !replaced.includes(generation)) return;
-	}
-	return current;
+	// kept across level-1 certificates, so a relayed row of a generation it left cannot become current again
+	const latest = direct?.originGeneration ?? direct?.lastGeneration;
+	if (typeof latest !== 'string') return named.size === 1 ? named.values().next().value : undefined;
+	const replaced = Array.isArray(direct.replacedGenerations) ? direct.replacedGenerations : [];
+	// the origin certified a generation it had already left: its history is not one line
+	if (replaced.includes(latest)) return;
+	for (const generation of named) if (generation !== latest && !replaced.includes(generation)) return;
+	return latest;
 }
 
 /**

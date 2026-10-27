@@ -432,6 +432,19 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				floors(56, [[56, now - 17, true, 'gen-b', true]]),
 				floors(56, [[56, now - 16, true]]),
 				floors(56, [[56, now - 15, true, 'gen-a', true]]),
+				// a restore after a level-1 certificate: the new generation's lower floor replaces the old one
+				floors(57, [
+					[57, now - 20, true, 'gen-a', true],
+					[22, now - 20, true, 'gen-a', true],
+				]),
+				floors(57, [
+					[57, now - 10, true],
+					[22, now - 10, true],
+				]),
+				floors(57, [
+					[57, now - 15, true, 'gen-b', true],
+					[22, now - 15, true, 'gen-b', true],
+				]),
 				floors(54, [[54, now - 20, true, 'gen-a', true]]),
 				floors(54, [[54, now - 19, true, 'gen-b', true]]),
 				floors(54, [[54, now - 18, true, 'gen-a', true]]),
@@ -455,6 +468,12 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			assert.equal(node(56, 56).originGeneration, 'gen-a');
 			assert.deepEqual(node(56, 56).replacedGenerations, ['gen-a', 'gen-b']);
 			assert.equal(node(56, 56).lastGeneration, undefined);
+			for (const id of [57, 22]) {
+				assert.equal(node(57, id).originGeneration, 'gen-b');
+				assert.equal(node(57, id).closedFloor, now - 15);
+			}
+			assert.deepEqual(node(57, 57).replacedGenerations, ['gen-a']);
+			assert.equal(node(57, 22).replacedGenerations, undefined);
 			assert.equal(node(55, 55).originGeneration, 'gen-9');
 			assert.deepEqual(node(55, 55).replacedGenerations, generations.slice(1, 9));
 		} finally {

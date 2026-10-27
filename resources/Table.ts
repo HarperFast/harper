@@ -2543,20 +2543,23 @@ export function makeTable(options): TableResourceClass {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									// what the route last certified, whatever level-1 certificates came since
+									const previousGeneration = nodeState.originGeneration ?? nodeState.lastGeneration;
 									const generationChanged =
 										typeof originGeneration === 'string' &&
-										typeof nodeState.originGeneration === 'string' &&
-										nodeState.originGeneration !== originGeneration;
-									if (nodeId === event.remoteNodeIds[0] && typeof originGeneration === 'string') {
-										// the origin itself certified one history and then another, whatever level-1 certificates came
-										// between: what orders its generations
-										const previous = nodeState.originGeneration ?? nodeState.lastGeneration;
-										if (typeof previous === 'string' && previous !== originGeneration) {
-											nodeState.replacedGenerations = withReplacedGeneration(nodeState.replacedGenerations, previous);
-										}
+										typeof previousGeneration === 'string' &&
+										previousGeneration !== originGeneration;
+									if (typeof originGeneration === 'string' && nodeState.lastGeneration !== undefined) {
 										nodeState.lastGeneration = undefined;
 									}
 									if (generationChanged) {
+										// the origin itself certified one history and then another: what orders its generations
+										if (nodeId === event.remoteNodeIds[0]) {
+											nodeState.replacedGenerations = withReplacedGeneration(
+												nodeState.replacedGenerations,
+												previousGeneration
+											);
+										}
 										// a new history identity: what was certified under the old one is void, and the route
 										// must prove its prefix again (certifiedFrom) before this generation qualifies
 										nodeState.floorRevoked = undefined;
@@ -2572,7 +2575,7 @@ export function makeTable(options): TableResourceClass {
 									// a certificate without a generation from a route that had one: that route no longer certifies
 									// at level 2, so its checkpoint-grade qualifiers no longer hold for what follows
 									if (typeof originGeneration !== 'string' && typeof nodeState.originGeneration === 'string') {
-										if (nodeId === event.remoteNodeIds[0]) nodeState.lastGeneration = nodeState.originGeneration;
+										nodeState.lastGeneration = nodeState.originGeneration;
 										nodeState.originGeneration = undefined;
 										nodeState.fullCoverage = undefined;
 										nodeState.certifiedFrom = undefined;

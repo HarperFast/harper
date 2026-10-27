@@ -771,7 +771,13 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				await refuses(T, g2Token, 'a reversal');
 				T.dbisDB.removeSync([SEQ, live]);
 				T.dbisDB.removeSync([SEQ, retained]);
+				await refuses(T, g2Token, 'a reversal with no other row');
+				route(origin, healthy(g2, floor));
 				assert.strictEqual(await admits(T, g2Token), true, 'one generation needs no witness');
+				// the direct route dropped to level 1 after seeing g1 replaced: a retained g1 row stays replaced
+				route(origin, { closedFloor: floor, lastGeneration: g2, replacedGenerations: [g1] });
+				route(retained, healthy(g1, floor + 100));
+				await refuses(T, token, 'g1 is replaced while the direct route certifies at level 1');
 				subscription.end();
 			});
 
@@ -881,12 +887,21 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			assert.deepStrictEqual(readCopyBounds(T.dbisDB), new Map([[3, 400]]));
 			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 300]]) }), false);
 			assert.strictEqual(readOriginStateEpoch(rootStore), before + 3);
-			// inside another write transaction, whose abort would take the bound with it
+			// inside another write transaction, which would commit or abort the bound with it, or wait on it
+			const refusal = (promise) =>
+				promise.then(
+					() => undefined,
+					(error) => error
+				);
 			let nested;
 			rootStore.transactionSync(() => {
-				nested = writeCopyBounds(rootStore, 7, { raise: new Map([[3, 900]]) });
+				nested = refusal(writeCopyBounds(rootStore, 7, { raise: new Map([[3, 900]]) }));
 			});
-			await assert.rejects(nested);
+			assert.ok((await nested) instanceof Error);
+			await rootStore.transactionAsync(() => {
+				nested = refusal(writeCopyBounds(rootStore, 7, { raise: new Map([[3, 900]]) }));
+			});
+			assert.ok((await nested) instanceof Error);
 			assert.deepStrictEqual(readCopyBounds(T.dbisDB), new Map([[3, 400]]));
 			assert.strictEqual(readOriginStateEpoch(rootStore), before + 3);
 		});
