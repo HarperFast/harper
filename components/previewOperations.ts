@@ -341,6 +341,9 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		else if (policy.enabled === false) problems.push(`trust policy "${id}" is disabled`);
 		else if (policy.invalid_reason) problems.push(`trust policy "${id}" ${policy.invalid_reason}`);
 		else if (policy.user !== names.user) problems.push(`trust policy "${id}" names user "${policy.user}"`);
+		else if (policy.claims?.event_name !== 'pull_request_target' || !policy.claims?.environment) {
+			problems.push(`trust policy "${id}" no longer pins event_name pull_request_target and an environment`);
+		}
 	}
 	return {
 		app: req.app,

@@ -98,7 +98,6 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		});
 		return { status: response.status, body: await response.json().catch(() => undefined) };
 	}
-	/** As an administrator; the request must succeed. */
 	async function sendOperation(body: Record<string, unknown>): Promise<any> {
 		const { status, body: answer } = await operation(body);
 		strictEqual(status, 200, `${body.operation}: ${JSON.stringify(answer)}`);

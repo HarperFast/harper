@@ -144,7 +144,6 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	return { problems, unverified };
 }
 
-/** That some job runs in `environment` and may request an identity token there. */
 function checkEnvironmentJobs(workflow: any, environment: string, problems: string[], unverified: string[]): void {
 	const jobs: any[] = Object.values(workflow?.jobs ?? {});
 	const environments = jobs.map(environmentName).filter((name) => name !== undefined && name !== null);
@@ -183,15 +182,13 @@ function triggerEvents(triggers: unknown): { names: string[]; config: Record<str
 
 const HEAD_REPOSITORY = String.raw`github\.event\.pull_request\.head\.repo`;
 const BASE_REPOSITORY = String.raw`(?:github\.repository|github\.event\.pull_request\.base\.repo\.full_name)`;
-/** A whole `&&` term that admits only same-repository pull requests. */
+/**
+ * A whole `&&` term that admits only same-repository pull requests. Not `head.repo.fork`: it describes the head
+ * repository alone, so it is false for a PR from the root of the base's own fork network, and a deleted fork's null
+ * head passes `!fork`.
+ */
 const SAME_REPOSITORY_TERM = new RegExp(
-	`^(?:${[
-		`${HEAD_REPOSITORY}\\.full_name\\s*==\\s*${BASE_REPOSITORY}`,
-		`${BASE_REPOSITORY}\\s*==\\s*${HEAD_REPOSITORY}\\.full_name`,
-		`${HEAD_REPOSITORY}\\.fork\\s*==\\s*false`,
-		`false\\s*==\\s*${HEAD_REPOSITORY}\\.fork`,
-		`!\\s*${HEAD_REPOSITORY}\\.fork`,
-	].join('|')})$`
+	`^(?:${HEAD_REPOSITORY}\\.full_name\\s*==\\s*${BASE_REPOSITORY}|${BASE_REPOSITORY}\\s*==\\s*${HEAD_REPOSITORY}\\.full_name)$`
 );
 
 function withoutEnclosingParentheses(term: string): string {

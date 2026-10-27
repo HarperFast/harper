@@ -307,9 +307,9 @@ jobs:
 			assert.match(problemsOf(starter.replace(deployIf, '')), /job "deploy" runs for pull requests from forks/);
 		});
 
-		it('accepts the other spellings of the same-repository condition, and cannot read one inside an ||', () => {
+		it('takes neither head.repo.fork nor a test inside an || as excluding forks', () => {
 			const forkFalse = starter.replace(deployIf, '    if: ${{ !github.event.pull_request.head.repo.fork }}\n');
-			assert.deepStrictEqual(check(forkFalse).problems, []);
+			assert.deepStrictEqual(check(forkFalse).unsafe, ['that job "deploy" excludes fork pull requests']);
 			const either = starter.replace(
 				deployIf,
 				`    if: github.event.action == 'opened' ||${sameRepository.slice(3)}\n`
@@ -416,7 +416,6 @@ jobs:
 				/harper preview deploy app=shop pr="\$PR" branch="\$BRANCH" by_ref=true ref="\$SHA" domain=previews\.example\.com credential=true branchedDatabases=false/
 			);
 			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });
-			// Only a PR read as closed is dropped after a deploy, so a failed read never drops an open one.
 			assert.match(shaped, /if \[ "\$\{after%% \*\}" = closed \]; then harper preview drop app=shop/);
 		});
 	});
