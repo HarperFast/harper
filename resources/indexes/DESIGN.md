@@ -226,7 +226,9 @@ name>: <log sequence> } }`. `logs` advances only at `endTxn` and only after the 
 4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
    or a full backend queue delays indexing; it cannot skip durable log work.
 5. Resume proves every saved log position with `exactStart`. A missing, incomplete or duplicate
-   boundary condemns the generation; approximate resume is not permitted.
+   boundary condemns the generation; approximate resume is not permitted. The one exception is a
+   `missing` boundary whose loss is proven harmless (below, `#recoverPurgedAnchors`): that log is
+   re-anchored by a floor instead.
 6. The runtime resolves the current primary entry once per changed record and projects only the
    registered attributes. Backends never see the log entry's body: a conflict retry can re-resolve a
    record after its log payload was staged, so the entry is identity and version evidence, not state.
@@ -285,6 +287,26 @@ transaction may have been purged since the install check), and `#reconcileDurabl
 durable advance publishes coverage or ready — the one path every catch-up publication takes, checked
 against the newest accepted vector, since a log anchored there was proven past its floor when read. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
 once; its runtime and HNSW drop the field on clone and judge the log by the old rule.
+
+Retention also purges the file holding a log's **timestamp anchor** once the log is idle and flushed,
+so the next install (a restart, or the first acquisition after an idle release) finds that boundary
+`missing` although nothing committed after it. `#recoverPurgedAnchors` proves that case instead of
+condemning: the durable cursor covers every commit at or before its `coverage` position (captured
+only at a committed tail with nothing uncommitted after it, persisted only once its offered cursor is
+durable, and carried into newer cursors by both backends), and purge deletes only files lying wholly at
+or before the flush witness (`lastFlushedPosition`, `txn.state`, never moved backwards). So while the
+witness is not past the covered position, nothing after it was lost, and the log is converted to a
+floor taken from the current file inventory, then read from its beginning like any floor-anchored log.
+`lastCommittedPosition` is not a witness: retirement moves it to the next sequence. The inventory is
+sampled before the witness, in two `getStats` calls: one call reads the flush position before the file
+inventory, so it can pair a stale witness with an inventory a flush and purge of an uncovered entry has
+since shrunk, and the floor would then sit past that entry. The converted vector reaches the backend as
+an empty `#pendingBatch` delivered before any log work, so the saved vector stays `#offeredCursors[0]`
+until the conversion is durable (no `cursor-unoffered`), and a crash before then repeats the proof.
+The proof is sufficient, not necessary: a write after the purge that was flushed before the install
+moves the witness past coverage and the index rebuilds, as does a cursor whose coverage predates its
+anchor. Any other failure in the same range (corrupt frame, failed log, `incomplete`, `duplicate`,
+or an unproven sibling log) still condemns.
 
 ### Offered versus durable progress
 

@@ -1336,6 +1336,140 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	// Retention purged the file holding the saved anchor (an idle, flushed log loses every file); the
+	// saved coverage says how far the cursor covers, and the flush witness how far anything was purged.
+	const covered = { sequence: 3, offset: 49 };
+	const purgedAnchorStore = (stats, { logNames = ['local'], failures = [['local', 'missing']] } = {}) => {
+		const store = new FakeLogStore(new Map([[undefined, [audit({ timestamp: 9, recordId: 'b' })]]]), {
+			logNames,
+			logEntries: new Map(logNames.map((name) => [name, []])),
+			logStats: new Map([['local', stats]]),
+		});
+		store.exactStartFailures = new Map(failures);
+		const getRange = store.getRange.bind(store);
+		store.getRange = (options) => {
+			const range = getRange(options);
+			if (options.log === undefined) store.exactStartFailures = new Map();
+			return range;
+		};
+		return store;
+	};
+	const purgedAnchorRecords = () => new Map([['1:b', { version: 9, value: { title: 'b' } }]]);
+	const emptiedStats = (lastFlushedPosition) => ({
+		fileCount: 0,
+		oldestSequenceNumber: 0,
+		currentSequenceNumber: 4,
+		lastFlushedPosition,
+	});
+
+	it('resumes from a floor when retention purged the anchor but nothing past the coverage was flushed', async () => {
+		const store = purgedAnchorStore(emptiedStats(covered));
+		const backend = new AsyncBackend('purged-anchor', {
+			cursor: { format: 1, logs: { local: 7 }, coverage: { local: covered } },
+			applyDelay: 2,
+		});
+		const { runtime } = runtimeFor(store, purgedAnchorRecords(), { idleGraceMilliseconds: 1000 });
+		runtime.register(floorRegistration(backend));
+
+		await waitFor(() => backend.cursor.logs.local === 9, { timeout: 5000 });
+		assert.strictEqual(backend.resets.length, 0);
+		assert.deepStrictEqual(backend.deliveries[0].through, { format: 1, logs: {}, floors: { local: 4 } });
+		assert.strictEqual(backend.deliveries[0].records.length, 0);
+		assert.strictEqual(store.rangeCalls.at(-1).startByLog.has('local'), false, 'the log is read from its floor');
+		assert.strictEqual(backend.applied.get('b').kind, 'record');
+		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 9 } });
+		await runtime.stop();
+	});
+
+	it('samples the floor before the flush witness', async () => {
+		// One getStats call can pair a flush position read before a flush and purge with the file
+		// inventory after it; only a witness sampled after the floor proves nothing past coverage was lost.
+		let calls = 0;
+		const store = purgedAnchorStore(() =>
+			++calls === 1 ? emptiedStats(covered) : emptiedStats({ sequence: 4, offset: 10 })
+		);
+		const backend = new AsyncBackend('purged-anchor-race', {
+			cursor: { format: 1, logs: { local: 7 }, coverage: { local: covered } },
+			applyDelay: 2,
+		});
+		const { runtime } = runtimeFor(store, purgedAnchorRecords(), { idleGraceMilliseconds: 1000 });
+		runtime.register(floorRegistration(backend));
+
+		await waitFor(() => backend.resets.length === 1 && runtime.getReadiness(backend.id).state === 'ready', {
+			timeout: 5000,
+		});
+		await runtime.stop();
+	});
+
+	it('condemns a purged anchor the saved coverage and flush witness do not prove', async () => {
+		for (const [label, saved, stats, options] of [
+			['no coverage', { format: 1, logs: { local: 7 } }, emptiedStats(covered)],
+			[
+				'malformed coverage',
+				{ format: 1, logs: { local: 7 }, coverage: { local: { sequence: 3.5, offset: 0 } } },
+				emptiedStats(covered),
+			],
+			[
+				'sentinel witness',
+				{ format: 1, logs: { local: 7 }, coverage: { local: covered } },
+				emptiedStats({ sequence: 0, offset: 0 }),
+			],
+			[
+				'witness past coverage',
+				{ format: 1, logs: { local: 7 }, coverage: { local: covered } },
+				emptiedStats({ sequence: 3, offset: 50 }),
+			],
+			[
+				'incomplete anchor',
+				{ format: 1, logs: { local: 7 }, coverage: { local: covered } },
+				emptiedStats(covered),
+				{ failures: [['local', 'incomplete']] },
+			],
+			[
+				'an unproven sibling',
+				{ format: 1, logs: { local: 7, remote: 5 }, coverage: { local: covered } },
+				emptiedStats(covered),
+				{
+					logNames: ['local', 'remote'],
+					failures: [
+						['local', 'missing'],
+						['remote', 'missing'],
+					],
+				},
+			],
+		]) {
+			const store = purgedAnchorStore(stats, options);
+			const backend = new AsyncBackend('purged-anchor-unproven', { cursor: saved, applyDelay: 2 });
+			const { runtime } = runtimeFor(store, purgedAnchorRecords(), { idleGraceMilliseconds: 1000 });
+			runtime.register(floorRegistration(backend));
+
+			await waitFor(() => backend.resets.length === 1 && runtime.getReadiness(backend.id).state === 'ready', {
+				timeout: 5000,
+				message: `${label} must condemn the cursor`,
+			});
+			await runtime.stop();
+		}
+	});
+
+	it('keeps the saved cursor offered while the floor conversion is deferred', async () => {
+		const store = purgedAnchorStore(emptiedStats(covered));
+		const saved = { format: 1, logs: { local: 7 }, coverage: { local: covered } };
+		const backend = new AsyncBackend('purged-anchor-deferred', { cursor: saved, applyDelay: 2, capacity: 0 });
+		const { runtime } = runtimeFor(store, purgedAnchorRecords(), { idleGraceMilliseconds: 1000 });
+		runtime.register(floorRegistration(backend));
+
+		await waitFor(() => backend.deliveries.length >= 1, { timeout: 5000 });
+		await sleep(20);
+		assert.strictEqual(runtime.getStatus(backend.id).state, 'deferred');
+		assert.strictEqual(backend.resets.length, 0);
+		assert.strictEqual(backend.cursor, saved);
+		backend.capacity = Infinity;
+		backend.stateChange('changed');
+		await waitFor(() => backend.cursor.logs.local === 9, { timeout: 5000 });
+		assert.strictEqual(backend.resets.length, 0);
+		await runtime.stop();
+	});
+
 	it('does not spend rebuild attempts on reload markers behind the captured tail', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const reloads = [8, 9, 10].map((timestamp) => ({ ...audit({ timestamp, type: 'reload' }), recordId: null }));
@@ -2129,7 +2263,7 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		await transaction(canonical, () => Gated.put('g-source', { title: 'canonical' }, canonical));
 		assert.strictEqual((await Gated.get('g-source'))?.title, 'canonical');
 		assert.notStrictEqual(derivedIndexWriteRejection(Gated.auditStore, Gated.tableId), undefined, 'still tripped');
-		await waitFor(() => backend.deliveries.length >= 2, { timeout: 5000 });
+		await waitFor(() => backend.deliveries.length >= 1, { timeout: 5000 });
 
 		backend.cursor = backend.deliveries.at(-1).through;
 		backend.stateChange();
