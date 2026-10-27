@@ -44,10 +44,13 @@ export interface ImportArchiveArgs {
 	importedFrom: string;
 }
 
-/** The archive under `.import/`, refusing any name that resolves outside it, links included. */
+/**
+ * The archive under `.import/`, refusing any name that resolves outside it, links included. A missing
+ * `.import/` is created, so an operator finds where to place the archive.
+ */
 function resolveSourceFile(backupDir: string, sourceFile: string): string {
 	const importRoot = join(backupDir, IMPORT_SOURCE_DIR);
-	if (!existsSync(importRoot)) throw new ClientError(`${importRoot} does not exist`, 404);
+	mkdirSync(importRoot, { recursive: true });
 	const root = realpathSync(importRoot);
 	let resolved: string;
 	try {

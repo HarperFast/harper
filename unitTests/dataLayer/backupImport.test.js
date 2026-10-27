@@ -13,6 +13,7 @@ const {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } = require('node:fs');
@@ -345,6 +346,20 @@ describeUnlessLmdb('import_backup', function () {
 			await assert.rejects(importBackupJob({ ...SU, database: IMPORTED, source_file: 'truncated.tar.gz' }));
 			assert.deepStrictEqual(stagingEntries(IMPORTED), []);
 			assert.deepStrictEqual(await repositoryState(IMPORTED), { engine: [], manifests: [], listed: [] });
+		});
+
+		it('creates a missing .import/ and refuses the source_file it cannot yet hold', async function () {
+			const importDir = join(backupDirForDatabase(IMPORTED), IMPORT_SOURCE_DIR);
+			rmSync(importDir, { recursive: true, force: true });
+			await assert.rejects(
+				importBackupJob({ ...SU, database: IMPORTED, source_file: 'later.tar.gz' }),
+				(error) => error.statusCode === 404 && error.message.includes(`No archive named 'later.tar.gz' in ${importDir}`)
+			);
+			assert.ok(statSync(importDir).isDirectory(), '.import/ was created');
+
+			placeInImport(IMPORTED, gzArchive, 'later.tar.gz');
+			const result = await importBackupJob({ ...SU, database: IMPORTED, source_file: 'later.tar.gz' });
+			assert.strictEqual(result.imported_from, `${IMPORT_SOURCE_DIR}/later.tar.gz`);
 		});
 
 		it('refuses a source_file that is a symlink out of .import/', async function () {
