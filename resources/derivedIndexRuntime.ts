@@ -1153,7 +1153,7 @@ class DerivedIndexRunner {
 		this.#iterator = this.#iterable[Symbol.iterator]();
 	}
 
-	/** Separate getStats calls: one reads the flush position before the file inventory. */
+	/** The inventory is sampled before the witness: one getStats call reads the flush position before its inventory. */
 	#recoverPurgedAnchors(cursor: DerivedIndexCursor): DerivedIndexCursor | undefined {
 		const iterable = this.#iterable!;
 		if (iterable.exactStartFailures.size === 0 || iterable.corruptFrameStop.breaks > 0 || iterable.failedLogs.size > 0)
@@ -1165,7 +1165,7 @@ class DerivedIndexRunner {
 			const log = this.#logStore.rootStore.useLog(logName);
 			const inventory = log.getStats();
 			const witness = log.getStats().lastFlushedPosition;
-			if (!isLogPosition(witness) || !flushedThrough(witness, covered)) return;
+			if (!isLogPosition(witness) || !flushedThrough(witness, covered, inventory)) return;
 			recovered ??= cloneCursor(cursor);
 			delete recovered.logs[logName];
 			const floor = inventory.fileCount === 0 ? inventory.currentSequenceNumber : inventory.oldestSequenceNumber;
@@ -2582,14 +2582,23 @@ function isLogPosition(position: unknown): position is { sequence: number; offse
 }
 
 /**
- * The flush witness sits exactly at the covered tail, or at the end of the segment a purge retired when the
- * tail was captured after it: a witness short of coverage may have lost the tail at power loss, one past it
- * may have purged commits the cursor never reflected.
+ * The flush witness sits exactly at the covered tail, or at the end of a segment a purge removed when the
+ * tail was captured at the start of the next: a witness short of coverage may have lost the tail at power
+ * loss, one past it may have purged commits the cursor never reflected. A rotation also starts the next
+ * segment, so only a removed segment (purge takes only a fully flushed one) proves the witness is its end.
  */
-function flushedThrough(witness: { sequence: number; offset: number }, covered: { sequence: number; offset: number }) {
+function flushedThrough(
+	witness: { sequence: number; offset: number },
+	covered: { sequence: number; offset: number },
+	inventory: { fileCount: number; oldestSequenceNumber: number; currentSequenceNumber: number }
+) {
 	if (witness.sequence === 0 && witness.offset === 0) return false;
 	if (witness.sequence === covered.sequence) return witness.offset === covered.offset;
-	return covered.offset === 0 && covered.sequence === witness.sequence + 1;
+	const removed =
+		inventory.fileCount === 0
+			? inventory.currentSequenceNumber > witness.sequence
+			: inventory.oldestSequenceNumber > witness.sequence;
+	return removed && covered.offset === 0 && covered.sequence === witness.sequence + 1;
 }
 
 export function sameDerivedIndexCursorVector(left: DerivedIndexCursor, right: DerivedIndexCursor): boolean {

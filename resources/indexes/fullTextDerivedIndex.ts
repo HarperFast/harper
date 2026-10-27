@@ -688,7 +688,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(command.epoch);
 		if (this.#lastAppliedSequence < command.horizon)
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
-		const cursor = withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
+		const cursor = this.#hasStagedMutations
+			? (command.cursor ?? this.#durableCursor)
+			: withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
 		try {
 			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 			await this.#engine!.publish(payload);

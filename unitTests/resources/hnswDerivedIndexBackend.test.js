@@ -170,6 +170,29 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		assert.equal(backend.getDurableCursor(), undefined, 'a rebuild scan publishes no cursor');
 	});
 
+	it('keeps published coverage on a cursor write only while no record has been applied since', async () => {
+		start(0);
+		deliver(1);
+		backend.flush('threshold');
+		(await waitFor(() => index.barriers[0], 5000)).settle();
+		await waitFor(() => backend.getDurableCursor()?.logs.local === 1, 5000);
+		const coverage = { local: { sequence: 1, offset: 10 } };
+		backend.publishCoverage(coverage, OWNER_EPOCH);
+
+		assert.equal(backend.deliver(makeBatch(1, 0)), DERIVED_INDEX_ACCEPTED);
+		backend.flush('age');
+		(await waitFor(() => index.barriers[1], 5000)).settle();
+		await settled();
+		assert.deepStrictEqual(backend.getDurableCursor().coverage, coverage, 'an empty batch leaves the graph covered');
+
+		// A transaction's first chunk applies records under the vector it has not completed yet.
+		assert.equal(backend.deliver(makeBatch(1)), DERIVED_INDEX_ACCEPTED);
+		backend.flush('age');
+		(await waitFor(() => index.barriers[2], 5000)).settle();
+		await waitFor(() => backend.getDurableCursor().coverage === undefined, 5000);
+		assert.deepStrictEqual(backend.getDurableCursor().logs, { local: 1 });
+	});
+
 	it('publishes every completed batch across a catch-up spanning several barriers', async () => {
 		deliver(4);
 		backend.flush('threshold');

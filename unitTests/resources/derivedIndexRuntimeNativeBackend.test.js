@@ -1444,6 +1444,16 @@ describe('DerivedIndexRuntime for native backends', () => {
 				emptiedStats(covered),
 			],
 			[
+				'a rotation, not a purge',
+				{ format: 1, logs: { local: 7 }, coverage: { local: { sequence: 4, offset: 0 } } },
+				{
+					fileCount: 1,
+					oldestSequenceNumber: 3,
+					currentSequenceNumber: 3,
+					lastFlushedPosition: { sequence: 3, offset: 20 },
+				},
+			],
+			[
 				'incomplete anchor',
 				{ format: 1, logs: { local: 7 }, coverage: { local: covered } },
 				emptiedStats(covered),
