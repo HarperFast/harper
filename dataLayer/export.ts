@@ -9,6 +9,7 @@ import fs from 'fs-extra';
 import * as path from 'node:path';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
+import { pipeline } from 'node:stream/promises';
 import * as hdbCommon from '../utility/common_utils.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -160,10 +161,7 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 
 	if (sourceDataFormat === JSON_TEXT) {
 		// Create a write stream to the local export file.
-		let writeStream = fs.createWriteStream(filePath);
-		streamAsJSON(data).pipe(writeStream);
-		// Wait until done. Throws if there are errors.
-		await streamFinished(writeStream);
+		await pipeline(streamAsJSON(data), fs.createWriteStream(filePath));
 
 		return {
 			message: LOCAL_JSON_EXPORT_MSG,

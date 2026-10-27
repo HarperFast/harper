@@ -114,6 +114,26 @@ describe('Test export.js', () => {
 			assert.equal(converted[0].text, 'blah blah', 'Got incorrect file text value');
 		});
 
+		it('export_local to json rejects when the result iterator throws mid-stream', async function () {
+			function* failingResults() {
+				yield TEST_OBJECT;
+				throw new Error('scan failed');
+			}
+			search_stub = sandbox.stub().returns(failingResults());
+			file_name = path.join(TMP_TEST_DIR, 'failed_file.json');
+			hdb_export.__set__('pSql', search_stub);
+			await assert.rejects(
+				export_local({
+					operation: 'export_local',
+					path: TMP_TEST_DIR,
+					filename: 'failed_file',
+					format: 'json',
+					search_operation: { operation: 'sql', sql: 'SELECT * FROM dev.breed' },
+				}),
+				/scan failed/
+			);
+		});
+
 		it('Call to export_local with bad path', async function () {
 			search_stub = sandbox.stub().returns(SEARCH_RESPONSE);
 			hdb_export.__set__('pSql', search_stub);

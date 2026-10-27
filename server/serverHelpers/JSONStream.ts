@@ -31,6 +31,7 @@ class JSONStream extends Readable {
 	activeIterators: (Iterator<any> | AsyncIterator<any>)[];
 	_amReading?: boolean;
 	done?: boolean;
+	failed?: boolean;
 
 	constructor(options) {
 		// Calls the stream.Readable(options) constructor
@@ -51,10 +52,11 @@ class JSONStream extends Readable {
 				yield '[';
 				let first = true;
 				if ((hasAsyncIterator || hasIterator) && !(object instanceof Array)) {
-					let iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
-					const originalIterator = iterator;
+					const iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
 					this.activeIterators.push(iterator);
 					let iteratorResult;
+					let failed = false;
+					let failure;
 					while (true) {
 						try {
 							iteratorResult = iterator.next();
@@ -67,26 +69,20 @@ class JSONStream extends Readable {
 										return ''; // return nothing now and serialization will continue below
 									},
 									(error) => {
-										// try to properly serialize the error, but then finish the iterator
-										harperLogger.warn('Error serializing in stream', error);
+										failed = true;
+										failure = error;
 										iteratorResult = { done: false, value: streamError(error) };
-										iterator = {
-											next: () => ({ done: true }),
-										};
 										return '';
 									}
 								);
 							}
 						} catch (error) {
+							failed = true;
+							failure = error;
 							iteratorResult = { done: false, value: streamError(error) };
-							iterator = {
-								next: () => ({ done: true }),
-							};
 						}
 						if (iteratorResult.done) {
-							// `iterator` may now be the error stub above, not what was pushed
-							const activeIndex = this.activeIterators.indexOf(originalIterator);
-							if (activeIndex >= 0) this.activeIterators.splice(activeIndex, 1);
+							this.untrackIterator(iterator);
 							yield ']';
 							return;
 						} else {
@@ -96,6 +92,12 @@ class JSONStream extends Readable {
 								yield ',';
 							}
 							yield* this.serialize(iteratorResult.value);
+							if (failed) {
+								// the error element is only a diagnostic: no closing bracket, and the throw
+								// unwinds every enclosing array so the stream fails instead of ending
+								this.untrackIterator(iterator);
+								throw failure;
+							}
 						}
 					}
 				}
@@ -110,11 +112,7 @@ class JSONStream extends Readable {
 				return;
 			}
 			if (object.then) {
-				try {
-					yield object.then((object) => this.serialize(object), handleError);
-				} catch (error) {
-					yield handleError(error);
-				}
+				yield object.then((object) => this.serialize(object));
 			} else {
 				yield stringify(object);
 			}
@@ -124,7 +122,7 @@ class JSONStream extends Readable {
 	}
 
 	_read() {
-		if (this._amReading) {
+		if (this._amReading || this.failed) {
 			// I don't know why _read is called from within a push call, but if we are already reading, ignore the call
 			return;
 		}
@@ -142,13 +140,25 @@ class JSONStream extends Readable {
 					this._amReading = false;
 				}
 			},
-			(error) => {
-				console.error(harperLogger.errorForLog(error));
-				this.done = true;
-				this.push(errorToString(error));
-				this.push(null);
-			}
+			(error) => this.fail(error)
 		);
+	}
+
+	/**
+	 * End the stream as failed rather than complete, so the transport aborts the response instead of
+	 * framing what was sent as the whole result.
+	 */
+	fail(error: unknown) {
+		if (this.failed) return;
+		this.failed = true;
+		if (this.bufferSize > 0) this.flush();
+		// destroy() discards unread data, so give the consumer a turn to take the diagnostic element first
+		setImmediate(() => this.destroy((error ?? new Error('JSON stream failed')) as Error));
+	}
+
+	untrackIterator(iterator: Iterator<any> | AsyncIterator<any>) {
+		const activeIndex = this.activeIterators.indexOf(iterator);
+		if (activeIndex >= 0) this.activeIterators.splice(activeIndex, 1);
 	}
 
 	push(content) {
@@ -215,25 +225,28 @@ class JSONStream extends Readable {
 				}
 			} while (this.push(nextString));
 		} catch (error) {
-			console.error(harperLogger.errorForLog(error));
-			this.push(errorToString(error));
-			this.push(null);
-			return true;
+			this.fail(error);
+			return false;
 		}
 	}
 
 	_destroy(error, callback) {
+		// throw(error) hands the error back when the iterator does not handle it; that is not a cleanup failure
+		const onCleanupError = (cleanupError) => {
+			if (cleanupError !== error) harperLogger.warn('Error closing a streamed iterator', cleanupError);
+		};
 		for (const iterator of this.activeIterators) {
-			if (error) iterator.throw(error);
-			else iterator.return();
+			try {
+				// an iterator enclosing our own failure did not fail, it just needs closing
+				const result = error && !this.failed && iterator.throw ? iterator.throw(error) : iterator.return?.();
+				(result as any)?.then?.(null, onCleanupError);
+			} catch (cleanupError) {
+				onCleanupError(cleanupError);
+			}
 		}
-		callback();
+		// only our own failure is reported as an 'error'; an external destroyer already has its error
+		callback(this.failed ? error : null);
 	}
-}
-
-function handleError(error) {
-	console.error(harperLogger.errorForLog(error));
-	return JSON.stringify(errorToString(error));
 }
 
 export function stringify(value) {
