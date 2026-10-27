@@ -10,6 +10,7 @@ const { Transaction, RocksDatabase } = require('../rocksdbBindings.mts').rocksdb
 const {
 	certifyOriginFloor,
 	getOriginClosedFloor,
+	localStartBound,
 	publishOriginFloor,
 	reserveLocalKey,
 	releaseLocalKey,
@@ -90,6 +91,81 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		]);
 		return { worker, next, exited };
 	}
+
+	const releaseGate = (gate) => {
+		Atomics.store(gate, 0, 1);
+		Atomics.notify(gate, 0);
+	};
+	const startsAtOrBelow = (start, key) => ('atOrAbove' in start ? start.atOrAbove <= key : start.above < key);
+
+	it('a registration sample takes the bound a thread mid-reservation carries; certification waits (worker thread)', async () => {
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { next, exited } = startWorker({ mode: 'park-reserving', gate, tableName });
+		await next('ready');
+		await next('parked');
+		const start = localStartBound(rootStore);
+		assert(start, 'a pending reservation leaves the sample a bound');
+		for (let round = 0; round < 3; round++)
+			assert.strictEqual(certifyOriginFloor(rootStore), null, 'no floor while a key is undecided');
+		releaseGate(gate);
+		await next('committed');
+		await exited;
+		const [entry] = entriesFor('parked-reserving');
+		assert(startsAtOrBelow(start, entry.txnLogKey), `start ${JSON.stringify(start)} above ${entry.txnLogKey}`);
+	});
+
+	it('a thread mid-reservation still bounds the start at its outstanding key, below a newer sample (worker thread)', async () => {
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { worker, next, exited } = startWorker({ mode: 'hold-then-park-reserving', gate, tableName });
+		await next('ready');
+		await next('held');
+		await sleep(2);
+		localStartBound(rootStore); // raises `proposed` above the held key
+		worker.postMessage('park');
+		await next('parked');
+		const start = localStartBound(rootStore);
+		releaseGate(gate);
+		await next('committed');
+		await exited;
+		const [held] = entriesFor('held-outstanding');
+		assert(startsAtOrBelow(start, held.txnLogKey), `start ${JSON.stringify(start)} above held ${held.txnLogKey}`);
+	});
+
+	it('a thread terminated mid-reservation bounds the start until its slot is retired (worker thread)', async () => {
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { worker, next } = startWorker({
+			mode: 'park-reserving',
+			gate,
+			tableName,
+			record: { id: 'terminated-reserving', n: 1 },
+		});
+		const { threadId } = await next('ready');
+		await next('parked');
+		await worker.terminate();
+		const before = certify();
+		assert(localStartBound(rootStore), 'the pending word of a dead thread still yields a bound');
+		assert.strictEqual(certifyOriginFloor(rootStore), null, 'certification waits for the retirement');
+		retireOriginFloorSlots(threadId);
+		await sleep(2);
+		assert(certify() > before, 'the floor advances once the slot is retired');
+		assert.strictEqual(entriesFor('terminated-reserving').length, 0);
+	});
+
+	it('a slot still being claimed constrains nothing', () => {
+		// buffer layout from originClosedFloor.ts: 4 header words, 1024 owner words, then one bound per 8 words
+		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
+		let slot = 1023;
+		while (Atomics.load(words, 4 + slot) !== 0n || Atomics.load(words, 4 + 1024 + slot * 8) !== 0n) slot--;
+		Atomics.store(words, 4 + slot, 1n << 30n);
+		try {
+			const start = localStartBound(rootStore);
+			const bound = 'atOrAbove' in start ? start.atOrAbove : start.above;
+			assert(bound > 0 && bound < Infinity, `a claim in progress must not reach the start: ${bound}`);
+			assert.strictEqual(certifyOriginFloor(rootStore), null, 'certification still waits for the claimer');
+		} finally {
+			Atomics.store(words, 4 + slot, 0n);
+		}
+	});
 
 	it('advances and persists on an idle database', async () => {
 		const first = certify();

@@ -6,7 +6,16 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 
-const { mode, gate, epoch, tableName, writes } = workerData ?? {};
+const {
+	mode,
+	gate,
+	epoch,
+	tableName,
+	writes,
+	database = 'test',
+	attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+	record = { id: 'parked-reserving', n: 1 },
+} = workerData ?? {};
 if (mode) run().catch((error) => parentPort.postMessage({ type: 'error', message: error.stack }));
 
 async function run() {
@@ -14,9 +23,9 @@ async function run() {
 	setMainIsWorker(true);
 	const Tbl = table({
 		table: tableName,
-		database: 'test',
+		database,
 		audit: true,
-		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		attributes,
 	});
 	parentPort.postMessage({ type: 'ready', threadId });
 	if (mode === 'hold') {
@@ -70,5 +79,36 @@ async function run() {
 			Atomics.wait(gate, 0, 0);
 		};
 		await transaction({}, () => Tbl.put({ id: 'parked', n: 1 }));
+	} else if (mode === 'park-reserving') {
+		parkInsideNextReservation();
+		await transaction({}, () => Tbl.put(record));
+		parentPort.postMessage({ type: 'committed' });
+	} else if (mode === 'hold-then-park-reserving') {
+		let commitHeld;
+		const held = transaction({}, async () => {
+			await Tbl.put({ id: 'held-outstanding', n: 1 });
+			await new Promise((resolve) => (commitHeld = resolve));
+		});
+		while (!commitHeld) await new Promise((resolve) => setImmediate(resolve));
+		parentPort.postMessage({ type: 'held' });
+		await new Promise((resolve) => parentPort.once('message', resolve));
+		parkInsideNextReservation();
+		await transaction({}, () => Tbl.put(record));
+		commitHeld();
+		await held;
+		parentPort.postMessage({ type: 'committed' });
 	}
+}
+
+// Stops inside the reservation itself: its slot already says so, and its key is not decided yet.
+function parkInsideNextReservation() {
+	const getTimestamp = Transaction.prototype.getTimestamp;
+	Transaction.prototype.getTimestamp = function () {
+		if (/ThreadRegistry\.reserve\b/.test(new Error().stack)) {
+			Transaction.prototype.getTimestamp = getTimestamp;
+			parentPort.postMessage({ type: 'parked' });
+			Atomics.wait(gate, 0, 0);
+		}
+		return getTimestamp.call(this);
+	};
 }
