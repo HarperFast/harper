@@ -577,11 +577,14 @@ export class RecordEncoder extends StructonEncoder {
 				discardUncommittedStructures(this);
 				throw error;
 			}
+			// A decline still flags an update: a peer committed structures this encoder never flagged, and
+			// the re-pack may reuse them. LMDB audit entries carry no structureVersion, so the flag is
+			// the replication sender's only cue to reload before shipping that record.
+			this.structureUpdate = structures;
 			if (result === false) {
 				discardUncommittedStructures(this);
 				return false;
 			}
-			this.structureUpdate = structures;
 			this.checkStructureCapacity();
 			return result;
 		};

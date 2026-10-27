@@ -256,7 +256,7 @@ describe('RecordEncoder discards structures from a structure save that did not c
 	}
 
 	describe('LMDB (saver delegated to lmdb-js)', () => {
-		it('records a structure update only for a committed save, and a failure leaves a pending one', () => {
+		it('records a structure update for a committed or declined save, and a failure leaves a pending one', () => {
 			const writer = engines[2].open(tmpDir);
 			const peer = engines[2].open(tmpDir);
 			handles.push(writer, peer);
@@ -269,7 +269,7 @@ describe('RecordEncoder discards structures from a structure save that did not c
 			// re-pack finds the shape in the reloaded dictionary without saving.
 			peer.db.encoder.structureUpdate = undefined;
 			peer.put('p1', { id: '2', a: 'second' });
-			assert.strictEqual(peer.db.encoder.structureUpdate, undefined, 'a declined save records no structure update');
+			assert.ok(peer.db.encoder.structureUpdate, "a declined save flags the peer's structures it re-packs onto");
 			assert.deepEqual(writer.get('p1'), { id: '2', a: 'second' });
 
 			const restore = failSaves(writer, throwInSave);
