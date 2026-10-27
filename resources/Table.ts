@@ -47,6 +47,7 @@ import {
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
+	getReadTransactionGuard,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -6837,12 +6838,19 @@ export function makeTable(options): TableResourceClass {
 							: entries[Symbol.iterator]();
 					let dbDone: boolean;
 					let closed = false;
+					// A released read snapshot ends the scan the way a range read over it does: RocksDB's guard
+					// throws the expired-snapshot error (teardown runs onDone() without returning this iterator),
+					// and an LMDB transaction reports isDone
+					const checkActive = getReadTransactionGuard(readTxn);
+					const stopped = () => {
+						if (closed) return true;
+						checkActive?.();
+						return readTxn?.isDone;
+					};
 					const dbOrderedAttribute = (sort as any).dbOrderedAttribute;
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
-					// request teardown finishes the read transaction (onDone) without returning this iterator
-					const stopped = () => closed || readTxn?.isDone;
 					function collect(entry): Promise<unknown> | undefined {
 						ordered.push(entry);
 						let pending: Promise<void>[];

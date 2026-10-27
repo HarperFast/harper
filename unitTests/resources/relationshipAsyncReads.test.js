@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -354,6 +355,44 @@ describe('Queries read related records asynchronously', () => {
 			);
 			assert.equal(results.length, 4);
 			assert.equal(childReads.sync, 0);
+		});
+
+		describe('when the request is torn down mid-query', function () {
+			// A handler that started a query and then failed ends its scope without ever returning the query's
+			// iterator; the transaction releases the read snapshot under it. A scan waiting on a related read
+			// then fails the way a range read over a released snapshot does, with the expired-snapshot error.
+			// RocksDB only: a released LMDB read transaction is not detectable here, and LMDB range reads drain on.
+			async function tearDownAfterFirstNext(Table, query) {
+				const context = {};
+				let pending;
+				await assert.rejects(
+					transaction(context, async () => {
+						pending = Table.search(query, context)[Symbol.asyncIterator]().next();
+						throw new Error('handler failed');
+					}),
+					/handler failed/
+				);
+				await assert.rejects(pending, { name: 'ReadSnapshotExpiredError', statusCode: 503 });
+			}
+
+			it('a sort by a related attribute reads no more related records', async function () {
+				if (isLMDB) return this.skip();
+				await tearDownAfterFirstNext(ColdParent, {
+					conditions: [firstFourParents],
+					sort: { attribute: ['child', 'label'] },
+					select: ['id'],
+				});
+				assert.equal(childReads.async + childReads.sync, 0, 'no sort key was read after teardown');
+			});
+
+			it('a leading one-to-many join stops scanning', async function () {
+				if (isLMDB) return this.skip();
+				await tearDownAfterFirstNext(ColdChild, {
+					conditions: [{ attribute: ['parents', 'childId'], comparator: 'starts_with', value: 'child' }],
+					select: ['id'],
+				});
+				assert(parentReads.async <= 1, `only the read already in flight completes (${parentReads.async} reads)`);
+			});
 		});
 
 		it('sort by a related attribute', async function () {

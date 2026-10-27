@@ -1422,7 +1422,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 		let joinedIterator;
 		(joined as any).hasMappings = true;
 		if (options?.async) {
-			const scan = { closed: false, transaction };
+			const scan: JoinScan = { closed: false, transaction, checkActive: getReadTransactionGuard(transaction) };
 			let scanned: Promise<void>;
 			const readOptions = { transaction, async: true };
 			return {
@@ -1431,9 +1431,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 					if (joinedIterator) return joinedIterator.next();
 					scanned ??= scanRelated(
 						rightIterable,
-						(entry) =>
-							entry.value ??
-							(transaction?.isDone ? undefined : when(store.getEntry(entry.key ?? entry, readOptions), entryValue)),
+						(entry) => entry.value ?? when(store.getEntry(entry.key ?? entry, readOptions), entryValue),
 						joined,
 						addRelated,
 						scan
@@ -1490,10 +1488,16 @@ function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
 	}
 	return results;
 }
-// a request torn down mid-scan finishes the read transaction (onDone) without returning the join iterator;
-// either way a stopped scan yields nothing more, not its partial mappings or ids
-const scanStopped = (scan) => scan.closed || scan.transaction?.isDone;
-async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean; transaction: any }) {
+// A stopped scan yields nothing more, not its partial mappings or ids. Its join iterator was returned, or the
+// read snapshot was released (teardown runs onDone() without returning it): RocksDB's guard then throws the
+// expired-snapshot error a range read would, and an LMDB transaction reports isDone.
+function scanStopped(scan: JoinScan) {
+	if (scan.closed) return true;
+	scan.checkActive?.();
+	return scan.transaction?.isDone;
+}
+type JoinScan = { closed: boolean; transaction: any; checkActive?: () => void };
+async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinScan) {
 	// a custom index search can return a plain array
 	const iterator = (rightIterable[Symbol.asyncIterator] ?? rightIterable[Symbol.iterator]).call(rightIterable);
 	let done = false;
@@ -1597,7 +1601,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 				joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
 			}
 		};
-		const scan = { closed: false, transaction };
+		const scan: JoinScan = { closed: false, transaction, checkActive: getReadTransactionGuard(transaction) };
 		const iterator: any = {
 			return() {
 				scan.closed = true;
@@ -1618,10 +1622,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					defineFromRecord();
 					scanned = scanRelated(
 						rightIterable,
-						(id) =>
-							(joined as any).filters && !transaction?.isDone
-								? when(store.getEntry(id, readOptions), entryValue)
-								: undefined,
+						(id) => ((joined as any).filters ? when(store.getEntry(id, readOptions), entryValue) : undefined),
 						joined,
 						(id) => ids.add(id),
 						scan
