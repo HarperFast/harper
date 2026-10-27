@@ -5698,6 +5698,7 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 						}
+						let hasOwnPendingHead = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -5762,6 +5763,26 @@ export function makeTable(options): TableResourceClass {
 							) {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
+							}
+							if (!priorStaged && isRocksDB && !replaying && refBase !== existingEntry) {
+								const precedesCommitted = refBase ? precedesExistingVersion(txnTime, refBase, options?.nodeId) : 1;
+								if (precedesCommitted <= 0) {
+									// A same-transaction publish or relocate restamped existingEntry; restore the committed head.
+									existingEntry = {
+										...existingEntry,
+										version: refBase.version,
+										nodeId: refBase.nodeId,
+										additionalAuditRefs: refBase.additionalAuditRefs,
+										receivedIdentityRefs: refBase.receivedIdentityRefs,
+									};
+									precedesExisting = precedesCommitted;
+								} else if (
+									precedesExisting === 0 &&
+									(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
+									transaction.hasStagedLog
+								) {
+									hasOwnPendingHead = true;
+								}
 							}
 							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
 							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
@@ -5849,7 +5870,9 @@ export function makeTable(options): TableResourceClass {
 						if (audit && !belowAuditFloor) {
 							// incremental CRDT updates are only available with audit logging on
 							const initialAuditHead: { txnLogKey: number; nodeId: number; entry?: any } = isRocksDB
-								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
+								? hasOwnPendingHead
+									? { txnLogKey: appendedLogKey, nodeId: existingEntry.nodeId }
+									: resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
 								: { txnLogKey: existingEntry.localTime, nodeId: existingEntry.nodeId };
 							let localTime = initialAuditHead.txnLogKey;
 							let resolvedEntry = initialAuditHead.entry;
@@ -6006,22 +6029,13 @@ export function makeTable(options): TableResourceClass {
 									}
 									resolvedEntry = undefined;
 									if (!auditRecord) {
-										// A floor-rekeyed receipt can alias a collected record version.
+										// A transitional ref storing a received identity can match a collected record version.
 										const receiptAlreadyCollected =
 											isAdditionalAuditRef &&
 											visitedAuditVersions?.has(auditIdentity) &&
 											getAuditFloor(auditStore) <= txnTime;
 										// A preceding same-key message is not in the committed log yet.
-										const ownPendingHead =
-											isRocksDB &&
-											!isAdditionalAuditRef &&
-											!replaying &&
-											precedesExisting === 0 &&
-											localTime === appendedLogKey &&
-											(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
-											transaction.hasStagedLog &&
-											write.priorWrite &&
-											!write.priorWrite.skipped;
+										const ownPendingHead = hasOwnPendingHead && !isAdditionalAuditRef && localTime === appendedLogKey;
 										if (!receiptAlreadyCollected && !ownPendingHead) auditHistoryMissing = true;
 										break;
 									}
@@ -6220,10 +6234,7 @@ export function makeTable(options): TableResourceClass {
 											if (collectedKeys?.has(entry.txnLogKey)) continue;
 											collectedKeys?.add(entry.txnLogKey);
 											const precedes = precedesExistingVersion(txnTime, entry, options?.nodeId);
-											if (
-												precedes < 0 ||
-												(precedes === 0 && receivedLogKey === appendedLogKey && entry.txnLogKey > appendedLogKey)
-											) {
+											if (precedes < 0 || (precedes === 0 && !identityIsNotKey && entry.txnLogKey > appendedLogKey)) {
 												if (entry.type === 'put' || entry.type === 'delete') {
 													write.skipped = true;
 													return;

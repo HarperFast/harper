@@ -16,7 +16,7 @@ const {
 	HAS_ADDITIONAL_AUDIT_REFS,
 	ENTRY_DATAVIEW,
 } = require('#src/resources/auditStore');
-const { setNextEncoding } = require('#src/resources/RecordEncoder');
+const { recordUpdater } = require('#src/resources/RecordEncoder');
 const { getFileId, getFilePathForBlob, isSaving, setDeletionDelay } = require('#src/resources/blob');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -203,7 +203,15 @@ for (const loadAsInstance of [true, false]) {
 			publishOriginFloor(T.primaryStore.rootStore, floor);
 			await T.patch('rekeyed', { b: 'newer' }, { timestamp: timestamp + 20 });
 			const entry = T.primaryStore.getEntry('rekeyed');
-			assert.ok(entry.additionalAuditRefs.some((ref) => ref.version === timestamp + 20));
+			assert.ok(entry.receivedIdentityRefs.some((ref) => ref.version === timestamp + 20));
+			await T.primaryStore.rootStore.transaction((native) => {
+				recordUpdater(T.primaryStore, T.tableId, T.auditStore)('rekeyed', entry.value, entry, entry.version, 0, false, {
+					transaction: native,
+					additionalAuditRefs: [...entry.additionalAuditRefs, { version: timestamp + 20, nodeId: 0 }],
+					receivedIdentityRefs: entry.receivedIdentityRefs,
+				});
+			});
+			assert.ok(T.primaryStore.getEntry('rekeyed').additionalAuditRefs.some((ref) => ref.version === timestamp + 20));
 			assert.equal(T.auditStore.get(timestamp + 20, T.tableId, 'rekeyed', 0), undefined);
 			await T.put('rekeyed', { a: 'replacement' }, { timestamp: timestamp + 10 });
 			assert.deepStrictEqual(
@@ -235,6 +243,22 @@ for (const loadAsInstance of [true, false]) {
 			persistOriginClosedFloor(Unknown.auditStore, floor);
 			publishOriginFloor(Unknown.primaryStore.rootStore, floor);
 			await Unknown.patch('unknown', { b: 'newer' }, { timestamp: timestamp + 20 });
+			const entry = Unknown.primaryStore.getEntry('unknown');
+			await Unknown.primaryStore.rootStore.transaction((native) => {
+				recordUpdater(Unknown.primaryStore, Unknown.tableId, Unknown.auditStore)(
+					'unknown',
+					entry.value,
+					entry,
+					entry.version,
+					0,
+					false,
+					{
+						transaction: native,
+						additionalAuditRefs: [...entry.additionalAuditRefs, { version: timestamp + 20, nodeId: 0 }],
+						receivedIdentityRefs: entry.receivedIdentityRefs,
+					}
+				);
+			});
 			raiseAuditFloor(Unknown.auditStore, Infinity);
 			await Unknown.put('unknown', { a: 'replacement' }, { timestamp: timestamp + 10 });
 			assert.deepStrictEqual(
@@ -300,6 +324,32 @@ for (const loadAsInstance of [true, false]) {
 			});
 			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, a: 'replacement' });
 		});
+
+		(isLMDB ? it.skip : it)(
+			'replays a committed newer patch when an older transaction publishes before its full PUT',
+			async () => {
+				const id = 'older-message-then-put';
+				const timestamp = (nextTimestamp += 1000);
+				await T.put(id, { a: 'initial', c: 'stale', counter: 10 }, { timestamp });
+				await T.patch(id, { b: 'newer', counter: { __op__: 'add', value: 5 } }, { timestamp: timestamp + 20 });
+				const context = { timestamp: timestamp + 10 };
+				await transaction(context, async () => {
+					await T.publish(id, { notice: 'message' }, context);
+					await T.put(id, { a: 'replacement', counter: 100 }, context);
+				});
+				const record = await T.get(id);
+				assert.deepStrictEqual(
+					{ ...record },
+					{
+						id,
+						a: 'replacement',
+						b: 'newer',
+						counter: 105,
+					}
+				);
+				assert.equal(record.getUpdatedTime(), timestamp + 20);
+			}
+		);
 
 		for (const laterPatch of [false, true]) {
 			it(`replays a newer patch after a same-record message (later patch=${laterPatch})`, async () => {
@@ -432,12 +482,14 @@ for (const loadAsInstance of [true, false]) {
 				const id = 'aaaaaaaaaa';
 				const timestamp = (nextTimestamp += 1000);
 				await T.put(id, { c: 'retained' }, { timestamp });
+				const initialHead = T.primaryStore.getEntry(id).additionalAuditRefs[0].version;
 				const root = T.auditStore.rootStore;
 				let handle;
+				let logKey;
 				try {
 					await root.transaction((native) => {
 						handle = native;
-						assert.equal(reserveLocalKey(root, native, timestamp + 20), timestamp + 20);
+						logKey = reserveLocalKey(root, native, timestamp + 20);
 						ENTRY_DATAVIEW.setUint32(0, 0);
 						let encoded = Buffer.from(
 							createAuditEntry(
@@ -482,25 +534,28 @@ for (const loadAsInstance of [true, false]) {
 								recordId: id,
 								nodeId: 0,
 								version: timestamp + 20,
-								previousVersion: timestamp,
+								previousVersion: initialHead,
 								encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ d: 'last' })),
 							},
 							{ transaction: native }
 						);
-						setNextEncoding(timestamp + 20, 0);
-						T.primaryStore.putSync(
+						recordUpdater(T.primaryStore, T.tableId, T.auditStore)(
 							id,
 							{ id, c: 'retained', b: 'first', d: 'last' },
+							T.primaryStore.getEntry(id),
+							timestamp + 20,
+							0,
+							false,
 							{
 								transaction: native,
-								version: timestamp + 20,
+								additionalAuditRefs: [{ version: logKey, nodeId: 0 }],
 							}
 						);
 					});
 				} finally {
 					if (handle) releaseLocalKey(handle);
 				}
-				const entries = [...T.auditStore.getRange({ start: timestamp + 20, exactStart: true, log: 0 })];
+				const entries = [...T.auditStore.getRange({ start: logKey, exactStart: true, log: 0 })];
 				const unreadableId = corruption === 'header' || corruption === 'record ID';
 				assert.equal(entries[0].recordId, unreadableId ? undefined : id);
 				if (corruption === 'missing body') assert.equal(entries[0].getValue(T.primaryStore), undefined);
@@ -514,8 +569,8 @@ for (const loadAsInstance of [true, false]) {
 				assert.equal(entries[1].endTxn, true);
 				assert.deepStrictEqual({ ...entries[1].getValue(T.primaryStore) }, { d: 'last' });
 				assert.equal(T.primaryStore.getEntry(id).version, timestamp + 20);
-				assert.equal(T.primaryStore.getEntry(id).localTime, timestamp + 20);
-				assert.equal(T.auditStore.get(timestamp + 20, T.tableId, id, 0).endTxn, unreadableId);
+				assert.deepStrictEqual(T.primaryStore.getEntry(id).additionalAuditRefs, [{ version: logKey, nodeId: 0 }]);
+				assert.equal(T.auditStore.get(logKey, T.tableId, id, 0).endTxn, unreadableId);
 				await T.put(id, { a: 'replacement' }, { timestamp: timestamp + 10 });
 				assert.deepStrictEqual(
 					{ ...(await T.get(id)) },
