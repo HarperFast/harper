@@ -290,11 +290,18 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 ## @harperfast/fulltext (optional dependency)
 
 - Need for usage: Supplies the Tantivy-backed native index used by Harper full-text derived indexes. Harper remains the source of truth; each node builds and advances its local index from committed records through the shared derived-index runtime.
-- Size/memory cost: The root package is about 260 KB installed, plus one platform-specific native package (about 6.1 MB on macOS arm64). Runtime memory and native index size depend on the indexed text, analyzer, and stored-field options.
+- Size/memory cost: The root package is about 440 KB installed for 0.7.0, plus one platform-specific native package (about 7.0 MB on macOS arm64). Runtime memory and native index size depend on the indexed text, analyzer, and stored-field options.
 - Security: First-party Apache-2.0 Harper package wrapping Tantivy. It runs native code in-process, so Harper exact-pins the root package and the package exact-pins every platform prebuild to the same version.
-- Environment interaction: Lazily loaded only when a full-text index is activated. It creates Tantivy index files in Harper's derived-index directory; those files are disposable local state and are rebuilt or replayed from Harper records after loss or incompatibility. A format-incompatible package upgrade rebuilds each node's local indexes and returns 503 for full-text queries on that node until they are ready; use a rolling upgrade to keep other nodes available.
+- Environment interaction: Lazily loaded only when a full-text index is activated. It creates Tantivy index files in Harper's derived-index directory; those files are disposable local state and are rebuilt or replayed from Harper records after loss or incompatibility. The 0.6.x → 0.7.0 analyzer transition requires a full local rebuild on every node; see the [deployment and rollback guidance](resources/FULL_TEXT.md#upgrading-from-fulltext-06x).
 - Overlap: None. Harper owns schema, transactions, replication, source-record reads, and derived-index coordination; the package owns native indexing, persistence, and search execution.
 - Transitive dependencies: Only exact-version, platform-specific optional prebuild packages; no JavaScript runtime dependency tree.
 - Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Because the root package is optional, Harper still installs if a native package is unavailable, but a declared full-text index cannot activate until the module is installed.
 - Can be deferred: Yes. The module is not loaded for tables without full-text indexes.
 - Eventual removal: Remove full-text declarations and their local derived-index files, then remove the optional dependency and Harper adapter. Source records remain authoritative and unaffected.
+
+## @harperfast/fulltext-previous (dev dependency)
+
+- Need for usage: Exact npm alias for fulltext 0.6.0, used only by the child-process upgrade fixture to write genuine old-engine indexes and verify downgrade refusal. Simulating an error or editing identity bytes would not exercise the actual compatibility boundary.
+- Size/memory cost: One additional root package and its supported platform prebuild in development/CI. The child exits before the current engine inspects its files; production installs with dev dependencies omitted do not include the alias.
+- Security/overlap: Same first-party package, exact-pinned to the prior release. Production code must not import this alias or relax its current native ABI validation to accommodate it.
+- Eventual removal: Remove the alias with its cross-version fixtures when migration from 0.6.x is no longer supported. Do not update it together with the current wrapper pin.
