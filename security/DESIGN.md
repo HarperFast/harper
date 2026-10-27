@@ -252,3 +252,32 @@ Synchronous spawning uses a filesystem bakery lock: contenders atomically publis
 Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
 
 Named-process probe and lock failures use `NamedProcessError`, a `ServerError` subtype with the original cause; native child-process argument errors retain their original class and code.
+
+## Application lockdown seals the intrinsics by default (`security/intrinsicsLockdown.ts`)
+
+`applications.lockdown` makes prototype-pollution exploits against apps harder; it is not a sandbox. The default
+`seal-after-load` (and eager `seal`) seals 21 intrinsic globals (constructors plus `Math`, `JSON`, `Reflect` and
+`Atomics`) and their prototypes, plus `Function` and `Function.prototype`, once components have loaded. After that point no property can be added to or deleted
+from them, which is what a polluting key (`__proto__.isAdmin`, `constructor.prototype.isAdmin`) needs.
+Overwriting an existing property is still allowed: it is mostly a denial of service, not an escalation.
+
+Never make prototype properties read-only in a seal mode, whether by `Object.freeze`, `writable: false` or
+getter/setter accessors. A read-only elements kind on `Object.prototype` or `Array.prototype` moves every store
+into an array hole off V8's fast path, process-wide (about 45× for `new Array(n)` fills, about 3× for msgpackr
+decode). Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
+shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
+accessors.
+
+The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible. When a component
+replaces one of these globals while it loads, sealing locks both the replacement and the realm's original, which
+literals and async functions keep using. Freezing locks only the current global, because freezing the original
+would skip its overridable accessors.
+
+`lockDownIntrinsics` matches mode names exactly: any other truthy value, including a typo or a non-string, freezes
+eagerly (fails closed). A falsy value skips lockdown, like `none` (`security/jsLoader.ts`). Only fresh installs get
+the default: the installer writes the whole default config into each instance's `harper-config.yaml`, so an
+upgraded instance keeps the `freeze-after-load` it was installed with.
+
+Enforced by `unitTests/security/intrinsicsLockdown.test.js`, which runs each mode in a fresh `Worker` because
+lockdown cannot be undone in a realm, and by `integrationTests/components/intrinsics-lockdown.test.ts`. The cost of
+each mode is measured by `benchmarks/lockdown/run.mts`.
