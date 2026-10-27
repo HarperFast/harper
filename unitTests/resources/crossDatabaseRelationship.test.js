@@ -70,10 +70,13 @@ describe('cross-database relationship search', function () {
 		// many vault names a contains-filter rejects, each yielding an event turn, scanned before the one it
 		// matches (RocksDB only: the monitor case it feeds does not run on LMDB)
 		if (!Emp.primaryStore.path?.endsWith('.mdb')) {
-			for (let i = 0; i < VAULTS; i++) {
-				await Vault.put({ id: `v${i}`, name: `name-${String(i).padStart(5, '0')}` });
-				await Org.put({ id: `o${i}`, name: `name-${String(i).padStart(5, '0')}` });
-			}
+			await transaction({}, () => {
+				for (let i = 0; i < VAULTS; i++) {
+					const name = `name-${String(i).padStart(5, '0')}`;
+					Vault.put({ id: `v${i}`, name });
+					Org.put({ id: `o${i}`, name });
+				}
+			});
 		}
 		await Org.put({ id: 'oAlpha', name: 'zz-Alpha' });
 		await Vault.put({ id: 'vAlpha', name: 'zz-Alpha', orgId: 'oAlpha' });
