@@ -1153,7 +1153,10 @@ class DerivedIndexRunner {
 		this.#iterator = this.#iterable[Symbol.iterator]();
 	}
 
-	/** The inventory is sampled before the witness: one getStats call reads the flush position before its inventory. */
+	/**
+	 * The floor's inventory and the witness come from two getStats calls, inventory first: within one call
+	 * the flush position is read before the inventory.
+	 */
 	#recoverPurgedAnchors(cursor: DerivedIndexCursor): DerivedIndexCursor | undefined {
 		const iterable = this.#iterable!;
 		if (iterable.exactStartFailures.size === 0 || iterable.corruptFrameStop.breaks > 0 || iterable.failedLogs.size > 0)

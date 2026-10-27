@@ -688,9 +688,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(command.epoch);
 		if (this.#lastAppliedSequence < command.horizon)
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
+		const published = command.cursor ?? this.#durableCursor;
 		const cursor = this.#hasStagedMutations
-			? (command.cursor ?? this.#durableCursor)
-			: withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
+			? withoutCoverage(published)
+			: withDurableCoverage(published, this.#durableCursor);
 		try {
 			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 			await this.#engine!.publish(payload);
@@ -1240,6 +1241,12 @@ function cloneCursor(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor
 	const floors = cursor.floors && Object.freeze({ ...cursor.floors });
 	const coverage = cursor.coverage && clonePositions(cursor.coverage);
 	return Object.freeze({ format: 1, logs, ...(floors ? { floors } : null), ...(coverage ? { coverage } : null) });
+}
+
+function withoutCoverage(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor | undefined {
+	if (!cursor?.coverage) return cursor;
+	const { coverage: _coverage, ...vector } = cursor;
+	return vector;
 }
 
 function withDurableCoverage(
