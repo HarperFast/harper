@@ -160,10 +160,14 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 	}
 
 	if (sourceDataFormat === JSON_TEXT) {
+		const writeStream = fs.createWriteStream(filePath);
+		let opened = false;
+		writeStream.once('open', () => (opened = true));
 		try {
-			await pipeline(streamAsJSON(data), fs.createWriteStream(filePath));
+			await pipeline(streamAsJSON(data), writeStream);
 		} catch (error) {
-			await fs.remove(filePath).catch(() => {});
+			// only a file this export opened (and so truncated) is its own to remove
+			if (opened) await fs.promises.unlink(filePath).catch(() => {});
 			throw error;
 		}
 

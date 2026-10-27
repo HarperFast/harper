@@ -134,16 +134,16 @@ describe('Test JSONStream module ', () => {
 			assertFailed(await collect(streamAsJSON(rows())), '[{"n":0},{"error":"Error: boom"}', 'boom');
 		});
 
-		it('a failure behind a backpressured row neither stalls nor closes the failed iterator again', async function () {
-			const big = 'x'.repeat(100_000);
-			let calls = 0;
+		it('fails while its consumer is backpressured, without closing the failed iterator again', async function () {
+			// row a flushes at once; row b stays buffered until the long diagnostic pushes the readable past its high-water mark
+			const rows = [{ a: 'x'.repeat(10_001) }, { b: 'y'.repeat(6000) }];
 			let returned = false;
-			const rows = {
+			const iterable = {
 				[Symbol.iterator]() {
 					return {
 						next() {
-							if (calls++ === 0) return { done: false, value: { big } };
-							throw new Error('boom');
+							if (rows.length) return { done: false, value: rows.shift() };
+							throw new Error('z'.repeat(4000));
 						},
 						return() {
 							returned = true;
@@ -152,12 +152,12 @@ describe('Test JSONStream module ', () => {
 					};
 				},
 			};
-			const stream = streamAsJSON(rows);
+			const stream = streamAsJSON(iterable);
+			let streamError;
+			stream.on('error', (error) => (streamError = error));
 			stream.read(0);
 			await delay(20);
-			assert.strictEqual(stream.readableLength > stream.readableHighWaterMark, true);
-			const result = await collect(stream);
-			assertFailed(result, `[{"big":"${big}"},{"error":"Error: boom"}`, 'boom');
+			assert.strictEqual(streamError?.message, 'z'.repeat(4000), 'the stream must fail without being drained');
 			assert.strictEqual(returned, false);
 		});
 

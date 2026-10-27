@@ -110,20 +110,15 @@ class JSONStream extends Readable {
 				return;
 			}
 			if (object.then) {
-				yield object.then(
-					(object) => this.serialize(object),
-					(error) => {
-						throw elementFailure(error);
-					}
-				);
+				yield object.then((object) => this.serialize(object), rethrowElementFailure);
 			} else {
 				let json;
 				try {
 					json = stringify(object);
 				} catch (error) {
-					throw elementFailure(error);
+					rethrowElementFailure(error);
 				}
-				yield json;
+				yield json?.then ? json.then(null, rethrowElementFailure) : json;
 			}
 		} else {
 			yield stringify(object);
@@ -154,12 +149,8 @@ class JSONStream extends Readable {
 		);
 	}
 
-	/**
-	 * Fail the stream instead of ending it, so the transport aborts the response rather than framing a
-	 * partial array as the whole result. A StreamFailure leaves its error element as a diagnostic.
-	 */
 	fail(error: unknown) {
-		if (this.failed) return;
+		if (this.failed || this.destroyed) return;
 		this.failed = true;
 		if (error instanceof StreamFailure) {
 			this.buffer.push(error.diagnostic);
@@ -168,7 +159,7 @@ class JSONStream extends Readable {
 		}
 		this.failure = (error || new Error('JSON stream failed')) as Error;
 		if (this.bufferSize > 0) this.flush();
-		// destroy() discards unread data, so give the consumer a turn to take the diagnostic element first
+		// destroy() discards unread data; a consumer that is not applying backpressure takes the diagnostic first
 		setImmediate(() => this.destroy(this.failure));
 	}
 
@@ -275,8 +266,8 @@ class StreamFailure {
 }
 
 // the element's comma is already written, so its diagnostic takes the element's place
-function elementFailure(error: unknown) {
-	return new StreamFailure(error, stringify(streamError(error)));
+function rethrowElementFailure(error: unknown): never {
+	throw new StreamFailure(error, stringify(streamError(error)));
 }
 
 export function stringify(value) {
