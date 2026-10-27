@@ -5910,9 +5910,14 @@ export function makeTable(options): TableResourceClass {
 							// is the backstop).
 							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
 								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
-						} else if (precedesExisting === 0 && !priorWritesSkipped(write)) {
-							// An earlier write of this transaction restamped the head without staging it (a publish or relocate):
-							// the tie is program order, so this write applies as an in-order one does.
+						} else if (
+							precedesExisting === 0 &&
+							(!priorWritesSkipped(write) ||
+								precedesExistingVersion(txnTime, identityBase(write, existingEntry, committedBy), options?.nodeId) !==
+									0)
+						) {
+							// A publish or relocate of this transaction, before or after this deferred write, restamped the head
+							// without staging it: the tie is program order, so this write applies as an in-order one does.
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —

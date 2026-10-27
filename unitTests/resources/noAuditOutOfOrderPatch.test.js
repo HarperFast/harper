@@ -213,6 +213,35 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual(record.count, 14);
 	});
 
+	// a replicated patch is deferred to commit, so its source transaction's later publish has already restamped the head
+	const applyPatchThenPublish = async (id, nodeId, version) => {
+		const context = { source: {}, sourceApply: true, timestamp: version };
+		await transaction(context, async () => {
+			const resource = await NoAudit.getResource(id, context);
+			const options = { isNotification: true, nodeId, version };
+			await resource._writeUpdate(id, { count: { __op__: 'add', value: 4 } }, false, options);
+			resource._writePublish(id, { message: 'hello' }, options);
+		});
+	};
+
+	itUnlessLmdb('a replicated patch before a same-origin publish in its source transaction still applies', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const nodeId = getIdOfRemoteNode('origin-patch-then-publish', NoAudit.auditStore);
+		await applyPatchThenPublish(id, nodeId, Date.now() + 1000);
+		assert.strictEqual((await NoAudit.get(id)).count, 14);
+	});
+
+	itUnlessLmdb('a re-delivered patch-then-publish source transaction applies its increment once', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const nodeId = getIdOfRemoteNode('origin-patch-then-publish-again', NoAudit.auditStore);
+		const version = Date.now() + 1000;
+		await applyPatchThenPublish(id, nodeId, version);
+		await applyPatchThenPublish(id, nodeId, version);
+		assert.strictEqual((await NoAudit.get(id)).count, 14);
+	});
+
 	it('a put after a publish to the record in the same transaction replaces it', async () => {
 		const id = `noaudit-${nextId++}`;
 		await NoAudit.put(id, { tag: 'base', count: 10 });
