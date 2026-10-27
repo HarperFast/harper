@@ -1020,10 +1020,8 @@ export class HierarchicalNavigableSmallWorld {
 				this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
 				return;
 			}
-			// A replay re-delivers values this process already inserted (a rebuild's scan overlaps its log
-			// replay). Replacing the node would tombstone it, and the plane does not re-link the neighbours
-			// that routed through it. Only an in-memory mapping proves the node is in this plane; one read
-			// back from storage may predate a crash that lost it, so that case still re-inserts.
+			// Replacing would tombstone a node the plane does not re-link around. Only an in-memory pending
+			// mapping proves its node is in this plane; one read back from storage may predate a crash.
 			if (pendingMapping) {
 				const mapping = { id: oldNodeId, previousId: durableNodeId, signature, version, pending: true };
 				this.indexStore.putSync(safeKey, mapping);
