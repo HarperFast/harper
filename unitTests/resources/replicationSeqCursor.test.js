@@ -435,6 +435,7 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				floors(56, [[56, now - 15, true, 'gen-a', true]]),
 				floors(60, [[60, now - 20, true, 'gen-a', true]]),
 				floors(60, [[60, now - 19, true]], { originFloorRevocations: [[60, 'gen-a']] }),
+				floors(60, [[60, now - 18, true, 'gen-a', true]]),
 				floors(61, [[61, now - 20, true, 'gen-a', true]]),
 				floors(61, [[61, now - 19, true]], { originRouteStates: [[61, undefined, undefined, true, 'gen-a']] }),
 				floors(62, [[62, now - 20, true]]),
@@ -482,7 +483,7 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			assert.deepEqual(node(56, 56).replacedGenerations, ['gen-a', 'gen-b']);
 			assert.equal(node(56, 56).lastGeneration, undefined);
 			assert.equal(node(58, 58).closedFloor, now - 15);
-			assert.equal(node(60, 60).lastGeneration, 'gen-a');
+			assert.equal(node(60, 60).lastGeneration, 'gen-a', 'a revoked row back at its generation still names it');
 			assert.equal(node(60, 60).floorRevoked, true, 'a revocation in the same update as the downgrade');
 			assert.equal(node(61, 61).hole, true, 'a hole marked under the generation the route left');
 			assert.equal(node(62, 62).originGeneration, 'gen-a');

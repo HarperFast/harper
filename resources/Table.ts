@@ -2548,9 +2548,6 @@ export function makeTable(options): TableResourceClass {
 										typeof originGeneration === 'string' &&
 										typeof previousGeneration === 'string' &&
 										previousGeneration !== originGeneration;
-									if (typeof originGeneration === 'string' && nodeState.lastGeneration !== undefined) {
-										nodeState.lastGeneration = undefined;
-									}
 									if (generationChanged) {
 										// the origin itself certified one history and then another: what orders its generations
 										if (nodeId === event.remoteNodeIds[0]) {
@@ -2572,6 +2569,9 @@ export function makeTable(options): TableResourceClass {
 									}
 									// a revoked origin keeps no floor within its generation: a later or higher certificate never clears it
 									if (nodeState.floorRevoked === true) continue;
+									if (typeof originGeneration === 'string' && nodeState.lastGeneration !== undefined) {
+										nodeState.lastGeneration = undefined;
+									}
 									// a certificate without a generation from a route that had one: that route no longer certifies
 									// at level 2, so its checkpoint-grade qualifiers no longer hold for what follows
 									if (typeof originGeneration !== 'string' && typeof nodeState.originGeneration === 'string') {
