@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { setMaxRetryDelayMs } = require('#src/resources/DatabaseTransaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 
@@ -18,7 +19,7 @@ const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().cons
 describe('request-path commit retry exhaustion rejects the awaited chain', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const MAX_RETRIES = 40; // mirrors resources/DatabaseTransaction.ts
-	let ExhaustTable, LoggedExhaustTable;
+	let ExhaustTable, LoggedExhaustTable, previousMaxRetryDelay;
 	const unhandled = [];
 	const onUnhandled = (error) => unhandled.push(error);
 
@@ -38,9 +39,17 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 			audit: true,
 		});
 		process.on('unhandledRejection', onUnhandled);
+		previousMaxRetryDelay = setMaxRetryDelayMs(1);
+		// the tests run at a 1ms cap; this keeps the production schedule's worst case (every retry at
+		// the cap) inside client socket timeouts, which is what harper#1785 depends on
+		assert.ok(
+			previousMaxRetryDelay * MAX_RETRIES <= 50000,
+			`retry exhaustion could take ${previousMaxRetryDelay * MAX_RETRIES}ms at the production backoff cap`
+		);
 	});
 
 	after(() => {
+		if (previousMaxRetryDelay !== undefined) setMaxRetryDelayMs(previousMaxRetryDelay);
 		process.removeListener('unhandledRejection', onUnhandled);
 	});
 
@@ -56,7 +65,7 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	// error code (the uncoordinated conflict path), `retryNow` mode resolves with the RETRY_NOW
 	// sentinel (the coordinatedRetry conflict path). abort() stays real so retry transactions
 	// release their native handles. Scoped to the test table's native db handle — background
-	// timers (hdb_analytics aggregation) commit their own transactions during the ~20s backoff
+	// timers (hdb_analytics aggregation) commit their own transactions during the backoff
 	// window, and failing those spawns unrelated retry chains that pollute the attempt count.
 	function failCommits(mode, code, { failFirst = Infinity, targetTable = ExhaustTable } = {}) {
 		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
@@ -96,12 +105,10 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	}
 
 	it('rejects with the retry-exhaustion ServerError when commits reject (ERR_TRY_AGAIN)', async function () {
-		this.timeout(60000);
+		this.timeout(15000);
 		const { attempts, restore } = failCommits('reject', 'ERR_TRY_AGAIN');
 		try {
-			// full quadratic backoff runs here (~20s): this also pins that exhaustion surfaces in
-			// tens of seconds — well inside client socket timeouts — not minutes
-			const { outcome, error } = await raceOutcome(writeThatExhausts('try-again'), 50000);
+			const { outcome, error } = await raceOutcome(writeThatExhausts('try-again'), 10000);
 			assert.equal(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
 			assert.match(error.message, /After 40 retries, unable to commit/);
 			assert.equal(error.statusCode, 500, 'the exhaustion error must carry an HTTP status');
@@ -117,15 +124,20 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	});
 
 	it('rejects with the retry-exhaustion ServerError when commits reject (ERR_BUSY)', async function () {
-		this.timeout(60000);
+		this.timeout(15000);
 		const { attempts, restore } = failCommits('reject', 'ERR_BUSY');
+		// at a 25ms cap a capped schedule exhausts in about 1s; one that ignores the cap takes ~20s
+		setMaxRetryDelayMs(25);
+		const started = performance.now();
 		try {
-			const { outcome, error } = await raceOutcome(writeThatExhausts('busy'), 50000);
+			const { outcome, error } = await raceOutcome(writeThatExhausts('busy'), 10000);
+			assert.ok(performance.now() - started < 5000, 'the backoff schedule must honor its cap');
 			assert.equal(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
 			assert.match(error.message, /After 40 retries, unable to commit/);
 			assert.equal(error.statusCode, 500, 'the exhaustion error must carry an HTTP status');
 			assert.equal(attempts.length, MAX_RETRIES + 1, 'one initial attempt plus MAX_RETRIES retries');
 		} finally {
+			setMaxRetryDelayMs(1);
 			restore();
 		}
 		// unhandledRejection is emitted on a later event-loop turn than the rejection itself;
