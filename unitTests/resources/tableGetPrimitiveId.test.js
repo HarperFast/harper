@@ -369,6 +369,24 @@ describe('Table.get by a primitive id', function () {
 			}
 		});
 
+		it('after the table is cleaned up', async () => {
+			const Disposed = table({
+				table: 'PrimitiveIdGetDisposed',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			});
+			await Disposed.put({ id: 'a', name: 'A' });
+			await Disposed.dropTable();
+			await assertNotHandled(Disposed, () =>
+				inTransaction(() =>
+					assert.throws(
+						() => Disposed.get('a'),
+						(error) => error.statusCode === 404
+					)
+				)
+			);
+		});
+
 		it('for a caching table', async () => {
 			const Cached = table({
 				table: 'PrimitiveIdGetCached',
