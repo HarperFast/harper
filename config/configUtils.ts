@@ -33,7 +33,12 @@ import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
-import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
+import {
+	prepareRuntimeEnvConfig,
+	hasPersistedEnvConfigState,
+	discardConfigState,
+	envLayerNaming,
+} from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
@@ -1159,7 +1164,12 @@ export function updateConfigValue(
 				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
 				try {
 					if (splitParam.length > 1) {
-						if (typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
+						const parent = configDoc.getIn(splitParam.slice(0, -1));
+						// The Studio reader tolerates a non-map `studio`; a write replaces it rather than failing to land.
+						if (
+							typeof parent === 'boolean' ||
+							(SET_CONFIGURATION_ONLY_PARAMS.has(configParam) && parent !== undefined && !YAML.isMap(parent))
+						) {
 							configDoc.deleteIn(splitParam.slice(0, -1));
 						}
 					}
@@ -1338,6 +1348,10 @@ async function assertStudioSettingsValid(configFields) {
 	for (const field in configFields) {
 		const param = field.toLowerCase();
 		if (param !== hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION && param !== hdbTerms.STUDIO_CONFIG_PARAMS.LANDING) continue;
+		// A reasserting env layer would put its own value back at the next start, so the write would silently revert.
+		const pinnedBy = envLayerNaming(param.replace('_', '.'));
+		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
+			throw new ClientError(`Cannot set ${param}: ${pinnedBy} defines it. Change that variable first.`, 409);
 		// Imported lazily: it imports this module.
 		studioConfiguration ??= await import('./studioConfiguration.ts');
 		const value = castConfigValue(param, configFields[field]);

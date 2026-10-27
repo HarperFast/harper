@@ -12,9 +12,9 @@ export interface StudioPage {
 	component: string;
 	id: string;
 	name: string;
-	icon?: unknown;
+	icon?: string;
 	placement: 'tab' | 'config';
-	description?: unknown;
+	description?: string;
 	access?: unknown;
 	content?: unknown;
 }
@@ -32,21 +32,16 @@ interface WarningLogger {
 const KEY_PATTERN = /^[a-z0-9-]+$/;
 const NAVIGATION_STATES = new Set(['visible', 'tucked', 'hidden']);
 const PLACEMENTS = new Set(['tab', 'config']);
-const OPAQUE_PAGE_FIELDS = ['icon', 'description', 'access', 'content'] as const;
+const COMPONENT_READ_CONCURRENCY = 8;
 const ROOT_SOURCE = '';
+
+// Problems name the field and what it must be, never the value found there: a mistyped block can hold anything,
+// credentials included.
 
 function isMap(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-// Config text reaches the log only as a short, control-free quote.
-function quote(value: unknown): string {
-	const text = typeof value === 'string' ? value : String(JSON.stringify(value));
-	// eslint-disable-next-line no-control-regex
-	return `'${text.slice(0, 64).replace(/[\u0000-\u001f\u007f]/g, '?')}'`;
-}
-
-/** The valid entries of a `studio.navigation` map, or undefined when it holds none; each invalid entry is a problem. */
 export function validateStudioNavigation(
 	navigation: unknown,
 	problems: string[]
@@ -59,10 +54,10 @@ export function validateStudioNavigation(
 	const valid: Record<string, StudioNavigationState> = {};
 	let count = 0;
 	for (const [tab, state] of Object.entries(navigation)) {
-		if (state == null) continue;
-		if (!KEY_PATTERN.test(tab)) problems.push(`studio.navigation key ${quote(tab)} must match [a-z0-9-]+`);
+		if (!KEY_PATTERN.test(tab)) problems.push('studio.navigation has a key that does not match [a-z0-9-]+');
+		else if (state == null) continue;
 		else if (typeof state !== 'string' || !NAVIGATION_STATES.has(state))
-			problems.push(`studio.navigation.${tab} must be visible, tucked or hidden, not ${quote(state)}`);
+			problems.push(`studio.navigation.${tab} must be visible, tucked or hidden`);
 		else {
 			valid[tab] = state as StudioNavigationState;
 			count++;
@@ -74,12 +69,11 @@ export function validateStudioNavigation(
 export function validateStudioLanding(landing: unknown, problems: string[]): string | undefined {
 	if (landing == null) return undefined;
 	if (typeof landing === 'string' && landing.trim() !== '') return landing;
-	problems.push(`studio.landing must be a non-empty string, not ${quote(landing)}`);
+	problems.push('studio.landing must be a non-empty string');
 	return undefined;
 }
 
-/** The valid pages of a component's `studio` block; each dropped page is a problem. */
-export function validateStudioPages(component: string, studio: unknown, problems: string[]): StudioPage[] {
+function validateStudioPages(component: string, studio: unknown, problems: string[]): StudioPage[] {
 	if (studio == null) return [];
 	if (!isMap(studio)) {
 		problems.push('studio must be a map');
@@ -100,31 +94,48 @@ export function validateStudioPages(component: string, studio: unknown, problems
 			problems.push(`${label} must be a map`);
 			continue;
 		}
-		const { id, name, placement } = page;
+		const { id, name, icon, placement, description, access, content } = page;
 		if (typeof id !== 'string' || !KEY_PATTERN.test(id)) {
-			problems.push(`${label}.id must match [a-z0-9-]+, not ${quote(id)}`);
-		} else if (ids.has(id)) {
-			problems.push(`${label}.id '${id}' repeats an earlier page's id`);
-		} else if (typeof name !== 'string' || name.trim() === '') {
-			problems.push(`${label} ('${id}') must have a non-empty name`);
-		} else if (typeof placement !== 'string' || !PLACEMENTS.has(placement)) {
-			problems.push(`${label} ('${id}') placement must be tab or config, not ${quote(placement)}`);
-		} else {
-			ids.add(id);
-			const accepted: StudioPage = { component, id, name, placement: placement as StudioPage['placement'] };
-			for (const field of OPAQUE_PAGE_FIELDS) if (page[field] !== undefined) accepted[field] = page[field];
-			valid.push(accepted);
+			problems.push(`${label}.id must be a string matching [a-z0-9-]+`);
+			continue;
 		}
+		if (ids.has(id)) {
+			problems.push(`${label}.id '${id}' repeats an earlier page's id`);
+			continue;
+		}
+		if (typeof name !== 'string' || name.trim() === '') {
+			problems.push(`${label} ('${id}') must have a non-empty name`);
+			continue;
+		}
+		if (typeof placement !== 'string' || !PLACEMENTS.has(placement)) {
+			problems.push(`${label} ('${id}') placement must be tab or config`);
+			continue;
+		}
+		const accepted: StudioPage = { component, id, name, placement: placement as StudioPage['placement'] };
+		if (typeof icon === 'string') accepted.icon = icon;
+		else if (icon != null) problems.push(`${label} ('${id}') icon must be a string; it is left out`);
+		if (typeof description === 'string') accepted.description = description;
+		else if (description != null) problems.push(`${label} ('${id}') description must be a string; it is left out`);
+		if (access !== undefined) accepted.access = access;
+		if (content !== undefined) accepted.content = content;
+		try {
+			// A YAML alias can make `access` or `content` refer to itself, which no response can carry.
+			JSON.stringify(accepted);
+		} catch {
+			problems.push(`${label} ('${id}') holds a value that cannot be returned as JSON`);
+			continue;
+		}
+		ids.add(id);
+		valid.push(accepted);
 	}
 	return valid;
 }
 
-/** The root config's Studio settings, read from the file `set_configuration` writes, so a write is visible at once. */
 function readRootStudioSettings(problems: string[]): Pick<StudioConfiguration, 'navigation' | 'landing'> {
 	let studio: unknown;
 	try {
-		// Synchronous: an open read handle on the root config blocks `atomicWriteFile`'s Windows rename retry on
-		// this same thread (config/DESIGN.md, "Root config watchers must read synchronously").
+		// The file set_configuration writes, read synchronously: an open read handle on the root config blocks
+		// `atomicWriteFile`'s Windows rename retry on this same thread (config/DESIGN.md).
 		const configFilePath = getRootConfigFilePath();
 		studio = parseConfigFile(readConfigFileSync(configFilePath), configFilePath)?.studio;
 	} catch (error) {
@@ -144,19 +155,18 @@ function readRootStudioSettings(problems: string[]): Pick<StudioConfiguration, '
 	return settings;
 }
 
-/** The components the loader would load, as `[name, directory]` sorted by name; the name is `get_components`'. */
-async function componentDirectories(): Promise<[string, string][]> {
+/** The components the loader would load, as `[name, directory]` sorted by name; the name is the one `get_components` reports. */
+async function componentDirectories(problems: string[]): Promise<[string, string][]> {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 	const directories = new Map<string, string>();
 	try {
 		for (const entry of await readdir(componentsRoot, { withFileTypes: true })) {
-			if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-			// Harper's own staging, aside and lock directories are dot-prefixed, as the loader relies on.
-			if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-			directories.set(entry.name, join(componentsRoot, entry.name));
+			// The loader's own filter: Harper's staging, aside and lock directories are dot-prefixed.
+			if ((entry.isDirectory() || entry.isSymbolicLink()) && !entry.name.startsWith('.'))
+				directories.set(entry.name, join(componentsRoot, entry.name));
 		}
 	} catch (error) {
-		if (error.code !== 'ENOENT') throw error;
+		if (error.code !== 'ENOENT') problems.push(`the components root could not be listed: ${error.message}`);
 	}
 	const devApplication = process.env.RUN_HDB_APP;
 	if (devApplication && !directories.has(basename(devApplication)))
@@ -171,7 +181,7 @@ async function readComponentStudioBlock(directory: string): Promise<unknown> {
 		try {
 			contents = await readFile(configFilePath, 'utf8');
 		} catch (error) {
-			if (error.code === 'ENOENT') continue;
+			if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
 			throw error;
 		}
 		return parseConfigFile(contents, configFilePath)?.studio;
@@ -179,14 +189,28 @@ async function readComponentStudioBlock(directory: string): Promise<unknown> {
 	return undefined;
 }
 
+async function mapBounded<T, R>(items: T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
+	const results: R[] = new Array(items.length);
+	let nextIndex = 0;
+	const drain = async () => {
+		while (nextIndex < items.length) {
+			const index = nextIndex++;
+			results[index] = await map(items[index]);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, drain));
+	return results;
+}
+
 /**
- * A reader of the Studio configuration this node's disk holds. Each call reads the root config and every component's
+ * A reader of the Studio configuration on this node's disk. Every scan reads the root config and each component's
  * config afresh, so it agrees on every thread and reflects a completed `set_configuration`, `deploy_component` or
- * `drop_component` without a restart. A source's problems are logged once, when they change.
+ * `drop_component` without a restart. One scan runs at a time; a source's problems are logged when they change.
  */
 export function createStudioConfigurationReader(logger: WarningLogger) {
 	let loggedProblems = new Map<string, string>();
-	let latestRead = 0;
+	let scanning: Promise<StudioConfiguration> | undefined;
+	let queued: Promise<StudioConfiguration> | undefined;
 
 	function logChangedProblems(problemsBySource: Map<string, string[]>) {
 		const logged = new Map<string, string>();
@@ -201,21 +225,14 @@ export function createStudioConfigurationReader(logger: WarningLogger) {
 		loggedProblems = logged;
 	}
 
-	return async function readStudioConfiguration(): Promise<StudioConfiguration> {
-		const read = ++latestRead;
-		const problemsBySource = new Map<string, string[]>();
+	async function scan(): Promise<StudioConfiguration> {
 		const rootProblems: string[] = [];
-		problemsBySource.set(ROOT_SOURCE, rootProblems);
+		const problemsBySource = new Map([[ROOT_SOURCE, rootProblems]]);
 		const configuration: StudioConfiguration = { ...readRootStudioSettings(rootProblems), pages: [] };
-
-		let directories: [string, string][] = [];
-		try {
-			directories = await componentDirectories();
-		} catch (error) {
-			rootProblems.push(`the components root could not be listed: ${error.message}`);
-		}
-		const pagesByComponent = await Promise.all(
-			directories.map(async ([component, directory]) => {
+		const pagesByComponent = await mapBounded(
+			await componentDirectories(rootProblems),
+			COMPONENT_READ_CONCURRENCY,
+			async ([component, directory]) => {
 				const problems: string[] = [];
 				problemsBySource.set(component, problems);
 				try {
@@ -224,18 +241,38 @@ export function createStudioConfigurationReader(logger: WarningLogger) {
 					problems.push(`its config could not be read: ${error.message}`);
 					return [];
 				}
-			})
+			}
 		);
 		for (const pages of pagesByComponent) configuration.pages.push(...pages);
-		// An earlier read finishing after a later one has older problems; only the latest decides what was logged.
-		if (read === latestRead) logChangedProblems(problemsBySource);
+		logChangedProblems(problemsBySource);
 		return configuration;
+	}
+
+	return function readStudioConfiguration(): Promise<StudioConfiguration> {
+		if (!scanning) {
+			scanning = scan().finally(() => {
+				scanning = undefined;
+			});
+			return scanning;
+		}
+		// The scan in flight may have read before this caller's own write, so the caller waits for the next scan,
+		// which every caller arriving meanwhile shares.
+		queued ??= scanning
+			.then(
+				() => {},
+				() => {}
+			)
+			.then(() => {
+				queued = undefined;
+				return readStudioConfiguration();
+			});
+		return queued;
 	};
 }
 
 const readStudioConfiguration = createStudioConfigurationReader(harperLogger);
 
-/** `get_studio_configuration`: open to every authenticated role, so it returns only the allowlisted Studio keys. */
+/** `get_studio_configuration`: open to every authenticated role, so it returns only the validated Studio keys. */
 export function getStudioConfiguration(): Promise<StudioConfiguration> {
 	return readStudioConfiguration();
 }

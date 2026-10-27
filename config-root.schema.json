@@ -483,7 +483,7 @@
 		},
 		"studio": {
 			"type": "object",
-			"description": "Cluster-level Harper Studio UI settings, written with set_configuration (studio_navigation, studio_landing) and readable by every authenticated role through get_studio_configuration. A UI choice only: server permissions are unchanged. An invalid entry is ignored with a logged warning.",
+			"description": "Harper Studio UI settings for the cluster, written with set_configuration (studio_navigation, studio_landing) and readable by every authenticated role through get_studio_configuration. Each node keeps its own copy, so write it on every node, or pass replicated: true. A UI choice only: server permissions are unchanged. An invalid entry is ignored with a logged warning.",
 			"properties": {
 				"navigation": {
 					"type": "object",

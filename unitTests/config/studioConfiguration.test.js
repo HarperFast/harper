@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } = require('node:fs');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');
 const { setConfiguration, getConfigFilePath, initConfig } = require('#src/config/configUtils');
@@ -93,19 +93,39 @@ studio:
 			assert.deepStrictEqual(warnings, []);
 		});
 
-		it('drops invalid entries with one warning and keeps the valid ones', async () => {
+		it('drops invalid entries with one warning that never repeats the value found', async () => {
 			setRootConfigEntry('studio', {
-				navigation: { apis: 'hidden', logs: 'gone', Bad_Key: 'hidden', status: null, cluster: 'tucked' },
-				landing: 5,
+				navigation: {
+					apis: 'hidden',
+					logs: 'gone',
+					Bad_Key: 'hidden',
+					[`${SECRET}_key`]: null,
+					status: null,
+					cluster: 'tucked',
+					config: { apiKey: SECRET },
+				},
+				landing: { apiKey: SECRET },
 			});
 			const { warnings, logger } = captureWarnings();
 			const configuration = await createStudioConfigurationReader(logger)();
 			assert.deepStrictEqual(configuration, { navigation: { apis: 'hidden', cluster: 'tucked' }, pages: [] });
 			assert.strictEqual(warnings.length, 1);
 			assert.match(warnings[0], /root config/);
-			assert.match(warnings[0], /studio\.navigation\.logs must be visible, tucked or hidden, not 'gone'/);
-			assert.match(warnings[0], /studio\.navigation key 'Bad_Key'/);
+			assert.match(warnings[0], /studio\.navigation\.logs must be visible, tucked or hidden/);
+			assert.match(warnings[0], /studio\.navigation\.config must be visible, tucked or hidden/);
+			assert.strictEqual(warnings[0].match(/studio\.navigation has a key that does not match/g).length, 2);
 			assert.match(warnings[0], /studio\.landing must be a non-empty string/);
+			assert.ok(!warnings[0].includes(SECRET) && !warnings[0].includes('gone'));
+		});
+
+		it('drops a navigation value a YAML alias makes refer to itself, without failing the call', async () => {
+			writeFileSync(
+				getConfigFilePath(),
+				`${readFileSync(getConfigFilePath(), 'utf8')}\nstudio:\n  navigation:\n    logs: &loop [*loop]\n    apis: hidden\n`
+			);
+			const { warnings, logger } = captureWarnings();
+			assert.deepStrictEqual((await createStudioConfigurationReader(logger)()).navigation, { apis: 'hidden' });
+			assert.strictEqual(warnings.length, 1);
 		});
 
 		for (const studio of ['hidden', ['applications'], true]) {
@@ -177,15 +197,48 @@ studio:
 			assert.deepStrictEqual(configuration.pages, [{ component: 'mixed', id: 'good', name: 'Good', placement: 'tab' }]);
 			assert.strictEqual(warnings.length, 1);
 			for (const problem of [
-				/studio\.pages\[1\]\.id must match/,
+				/studio\.pages\[1\]\.id must be a string matching/,
 				/studio\.pages\[2\] \('no-name'\) must have a non-empty name/,
-				/studio\.pages\[3\] \('nowhere'\) placement must be tab or config, not 'sidebar'/,
+				/studio\.pages\[3\] \('nowhere'\) placement must be tab or config/,
 				/studio\.pages\[4\]\.id 'good' repeats/,
 				/studio\.pages\[5\] must be a map/,
-				/studio\.pages\[6\]\.id must match/,
+				/studio\.pages\[6\]\.id must be a string matching/,
 			])
 				assert.match(warnings[0], problem);
 			assert.match(warnings[0], /component 'mixed'/);
+			assert.ok(!warnings[0].includes('Bad_Id') && !warnings[0].includes('sidebar'));
+		});
+
+		it('leaves out an icon or description that is not a string, and keeps the page', async () => {
+			writeComponent(
+				'typed',
+				`studio:\n  pages:\n    - { id: page, name: Page, placement: tab, icon: { svg: ${SECRET} }, description: 5 }\n    - { id: empty, name: Empty, placement: tab, icon: }\n`
+			);
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(configuration.pages, [
+				{ component: 'typed', id: 'page', name: 'Page', placement: 'tab' },
+				{ component: 'typed', id: 'empty', name: 'Empty', placement: 'tab' },
+			]);
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /\('page'\) icon must be a string; it is left out/);
+			assert.match(warnings[0], /\('page'\) description must be a string; it is left out/);
+			assert.ok(!warnings[0].includes(SECRET));
+		});
+
+		it('drops a page whose content a YAML alias makes refer to itself, and keeps the rest', async () => {
+			writeComponent(
+				'looped',
+				'studio:\n  pages:\n    - { id: loop, name: Loop, placement: tab, content: &loop { self: *loop } }\n    - { id: fine, name: Fine, placement: tab }\n'
+			);
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(
+				configuration.pages.map((page) => page.id),
+				['fine']
+			);
+			assert.doesNotThrow(() => JSON.stringify(configuration));
+			assert.match(warnings[0], /\('loop'\) holds a value that cannot be returned as JSON/);
 		});
 
 		it('ignores a pages value that is not a list, and a studio value that is not a map', async () => {
@@ -237,19 +290,21 @@ studio:
 			assert.match(warnings[0], /component 'invalid-first'/);
 		});
 
-		it("skips Harper's dot-prefixed bookkeeping, node_modules and plain files, and orders by component", async () => {
+		it("skips Harper's dot-prefixed bookkeeping and plain files, and orders by component", async () => {
 			const studioPage = 'studio:\n  pages: [{ id: page, name: Page, placement: tab }]\n';
 			writeComponent('zeta', studioPage);
 			writeComponent('alpha', studioPage);
 			writeComponent(path.join('.deploy-staging', 'some-deployment', 'staged'), studioPage);
 			writeComponent('.deploy-staging', studioPage);
-			writeComponent('node_modules', studioPage);
 			writeFileSync(path.join(componentsRoot, 'stray.yaml'), studioPage);
-			const configuration = await getStudioConfiguration();
+			symlinkSync(path.join(componentsRoot, 'stray.yaml'), path.join(componentsRoot, 'linked-file'));
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
 			assert.deepStrictEqual(
 				configuration.pages.map((page) => page.component),
 				['alpha', 'zeta']
 			);
+			assert.deepStrictEqual(warnings, [], 'a link to a file is a component with no config, as the loader sees it');
 		});
 
 		it('reflects a component appearing and disappearing on the next call', async () => {
@@ -259,6 +314,29 @@ studio:
 			assert.strictEqual((await read()).pages.length, 2);
 			rmSync(directory, { recursive: true });
 			assert.deepStrictEqual((await read()).pages, []);
+		});
+
+		it('still returns the `harper dev` application when the components root cannot be listed', async () => {
+			const notADirectory = path.join(componentsRoot, 'a-file');
+			writeFileSync(notADirectory, '');
+			env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, notADirectory);
+			const outside = mkdtempSync(path.join(tmpdir(), 'harper-studio-dev-'));
+			try {
+				writeFileSync(
+					path.join(outside, 'config.yaml'),
+					'studio:\n  pages: [{ id: page, name: Dev, placement: tab }]\n'
+				);
+				process.env.RUN_HDB_APP = outside;
+				const { warnings, logger } = captureWarnings();
+				const configuration = await createStudioConfigurationReader(logger)();
+				assert.deepStrictEqual(
+					configuration.pages.map((page) => page.name),
+					['Dev']
+				);
+				assert.match(warnings[0], /the components root could not be listed/);
+			} finally {
+				rmSync(outside, { recursive: true, force: true });
+			}
 		});
 
 		it('returns no pages when the components root does not exist', async () => {
@@ -321,13 +399,33 @@ studio:
 			await read();
 			assert.strictEqual(warnings.length, 4, 'a source removed and re-added is logged again');
 		});
+	});
 
-		it('logs only the latest of overlapping reads', async () => {
+	describe('concurrent calls', () => {
+		it('give a call that arrives during a scan the state as of its arrival, from one shared follow-up scan', async () => {
 			const { warnings, logger } = captureWarnings();
 			const read = createStudioConfigurationReader(logger);
 			writeComponent('flaky', 'studio:\n  pages: [{ id: Bad, name: Bad, placement: tab }]\n');
-			await Promise.all([read(), read(), read()]);
+			setRootConfigEntry('studio', { landing: 'before' });
+			const inFlight = read();
+			setRootConfigEntry('studio', { landing: 'after' });
+			const followUps = [read(), read(), read()];
+			assert.strictEqual(followUps[0], followUps[1], 'callers arriving during one scan share the next');
+			assert.strictEqual(followUps[1], followUps[2]);
+			assert.strictEqual((await inFlight).landing, 'before');
+			assert.strictEqual((await followUps[0]).landing, 'after');
 			assert.strictEqual(warnings.length, 1);
+		});
+
+		it('keep at most a few component configs open at once', async () => {
+			for (let index = 0; index < 60; index++)
+				writeComponent(
+					`component-${String(index).padStart(2, '0')}`,
+					`studio:\n  pages: [{ id: p, name: P${index}, placement: tab }]\n`
+				);
+			const read = createStudioConfigurationReader(captureWarnings().logger);
+			const results = await Promise.all(Array.from({ length: 20 }, () => read()));
+			for (const configuration of results) assert.strictEqual(configuration.pages.length, 60);
 		});
 	});
 
@@ -405,7 +503,8 @@ studio:
 		for (const [fields, problem] of [
 			[{ studio_navigation: { logs: 'gone' } }, /studio\.navigation\.logs must be visible, tucked or hidden/],
 			[{ studio_navigation: 'hidden' }, /studio\.navigation must be a map/],
-			[{ studio_navigation: { Logs: 'hidden' } }, /studio\.navigation key 'Logs'/],
+			[{ studio_navigation: { Logs: 'hidden' } }, /studio\.navigation has a key that does not match/],
+			[{ studio_navigation: { 'Bad_Key!': null } }, /studio\.navigation has a key that does not match/],
 			[{ studio_landing: '' }, /studio\.landing must be a non-empty string/],
 			[{ studio_landing: { page: 'x' } }, /studio\.landing must be a non-empty string/],
 		]) {
@@ -418,6 +517,48 @@ studio:
 				assert.strictEqual(readFileSync(getConfigFilePath(), 'utf8'), before);
 			});
 		}
+
+		it('replaces a root studio value that is not a map rather than reporting a write that did not land', async () => {
+			setRootConfigEntry('studio', 'hidden');
+			await setConfiguration({
+				operation: 'set_configuration',
+				studio_navigation: { logs: 'hidden' },
+				studio_landing: 'databases',
+			});
+			assert.deepStrictEqual(readRootConfig().studio, { navigation: { logs: 'hidden' }, landing: 'databases' });
+		});
+
+		for (const layer of ['HARPER_SET_CONFIG', 'HARPER_CONFIG']) {
+			it(`refuses a write ${layer} would put back at the next start`, async () => {
+				const saved = process.env[layer];
+				const before = readFileSync(getConfigFilePath(), 'utf8');
+				process.env[layer] = JSON.stringify({ studio: { navigation: { logs: 'hidden' } } });
+				try {
+					await assert.rejects(
+						setConfiguration({ operation: 'set_configuration', studio_navigation: { logs: 'tucked' } }),
+						(error) => error.statusCode === 409 && error.message.includes(layer)
+					);
+					assert.strictEqual(readFileSync(getConfigFilePath(), 'utf8'), before);
+					await setConfiguration({ operation: 'set_configuration', studio_landing: 'logs' });
+					assert.strictEqual(readRootConfig().studio.landing, 'logs', 'a key the layer does not name is writable');
+				} finally {
+					if (saved === undefined) delete process.env[layer];
+					else process.env[layer] = saved;
+				}
+			});
+		}
+
+		it('accepts a write over settings HARPER_DEFAULT_CONFIG supplied', async () => {
+			const saved = process.env.HARPER_DEFAULT_CONFIG;
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ 'studio.navigation.logs': 'hidden' });
+			try {
+				await setConfiguration({ operation: 'set_configuration', studio_navigation: { logs: 'tucked' } });
+				assert.deepStrictEqual(readRootConfig().studio.navigation, { logs: 'tucked' });
+			} finally {
+				if (saved === undefined) delete process.env.HARPER_DEFAULT_CONFIG;
+				else process.env.HARPER_DEFAULT_CONFIG = saved;
+			}
+		});
 
 		it('refuses a nested studio block, which would replace an application entry of that name', async () => {
 			await assert.rejects(

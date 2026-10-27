@@ -1034,6 +1034,29 @@ function composeEnvLayers(below: readonly string[], base: ConfigObject, above: r
 	return result;
 }
 
+/**
+ * The first config env var, in precedence order, that names `path` or a key under it. Dotted top-level keys
+ * ("models.embedding.default") compose into the nested block, so they count exactly like a nested key.
+ */
+export function envLayerNaming(path: string): string | undefined {
+	for (const name of ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG']) {
+		const raw = process.env[name];
+		if (!raw) continue;
+		try {
+			const parsed = JSON.parse(raw);
+			if (
+				parsed &&
+				typeof parsed === 'object' &&
+				Object.keys(flattenObject(parsed, '', false)).some((key) => key === path || key.startsWith(`${path}.`))
+			)
+				return name;
+		} catch {
+			// Malformed env config is reported by config loading itself.
+		}
+	}
+	return undefined;
+}
+
 /** True when any config-shaping env var (HARPER_DEFAULT_CONFIG / HARPER_CONFIG / HARPER_SET_CONFIG) is set. */
 export function hasConfigEnvVars(): boolean {
 	return Boolean(process.env.HARPER_DEFAULT_CONFIG || process.env.HARPER_CONFIG || process.env.HARPER_SET_CONFIG);

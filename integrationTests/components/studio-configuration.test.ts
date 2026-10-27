@@ -164,7 +164,6 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 	test("a deployed component's pages are returned as soon as deploy_component answers, and leave with it", async () => {
 		await deployPages('Caching', false);
 		const deployedPage = { component: DEPLOYED, id: 'caching', icon: 'database-zap', placement: 'config' };
-		// Ordered by component name.
 		deepStrictEqual((await studioConfiguration('studio_no_permissions_user')).pages, [
 			{ ...deployedPage, name: 'Caching' },
 			...FIXTURE_PAGES,
