@@ -2285,14 +2285,8 @@ export function makeTable(options): TableResourceClass {
 				return property;
 			}
 			if (!property.name) property = { name: property };
-			// a sorted REST property set is projected entry by entry, so its entries are the sub-selection
-			if (
-				Array.isArray(property) &&
-				(property as any).select == null &&
-				property.sort &&
-				typeof property.sort === 'object'
-			)
-				(property as any).select = [...property];
+			// a REST property set (`related{a,b}`) is an Array whose entries are the sub-selection
+			if (Array.isArray(property) && (property as any).select == null) (property as any).select = [...property];
 			// authority comes from the request being authorized, never from the selection itself
 			if (checkPermission) property.checkPermission = checkPermission;
 			else delete property.checkPermission;
@@ -2303,7 +2297,7 @@ export function makeTable(options): TableResourceClass {
 			// Invoke the related table's allowRead on a properly-bound instance rather than
 			// `.call(null, ...)` so `this` is a valid resource of the related type.
 			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;
-			return property.select || (typeof property.sort === 'object' && property.sort) ? property : property.name;
+			return property.select || hasNestedQueryOptions(property) ? property : property.name;
 		}
 		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
 			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));
@@ -11734,38 +11728,19 @@ export function makeTable(options): TableResourceClass {
 			return true;
 		}
 		let select: any = target?.select;
-		const listRelationships =
+		const canListRelationships = () =>
 			enumerableRelationshipNames.length > 0 &&
 			!(attribute_permissions?.length > 0) &&
-			(select == null || select === '*' || (Array.isArray(select) && select.includes('*'))) &&
 			!TableResource._readableInFull(user, target);
+		const listRelationships =
+			(select == null || select === '*' || (Array.isArray(select) && select.includes('*'))) && canListRelationships();
 		if (listRelationships && select == null) select = '*';
 		if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
 			// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 			// or if there are relationships, we need to ensure that the user has permission to read from the related table
 			if (!target) target = {} as any;
-			if (select) {
-				const selectArray = Array.isArray(select) ? select : [select];
-				const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-				const authorizedSelect = selectArray
-					.map((property: any) => {
-						const propertyName = property.name || property;
-						if (
-							!attrsForType ||
-							attrsForType[propertyName] ||
-							fullTextFieldNames?.has(propertyName) ||
-							propertyName === '$score' ||
-							propertyName === '$highlights'
-						) {
-							return TableResource._authorizeRelatedSelection(property, user, (target as any).checkPermission, context);
-						}
-					})
-					.filter(Boolean);
-				if (listRelationships)
-					listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
-				(target as any).select = authorizedSelect;
-			} else {
-				target.select = attribute_permissions
+			const permittedScalarAttributes = () =>
+				attribute_permissions
 					.filter(
 						(attribute) =>
 							attribute.read &&
@@ -11773,6 +11748,50 @@ export function makeTable(options): TableResourceClass {
 							!propertyResolvers[attribute.attribute_name]
 					)
 					.map((attribute) => attribute.attribute_name);
+			if (select) {
+				const selectArray = Array.isArray(select) ? select : [select];
+				const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+				let authorizedSelect: any[] = selectArray.flatMap((property: any) => {
+					if (property === '*' && attrsForType) return permittedScalarAttributes();
+					const propertyName = property.name || property;
+					if (
+						!attrsForType ||
+						attrsForType[propertyName] ||
+						fullTextFieldNames?.has(propertyName) ||
+						propertyName === '$score' ||
+						propertyName === '$highlights'
+					) {
+						const entry = TableResource._authorizeRelatedSelection(
+							property,
+							user,
+							(target as any).checkPermission,
+							context
+						);
+						return entry ? [entry] : [];
+					}
+					return [];
+				});
+				if (listRelationships)
+					listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
+				// Braced sub-selects (`related{name}`) are parsed as Array instances; when all listed fields
+				// in a braced sub-select are denied, fall back to the role's default projection for the table.
+				if (Array.isArray(target) && authorizedSelect.length === 0) {
+					if (attrsForType) {
+						authorizedSelect = permittedScalarAttributes();
+					} else if (canListRelationships()) {
+						authorizedSelect = ['*'];
+						listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
+					} else if (hasNestedQueryOptions(target)) {
+						authorizedSelect = ['*'];
+					} else {
+						delete (target as any).select;
+						(target as any)[AUTHORIZATION_SELECT] = true;
+						return true;
+					}
+				}
+				(target as any).select = authorizedSelect;
+			} else {
+				target.select = permittedScalarAttributes();
 			}
 			(target as any)[AUTHORIZATION_SELECT] = true;
 			return true;
