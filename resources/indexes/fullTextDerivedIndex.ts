@@ -3,6 +3,7 @@ import {
 	DERIVED_INDEX_DEFERRED,
 	DERIVED_INDEX_FAILED,
 	MAX_LOG_SEQUENCE,
+	sameDerivedIndexCursorVector,
 	sameDerivedIndexPositions,
 } from '../derivedIndexRuntime.ts';
 import type {
@@ -1243,7 +1244,7 @@ function withDurableCoverage(
 	cursor: DerivedIndexCursor | undefined,
 	durable: DerivedIndexCursor | undefined
 ): DerivedIndexCursor | undefined {
-	if (!cursor || cursor.coverage || !durable?.coverage) return cursor;
+	if (!cursor || cursor.coverage || !durable?.coverage || !sameDerivedIndexCursorVector(cursor, durable)) return cursor;
 	return { ...cursor, coverage: durable.coverage };
 }
 

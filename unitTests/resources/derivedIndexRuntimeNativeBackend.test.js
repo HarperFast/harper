@@ -1363,14 +1363,16 @@ describe('DerivedIndexRuntime for native backends', () => {
 	});
 
 	it('resumes from a floor when retention purged the anchor but nothing past the coverage was flushed', async () => {
-		// Emptied, and emptied then written again (the write is unflushed, so the witness has not moved).
-		for (const stats of [
-			emptiedStats(covered),
-			{ fileCount: 1, oldestSequenceNumber: 4, currentSequenceNumber: 4, lastFlushedPosition: covered },
+		// Emptied; emptied then written again (unflushed, so the witness has not moved); and coverage an idle
+		// owner recaptured after the purge retired the segment the witness ends.
+		for (const [stats, coverage] of [
+			[emptiedStats(covered), covered],
+			[{ fileCount: 1, oldestSequenceNumber: 4, currentSequenceNumber: 4, lastFlushedPosition: covered }, covered],
+			[emptiedStats(covered), { sequence: 4, offset: 0 }],
 		]) {
 			const store = purgedAnchorStore(stats);
 			const backend = new AsyncBackend('purged-anchor', {
-				cursor: { format: 1, logs: { local: 7 }, coverage: { local: covered } },
+				cursor: { format: 1, logs: { local: 7 }, coverage: { local: coverage } },
 				applyDelay: 2,
 			});
 			const { runtime } = runtimeFor(store, purgedAnchorRecords(), { idleGraceMilliseconds: 1000 });
@@ -1434,6 +1436,11 @@ describe('DerivedIndexRuntime for native backends', () => {
 					currentSequenceNumber: 4,
 					lastFlushedPosition: { sequence: 3, offset: 20 },
 				},
+			],
+			[
+				'a lost tail in a later segment',
+				{ format: 1, logs: { local: 7 }, coverage: { local: { sequence: 4, offset: 30 } } },
+				emptiedStats(covered),
 			],
 			[
 				'incomplete anchor',

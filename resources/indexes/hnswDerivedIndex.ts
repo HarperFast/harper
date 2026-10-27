@@ -6,6 +6,7 @@ import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	readDerivedIndexReadiness,
+	sameDerivedIndexCursorVector,
 	sameDerivedIndexPositions,
 	type DerivedIndexBackend,
 	type DerivedIndexBackendHost,
@@ -245,7 +246,8 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			await this.#index.flushDerived();
 			if (epoch !== undefined && !host.isOwnerEpoch(epoch)) return;
 			if (cursor) {
-				const coverage = this.getDurableCursor()?.coverage;
+				const durable = this.getDurableCursor();
+				const coverage = durable && sameDerivedIndexCursorVector(durable, cursor) ? durable.coverage : undefined;
 				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...cursor, coverage } : cursor);
 			}
 		})();

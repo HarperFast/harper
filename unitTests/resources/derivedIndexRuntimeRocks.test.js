@@ -272,7 +272,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 	});
 
 	describe('a timestamp-anchored log that retention empties while idle', () => {
-		// Carries coverage into newer cursors, as both native backends do.
+		// Keeps coverage only on the vector it was captured with, as both native backends do.
 		const coverageBackend = (id) => ({
 			id,
 			cursor: undefined,
@@ -296,8 +296,12 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			},
 			deliver(batch) {
 				this.deliveries.push(batch);
-				if (batch.through)
-					this.cursor = this.cursor?.coverage ? { ...batch.through, coverage: this.cursor.coverage } : batch.through;
+				if (!batch.through) return DERIVED_INDEX_ACCEPTED;
+				const sameVector =
+					JSON.stringify([this.cursor?.logs, this.cursor?.floors]) ===
+					JSON.stringify([batch.through.logs, batch.through.floors]);
+				this.cursor =
+					sameVector && this.cursor.coverage ? { ...batch.through, coverage: this.cursor.coverage } : batch.through;
 				return DERIVED_INDEX_ACCEPTED;
 			},
 			onStateChange(wake) {
