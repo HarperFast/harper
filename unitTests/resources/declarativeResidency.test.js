@@ -715,6 +715,241 @@ const { transaction } = require('#src/resources/transaction');
 		assert.equal(confirmations[0].position, last.txnLogKey ?? last.key);
 	});
 
+	describe('local-only attribute-slot updates', () => {
+		let Records, localSlot, otherLocalSlot, remoteSlot;
+		before(async () => {
+			Records = await declare(
+				'SlotLocalOnly',
+				'@sharded(slots: 10, by: "region", slotFrom: "region")',
+				'region: Int @indexed\nbody: String'
+			);
+			const slots = Array.from({ length: 10 }, (_, slot) => slot);
+			[localSlot, otherLocalSlot] = slots.filter((slot) => residencyIsLocal('slots_test', slot, 10));
+			remoteSlot = slots.find((slot) => !residencyIsLocal('slots_test', slot, 10));
+			assert.notEqual(otherLocalSlot, undefined);
+			assert.notEqual(remoteSlot, undefined);
+		});
+		async function stage(context, id, region, options) {
+			const resource = await Records.getResource(id, context);
+			await resource._writeUpdate(id, { region, body: 'changed' }, false, options);
+			await resource.save();
+		}
+		for (const caught of [false, true])
+			it(`refuses an unsendable slot move before native submission (caught=${caught})`, async () => {
+				const id = 'local-only-refused-' + caught;
+				await Records.put(id, { id, region: localSlot, body: 'original' });
+				const before = Buffer.from(Records.primaryStore.getBinary(id));
+				const auditEntries = () =>
+					Array.from(Records.auditStore.getRange({ start: 1 }), (entry) => [
+						entry.txnLogKey ?? entry.key,
+						entry.nodeId,
+						entry.tableId,
+						entry.recordId,
+						entry.type,
+					]);
+				const history = auditEntries();
+				const index = Array.from(Records.indices.region.getRange({}));
+				const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+				const commit = Transaction.prototype.commit;
+				let submitted = 0;
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db === Records.primaryStore.store.db) submitted++;
+					return commit.apply(this, args);
+				};
+				setResidencyPlacementGuard(() => {});
+				replicationConfirmation(() => Promise.resolve());
+				const context = {};
+				let refusal;
+				const rejected = (error) => {
+					if (refusal) assert.equal(error, refusal);
+					refusal = error;
+					assert.equal(error.statusCode, 400);
+					assert.match(error.message, /SlotLocalOnly/);
+					assert.ok(error.message.includes(id));
+					assert.match(error.message, /local-only write cannot deliver.*new owners/);
+					return true;
+				};
+				try {
+					if (caught) {
+						await assert.rejects(
+							transaction(context, async () => {
+								await Records.put('rolled-back', { id: 'rolled-back', region: localSlot });
+								await assert.rejects(stage(context, id, remoteSlot, { localOnly: true }), rejected);
+								await Records.put('after-refusal', { id: 'after-refusal', region: localSlot });
+							}),
+							rejected
+						);
+					} else {
+						await assert.rejects(
+							transaction(context, async () => {
+								await Records.put('rolled-back', { id: 'rolled-back', region: localSlot });
+								await stage(context, id, remoteSlot, { localOnly: true });
+							}),
+							rejected
+						);
+					}
+					assert.equal(submitted, 0, 'the refused transaction never reaches native submission');
+					assert.deepEqual(Buffer.from(Records.primaryStore.getBinary(id)), before);
+					assert.equal(Records.primaryStore.getEntry('rolled-back'), undefined);
+					assert.equal(Records.primaryStore.getEntry('after-refusal'), undefined);
+					assert.deepEqual(auditEntries(), history);
+					assert.deepEqual(Array.from(Records.indices.region.getRange({})), index);
+				} finally {
+					Transaction.prototype.commit = commit;
+				}
+			});
+		for (const move of [false, true])
+			it(`commits a local-only writer-owned update without confirmation (move=${move})`, async () => {
+				const id = 'local-only-owned-' + move;
+				await Records.put(id, { id, region: localSlot, body: 'original' });
+				replicationConfirmation(() => assert.fail('a local-only update cannot wait on replication'));
+				const context = { replicatedConfirmation: 1 };
+				await transaction(context, () => stage(context, id, move ? otherLocalSlot : localSlot, { localOnly: true }));
+				assert.equal(Records.primaryStore.getSync(id).body, 'changed');
+			});
+		for (const existing of [false, true])
+			it(`keeps a non-owner local-only full write without a slot transition unconfirmed (existing=${existing})`, async () => {
+				const id = 'local-only-nonowner-' + existing;
+				if (existing) await Records.put(id, { id, region: remoteSlot, body: 'original' });
+				replicationConfirmation(() => assert.fail('no transition means no new owner confirmation'));
+				const context = { replicatedConfirmation: 1 };
+				await transaction(context, async () => {
+					const resource = await Records.getResource(id, context);
+					await resource._writeUpdate(id, { id, region: remoteSlot, body: 'local-only' }, true, { localOnly: true });
+				});
+				const entry = Records.primaryStore.getEntry(id);
+				assert.equal(entry.residencySlot, remoteSlot);
+				assert.ok(entry.metadataFlags & INVALIDATED);
+				assert.equal(entry.value.body, undefined);
+			});
+		it('refuses an away move even when the writer could retain a temporary replica', async () => {
+			await loadGQLSchema(`type SlotLocalOnlyReplica @table(database: "slots_test", replicaExpiration: 60)
+				@sharded(slots: 10, by: "region", slotFrom: "region") {
+				id: ID @primaryKey region: Int @indexed body: String
+			}`);
+			const Replica = databases.slots_test.SlotLocalOnlyReplica;
+			await Replica.put('replica-refused', { id: 'replica-refused', region: localSlot, body: 'original' });
+			const before = Buffer.from(Replica.primaryStore.getBinary('replica-refused'));
+			const resource = await Replica.getResource('replica-refused', {});
+			await assert.rejects(async () => {
+				await resource._writeUpdate('replica-refused', { region: remoteSlot }, false, { localOnly: true });
+				await resource.save();
+			}, /local-only write cannot deliver/);
+			assert.deepEqual(Buffer.from(Replica.primaryStore.getBinary('replica-refused')), before);
+		});
+		for (const fullUpdate of [true, false])
+			it(`settles an already-submitted local-only native retry after its base slot changes (full=${fullUpdate})`, async () => {
+				if (!fullUpdate)
+					await loadGQLSchema(`type SlotLocalOnlyRetryReplica @table(database: "slots_test", replicaExpiration: 60)
+					@sharded(slots: 10, by: "region", slotFrom: "region") {
+					id: ID @primaryKey region: Int @indexed body: String
+				}`);
+				const RetryRecords = fullUpdate ? Records : databases.slots_test.SlotLocalOnlyRetryReplica;
+				const id = 'local-only-retry-' + fullUpdate;
+				await RetryRecords.put(id, { id, region: remoteSlot, body: 'original' });
+				const binding = Object.values(require.cache).find(
+					(module) => module.filename?.endsWith('.node') && typeof module.exports.forceTryAgainForTesting === 'function'
+				)?.exports;
+				assert.ok(binding);
+				const { Transaction, constants } = require('../rocksdbBindings.mts').rocksdbBindings();
+				const original = Transaction.prototype.commit;
+				let originalId,
+					changedBase = false;
+				const attempts = [];
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db !== RetryRecords.primaryStore.store.db) return original.apply(this, args);
+					attempts.push(this.id);
+					const first = originalId === undefined;
+					if (first) originalId = this.id;
+					const result = original.apply(this, args);
+					if (!first) return result;
+					const changeBase = async () => {
+						await transaction({}, () => RetryRecords.put(id, { id, region: localSlot, body: 'concurrent' }));
+						assert.equal(RetryRecords.primaryStore.getEntry(id).residencySlot, localSlot);
+						changedBase = true;
+					};
+					return result.then(
+						async (outcome) => {
+							assert.equal(outcome, constants.RETRY_NOW_VALUE);
+							await changeBase();
+							return outcome;
+						},
+						async (error) => {
+							assert.equal(error.code, 'ERR_TRY_AGAIN');
+							await changeBase();
+							throw error;
+						}
+					);
+				};
+				setResidencyPlacementGuard(() => {});
+				replicationConfirmation(() => assert.fail('a local-only retry has no replicable append to confirm'));
+				const context = { timestamp: Date.now() + 60_000 };
+				const retryBases = [];
+				try {
+					await Promise.race([
+						transaction(context, async () => {
+							const resource = await RetryRecords.getResource(id, context);
+							await resource._writeUpdate(
+								id,
+								fullUpdate ? { id, region: remoteSlot, body: 'submitted' } : { body: 'submitted' },
+								fullUpdate,
+								{ localOnly: true }
+							);
+							await resource.save();
+							const write = context.transaction.writes.find((write) => write?.key === id);
+							const commit = write.commit;
+							write.commit = function (...args) {
+								if (args[3]?.isRetry) retryBases.push(args[1]?.residencySlot);
+								return commit.apply(this, args);
+							};
+							binding.forceTryAgainForTesting(1);
+						}),
+						new Promise((_, reject) =>
+							setTimeout(() => reject(new Error('local-only retry did not settle')), 5000).unref()
+						),
+					]);
+					assert.equal(changedBase, true, JSON.stringify({ attempts, originalId, retryBases }));
+					assert.ok(retryBases.includes(localSlot), 'the retry sees the concurrently changed slot');
+					assert.ok(
+						attempts.filter((id) => id === originalId).length >= 2,
+						'the original native handle reaches its outcome'
+					);
+					const stored = RetryRecords.primaryStore.getEntry(id);
+					assert.equal(stored.residencySlot, fullUpdate ? remoteSlot : localSlot);
+					if (!fullUpdate) {
+						assert.equal(
+							stored.metadataFlags & (INVALIDATED | REPLICA),
+							0,
+							'retry uses destination owners after the slot changes'
+						);
+						assert.equal(stored.value.body, 'submitted');
+					}
+				} finally {
+					binding.forceTryAgainForTesting(0);
+					Transaction.prototype.commit = original;
+				}
+			});
+		for (const mode of ['copy', 'replication', 'source'])
+			it(`preserves the internal ${mode} apply path across a slot change`, async () => {
+				const id = 'local-only-apply-' + mode;
+				await Records.put(id, { id, region: localSlot, body: 'original' });
+				const { REPLICATION_APPLY } = require('#src/resources/databaseLiveGuard');
+				const context = { sourceApply: true, [REPLICATION_APPLY]: mode !== 'source' };
+				replicationConfirmation(() => assert.fail('internal apply does not request owner confirmation'));
+				await transaction(context, async () => {
+					const resource = await Records.getResource(id, context);
+					await resource._writeUpdate(id, { id, region: remoteSlot, body: 'copied' }, true, {
+						localOnly: true,
+						isCopyApply: mode === 'copy',
+						isNotification: true,
+					});
+				});
+				const entry = Records.primaryStore.getEntry(id);
+				assert.equal(entry.residencySlot, remoteSlot);
+				assert.ok(entry.metadataFlags & INVALIDATED);
+			});
+	});
+
 	it('keeps mandatory owner confirmation through a native RocksDB TryAgain retry', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const Records = await declare(

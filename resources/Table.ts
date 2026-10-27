@@ -6077,7 +6077,10 @@ export function makeTable(options): TableResourceClass {
 							residencyPolicy.byAttribute && patchesStub
 								? (options?.residencySlot ?? baseEntry.residencySlot)
 								: calculateResidencySlot(id, recordToStore);
-						const owners = captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite);
+						const owners =
+							transaction?.isRetry && write.residencyOwners && write.residencyOwnerSlot === slot
+								? write.residencyOwners
+								: captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite);
 						residencyId = undefined;
 						if (residencyPolicy.byAttribute) residencySlot = slot;
 						omitLocalRecord = patchesStub || !owners.includes(server.hostname);
@@ -6087,15 +6090,34 @@ export function makeTable(options): TableResourceClass {
 							baseEntry.residencySlot !== slot
 						) {
 							if (writtenHere && omitLocalRecord) {
-								requireConnectedResidencyOwner(databaseName, owners);
-								const committer = committedBy ?? transaction;
-								write.requiresOwnerConfirmation = true;
-								committer.requiresOwnerConfirmation = true;
-								const checkOwners = write.checkResidency;
-								write.checkResidency = () => {
-									checkOwners();
-									requireConnectedResidencyOwner(databaseName, owners);
-								};
+								if (options?.localOnly) {
+									if (
+										!isCopyApply &&
+										localShardingWrite &&
+										!transaction?.isRetry &&
+										!owners.includes(server.hostname)
+									) {
+										const error = new ResidencyPlacementError(
+											`Cannot move record ${String(keyArrayToString(id)).slice(0, 256)} in table ${databaseName}.${tableName}: a local-only write cannot deliver the moved record to its new owners`,
+											400
+										);
+										const refuse = () => {
+											throw error;
+										};
+										write.commit = write.checkResidency = refuse;
+										throw error;
+									}
+								} else {
+									if (!transaction?.isRetry) requireConnectedResidencyOwner(databaseName, owners);
+									const committer = committedBy ?? transaction;
+									write.requiresOwnerConfirmation = true;
+									committer.requiresOwnerConfirmation = true;
+									const checkOwners = write.checkResidency;
+									write.checkResidency = () => {
+										checkOwners();
+										requireConnectedResidencyOwner(databaseName, owners);
+									};
+								}
 							}
 							auditRecordToStore = recordToStore;
 							type = 'put';
@@ -6119,7 +6141,10 @@ export function makeTable(options): TableResourceClass {
 					if (
 						(residencyId || write.residencyOwners) &&
 						committedBy?.requestedConfirmationCount &&
-						!transaction?.isRetry
+						!transaction?.isRetry &&
+						audit &&
+						!isCopyApply &&
+						!options?.localOnly
 					) {
 						try {
 							if (write.residencyOwners)
@@ -11481,6 +11506,7 @@ export function makeTable(options): TableResourceClass {
 		const owners = residencyOwners(databaseName, slot, residencyPolicy.slots);
 		if (localWrite) assertLocalShardWrite(owners);
 		write.residencyOwners = owners;
+		write.residencyOwnerSlot = slot;
 		write.checkResidency = () => {
 			const current = residencyOwners(databaseName, slot, residencyPolicy.slots);
 			if (localWrite) assertLocalShardWrite(current);

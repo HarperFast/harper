@@ -977,9 +977,7 @@ export class DatabaseTransaction implements Transaction {
 		return Math.max(
 			this.requestedConfirmationCount,
 			this.requiresOwnerConfirmation &&
-				this.writes.some(
-					(write) => write?.saved && !write.skipReplicationConfirmation && write.requiresOwnerConfirmation
-				)
+				this.writes.some((write) => write?.saved && !confirmsNothing(write) && write.requiresOwnerConfirmation)
 				? 1
 				: 0
 		);
@@ -1980,7 +1978,7 @@ export class DatabaseTransaction implements Transaction {
 		const count = this.confirmationCount;
 		let lists: Map<number | readonly string[], string[]> | undefined;
 		for (const write of this.writes) {
-			if (!write?.saved || write.skipReplicationConfirmation) continue;
+			if (!write?.saved || confirmsNothing(write)) continue;
 			if (!this.requestedConfirmationCount && !write.requiresOwnerConfirmation) continue;
 			if (write.residencyOwners) {
 				if (submitted && write.appendedTo !== submitted) continue;
@@ -2014,8 +2012,7 @@ export class DatabaseTransaction implements Transaction {
 		try {
 			if (this.hasExclusiveWrites)
 				for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
-			if (!this.confirmationCount || !this.writes.some((write) => write?.saved && !write.skipReplicationConfirmation))
-				return;
+			if (!this.confirmationCount || !this.writes.some((write) => write?.saved && !confirmsNothing(write))) return;
 
 			const residentPeerLists = this.residentPeerLists(transaction);
 			if (!this.requestedConfirmationCount && !residentPeerLists) return;

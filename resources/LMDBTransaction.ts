@@ -488,7 +488,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	private confirmationPosition(committedLogPosition?: number): number | undefined {
 		let position: number | undefined;
 		for (const write of this.writes) {
-			if (!write || write.skipReplicationConfirmation) continue;
+			if (!write || confirmsNothing(write)) continue;
 			// A placed write may omit the primary row or leave its older value in place.
 			// The captured audit position still covers that write and the rest of its batch.
 			const localTime =
