@@ -934,16 +934,7 @@ paths; `unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists 
 
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
-`LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's
-`metadataFlags` — so a replication sender skips it by a bitmask test without decoding the value.
-Record mutations set both from `options.localOnly`. A publish applies the option only to its message
-audit entry and preserves the existing row bit, because a message does not change the row's replication
-eligibility. The static protocol verbs never carry the option; of the instance verbs only
-`publish(target, message, options)` forwards one. Crash replay re-derives it from the entry, because
-replay re-encodes the record but never re-appends its audit entry (replay transactions are `isRetry`).
-The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
-mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
-Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
+`LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's `metadataFlags` — so a replication sender skips it by a bitmask test without decoding the value. Record mutations set both from `options.localOnly`. A publish applies the option only to its message audit entry and preserves the existing row bit, because a message does not change the row's replication eligibility. The static protocol verbs never carry the option; of the instance verbs only `publish(target, message, options)` forwards one. Crash replay re-derives it from the entry, because replay re-encodes the record but never re-appends its audit entry (replay transactions are `isRetry`). The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are. Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
 
 ## A record's residency is the listed nodes plus the writer, and a patch over a stub stays a stub (`Table.ts` `_writeUpdate`, harper#2257)
 
@@ -999,3 +990,7 @@ Every audited write stamps the writing node's short id, so `getThisNodeId` sits 
 ## Query primary-key identity is the stored encoding (`search.ts` `CandidateKeySet`)
 
 A query compares primary keys by the store's own key encoding (`writeKeyId`), never by a joined string or object identity: a composite key decodes to a fresh array per read, and `['t', 7]`, `['t', '7']` and `'t\0007'` join to the same string. The adaptive id filter and the OR union use `CandidateKeySet`; a hit in the id filter replaces the record predicate (`Table.ts` `idFiltersApplied`), so a lossy identity returns a non-matching record. The OR dedupe set is per iteration, and `searchByIndex` resolves a comparator alias once before reading the range flags. `joinFrom` and `joinTo` still key by object identity (#3394). Pinned by `unitTests/resources/searchKeyIdentity.test.js`.
+
+## Validation keeps a patch operation and coerces only its operand (`Table.ts` `validate`)
+
+A top-level `{ __op__, value }` patch on a numeric (`Int`/`Long`/`Float`/`Number`/`BigInt`/`Any`) or untyped attribute whose `__op__` is in `crdt.operations` keeps its envelope (replacing it with a scalar turns an increment into an assignment, and `updateAndFreeze` applies no nested envelope) with its finite-number/bigint operand coerced in place or into a new envelope when frozen (`0n` included; stored-value checks are harper#3568), enforced by `unitTests/resources/validation.test.js` (harper#3577).

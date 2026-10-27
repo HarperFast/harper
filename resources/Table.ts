@@ -228,7 +228,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
-import { commutativeOpsOf, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
+import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -296,6 +296,7 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
+const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
@@ -8539,9 +8540,8 @@ export function makeTable(options): TableResourceClass {
 			};
 			const validateValue = (value, attribute: Attribute, name) => {
 				if (attribute.type && value != null) {
-					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
-						if (typeof value !== 'object') {
+						if (typeof value !== 'object' || Array.isArray(value)) {
 							addError(
 								name,
 								'type',
@@ -8549,31 +8549,35 @@ export function makeTable(options): TableResourceClass {
 									attribute.type ? ' (' + attribute.type + ')' : ''
 								}`
 							);
-						}
-						const properties = attribute.properties;
-						for (let i = 0, l = properties.length; i < l; i++) {
-							const attribute = properties[i];
-							if (attribute.relationship || attribute.computed) {
-								if (record.hasOwnProperty(attribute.name)) {
-									addError(
-										`${name}.${attribute.name}`,
-										'computed',
-										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
-									);
+						} else {
+							const properties = attribute.properties;
+							let changes;
+							for (let i = 0, l = properties.length; i < l; i++) {
+								const attribute = properties[i];
+								if (attribute.relationship || attribute.computed) {
+									// a tracked sub-object holds assignments in its pending changes, not as own properties
+									changes ??= (typeof value.getChanges === 'function' && value.getChanges()) || false;
+									if (Object.hasOwn(value, attribute.name) || (changes && Object.hasOwn(changes, attribute.name))) {
+										addError(
+											`${name}.${attribute.name}`,
+											'computed',
+											`Computed property ${name}.${attribute.name} may not be directly assigned a value`
+										);
+									}
+									continue;
 								}
-								continue;
+								const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
+								if (updated !== undefined) value[attribute.name] = updated;
 							}
-							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
-							if (updated) value[attribute.name] = updated;
-						}
-						if (attribute.sealed && value != null && typeof value === 'object') {
-							for (const key in value) {
-								if (!properties.find((property) => property.name === key)) {
-									addError(
-										`${name}.${key}`,
-										'unknown_property',
-										`Property ${key} is not allowed within object in property ${name}`
-									);
+							if (attribute.sealed) {
+								for (const key in value) {
+									if (!properties.find((property) => property.name === key)) {
+										addError(
+											`${name}.${key}`,
+											'unknown_property',
+											`Property ${key} is not allowed within object in property ${name}`
+										);
+									}
 								}
 							}
 						}
@@ -8658,7 +8662,7 @@ export function makeTable(options): TableResourceClass {
 										for (let i = 0, l = value.length; i < l; i++) {
 											const element = value[i];
 											const updated = validateValue(element, attribute.elements, name + '[*]');
-											if (updated) value[i] = updated;
+											if (updated !== undefined) value[i] = updated;
 										}
 									}
 								} else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be an Array`);
@@ -8684,8 +8688,41 @@ export function makeTable(options): TableResourceClass {
 					continue;
 				}
 				if (!patch || attribute.name in record) {
-					const updated = validateValue(record[attribute.name], attribute, attribute.name);
-					if (updated !== undefined) record[attribute.name] = updated;
+					const name = attribute.name;
+					const value = record[name];
+					if (patch && typeof value === 'object' && value?.__op__) {
+						// A patch operation (`{ __op__: 'add', value }`) is applied at commit, and only on top-level
+						// properties, so it stays in the record with its operand coerced.
+						const operand = value.value;
+						if (!crdtOperations[value.__op__]) {
+							addError(name, 'type', `Operation ${stringify(value.__op__)} in property ${name} is not supported`);
+						} else if (attribute.type && !OPERATION_TYPES.has(attribute.type)) {
+							addError(
+								name,
+								'type',
+								`Operation ${value.__op__} in property ${name} requires a numeric property, not ${attribute.type}`
+							);
+						} else if (
+							typeof operand !== 'bigint' &&
+							!Number.isFinite(operand) &&
+							!(attribute.type === 'BigInt' && typeof operand === 'string')
+						) {
+							addError(
+								name,
+								'type',
+								`Value ${stringify(operand)} for operation ${value.__op__} in property ${name} must be numeric`
+							);
+						} else {
+							const coerced = validateValue(operand, attribute, name);
+							if (coerced !== undefined) {
+								if (Object.isFrozen(value)) record[name] = { __op__: value.__op__, value: coerced };
+								else value.value = coerced;
+							}
+						}
+					} else {
+						const updated = validateValue(value, attribute, name);
+						if (updated !== undefined) record[name] = updated;
+					}
 				}
 			}
 			if (sealed) {
