@@ -4295,8 +4295,8 @@ function searchScanning(holder: DatabaseTransaction): boolean {
 
 function leasePartnerScanning(txn: DatabaseTransaction): boolean {
 	let scanning = false;
-	if (txn.readLeases) for (const { holder } of txn.readLeases) if (searchScanning(holder)) scanning = true;
-	if (txn.heldLeases && searchScanning(txn)) scanning = true;
+	if (txn.readLeases?.size) for (const { holder } of txn.readLeases) if (searchScanning(holder)) scanning = true;
+	if (txn.heldLeases?.size && searchScanning(txn)) scanning = true;
 	return scanning;
 }
 

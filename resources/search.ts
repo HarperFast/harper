@@ -75,8 +75,7 @@ export function executeConditions(
 	context,
 	transformToEntries,
 	filtered,
-	recordAccess?,
-	readTxnFor?: (relatedTable: any) => any
+	recordAccess?
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -151,16 +150,17 @@ export function executeConditions(
 				request,
 				context,
 				transformToEntries,
-				filtered,
+				filtered
 				// recordAccess intentionally omitted: guards run once, at the top level (see above).
-				undefined,
-				readTxnFor
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
-			readTxnFor,
+			holderTable: table,
+			holderReadTxn: txn,
+			disableSnapshot: request.snapshot === false,
+			leaseHost: filtered,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
@@ -888,6 +888,29 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
  * @param Table
  * @param options
  */
+export const RELATED_LEASES = Symbol('relatedLeases');
+
+/**
+ * A join into another database scans that database's index lazily, after the request commits, so the
+ * search's results hold a lease on that database's link until they are done; the leases live on the
+ * search's `filtered` object, created on the first join that needs one, and `Table.search` releases them.
+ */
+function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, disableSnapshot, leaseHost) {
+	if (!holderReadTxn || !leaseHost || !context) return;
+	const holder = holderTable._txnForContext(context);
+	const link = relatedTable._txnForContext(context);
+	if (link === holder) return holderReadTxn;
+	const leases = (leaseHost[RELATED_LEASES] ??= new Map());
+	let lease = leases.get(link);
+	if (!lease) leases.set(link, (lease = link.leaseReadTxn(holder, disableSnapshot)));
+	return lease.readTxn;
+}
+
+export function releaseRelatedLeases(leaseHost) {
+	const leases = leaseHost[RELATED_LEASES];
+	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
 export function searchByIndex(
 	searchCondition: DirectCondition,
 	transaction: any,
@@ -903,15 +926,31 @@ export function searchByIndex(
 		minResults?: number;
 		// Rows before this offset are needed for correct paging but do not need highlight metadata.
 		resultOffset?: number;
-		// A join into another database reads through this; without it, that database's latest committed state.
-		readTxnFor?: (relatedTable: any) => any;
+		// What a join into another database needs to lease that database's read handle for the search
+		// (see leaseRelatedReadTxn); without them it reads that database's latest committed state.
+		holderTable?: any;
+		holderReadTxn?: any;
+		disableSnapshot?: boolean;
+		leaseHost?: any;
+		leaseContext?: any;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults, resultOffset, readTxnFor } = options;
+	const {
+		allowFullScan,
+		filtered,
+		context,
+		minResults,
+		resultOffset,
+		holderTable,
+		holderReadTxn,
+		disableSnapshot,
+		leaseHost,
+	} = options;
+	const leaseContext = options.leaseContext ?? context;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -946,10 +985,12 @@ export function searchByIndex(
 					comparator,
 					negated: searchCondition.negated,
 				},
-				relatedTable.primaryStore.path === Table.primaryStore.path ? transaction : readTxnFor?.(relatedTable),
+				relatedTable.primaryStore.path === Table.primaryStore.path
+					? transaction
+					: leaseRelatedReadTxn(relatedTable, leaseContext, holderTable, holderReadTxn, disableSnapshot, leaseHost),
 				reverse,
 				relatedTable,
-				{ allowFullScan, filtered: joined, readTxnFor }
+				{ allowFullScan, filtered: joined, holderTable, holderReadTxn, disableSnapshot, leaseHost, leaseContext }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match

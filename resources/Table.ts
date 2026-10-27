@@ -56,7 +56,6 @@ import {
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
-	type ReadLease,
 	confirmingResidents,
 	getReadTransactionGuard,
 } from './DatabaseTransaction.ts';
@@ -139,6 +138,7 @@ import {
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
 	searchByIndex,
+	releaseRelatedLeases,
 	findAttribute,
 	estimateCondition,
 	estimatedEntryCount,
@@ -6688,23 +6688,6 @@ export function makeTable(options): TableResourceClass {
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
 			const readTxnGeneration = txn.readTxnGeneration;
-			// A join into another database scans that database's indexes lazily, after the request commits,
-			// so the results hold a lease on each such link until they are done.
-			let relatedLeases: Map<DatabaseTransaction, ReadLease> | undefined;
-			const readTxnFor =
-				readTxn && hasRelationships && hasCrossDatabaseJoin(conditions, TableResource)
-					? (relatedTable: typeof TableResource) => {
-							const link = relatedTable._txnForContext(context);
-							if (link === txn) return readTxn;
-							relatedLeases ??= new Map();
-							let lease = relatedLeases.get(link);
-							if (!lease) {
-								lease = link.leaseReadTxn(txn, target.snapshot === false);
-								relatedLeases.set(link, lease);
-							}
-							return lease.readTxn;
-						}
-					: undefined;
 			// The explicit row filter participates in query execution: it is pushed into HNSW
 			// traversal for vector sorts, applied after conditions otherwise, and checked again after
 			// cache/source materialization below. A policy error aborts the query instead of silently
@@ -6733,8 +6716,7 @@ export function makeTable(options): TableResourceClass {
 					context,
 					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 					filtered,
-					recordAccess,
-					readTxnFor
+					recordAccess
 				);
 				const ensure_loaded = (target as any).ensureLoaded !== false;
 				// The guards inside executeConditions evaluate the
@@ -6854,7 +6836,7 @@ export function makeTable(options): TableResourceClass {
 								try {
 									if (readTxn) txn.doneReadTxn(readTxnGeneration);
 								} finally {
-									releaseLeases(relatedLeases);
+									releaseRelatedLeases(filtered);
 								}
 							}
 						}
@@ -6898,7 +6880,7 @@ export function makeTable(options): TableResourceClass {
 					(transformToRecord as any).return?.();
 					txn.unregisterReadIterator(results);
 					if (readTxn) txn.doneReadTxn(readTxnGeneration);
-					releaseLeases(relatedLeases);
+					releaseRelatedLeases(filtered);
 				};
 				// Recorded ownership: if the request dies before anything consumes these results, the
 				// transaction closes them itself rather than leaving its read snapshot pinned.
@@ -6908,7 +6890,7 @@ export function makeTable(options): TableResourceClass {
 				return results;
 			} catch (error) {
 				if (readTxn) txn.doneReadTxn(readTxnGeneration);
-				releaseLeases(relatedLeases);
+				releaseRelatedLeases(filtered);
 				throw error;
 			}
 		}
@@ -12661,31 +12643,6 @@ const RELATED_READS_IN_FLIGHT = 16;
 // for filtering
 function exists(value) {
 	return value != null;
-}
-
-function releaseLeases(leases: Map<DatabaseTransaction, ReadLease> | undefined) {
-	if (leases) for (const lease of leases.values()) lease.onDone?.();
-}
-
-function hasCrossDatabaseJoin(conditions: any[], table: any): boolean {
-	for (const condition of conditions) {
-		if (condition.conditions) {
-			if (hasCrossDatabaseJoin(condition.conditions, table)) return true;
-			continue;
-		}
-		const attribute = condition.attribute ?? condition[0];
-		if (!Array.isArray(attribute)) continue;
-		let hop = table;
-		for (let i = 0; i < attribute.length - 1; i++) {
-			const relationship = findAttribute(hop.attributes, attribute[i]);
-			if (!relationship?.relationship) break;
-			const related = relationship.definition?.tableClass || relationship.elements?.definition?.tableClass;
-			if (!related) break;
-			if (related.primaryStore.path !== hop.primaryStore.path) return true;
-			hop = related;
-		}
-	}
-	return false;
 }
 
 function stringify(value) {
