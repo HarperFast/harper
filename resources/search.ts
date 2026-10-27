@@ -1477,8 +1477,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 }
 const entryValue = (entry) => entry?.value;
 function ignoreReturnFailure() {}
-// Array map whose callback may return Promises: when a later call throws, the earlier pending Promises are
-// observed, so their rejections are not reported as unhandled for a query that has already failed
+// when a later call throws, the earlier pending results are observed so their rejections are not reported unhandled
 function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
 	const results = [];
 	try {

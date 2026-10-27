@@ -8962,8 +8962,7 @@ export function makeTable(options): TableResourceClass {
 								const id = object[relationship.from ? relationship.from : primaryKey];
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
-							attribute.resolve.resolveKeys = (object, context) =>
-								txnForContext(context).getReadTxn()?.isDone ? [] : searchRelated(object, context).asArray;
+							attribute.resolve.resolveKeys = (object, context) => searchRelated(object, context).asArray;
 							attribute.resolve.loadEntries = (object, context) => {
 								const keys = attribute.resolve.resolveKeys(object, context);
 								const relatedTable = attribute.elements.definition.tableClass;
@@ -10147,8 +10146,6 @@ export function makeTable(options): TableResourceClass {
 	// must settle to what the relationship resolver returns with returnEntry
 	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
 		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
-		// as in loadLocalRecord: the query ended, so read nothing more through its finished transaction
-		if (options.transaction?.isDone) return settleRelatedEntries([], filterMissing);
 		let pending = false;
 		const entries = [];
 		try {
@@ -10169,9 +10166,10 @@ export function makeTable(options): TableResourceClass {
 		return filterMissing ? entries.filter(exists) : entries;
 	}
 	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
-		const transaction = txnForContext(context).getReadTxn();
-		if (transaction?.isDone) return;
-		const entry = relatedTable.primaryStore.getEntry(key, { transaction, async: true });
+		const entry = relatedTable.primaryStore.getEntry(key, {
+			transaction: txnForContext(context).getReadTxn(),
+			async: true,
+		});
 		return entry?.then ? entry.then(freezeRelatedEntry) : freezeRelatedEntry(entry);
 	}
 	function freezeRelatedEntry(entry: any) {
@@ -10252,11 +10250,11 @@ export function makeTable(options): TableResourceClass {
 		}
 		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
 			for (let i = start; i < filtersLength; i++) {
-				if (applied?.includes(i)) continue; // already applied
+				if (applied?.includes(i)) continue;
 				const matches = matchers[i](record, entry);
 				if (matches?.then)
 					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
-				if (!matches) return SKIP; // didn't match filters
+				if (!matches) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
 			return entry;
