@@ -6687,7 +6687,7 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
-					// RocksDB logs only the first attempt's delta, which lacks these when that attempt read a live record
+					// A patch that merges onto no record may lack both fields (a retry is not re-logged); fill them identically on every node
 					if (!fullUpdate && existingRecord == null && recordToStore)
 						recordToStore = completeCreatedRecord(recordToStore, id, options?.version ?? txnTime);
 					this.#record = recordToStore;

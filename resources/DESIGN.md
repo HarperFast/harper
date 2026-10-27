@@ -308,7 +308,7 @@ A `PrimaryRocksDatabase` store that never runs `initStore` (notably `__dbis__`) 
 
 ## A patch that creates a record derives its primary key and created time at commit (`_writeUpdate`)
 
-`validate` stamps `@createdTime` once, against the base it read; an `INVALIDATED` stub without a created time counts as no base unless it carries a residency list (its record, and created time, live on the residents). A patch that read a live record but lands on none (a delete won the race, so its conflict retry reloads a tombstone) carries neither field, and on RocksDB only the first attempt is logged (`RocksTransactionLogStore.put` skips `isRetry`), so replicas and replay apply that same bare delta. The commit therefore fills both on every path, origin and applied alike, whenever a non-full update merges onto no record: primary key = id, created time = the carried record version (`options.version ?? txnTime`, since LMDB commits an applied write at its log clock), fill-only, copying because the merge onto no record can return the caller's delta. A put prepared against absence that lands on a concurrent create keeps its own stamp, which is also what it logged. Enforced by `unitTests/resources/createdTimeBase.test.js` (both engines).
+`_writeUpdate`'s `validate` callback stamps `@createdTime` once, against the base it read; an `INVALIDATED` stub without a created time (from `invalidate()` before any write, or a legacy/post-declaration stub) counts as no base unless it carries a residency list (its record, and created time, live on the residents). A patch that read a live record but lands on none (a delete won the race, so its conflict retry reloads a tombstone) carries neither field, and on RocksDB only the first attempt is logged (`RocksTransactionLogStore.put` skips `isRetry`), so replicas and replay apply that same bare delta. The commit therefore fills both on every path, origin and applied alike, whenever a non-full update merges onto no record: primary key = id, created time = the carried record version (`options.version ?? txnTime`, since LMDB commits an applied write at its log clock), fill-only (a delta that already carried the attribute keeps what `validate` copied), copying because the merge onto no record can return the caller's delta. A put prepared against absence that lands on a concurrent create keeps its own stamp, which is also what it logged. Enforced by `unitTests/resources/createdTimeBase.test.js` (both engines).
 
 ## getFromSource() timing: promise resolves before commit runs
 
@@ -551,15 +551,7 @@ Two `update()`+`save()` cycles on one resource instance outside `transaction()` 
 
 ## A commit retry re-saves into the transaction it is retrying; `ImmediateTransaction.save()` must forward it
 
-Every retry and replay round of `commit()` re-stages into the native handle being retried, and
-`ImmediateTransaction.save()` forwards whenever `isCommitting` is set or the call carries `transaction`
-or `options`: without it, `DatabaseTransaction.save()` opens a fresh handle and nests a `commit()` whose
-retry loop re-enters the override without bound (`RangeError`, harper#2825), or a nested retry running
-after `isCommitting` reset starts a new top-level commit instead of re-staging onto its own handle. A
-retry round's handle is detached, so a re-save that throws releases it before `abort()`, or its write
-intents park other writers until GC. Pinned by `immediateTransactionConflictRetry.test.js` ("…not a
-nested commit", "releases the replay transaction when a lapsed lease refuses a re-save…") and
-`noAbortAfterTxnLog.test.js`.
+Every retry and replay round of `commit()` re-stages into the native handle being retried, and `ImmediateTransaction.save()` forwards whenever `isCommitting` is set or the call carries `transaction` or `options`: without it, `DatabaseTransaction.save()` opens a fresh handle and nests a `commit()` whose retry loop re-enters the override without bound (`RangeError`, harper#2825), or a nested retry running after `isCommitting` reset starts a new top-level commit instead of re-staging onto its own handle. A retry round's handle is detached, so a re-save that throws releases it before `abort()`, or its write intents park other writers until GC. Pinned by `immediateTransactionConflictRetry.test.js` ("…not a nested commit", "releases the replay transaction when a lapsed lease refuses a re-save…") and `noAbortAfterTxnLog.test.js`.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

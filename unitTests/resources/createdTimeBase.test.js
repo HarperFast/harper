@@ -182,7 +182,9 @@ describe('@createdTime follows the record a write lands on', function () {
 		assert.ok(stub.metadataFlags & INVALIDATED && stub.residencyId, 'the invalidation left a residency stub');
 		assert.equal(stub.value.createdAt, undefined);
 		await Item.patch(id, { name: 'local' });
-		assert.equal(lastLoggedWrite(Item, id).value.createdAt, undefined);
+		const logged = lastLoggedWrite(Item, id);
+		assert.equal(logged.value.name, 'local');
+		assert.equal(logged.value.createdAt, undefined);
 	});
 
 	describe('a patch that recreates a deleted record', () => {
