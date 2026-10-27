@@ -2463,13 +2463,35 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		const rootStore = T.auditStore.rootStore;
 		const { session } = await connect(`closing-${name}`);
 		const status = rootStore.status;
+		const getKeys = T.auditStore.getKeys;
+		let reads = 0;
+		T.auditStore.getKeys = function (...args) {
+			reads++;
+			return getKeys.apply(this, args);
+		};
 		rootStore.status = 'closing';
 		try {
 			await assert.rejects(session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 0 }, true), DatabaseClosingError);
 		} finally {
 			rootStore.status = status;
+			T.auditStore.getKeys = getKeys;
 		}
+		assert.strictEqual(reads, 0, 'the log was read');
 		session.disconnect(true);
+	});
+
+	it('starts a new LMDB subscription that reports progress at its newest committed log key, or 1 for an empty log', async function () {
+		if (isRocksDB) this.skip();
+		const { T } = topicTable();
+		const empty = await T.subscribe({ reportProgress: true, omitCurrent: true });
+		assert.strictEqual(empty.localResumeStart, 1);
+		empty.end();
+		await T.put('a', { value: 'a1' });
+		await T.put('z', { value: 'z1' });
+		const [newest] = T.auditStore.getKeys({ reverse: true, limit: 1 });
+		const started = await T.subscribe({ reportProgress: true, omitCurrent: true });
+		assert.strictEqual(started.localResumeStart, newest);
+		started.end();
 	});
 
 	it('resumes a topic subscribed while its log was empty with only what was written after', async () => {
