@@ -37,7 +37,7 @@ jobs:
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above the
     # largest shard's sum (37 on `main`), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 38
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -48,15 +48,10 @@ jobs:
         # (harper#2587, harper#2017). `test:unit:lmdb` chains its own resources/apitests/bin runs
         # with `&&`, so a failure there stops at the first of those three.
         #
-        # Size a cap you are changing at roughly 1.5x that suite's slowest run which REACHED
-        # mocha's epilogue, pooling all Node legs since none is reliably the slowest, and re-derive
-        # it from the Actions step API: a cap-killed sample is right-censored and reads far too low.
-        # Derived 2026-10-27 over 66 Node legs since 2026-10-22: main 4m12, components 2m41,
-        # server 4m58, resources (indexes) 3m29 (1.5x is 5m14, so 6m), lmdb 5m34 (so 9m).
-        # `resources (core)` reached its epilogue at 8m12 — past its 8m cap — before the two
-        # retry-exhaustion tests stopped waiting out the production backoff (~40s), so ~7m30. It
-        # splits by file name at `r`; a local run put 68% of it in `a-q` (CI's per-suite times put
-        # 52%), so sized at the larger share: a-q ~5m06 -> 8m, r-z ~3m54 -> 6m.
+        # Size a cap at roughly 1.5x that suite's slowest run which REACHED mocha's epilogue,
+        # pooling all Node legs since none is reliably the slowest, and re-derive it from the
+        # Actions step API: a cap-killed sample is right-censored and reads far too low. The
+        # `resources-core` halves are not balanced by size, so size each from its own runs.
         #
         # The resources shards partition the suite by file name, so a file added later lands in
         # exactly one of them; AGENTS.md carries the pattern. They are the only default-engine run
@@ -145,19 +140,6 @@ jobs:
         timeout-minutes: 3
         run: npm run test:unit:apitests
 
-  # The one required check for this workflow: branch protection names this job rather than the
-  # shard legs, so shards can be added or renamed without touching the ruleset. `always()` rather
-  # than `!cancelled()`, because a skipped required check reads as passing.
-  unit-test-result:
-    name: Unit Test
-    if: always()
-    needs: [unit-test]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: All unit-test shards passed
-        run: test "${{ needs.unit-test.result }}" = success
-
   unit-test-source:
     name: Native Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
@@ -167,9 +149,7 @@ jobs:
       matrix:
         # 22.18.0 and 24.0.0 are the package.json `engines` floors, the oldest runtimes that must
         # run the .ts sources directly; they run with Node 22 nightly. Caps follow the rule on the
-        # `unit-test` job, over the same window: core 6m27, resources (core) 7m33 before the
-        # retry-exhaustion fix (~6m53 after, split as there: a-q ~4m41 -> 8m, r-z ~3m35 -> 6m),
-        # resources (indexes) 3m49.
+        # `unit-test` job.
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all') && '["22.18.0", "24.0.0", 22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
         shard: [core, resources-core-a-q, resources-core-r-z, resources-indexes]
         include:
@@ -223,9 +203,6 @@ jobs:
   # reason it is there) and the reason the run is split into one mocha process per
   # directory all live in unitTests/windowsGate.mjs — read its header before changing
   # what this job covers.
-  #
-  # Make this `unit-test-windows` job a REQUIRED status check on `main`. It fires on
-  # every PR with no `paths:` filter, so it is satisfiable.
   unit-test-windows:
     name: Unit Test (Windows, Node.js v26)
     runs-on: windows-latest
@@ -352,3 +329,21 @@ jobs:
 
       - name: Native full-text lifecycle test
         run: npx mocha unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTableSearch.test.js --forbid-pending --fail-zero
+
+  # The one required check for this workflow: branch protection names this job rather than the
+  # legs, so legs can be added or renamed without touching the ruleset. `always()` rather than
+  # `!cancelled()`, because a skipped required check reads as passing. Every job above runs
+  # unconditionally, so `success` is the only passing result.
+  unit-test-result:
+    name: Unit Test
+    if: always()
+    needs: [unit-test, unit-test-source, unit-test-windows, hnsw-plane, uws-tcp-macos, fulltext-plane]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every unit-test job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do [ "$result" = success ] || exit 1; done

@@ -39,8 +39,13 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 			audit: true,
 		});
 		process.on('unhandledRejection', onUnhandled);
-		// the backoff schedule is not under test; at the production cap it spends ~20s per exhaustion
 		previousMaxRetryDelay = setMaxRetryDelayMs(1);
+		// the tests run at a 1ms cap; this keeps the production schedule's worst case (every retry at
+		// the cap) inside client socket timeouts, which is what harper#1785 depends on
+		assert.ok(
+			previousMaxRetryDelay * MAX_RETRIES <= 50000,
+			`retry exhaustion could take ${previousMaxRetryDelay * MAX_RETRIES}ms at the production backoff cap`
+		);
 	});
 
 	after(() => {
