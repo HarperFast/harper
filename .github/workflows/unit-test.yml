@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
+        node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
         shard: [main, components, server, resources-core-a-q, resources-core-r-z, resources-indexes, lmdb]
         # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
         # each shard's test-step cap is what turns a wedged suite into a reported failure
@@ -149,7 +149,7 @@ jobs:
         # 22.18.0 and 24.0.0 are the package.json `engines` floors, the oldest runtimes that must
         # run the .ts sources directly; they run with Node 22 nightly. Caps follow the rule on the
         # `unit-test` job.
-        node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all') && '["22.18.0", "24.0.0", 22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
+        node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '["22.18.0", "24.0.0", 22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
         shard: [core, resources-core-a-q, resources-core-r-z, resources-indexes]
         include:
           - shard: core

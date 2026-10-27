@@ -126,13 +126,18 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	it('rejects with the retry-exhaustion ServerError when commits reject (ERR_BUSY)', async function () {
 		this.timeout(15000);
 		const { attempts, restore } = failCommits('reject', 'ERR_BUSY');
+		// at a 25ms cap a capped schedule exhausts in about 1s; one that ignores the cap takes ~20s
+		setMaxRetryDelayMs(25);
+		const started = performance.now();
 		try {
 			const { outcome, error } = await raceOutcome(writeThatExhausts('busy'), 10000);
+			assert.ok(performance.now() - started < 5000, 'the backoff schedule must honor its cap');
 			assert.equal(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
 			assert.match(error.message, /After 40 retries, unable to commit/);
 			assert.equal(error.statusCode, 500, 'the exhaustion error must carry an HTTP status');
 			assert.equal(attempts.length, MAX_RETRIES + 1, 'one initial attempt plus MAX_RETRIES retries');
 		} finally {
+			setMaxRetryDelayMs(1);
 			restore();
 		}
 		// unhandledRejection is emitted on a later event-loop turn than the rejection itself;

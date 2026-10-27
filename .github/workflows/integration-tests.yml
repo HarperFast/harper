@@ -67,8 +67,11 @@ jobs:
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             # PR pushes run the recommended Node version alone to keep the dev loop fast.
             echo "node-versions=[26]" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" == "push" ]; then
+          elif [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref_name }}" == "main" ]; then
+            # release branches have no nightly run, so their pushes take the full set below
             echo "node-versions=[24, 26]" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
             echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           else

@@ -637,9 +637,14 @@ jobs:
           # Pin the Node matrix. These inputs default to `all`, which is the
           # nightly-scale matrix (~43 jobs); a PR push runs a single version.
           # Unpinned, one push to a PR milestoned onto three release branches
-          # dispatches that matrix three times.
-          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=26
-          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=26
+          # dispatches that matrix three times. Branches cut before Node 26
+          # (v5.0) do not offer it as an input, and the dispatch would fail.
+          NODE_VERSION=24
+          if git show "${BRANCH}:.github/workflows/unit-test.yml" | grep -qE "^[[:space:]]*- '26'[[:space:]]*$"; then
+            NODE_VERSION=26
+          fi
+          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$NODE_VERSION"
+          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$NODE_VERSION"
 
           # Locate the dispatched integration-tests run id (creation is async)
           RUN_ID=""

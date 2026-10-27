@@ -36,7 +36,7 @@ Branch protection requires only the `Unit Test` job, which needs every other job
 
 ## Which Node versions run when (`workflows/unit-test.yml`, `workflows/integration-tests.yml`)
 
-Node 26 is the recommended runtime, so every single-version job runs it, and pull requests run unit tests on 24 and 26 and integration tests on 26 alone. Pushes to `main` and release branches run both on 24 and 26. Node 22 runs only nightly and on a manual `all` dispatch, as do the native type-strip legs on `22.18.0` and `24.0.0`, the `engines` floors in `package.json`, which are the oldest runtimes that must run the `.ts` sources directly. The integration check names carry the Node version, so moving the PR version means changing the ruleset's required checks in the same release.
+Node 26 is the recommended runtime, so every single-version job runs it, and pull requests run unit tests on 24 and 26 and integration tests on 26 alone. Pushes to `main` run both on 24 and 26. Node 22 runs nightly and on a manual `all` dispatch, as do the native type-strip legs on `22.18.0` and `24.0.0`, the `engines` floors in `package.json`, which are the oldest runtimes that must run the `.ts` sources directly. The nightly schedule runs only on `main`, so a push to a release branch runs that full set: a patch release still ships to Node 22 users. The cherry-pick job dispatches a release branch's tests on Node 26, or on 24 when that branch's workflows predate 26. The integration check names carry the Node version, so moving the PR version means changing the ruleset's required checks in the same release.
 
 ## A release cherry-pick skips a change its branch already has (`workflows/cherry-pick-patch.yml`, `scripts/change-landed.sh`)
 
