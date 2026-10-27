@@ -452,7 +452,7 @@ function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, un
 			if (name in namespace) continue;
 			try {
 				const descriptor = Object.getOwnPropertyDescriptor(cjsExports, name);
-				if (descriptor && 'value' in descriptor) {
+				if (descriptor && 'value' in descriptor && !(name === 'then' && typeof descriptor.value === 'function')) {
 					names[name] = descriptor.value;
 				}
 			} catch {}
