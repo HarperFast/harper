@@ -71,11 +71,12 @@ describe('cross-database relationship search', function () {
 		// matches (RocksDB only: the monitor case it feeds does not run on LMDB)
 		if (!Emp.primaryStore.path?.endsWith('.mdb')) {
 			await transaction({}, () => {
+				const puts = [];
 				for (let i = 0; i < VAULTS; i++) {
 					const name = `name-${String(i).padStart(5, '0')}`;
-					Vault.put({ id: `v${i}`, name });
-					Org.put({ id: `o${i}`, name });
+					puts.push(Vault.put({ id: `v${i}`, name }), Org.put({ id: `o${i}`, name }));
 				}
+				return Promise.all(puts);
 			});
 		}
 		await Org.put({ id: 'oAlpha', name: 'zz-Alpha' });
