@@ -305,25 +305,30 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 
 /**
  * The origin's generation its rows show current: the one its direct route last certified, when that route saw it
- * replace every other generation the rows name, or else the only one they name. A floor cannot order generations:
- * floors sample the origin's clock, which a restore can set back. A relayed route is no witness either: a restored
- * relay can forward a generation older than one it already forwarded. Undefined when nothing orders them, so the
- * origin certifies nothing.
+ * replace every other generation the rows name, or else the only one they name; either way one a row certifies at
+ * level 2. A row at level 1 names the generation it last certified. A floor cannot order generations: floors sample the
+ * origin's clock, which a restore can set back. A relayed route is no witness either: a restored relay can forward a
+ * generation older than one it already forwarded. Undefined when nothing orders them, so the origin certifies nothing.
  */
 function currentGeneration(nodeId: number, originEntries: { node: any; routeId: number }[]): string | undefined {
 	const named = new Set<string>();
+	const certified = new Set<string>();
 	let direct: any;
 	for (const { node, routeId } of originEntries) {
 		if (routeId === nodeId) direct = node;
-		if (typeof node.originGeneration === 'string') named.add(node.originGeneration);
+		const generation = node.originGeneration ?? node.lastGeneration;
+		if (typeof generation === 'string') named.add(generation);
+		if (typeof node.originGeneration === 'string') certified.add(node.originGeneration);
 	}
-	// kept across level-1 certificates, so a relayed row of a generation it left cannot become current again; certified
-	// at level 2 by no row, it is current nowhere either
 	const latest = direct?.originGeneration ?? direct?.lastGeneration;
-	if (typeof latest !== 'string') return named.size === 1 ? named.values().next().value : undefined;
+	if (typeof latest !== 'string') {
+		const [only] = named;
+		return named.size === 1 && certified.has(only) ? only : undefined;
+	}
 	const replaced = Array.isArray(direct.replacedGenerations) ? direct.replacedGenerations : [];
+	if (!certified.has(latest)) return;
 	// the origin certified a generation it had already left: its history is not one line
-	if (replaced.includes(latest) || !named.has(latest)) return;
+	if (replaced.includes(latest)) return;
 	for (const generation of named) if (generation !== latest && !replaced.includes(generation)) return;
 	return latest;
 }

@@ -750,6 +750,11 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				await refuses(T, token, 'a relayed route that saw g1 replaced');
 				await sleep(400);
 				assert.strictEqual(subscription.checkpoint(), undefined, 'no capture names either generation');
+				route(retained, healthy(g1, floor + 100));
+				route(live, { closedFloor: floor + 200, lastGeneration: g2 });
+				await refuses(T, token, 'a relay that certified g2 before it dropped to level 1');
+				T.dbisDB.removeSync([SEQ, live]);
+				assert.strictEqual(await admits(T, token), true);
 				subscription.end();
 			});
 
@@ -848,7 +853,6 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				let g2Token;
 				await waitFor(() => (g2Token = subscription.checkpoint())?.members === members(g2));
 				assert.strictEqual(await admits(T, g2Token), true);
-				// a copy bound over g2's route voids it, and g1's higher floor on the relay is no fallback
 				const rootStore = T.primaryStore.rootStore;
 				await writeCopyBounds(rootStore, relay, { raise: new Map([[origin, floor - 1000]]) });
 				await refuses(T, g2Token, 'a copy bound covers the g2 route');
