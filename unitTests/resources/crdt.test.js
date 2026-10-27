@@ -576,7 +576,20 @@ describe('crdt getRecordAtTime', () => {
 				{ version: 40, type: 'patch', value: { count: 100 }, previousVersion: 30 },
 			]);
 			const current = currentEntry({ id: 'T', count: 100 }, 40);
-			assert.notStrictEqual(getRecordAtTime(current, 30, store, 1, 'T').count, 1.5);
+			// history before the invalidate cannot settle `count`, so the newer plain set's value stands
+			assert.strictEqual(getRecordAtTime(current, 30, store, 1, 'T').count, 100);
+			assert.strictEqual(getRecordAtTime(current, 25, store, 1, 'T').count, 100);
+		});
+
+		it('does not reverse an older add under a newer plain set', () => {
+			const store = makeStore([
+				// version 10 (put { id: 'U', count: 1 }) was pruned by audit retention
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(2.5) }, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { count: 10n }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ id: 'U', v: 2, count: 10n }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'U'), { id: 'U', v: 2, count: 10n });
 		});
 
 		it('rebuilds a snapshot older than a newer invalidate from history, not from its stub', () => {

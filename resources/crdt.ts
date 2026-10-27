@@ -131,14 +131,22 @@ function holdsField(record: any, key: string) {
 	return false;
 }
 
-// A plain set has no inverse, so its key is left to older history (`unknowns`). An add reverses
+// A plain set has no inverse, so its key is left to older history (`unknowns`), and an older add
+// under it is not reversed: subtracting from the set's value would invent one. An add reverses
 // exactly in safe-integer arithmetic, except one that established its field from absent or null,
 // which reverses to 0; such keys wait in `reversedAdds` for getRecordAtTime to keep only a nonzero
 // result (a coerced numeric string or boolean comes back as its number).
-export function applyReverse(record, update, unknowns: Set<string>, reversedAdds: Set<string>) {
+export function applyReverse(
+	record,
+	update,
+	unknowns: Set<string>,
+	reversedAdds: Set<string>,
+	overwritten: Set<string>
+) {
 	for (const key in update) {
 		const value = update[key];
 		if (value?.__op__) {
+			if (overwritten.has(key)) continue;
 			const reverse = operations[value.__op__]?.reverse;
 			if (!reverse) throw new Error(`Unsupported operation ${value.__op__}`);
 			const exact = value.__op__ === 'add' && isExactInteger(record[key]) && isExactInteger(value.value);
@@ -146,6 +154,7 @@ export function applyReverse(record, update, unknowns: Set<string>, reversedAdds
 			(exact ? reversedAdds : unknowns).add(key);
 		} else {
 			unknowns.add(key);
+			overwritten.add(key);
 		}
 	}
 }
@@ -339,6 +348,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
 	const reversedAdds = new Set<string>();
+	const overwritten = new Set<string>();
 	let replaced = false;
 	while (auditTime > timestamp) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
@@ -354,7 +364,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 					const update = auditEntry.getValue(store);
 					// a patch with no readable body cannot be reversed, but the state before it does not need it
 					if (update == null) replaced = true;
-					else applyReverse(record, update, unknowns, reversedAdds);
+					else applyReverse(record, update, unknowns, reversedAdds, overwritten);
 				}
 				break;
 		}
