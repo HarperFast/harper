@@ -1,13 +1,8 @@
 /**
  * `drop_attribute` on a dynamic (`create_table`, no attributes) table rewrites every row without the
- * dropped value. The rewrite must keep each row readable with its remaining fields and its version,
- * and must leave deleted rows deleted.
- *
- * On RocksDB the rewrite used to be a raw primary-store put with no metadata prefix. The second
- * drop's record shape takes classic structure id #2, whose first byte (0x42) the RocksDB decode reads
- * as a version prefix, so every row decoded as null: 200 → 200 → 0 rows
- * (https://github.com/HarperFast/harper/issues/1762). The same rewrite turned a deleted row's
- * tombstone into `{}`, which brought the row back.
+ * dropped value. Every row must stay readable with its remaining fields and its version, and a deleted
+ * row must stay deleted. A raw primary-store rewrite failed both: RocksDB read 200 → 200 → 0 rows over
+ * two drops (harper#1762), and a deleted row came back as `{}`.
  *
  *   npm run test:integration -- "integrationTests/database/drop-attribute-dynamic-rewrite.test.ts"
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/drop-attribute-dynamic-rewrite.test.ts"

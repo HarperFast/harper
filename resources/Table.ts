@@ -758,6 +758,7 @@ const UNREADABLE_LOG_REFUSAL =
 	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
 const STRIP_BATCH_SIZE = 100;
+const STRIP_MAX_ATTEMPTS = 20;
 // metadata flags that describe the record's state; the rest are re-derived from the payloads they announce
 const RECORD_STATE_FLAGS = INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
@@ -1222,7 +1223,6 @@ interface TableResourceClass {
 	get lockCoordinator(): LockCoordinator | undefined;
 	addAttributes(attributesToAdd: Attribute[]): Promise<any>;
 	removeAttributes(names: string[]): Promise<any>;
-	/** Delete the named properties from every stored record, in place (dynamic-table `drop_attribute`). */
 	stripAttributeValues(names: string[]): Promise<void>;
 	/**
 	 * Get the size of the table in bytes (based on amount of pages stored in the database)
@@ -9929,10 +9929,8 @@ export function makeTable(options): TableResourceClass {
 			return (TableResource as any).indexingOperation;
 		}
 		/**
-		 * Rewrite each stored record without the named properties, keeping its version, metadata and (LMDB) local
-		 * time: no audit entry, nothing replicates. Each batch reads and writes its rows in one write transaction
-		 * (exclusive on LMDB, conflict-checked on RocksDB), so a concurrent write or strip is stripped, not reverted.
-		 * Blob files of stripped values are left for cleanup_orphan_blobs: this write is not flushed when it resolves.
+		 * Rewrite each stored record without the named properties, in place: not audited or replicated. See
+		 * resources/DESIGN.md for what a concurrent write sees.
 		 */
 		static async stripAttributeValues(names: string[]) {
 			let keys: Id[] = [];
@@ -13047,20 +13045,24 @@ export function makeTable(options): TableResourceClass {
 			}
 		);
 	}
-	function stripBatch(keys: Id[], names: string[]): Promise<unknown> {
+	function stripBatch(keys: Id[], names: string[], attempt = 1): Promise<unknown> {
 		const completions: Promise<unknown>[] = [];
 		const stripKeys = (transaction?: RocksTransaction) => {
 			for (const key of keys) {
 				const entry = primaryStore.getEntry(key, transaction && { transaction, uncachedRead: true });
 				const completion = stripRecord(key, entry, names, transaction);
 				if (completion?.then) {
-					// awaited below once the batch commits; until then a rejection must not go unhandled
 					completion.then(undefined, () => {});
 					completions.push(completion);
 				}
 			}
 		};
-		if (!isRocksDB) return primaryStore.transaction(() => stripKeys()).then(() => Promise.all(completions));
+		// nested in an open lmdb-js write transaction, transaction() runs the callback inline and returns its result
+		if (!isRocksDB)
+			return when(
+				primaryStore.transaction(() => stripKeys()),
+				() => Promise.all(completions)
+			);
 		const transaction = new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
 		try {
 			stripKeys(transaction);
@@ -13068,20 +13070,26 @@ export function makeTable(options): TableResourceClass {
 			(transaction as any).abort();
 			throw error;
 		}
-		return commitRawTransaction(transaction).then((committed) =>
-			committed ? Promise.all(completions) : stripBatch(keys, names)
-		);
+		return commitRawTransaction(transaction).then((committed) => {
+			if (committed) return Promise.all(completions);
+			if (attempt >= STRIP_MAX_ATTEMPTS)
+				throw new Error(
+					`Could not remove ${names.join(', ')} from ${tableName}: a batch of records conflicted with other writes ${attempt} times; run drop_attribute again`
+				);
+			return stripBatch(keys, names, attempt + 1);
+		});
 	}
 	function stripRecord(key: Id, entry: Entry | undefined, names: string[], transaction?: RocksTransaction) {
 		const record = entry?.value;
-		if (record == null || typeof record !== 'object' || !names.some((name) => record[name] !== undefined)) return;
+		if (record == null || typeof record !== 'object' || !names.some((name) => Object.hasOwn(record, name))) return;
 		const stripped = { ...record };
 		for (const name of names) delete stripped[name];
 		return updateRecord(
 			key,
 			stripped,
 			withoutBlobRelease(entry),
-			entry.version,
+			// a row a raw put stored has no version; RocksDB cannot decode a metadata word without one
+			entry.version ?? (isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime()),
 			entry.metadataFlags & RECORD_STATE_FLAGS,
 			false,
 			{

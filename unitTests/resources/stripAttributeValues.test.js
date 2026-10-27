@@ -7,8 +7,6 @@ const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 
-// Table.stripAttributeValues backs drop_attribute on dynamic tables; the built-server path is in
-// integrationTests/database/drop-attribute-dynamic-rewrite.test.ts.
 describe('Table.stripAttributeValues', () => {
 	let tableCount = 0;
 	before(() => {
@@ -84,15 +82,34 @@ describe('Table.stripAttributeValues', () => {
 	it('strips more rows than one batch, typed-structure records included', async () => {
 		const Table = makeTable({ randomAccessFields: true });
 		const ids = Array.from({ length: 250 }, (_, index) => index);
-		for (const id of ids) Table.put(id, { id, a: `value-${id}`, keep: id * 2 });
-		await Table.put(ids.length, { id: ids.length, keep: 0 });
+		await Promise.all(ids.map((id) => Table.put(id, { id, a: `value-${id}`, keep: id * 2 })));
 
 		await Table.stripAttributeValues(['a']);
 
-		for (const id of ids) {
-			const record = await Table.get(id);
-			assert.strictEqual(record.a, undefined, `row ${id}`);
-			assert.strictEqual(record.keep, id * 2);
-		}
+		for (const id of ids) assert.deepStrictEqual({ ...(await Table.get(id)) }, { id, keep: id * 2 }, `row ${id}`);
+	});
+
+	it('gives a row stored without a version one, and keeps it readable', async function () {
+		// lmdb-js versions every put
+		if (!isRocksDB) this.skip();
+		const Table = makeTable();
+		await Table.primaryStore.put('raw', { id: 'raw', a: 1, b: 2 });
+		assert.strictEqual(readEntry(Table, 'raw').version, undefined, 'a raw put stores no version');
+
+		await Table.stripAttributeValues(['a']);
+
+		const entry = readEntry(Table, 'raw');
+		assert.deepStrictEqual({ ...entry.value }, { id: 'raw', b: 2 });
+		assert.ok(entry.version > 0);
+	});
+
+	it('does not rewrite a row for a name it only inherits', async () => {
+		const Table = makeTable();
+		await Table.put('plain', { id: 'plain', a: 1 });
+		const stored = Buffer.from(Table.primaryStore.getBinary('plain'));
+
+		await Table.stripAttributeValues(['toString']);
+
+		assert.deepStrictEqual(Buffer.from(Table.primaryStore.getBinary('plain')), stored);
 	});
 });
