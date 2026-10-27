@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 // CI runs unitTests/resources as three shard scripts (core:a-q, core:r-z, indexes) and nothing else
 // runs that tree as a whole on the default engine, so a file the globs stop selecting silently loses
-// its coverage. This resolves each script's file set with mocha's own option and file collection and
-// requires the shards to be an exact partition of `test:unit:resources`, for both the compiled and the
-// native type-strip scripts.
+// its coverage.
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -21,8 +19,8 @@ function filesOf(name) {
 	if (!runner.test(command ?? '')) throw new Error(`"${name}" is not a mocha or type-strip runner script: ${command}`);
 	const args = command
 		.replace(runner, '')
-		.match(/"[^"]*"|\S+/g)
-		.map((arg) => arg.replace(/^"|"$/g, ''));
+		.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)
+		.map((arg) => arg.replace(/["']/g, ''));
 	const options = loadOptions(args);
 	return new Set(
 		collectFiles({ ...options, spec: options._, file: [] }).files.map((file) => path.relative(repo, file))
@@ -57,5 +55,5 @@ if (errors.length) {
 	process.exit(1);
 }
 console.log(
-	`unit partition: ${sets['test:unit'].map(([shard, files]) => `${shard} ${files.size}`).join(', ')} — exact, compiled and type-strip`
+	`unit partition: ${sets['test:unit'].map(([shard, files]) => `${shard} ${files.size}`).join(', ')} — an exact partition in the compiled and type-strip scripts`
 );
