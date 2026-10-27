@@ -360,7 +360,11 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				floors([
 					[11, now - 20, true],
 					[12, now - 20, true, 'gen-1', false],
+					[13, now - 20, true, 'gen-1', true],
 				]),
+				// a level-2 route now certifying at level 1 drops its generation, so a later revocation clears it
+				floors([[13, now - 18, true]]),
+				update({ originFloorRevocations: [13] }),
 				// a level-1 floor is cleared, not revoked, so a later certificate floors the route again
 				update({ originFloorRevocations: [11] }),
 				floors([[11, now - 15, false]]),
@@ -388,6 +392,10 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 					relayable: false,
 				}
 			);
+			const downgraded = nodes.find((node) => node.id === 13);
+			assert.equal(downgraded.closedFloor, undefined);
+			assert.equal(downgraded.relayable, false);
+			assert.equal(downgraded.originGeneration, undefined);
 			const levelTwo = nodes.find((node) => node.id === 12);
 			assert.equal(levelTwo.fullCoverage, true);
 			assert.equal(levelTwo.floorRevoked, undefined);

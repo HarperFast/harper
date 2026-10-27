@@ -522,22 +522,40 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			const resumed = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
 			assert.strictEqual(await resumed.resumeVerified, true);
 			resumed.end();
-			// another peer's copy wrote the origin's rows without log entries up to the route's start
 			T.dbisDB.putSync([COPY_BOUND_KEY, 77], { [peerId]: floor - 1000 });
 			bumpOriginStateEpoch(T.primaryStore.rootStore);
 			assert.strictEqual(subscription.checkpoint(), undefined, 'a capture from before the bound is not used');
 			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
 			await sleep(400);
 			assert.strictEqual(subscription.checkpoint(), undefined, 'no capture qualifies the covered route');
-			// the route proves its prefix again from above the bound
 			writeSeqRow(T, 'copied-peer', { ...route, certifiedFrom: floor - 999 });
 			const again = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
 			assert.strictEqual(await again.resumeVerified, true);
 			again.end();
 			await waitFor(() => subscription.checkpoint()?.members === members);
-			// an unreadable bound fails closed
-			T.dbisDB.putSync([COPY_BOUND_KEY, 78], { [peerId]: 'not a version' });
-			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }));
+			// a copy that restored this node's own lost rows: its own log is complete only above them
+			T.dbisDB.putSync([COPY_BOUND_KEY, 79], { 0: floor - 100_000 });
+			const belowOwn = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
+			assert.strictEqual(await belowOwn.resumeVerified, true);
+			belowOwn.end();
+			T.dbisDB.putSync([COPY_BOUND_KEY, 79], { 0: floor });
+			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
+			T.dbisDB.removeSync([COPY_BOUND_KEY, 79]);
+			for (const malformed of [
+				{ [peerId]: 'not a version' },
+				{ [peerId]: -1 },
+				{ '': floor },
+				{ '-1': floor },
+				{ '01': floor },
+				[floor],
+			]) {
+				T.dbisDB.putSync([COPY_BOUND_KEY, 78], malformed);
+				await assert.rejects(
+					T.subscribe({ resume: token, omitCurrent: true }),
+					(error) => error.statusCode === 410,
+					`fails closed on ${JSON.stringify(malformed)}`
+				);
+			}
 			subscription.end();
 		});
 	});

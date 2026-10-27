@@ -108,17 +108,23 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 export function readCopyBounds(dbisDb: any): Map<number, number> {
 	const bounds = new Map<number, number>();
 	for (const { value } of dbisDb.getRange({ start: COPY_BOUND_KEY, end: [COPY_BOUND_KEY, Buffer.from([0xff])] })) {
-		if (!value || typeof value !== 'object') throw new Error('A copy bound row is unreadable');
+		const prototype = value && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined;
+		if (prototype !== Object.prototype && prototype !== null) throw unreadableCopyBound();
 		for (const key in value) {
 			const originId = Number(key);
 			const bound = value[key];
-			if (!Number.isInteger(originId) || typeof bound !== 'number' || !Number.isFinite(bound)) {
-				throw new Error(`A copy bound row holds a malformed entry for origin ${key}`);
-			}
-			if (!(bounds.get(originId) >= bound)) bounds.set(originId, bound);
+			if (!(Number.isInteger(originId) && originId >= 0 && String(originId) === key)) throw unreadableCopyBound();
+			if (!(typeof bound === 'number' && Number.isFinite(bound) && bound >= 0)) throw unreadableCopyBound();
+			if (!(bounds.get(originId)! >= bound)) bounds.set(originId, bound);
 		}
 	}
 	return bounds;
+}
+
+function unreadableCopyBound(): ResumeHistoryUnavailableError {
+	return new ResumeHistoryUnavailableError(
+		'A copy bound record is unreadable, so no checkpoint can be shown complete; resubscribe to resynchronize'
+	);
 }
 
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
@@ -140,7 +146,9 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 	if (published) own.floor = published.floor;
 	states.set(0, own);
 	const copyBounds = readCopyBounds(dbisDb);
-	// a copy that wrote the origin's rows without log entries at or above the route's start leaves its prefix incomplete
+	// a copy can restore this node's own lost rows too, which its own log then lacks
+	const ownBound = copyBounds.get(0);
+	if (ownBound !== undefined) own.certifiedFrom = positionAfter(ownBound);
 	const routeCertifies = (node: any) =>
 		isValidFloor(node.closedFloor) &&
 		typeof node.originGeneration === 'string' &&
@@ -164,7 +172,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				rows.set(node.id, []);
 			}
 			rows.get(node.id)!.push({ node, seqId: rowSeqId });
-			if (routeCertifies(node) && !(state.floor >= node.closedFloor)) {
+			if (!(state.floor >= node.closedFloor) && routeCertifies(node)) {
 				// the route that certified the floor is the one whose prefix below it is complete: another whole
 				// route's start says nothing about this one, since their coverage can be disjoint
 				state.floor = node.closedFloor;
@@ -198,7 +206,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 			state.generation = current;
 			for (const { node } of nodeRows) {
 				if (node.originGeneration !== current) continue;
-				if (routeCertifies(node) && !(state.floor >= node.closedFloor)) {
+				if (!(state.floor >= node.closedFloor) && routeCertifies(node)) {
 					state.floor = node.closedFloor;
 					state.certifiedFrom = node.certifiedFrom;
 					state.fullCoverage = true;
@@ -267,6 +275,13 @@ export function positionBefore(key: number): number {
 	// doubles of one sign order by their bit patterns, read as signed integers
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0] += key > 0 ? -1n : 1n;
+	return KEY_SCRATCH[0];
+}
+
+function positionAfter(key: number): number {
+	if (key === 0) return Number.MIN_VALUE;
+	KEY_SCRATCH[0] = key;
+	KEY_BITS[0] += 1n;
 	return KEY_SCRATCH[0];
 }
 
@@ -473,6 +488,11 @@ export function admitCheckpoint(
 		if (state.floorRevoked && boundary > 0) {
 			throw new ResumeHistoryUnavailableError(
 				`Origin ${name} may have written below its certified floor; resubscribe to resynchronize`
+			);
+		}
+		if (state.nodeId === 0 && !(state.certifiedFrom! <= boundary)) {
+			throw new ResumeHistoryUnavailableError(
+				`A copy restored rows of this node's own origin above the checkpoint boundary; resubscribe to resynchronize`
 			);
 		}
 		if (state.nodeId !== 0 && !(qualifies(state) && state.certifiedFrom <= boundary)) {

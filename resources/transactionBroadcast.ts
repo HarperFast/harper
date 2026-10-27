@@ -205,7 +205,6 @@ export function certifiedFloors(subscription: any): CertifiedFloors | undefined 
 	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
 	if (!subscription.reportsProgress || !databaseSubscriptions || databaseSubscriptions.progressStopped) return;
 	const floors: CertifiedFloors | undefined = databaseSubscriptions.certifiedFloors ?? undefined;
-	// a qualifier or copy bound committed after the capture read may void what it certified
 	if (floors && floors.epoch !== readOriginStateEpoch(databaseSubscriptions.auditStore?.rootStore)) return;
 	return floors;
 }
