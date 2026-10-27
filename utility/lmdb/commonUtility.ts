@@ -120,7 +120,7 @@ setInterval(adjustStartTime, TIME_ADJUSTMENT_INTERVAL).unref();
 export function getNextMonotonicTime(this: any) {
 	timeFloat[0] = performance.now() + startTime;
 	const nowBits = timeBits[0];
-	// usually still current, and a stale guess just fails the exchange, which returns the current word
+	// a stale guess only costs a failed exchange, which returns the current word
 	let last = lastSeenBits;
 	for (;;) {
 		// positive doubles order like their bit patterns, and one more is the next representable double

@@ -4,7 +4,8 @@
  *
  *   npm run test:integration -- "integrationTests/database/lmdb-concurrent-crdt-add.test.ts"
  *   LMDB_CRDT_ADD_ROUNDS=200 … to run more rounds
- */ import { suite, test, before, after } from 'node:test';
+ */
+import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok } from 'node:assert';
 import { request } from 'node:http';
 import { resolve } from 'node:path';

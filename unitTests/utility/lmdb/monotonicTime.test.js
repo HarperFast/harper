@@ -7,7 +7,6 @@ const { getNextMonotonicTime } = require('#src/utility/lmdb/commonUtility');
 const COMMON_UTILITY = require.resolve('#src/utility/lmdb/commonUtility');
 const CALLS_PER_THREAD = 100_000;
 
-// Waits on a shared start gate so every thread mints at the same moment, then reports its values.
 // A `nested` worker spawns a plain child of its own, which inherits the clock from it rather than from main.
 const MINTER = `
 	const { parentPort, workerData, Worker } = require('node:worker_threads');
@@ -51,14 +50,15 @@ describe('getNextMonotonicTime', function () {
 					workerData: { gate, nested, commonUtility: COMMON_UTILITY, calls: CALLS_PER_THREAD },
 				});
 				workers.push(worker);
-				return new Promise((resolve, reject) => {
+				const result = new Promise((resolve, reject) => {
 					const fail = (error) => reject((failure ??= error));
 					worker.once('message', resolve);
 					worker.once('error', fail);
 					worker.once('exit', (code) => fail(new Error(`minter exited with ${code} before reporting`)));
 				});
+				result.catch(() => {}); // a failure is rethrown from `failure` or the join
+				return result;
 			});
-			for (const result of results) result.catch(() => {}); // a failure is rethrown from `failure` or the join
 			const deadline = Date.now() + 30_000;
 			while (Atomics.load(gateView, 1) < workers.length) {
 				if (failure) throw failure;
