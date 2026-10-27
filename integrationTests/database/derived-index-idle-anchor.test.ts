@@ -3,11 +3,6 @@
  * a rebuild after a restart (harper#3631). The runner hand-off case is in derivedIndexRuntimeRocks.test.js:
  * here every retention pass commits and wakes the runner, so it never reaches its idle release.
  *
- * rocksdb-js 2.12 retention deletes every fully flushed file of a log, including the one holding the
- * last transaction the index's durable cursor anchors. The cursor's persisted coverage and the log's
- * flush witness prove nothing after that anchor was lost, so the next install reads the log from a floor
- * instead of condemning the cursor.
- *
  * "No rebuild" is read from the worker's `needs rebuild` error lines across every boot's hdb.log, anchored
  * by the first boot's own line for the fresh index (`backend has no durable cursor`). The restart is
  * graceful, so it does not prove recovery from a crash.

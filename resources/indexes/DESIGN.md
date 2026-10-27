@@ -713,10 +713,12 @@ is durable. Unrelated-only progress may publish without a new barrier only if **
 registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
 be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
 optional `coverage` field in the existing durable cursor value, kept by a later cursor write only while
-it keeps the same vector, persisted only from an idle pass's capture (see the purged-anchor paragraph under
-cursors), and removed with the cursor before reset. No native file format changes.
+it keeps the same vector, persisted only from an idle pass's capture or carried onto a purged-anchor floor
+conversion, which reflects the same commits (see the purged-anchor paragraph under cursors), and removed
+with the cursor before reset. No native file format changes.
 
-Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic. The
+Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic, except
+that a durable vector advance resets the cadence, since the backend dropped the old vector's coverage. The
 shared time can refresh sooner once its prefix is durable. A coverage-only write failure logs and skips
 publication instead of rebuilding the healthy graph. Strict queries may wait for the next persisted proof.
 

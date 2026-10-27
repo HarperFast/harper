@@ -273,6 +273,27 @@ describe('DerivedIndexRuntime', () => {
 		await runtime.stop();
 	});
 
+	it('persists the idle capture on the pass that sees its vector become durable', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		store.committedPosition = { sequence: 1, offset: 64 };
+		const backend = new FakeBackend('idle-durable-coverage', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const persisted = [];
+		backend.publishCoverage = (positions) => persisted.push({ positions, cursor: backend.cursor });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 60_000,
+			maxFlushAgeMilliseconds: 1000,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 1);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		backend.cursor = backend.deliveries[0].through;
+		backend.stateChange();
+		// Well inside the cadence, so the coverage timer cannot be what persists it.
+		await waitFor(() => persisted.some(({ cursor }) => cursor.logs.local === 20), { timeout: 500 });
+		await runtime.stop();
+	});
+
 	it('does not let a local setup failure replace peer-owned readiness', () => {
 		const store = new FakeLogStore(new Map());
 		publishDerivedIndexReadiness(store, 'peer-owned', 'ready');
