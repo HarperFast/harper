@@ -3834,59 +3834,70 @@ export function makeTable(options): TableResourceClass {
 					if (!target) target = {} as any;
 					const selectArray = select ? (Array.isArray(select) ? select : [select]) : null;
 					const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+					const permittedScalarAttributes = () =>
+						attribute_permissions
+							.filter(
+								(attribute) =>
+									attribute.read &&
+									!fullTextFieldNames?.has(attribute.attribute_name) &&
+									!propertyResolvers[attribute.attribute_name]
+							)
+							.map((attribute) => attribute.attribute_name);
 					if (selectArray) {
-						(target as any).select = selectArray
-							.map((property: any) => {
-								const propertyName = property.name || property;
-								if (
-									!attrsForType ||
-									attrsForType[propertyName] ||
-									fullTextFieldNames?.has(propertyName) ||
-									propertyName === '$score' ||
-									propertyName === '$highlights'
-								) {
-									const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
-									if (relatedTable) {
-										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
-										if (!property.name) property = { name: property };
-										if (Array.isArray(property) && !(property as any).select)
-											(property as any).select = Array.from(property);
-										if (!property.checkPermission && (target as any).checkPermission)
-											property.checkPermission = (target as any).checkPermission;
-										// Invoke the related table's allowRead on a properly-bound instance rather than
-										// `.call(null, ...)` so `this` is a valid resource of the related type.
-										const relatedResource = new relatedTable(undefined, context);
-										if (!relatedResource.allowRead(user, property, context)) return false;
-										for (let s = typeof property.sort === 'object' ? property.sort : null; s; s = s.next) {
-											const segments = (Array.isArray(s.attribute) ? s.attribute : [s.attribute]).filter(Boolean);
-											if (segments.length === 0) continue;
-											let sortSelect: any = segments[segments.length - 1];
-											for (let i = segments.length - 2; i >= 0; i--) {
-												sortSelect = { name: segments[i], select: [sortSelect], [SORT_PROBE]: true };
-											}
-											const sortProbe: any = {
-												select: [sortSelect],
-												checkPermission: property.checkPermission,
-												[SORT_PROBE]: true,
-											};
-											if (!relatedResource.allowRead(user, sortProbe, context)) return false;
-											for (let cur = sortProbe.select; Array.isArray(cur); cur = cur[0]?.select) {
-												if (cur.length === 0) return false;
-											}
+						(target as any).select = selectArray.flatMap((property: any) => {
+							if (property === '*' && attrsForType) return permittedScalarAttributes();
+							const propertyName = property.name || property;
+							if (
+								!attrsForType ||
+								attrsForType[propertyName] ||
+								fullTextFieldNames?.has(propertyName) ||
+								propertyName === '$score' ||
+								propertyName === '$highlights'
+							) {
+								const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
+								if (relatedTable) {
+									// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
+									if (!property.name) property = { name: property };
+									if (Array.isArray(property) && !(property as any).select)
+										(property as any).select = Array.from(property);
+									if (!property.checkPermission && (target as any).checkPermission)
+										property.checkPermission = (target as any).checkPermission;
+									// Invoke the related table's allowRead on a properly-bound instance rather than
+									// `.call(null, ...)` so `this` is a valid resource of the related type.
+									const relatedResource = new relatedTable(undefined, context);
+									if (!relatedResource.allowRead(user, property, context)) return [];
+									for (let s = typeof property.sort === 'object' ? property.sort : null; s; s = s.next) {
+										const segments = (Array.isArray(s.attribute) ? s.attribute : [s.attribute]).filter(Boolean);
+										if (segments.length === 0) continue;
+										let sortSelect: any = segments[segments.length - 1];
+										for (let i = segments.length - 2; i >= 0; i--) {
+											sortSelect = { name: segments[i], select: [sortSelect], [SORT_PROBE]: true };
 										}
-										if (
-											!property.select &&
-											!property.sort &&
-											property.limit === undefined &&
-											property.offset === undefined
-										)
-											return property.name;
+										const sortProbe: any = {
+											select: [sortSelect],
+											checkPermission: property.checkPermission,
+											[SORT_PROBE]: true,
+										};
+										if (!relatedResource.allowRead(user, sortProbe, context)) return [];
+										for (let cur = sortProbe.select; Array.isArray(cur); cur = cur[0]?.select) {
+											if (cur.length === 0) return [];
+										}
 									}
-									return property;
+									if (
+										!property.select &&
+										!property.sort &&
+										property.limit === undefined &&
+										property.offset === undefined
+									)
+										return [property.name];
 								}
-							})
-							.filter(Boolean);
+								return [property];
+							}
+							return [];
+						});
 					}
+					// When an explicit scalar select filters to empty on an attribute-restricted table,
+					// fall back to the role's permitted non-relationship attributes (pinned by permissions.test.js).
 					if (
 						attrsForType &&
 						(!selectArray ||
@@ -3895,14 +3906,7 @@ export function makeTable(options): TableResourceClass {
 								!(target as any)[SORT_PROBE] &&
 								selectArray.every((p: any) => !propertyResolvers[p?.name || p]?.definition?.tableClass)))
 					) {
-						target.select = attribute_permissions
-							.filter(
-								(attribute) =>
-									attribute.read &&
-									!fullTextFieldNames?.has(attribute.attribute_name) &&
-									!propertyResolvers[attribute.attribute_name]
-							)
-							.map((attribute) => attribute.attribute_name);
+						target.select = permittedScalarAttributes();
 					}
 					(target as any)[AUTHORIZATION_SELECT] = true;
 					return true;

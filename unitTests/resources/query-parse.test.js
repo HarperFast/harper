@@ -265,33 +265,6 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('unknown(5,10)'), /unknown query function call/);
 		assert.throws(() => parseQuery('select([)'), /expected '\]'/);
 		assert.throws(() => parseQuery('select)'), /unexpected token '\)'/);
-		// Run in a subprocess with a hard timeout so a regression in the '?' empty-match guard
-		// fails fast instead of hanging the Mocha suite (which runs with timeout: 0).
-		const probe = spawnSync(
-			process.execPath,
-			[
-				...process.execArgv.filter((arg) => !arg.startsWith('--inspect')),
-				'-e',
-				`const assert = require('node:assert');
-				const { parseQuery } = require('#src/resources/search');
-				const { RequestTarget } = require('#src/resources/RequestTarget');
-				assert.throws(
-					() => parseQuery('select(id)?limit(1)'),
-					(err) => err.statusCode === 400 && /unexpected character '\\?'/.test(err.message)
-				);
-				const target = new RequestTarget('?select(id)?limit(1)');
-				assert.strictEqual(target.parseError?.statusCode, 400);
-				process.exit(0);`,
-			],
-			{ cwd: path.resolve(__dirname, '../..'), timeout: 45000, encoding: 'utf8' }
-		);
-		assert.strictEqual(
-			probe.status,
-			0,
-			probe.error?.code === 'ETIMEDOUT'
-				? 'parseQuery("select(id)?limit(1)") timed out in subprocess probe (possible parser hang)'
-				: probe.stderr || probe.error?.message
-		);
 		assert.throws(
 			() => parseQuery('select(id)?limit(1)'),
 			(err) => err.statusCode === 400 && /unexpected character '\?'/.test(err.message)
@@ -382,7 +355,7 @@ describe('Parsing queries', () => {
 		// a child process, so a regression fails on the timeout instead of hanging the suite
 		const script = `
 			const { parseQuery } = require('#src/resources/search');
-			for (const query of ['(?a=1)', 'a=gt=1&(?)', 'select(?)', 'a=gt=1&?b=2']) {
+			for (const query of ['(?a=1)', 'a=gt=1&(?)', 'select(?)', 'a=gt=1&?b=2', 'select(id)?limit(1)']) {
 				try {
 					parseQuery(query);
 					console.log(query + ': no error');
@@ -397,7 +370,7 @@ describe('Parsing queries', () => {
 		});
 		assert.equal(result.error, undefined, result.error?.message);
 		const lines = result.stdout.trim().split('\n');
-		assert.equal(lines.length, 4, result.stdout + result.stderr);
+		assert.equal(lines.length, 5, result.stdout + result.stderr);
 		for (const line of lines) assert.match(line, /unexpected character '\?'/);
 	});
 	it('Single-argument select forms', function () {

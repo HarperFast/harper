@@ -752,6 +752,58 @@ describe('REST and operations API select projection fixes', function () {
 				child: { id: 'c1', label: 'child-label-v1' },
 			});
 
+			const scopedStarWithNestedRelUser = {
+				role: {
+					permission: {
+						super_user: false,
+						[dbName]: {
+							tables: {
+								Parent: {
+									read: true,
+									attribute_permissions: [
+										{ attribute_name: 'id', read: true },
+										{ attribute_name: 'title', read: true },
+										{ attribute_name: 'childId', read: false },
+										{ attribute_name: 'child', read: true },
+									],
+								},
+								Child: {
+									read: true,
+									attribute_permissions: [
+										{ attribute_name: 'id', read: true },
+										{ attribute_name: 'label', read: true },
+										{ attribute_name: 'parentId', read: false },
+										{ attribute_name: 'grandchild', read: true },
+									],
+								},
+								Grandchild: {
+									read: true,
+									attribute_permissions: [
+										{ attribute_name: 'id', read: true },
+										{ attribute_name: 'secret', read: false },
+									],
+								},
+							},
+						},
+					},
+				},
+			};
+			const scopedStarWithRel = await restGet(
+				'/Parent/p1?select(*,child{*,grandchild{id,secret}})',
+				{},
+				scopedStarWithNestedRelUser
+			);
+			assert.strictEqual(scopedStarWithRel.status, 200);
+			assert.deepStrictEqual(scopedStarWithRel.body, {
+				id: 'p1',
+				title: 'parent-title-1',
+				child: {
+					id: 'c1',
+					label: 'child-label-v1',
+					grandchild: { id: 'g1' },
+				},
+			});
+
 			const scopedDeniedFieldBrace = await restGet('/Parent/p1?select(id,child{parentId})', {}, scopedChildUser);
 			assert.strictEqual(scopedDeniedFieldBrace.status, 200);
 			assert.deepStrictEqual(scopedDeniedFieldBrace.body, {
