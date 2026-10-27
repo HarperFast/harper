@@ -60,7 +60,12 @@ async function backlog(send, method) {
 	return pending;
 }
 
-describe('HTTP method request queues', function () {
+function spin(ms) {
+	const until = performance.now() + ms;
+	while (performance.now() < until);
+}
+
+describe('HTTP method request admission', function () {
 	this.timeout(5000);
 	let previousReadLimit, previousWriteLimit;
 	beforeEach(() => {
@@ -74,31 +79,41 @@ describe('HTTP method request queues', function () {
 
 	for (const backend of ['Node', 'uWS']) {
 		describe(backend, () => {
+			it('dispatches admitted reads synchronously, without queuing', async () => {
+				let called = 0;
+				const send = createHandler(backend, 60_000, 0, () => called++);
+				const reads = ['GET', 'HEAD', 'OPTIONS', 'GET', 'GET'].map((method) => send(method));
+				assert.equal(called, 5);
+				for (const { status } of await Promise.all(reads)) assert.equal(status, 200);
+			});
 			it('dispatches disabled reads immediately while retaining write admission', async () => {
 				let called = 0;
 				const send = createHandler(backend, false, 0, () => called++);
+				const pending = send('GET');
+				spin(5);
 				const reads = ['GET', 'HEAD', 'OPTIONS'].map((method) => send(method));
-				assert.equal(called, 3);
-				await Promise.all(reads);
+				assert.equal(called, 4);
+				await Promise.all([pending, ...reads]);
 				const writes = await backlog(send, 'POST');
 				assert.equal((await send('POST')).status, 503);
 				await Promise.all(writes);
 			});
-			for (const method of ['GET', 'POST']) {
-				it(`${method === 'GET' ? 'skips' : 'still dispatches'} queued ${method} requests after disconnect`, async () => {
+			for (const method of ['GET', 'HEAD', 'OPTIONS']) {
+				it(`rejects a ${method} without running it once the loop iteration passes the limit`, async () => {
 					let called = 0;
-					const send = createHandler(backend, 60_000, 60_000, () => called++);
-					const controller = new AbortController();
-					const pending = [send(method), send(method, controller.signal), send(method, controller.signal)];
-					controller.abort();
-					await Promise.all(pending);
-					assert.equal(called, method === 'GET' ? 1 : 3);
-					assert.equal((await send('GET')).status, 200);
+					const send = createHandler(backend, 1, 0, () => called++);
+					const first = send(method);
+					spin(5);
+					assert.equal((await send(method)).status, 503);
+					assert.equal(called, 1);
+					await first;
+					await nextCycle();
+					assert.equal((await send(method)).status, 200);
 				});
 			}
-			for (const method of ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE']) {
-				it(`sheds a queued ${method} using its configured limit`, async () => {
-					const send = createHandler(backend);
+			for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+				it(`still queues and sheds ${method} using the write limit`, async () => {
+					const send = createHandler(backend, false, 0);
 					const pending = await backlog(send, method);
 					assert.equal((await send(method)).status, 503);
 					await Promise.all(pending);
@@ -106,7 +121,33 @@ describe('HTTP method request queues', function () {
 					assert.equal((await send(method)).status, 200);
 				});
 			}
-			it('preserves CORS and configured headers on shed reads without allowing other origins', async () => {
+			it('counts work that ran earlier in the iteration while reads keep arriving', async () => {
+				const send = createHandler(backend, 1);
+				const first = send('GET');
+				await nextCycle();
+				spin(5);
+				assert.equal((await send('GET')).status, 503);
+				await first;
+			});
+			it('stops probing once reads stop, so a cold read is admitted', async () => {
+				const send = createHandler(backend, 1);
+				await send('GET');
+				await nextCycle();
+				await nextCycle();
+				spin(5);
+				assert.equal((await send('GET')).status, 200);
+			});
+			it('shares the loop measurement across listeners but applies each limit', async () => {
+				const strict = createHandler(backend, 1);
+				const lenient = createHandler(backend, 60_000);
+				const pending = strict('GET');
+				spin(5);
+				const [rejected, admitted] = await Promise.all([strict('GET'), lenient('GET')]);
+				assert.equal(rejected.status, 503);
+				assert.equal(admitted.status, 200);
+				await pending;
+			});
+			it('preserves CORS and configured headers on rejected reads without allowing other origins', async () => {
 				const previousCors = env.get('http_cors');
 				const previousList = env.get('http_corsAccessList');
 				const ownedHeader = ['X-Queue-Test', 'present'];
@@ -114,8 +155,9 @@ describe('HTTP method request queues', function () {
 				try {
 					env.setProperty('http_cors', true);
 					env.setProperty('http_corsAccessList', ['https://queue.example']);
-					const send = createHandler(backend);
-					const pending = await backlog(send, 'GET');
+					const send = createHandler(backend, 1);
+					const pending = send('GET');
+					spin(5);
 					const [allowed, denied] = await Promise.all([send('GET'), send('GET', undefined, 'https://denied.example')]);
 					assert.equal(allowed.status, 503);
 					assert.equal(allowed.headers.get('Access-Control-Allow-Origin'), 'https://queue.example');
@@ -123,7 +165,7 @@ describe('HTTP method request queues', function () {
 					assert(allowed.headers.get('Vary').toLowerCase().includes('origin'));
 					assert.equal(denied.status, 503);
 					assert(!denied.headers.get('Access-Control-Allow-Origin'));
-					await Promise.all(pending);
+					await pending;
 				} finally {
 					env.setProperty('http_cors', previousCors);
 					env.setProperty('http_corsAccessList', previousList);
@@ -131,40 +173,27 @@ describe('HTTP method request queues', function () {
 					if (index >= 0) universalHeaders.splice(index, 1);
 				}
 			});
-			for (const [busy, idle] of [
-				['GET', 'POST'],
-				['POST', 'GET'],
-			]) {
-				it(`keeps ${idle} queue depth separate from a shedding ${busy} queue`, async () => {
-					const send = createHandler(backend);
-					const pending = await backlog(send, busy);
-					const [shed, admitted] = await Promise.all([send(busy), send(idle)]);
-					assert.equal(shed.status, 503);
-					assert.equal(admitted.status, 200);
-					await Promise.all(pending);
-				});
-			}
-			it('keeps read and write limits independent', async () => {
+			it('admits reads while the write queue is shedding', async () => {
 				const send = createHandler(backend, 60_000, 0);
-				const reads = await backlog(send, 'GET');
-				assert.equal((await send('GET')).status, 200);
-				await Promise.all(reads);
 				const writes = await backlog(send, 'POST');
-				assert.equal((await send('POST')).status, 503);
+				const [shed, admitted] = await Promise.all([send('POST'), send('GET')]);
+				assert.equal(shed.status, 503);
+				assert.equal(admitted.status, 200);
 				await Promise.all(writes);
 			});
 		});
 	}
 
 	for (const readLimit of [undefined, null]) {
-		it(`uses the larger read default for ${readLimit} on the exported uWS handler`, async () => {
+		it(`uses the 5000ms read default for ${readLimit} on the exported uWS handler`, async () => {
 			const port = nextPort++;
 			httpServer(() => ({ status: 200, body: 'ok' }), { port, name: `requestQueue${port}` });
 			const handler = makeUwsHandler(port, false, 0, readLimit);
 			const send = (method) => Promise.resolve(handler({ method, url: '/', headers: new Headers() }));
-			const reads = await backlog(send, 'GET');
+			const pending = send('GET');
+			spin(20);
 			assert.equal((await send('GET')).status, 200);
-			await Promise.all(reads);
+			await pending;
 			const writes = await backlog(send, 'POST');
 			assert.equal((await send('POST')).status, 503);
 			await Promise.all(writes);

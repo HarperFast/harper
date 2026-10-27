@@ -49,7 +49,7 @@ import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
-import { throttle } from './throttle.ts';
+import { rejectWhenLoopDelayed, throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { isolatedApplicationUnavailable } from './isolatedHostGuard.ts';
 import { WebSocketServer } from 'ws';
@@ -796,7 +796,12 @@ function throttleRequests(
 	const reads =
 		readRequestQueueLimit === false
 			? handler
-			: throttle(handler, onLimitExceeded, readRequestQueueLimit ?? 60_000, `HTTP read request queue on port ${port}`);
+			: rejectWhenLoopDelayed(
+					handler,
+					onLimitExceeded,
+					readRequestQueueLimit ?? 5000,
+					`HTTP read admission on port ${port}`
+				);
 	return (request, response) => {
 		if (isReadMethod(request.method)) return reads(request, response);
 		if (queueWrites && checkAnalyticsEnabled()) request.receivedAt = performance.now();
@@ -881,11 +886,6 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			});
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
-			if (
-				isReadMethod(nodeRequest.method) &&
-				(nodeResponse.destroyed || nodeRequest.stream?.destroyed || nodeRequest.socket?.destroyed)
-			)
-				return;
 			const startTime = performance.now();
 			const receivedAt = (nodeRequest as any).receivedAt;
 			let requestId = 0;
@@ -1229,7 +1229,6 @@ export function makeUwsHandler(
 	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
 	// mutates. `headers` is normalized in place the same way the Bun path does.
 	const handle = async (request: any) => {
-		if (isReadMethod(request.method) && request.signal?.aborted) return;
 		const startTime = performance.now();
 		const receivedAt = request.receivedAt;
 		let requestId = 0;
@@ -1441,7 +1440,6 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 			const startTime = performance.now();
 			let requestId = 0;
 			try {
-				if (isReadMethod(webRequest.method) && webRequest.signal.aborted) return new Response(null, { status: 204 });
 				const request = new BunRequest(webRequest, bunServer, secure) as any;
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();

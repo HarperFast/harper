@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper } from '@harperfast/integration-testing';
 
 for (const nativeBun of process.env.HARPER_RUNTIME === 'bun' ? [false, true] : [false]) {
-	suite(`HTTP read request queue (#2755)${nativeBun ? ' (Bun.serve)' : ''}`, (ctx: any) => {
+	suite(`HTTP read admission (#2755)${nativeBun ? ' (Bun.serve)' : ''}`, (ctx: any) => {
 		before(async () => {
 			await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'fixtures/request-queue'), {
 				config: {
@@ -26,7 +26,7 @@ for (const nativeBun of process.env.HARPER_RUNTIME === 'bun' ? [false, true] : [
 			await teardownHarper(ctx);
 		});
 
-		test('sheds a GET burst with 503 and serves reads after the queue drains', { timeout: 30_000 }, async () => {
+		test('sheds a GET burst with 503 and serves reads once the loop recovers', { timeout: 30_000 }, async () => {
 			const url = ctx.harper.httpURL + '/QueueWork/1';
 			const send = async () => {
 				const response = await fetch(url, {
@@ -45,7 +45,7 @@ for (const nativeBun of process.env.HARPER_RUNTIME === 'bun' ? [false, true] : [
 			const responses = await Promise.all([...firstWave, ...Array.from({ length: 64 }, send)]);
 			assert(responses.some((response) => response.status === 200));
 			const rejected = responses.filter((response) => response.status === 503);
-			assert(rejected.length > 0, 'expected the configured read queue limit to shed GET requests');
+			assert(rejected.length > 0, 'expected the configured read limit to shed GET requests');
 			for (const response of rejected) {
 				assert.equal(response.body, 'Service unavailable, exceeded request queue limit');
 				assert.equal(response.origin, 'https://queue.example');

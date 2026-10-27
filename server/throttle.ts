@@ -71,6 +71,49 @@ export function throttle(
 		});
 	}
 }
+// One probe per thread: the delay belongs to the event loop, not to a listener (server/DESIGN.md).
+let loopProbePending = false;
+let loopIterationStart = 0;
+let callsSinceProbe = false;
+function probeLoopIteration() {
+	if (callsSinceProbe) {
+		callsSinceProbe = false;
+		loopIterationStart = performance.now();
+		setImmediate(probeLoopIteration);
+	} else loopProbePending = false;
+}
+
+/**
+ * Runs fn synchronously, or answers with onLimitExceeded when the current event-loop iteration has already run
+ * longer than maxLoopDelay ms. Calls are never queued or deferred.
+ */
+export function rejectWhenLoopDelayed<A, B, R>(
+	fn: (a: A, b: B) => R,
+	onLimitExceeded: (a: A, b: B) => R,
+	maxLoopDelay: number,
+	name: string
+) {
+	let lastLimitExceededLog = -Infinity;
+	return function (a: A, b: B): R {
+		const now = performance.now();
+		callsSinceProbe = true;
+		if (!loopProbePending) {
+			loopProbePending = true;
+			loopIterationStart = now;
+			setImmediate(probeLoopIteration);
+		} else if (now - loopIterationStart > maxLoopDelay) {
+			if (now - lastLimitExceededLog > LIMIT_EXCEEDED_LOG_INTERVAL) {
+				lastLimitExceededLog = now;
+				logger.warn?.(
+					`Rejecting calls (${name}): the event loop has been busy for ~${Math.round(now - loopIterationStart)}ms, past the ${maxLoopDelay}ms limit`
+				);
+			}
+			return onLimitExceeded(a, b);
+		}
+		return fn(a, b);
+	};
+}
+
 setInterval(() => {
 	const now = performance.now();
 	if (
