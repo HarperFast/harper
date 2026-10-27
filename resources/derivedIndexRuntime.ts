@@ -1743,7 +1743,7 @@ class DerivedIndexRunner {
 			}
 		}
 		if (offeredIndex > 0) {
-			// The backend dropped coverage with the old vector; the next bound capture may persist at once.
+			// The backend dropped coverage with the old vector, so the next bound capture is not throttled.
 			this.#lastPersistedCoverageTime = 0n;
 			this.#offeredCursors.splice(0, offeredIndex);
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
@@ -1764,7 +1764,9 @@ class DerivedIndexRunner {
 
 	#publishCoverage(capture: CoverageCapture) {
 		if (!this.#owned || this.#rebuilding || Atomics.load(this.#shared().epoch, 0) !== this.#ownerEpoch) return;
-		if (capture.time <= Atomics.load(this.#shared().coverage, 0)) return;
+		// The clock may already hold this capture's time: a reconcile publishes a capture before the idle pass
+		// that binds it, and only then can it be persisted.
+		const advancesClock = capture.time > Atomics.load(this.#shared().coverage, 0);
 		// Persisted coverage is resume evidence (#recoverPurgedAnchors): it must reflect exactly the commits
 		// the vector a backend stores it with reflects, so only a bound capture with no mutations past it.
 		if (
@@ -1780,7 +1782,7 @@ class DerivedIndexRunner {
 				return;
 			}
 		}
-		Atomics.store(this.#shared().coverage, 0, capture.time);
+		if (advancesClock) Atomics.store(this.#shared().coverage, 0, capture.time);
 	}
 
 	#armCoverageTimer() {

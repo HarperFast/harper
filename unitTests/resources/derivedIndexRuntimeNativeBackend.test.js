@@ -1336,8 +1336,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	// Retention purged the file holding the saved anchor (an idle, flushed log loses every file); the
-	// saved coverage says how far the cursor covers, and the flush witness how far anything was purged.
 	const covered = { sequence: 3, offset: 49 };
 	const purgedAnchorStore = (stats, { logNames = ['local'], failures = [['local', 'missing']] } = {}) => {
 		const store = new FakeLogStore(new Map([[undefined, [audit({ timestamp: 9, recordId: 'b' })]]]), {
