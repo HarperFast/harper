@@ -680,8 +680,9 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			subscriptions.recheckPending = false;
 			subscriptions.notifyScheduled = true;
 			// a same-thread follow-up only re-captures: the shared log range is the cross-thread registry's to drain
-			const follow = subscriptions.sameThread ? [] : auditStore.subscriptionLogRange;
-			setImmediate(() => notifyFromTransactionData(subscriptions, follow, true));
+			setImmediate(() =>
+				notifyFromTransactionData(subscriptions, subscriptions.sameThread ? [] : auditStore.subscriptionLogRange, true)
+			);
 		}
 	}
 }
