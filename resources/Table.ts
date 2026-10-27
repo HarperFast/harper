@@ -647,6 +647,10 @@ function isPlainData(value: any, budget: { nodes: number }, depth: number): bool
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
 // a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
 // (which reports as frozen and would spread into character/index keys).
+function timestampValue(attribute: Attribute, time: number): Date | string | number {
+	return attribute.type === 'Date' ? new Date(time) : attribute.type === 'String' ? new Date(time).toISOString() : time;
+}
+
 function isFrozenRecordObject(value: any): boolean {
 	return (
 		value !== null &&
@@ -1748,6 +1752,15 @@ export function makeTable(options): TableResourceClass {
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updatedTimeProperty = attribute;
 		if (attribute.expiresAt) expiresAtProperty = attribute;
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
+	}
+	// Copies rather than assigns: the merge onto no record can return the caller's delta itself.
+	function completeCreatedRecord(record: any, id: Id, version: number) {
+		const missingKey = primaryKey && record[primaryKey] == null;
+		const missingCreatedTime = createdTimeProperty && record[createdTimeProperty.name] == null;
+		if (!missingKey && !missingCreatedTime) return record;
+		const completed = missingKey ? { [primaryKey]: id, ...record } : { ...record };
+		if (missingCreatedTime) completed[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
+		return Object.freeze(completed);
 	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
 	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
@@ -5709,30 +5722,24 @@ export function makeTable(options): TableResourceClass {
 								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
 							}
 							if (updatedTimeProperty) {
-								recordUpdate[updatedTimeProperty.name] =
-									updatedTimeProperty.type === 'Date'
-										? new Date(txnTime)
-										: updatedTimeProperty.type === 'String'
-											? new Date(txnTime).toISOString()
-											: txnTime;
+								recordUpdate[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, txnTime);
 							}
 							if (createdTimeProperty) {
 								// the reloaded commit base, not the pre-read one: a full PUT racing a create
 								// would otherwise stamp a fresh created time over the real one
 								const base = write.entry;
-								if (base?.value) {
+								// an invalidation stub of a record that was never stored has no created time to keep
+								if (
+									base?.value &&
+									(base.value[createdTimeProperty.name] != null || !(base.metadataFlags & INVALIDATED))
+								) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
 										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
 									}
 								} else {
 									// new entry, set created time
-									recordUpdate[createdTimeProperty.name] =
-										createdTimeProperty.type === 'Date'
-											? new Date(txnTime)
-											: createdTimeProperty.type === 'String'
-												? new Date(txnTime).toISOString()
-												: txnTime;
+									recordUpdate[createdTimeProperty.name] = timestampValue(createdTimeProperty, txnTime);
 								}
 							}
 							if (primaryKey && recordUpdate[primaryKey] !== id && (fullUpdate || primaryKey in recordUpdate)) {
@@ -6677,6 +6684,10 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
+					// A patch that creates the record: validate stamps one only if the base it read was absent too, and a
+					// conflict retry is not re-logged on RocksDB, so every consumer of the logged delta derives these here.
+					if (!fullUpdate && existingRecord == null && recordToStore)
+						recordToStore = completeCreatedRecord(recordToStore, id, options?.version ?? txnTime);
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
@@ -12519,21 +12530,11 @@ export function makeTable(options): TableResourceClass {
 					// before resolve(): a write that is not skipped commits at exactly resolvedVersion
 					if (updatedRecord) {
 						if (updatedTimeProperty) {
-							updatedRecord[updatedTimeProperty.name] =
-								updatedTimeProperty.type === 'Date'
-									? new Date(resolvedVersion)
-									: updatedTimeProperty.type === 'String'
-										? new Date(resolvedVersion).toISOString()
-										: resolvedVersion;
+							updatedRecord[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, resolvedVersion);
 						}
 						if (createdTimeToAssign) {
 							updatedRecord[createdTimeToAssign.name] =
-								existingRecord?.[createdTimeToAssign.name] ??
-								(createdTimeToAssign.type === 'Date'
-									? new Date(resolvedVersion)
-									: createdTimeToAssign.type === 'String'
-										? new Date(resolvedVersion).toISOString()
-										: resolvedVersion);
+								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
 					}
 					const resolvedEntry: Entry = {
