@@ -42,6 +42,9 @@ jobs:
       matrix:
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
         shard: [main, components, server, resources-core-a-q, resources-core-r-z, resources-indexes, lmdb]
+        # harper#3349: LMDB segfaults intermittently in this shard, and every leg gates `Unit Test`. PRs run
+        # it on Node 26 alone until that is fixed; pushes and the nightly run keep every version.
+        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"shard":"lmdb","node-version":24}]' || '[]') }}
         # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
         # each shard's test-step cap is what turns a wedged suite into a reported failure
         # (harper#2587, harper#2017). `test:unit:lmdb` chains its own resources/apitests/bin runs
