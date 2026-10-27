@@ -804,6 +804,18 @@ describe('REST and operations API select projection fixes', function () {
 				},
 			});
 
+			const superStarWithRel = await restGet('/Parent/p1?select(*,child{*,grandchild{id}})');
+			assert.strictEqual(superStarWithRel.status, 200);
+			assert.strictEqual(superStarWithRel.body.id, 'p1');
+			assert.strictEqual(superStarWithRel.body.title, 'parent-title-1');
+			assert.deepStrictEqual(superStarWithRel.body.child, {
+				id: 'c1',
+				parentId: 'p1',
+				label: 'child-label-v1',
+				grandchildId: 'g1',
+				grandchild: { id: 'g1' },
+			});
+
 			const scopedDeniedFieldBrace = await restGet('/Parent/p1?select(id,child{parentId})', {}, scopedChildUser);
 			assert.strictEqual(scopedDeniedFieldBrace.status, 200);
 			assert.deepStrictEqual(scopedDeniedFieldBrace.body, {
@@ -819,8 +831,12 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(scopedDeniedFieldBracket.status, 200);
 			assert.deepStrictEqual(scopedDeniedFieldBracket.body, {
 				id: 'p1',
-				child: { id: 'c1', label: 'child-label-v1' },
+				child: {},
 			});
+
+			const scopedDeniedTopLevel = await restGet('/Child/c1?select(parentId)', {}, scopedChildUser);
+			assert.strictEqual(scopedDeniedTopLevel.status, 200);
+			assert.deepStrictEqual(scopedDeniedTopLevel.body, {});
 
 			const scopedDeniedSortSingle = await restGet(
 				'/Parent/p1?select(id,children[sort(parentId)])',

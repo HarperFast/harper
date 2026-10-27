@@ -1226,6 +1226,12 @@ export function transformForSelect(select, resource) {
 				});
 			let promises;
 			for (const property of select) {
+				if (property === '*') {
+					for (const key in object) {
+						selectedData[key] = object[key];
+					}
+					continue;
+				}
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {

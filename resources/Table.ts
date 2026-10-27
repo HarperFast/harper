@@ -330,9 +330,8 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 // (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
 const MAX_EXACT_COUNT_SCAN = 1_000_000;
 const MAX_EXACT_COUNT_MS = 1_000;
-// Largest page a `Prefer: count=` request will materialize. A programmatic target whose limit exceeds
-// this (or is not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`; REST
-// `parseQuery` rejects non-integer/negative `limit(...)` with 400) falls through to the normal
+// Largest page a `Prefer: count=` request will materialize. A target whose limit exceeds this (or is
+// not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
@@ -669,7 +668,6 @@ function isSameIdAllocation(a: any, b: any): boolean {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
-const SORT_PROBE = Symbol('sortProbe');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
@@ -3871,12 +3869,11 @@ export function makeTable(options): TableResourceClass {
 										if (segments.length === 0) continue;
 										let sortSelect: any = segments[segments.length - 1];
 										for (let i = segments.length - 2; i >= 0; i--) {
-											sortSelect = { name: segments[i], select: [sortSelect], [SORT_PROBE]: true };
+											sortSelect = { name: segments[i], select: [sortSelect] };
 										}
 										const sortProbe: any = {
 											select: [sortSelect],
 											checkPermission: property.checkPermission,
-											[SORT_PROBE]: true,
 										};
 										if (!relatedResource.allowRead(user, sortProbe, context)) return [];
 										for (let cur = sortProbe.select; Array.isArray(cur); cur = cur[0]?.select) {
@@ -3896,16 +3893,10 @@ export function makeTable(options): TableResourceClass {
 							return [];
 						});
 					}
-					// When an explicit scalar select filters to empty on an attribute-restricted table,
-					// fall back to the role's permitted non-relationship attributes (pinned by permissions.test.js).
-					if (
-						attrsForType &&
-						(!selectArray ||
-							(selectArray.length > 0 &&
-								(target as any).select.length === 0 &&
-								!(target as any)[SORT_PROBE] &&
-								selectArray.every((p: any) => !propertyResolvers[p?.name || p]?.definition?.tableClass)))
-					) {
+					// Braced sub-selects (`related{name}`) are parsed as Array instances; when all listed fields
+					// in a braced sub-select are denied, fall back to the role's permitted scalar attributes
+					// ("Can query with selecting inaccessible attributes with (limited) permission", permissions.test.js).
+					if (attrsForType && (!selectArray || (Array.isArray(target) && (target as any).select.length === 0))) {
 						target.select = permittedScalarAttributes();
 					}
 					(target as any)[AUTHORIZATION_SELECT] = true;
@@ -6725,11 +6716,10 @@ export function makeTable(options): TableResourceClass {
 				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
 				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
 				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-				// oversized/non-finite/negative limit or offset (a bare collection GET, or programmatic targets
-				// such as `{ limit: Infinity }`, `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page
-				// window past the scan budget — falls through to the normal streaming path with no count. This
-				// bounds the offset too: without it a huge offset would postpone the exact guardrail (which only
-				// engages past the page) until that offset was scanned.
+				// oversized/non-finite/negative limit or offset (a bare collection GET, `{ limit: Infinity }`,
+				// `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window past the scan budget — falls through to the
+				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
+				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
 				const pageLimit = target.limit as number;
 				if (
 					target.count &&
@@ -7191,7 +7181,7 @@ export function makeTable(options): TableResourceClass {
 								if (resolver.directReturn) return callback(value, attribute_name);
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
-									if (!transformCache) transformCache = {};
+									if (!transformCache) transformCache = Object.create(null);
 									// Use the target table's own read transaction; each table's readTxn is
 									// scoped to its RocksDB column family and cannot read another table's store.
 									const targetReadTxn =
@@ -7260,15 +7250,14 @@ export function makeTable(options): TableResourceClass {
 						} else {
 							value = record[attribute_name];
 							if (value && typeof value === 'object' && attribute_name !== attribute) {
-								const subSelect = attribute.select || (Array.isArray(attribute) ? attribute : null);
-								const subTransform =
-									subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
-										? TableResource.transformEntryForSelect(subSelect, context, readTxn, null)
-										: null;
-								// Plain JSON nested values: arrays project per-element so that
-								// `select: [{ name: 'addresses', select: ['city'] }]` returns
-								// `addresses: [{ city }, { city }]` rather than a single object.
-								if (Array.isArray(value)) {
+								if (!transformCache) transformCache = Object.create(null);
+								let applyPlainSubSelect = transformCache[attribute_name];
+								if (!applyPlainSubSelect) {
+									const subSelect = attribute.select || (Array.isArray(attribute) ? attribute : null);
+									const subTransform =
+										subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
+											? TableResource.transformEntryForSelect(subSelect, context, readTxn, null)
+											: null;
 									const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
 									for (
 										let clause = typeof attribute.sort === 'object' ? attribute.sort : null;
@@ -7280,17 +7269,27 @@ export function makeTable(options): TableResourceClass {
 									const offset =
 										Number.isInteger(attribute.offset) && attribute.offset >= 0 ? attribute.offset : undefined;
 									const limit = Number.isInteger(attribute.limit) && attribute.limit >= 0 ? attribute.limit : undefined;
-									if (sortClauses.length > 0 || offset !== undefined || limit !== undefined) {
-										value = sortAndSliceArray(value, sortClauses, offset, limit, undefined, context);
-									}
-									if (subTransform) {
-										value = value.map((item) =>
-											item && typeof item === 'object' ? subTransform({ value: item } as any) : item
-										);
-									}
-								} else if (subTransform && !(value instanceof Date)) {
-									value = subTransform({ value } as any);
+									const hasWindowOrSort = sortClauses.length > 0 || offset !== undefined || limit !== undefined;
+									applyPlainSubSelect = transformCache[attribute_name] = (val: any) => {
+										// Plain JSON nested values: arrays project per-element so that
+										// `select: [{ name: 'addresses', select: ['city'] }]` returns
+										// `addresses: [{ city }, { city }]` rather than a single object.
+										if (Array.isArray(val)) {
+											if (hasWindowOrSort) {
+												val = sortAndSliceArray(val, sortClauses, offset, limit, undefined, context);
+											}
+											if (subTransform) {
+												val = val.map((item) =>
+													item && typeof item === 'object' ? subTransform({ value: item } as any) : item
+												);
+											}
+										} else if (subTransform && !(val instanceof Date)) {
+											val = subTransform({ value: val } as any);
+										}
+										return val;
+									};
 								}
+								value = applyPlainSubSelect(value);
 							}
 						}
 						callback(value, attribute_name);
