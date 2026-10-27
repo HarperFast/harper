@@ -2,6 +2,7 @@
 
 const testUtils = require('../../testUtils.js');
 const { streamAsJSON } = require('#src/server/serverHelpers/JSONStream');
+const { waitFor } = require('../../waitFor');
 testUtils.preTestPrep();
 
 const assert = require('assert');
@@ -158,8 +159,8 @@ describe('Test JSONStream module ', () => {
 			let streamError;
 			stream.on('error', (error) => (streamError = error));
 			stream.read(0);
-			await delay(20);
-			assert.strictEqual(streamError?.message, 'z'.repeat(4000), 'the stream must fail without being drained');
+			await waitFor(() => streamError, { message: 'the stream must fail without being drained' });
+			assert.strictEqual(streamError.message, 'z'.repeat(4000));
 			assert.strictEqual(returned, false);
 		});
 

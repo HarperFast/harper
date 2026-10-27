@@ -134,6 +134,30 @@ describe('Test export.js', () => {
 			assert.strictEqual(fs.existsSync(file_name), false, 'a failed export must not leave a partial file');
 		});
 
+		it('a json export that cannot open its target leaves what is there', async function () {
+			function* results() {
+				yield TEST_OBJECT;
+			}
+			const target = path.join(TMP_TEST_DIR, 'existing_dir.json');
+			await fs.ensureDir(path.join(target, 'kept'));
+			hdb_export.__set__('pSql', async () => results());
+			try {
+				await assert.rejects(
+					export_local({
+						operation: 'export_local',
+						path: TMP_TEST_DIR,
+						filename: 'existing_dir',
+						format: 'json',
+						search_operation: { operation: 'sql', sql: 'SELECT * FROM dev.breed' },
+					}),
+					/EISDIR/
+				);
+				assert.strictEqual(fs.existsSync(path.join(target, 'kept')), true);
+			} finally {
+				await fs.remove(target);
+			}
+		});
+
 		it('Call to export_local with bad path', async function () {
 			search_stub = sandbox.stub().returns(SEARCH_RESPONSE);
 			hdb_export.__set__('pSql', search_stub);
