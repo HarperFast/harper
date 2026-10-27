@@ -1425,7 +1425,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 			const readOptions = { transaction, async: true };
 			return {
 				next() {
-					if (scan.closed) return { done: true, value: undefined };
+					if (scanStopped(scan)) return { done: true, value: undefined };
 					if (joinedIterator) return joinedIterator.next();
 					scanned ??= scanRelated(
 						rightIterable,
@@ -1437,9 +1437,9 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						scan
 					).then(() => {
 						// a scan stopped by return() leaves partial mappings, which must not be yielded
-						joinedIterator = (scan.closed ? new Map() : joined).keys()[Symbol.iterator]();
+						joinedIterator = (scanStopped(scan) ? new Map() : joined).keys()[Symbol.iterator]();
 					});
-					return scanned.then(() => (scan.closed ? { done: true, value: undefined } : joinedIterator.next()));
+					return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : joinedIterator.next()));
 				},
 				return() {
 					scan.closed = true;
@@ -1489,7 +1489,8 @@ function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
 	}
 	return results;
 }
-// a request torn down mid-scan finishes the read transaction (onDone) without returning the join iterator
+// a request torn down mid-scan finishes the read transaction (onDone) without returning the join iterator;
+// either way a stopped scan yields nothing more, not its partial mappings or ids
 const scanStopped = (scan) => scan.closed || scan.transaction?.isDone;
 async function scanRelated(rightIterable, readRecord, joined, add, scan: { closed: boolean; transaction: any }) {
 	const iterator = rightIterable[Symbol.asyncIterator]();
@@ -1609,7 +1610,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 			let scanned: Promise<void>;
 			const readOptions = { transaction, async: true };
 			iterator.next = () => {
-				if (scan.closed) return { done: true, value: undefined };
+				if (scanStopped(scan)) return { done: true, value: undefined };
 				if (idIterator) return nextJoined();
 				if (!scanned) {
 					defineFromRecord();
@@ -1623,10 +1624,10 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						(id) => ids.add(id),
 						scan
 					).then(() => {
-						idIterator = (scan.closed ? new Set() : ids)[Symbol.iterator]();
+						idIterator = (scanStopped(scan) ? new Set() : ids)[Symbol.iterator]();
 					});
 				}
-				return scanned.then(() => (scan.closed ? { done: true, value: undefined } : nextJoined()));
+				return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : nextJoined()));
 			};
 		} else {
 			iterator.next = () => {

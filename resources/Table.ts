@@ -6831,6 +6831,8 @@ export function makeTable(options): TableResourceClass {
 					let lastGroupingValue: any;
 					let firstEntry = true;
 					let closed = false;
+					// request teardown finishes the read transaction (onDone) without returning this iterator
+					const stopped = () => closed || readTxn?.isDone;
 					function collect(entry): Promise<unknown> | undefined {
 						ordered.push(entry);
 						let pending: Promise<void>[];
@@ -6849,7 +6851,6 @@ export function makeTable(options): TableResourceClass {
 								} else keys.push(convertToComparableKeys(value));
 							}
 						} catch (error) {
-							// observe the keys still pending, so their rejections are not reported as unhandled
 							if (pending) Promise.all(pending).catch(() => {});
 							throw error;
 						}
@@ -6880,10 +6881,10 @@ export function makeTable(options): TableResourceClass {
 										if (results.onDone) results.onDone();
 										return iteration;
 									}
-								} else
-									return {
-										value: await transformToRecord.call(this, iteration.value),
-									};
+								} else {
+									const value = await transformToRecord.call(this, iteration.value);
+									return stopped() ? { done: true, value: undefined } : { value };
+								}
 							}
 							ordered = [];
 							orderedKeys = [];
@@ -6894,9 +6895,9 @@ export function makeTable(options): TableResourceClass {
 							}
 							// need to load all the entries into ordered
 							do {
-								// a key read awaited below can settle after the consumer returned the iterator
-								if (closed) return { done: true, value: undefined };
+								if (stopped()) return { done: true, value: undefined };
 								iteration = await dbIterator.next();
+								if (stopped()) return { done: true, value: undefined };
 								if (iteration.done) {
 									dbDone = true;
 									if (!ordered.length) {
@@ -6907,7 +6908,7 @@ export function makeTable(options): TableResourceClass {
 									let entry = iteration.value;
 									if (entry?.then) {
 										entry = await entry;
-										if (closed) return { done: true, value: undefined };
+										if (stopped()) return { done: true, value: undefined };
 									}
 									if (entry === SKIP) continue;
 									// if the index has already provided the first order of sorting, we only need to sort
@@ -6921,7 +6922,7 @@ export function makeTable(options): TableResourceClass {
 										);
 										if (groupingValue?.then) {
 											groupingValue = await groupingValue;
-											if (closed) return { done: true, value: undefined };
+											if (stopped()) return { done: true, value: undefined };
 										}
 										if (firstEntry) {
 											firstEntry = false;
@@ -6936,7 +6937,7 @@ export function makeTable(options): TableResourceClass {
 									if (collecting) await collecting;
 								}
 							} while (true);
-							if (closed) return { done: true, value: undefined };
+							if (stopped()) return { done: true, value: undefined };
 							if ((sort as any).isGrouped) {
 								// TODO: Return grouped results
 							}
@@ -6945,10 +6946,10 @@ export function makeTable(options): TableResourceClass {
 							sortedPositions.sort(comparePositions);
 							sortedIndex = 0;
 							iteration = nextSorted();
-							if (!iteration.done)
-								return {
-									value: await transformToRecord.call(this, iteration.value),
-								};
+							if (!iteration.done) {
+								const value = await transformToRecord.call(this, iteration.value);
+								return stopped() ? { done: true, value: undefined } : { value };
+							}
 							if (results.onDone) results.onDone();
 							return iteration;
 						},
@@ -7241,33 +7242,39 @@ export function makeTable(options): TableResourceClass {
 						callback(value, attribute_name);
 					};
 					let selected: any;
-					if (typeof select === 'string') {
-						selectAttribute(select, (value) => {
-							selected = value;
-						});
-					} else if (Array.isArray(select)) {
-						if ((select as any).asArray) {
-							selected = [];
-							select.forEach((attribute, index) => {
-								if (attribute === '*') select[index] = record;
-								else selectAttribute(attribute, (value) => (selected[index] = value));
+					try {
+						if (typeof select === 'string') {
+							selectAttribute(select, (value) => {
+								selected = value;
 							});
-						} else {
-							selected = {};
-							const forceNulls = (select as any).forceNulls;
-							for (const attribute of select) {
-								if (attribute === '*')
-									for (const key in record) {
-										selected[key] = record[key];
-									}
-								else
-									selectAttribute(attribute, (value, attribute_name) => {
-										if (value === undefined && forceNulls) value = null;
-										selected[attribute_name] = value;
-									});
+						} else if (Array.isArray(select)) {
+							if ((select as any).asArray) {
+								selected = [];
+								select.forEach((attribute, index) => {
+									if (attribute === '*') select[index] = record;
+									else selectAttribute(attribute, (value) => (selected[index] = value));
+								});
+							} else {
+								selected = {};
+								const forceNulls = (select as any).forceNulls;
+								for (const attribute of select) {
+									if (attribute === '*')
+										for (const key in record) {
+											selected[key] = record[key];
+										}
+									else
+										selectAttribute(attribute, (value, attribute_name) => {
+											if (value === undefined && forceNulls) value = null;
+											selected[attribute_name] = value;
+										});
+								}
 							}
-						}
-					} else throw new ClientError('Invalid select' + select);
+						} else throw new ClientError('Invalid select' + select);
+					} catch (error) {
+						// related reads already started for this row would otherwise reject unobserved
+						if (promises) Promise.all(promises).catch(() => {});
+						throw error;
+					}
 					if (promises) {
 						return Promise.all(promises).then(() => selected);
 					}
@@ -10147,7 +10154,6 @@ export function makeTable(options): TableResourceClass {
 				entries.push(entry);
 			}
 		} catch (error) {
-			// observe the reads still pending, so their rejections are not reported as unhandled
 			if (pending) Promise.all(entries).catch(() => {});
 			throw error;
 		}
