@@ -611,8 +611,6 @@ describe('exchangeOidcToken', () => {
 		assert.strictEqual(payload.operations, undefined, 'an unscoped token must look exactly as it did before');
 	});
 
-	// The two policies enable_previews writes name one user: each environment's run gets that user's role narrowed to
-	// what the policy allows, so the close-event cleanup job, which waits on no reviewer, can only drop previews.
 	it("mints a preview cleanup token that drops the application's previews and deploys nothing (harper#3042)", async () => {
 		const { desiredPreviewIdentity } = require('#src/components/previewOperations');
 		const op_auth = require('#src/utility/operation_authorization');

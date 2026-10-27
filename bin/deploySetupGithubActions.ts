@@ -285,7 +285,7 @@ function excludesForks(name: string, jobs: Record<string, any>, seen = new Set<s
 	seen.add(name);
 	const condition = jobCondition(jobs[name]);
 	if (conjuncts(withoutEnclosingParentheses(condition))?.some((term) => SAME_REPOSITORY_TERM.test(term))) return true;
-	if (/\b(?:always|failure|cancelled|success)\s*\(/.test(condition)) return false;
+	if (/\b(?:always|failure|cancelled|success)\s*\(/i.test(condition)) return false;
 	return asList(jobs[name]?.needs).some((needed) => excludesForks(String(needed), jobs, seen));
 }
 

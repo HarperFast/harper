@@ -109,11 +109,19 @@ export function starterPreviewWorkflow({
 		`    environment: ${PREVIEW_CLEANUP_ENVIRONMENT}`,
 		'    permissions:',
 		'      id-token: write',
+		'      pull-requests: read',
+		'    env:',
+		'      GH_TOKEN: ${{ github.token }}',
 		'    steps:',
 		...setup,
 		'      - run: |',
-		'          # A deploy still holding the preview answers 409 until it finishes.',
-		`          for attempt in 1 2 3 4 5; do harper preview drop app=${app} pr="$PR" && exit 0; sleep 30; done; exit 1`,
+		'          # A deploy still holding the preview answers 409 until it finishes; a reopened PR keeps its preview.',
+		'          for attempt in 1 2 3 4 5; do',
+		`            [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .state)" = closed ] || exit 0`,
+		`            harper preview drop app=${app} pr="$PR" && exit 0`,
+		'            sleep 30',
+		'          done',
+		'          exit 1',
 		'',
 	].join('\n');
 }
@@ -188,7 +196,14 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 					message: `${workflow} does not exist. Write a starter preview workflow?`,
 					default: true,
 				})));
-		if (!writeWorkflow) notes.push(`${workflow} is not in this checkout; write_workflow=true writes a starter one.`);
+	}
+	if ((!checkout || (checkout.content === undefined && !writeWorkflow)) && args.allow_unverified !== true) {
+		throw usageError(
+			`Setup could not check ${workflow} ${checkout ? 'because it is not in this checkout' : `from a checkout of ${repository.fullName}`}, ` +
+				'and the workflow is what keeps forks and PR code away from the preview identity. Run setup from a checkout ' +
+				'of the repository, pass write_workflow=true for a starter one, or allow_unverified=true once you have ' +
+				'checked it yourself. Nothing was changed.'
+		);
 	}
 	let credential = args.credential === true;
 	if (!credential && repository.private && args.credential === undefined) {

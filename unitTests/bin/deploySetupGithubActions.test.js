@@ -330,6 +330,8 @@ jobs:
 				"    needs: [gate]\n    if: success() || github.event.action == 'labeled'\n"
 			);
 			assert.deepStrictEqual(check(labeled).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const capitalized = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: Always()\n');
+			assert.deepStrictEqual(check(capitalized).unsafe, ['that job "deploy" excludes fork pull requests']);
 		});
 
 		it('cannot read a condition that names the head repository without plainly admitting only it', () => {
@@ -362,7 +364,10 @@ jobs:
 				'      pull-requests: read\n'
 			);
 			assert.match(problemsOf(noToken), /no job in the "preview" environment has `permissions: id-token: write`/);
-			const cleanupNoToken = starter.replace('    permissions:\n      id-token: write\n    steps:', '    steps:');
+			const cleanupNoToken = starter.replace(
+				'      id-token: write\n      pull-requests: read\n    env:',
+				'      pull-requests: read\n    env:'
+			);
 			assert.match(problemsOf(cleanupNoToken), /job "cleanup" runs in "preview-cleanup" without/);
 		});
 

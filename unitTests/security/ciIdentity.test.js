@@ -1,6 +1,5 @@
 'use strict';
 
-// The production setup's cases are in unitTests/bin/deploySetupGithubActions.test.js.
 const assert = require('node:assert');
 const { planIdentityReconcile, policiesOverlap, roleDifference } = require('#src/security/ciIdentity');
 const { derivePreviewNames, isPreviewProjectOf, canonicalWorkflowPath } = require('#src/utility/previewIdentity');

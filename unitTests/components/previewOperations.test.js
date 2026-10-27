@@ -1,6 +1,5 @@
 'use strict';
 
-// Against real system tables. The run through the CLI is integrationTests/deploy/preview-setup.test.ts.
 const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const os = require('node:os');
