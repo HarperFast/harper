@@ -757,11 +757,21 @@ describe('Replication confirmation failure after a local commit', () => {
 				}
 				const stream = contentTypes.get(type).serializeStream(source(), undefined, { method: 'GET' });
 				const chunks = [];
-				for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+				let streamError;
+				try {
+					for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+				} catch (error) {
+					streamError = error;
+				}
 				const text = Buffer.concat(chunks).toString();
+				if (type === 'application/json') {
+					// a JSON array has no terminal record, so the element is a diagnostic and the stream fails
+					assert.ok(streamError, 'a failed JSON-array stream must fail rather than end');
+					assert.throws(() => JSON.parse(text), SyntaxError);
+				} else assert.strictEqual(streamError, undefined);
 				const records =
 					type === 'application/json'
-						? JSON.parse(text)
+						? JSON.parse(text + ']')
 						: type === 'text/event-stream'
 							? text
 									.split('\n')
