@@ -398,9 +398,11 @@ export function certifyOriginFloor(rootStore: RocksDatabase): number | null | un
 export function localStartBound(rootStore: RocksDatabase): { atOrAbove: number } | { above: number } | undefined {
 	// a closed store's registry is retired; recreating it would retain the closed store
 	if (rootStore.status === 'closed') return;
+	// A floor published before the sample bounds every key still outstanding at the scan, and is the tighter
+	// bound when a carried one is stale. One read after the scan could pass a key the scan saw commit meanwhile.
+	const published = fromBits(Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED));
 	const closed = sampleClosedBounds(rootStore);
-	// nothing appends below the published floor either; it is the tighter bound when a carried one is stale
-	const bound = Math.max(closed.bound, fromBits(Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED)));
+	const bound = Math.max(closed.bound, published);
 	return bound <= closed.sample ? { atOrAbove: bound } : { above: closed.sample };
 }
 
