@@ -1,7 +1,8 @@
 /** Native HNSW coverage waits and response metadata through REST with six HTTP workers. */
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import {
 	createHarperContext,
 	setupHarperWithFixture,
@@ -45,6 +46,10 @@ test(
 				'Content-Type': 'application/json',
 				'Connection': 'close',
 			};
+			function harperLog(): string {
+				const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+				return existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
+			}
 			async function request(path: string, method = 'GET', body?: unknown) {
 				const response = await fetch(`${ctx.harper.httpURL}${path}`, {
 					method,
@@ -93,10 +98,11 @@ test(
 				const shortWait = await query(1_000_000, 1, target, path);
 				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
 				assert.equal(shortWait.coverage, null);
-				// a cut-off body may or may not carry its best-effort diagnostic
+				// a cut-off body's diagnostic is best-effort; without it, the server log names the failure
 				if (shortWait.aborted)
 					assert(
-						!shortWait.text.includes('{"error":') || /\{"error":"DerivedIndexLagError/.test(shortWait.text),
+						/\{"error":"DerivedIndexLagError/.test(shortWait.text) ||
+							(!shortWait.text.includes('{"error":') && harperLog().includes('DerivedIndexLagError')),
 						JSON.stringify(shortWait)
 					);
 				else {

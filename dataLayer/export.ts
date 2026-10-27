@@ -127,7 +127,7 @@ async function confirmPath(directoryPath: string) {
  * @param sourceDataFormat
  * @param data
  */
-async function saveToLocal(filePath: string, sourceDataFormat: string, data: any) {
+export async function saveToLocal(filePath: string, sourceDataFormat: string, data: any) {
 	hdbLogger.trace('in saveToLocal');
 	if (hdbCommon.isEmptyOrZeroLength(filePath)) {
 		throw handleHDBError(
@@ -162,14 +162,18 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 
 	if (sourceDataFormat === JSON_TEXT) {
 		const writeStream = fs.createWriteStream(filePath);
-		let opened = false;
-		writeStream.once('open', () => (opened = true));
+		let written: fs.Stats | undefined;
+		writeStream.once('open', (fd) => (written = fs.fstatSync(fd)));
 		try {
 			await pipeline(streamAsJSON(data), writeStream);
 		} catch (error) {
-			// an open still in flight completes before 'close'; only a file this export opened is its own to remove
+			// an open still in flight completes before 'close'; remove only the file this export opened, not one
+			// another export has since put at the same path
 			if (!writeStream.closed) await once(writeStream, 'close');
-			if (opened) await fs.promises.unlink(filePath).catch(() => {});
+			const current = written && (await fs.promises.lstat(filePath).catch(() => undefined));
+			if (current && current.ino === written.ino && current.dev === written.dev) {
+				await fs.promises.unlink(filePath).catch(() => {});
+			}
 			throw error;
 		}
 

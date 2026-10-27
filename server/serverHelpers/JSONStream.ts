@@ -110,15 +110,15 @@ class JSONStream extends Readable {
 				return;
 			}
 			if (object.then) {
-				yield object.then((object) => this.serialize(object), rethrowElementFailure);
+				yield object.then((object) => this.serialize(object));
 			} else {
 				let json;
 				try {
 					json = stringify(object);
 				} catch (error) {
-					rethrowElementFailure(error);
+					throw elementFailure(error);
 				}
-				yield json?.then ? json.then(null, rethrowElementFailure) : json;
+				yield json;
 			}
 		} else {
 			yield stringify(object);
@@ -216,6 +216,7 @@ class JSONStream extends Readable {
 				} else {
 					if (nextString.then) {
 						this.flush();
+						// an iterator step never rejects, so a rejection here is an element's: a promise row or a deferred stringify
 						return Promise.resolve(nextString).then((resolved) => {
 							if (resolved && typeof resolved.return === 'function') {
 								iterator.childIterator = resolved;
@@ -223,7 +224,7 @@ class JSONStream extends Readable {
 							} else if (this.push(resolved + '')) {
 								return this.readIterator(iterator);
 							} // else return false
-						});
+						}, rethrowElementFailure);
 					}
 					if (typeof nextString.return === 'function') {
 						iterator.childIterator = nextString;
@@ -266,8 +267,12 @@ class StreamFailure {
 }
 
 // the element's comma is already written, so its diagnostic takes the element's place
+function elementFailure(error: unknown) {
+	return new StreamFailure(error, stringify(streamError(error)));
+}
+
 function rethrowElementFailure(error: unknown): never {
-	throw new StreamFailure(error, stringify(streamError(error)));
+	throw elementFailure(error);
 }
 
 export function stringify(value) {
