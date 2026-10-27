@@ -2,6 +2,7 @@ import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { Readable } from 'node:stream';
 import { request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -281,6 +282,28 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 			if (valid) assert.deepStrictEqual(JSON.parse(text), { title: 'schema form' });
 		});
 	}
+
+	test('enforces request-contract body presence on a request with no body framing', async () => {
+		// fetch and node:http frame a bodyless request with Content-Length: 0, which REST deserializes per
+		// Content-Type; only a request with neither Content-Length nor Transfer-Encoding has no body.
+		const unframed = async (path: string) => {
+			const { hostname, port } = new URL(ctx.harper.httpURL);
+			const socket = connect(Number(port), hostname);
+			socket.end(
+				`PATCH ${path} HTTP/1.1\r\nHost: ${hostname}\r\nAuthorization: ${authorization}\r\n` +
+					'Accept: application/json\r\nConnection: close\r\n\r\n'
+			);
+			let raw = '';
+			for await (const chunk of socket.setTimeout(10000, () => socket.destroy())) raw += chunk;
+			return { status: Number(raw.split(' ', 2)[1]), raw };
+		};
+		const missing = await unframed('/SchemaRequiredBody/1');
+		assert.equal(missing.status, 400, missing.raw);
+		assert.match(missing.raw, /body is required/);
+		const omitted = await unframed('/SchemaOptionalBody/1');
+		assert.equal(omitted.status, 200, omitted.raw);
+		assert.match(omitted.raw, /"omitted":true/);
+	});
 
 	test('settles inherited form collection when the client disconnects mid-file', async () => {
 		const uploading = httpRequest(`${ctx.harper.httpURL}/DelegatedUpload/disconnected-inherited`, {
