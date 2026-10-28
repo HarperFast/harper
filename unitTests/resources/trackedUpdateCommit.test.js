@@ -1151,6 +1151,41 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 		});
 	});
 
+	describe('A save that fails validation', () => {
+		let SealedTable;
+		before(() => {
+			SealedTable = table({
+				table: 'TrackedSealedRetry',
+				database: 'test_qa1955',
+				audit: true,
+				sealed: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+				],
+			});
+		});
+		it('saves the correction of a rejected own property, on a retry and at commit', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // LMDB validates at commit, not at save
+			await SealedTable.put('retry', { title: 't' });
+			await SealedTable.put('retry-at-commit', { title: 't' });
+			await transaction(async (ctx) => {
+				const retried = await SealedTable.update('retry', ctx);
+				retried.unknown = 1;
+				assert.throws(() => retried.save(), /not allowed/);
+				delete retried.unknown;
+				retried.title = 'saved';
+				await retried.save();
+				const committed = await SealedTable.update('retry-at-commit', ctx);
+				committed.unknown = 1;
+				assert.throws(() => committed.save(), /not allowed/);
+				delete committed.unknown;
+				committed.title = 'committed';
+			});
+			assert.strictEqual((await SealedTable.get('retry')).title, 'saved');
+			assert.strictEqual((await SealedTable.get('retry-at-commit')).title, 'committed');
+		});
+	});
 	describe('Held lock', () => {
 		it('saves an own dynamic property set alone on a held record', async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // held locks are RocksDB-only

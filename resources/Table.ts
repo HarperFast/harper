@@ -4356,7 +4356,11 @@ export function makeTable(options): TableResourceClass {
 				try {
 					result = this.#saveOperation(operation);
 				} catch (error) {
-					if (!operation.saved && !operation.dropped) this.#savingOperation = operation;
+					if (!operation.saved && !operation.dropped) {
+						// the write goes back to this generation unstaged, so its retry reads the corrected changes
+						operation.releaseChanges?.();
+						this.#savingOperation = operation;
+					}
 					throw error;
 				}
 				const innerCommit = operation.innerCommit;
@@ -5521,7 +5525,7 @@ export function makeTable(options): TableResourceClass {
 			// validation is picked up
 			const tracksInstance = !fullUpdate && (recordUpdate === undefined || recordUpdate === this.#changes);
 			let instanceChanges = tracksInstance ? recordUpdate : undefined;
-			let captureChanges;
+			let captureChanges, releaseChanges;
 			if (recordUpdate === undefined) {
 				let captured = false;
 				captureChanges = () => {
@@ -5530,6 +5534,9 @@ export function makeTable(options): TableResourceClass {
 						recordUpdate = this.#changes;
 						if (tracksInstance) instanceChanges = recordUpdate;
 					}
+				};
+				releaseChanges = () => {
+					captured = false;
 				};
 			}
 			const reloadsCommitBase = options?.isCopyApply !== true;
@@ -5583,6 +5590,7 @@ export function makeTable(options): TableResourceClass {
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				captureChanges,
+				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
 					if (tracksInstance) {
