@@ -9929,10 +9929,10 @@ export function makeTable(options): TableResourceClass {
 			return (TableResource as any).indexingOperation;
 		}
 		/**
-		 * Rewrite each stored record without the named properties, in place: not audited or replicated. See
-		 * resources/DESIGN.md for what a concurrent write sees.
+		 * Remove the named properties only after their schema attributes and indexes have been removed.
 		 */
 		static async stripAttributeValues(names: string[]) {
+			assertAttributesRemoved(names);
 			let keys: Id[] = [];
 			for (const key of primaryStore.getKeys({ start: true, snapshot: false })) {
 				keys.push(key);
@@ -13045,12 +13045,21 @@ export function makeTable(options): TableResourceClass {
 			}
 		);
 	}
+	function assertAttributesRemoved(names: string[]) {
+		const declaredName = names.find((name) => attributes.some((attribute) => attribute.name === name));
+		if (declaredName !== undefined)
+			throw new ClientError(
+				`Cannot strip ${declaredName} from ${tableName} while it is still declared; remove the attribute from the schema first`,
+				409
+			);
+	}
 	function stripBatch(
 		keys: Id[],
 		names: string[],
 		attempt = 1,
 		deadline = Date.now() + STRIP_RETRY_BUDGET_MS
 	): Promise<unknown> {
+		assertAttributesRemoved(names);
 		const completions: Promise<unknown>[] = [];
 		const stripKeys = (transaction?: RocksTransaction) => {
 			for (const key of keys) {

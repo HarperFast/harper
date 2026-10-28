@@ -2,7 +2,8 @@
  * `drop_attribute` on a dynamic (`create_table`, no attributes) table rewrites every row without the
  * dropped value. Every row must stay readable with its remaining fields and its version, and a deleted
  * row must stay deleted. A raw primary-store rewrite failed both: RocksDB read 200 → 200 → 0 rows over
- * two drops (harper#1762), and a deleted row came back as `{}`.
+ * two drops (harper#1762), and a deleted row came back as `{}`. A probe re-registers each dropped
+ * catalog field so projection cannot hide a value the strip left stored.
  *
  *   npm run test:integration -- "integrationTests/database/drop-attribute-dynamic-rewrite.test.ts"
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/drop-attribute-dynamic-rewrite.test.ts"
@@ -29,8 +30,17 @@ suite('drop_attribute rewrite on a dynamic table keeps every row', (ctx: Context
 		op({ operation: 'search_by_id', database: DATABASE, table, ids, get_attributes: ['*'] });
 	const recordCount = async (table: string): Promise<number> =>
 		(await op({ operation: 'describe_table', database: DATABASE, table })).record_count;
-	const dropAttribute = (table: string, attribute: string) =>
-		op({ operation: 'drop_attribute', database: DATABASE, table, attribute });
+	const dropThenRestoreCatalogAttribute = async (table: string, attribute: string) => {
+		await op({ operation: 'drop_attribute', database: DATABASE, table, attribute });
+		const id = `catalog-probe-${attribute}`;
+		await op({ operation: 'insert', database: DATABASE, table, records: [{ code: id, [attribute]: 0 }] });
+		await op({ operation: 'delete', database: DATABASE, table, ids: [id] });
+		const description = await op({ operation: 'describe_table', database: DATABASE, table });
+		strictEqual(
+			description.attributes.some((entry: { attribute: string }) => entry.attribute === attribute),
+			true
+		);
+	};
 	const updatedTimes = new Map<string, Map<string, number>>();
 
 	async function seed(table: string, deletedIds: string[] = []) {
@@ -49,7 +59,7 @@ suite('drop_attribute rewrite on a dynamic table keeps every row', (ctx: Context
 		deepStrictEqual(rows.map((row) => row.code).sort(), [...expectedIds].sort());
 		for (const row of rows) {
 			const seeded = seedRecord(Number(row.code.slice('code-'.length)));
-			const stored = Object.fromEntries(FIELDS.map((field) => [field, row[field]]));
+			const stored = Object.fromEntries(FIELDS.map((field) => [field, row[field] ?? undefined]));
 			const expected = Object.fromEntries(
 				FIELDS.map((field) => [field, keptFields.includes(field) ? seeded[field] : undefined])
 			);
@@ -69,17 +79,17 @@ suite('drop_attribute rewrite on a dynamic table keeps every row', (ctx: Context
 		await teardownHarper(ctx);
 	});
 
-	test('two drops keep every row and its remaining fields', async () => {
-		await dropAttribute('Dynamic', 'price');
+	test('successive drops keep every row and its remaining fields', async () => {
+		await dropThenRestoreCatalogAttribute('Dynamic', 'price');
 		await assertRows('Dynamic', ['code', 'name', 'qty'], ids);
-		await dropAttribute('Dynamic', 'qty');
+		await dropThenRestoreCatalogAttribute('Dynamic', 'qty');
 		await assertRows('Dynamic', ['code', 'name'], ids);
-		await dropAttribute('Dynamic', 'name');
+		await dropThenRestoreCatalogAttribute('Dynamic', 'name');
 		await assertRows('Dynamic', ['code'], ids);
 	});
 
 	test('a drop leaves a deleted row deleted', async () => {
-		await dropAttribute('WithDeleted', 'price');
+		await dropThenRestoreCatalogAttribute('WithDeleted', 'price');
 		await assertRows(
 			'WithDeleted',
 			['code', 'name', 'qty'],
