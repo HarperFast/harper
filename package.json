@@ -71,7 +71,11 @@
 		"test:unit": "mocha",
 		"test:unit:main": "mocha \"unitTests/**/*test.*js\" --exclude \"unitTests/apiTests/**/*\" --exclude \"unitTests/dataLayer/harperBridge/**/*\" --exclude \"unitTests/resources/**/*\"",
 		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
+<<<<<<< HEAD
 		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
+=======
+		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb mocha unitTests/server/preconditions.test.js unitTests/server/durableSessionResume.test.js unitTests/server/durableSessionSubscribeBoundedSave.test.js && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
+>>>>>>> 78da58a7d (Answer a durable MQTT SUBSCRIBE and UNSUBSCRIBE from their own save, not from the end of the save loop)
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
 		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:resources:core": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",

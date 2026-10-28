@@ -760,6 +760,115 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
 	}
+<<<<<<< HEAD
+=======
+	/** Its PUBREL waits for a save that keeps the message from being sent again and records the PUBREL owed. */
+	received(messageId: number, failed: boolean) {
+		const owed = this.awaitingCompletion?.get(messageId);
+		// false: its save failed, so a repeated PUBREC tries it again
+		if (owed === false) return this.owePubrel(messageId);
+		if (owed !== undefined) return owed;
+		const delivery = this.awaitingAcks?.get(messageId);
+		if (delivery && delivery.qos !== 2) return false;
+		let state = delivery && this.topics.get(delivery.topic);
+		const sent = state?.unacked.get(messageId);
+		let identity: DeliveryIdentity | undefined = sent && [sent.key, sent.ordinal, sent.id];
+		const held = sent ? undefined : this.takeResend(messageId);
+		if (held) ({ state, identity } = held);
+		if (!delivery && !identity) return false;
+		this.dirty = true;
+		this.acknowledge(messageId);
+		this.scheduleCheckpoint();
+		if (state) {
+			// compacted first, so the receipt limit counts only what is still kept; the boundary vector built here
+			// is the one the position advance below reuses
+			this.advanceCount++;
+			const checkpoint = state.entry.checkpoint === undefined ? undefined : this.currentCheckpoint(state);
+			const floor = checkpoint === undefined ? undefined : checkpointFloor(checkpoint);
+			this.compactReceived(state, floor);
+			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
+			if (identity) {
+				this.addReceived(state, identity);
+				this.compactReceived(state, floor);
+			}
+		}
+		if (failed) return true;
+		this.advancePositions(false);
+		return this.owePubrel(messageId);
+	}
+	takeResend(messageId: number): { state: TopicState; identity: DeliveryIdentity } | undefined {
+		if (!this.reservedIds.has(messageId)) return;
+		for (const state of this.topics.values()) {
+			for (const [slot, resend] of state.resend ?? []) {
+				if (resend[3] !== messageId) continue;
+				state.resend.delete(slot);
+				this.reservedIds.delete(messageId);
+				return { state, identity: [resend[0], resend[1], resend[2]] };
+			}
+		}
+	}
+	owePubrel(messageId: number) {
+		const awaitingCompletion = (this.awaitingCompletion ??= new Map());
+		// in the map before the save starts, which reads it at once
+		awaitingCompletion.set(messageId, true);
+		const saved = this.saveExchanges().then(
+			() => true,
+			(error) => {
+				if (awaitingCompletion.get(messageId) === saved) awaitingCompletion.set(messageId, false);
+				throw error;
+			}
+		);
+		awaitingCompletion.set(messageId, saved);
+		return saved;
+	}
+	completed(messageId: number) {
+		// one not yet saved only has its PUBREL sent again after a reconnect, which the client completes again
+		if (this.awaitingCompletion?.delete(messageId)) {
+			this.dirty = true;
+			this.scheduleCheckpoint();
+		}
+	}
+	receiveExactlyOnce(messageId: number, publish: () => Promise<any>) {
+		if (this.terminated) return Promise.reject(this.endedError());
+		return super.receiveExactlyOnce(messageId, publish);
+	}
+	/** Settles once a save that read the session after this call has landed: later saves are not waited for. */
+	saveExchanges(): Promise<void> {
+		// an ended session's last save has been taken, so nothing it would acknowledge can be kept
+		if (this.sealed || this.discarded) return Promise.reject(this.endedError());
+		const needed = this.savesStarted + 1;
+		return new Promise((resolve, reject) => {
+			this.saveWaiters.push({ needed, resolve, reject });
+			this.persist();
+		});
+	}
+	/** The final save waits for inbound QoS 2 publishes still committing, so it keeps their ids; nothing saves after it. */
+	seal(save: boolean) {
+		if (this.sealing || this.sealed) return;
+		const publishing = [];
+		for (const exchange of this.awaitingRelease?.values() ?? []) {
+			// bounded within the takeover deadline: one that misses it is saved as not published, so a retransmission publishes
+			if (!exchange.published && !exchange.release)
+				publishing.push(Promise.race([exchange.reply.catch(() => {}), sealWait()]));
+		}
+		if (publishing.length === 0) {
+			if (save) this.persist().catch(() => {});
+			this.sealed = true;
+			return;
+		}
+		// a takeover waits on `writes`, so it reads the record only after this save
+		this.sealing = true;
+		this.writes = Promise.all([this.writes, ...publishing]).then(() => {
+			const saved = this.persist().catch(() => {});
+			this.sealed = true;
+			return saved;
+		});
+	}
+	hasInFlight() {
+		for (const state of this.topics.values()) if (state.entry.qos === 2 && state.unacked.size > 0) return true;
+		return false;
+	}
+>>>>>>> 78da58a7d (Answer a durable MQTT SUBSCRIBE and UNSUBSCRIBE from their own save, not from the end of the save loop)
 	consumed(subscription) {
 		const state = this.topics.get(subscription.topic);
 		if (state?.subscription === subscription) state.consumed++;
@@ -786,7 +895,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		try {
 			started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
-			if (durable || started) await this.persist();
+			if (durable || started) await this.saveExchanges();
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
@@ -814,7 +923,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const result = await super.removeSubscription(topic);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
-			if (saved || this.dirty || this.saving) await this.persist();
+			if (saved || this.dirty || this.saving) await this.saveExchanges();
 			return result || saved;
 		});
 	}
