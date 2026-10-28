@@ -90,6 +90,16 @@ describe('check-design-docs', function () {
 				/unitTests\/DESIGN\.md is 1001 lines; the budget is 1000/
 			);
 		});
+
+		it('rejects an indexed topic file over 1000 lines and accepts exactly 1000', function () {
+			const registered = `${ROOT}\n## a/topic.md\n\n- [Part](a/topic.md#part) — x\n`;
+			const topic = '# Topic\n\n## Part\n\nBody.\n';
+			passes({ 'DESIGN.md': registered, 'a/topic.md': padded(topic, 1000) });
+			fails(
+				{ 'DESIGN.md': registered, 'a/topic.md': padded(topic, 1001) },
+				/a\/topic\.md is 1001 lines; the budget is 1000/
+			);
+		});
 	});
 
 	describe('index completeness', function () {

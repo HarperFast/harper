@@ -120,8 +120,7 @@ notes.delete('DESIGN.md');
 
 for (const file of [...notes].sort()) {
 	const n = lines(file).length;
-	if (path.basename(file) === 'DESIGN.md' && n > FILE_BUDGET)
-		errors.push(`${file} is ${n} lines; the budget is ${FILE_BUDGET} — prune before adding`);
+	if (n > FILE_BUDGET) errors.push(`${file} is ${n} lines; the budget is ${FILE_BUDGET} — prune before adding`);
 	const seen = registered.get(file) ?? new Set();
 	for (const { anchor, level, text } of anchors(file))
 		if (level === 2 && !seen.has(anchor)) errors.push(`${file} section "${text}" is not indexed in DESIGN.md`);
