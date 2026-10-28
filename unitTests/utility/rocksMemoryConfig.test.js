@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { resolveRocksMemoryConfig } = require('#src/utility/rocksMemoryConfig');
+const { resolveRocksMemoryConfig, resolveRocksArenaBlockSize } = require('#src/utility/rocksMemoryConfig');
 
 const GB = 1024 * 1024 * 1024;
 
@@ -11,6 +11,7 @@ function resolve(overrides) {
 		configuredWriteBufferManagerSize: undefined,
 		configuredCostToCache: undefined,
 		configuredAllowStall: undefined,
+		configuredFlushPolicy: undefined,
 		availableMemory: 8 * GB,
 		...overrides,
 	});
@@ -56,6 +57,12 @@ describe('resolveRocksMemoryConfig', function () {
 			assert.ok(!('writeBufferManagerSize' in config));
 			assert.ok(!('writeBufferManagerCostToCache' in config));
 			assert.ok(!('writeBufferManagerAllowStall' in config));
+			assert.ok(
+				!(
+					'writeBufferManagerFlushPolicy' in
+					resolve({ configuredWriteBufferManagerSize: 0, configuredFlushPolicy: 'largest' })
+				)
+			);
 		});
 
 		it('falls back to the default for non-number values', function () {
@@ -111,5 +118,65 @@ describe('resolveRocksMemoryConfig', function () {
 			assert.strictEqual(config.writeBufferManagerAllowStall, false);
 			assert.strictEqual(resolve({ configuredAllowStall: 'true' }).writeBufferManagerAllowStall, false);
 		});
+	});
+
+	describe('flush policy', function () {
+		it('is left unset when not configured, so rocksdb-js picks it', function () {
+			assert.ok(!('writeBufferManagerFlushPolicy' in resolve({})));
+			assert.ok(!('writeBufferManagerFlushPolicy' in resolve({ configuredFlushPolicy: null })));
+			assert.ok(!('writeBufferManagerFlushPolicy' in resolve({ configuredAllowStall: true })));
+		});
+
+		it('passes each supported policy through', function () {
+			for (const policy of ['oldest', 'largest', 'largestAcrossDBs']) {
+				assert.strictEqual(resolve({ configuredFlushPolicy: policy }).writeBufferManagerFlushPolicy, policy);
+			}
+		});
+
+		it('is left unset for an unknown policy name or a non-string value', function () {
+			for (const configuredFlushPolicy of [
+				'largestacrossdbs',
+				'newest',
+				'',
+				1,
+				true,
+				['oldest'],
+				{ policy: 'oldest' },
+			]) {
+				assert.ok(
+					!('writeBufferManagerFlushPolicy' in resolve({ configuredFlushPolicy })),
+					String(configuredFlushPolicy)
+				);
+			}
+		});
+	});
+});
+
+describe('resolveRocksArenaBlockSize', function () {
+	it('is undefined when not configured, so rocksdb-js sizes the arena', function () {
+		assert.strictEqual(resolveRocksArenaBlockSize(undefined), undefined);
+		assert.strictEqual(resolveRocksArenaBlockSize(null), undefined);
+	});
+
+	it('passes a positive integer through', function () {
+		assert.strictEqual(resolveRocksArenaBlockSize(65536), 65536);
+		assert.strictEqual(resolveRocksArenaBlockSize(1), 1);
+	});
+
+	it('treats 0 as automatic', function () {
+		assert.strictEqual(resolveRocksArenaBlockSize(0), undefined);
+	});
+
+	it('is undefined for values the native layer would reject', function () {
+		for (const value of [-65536, 65536.5, NaN, Infinity, -Infinity, 2 ** 53]) {
+			assert.strictEqual(resolveRocksArenaBlockSize(value), undefined, String(value));
+		}
+	});
+
+	it('is undefined for non-number values', function () {
+		// castConfigValue turns numeric YAML/env/CLI text into a number before it reaches the resolver
+		for (const value of ['65536', true, {}, [65536]]) {
+			assert.strictEqual(resolveRocksArenaBlockSize(value), undefined, String(value));
+		}
 	});
 });

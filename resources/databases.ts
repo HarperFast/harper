@@ -123,7 +123,7 @@ import {
 } from './derivedIndexRegistry.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
-import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
+import { resolveRocksArenaBlockSize, resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import {
 	compileFullTextDefinitions,
@@ -487,18 +487,23 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
 	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
 	// In practice that's fine — these come from process-level config that doesn't change.
+	// writeBufferManagerFlushPolicy does apply live, but rocksdb-js keeps an explicit policy for the
+	// life of the process, so removing it from config takes effect only after a full restart.
 	RocksDatabase.config({
 		...resolveRocksMemoryConfig({
 			configuredBlockCacheSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE),
 			configuredWriteBufferManagerSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE),
 			configuredCostToCache: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE),
 			configuredAllowStall: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL),
+			configuredFlushPolicy: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY),
 			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
 		}),
 		...(envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS) === true
 			? { transactionLogAbortMarkers: true }
 			: {}),
 	});
+	const arenaBlockSize = resolveRocksArenaBlockSize(envGet(CONFIG_PARAMS.STORAGE_ROCKS_ARENABLOCKSIZE));
+	if (arenaBlockSize !== undefined) (options as { arenaBlockSize?: number }).arenaBlockSize = arenaBlockSize;
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
 		if (isReadOnlyMode()) {

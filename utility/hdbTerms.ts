@@ -815,6 +815,8 @@ export const CONFIG_PARAMS = {
 	STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE: 'storage_rocks_writeBufferManagerSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE: 'storage_rocks_writeBufferManagerCostToCache',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL: 'storage_rocks_writeBufferManagerAllowStall',
+	STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY: 'storage_rocks_writeBufferManagerFlushPolicy',
+	STORAGE_ROCKS_ARENABLOCKSIZE: 'storage_rocks_arenaBlockSize',
 	STORAGE_LOGGING_LEVEL: 'storage_logging_level',
 	STORAGE_LOGGING_PATH: 'storage_logging_path',
 	STORAGE_LOGGING_ROOT: 'storage_logging_root',
