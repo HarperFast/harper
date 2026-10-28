@@ -315,6 +315,6 @@ Built-in plugins (REST, HTTP, operations API, etc.) and the core database are un
 ## See Also
 
 - [Configuration Options](./options.md) — complete reference for every `harper-config.yaml` key
-- [Worker Thread Debugging](./debugging.md) — attaching Node.js inspector to Harper's worker threads
+- [Worker Thread Debugging](./debugging.md) — attaching Node.js inspector to Harper's worker threads, and enabling source maps in stack traces
 - [Storage Tuning](../database/storage-tuning.md) — production tuning of `storage.*` options
 - [Logging Configuration](../logging/configuration.md) — main and per-subsystem log settings
