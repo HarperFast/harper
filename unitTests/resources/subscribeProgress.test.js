@@ -41,6 +41,27 @@ describe('Certified subscription progress', function () {
 		subscription.end();
 	});
 
+	it('reports the lowest late event the consumer has not consumed, and keeps only what a consumer has not taken', async () => {
+		const T = tableInOwnDatabase();
+		const send = (subscription, localTime) => subscription.send({ type: 'put', id: `k${localTime}`, localTime });
+		const queued = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		// 15 and 12 arrive below 20, 18 below 30; 12 follows 15, so 15 can never be the lowest
+		for (const key of [10, 20, 15, 12, 30, 18]) send(queued, key);
+		// a scan row and a control event carry no log position
+		queued.send({ type: 'put', id: 'scan', localTime: 1, fromScan: true });
+		queued.send({ type: 'checkpoint' });
+		assert.strictEqual(queued.lowestLateUnconsumed(0), 12);
+		assert.strictEqual(queued.lowestLateUnconsumed(3), 12);
+		assert.strictEqual(queued.lowestLateUnconsumed(4), 18, 'consumed through 12');
+		assert.strictEqual(queued.lowestLateUnconsumed(6), undefined, 'every late event consumed');
+		queued.end();
+		// a callback consumer takes each event as it is sent: only the last one taken can still be in hand
+		const listened = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: () => {} });
+		for (const key of [100, 50, 60, 70]) send(listened, key);
+		assert.strictEqual(listened.lowestLateUnconsumed(0), 60);
+		listened.end();
+	});
+
 	it('follows the watermark once live, which a yield inside one transaction does not advance', async () => {
 		const T = tableInOwnDatabase();
 		await T.put('seed', { value: 0 });

@@ -2878,6 +2878,46 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		second.session.disconnect(true);
 	});
 
+	it('QoS 2: keeps receipts below a late lower key that is queued behind received deliveries, and delivers it after a reconnect', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-queued-qos2-${name}`;
+		const { session, received } = await connect(clientId);
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		session.setListener((_topic, message, messageId) => {
+			received.push({ message, messageId });
+			return message?.value === 'stall' ? stalled : true;
+		});
+		await session.addSubscription({ topic, qos: 2, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		await waitFor(() => delivery(received, 'stall'));
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		const state = session.topics.get(topic);
+		await waitFor(() => state.subscription.queue?.some((event) => event.localTime === lateKey));
+		await waitFor(() => state.subscription.progress() >= lateKey);
+		await session.received(delivery(received, 'early').messageId, false);
+		await session.received(delivery(received, 'stall').messageId, false);
+		assert.ok(
+			!(state.receivedThrough >= lateKey),
+			`receipts compacted through ${state.receivedThrough}, past the queued key ${lateKey}`
+		);
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the saved position passed it');
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		assert.ok(!values(second.received).includes('early'), 'a received delivery is not sent again');
+		second.session.disconnect(true);
+	});
+
 	it('does not pass a late key a resumed replay reads after higher ones when the topic is subscribed again', async function () {
 		if (!isRocksDB) this.skip();
 		const { T, name } = topicTable();

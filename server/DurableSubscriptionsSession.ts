@@ -1134,6 +1134,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			// with none late, the oldest unacknowledged delivery has the lowest key
 			if (state.lateUnacked === 0) break;
 		}
+		const late = this.lateUnconsumed(state);
+		if (late < bound) bound = late;
 		for (const [key] of state.resend?.values() ?? []) if (key < bound) bound = key;
 		let through = state.receivedThrough;
 		for (const key of state.receivedRuns?.keys() ?? []) {
@@ -1416,19 +1418,25 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.lateUnacked === 0) break;
 		}
 		if (boundary === undefined || !certified) return boundary;
-		if (subscription.sentCount !== state.consumed) {
-			// an event sent below a key sent before it (a late commit, or a replay reading the log in commit order) can
-			// still be queued behind deliveries of higher keys; every other queued event is at or above the delivered key
-			const late = subscription.lowestLateUnconsumed?.(state.consumed);
-			if (late !== undefined) {
-				const before = positionBefore(late);
-				if (before < boundary) boundary = before;
-			}
+		const late = this.lateUnconsumed(state);
+		if (late !== undefined) {
+			const before = positionBefore(late);
+			if (before < boundary) boundary = before;
 		}
 		const progress = subscription.progress();
 		// nothing certifies an advance yet, but holding below an unacknowledged delivery needs no certificate
 		if (progress === undefined) return boundary < state.entry.startTime ? boundary : undefined;
 		return boundary < progress ? boundary : progress;
+	}
+	/**
+	 * The lowest key sent to the topic's subscription and not yet consumed, among events sent below a key sent before
+	 * them (a late commit, or a replay reading the log in commit order): one can wait in the queue behind deliveries
+	 * of higher keys. Every other queued event is at or above the last delivered key.
+	 */
+	lateUnconsumed(state: TopicState): number | undefined {
+		const subscription = state.subscription;
+		if (subscription?.sentCount === state.consumed) return;
+		return subscription?.lowestLateUnconsumed?.(state.consumed);
 	}
 	/** `fresh`: false reuses the checkpoints a `received` computed for this pass. */
 	advancePositions(fresh = true): boolean {
