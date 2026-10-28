@@ -55,9 +55,11 @@ import {
 	SEARCH_AUTHORIZATION,
 	WRITE_CONDITION,
 	transformForSelect,
-	sortAndSliceArray,
+	nestedSelectTransform,
 	defaultAllowReads,
 	convertToComparableKeys,
+	ownDataProperty,
+	readSelectedProperty,
 } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import { assertNestedQueryOptions, hasNestedQueryOptions } from './Resource.ts';
@@ -1589,6 +1591,14 @@ function resumeRefusal(auditStore: any, generationId: string, cursor: number): E
 		: new DatabaseGenerationChangedError();
 }
 
+function projectPlainValue(transformCache: Map<any, (value: any) => any>, attribute: any, value: any) {
+	let transform = transformCache.get(attribute);
+	if (!transform) {
+		transform = nestedSelectTransform(attribute, undefined);
+		transformCache.set(attribute, transform);
+	}
+	return transform(value);
+}
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -7947,7 +7957,7 @@ export function makeTable(options): TableResourceClass {
 				ensure_loaded &&
 				(hasSourceGet || sourceLoad) &&
 				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
-				!(typeof select === 'string' ? [select] : select)?.every((attribute) => {
+				!(typeof select === 'string' ? [select] : Array.isArray(select) ? select : null)?.every((attribute) => {
 					let attribute_name;
 					if (typeof attribute === 'object') {
 						attribute_name = attribute.name;
@@ -7961,7 +7971,10 @@ export function makeTable(options): TableResourceClass {
 			) {
 				checkLoaded = true;
 			}
-			let transformCache;
+			let transformCache: Map<any, (value: any) => any>;
+			const selectsPrototype =
+				select === '__proto__' ||
+				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
 			let relationshipSelections;
 			for (const attribute of Array.isArray(select) ? select : []) {
 				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
@@ -8044,7 +8057,7 @@ export function makeTable(options): TableResourceClass {
 				// query filters evaluated. The predicate sees a frozen view so application code can't
 				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
 				if (rowFilter && !rowFilter(frozenRecordView(record))) return canSkip ? SKIP : undefined;
-				if (select && !(select[0] === '*' && select.length === 1)) {
+				if (select && !(select[0] === '*' && select.length === 1 && !(select as any).asArray)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
 						let attribute_name;
@@ -8077,18 +8090,26 @@ export function makeTable(options): TableResourceClass {
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
-							const handleResolvedValue = (value: any) => {
-								if (resolver.directReturn) return callback(value, attribute_name);
+							const handleResolvedValue = (value: any): Promise<void> | void => {
+								if (resolver.directReturn) {
+									if (attribute_name !== attribute && value && typeof value === 'object' && !(value instanceof Date)) {
+										value = projectPlainValue((transformCache ??= new Map()), attribute, value);
+										if (typeof value?.then === 'function')
+											return value.then((value: any) => callback(value, attribute_name));
+									}
+									callback(value, attribute_name);
+									return;
+								}
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
-									if (!transformCache) transformCache = Object.create(null);
+									if (!transformCache) transformCache = new Map();
 									// Use the target table's own read transaction; each table's readTxn is
 									// scoped to its RocksDB column family and cannot read another table's store.
 									const targetReadTxn =
 										targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
-									const transform =
-										transformCache[attribute_name] ||
-										(transformCache[attribute_name] = targetTable.transformEntryForSelect(
+									let transform = transformCache.get(attribute);
+									if (!transform) {
+										transform = targetTable.transformEntryForSelect(
 											// if it is a simple string, there is no select for the next level,
 											// otherwise pass along the nested selected
 											attribute_name === attribute
@@ -8102,7 +8123,9 @@ export function makeTable(options): TableResourceClass {
 											undefined,
 											undefined,
 											typeof attribute.sort === 'object' && attribute.sort
-										));
+										);
+										transformCache.set(attribute, transform);
+									}
 									if (Array.isArray(value)) {
 										const results = [];
 										let orderedIterable = targetTable.transformToOrderedSelect(
@@ -8125,7 +8148,7 @@ export function makeTable(options): TableResourceClass {
 										const iterator = orderedIterable[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
 										const nextValue = (iteration: IteratorResult<any> & Promise<any>) => {
 											while (!iteration.done) {
-												if (iteration?.then) return iteration.then(nextValue);
+												if (typeof iteration?.then === 'function') return iteration.then(nextValue);
 												results.push(iteration.value);
 												iteration = iterator.next();
 											}
@@ -8134,62 +8157,29 @@ export function makeTable(options): TableResourceClass {
 										return nextValue(iterator.next());
 									} else {
 										value = transform.call(this, value);
-										if (value?.then) {
+										if (typeof value?.then === 'function')
 											return value.then((value: any) => callback(value, attribute_name));
-										}
 									}
 								}
 								callback(value, attribute_name);
 							};
-							const promised = value?.then ? value.then(handleResolvedValue) : handleResolvedValue(value);
-							if (promised?.then) {
+							const pending =
+								typeof value?.then === 'function' ? value.then(handleResolvedValue) : handleResolvedValue(value);
+							if (pending) {
 								if (!promises) promises = [];
-								promises.push(promised);
+								promises.push(pending);
 							}
 							return;
 						} else {
-							value = record[attribute_name];
-							if (value && typeof value === 'object' && attribute_name !== attribute) {
-								if (!transformCache) transformCache = Object.create(null);
-								let applyPlainSubSelect = transformCache[attribute_name];
-								if (!applyPlainSubSelect) {
-									const subSelect = attribute.select || (Array.isArray(attribute) ? attribute : null);
-									const subTransform =
-										subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
-											? TableResource.transformEntryForSelect(subSelect, context, readTxn, null)
-											: null;
-									const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
-									for (
-										let clause = typeof attribute.sort === 'object' ? attribute.sort : null;
-										clause;
-										clause = clause.next
-									) {
-										sortClauses.push(clause);
-									}
-									const offset =
-										Number.isInteger(attribute.offset) && attribute.offset >= 0 ? attribute.offset : undefined;
-									const limit = Number.isInteger(attribute.limit) && attribute.limit >= 0 ? attribute.limit : undefined;
-									const hasWindowOrSort = sortClauses.length > 0 || offset !== undefined || limit !== undefined;
-									applyPlainSubSelect = transformCache[attribute_name] = (val: any) => {
-										// Plain JSON nested values: arrays project per-element so that
-										// `select: [{ name: 'addresses', select: ['city'] }]` returns
-										// `addresses: [{ city }, { city }]` rather than a single object.
-										if (Array.isArray(val)) {
-											if (hasWindowOrSort) {
-												val = sortAndSliceArray(val, sortClauses, offset, limit, undefined, context);
-											}
-											if (subTransform) {
-												val = val.map((item) =>
-													item && typeof item === 'object' ? subTransform({ value: item } as any) : item
-												);
-											}
-										} else if (subTransform && !(val instanceof Date)) {
-											val = subTransform({ value: val } as any);
-										}
-										return val;
-									};
+							value = selectsPrototype ? readSelectedProperty(record, attribute_name) : record[attribute_name];
+							if (typeof value === 'function') value = undefined;
+							else if (value && typeof value === 'object' && attribute_name !== attribute && !(value instanceof Date)) {
+								value = projectPlainValue((transformCache ??= new Map()), attribute, value);
+								if (typeof value?.then === 'function') {
+									if (!promises) promises = [];
+									promises.push(value.then((value: any) => callback(value, attribute_name)));
+									return;
 								}
-								value = applyPlainSubSelect(value);
 							}
 						}
 						callback(value, attribute_name);
@@ -8204,19 +8194,24 @@ export function makeTable(options): TableResourceClass {
 							if ((select as any).asArray) {
 								selected = [];
 								select.forEach((attribute, index) => {
-									if (attribute === '*') select[index] = record;
+									if (attribute === '*') selected[index] = record;
 									else selectAttribute(attribute, (value) => (selected[index] = value));
 								});
 							} else {
 								selected = {};
+								if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
 								const forceNulls = (select as any).forceNulls;
 								for (const attribute of select) {
 									if (attribute === '*')
 										for (const key in record) {
-											selected[key] = record[key];
+											const value = record[key];
+											if (typeof value === 'function') continue;
+											if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
+											else selected[key] = value;
 										}
-									else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
-										const value = record[attribute];
+									else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
+										let value = record[attribute];
+										if (typeof value === 'function') value = undefined;
 										selected[attribute] = value === undefined && forceNulls ? null : value;
 									} else
 										selectAttribute(attribute, (value, attribute_name) => {
@@ -8240,9 +8235,9 @@ export function makeTable(options): TableResourceClass {
 			};
 			(transform as any).return = () => {
 				selectionStopped = true;
-				for (const cache of [relationshipSelections, transformCache]) {
-					if (cache) for (const child of Object.values(cache)) (child as any).return?.();
-				}
+				if (relationshipSelections)
+					for (const child of Object.values(relationshipSelections)) (child as any).return?.();
+				if (transformCache) for (const child of transformCache.values()) (child as any).return?.();
 			};
 			return transform;
 		}
@@ -9879,34 +9874,39 @@ export function makeTable(options): TableResourceClass {
 			const decideNames = new Set(this.decideAttributes.map((a) => a.name));
 			for (const name of Object.keys(this.userDeciders)) if (!decideNames.has(name)) delete this.userDeciders[name];
 			for (const name of this.userSetDeciders) if (!decideNames.has(name)) this.userSetDeciders.delete(name);
-			propertyResolvers = this.propertyResolvers = {
-				$id: (object, context, entry) => ({ value: entry.key }),
-				$updatedtime: (object, context, entry) => entry.version,
-				$updatedTime: (object, context, entry) => entry.version,
-				$expiresAt: (object, context, entry) => entry.expiresAt,
-				$record: (object, context, entry) => (entry ? { value: object } : object),
-				$score: (object, context, entry) => entry?.$score,
-				$highlights: (object, context, entry) => entry?.$highlights,
-				$distance: (object, context, entry, returnEntry, sort) => {
-					if (!entry) return;
-					if (entry.distance !== undefined) return entry.distance;
-					let distanceSort = sort;
-					while (
-						distanceSort &&
-						(typeof distanceSort.attribute !== 'string' ||
-							!Array.isArray(distanceSort.target) ||
-							!indices[distanceSort.attribute]?.customIndex?.propertyResolver)
-					)
-						distanceSort = distanceSort.next;
-					if (!distanceSort) return;
-					const customIndex = indices[distanceSort.attribute].customIndex;
-					const vector = object[distanceSort.attribute];
-					const distanceCache = context?.vectorDistanceCaches?.get(distanceSort);
-					const cachedDistance = distanceCache?.get(entry) ?? distanceCache?.get(vector);
-					if (cachedDistance !== undefined) return cachedDistance;
-					return customIndex.propertyResolver(vector, context, entry, distanceSort);
+			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
+			// (setPrototypeOf keeps fast properties; Object.create(null) starts in dictionary mode)
+			propertyResolvers = this.propertyResolvers = Object.setPrototypeOf(
+				{
+					$id: (object, context, entry) => ({ value: entry.key }),
+					$updatedtime: (object, context, entry) => entry.version,
+					$updatedTime: (object, context, entry) => entry.version,
+					$expiresAt: (object, context, entry) => entry.expiresAt,
+					$record: (object, context, entry) => (entry ? { value: object } : object),
+					$score: (object, context, entry) => entry?.$score,
+					$highlights: (object, context, entry) => entry?.$highlights,
+					$distance: (object, context, entry, returnEntry, sort) => {
+						if (!entry) return;
+						if (entry.distance !== undefined) return entry.distance;
+						let distanceSort = sort;
+						while (
+							distanceSort &&
+							(typeof distanceSort.attribute !== 'string' ||
+								!Array.isArray(distanceSort.target) ||
+								!indices[distanceSort.attribute]?.customIndex?.propertyResolver)
+						)
+							distanceSort = distanceSort.next;
+						if (!distanceSort) return;
+						const customIndex = indices[distanceSort.attribute].customIndex;
+						const vector = object[distanceSort.attribute];
+						const distanceCache = context?.vectorDistanceCaches?.get(distanceSort);
+						const cachedDistance = distanceCache?.get(entry) ?? distanceCache?.get(vector);
+						if (cachedDistance !== undefined) return cachedDistance;
+						return customIndex.propertyResolver(vector, context, entry, distanceSort);
+					},
 				},
-			};
+				null
+			);
 			propertyResolvers.$highlights.directReturn = true;
 			primaryKeyAttribute = undefined;
 			for (const attribute of this.attributes) {
