@@ -115,6 +115,28 @@ describe('Audit chain across a conflict retry', function () {
 		assert.deepStrictEqual({ title, meta, other }, { title: 'newer', meta: 'older', other: 'conflict' });
 	});
 
+	it('replays newer patches over an out-of-order put while its own uncommitted entry holds the watermark', async () => {
+		const id = 'watermark-put';
+		const base = freshBase();
+		await applyFromOrigin(base, put(id, { id, title: 'seed', meta: 'seed' }));
+		const interception = interceptNextCommit(async (commit) => {
+			await applyFromOrigin(base + 100, patch(id, { other: 'conflict' }));
+			try {
+				return await commit();
+			} finally {
+				await applyFromOrigin(base + 300, patch(id, { title: 'newer' }));
+			}
+		});
+		try {
+			await applyFromOrigin(base + 200, put(id, { id, title: 'older', meta: 'older' }));
+		} finally {
+			interception.restore();
+		}
+		assert(interception.retried, 'the write must have retried');
+		const { title, meta, other } = await T.get(id);
+		assert.deepStrictEqual({ title, meta, other }, { title: 'newer', meta: 'older', other: undefined });
+	});
+
 	it('keeps the head an in-order retry committed over reachable from the record', async () => {
 		const id = 'intermediate';
 		const base = freshBase();
