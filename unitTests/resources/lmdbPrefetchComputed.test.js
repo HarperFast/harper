@@ -4,9 +4,8 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
-// LMDB's loadLocalRecord resolves some indexed-search rows through its prefetch Promise, and the
-// search transform reads those through the lmdb-js cache entry's deref(), whose target used to be the
-// plain decoded object rather than the record object carrying the @computed getters.
+// More rows than loadLocalRecord's MAX_PREFETCH_SEQUENCE under an indexed condition, so LMDB resolves some
+// of them through its prefetch Promise, which the search transform reads through the cache entry's deref()
 describe('Collection reads keep @computed attributes on every row', () => {
 	const ROW_COUNT = 60;
 	const isLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
