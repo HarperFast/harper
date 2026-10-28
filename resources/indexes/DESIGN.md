@@ -146,9 +146,9 @@ puts a store lookup back on every query whose `limit` exceeds the table — the 
 whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
 traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
 
-The filter budget deliberately does not follow a limit-derived `ef`: it comes from the `ef` the index
-resolved for itself, capped as in the auto-scale note above. Multiplying the budget by a caller's
-`limit` would turn a filtered vector query into a record-loading scan wearing an index's clothes.
+The filter budget deliberately does not follow a limit-derived `ef`: it is the index's own resolved
+`ef` (capped as in the auto-scale note) times `filterExpansion`. Multiplying it by a caller's `limit`
+would turn a filtered vector query into a record-loading scan wearing an index's clothes.
 
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
@@ -499,6 +499,7 @@ query, including page fetches, source Blob reads and tracing, rather than restar
 call. Highlight source materialization is bounded by both the wrapper's trace-record count and source-byte
 limit before Blob reads start. Query leaves with the same field set reuse that materialization; distinct
 field sets remain independently bounded. Requesting highlights from an index that did not enable them is rejected.
+A retired handle accepts no new leases but remains open until its active searches finish.
 Rejected closes remain tracked and are retried during the next pause or close; a fulfilled native
 cleanup warning is logged. Neither replaces an otherwise successful query response.
 One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
