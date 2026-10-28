@@ -224,7 +224,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			// this a request for a transaction log entry by a timestamp
+			// this is a request for a transaction log entry by a timestamp
 			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
 			const readUncommitted = !committedOnly;
 			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId, readUncommitted })) {
