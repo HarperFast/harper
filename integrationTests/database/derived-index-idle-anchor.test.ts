@@ -171,8 +171,9 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 	});
 });
 
-// No retention override: cleanup then commits only every auditRetention / 10 (7.2 h at 3d), so nothing
-// keeps waking the runner, and the hand-off path in production is the one this exercises.
+// No retention override, as in production: cleanup commits only every auditRetention / 10 (7.2 h at 3d),
+// and the origin-closed floor's commits every 5 s wake the runner without delivering work, which must not
+// keep it from releasing.
 const DEFAULT_RETENTION_OPTIONS = {
 	...OPTIONS,
 	config: { ...OPTIONS.config, logging: { level: 'warn' } },

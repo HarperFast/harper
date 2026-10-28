@@ -1539,6 +1539,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.deepStrictEqual([...store.markers.keys()], [], 'no condemnation marker');
 		assert.strictEqual(backend.resets.length, 0);
 		assert.notStrictEqual(runtime.getReadiness(backend.id).state, 'needs-rebuild');
+		assert.strictEqual(runtime.getStatus(backend.id).state, 'unavailable', 'the runner stops without condemning');
 		store.rootStore.status = 'open';
 		await runtime.stop();
 	});
