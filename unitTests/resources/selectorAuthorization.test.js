@@ -93,18 +93,23 @@ describe('relationship selector authorization isolation', function () {
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
 				{ name: 'childId', type: 'ID' },
+				{ name: 'metadata', type: 'Any' },
 				{ name: 'child', relationship: { from: 'childId' }, type: 'Child', definition: { tableClass: Child } },
 			],
 		});
 		await Leaf.put('l1', { id: 'l1', secret: 'leaf value' });
 		await Child.put('c1', { id: 'c1', secret: 'child value', leafId: 'l1' });
-		await Parent.put('p1', { id: 'p1', childId: 'c1' });
+		await Parent.put('p1', {
+			id: 'p1',
+			childId: 'c1',
+			metadata: { childId: 'c1', $id: 'stored-id', child: { id: 'stored-child', secret: 'stored-value' } },
+		});
 	});
 	after(function () {
 		setMainIsWorker(previousMainIsWorker);
 	});
-	async function read(method, selection, user, permission = user.role.permission) {
-		const target = { id: 'p1', select: ['id', selection], checkPermission: permission };
+	async function read(method, selection, user, permission = user.role.permission, select = ['id', selection]) {
+		const target = { id: 'p1', select, checkPermission: permission };
 		if (method === 'get') return Parent.get(target, { user });
 		delete target.id;
 		target.conditions = [{ attribute: 'id', comparator: 'equals', value: 'p1' }];
@@ -114,6 +119,29 @@ describe('relationship selector authorization isolation', function () {
 		return rows[0];
 	}
 	for (const method of ['get', 'search']) {
+		for (const [order, users] of [
+			['broad then restricted', [broadUser, restrictedUser]],
+			['restricted then broad', [restrictedUser, broadUser]],
+		]) {
+			it(`${method} isolates relationships beside stored JSON resolver names, ${order}`, async function () {
+				const selection = selectors.object();
+				const original = structuredClone(selection);
+				const jsonSelection = freeze({
+					name: 'metadata',
+					select: ['$id', { name: 'child', select: ['id', 'secret'] }],
+				});
+				const originalJson = structuredClone(jsonSelection);
+				for (const user of users) {
+					const result = await read(method, selection, user, user.role.permission, ['id', selection, jsonSelection]);
+					assert.deepStrictEqual(result, {
+						...expected(user),
+						metadata: { $id: 'stored-id', child: { id: 'stored-child', secret: 'stored-value' } },
+					});
+				}
+				assertUnchanged(selection, original);
+				assertUnchanged(jsonSelection, originalJson);
+			});
+		}
 		for (const [shape, createSelection] of Object.entries(selectors)) {
 			for (const [order, users] of [
 				['broad then restricted', [broadUser, restrictedUser]],
