@@ -163,8 +163,10 @@ describe('relationship selector authorization isolation', function () {
 			const selection = selectors.braced();
 			selection.asArray = true;
 			selection.forceNulls = true;
+			Object.assign(selection[2], { asArray: true, forceNulls: true });
 			const original = structuredClone(selection);
-			assert.deepStrictEqual(await read(method, selection, restrictedUser), expected(restrictedUser));
+			for (const user of [restrictedUser, broadUser])
+				assert.deepStrictEqual(await read(method, selection, user), expected(user));
 			assertUnchanged(selection, original);
 		});
 		it(`${method} authorizes parsed nested predicates after copying the selector`, async function () {
