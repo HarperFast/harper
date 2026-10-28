@@ -11,7 +11,7 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { openRocksDatabase } = require('#src/resources/databases');
 const { RocksDatabase, getWriteBufferManagerStats } = require('@harperfast/rocksdb-js');
 
-// rocksdb-js releases before HarperFast/rocksdb-js#987 ignore both options.
+// rocksdb-js releases before HarperFast/rocksdb-js#987 ignore both options, so the native checks skip there.
 const nativeSupport = typeof getWriteBufferManagerStats().flushPolicy === 'string';
 
 function latestColumnFamilyOptions(databasePath) {
@@ -73,7 +73,14 @@ describe('openRocksDatabase storage.rocks config', function () {
 		open(indexOptions);
 		for (const options of [rootOptions, familyOptions, indexOptions])
 			assert.strictEqual(options.arenaBlockSize, 131072);
-		if (!nativeSupport) return;
+	});
+
+	it('writes the configured arenaBlockSize to every column family, and again on reopen', function () {
+		if (!nativeSupport) this.skip();
+		env.setProperty(CONFIG_PARAMS.STORAGE_ROCKS_ARENABLOCKSIZE, 131072);
+		open({});
+		open({ name: 'records' });
+		open({ name: 'records/index', dupSort: true });
 		const families = ['default', 'records', 'records/index'];
 		for (const family of families)
 			assert.strictEqual(latestColumnFamilyOptions(databasePath).get(family), 131072, family);
