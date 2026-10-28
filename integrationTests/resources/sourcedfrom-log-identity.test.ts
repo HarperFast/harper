@@ -17,7 +17,7 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 			method,
 			headers,
 			body: body === undefined ? undefined : JSON.stringify(body),
-			signal: AbortSignal.timeout(30_000),
+			signal: AbortSignal.timeout(45_000),
 		});
 		const text = await response.text();
 		assert.ok(response.ok, `${method} ${path}: ${response.status} ${text}`);
@@ -43,7 +43,18 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 	}
 
 	async function search(text: string) {
-		const records = await request(`/Probe/?probeSearch=matches=${text}&select(id,body)`);
+		const records = await request('/Probe/', 'QUERY', {
+			conditions: [
+				{
+					attribute: 'probeSearch',
+					comparator: 'matches',
+					value: text,
+					maxIndexLagMilliseconds: 0,
+					waitForIndexMilliseconds: 30_000,
+				},
+			],
+			select: ['id', 'body'],
+		});
 		assert.ok(Array.isArray(records), JSON.stringify(records));
 		assert.ok(
 			records.every((record) => typeof record.id === 'string'),
