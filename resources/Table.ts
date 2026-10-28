@@ -2530,18 +2530,10 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 							let originCursorsChanged = false;
-							// an origin new to the row is a new admission fact, so a replay admitted before it rechecks
-							const nodeStateFor = (nodeId: number) => {
-								let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-								if (!nodeState) {
-									nodeStates.push((nodeState = { id: nodeId }));
-									qualifiersChanged = true;
-								}
-								return nodeState;
-							};
+							const nodeCount = nodeStates.length;
 							if (originCursors)
 								for (const [nodeId, originLogKey] of originCursors) {
-									const nodeState = nodeStateFor(nodeId);
+									const nodeState = nodeStateIn(nodeStates, nodeId);
 									if (!(nodeState.originLogKey >= originLogKey)) {
 										nodeState.originLogKey = originLogKey;
 										originCursorsChanged = true;
@@ -2550,7 +2542,7 @@ export function makeTable(options): TableResourceClass {
 							if (originFloors)
 								for (const [nodeId, closedFloor, relayable, originGeneration, fullCoverage] of originFloors) {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
-									const nodeState = nodeStateFor(nodeId);
+									const nodeState = nodeStateIn(nodeStates, nodeId);
 									const previousGeneration = nodeState.originGeneration ?? nodeState.lastGeneration;
 									const generationChanged =
 										typeof originGeneration === 'string' &&
@@ -2653,7 +2645,7 @@ export function makeTable(options): TableResourceClass {
 									// a mark for a generation the route has not certified is ignored, so it must not add the origin
 									const nodeState =
 										generation === undefined
-											? nodeStateFor(nodeId)
+											? nodeStateIn(nodeStates, nodeId)
 											: nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (
 										generation !== undefined &&
@@ -2696,6 +2688,8 @@ export function makeTable(options): TableResourceClass {
 										qualifiersChanged = true;
 									}
 								}
+							// an origin new to the row is a new admission fact, so a replay admitted before it rechecks
+							if (nodeStates.length > nodeCount) qualifiersChanged = true;
 							if (qualifiersChanged) originCursorsChanged = true;
 							const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
 							// compared with the persisted row, not the cache, which moves before this write lands
@@ -13988,6 +13982,14 @@ function rejectNaN(value: number) {
 	if (isNaN(value)) throw new SyntaxError(); // will set the message in the catch block with more context
 	return value;
 }
+
+/** The seq row's state for `nodeId`, added to `nodeStates` when the row has none. */
+function nodeStateIn(nodeStates: any[], nodeId: number): any {
+	let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+	if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+	return nodeState;
+}
+
 function refuseReplay(subscription: any, tableName: string, refusal: Error): false {
 	logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
 	try {
