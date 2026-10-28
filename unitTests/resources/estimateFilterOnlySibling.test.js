@@ -110,9 +110,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 
 		async function reseed() {
 			for (const existing of await collect(Table.search({ allowFullScan: true }))) await Table.delete(existing.id);
-			let last;
-			for (const row of seed) last = Table.put({ ...row });
-			await last;
+			await Promise.all(seed.map((row) => Table.put({ ...row })));
 			if (Table.indexingOperation) await Table.indexingOperation;
 		}
 

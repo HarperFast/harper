@@ -2412,8 +2412,8 @@ export function estimateCondition(table) {
 					estimatedCount = Infinity;
 					for (const subCondition of condition.conditions) {
 						const subCount = estimateConditionForTable(subCondition);
-						if (!isFinite(subCount)) continue;
-						estimatedCount = isFinite(estimatedCount)
+						if (!Number.isFinite(subCount)) continue;
+						estimatedCount = Number.isFinite(estimatedCount)
 							? (estimatedCount * subCount) / (estimatedEntryCount(table.primaryStore) || 1)
 							: subCount;
 					}
