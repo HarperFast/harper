@@ -59,7 +59,7 @@ Use `describe_table` to inspect each index's declaration and readiness. See [Ins
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-Harper 5.3.4 ships `@harperfast/fulltext` 0.5.0. Upgrading to the 0.7.0 engine in Harper v5.4 requires a full local rebuild of every existing 0.5.x index. Prerelease installations using fulltext 0.6 also require rebuilding. Harper initiates the rebuild automatically when the wrapper refuses the old persisted identity; no manual rebuild command or file editing is needed.
+Harper 5.3.4 ships `@harperfast/fulltext` 0.5.0. Upgrading to the 0.7.0 engine in Harper v5.4 requires a full local rebuild of every existing 0.5.x index. Prerelease installations using fulltext 0.6 also require rebuilding. This procedure applies to the current field-based declarations; earlier beta declarations and indexes have no supported migration path. Harper initiates the rebuild automatically when the wrapper refuses the old persisted identity; no manual rebuild command or file editing is needed.
 
 ### Matching and ranking changes
 
@@ -69,11 +69,11 @@ Tantivy 0.27 changes English stemming even though the schema analyzer remains `e
 
 1. Drain the node's full-text requests and stop all old Harper processes that share its storage, including background workers. Do not run old and new engine versions against one local index.
 2. Confirm authoritative records and recovery backups are available. Reserve disk headroom and time for rebuilding every local full-text index, including temporarily retained retired files. There is no universal rebuild-duration or capacity estimate.
-3. Start the v5.4 Harper version. Use [`describe_table`](../operations-api/operations.md#describe_table) for each affected table and check every `full_text_indexes[].readiness.state`. Keep full-text traffic drained until all required indexes are `ready`.
+3. Start the v5.4 Harper version. Use [`describe_table`](../operations-api/operations.md#describe_table) for each affected table, using an operator account that can read every indexed source field, and check every `full_text_indexes[].readiness.state`. Metadata is permission-filtered; a missing entry does not prove that no index exists. Keep full-text traffic drained until all required indexes are `ready`.
 4. Run representative searches with `maxIndexLagMilliseconds: 0` and `waitForIndexMilliseconds: 30000` on each full-text condition. These wait for coverage of writes committed before the search; readiness alone does not establish that coverage. Check response bodies for terminal stream errors as well as HTTP status. A JSON-array response can start with HTTP 200 and end with an `error` element.
-5. Retry write responses carrying `DERIVED_INDEX_LAGGING` with bounded backoff while replay catches up. Restore full-text traffic only after readiness and current-coverage searches succeed. A node-by-node upgrade can use other ready replicas only if the application's routing supports it; the rebuilding node remains unavailable for full-text search.
+5. Retry write responses carrying `DERIVED_INDEX_LAGGING` with bounded backoff while replay catches up. Restore full-text traffic only after readiness and current-coverage searches succeed. A node-by-node upgrade can use other ready replicas only if the application's routing supports it; the rebuilding node remains unavailable for full-text search. During a mixed-version rollout, matching and ranking can differ between replicas. Route related searches consistently and check the application's behavior before using this approach.
 
-See [freshness controls](./querying.md#freshness-controls) for the condition fields and streaming behavior. The upgrade checks cover bounded workloads; they do not establish multi-node rollout safety, sustained-write capacity, customer relevance or performance parity. Measure those against the application's workload before rollout.
+See [freshness controls](./querying.md#freshness-controls) for the condition fields and streaming behavior. Qualify multi-node rollout, sustained-write capacity, relevance and performance against the application's workload before production rollout. A successful rebuild alone does not establish those properties.
 
 ### Recovering from a failed upgrade
 

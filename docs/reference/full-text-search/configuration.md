@@ -39,6 +39,8 @@ Writing the declaration-only field or selecting it as record data returns an err
 
 ## Directive options
 
+Only the directive options listed below are accepted; an unknown option returns `400`.
+
 | Option         | Default       | Description                                                                           |
 | -------------- | ------------- | ------------------------------------------------------------------------------------- |
 | `fields`       | required      | One or more source fields.                                                            |
@@ -48,8 +50,6 @@ Writing the declaration-only field or selecting it as record data returns an err
 | `surfaceTerms` | `true`        | Stores unstemmed analyzed terms. Required for prefix, fuzzy-prefix, and highlighting. |
 | `synonyms`     | `[]`          | Index-time synonym expansion rules.                                                   |
 | `highlighting` | omitted       | Enables highlight generation and sets fragment limits.                                |
-
-The `english@2` name remains unchanged in v5.4, but Tantivy 0.27 changes some English stems. Existing indexes must rebuild, and matching or ranking can change. See [upgrading existing indexes](./overview.md#upgrading-existing-indexes).
 
 Each field entry supports:
 
@@ -64,7 +64,7 @@ Source fields cannot use `@computed` or `@relationship`. Indexable source values
 
 ## Structured filters
 
-Combine full-text conditions with ordinary Harper conditions using `and`. Harper checks current source records and can use existing secondary indexes to narrow candidates. Only the directive options listed above are accepted; an unknown option returns `400`. See [combining conditions](./querying.md#combining-conditions).
+Combine full-text conditions with ordinary Harper conditions using `and`. Harper checks current source records and can use existing secondary indexes to narrow candidates. See [combining conditions](./querying.md#combining-conditions).
 
 ## Phrase and prefix support
 
@@ -147,9 +147,11 @@ type Document @table(audit: true) {
 
 ## Schema changes and rebuilds
 
+The `english@2` name remains unchanged in v5.4, but Tantivy 0.27 changes some English stems. Existing indexes must rebuild, and matching or ranking can change. See [upgrading existing indexes](./overview.md#upgrading-existing-indexes).
+
 Changes that affect indexed storage create a new local index generation and rebuild from source data. These include source membership, source order, media types, analyzer settings, stop-word handling, positions, surface terms, and synonyms. Keep the `fields` list in a stable order when its meaning has not changed.
 
-While a generation rebuilds, ordinary table reads and writes remain available, but full-text queries on that node return retryable `503` responses until the index is ready.
+While a generation rebuilds, ordinary table reads remain available, but full-text queries on that node return retryable `503` responses until the index is ready. Writes can receive retryable `DERIVED_INDEX_LAGGING` responses while replay catches up after a long rebuild; see [write backpressure](./overview.md#write-backpressure).
 
 Changing source weights or highlighting settings changes query behavior without rebuilding indexed term storage. Removing the `FullText` field retires its local files after the schema change is confirmed. Renaming the field creates a new index identity and retires the old one.
 
