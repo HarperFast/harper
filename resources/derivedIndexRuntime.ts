@@ -1906,8 +1906,8 @@ class DerivedIndexRunner {
 	}
 
 	#needsRebuild(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
-		// A failure while the database closes (rocksdb-js reports `closed` from the start of a close) is the
-		// close cutting work off, not evidence against the index, so it condemns nothing.
+		// A failure while the database closes is the close cutting work off, not evidence against the index,
+		// so it condemns nothing (rocksdb-js already reports `closed` from the start of a close).
 		const storeStatus: string = this.#logStore.rootStore.status;
 		if (storeStatus === 'closing' || storeStatus === 'closed') return;
 		if (this.#rebuilding) {
