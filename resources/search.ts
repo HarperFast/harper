@@ -2377,9 +2377,7 @@ function usableIndex(table, attributeName): any {
 
 /**
  * Whether searchByIndex answers this condition from an index range or the primary store, rather than with a
- * full scan it filters or an error. Lead selection ranks on this ahead of the row estimate, which several
- * full-scan conditions (`in`, an empty `starts_with`, a range on an unindexed attribute) report as finite.
- * Mirrors searchByIndex's `needFullScan` and missing-index decisions.
+ * full scan it filters or an error; it must follow searchByIndex's `needFullScan` and missing-index decisions.
  */
 export function conditionDrivesIndex(table, condition): boolean {
 	if (condition.conditions) {

@@ -300,13 +300,13 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 			const common = () => ({ attribute: 'c', value: 'common' });
 			const contains = () => ({ attribute: 'a', comparator: 'contains', value: 'x' });
 			const inLeg = () => ({ attribute: 'b', comparator: 'in', value: [3] });
-			// searchByIndex answers each with a full scan
+			// the last column is the table-fraction estimate over the 60 seeded rows (`in` sums its index counts instead)
 			const FULL_SCAN_LEGS = [
-				['in', inLeg],
-				['an empty starts_with', () => ({ attribute: 'a', comparator: 'starts_with', value: '' })],
-				['an unindexed starts_with', () => ({ attribute: 'flag', comparator: 'starts_with', value: 'n' })],
-				['an unindexed range', () => ({ attribute: 'flag', comparator: 'ge', value: 'n' })],
-				['a nested JSON path range', () => ({ attribute: ['meta', 'k'], comparator: 'ge', value: 10 })],
+				['in', inLeg, undefined],
+				['an empty starts_with', () => ({ attribute: 'a', comparator: 'starts_with', value: '' }), 4],
+				['an unindexed starts_with', () => ({ attribute: 'flag', comparator: 'starts_with', value: 'n' }), 4],
+				['an unindexed range', () => ({ attribute: 'flag', comparator: 'ge', value: 'n' }), 19],
+				['a nested JSON path range', () => ({ attribute: ['meta', 'k'], comparator: 'ge', value: 10 }), 19],
 			];
 			const plan = async (conditions, options) =>
 				(await Table.search({ conditions, allowFullScan: false, explain: true, ...options })).conditions;
@@ -317,7 +317,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 				return sets.reduce((left, right) => left.filter((id) => right.includes(id)));
 			};
 
-			for (const [name, leg] of FULL_SCAN_LEGS) {
+			for (const [name, leg, pinnedEstimate] of FULL_SCAN_LEGS) {
 				it(`seeks c = common ahead of ${name}`, async () => {
 					assert.ok(estimateCondition(Table)(leg()) < estimateCondition(Table)(common()), 'the leg estimates lower');
 					for (const conditions of [
@@ -339,7 +339,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 
 				it(`keeps the count: 'estimated' total of ${name}`, async () => {
 					const estimate = estimateCondition(Table)(leg());
-					assert.ok(Number.isFinite(estimate));
+					assert.strictEqual(estimate, pinnedEstimate ?? Table.indices.b.getValuesCount(3));
 					const page = await Table.search({ conditions: [leg()], limit: 1, count: 'estimated', allowFullScan: true });
 					assert.strictEqual(page.recordCount, Math.max(Math.round(estimate), page.length));
 				});
@@ -427,6 +427,18 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 					await sortLeads([common()], { attribute: 'b' }),
 					true,
 					'so does a broader indexed condition'
+				);
+			});
+
+			it('moves only the lead, leaving the other conditions to filter in estimate order', async () => {
+				const rare = { attribute: 'c', value: 'rare' };
+				const notNull = { attribute: 'b', comparator: 'ne', value: null };
+				const estimate = estimateCondition(Table);
+				assert.ok(estimate(inLeg()) < estimate(rare) && estimate(rare) < estimate(notNull));
+				const ordered = await plan([notNull, rare, inLeg()]);
+				assert.deepStrictEqual(
+					ordered.map((condition) => condition.comparator ?? condition.attribute),
+					['c', 'in', 'ne']
 				);
 			});
 

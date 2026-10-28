@@ -796,14 +796,13 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 - **An AND group's estimate ignores legs with a non-finite estimate and is `Infinity` only when every leg has one**
   (`estimateConditionForTable`, pinned by `estimateFilterOnlySibling.test.js`). Known gap: `intersectionEstimate`
   still multiplies `Infinity` into the incoming-row hint.
-- **Lead selection ranks "can drive an index scan" ahead of the estimate** (`conditionDrivesIndex`, used as the first
-  `sortBy` key in `orderConditions`). `in`, an empty `starts_with` and a range on an unindexed attribute or plain
-  JSON path estimate a finite cardinality yet full-scan; their estimates stay finite because `count: 'estimated'`
-  and the lazy index switch read them as counts. The predicate mirrors `searchByIndex`'s full-scan and missing-index
-  decisions, and a test pins the two to agree leaf by leaf. The synthetic index-order `sort` condition full-scans too,
-  but keeps its old rule: it leads only when its estimate is below every other condition's, because a sorted page
-  streams from it (ranking it below driving legs would lose that) and a `sort` lead drops rows missing the attribute
-  (ranking it above non-driving legs would change their rows).
+- **An AND leads with its narrowest condition that can drive an index scan** (`orderConditions` moves the first
+  `conditionDrivesIndex` match of the estimate order to the front; the rest keep estimate order as filters). `in`, an
+  empty `starts_with` and a range on an unindexed attribute or plain JSON path estimate a finite cardinality yet
+  full-scan; their estimates stay finite because `count: 'estimated'` and the lazy index switch read them as counts.
+  The predicate follows `searchByIndex`'s full-scan and missing-index decisions, and a test pins the two to agree leaf
+  by leaf. A synthetic index-order `sort` that sorts first keeps the lead, as before: it full-scans but streams a
+  sorted page.
 - **A relationship condition that filters rather than leads registers `filtered[attribute]` on its first match**, after
   the select transform is prepared, so a relationship selection reads its filter map per record
   (`_prepareRelationshipSelection`).

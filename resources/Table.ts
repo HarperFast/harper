@@ -7536,17 +7536,13 @@ export function makeTable(options): TableResourceClass {
 				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
 				// order for their query.
 				if (conditions.length > 1 && operator !== 'or') {
-					const estimate = estimateCondition(TableResource);
-					const ordered = sortBy(
-						conditions.filter((condition) => condition !== syntheticOrderCondition),
-						[(condition) => (conditionDrivesIndex(TableResource, condition) ? 0 : 1), estimate]
-					);
-					if (ordered.length < conditions.length) {
-						// the index-order scan full-scans yet streams a sorted page, so it leads exactly when it is narrower
-						// than every other condition, whether or not they can drive; anywhere else it is dropped below
-						const sortLeads = ordered.every((condition) => estimate(syntheticOrderCondition) < estimate(condition));
-						if (sortLeads) ordered.unshift(syntheticOrderCondition);
-						else ordered.push(syntheticOrderCondition);
+					const ordered = sortBy(conditions, estimateCondition(TableResource));
+					// Only the first condition is executed as an index scan; the rest filter its rows in estimate order. Some
+					// conditions that full-scan estimate a finite count, so lead with the narrowest that can drive an index
+					// scan. A leading synthetic sort keeps its place: it full-scans but streams a sorted page.
+					if (ordered[0] !== syntheticOrderCondition) {
+						const lead = ordered.findIndex((condition) => conditionDrivesIndex(TableResource, condition));
+						if (lead > 0) ordered.unshift(ordered.splice(lead, 1)[0]);
 					}
 					return ordered;
 				} else return conditions;
