@@ -358,20 +358,40 @@ describe('DerivedIndexRuntime', () => {
 		it('requests again for a waiter that joins after the first request was answered', async () => {
 			const store = new FakeLogStore(new Map([[10, []]]));
 			store.committedPosition = { sequence: 1, offset: 64 };
+			let clock = 1000;
+			store.rootStore.getMonotonicTimestamp = () => clock;
+			const counts = countCoverageNotifies(store);
 			const owner = runtimeFor(store, new Map(), options).runtime;
 			owner.register(registration(coverageBackend('coverage-joiner')));
 			await waitFor(() => coverageTime(store, 'coverage-joiner') > 0n);
 			const peer = runtimeFor(store, new Map(), options).runtime;
 			peer.register(registration(coverageBackend('coverage-joiner')));
 
-			// No capture can meet this target for 300 ms, so the group outlives the request that answers it.
-			const held = peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore) + 300_000_000n, 1000);
-			const answered = derivedIndexTime(store.rootStore);
-			await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
-			await peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
-			await held;
-			await peer.stop();
-			await owner.stop();
+			const controller = new AbortController();
+			clock++;
+			const held = peer.waitForCoverage(
+				'coverage-joiner',
+				derivedIndexTime(store.rootStore) + 60_000_000_000n,
+				1000,
+				controller.signal
+			);
+			const cancelled = assert.rejects(held, { message: 'held waiter complete' });
+			try {
+				assert.strictEqual(counts.notifies, 1);
+				clock++;
+				const answered = derivedIndexTime(store.rootStore);
+				await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
+				clock++;
+				const before = counts.notifies;
+				const joined = peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
+				assert.strictEqual(counts.notifies, before + 1, 'admission must request coverage before the next poll');
+				await joined;
+			} finally {
+				controller.abort(new Error('held waiter complete'));
+				await cancelled;
+				await peer.stop();
+				await owner.stop();
+			}
 		});
 
 		it('times a wait out as lagging when the coverage request cannot be sent', async () => {
