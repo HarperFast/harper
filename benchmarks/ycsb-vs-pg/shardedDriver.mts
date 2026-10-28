@@ -38,9 +38,12 @@ class ShardPool {
 
 	async start(count: number): Promise<void> {
 		this.children = await Promise.all(
-			Array.from({ length: count }, () => {
+			Array.from({ length: count }, (_, i) => {
 				const child = fork(WORKER_PATH, { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
-				return new Promise<ChildProcess>((resolve) => child.once('message', () => resolve(child)));
+				return new Promise<ChildProcess>((resolve, reject) => {
+					child.once('exit', (code) => reject(new Error(`shard ${i} exited (${code}) before ready`)));
+					child.once('message', () => resolve(child));
+				});
 			})
 		);
 	}
@@ -61,7 +64,7 @@ class ShardPool {
 							if (reply.ok) resolve(reply.result!);
 							else reject(new Error(`shard ${i}: ${reply.error}`));
 						});
-						child.send(command);
+						child.send(command, (error) => error && reject(new Error(`shard ${i}: ${error.message}`)));
 					})
 			)
 		);
@@ -138,6 +141,10 @@ export interface DriverRun {
 }
 
 export async function startDriver(config: DriverConfig): Promise<DriverRun> {
+	// A shard given zero connections runs nothing yet reports its key range complete.
+	if (config.concurrency < config.shards) {
+		throw new Error(`concurrency ${config.concurrency} is below shards ${config.shards}`);
+	}
 	const pool = new ShardPool();
 	await pool.start(config.shards);
 

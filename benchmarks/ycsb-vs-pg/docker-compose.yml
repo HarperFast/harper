@@ -23,6 +23,8 @@ services:
       - -c
       - effective_cache_size=6GB
       - -c
+      - listen_addresses=127.0.0.1
+      - -c
       - max_connections=300
       - -c
       - max_wal_size=8GB
@@ -47,6 +49,8 @@ services:
       - redis-server
       - --port
       - '6380'
+      - --bind
+      - 127.0.0.1
       - --save
       - ''
       - --appendonly

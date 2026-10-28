@@ -130,6 +130,21 @@ export interface CpuTopology {
 	maxKHz: number;
 }
 
+/**
+ * Rated clock that identifies a CPU's core class: base_frequency (unaffected by turbo state and
+ * by Turbo Boost Max favored cores) where intel_pstate exposes it, else cpuinfo_max_freq, else 0.
+ */
+function cpuClassKHz(base: string): number {
+	for (const file of ['base_frequency', 'cpuinfo_max_freq']) {
+		try {
+			return Number(readFileSync(`${base}/cpufreq/${file}`, 'utf8'));
+		} catch {
+			// not exposed on this platform
+		}
+	}
+	return 0;
+}
+
 export function readTopology(): CpuTopology[] {
 	const allowed = new Set(
 		parseCpuList(/^Cpus_allowed_list:\s*(\S+)/m.exec(readFileSync('/proc/self/status', 'utf8'))![1])
@@ -141,7 +156,7 @@ export function readTopology(): CpuTopology[] {
 			return {
 				cpu,
 				siblings: parseCpuList(readFileSync(`${base}/topology/core_cpus_list`, 'utf8').trim()),
-				maxKHz: Number(readFileSync(`${base}/cpufreq/cpuinfo_max_freq`, 'utf8')),
+				maxKHz: cpuClassKHz(base),
 			};
 		});
 }
@@ -237,21 +252,13 @@ async function processMemoryBytes(root: number): Promise<number> {
 
 /** Current charged bytes for a container, which counts shared pages once by construction. */
 async function cgroupMemoryBytes(scopePath: string): Promise<number> {
-	try {
-		return Number(await readFile(`${scopePath}/memory.current`, 'utf8'));
-	} catch {
-		return 0;
-	}
+	return Number(await readFile(`${scopePath}/memory.current`, 'utf8'));
 }
 
 async function cgroupCpuSeconds(scopePath: string): Promise<number> {
-	try {
-		const stat = await readFile(`${scopePath}/cpu.stat`, 'utf8');
-		const usage = /usage_usec (\d+)/.exec(stat);
-		return usage ? Number(usage[1]) / 1e6 : 0;
-	} catch {
-		return 0;
-	}
+	const usage = /usage_usec (\d+)/.exec(await readFile(`${scopePath}/cpu.stat`, 'utf8'));
+	if (!usage) throw new Error(`${scopePath}/cpu.stat has no usage_usec`);
+	return Number(usage[1]) / 1e6;
 }
 
 export async function sampleMemory(targets: ResourceTargets): Promise<Record<string, number>> {
@@ -394,9 +401,10 @@ export function parseCpuList(list: string): number[] {
 	const cpus: number[] = [];
 	for (const part of list.split(',')) {
 		const [from, to] = part.split('-').map(Number);
+		if (!Number.isInteger(from) || !Number.isInteger(to ?? from)) throw new Error(`bad CPU list "${list}"`);
 		for (let cpu = from; cpu <= (to ?? from); cpu++) cpus.push(cpu);
 	}
-	return cpus;
+	return [...new Set(cpus)].sort((a, b) => a - b);
 }
 
 export interface ResourceDelta {

@@ -19,6 +19,7 @@ definitions (A–F) and the REST operation mapping.
 
 ```sh
 npm run build                     # dist/bin/harper.js, which the harper target spawns
+npm ci --prefix benchmarks/ycsb-vs-pg/pg-app   # Fastify, pg, ioredis for the conventional stack
 docker --version                  # postgres + redis run via docker compose
 node benchmarks/ycsb-vs-pg/run-compare.mts --scale=standard
 node benchmarks/ycsb-vs-pg/run-compare.mts --scale=quick --workloads=C,A --targets=harper,pg-redis
@@ -47,7 +48,8 @@ sample starts a fresh server and reloads the dataset.
   the Harper process, or the Fastify cluster plus the Postgres and Redis
   containers together (compose `cpuset`, no per-service quota — the stack
   picks its own split). The K CPUs are one logical CPU on each of K physical
-  cores from the fastest core class; their SMT siblings stay idle. The load
+  cores from the fastest core class (so the machine needs more than K physical
+  cores); their SMT siblings stay idle. The load
   generator and the harness run on every CPU of the remaining physical cores.
   Affinity is set when each process is created (a `taskset` wrapper for Harper,
   `taskset -c` for Fastify, compose `cpuset` for containers) and every thread is
@@ -68,6 +70,9 @@ sample starts a fresh server and reloads the dataset.
   true cold: the record cache cannot be disabled, and entries beyond the strong
   set stay reachable on WeakRefs until GC. Both "cold" engines still read from
   memory (RocksDB block cache, `shared_buffers`) when the dataset fits.
+- **Postgres is vacuumed after the load.** `VACUUM (ANALYZE)` sets hint bits and
+  planner statistics before measuring, as an operator would after a bulk load,
+  and keeps an autovacuum triggered by the load out of the measured run.
 - **Interleaved reps.** Reps are the outer loop: every (rep, workload, target)
   is a fresh server, dataset and read-all pass, then one measured run. Target
   order is forward on even reps and reversed on odd ones; each sample records
@@ -109,9 +114,9 @@ sample starts a fresh server and reloads the dataset.
   distortion was big enough to invert rankings: a 95%-read workload measured
   _slower_ than a 50%-write one, and a 100%-read workload measured 2.5x slower
   than the 95%-read workload that followed it.
-- **The read-all pass touches every row.** Besides filling Redis, it pays the
-  first-touch cost the measured run would otherwise absorb — for Postgres, the
-  hint-bit rewrite each page needs after a bulk load.
+- **The read-all pass touches every key through the target's own read path** —
+  Redis for `pg-redis`, Postgres for `pg-only`, the record cache and RocksDB for
+  Harper — so first-touch costs land before the measured run.
 - **Everything is on one host**, including the load generator. Run
   `client-ceiling.mts` to confirm the reported numbers are server-bound rather
   than client-bound:

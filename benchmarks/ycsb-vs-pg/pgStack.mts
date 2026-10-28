@@ -6,8 +6,9 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { verifyAffinity, verifyCgroupCpuset } from './resources.mts';
 
@@ -16,7 +17,7 @@ const DIR = import.meta.dirname;
 const COMPOSE = ['compose', '-f', join(DIR, 'docker-compose.yml'), '-p', 'ycsb-vs-pg'];
 
 /** Where PGDATA lives on the host. Must be a real disk, and the same filesystem Harper uses. */
-export const dataDir = (): string => process.env.YCSB_VS_PG_DATA_DIR || join(DIR, 'data');
+export const dataDir = (): string => resolve(process.env.YCSB_VS_PG_DATA_DIR || join(DIR, 'data'));
 
 /**
  * How the target's memory budget is split across the stack's containers. The Fastify cluster
@@ -73,6 +74,13 @@ export interface PgStack {
 	baseUrl: string;
 	/** The Fastify cluster's primary; its workers are its children. */
 	appPid: number;
+	/**
+	 * VACUUM ANALYZE after the bulk load: sets hint bits and planner stats up front, as an
+	 * operator would, so neither they nor an autovacuum triggered by the load land in a
+	 * measured run. Through Fastify the read-all pass cannot do it for pg-redis — the load's
+	 * write-through already cached every row, so it never reaches Postgres.
+	 */
+	vacuum(): Promise<void>;
 	/** Container cgroup scopes, so Postgres' per-connection backends are all counted. */
 	cgroups: Record<string, string>;
 	/** Command that prints Redis INFO stats, for cache hit-rate sampling. */
@@ -84,7 +92,9 @@ export interface PgStack {
 async function containerCgroup(service: string): Promise<string> {
 	const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', service], { env: composeEnv() });
 	const id = stdout.trim();
-	return id ? `/sys/fs/cgroup/system.slice/docker-${id}.scope` : '';
+	const scope = `/sys/fs/cgroup/system.slice/docker-${id}.scope`;
+	if (!id || !existsSync(scope)) throw new Error(`no cgroup scope for ${service} at ${scope}`);
+	return scope;
 }
 
 /**
@@ -217,6 +227,27 @@ async function startServices(
 		baseUrl: `http://127.0.0.1:${PG_APP_PORT}`,
 		appPid: child.pid!,
 		cgroups,
+		async vacuum(): Promise<void> {
+			await exec(
+				'docker',
+				[
+					...COMPOSE,
+					'exec',
+					'-T',
+					'postgres',
+					'psql',
+					'-p',
+					'5433',
+					'-U',
+					'ycsb',
+					'-d',
+					'ycsb',
+					'-c',
+					'VACUUM (ANALYZE) usertable',
+				],
+				{ env: composeEnv() }
+			);
+		},
 		// pg-only still runs the redis container (idle, never connected to) so both stacks share
 		// one compose file; its CPU and memory are not charged since the app never uses it.
 		redisExec: ['docker', ...COMPOSE, 'exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'info', 'stats'],

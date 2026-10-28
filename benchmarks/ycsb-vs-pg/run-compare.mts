@@ -111,6 +111,7 @@ interface Running {
 	/** Component name -> root PID, each verified to run on the target cpuset only. */
 	pinned: Record<string, number>;
 	recordCacheSize?: number;
+	afterLoad?: () => Promise<void>;
 }
 
 async function withHarper<T>(
@@ -188,6 +189,7 @@ async function withPgStack<T>(
 				redisExec: useCache ? stack.redisExec : undefined,
 			},
 			pinned: { fastify: stack.appPid },
+			afterLoad: stack.vacuum,
 		});
 	} finally {
 		await stack.stop();
@@ -249,8 +251,9 @@ async function measureSample(
 			for (const pid of driver.pids) verifyAffinity('generator', pid, session.driverCpus);
 			assertNoErrors('load', driver.load);
 			console.log(`  [load] ${driver.load.throughput.toFixed(0)} records/sec`);
-			// Every key exactly once: leaves Redis holding the whole dataset (warm) and pays
-			// Postgres' post-bulk-load hint-bit rewrite before measuring, in both modes.
+			await running.afterLoad?.();
+			// Every key exactly once, through the target's own read path: Redis ends up holding
+			// the whole dataset, and first-touch costs land before measuring.
 			const warm = await driver.readAll();
 			assertNoErrors('read-all pass', warm);
 			if (warm.ops !== config.records) throw new Error(`read-all pass read ${warm.ops} of ${config.records} keys`);
@@ -264,9 +267,11 @@ async function measureSample(
 			clock.start();
 			const result = await driver.runWorkload(workload, distribution);
 			const meanClockGHz = clock.stop();
-			const peaks = await memory.stop();
+			// CPU first: stopping the sampler can wait out its interval, and background work in
+			// that gap would be charged to the run.
 			const after = await sampleResources(running.targets);
 			const generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
+			const peaks = await memory.stop();
 			assertNoErrors(`workload ${workload}`, result);
 
 			const resources = {
@@ -275,6 +280,13 @@ async function measureSample(
 				peakMemoryBytes: peaks.peakBytes,
 				peakTotalMemoryBytes: peaks.peakTotalBytes,
 			};
+			if (
+				before.redis &&
+				after.redis &&
+				(after.redis.hits < before.redis.hits || after.redis.misses < before.redis.misses)
+			) {
+				throw new Error('Redis counters went backwards during the measured run (restart?) — sample invalid');
+			}
 			const lookups = resources.redisHits + resources.redisMisses;
 			let redisHitRate: number | undefined;
 			if (running.targets.redisExec) {
@@ -494,8 +506,8 @@ async function main(): Promise<void> {
 	const cache = (extract('--cache') ?? 'warm') as CacheMode;
 	if (cache !== 'warm' && cache !== 'cold') throw new Error(`--cache must be warm or cold, got ${cache}`);
 	if (cache === 'cold') {
-		// Cold Postgres is pg-only. harper-sized is the warm configuration by definition, and the
-		// base build ignores HARPER_RECORD_CACHE_SIZE, so it cannot be run with a minimal cache.
+		// Cold Postgres is pg-only. harper-sized is the warm configuration by definition, and a
+		// base build need not read HARPER_RECORD_CACHE_SIZE (6d725818 does not).
 		const refused = targets.filter((t) => t === 'pg-redis' || t === 'harper-sized' || t === 'harper-base');
 		if (refused.length > 0) throw new Error(`--cache=cold does not support ${refused.join(', ')}`);
 	}
@@ -527,6 +539,10 @@ async function main(): Promise<void> {
 	// Harper threads and Fastify workers default to one per target core.
 	if (!passthrough.some((a) => a.startsWith('--threads'))) passthrough.push(`--threads=${serverCpus.length}`);
 	const options = parseOptions(passthrough);
+	const sizesCache = targets.includes('harper-sized') || (cache === 'cold' && targets.includes('harper'));
+	if (sizesCache && options.engine !== 'rocksdb') {
+		throw new Error(`HARPER_RECORD_CACHE_SIZE only applies to the rocksdb engine, not ${options.engine}`);
+	}
 
 	// This process, and the generator shards it forks, run on the generator cores.
 	await pinPid(process.pid, driverCpus);
@@ -567,7 +583,7 @@ async function main(): Promise<void> {
 			'pg-stack': { ...STACK_MEMORY, fastify: 'remainder, measured, not enforced' },
 		},
 		cache,
-		recordCacheSize: session.recordCacheSize,
+		recordCacheSize: sizesCache ? session.recordCacheSize : undefined,
 		shards: session.shards,
 		dataDir: base,
 		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT) },
