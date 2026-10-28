@@ -18,7 +18,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 // Long enough for a zero-delay reclamation queued by a wrong eviction to have unlinked its file, unless
 // entries left by earlier tests hold the shared queue's tail back.
 const RECLAMATION_SETTLE_MS = 200;
-const REREFERENCED = 1; // hold-state slot offset, resources/blob.ts
+const REFERENCE_GENERATION = 1;
 
 describe('evict() leaves a renewed record and its blobs intact', function () {
 	this.timeout(10000);
@@ -76,6 +76,11 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const originalCommit = Transaction.prototype.commit;
 		const { entry, filePath } = await putWithBlob('contended', 'resident');
+		const { table: holdState, slot } = getBlobHoldStateForTesting(
+			UnauditedBlobs.primaryStore.rootStore,
+			getFileId(entry.value.blob)
+		);
+		const beforeGeneration = Atomics.load(holdState, slot + REFERENCE_GENERATION);
 		// A competing write keeps the same blob. It has encoded (re-referencing the file) and is committing
 		// when the eviction reads and stages; the eviction's commit then lands after it and conflicts.
 		let eviction;
@@ -97,20 +102,20 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 			await UnauditedBlobs.put({ ...entry.value, tag: 'competing' });
 			assert.ok(eviction, 'the eviction must run inside the competing commit');
 			await eviction;
+			assert.equal(
+				getBlobHoldStateForTesting(UnauditedBlobs.primaryStore.rootStore, getFileId(entry.value.blob))
+					.pendingReclamation,
+				false,
+				'an abandoned eviction must not queue its blob for reclamation'
+			);
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 		}
 		await delay(RECLAMATION_SETTLE_MS);
 
-		// Queue-independent: queueing a reclamation clears the re-reference the competing write recorded.
-		const { table: holdState, slot } = getBlobHoldStateForTesting(
-			UnauditedBlobs.primaryStore.rootStore,
-			getFileId(entry.value.blob)
-		);
-		assert.equal(
-			Atomics.load(holdState, slot + REREFERENCED),
-			1,
-			"an abandoned eviction must not queue the competing write's blob for reclamation"
+		assert.ok(
+			Atomics.load(holdState, slot + REFERENCE_GENERATION) > beforeGeneration,
+			'competing write records its reference'
 		);
 		await assert.rejects(
 			evictionCommit,
@@ -129,6 +134,11 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const originalCommit = Transaction.prototype.commit;
 		const { entry, filePath } = await putWithBlob('refilled', 'resident');
+		const { table: holdState, slot } = getBlobHoldStateForTesting(
+			UnauditedBlobs.primaryStore.rootStore,
+			getFileId(entry.value.blob)
+		);
+		const beforeGeneration = Atomics.load(holdState, slot + REFERENCE_GENERATION);
 		Transaction.prototype.commit = function (...args) {
 			Transaction.prototype.commit = originalCommit;
 			// lands between the eviction's commit and its blob cleanup
@@ -138,17 +148,19 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		};
 		try {
 			await UnauditedBlobs.evict('refilled', entry.value, entry.version);
+			assert.equal(
+				getBlobHoldStateForTesting(UnauditedBlobs.primaryStore.rootStore, getFileId(entry.value.blob))
+					.pendingReclamation,
+				false,
+				'an eviction must not queue a blob referenced by a subsequent write'
+			);
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 		}
 		await delay(RECLAMATION_SETTLE_MS);
 
-		const { table: holdState, slot } = getBlobHoldStateForTesting(
-			UnauditedBlobs.primaryStore.rootStore,
-			getFileId(entry.value.blob)
-		);
 		assert.equal(UnauditedBlobs.primaryStore.getEntry('refilled')?.value.tag, 'refilled');
-		assert.equal(Atomics.load(holdState, slot + REREFERENCED), 1, 'the refilled record keeps its blob file');
+		assert.ok(Atomics.load(holdState, slot + REFERENCE_GENERATION) > beforeGeneration, 'refill records its reference');
 		assert.ok(existsSync(filePath));
 	});
 
@@ -260,9 +272,9 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		};
 	}
 
-	function rereferenced(Table, blob) {
+	function referenceGeneration(Table, blob) {
 		const { table: holdState, slot } = getBlobHoldStateForTesting(Table.primaryStore.rootStore, getFileId(blob));
-		return Atomics.load(holdState, slot + REREFERENCED);
+		return Atomics.load(holdState, slot + REFERENCE_GENERATION);
 	}
 
 	it('evict() keeps a record whose expiry a resequenced write renewed from the table expiration', async function () {
@@ -441,7 +453,7 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		assert.equal(merged.expiresAt, read.expiresAt, 'precondition: the expiry is unchanged');
 		const filePath = getFilePathForBlob(blob);
 		assert.ok(filePath && existsSync(filePath), 'precondition: the blob is file-backed');
-		assert.equal(rereferenced(Table, blob), 1, 'precondition: the write that references the file marked it');
+		assert.ok(referenceGeneration(Table, blob) > 0, 'precondition: the write recorded its reference');
 
 		let conflicts = 0;
 		Transaction.prototype.commit = function (...args) {
@@ -465,8 +477,11 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		await delay(RECLAMATION_SETTLE_MS);
 		assert.ok(Table.primaryStore.getEntry('unchanged'), 'the abandoned batch removed nothing');
 		assert.equal(getFileId(Table.primaryStore.getEntry('gained')?.value.blob), getFileId(blob));
-		// queue-independent: queueing a reclamation clears the re-reference
-		assert.equal(rereferenced(Table, blob), 1, 'the abandoned batch must not queue the blob for reclamation');
+		assert.equal(
+			getBlobHoldStateForTesting(Table.primaryStore.rootStore, getFileId(blob)).pendingReclamation,
+			false,
+			'the abandoned batch must not queue the blob for reclamation'
+		);
 		assert.ok(existsSync(filePath), 'an abandoned batch must not reclaim the blob of a record it left in place');
 	});
 });

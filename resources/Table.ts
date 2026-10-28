@@ -1,3 +1,4 @@
+import { databaseBaselineHoldReason, isReplicationApply, REPLICATION_APPLY } from './databaseLiveGuard.ts';
 /**
  * This module provides the main table implementation of the Resource API, providing full access to Harper
  * tables through the interface defined by the Resource class. This module is responsible for handling these
@@ -7,6 +8,24 @@
 import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS, THREAD_TYPES } from '../utility/hdbTerms.ts';
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
+import {
+	compileResidencyPolicy,
+	normalizeResidencyPolicy,
+	sameResidencyPolicy,
+	type ResidencyPolicy,
+} from './residencyPolicy.ts';
+import {
+	residencyOwners,
+	registerResidencyRoot,
+	residencyIsLocal,
+	capturedResidencyIsLocal,
+	requireConnectedResidencyOwner,
+	validateResidencyMapWrite,
+	acquireResidencyMapFence,
+	assertResidencyWriteRoute,
+	RESIDENCY_MAP_TABLE,
+	ResidencyPlacementError,
+} from './residencyMaps.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -44,6 +63,7 @@ import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts
 import { assertNestedQueryOptions, hasNestedQueryOptions } from './Resource.ts';
 import {
 	DatabaseTransaction,
+	getReadTransactionGuard,
 	ImmediateTransaction,
 	priorStagedWrite,
 	isJoinableScope,
@@ -52,12 +72,13 @@ import {
 	writeKeyId,
 	closeWriteInstance,
 	databaseCommitsSuspended,
+	databaseLiveHoldReason,
 	commitTrackedRocksTransaction,
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
-	getReadTransactionGuard,
+	confirmingOwnerNames,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -98,6 +119,7 @@ import {
 	DerivedIndexLagError,
 	IndexRebuildingError,
 	DatabaseClosingError,
+	DatabaseShardingHeldError,
 	DatabaseDrainTimeoutError,
 	DatabaseGenerationChangedError,
 	ResumeHistoryUnavailableError,
@@ -116,6 +138,7 @@ import { SchemaEventMsg } from '../server/threads/itc.ts';
 import { isDedicatedPoolWorker, isWorkerPoolActive } from '../server/threads/workerPools.ts';
 import {
 	databases,
+	databaseResidencyBlockReason,
 	table,
 	dropColumnFamily,
 	markDropInProgress,
@@ -241,6 +264,7 @@ import {
 	createBlob,
 	cleanupUnusedBlobs,
 	collectRetainedFileIds,
+	captureBlobReclamation,
 	getFileId,
 	deleteBlobsInObject,
 	findBlobsInObject,
@@ -643,8 +667,8 @@ export function frozenRecordView(record: any): any {
 	});
 }
 export const INVALIDATED = 1;
-// A complete record fetched from a resident and kept locally only: never audited, replicated, served as
-// a complete record, or counted as a resident. Exclusive with INVALIDATED; the stub's residencyId stays.
+// A complete local cache, never served as a resident or counted toward confirmation. Canonical audit
+// entries are independent of the cached body. Exclusive with INVALIDATED; placement metadata stays.
 export const REPLICA = 4;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 export { FULL_WRITE_HEAD };
@@ -663,6 +687,7 @@ export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
 const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
+const REPLICA_BLOB_AUDIT_READ_BUDGET = 32;
 class PoolWorkerResolverRefusal extends Error {}
 let minReplicaScanIntervalMs = MIN_REPLICA_SCAN_INTERVAL_MS;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
@@ -976,6 +1001,10 @@ interface TableResourceClass {
 	sourceOptions: any;
 	intermediateSource: boolean;
 	getResidencyById: (id: Id) => number | void;
+	readonly residency: Readonly<ResidencyPolicy> | undefined;
+	_setResidencyPolicy(policy: ResidencyPolicy): void;
+	getResidencySlot(id: Id, record?: object): number;
+	getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined;
 	get expirationMS(): any;
 	get evictionMS(): any;
 	dbisDB: any;
@@ -1056,6 +1085,7 @@ interface TableResourceClass {
 	dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean>;
 	/**
 	 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`; resolves true when stored.
+	 * Optional-cache callers must handle synchronous admission errors as well as rejected commits.
 	 */
 	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string; fullWriteHead?: number }): Promise<boolean>;
 	/**
@@ -1587,8 +1617,12 @@ export function makeTable(options): TableResourceClass {
 	let fullTextFieldNames = fullTextFields.length > 0 ? new Set<string>(fullTextFields) : undefined;
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
+	registerResidencyRoot(databaseName, tableRootStore, !!options.residency);
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	const isRocksDB = primaryStore instanceof RocksDatabase;
+	let residencyPolicy: Readonly<ResidencyPolicy> | undefined =
+		options.residency && normalizeResidencyPolicy(options.residency);
+	let calculateResidencySlot = residencyPolicy && compileResidencyPolicy(residencyPolicy);
 	let replicaExpirationMs = isRocksDB ? (options.replicaExpirationMS ?? DEFAULT_REPLICA_EXPIRATION_MS) : 0;
 	let replicaRefreshFraction = options.replicaRefreshFraction ?? DEFAULT_REPLICA_REFRESH_FRACTION;
 	// id → deadline (ms) for every REPLICA row, opened on the first replica stored or at load from its catalog row
@@ -1621,7 +1655,8 @@ export function makeTable(options): TableResourceClass {
 		options;
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
-	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
+	const isResidencyMapTable = databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE;
+	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, retainedAuditBlobFiles);
 	// Created on first cluster-scoped lock() or first arriving control entry, and only while a
 	// transport is registered for this database.
 	let lockCoordinator: LockCoordinator | undefined;
@@ -1810,8 +1845,20 @@ export function makeTable(options): TableResourceClass {
 		refs?: Array<{ version: number; nodeId: number }>
 	) {
 		if (!refs?.length) return { txnLogKey: version, nodeId };
+		const steps = resolveAuditHeadSteps(id, version, nodeId, refs);
+		let result = steps.next();
+		while (!result.done) result = steps.next();
+		return result.value;
+	}
+	function* resolveAuditHeadSteps(
+		id: Id,
+		version: number | undefined,
+		nodeId: number | undefined,
+		refs?: Array<{ version: number; nodeId: number }>
+	) {
+		if (!refs?.length) return { txnLogKey: version, nodeId };
 		const visited = new Set<string>();
-		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
+		function* findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
 			if (!candidateRefs) return;
 			const pending: Array<{ version: number; nodeId: number }> = candidateRefs.slice().reverse();
 			while (pending.length > 0) {
@@ -1819,6 +1866,7 @@ export function makeTable(options): TableResourceClass {
 				const identity = `${ref.nodeId ?? 0}:${ref.version}`;
 				if (visited.has(identity)) continue;
 				visited.add(identity);
+				yield;
 				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
 				if (!entry) continue;
 				if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
@@ -1829,9 +1877,10 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 		}
-		const referencedHead = findHead(refs);
+		const referencedHead = yield* findHead(refs);
 		if (referencedHead) return referencedHead;
 		if (version != null) {
+			yield;
 			const directHead = auditStore.getSync(version, tableId, id, nodeId);
 			if (directHead?.version === version && (nodeId == null || (directHead.nodeId ?? 0) === nodeId))
 				return { txnLogKey: version, nodeId, entry: directHead };
@@ -1840,8 +1889,14 @@ export function makeTable(options): TableResourceClass {
 	}
 	// Teardown rejects every producer; source/replay paths only bypass derived-index lag shedding.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
-		if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
-			throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
+		const held = transaction?.isReplay ? undefined : databaseLiveHoldReason(tableRootStore);
+		if (held && !databaseResidencyBlockReason(databaseName)) throw new DatabaseShardingHeldError(databaseName, held);
+		if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore, true))
+			throw new DatabaseClosingError(
+				databaseName,
+				!transaction?.root && !transaction?.snapshotFree,
+				databaseResidencyBlockReason(databaseName)
+			);
 		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
 		if (reason) throw new DerivedIndexLagError(reason);
@@ -2094,6 +2149,29 @@ export function makeTable(options): TableResourceClass {
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
+		static get residency() {
+			return residencyPolicy;
+		}
+		static _setResidencyPolicy(policy: ResidencyPolicy) {
+			const normalized = normalizeResidencyPolicy(policy);
+			if (residencyPolicy && !sameResidencyPolicy(residencyPolicy, normalized))
+				throw new ClientError(`The @sharded policy of ${databaseName}.${tableName} is immutable`, 409);
+			residencyPolicy = normalized;
+			calculateResidencySlot = compileResidencyPolicy(normalized);
+			registerResidencyRoot(databaseName, tableRootStore, true);
+			for (const Table of Object.values(databases[databaseName] ?? {}))
+				if (Table.primaryStore?.rootStore) registerResidencyRoot(databaseName, Table.primaryStore.rootStore, true);
+		}
+		static getResidencySlot(id: Id, record?: object): number {
+			return calculateResidencySlot(id, record);
+		}
+		static getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined {
+			if (residencyPolicy) {
+				const slot = residencyPolicy.byAttribute ? entry.residencySlot : calculateResidencySlot(entry.key);
+				return residencyOwners(databaseName, slot, residencyPolicy.slots);
+			}
+			return entry.residencyId ? TableResource.getResidencyRecord(entry.residencyId) : undefined;
+		}
 		static get expirationMS() {
 			return expirationMs;
 		}
@@ -2218,7 +2296,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					event.source = source;
 					const options = {
-						residencyId: getResidencyId(event.residencyList),
+						residencyId: Table.residency ? undefined : getResidencyId(event.residencyList),
+						residencySlot: event.residencySlot,
 						isNotification: true,
 						ensureLoaded: false,
 						nodeId: event.nodeId,
@@ -2590,6 +2669,7 @@ export function makeTable(options): TableResourceClass {
 								// there is no re-subscribe / sequence-id-resume path to recover it. Mark the context so the
 								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
 								event.sourceApply = true;
+								event[REPLICATION_APPLY] = source.isReplicator === true;
 								event[SOURCE_APPLY_POSITION] = failurePosition;
 								if (event.type === 'abort_txn') {
 									taggedStreams?.delete(txnStreamKey);
@@ -2855,11 +2935,21 @@ export function makeTable(options): TableResourceClass {
 			request: Context,
 			resourceOptions?: any
 		): Promise<TableResourceInstance<Record>> | TableResourceInstance<Record> {
-			if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
+			const held = (request as any)?.transaction?.isReplay ? undefined : databaseLiveHoldReason(tableRootStore);
+			if (held && !databaseResidencyBlockReason(databaseName)) throw new DatabaseShardingHeldError(databaseName, held);
+			if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore, true))
 				throw new DatabaseClosingError(
 					databaseName,
-					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
+					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree,
+					databaseResidencyBlockReason(databaseName)
 				);
+			if (
+				residencyPolicy &&
+				(target == null || (typeof target === 'object' && (target.isCollection || target.id == null)))
+			) {
+				const reason = databaseBaselineHoldReason(tableRootStore, request?.transaction);
+				if (reason) throw new DatabaseShardingHeldError(databaseName, reason);
+			}
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
 			const condition = request?.[WRITE_CONDITION];
 			if (condition?.Resource === this && !condition.prepared) {
@@ -3250,6 +3340,7 @@ export function makeTable(options): TableResourceClass {
 			);
 		}
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
+			if (residencyPolicy) throw new ClientError(`Cannot call setResidency on @sharded table ${tableName}`, 409);
 			if (typeof getResidency === 'function') TableResource.#reportResidencyPoolHook('setResidency');
 			TableResource.getResidency = getResidency
 				? (record: object, context: Context) => {
@@ -3263,6 +3354,7 @@ export function makeTable(options): TableResourceClass {
 				: defaultGetResidency;
 		}
 		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
+			if (residencyPolicy) throw new ClientError(`Cannot call setResidencyById on @sharded table ${tableName}`, 409);
 			if (typeof getResidencyById === 'function') TableResource.#reportResidencyPoolHook('setResidencyById');
 			TableResource.getResidencyById =
 				getResidencyById &&
@@ -3350,6 +3442,8 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean> {
+			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
+				throw new ClientError('Installed shard maps cannot be cleared or dropped', 409);
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -4290,13 +4384,16 @@ export function makeTable(options): TableResourceClass {
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			this.#assertLiveHandle(id);
 			const incomingRecord = partialRecord;
+			const isCopyApply = isRocksDB && options?.isCopyApply === true;
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			assertDerivedIndexAdmission(options, transaction);
+			const localShardingWrite = residencyPolicy && !transaction.isReplay && !isReplicationApply(transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				invalidated: true,
@@ -4314,16 +4411,34 @@ export function makeTable(options): TableResourceClass {
 					write.superseded = false;
 					const priorStagedOp = priorStagedWrite(write);
 					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
+					const residencySlot = residencyPolicy?.byAttribute
+						? retryResidencySlot(
+								write,
+								options?.residencySlot ?? priorStagedOp?.stagedEntry.residencySlot ?? existingEntry?.residencySlot,
+								transaction,
+								localShardingWrite
+							)
+						: undefined;
+					const owners =
+						residencyPolicy &&
+						captureResidencyOwners(
+							write,
+							residencyPolicy.byAttribute ? residencySlot : calculateResidencySlot(id),
+							options?.isReplay,
+							localShardingWrite,
+							transaction
+						);
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					// A base copy from a stub holder must not downgrade the same full record at a resident.
 					if (
 						precedesExisting < 0 ||
+						(isCopyApply && precedesExisting === 0) ||
 						(!priorStagedOp &&
 							precedesExisting === 0 &&
 							existingEntry?.value &&
 							!(existingEntry.metadataFlags & (INVALIDATED | REPLICA)) &&
-							options?.residencyId &&
-							TableResource.getResidencyRecord(options.residencyId)?.includes(server.hostname))
+							(residencyPolicy || options?.residencyId) &&
+							(owners || TableResource.getRecordResidency({ key: id, ...options }))?.includes(server.hostname))
 					) {
 						write.skipped = true;
 						return;
@@ -4332,7 +4447,7 @@ export function makeTable(options): TableResourceClass {
 					// only a local/cache invalidation carries forward the committed indexed fields.
 					partialRecord = incomingRecord
 						? Object.create(null)
-						: options?.residencyId && primaryKey
+						: (residencyPolicy || options?.residencyId) && primaryKey
 							? { [primaryKey]: id }
 							: null;
 					if (incomingRecord) for (const name in incomingRecord) partialRecord[name] = incomingRecord[name];
@@ -4342,7 +4457,11 @@ export function makeTable(options): TableResourceClass {
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 						const incomingValue = incomingRecord?.[name];
 						partialRecord[name] =
-							incomingValue === undefined && !options?.residencyId ? existingRecord?.[name] : incomingValue;
+							incomingValue === undefined &&
+							!options?.residencyId &&
+							(!residencyPolicy || (!incomingRecord && options?.nodeId === undefined))
+								? existingRecord?.[name]
+								: incomingValue;
 					}
 					// a refill takes its created time from the stub, so a cache invalidation carries it forward too
 					const createdTime = createdTimeProperty?.name;
@@ -4372,26 +4491,32 @@ export function makeTable(options): TableResourceClass {
 						existingEntry,
 						txnTime,
 						INVALIDATED,
-						audit,
+						isCopyApply ? false : audit,
 						{
 							user: (context as any)?.user,
-							residencyId: options?.residencyId,
+							residencyId: residencyPolicy ? undefined : options?.residencyId,
+							residencySlot,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
 							write,
-							tableToTrack: tableName,
+							tableToTrack: isCopyApply ? null : tableName,
 							recordVersion: txnTime,
 							additionalAuditRefs:
-								isRocksDB && audit && txnLogKey !== txnTime
+								!isCopyApply && isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
 							localOnly: options?.localOnly,
 						},
 						'invalidate'
 					);
-					write.stagedEntry = { value: partialRecord, metadataFlags: INVALIDATED, residencyId: options?.residencyId };
-					write.blobsAuditReferenced = Boolean(audit);
+					write.stagedEntry = {
+						value: partialRecord,
+						metadataFlags: INVALIDATED,
+						residencyId: residencyPolicy ? undefined : options?.residencyId,
+						residencySlot,
+					};
+					write.blobsAuditReferenced = !isCopyApply && Boolean(audit);
 					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
@@ -4406,9 +4531,11 @@ export function makeTable(options): TableResourceClass {
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			assertDerivedIndexAdmission(options, transaction);
+			const localShardingWrite = residencyPolicy && !transaction.isReplay && !isReplicationApply(transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				invalidated: true,
@@ -4438,7 +4565,23 @@ export function makeTable(options): TableResourceClass {
 						write.skipped = true;
 						return;
 					}
-					const residency = TableResource.getResidencyRecord(options.residencyId);
+					const residencySlot = residencyPolicy?.byAttribute
+						? retryResidencySlot(
+								write,
+								options?.residencySlot ?? existingEntry?.residencySlot,
+								transaction,
+								localShardingWrite
+							)
+						: undefined;
+					const residency = residencyPolicy
+						? captureResidencyOwners(
+								write,
+								residencyPolicy.byAttribute ? residencySlot : calculateResidencySlot(id),
+								options?.isReplay,
+								localShardingWrite,
+								transaction
+							)
+						: TableResource.getRecordResidency({ key: id, ...options });
 					let metadata = 0;
 					let newRecord = null;
 					const existingRecord = existingEntry?.value;
@@ -4460,7 +4603,8 @@ export function makeTable(options): TableResourceClass {
 						audit,
 						{
 							user: (context as any)?.user,
-							residencyId: options.residencyId,
+							residencyId: residencyPolicy ? undefined : options.residencyId,
+							residencySlot,
 							nodeId: options.nodeId,
 							viaNodeId: options?.viaNodeId,
 							expiresAt: options.expiresAt,
@@ -4486,19 +4630,19 @@ export function makeTable(options): TableResourceClass {
 		/**
 		 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`. Placement is
 		 * untouched: the row keeps the stub's residency and canonical identity, gets no audit entry and never
-		 * replicates. Resolves true when the replica was stored.
+		 * replicates. Resolves true when the replica was stored; admission can throw before a commit is submitted.
 		 */
 		static _storeReplica(
 			existingEntry: Entry,
 			entry: Entry & { originNode?: string; fullWriteHead?: number }
 		): Promise<boolean> {
 			if (
-				TableResource.getResidencyById ||
+				(residencyPolicy ? !hasSecondaryIndices() : TableResource.getResidencyById) ||
 				!replicaExpirationMs ||
 				disposed ||
 				maintenanceClosed ||
 				droppingTable ||
-				!existingEntry?.residencyId ||
+				!(residencyPolicy ? existingEntry : existingEntry?.residencyId) ||
 				entry?.value == null ||
 				!answersStub(existingEntry, entry.value, entry.version, entry.originNode, entry.fullWriteHead)
 			)
@@ -4551,6 +4695,7 @@ export function makeTable(options): TableResourceClass {
 					return trackMaintenanceCommit(
 						demotion.catch((error) => {
 							if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned demotion of busy replica', id);
+							else if (error instanceof DatabaseShardingHeldError) logger.trace?.('Error demoting replica', id, error);
 							else logger.warn?.('Error demoting replica', id, error);
 						})
 					);
@@ -4606,6 +4751,7 @@ export function makeTable(options): TableResourceClass {
 						(transaction as any).abort();
 					} catch {}
 					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+					else if (error instanceof DatabaseShardingHeldError) logger.trace?.('Error evicting record', id, error);
 					else logger.warn?.('Error evicting record', id, error);
 				};
 				const commit = commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore);
@@ -5177,7 +5323,41 @@ export function makeTable(options): TableResourceClass {
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
 			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
+			const localShardingWrite = residencyPolicy && !replaying && !isReplicationApply(transaction);
+			const writerReplicaEligible = Boolean(
+				residencyPolicy && writtenHere && replicaExpirationMs && hasSecondaryIndices()
+			);
+			if (writerReplicaEligible) openReplicaDeadlines(true);
 			checkValidId(id);
+			if (
+				residencyPolicy?.byAttribute &&
+				writtenHere &&
+				!fullUpdate &&
+				(recordUpdate !== undefined || this.#changes !== undefined) &&
+				this.#entry?.metadataFlags & INVALIDATED &&
+				!hasExpired(this.#entry)
+			) {
+				const tail = transaction.writesByKey?.get(primaryStore)?.get(writeKeyId(id));
+				const prior = tail && (tail.stagedEntry ? tail : priorStagedWrite(tail));
+				let replacement = transaction.stagesWriteOnSave ? undefined : tail;
+				while (replacement && 'fullUpdate' in replacement && !replacement.fullUpdate)
+					replacement = replacement.priorWrite;
+				if (!prior?.completeResidencyRecord && !replacement?.fullUpdate) {
+					if (
+						!sourceLoad ||
+						(context && 'replicateFrom' in context && context.replicateFrom === false) ||
+						(context && 'onlyIfCached' in context && context.onlyIfCached)
+					)
+						throw new ClientError('An attribute sharding patch requires the complete resident record', 503);
+					const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
+					transaction.disregardReadTxn();
+					return when(this.ensureLoaded(), () => {
+						if (!this.#entry?.value || this.#entry.metadataFlags & INVALIDATED)
+							throw new ClientError('An attribute sharding patch requires the complete resident record', 503);
+						return this._writeUpdate(id, updates, fullUpdate, options);
+					});
+				}
+			}
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
 				// validation, so this is the one path a nullish full update reaches (isNotification scopes
@@ -5205,6 +5385,7 @@ export function makeTable(options): TableResourceClass {
 				};
 			}
 			const reloadsCommitBase = options?.isCopyApply !== true;
+			const loadedEntry = this.#entry;
 			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
 			const baseReadTxn = this.#commitBaseTxn(id);
 			const writeToSource = () => {
@@ -5233,6 +5414,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry,
@@ -5357,6 +5539,7 @@ export function makeTable(options): TableResourceClass {
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
+					write.completeResidencyRecord = undefined;
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
 					// The record a preceding write in this transaction left for this key is what this write
 					// applies to (see priorStagedWrite): a staged write is not visible to a read, so without
@@ -5368,7 +5551,50 @@ export function makeTable(options): TableResourceClass {
 					// write's audit refs, which the re-delivery check below reads past (identityBase).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
-					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
+					let existingRecord =
+						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
+					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
+						try {
+							if (!fullUpdate) throw new ClientError('A shard map must be written as a complete snapshot', 400);
+							if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
+								write.skipped = true;
+								return;
+							}
+							if (!replaying)
+								write.releaseResidencyMapFence ??= acquireResidencyMapFence(String(id), committedBy ?? transaction);
+							if (!validateResidencyMapWrite(String(id), recordUpdate, existingRecord, replaying)) {
+								write.skipped = true;
+								return;
+							}
+						} catch (error) {
+							if (!writtenHere && error instanceof ClientError && !(error instanceof ResidencyPlacementError))
+								throw Object.assign(new ResidencyPlacementError(error.message, error.statusCode), { cause: error });
+							throw error;
+						}
+					}
+					if (
+						residencyPolicy?.byAttribute &&
+						writtenHere &&
+						!fullUpdate &&
+						!priorStagedOp?.completeResidencyRecord &&
+						(priorStaged ?? existingEntry)?.metadataFlags & INVALIDATED
+					) {
+						if (
+							priorStaged ||
+							!loadedEntry?.value ||
+							loadedEntry.metadataFlags & INVALIDATED ||
+							loadedEntry.version !== existingEntry.version ||
+							((loadedEntry as Entry & { originNode?: string }).originNode
+								? (loadedEntry as Entry & { originNode?: string }).originNode !==
+									(existingEntry.nodeId ? getNodeNameForId(auditStore, existingEntry.nodeId, true) : server.hostname)
+								: loadedEntry.nodeId !== existingEntry.nodeId)
+						)
+							throw new ClientError(
+								'Load the current complete record before changing attribute sharding; retry the write',
+								409
+							);
+						existingRecord = loadedEntry.value;
+					}
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -5384,6 +5610,7 @@ export function makeTable(options): TableResourceClass {
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
+					let keepWriterReplica = false;
 					const appendedLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
@@ -5410,8 +5637,9 @@ export function makeTable(options): TableResourceClass {
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
-					const type = fullUpdate ? 'put' : 'patch';
+					let type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
+					let residencySlot: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
 					// options/context expiresAt are the most specific overrides; a record @expiresAt field
 					// (resolved below, once recordToStore is merged) overrides the table default in both
@@ -5431,7 +5659,10 @@ export function makeTable(options): TableResourceClass {
 					// RocksDB anyway. (harper-pro#480)
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 
-					if (precedesExisting <= 0) {
+					if (
+						precedesExisting <= 0 &&
+						!(isCopyApply && precedesExisting === 0 && fullUpdate && needsOwnerBody(id, existingEntry))
+					) {
 						if (isCopyApply) {
 							// A base-copy snapshot row must never regress a newer-or-equal live write that landed
 							// during the copy; those are re-delivered by the post-copy audit replay from copyStartTime.
@@ -5470,7 +5701,8 @@ export function makeTable(options): TableResourceClass {
 									(identityRecord = identityBase(write, existingEntry, committedBy)),
 									txnTime,
 									options?.nodeId
-								)
+								) &&
+								!(fullUpdate && needsOwnerBody(id, identityRecord as Partial<Entry>))
 							) {
 								write.skipped = true;
 								return;
@@ -5991,9 +6223,79 @@ export function makeTable(options): TableResourceClass {
 					const baseEntry = priorStaged ?? existingEntry;
 					const patchesStub =
 						!fullUpdate &&
-						!TableResource.getResidencyById &&
-						Boolean(baseEntry?.metadataFlags & (INVALIDATED | REPLICA));
-					if (patchesStub) {
+						(residencyPolicy || !TableResource.getResidencyById) &&
+						Boolean(baseEntry?.metadataFlags & (residencyPolicy ? INVALIDATED : INVALIDATED | REPLICA)) &&
+						!(
+							residencyPolicy &&
+							writtenHere &&
+							(priorStagedOp?.completeResidencyRecord ||
+								(existingRecord === loadedEntry?.value && !(loadedEntry?.metadataFlags & INVALIDATED)))
+						);
+					if (residencyPolicy?.byAttribute && !patchesStub) write.completeResidencyRecord = recordToStore;
+					if (residencyPolicy) {
+						if (!transaction?.isRetry) write.requiresOwnerConfirmation = false;
+						let slot =
+							residencyPolicy.byAttribute && patchesStub
+								? retryResidencySlot(
+										write,
+										options?.residencySlot ?? baseEntry.residencySlot,
+										transaction,
+										localShardingWrite
+									)
+								: calculateWriteResidencySlot(write, recordToStore, transaction, localShardingWrite);
+						if (isRetainedResidencyWrite(write, transaction, localShardingWrite)) {
+							if (write.residencyBaseSlot === write.residencyOwnerSlot && baseEntry?.residencySlot !== slot)
+								slot = retryResidencySlot(
+									write,
+									slot,
+									transaction,
+									localShardingWrite,
+									'the retry base now requires a slot move'
+								);
+						} else write.residencyBaseSlot = baseEntry?.residencySlot;
+						const owners = captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite, transaction);
+						residencyId = undefined;
+						if (residencyPolicy.byAttribute) residencySlot = slot;
+						omitLocalRecord = patchesStub || !owners.includes(server.hostname);
+						if (
+							residencyPolicy.byAttribute &&
+							baseEntry?.residencySlot !== undefined &&
+							baseEntry.residencySlot !== slot
+						) {
+							if (writtenHere && omitLocalRecord) {
+								if (options?.localOnly) {
+									if (
+										!isCopyApply &&
+										localShardingWrite &&
+										!transaction?.isRetry &&
+										!owners.includes(server.hostname)
+									) {
+										const error = new ResidencyPlacementError(
+											`Cannot move record ${String(keyArrayToString(id)).slice(0, 256)} in table ${databaseName}.${tableName}: a local-only write cannot deliver the moved record to its new owners`,
+											400
+										);
+										const refuse = () => {
+											throw error;
+										};
+										write.commit = write.checkResidency = refuse;
+										throw error;
+									}
+								} else if (!transaction?.isRetry) {
+									requireConnectedResidencyOwner(databaseName, owners);
+									const committer = committedBy ?? transaction;
+									write.requiresOwnerConfirmation = true;
+									committer.requiresOwnerConfirmation = true;
+									const checkOwners = write.checkResidency;
+									write.checkResidency = () => {
+										checkOwners();
+										requireConnectedResidencyOwner(databaseName, owners);
+									};
+								}
+							}
+							auditRecordToStore = recordToStore;
+							type = 'put';
+						}
+					} else if (patchesStub) {
 						omitLocalRecord = true;
 						residencyId ??= baseEntry.residencyId;
 					} else if (residencyId == undefined) {
@@ -6010,15 +6312,17 @@ export function makeTable(options): TableResourceClass {
 					}
 					// a caller that catches the refusal must not be able to commit it, even on a retry
 					if (
-						residencyId &&
-						committedBy?.replicatedConfirmation &&
+						(residencyId || write.residencyOwners) &&
+						committedBy?.requestedConfirmationCount &&
 						!transaction?.isRetry &&
 						audit &&
 						!isCopyApply &&
 						!options?.localOnly
 					) {
 						try {
-							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
+							if (write.residencyOwners)
+								confirmingOwnerNames(primaryStore, write.residencyOwners, committedBy.requestedConfirmationCount, id);
+							else confirmingResidents(primaryStore, residencyId, committedBy.requestedConfirmationCount, id);
 						} catch (error) {
 							write.skipped = true;
 							write.skipReplicationConfirmation = true;
@@ -6028,9 +6332,16 @@ export function makeTable(options): TableResourceClass {
 							throw error;
 						}
 					}
-					if (omitLocalRecord) {
-						auditRecordToStore ??= recordToStore;
-						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore, id);
+					keepWriterReplica = omitLocalRecord && writerReplicaEligible && !patchesStub;
+					if (omitLocalRecord) auditRecordToStore ??= recordToStore;
+					if (omitLocalRecord && !keepWriterReplica) {
+						recordToStore = residencyPolicy
+							? hasSecondaryIndices()
+								? residencyStub(recordToStore, id)
+								: undefined
+							: TableResource.getResidencyById
+								? undefined
+								: residencyStub(recordToStore, id);
 					}
 					if (expiresAt == undefined) {
 						// A schema @expiresAt attribute makes the record field authoritative over the table
@@ -6042,7 +6353,7 @@ export function makeTable(options): TableResourceClass {
 						const fieldDeadline = fieldExpiresAtMs(recordToStore);
 						expiresAt = Number.isFinite(fieldDeadline) ? fieldDeadline : expirationMs ? expirationMs + Date.now() : -1;
 					}
-					if (!fullUpdate) {
+					if (!fullUpdate && type !== 'put') {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
 						auditRecordToStore = recordUpdate;
 					}
@@ -6069,7 +6380,7 @@ export function makeTable(options): TableResourceClass {
 							existingRecord,
 							recordToStore,
 							transaction && { transaction },
-							omitLocalRecord,
+							omitLocalRecord && !keepWriterReplica,
 							Boolean(baseEntry?.metadataFlags & INVALIDATED)
 						);
 					dropReplicaDeadline(id, existingEntry, transaction);
@@ -6124,7 +6435,7 @@ export function makeTable(options): TableResourceClass {
 							isRocksDB
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
-							(omitLocalRecord ? INVALIDATED : 0) |
+							(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
 								(isRocksDB &&
 								audit &&
 								fullUpdate &&
@@ -6143,6 +6454,7 @@ export function makeTable(options): TableResourceClass {
 								omitLocalRecord,
 								user: (context as any)?.user,
 								residencyId,
+								residencySlot,
 								expiresAt,
 								recordVersion: txnTime,
 								recordNodeId: precedesExisting < 0 ? existingEntry?.nodeId : options?.nodeId,
@@ -6163,6 +6475,10 @@ export function makeTable(options): TableResourceClass {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						if (storeRecord && keepWriterReplica) {
+							replicaDeadlines.putSync(id, replicaDeadlineFor(expiresAt), { transaction });
+							(transaction.replicaCommitNotifications ??= new Set()).add(noteReplicaStored);
+						}
 						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
 							write.residencyId = residencyId;
 						// publish what this write left for the key, for any later write to it in this
@@ -6174,9 +6490,13 @@ export function makeTable(options): TableResourceClass {
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
 							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
 							if (recordToStore !== undefined) {
-								write.stagedEntry = omitLocalRecord
-									? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
-									: { value: recordToStore };
+								write.stagedEntry = keepWriterReplica
+									? { value: recordToStore, metadataFlags: REPLICA, residencySlot }
+									: omitLocalRecord
+										? { value: recordToStore, metadataFlags: INVALIDATED, residencyId, residencySlot }
+										: residencySlot === undefined
+											? { value: recordToStore }
+											: { value: recordToStore, residencySlot };
 								// any record an earlier write in this transaction stored is now replaced, so mark those
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
 								// anything older was already superseded by its own staged successor earlier in this round
@@ -6283,11 +6603,14 @@ export function makeTable(options): TableResourceClass {
 		}
 		_writeDelete(id: Id, options?: any): MaybePromise<boolean> {
 			this.#assertLiveHandle(id);
+			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
+				throw new ClientError('Installed shard maps cannot be deleted', 409);
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
 			if (locking) return locking.then(() => this._writeDelete(id, options));
 			const transaction = txnForContext(context);
+			const localShardingWrite = residencyPolicy && !transaction.isReplay && !isReplicationApply(transaction);
 			this.#evaluateWriteCondition(id, condition, transaction);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
@@ -6297,6 +6620,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry,
@@ -6336,7 +6660,25 @@ export function makeTable(options): TableResourceClass {
 						write.skipped = true;
 						return;
 					}
-					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
+					let residencySlot: number | undefined;
+					if (residencyPolicy) {
+						residencySlot = residencyPolicy.byAttribute
+							? retryResidencySlot(
+									write,
+									options?.residencySlot ?? priorStaged?.residencySlot ?? existingEntry?.residencySlot,
+									transaction,
+									localShardingWrite
+								)
+							: undefined;
+						if (residencyPolicy.byAttribute && residencySlot === undefined)
+							throw new ClientError(
+								'Attribute sharding slot is unknown; retry the delete after placement is available',
+								503
+							);
+						const slot = residencySlot ?? calculateResidencySlot(id);
+						captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite, transaction);
+					}
+					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId, residencySlot };
 					if (
 						existingRecord == null &&
 						isAuditEntryWrite(removalBefore(write, existingEntry), { txnLogKey, nodeId: options?.nodeId })
@@ -6364,6 +6706,7 @@ export function makeTable(options): TableResourceClass {
 							audit,
 							{
 								user: (context as any)?.user,
+								residencySlot,
 								nodeId: options?.nodeId,
 								viaNodeId: options?.viaNodeId,
 								transaction,
@@ -8851,6 +9194,7 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
 				entry: this.#entry,
@@ -8885,11 +9229,12 @@ export function makeTable(options): TableResourceClass {
 						existingEntry?.value ?? null,
 						existingEntry,
 						txnTime,
-						(existingEntry?.metadataFlags ?? 0) & LOCAL_ONLY,
+						(existingEntry?.metadataFlags ?? 0) & (residencyPolicy ? LOCAL_ONLY | INVALIDATED | REPLICA : LOCAL_ONLY),
 						true,
 						{
 							user: (context as any)?.user,
-							residencyId: options?.residencyId,
+							residencyId: residencyPolicy ? undefined : options?.residencyId,
+							residencySlot: residencyPolicy?.byAttribute ? existingEntry?.residencySlot : undefined,
 							expiresAt: context?.expiresAt,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
@@ -8928,6 +9273,7 @@ export function makeTable(options): TableResourceClass {
 				tableTxn.addWrite({
 					key: null,
 					store: primaryStore,
+					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
 						return updateRecord(
@@ -8973,6 +9319,7 @@ export function makeTable(options): TableResourceClass {
 					tableTxn.addWrite({
 						key: null,
 						store: primaryStore,
+						requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 						skipReplicationConfirmation: true,
 						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) => {
 							position = txnTime;
@@ -10099,6 +10446,8 @@ export function makeTable(options): TableResourceClass {
 			return history.reverse();
 		}
 		static async clear() {
+			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
+				throw new ClientError('Installed shard maps cannot be cleared or dropped', 409);
 			const rootStore = primaryStore.rootStore;
 			const assertNoFullTextDeclaration = () => {
 				const namedPrimaryDescriptor = (dbisDb as any).getSync(`${tableName}/${primaryKey}`);
@@ -10393,14 +10742,20 @@ export function makeTable(options): TableResourceClass {
 		return typeof target === 'object' && target && (target as RequestTarget).isCollection;
 	}
 	function loadLocalRecord(id, context, options, sync, withEntry) {
-		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
+		if (
+			(residencyPolicy ? !residencyPolicy.byAttribute && !hasSecondaryIndices() : TableResource.getResidencyById) &&
+			options.ensureLoaded &&
+			context?.replicateFrom !== false
+		) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
 			// allow for a fast path to load the record from the correct node
-			const residency = residencyFromFunction(TableResource.getResidencyById(id));
+			const residency = residencyPolicy
+				? residencyOwners(databaseName, calculateResidencySlot(id), residencyPolicy.slots)
+				: residencyFromFunction(TableResource.getResidencyById(id));
 			if (residency) {
 				if (!residency.includes(server.hostname) && sourceLoad) {
 					// this record is not on this node, so we shouldn't load it here
-					return sourceLoad({ key: id, residency }).then(withEntry);
+					return loadResidentRecord({ key: id, residency }, id, options, withEntry);
 				}
 			}
 		}
@@ -10493,7 +10848,27 @@ export function makeTable(options): TableResourceClass {
 		if (entry?.then) return entry.then((entry) => withLocalEntry(entry, id, context, options, withEntry));
 		return withLocalEntry(entry, id, context, options, withEntry);
 	}
+	function loadResidentRecord(entry, id, options, withEntry) {
+		// Capture the owner before yielding: abort releases the context, and RocksDB handles do not expose isDone.
+		const checkActive = options.transaction && getReadTransactionGuard(options.transaction);
+		return sourceLoad(entry).then((loaded) => {
+			checkActive?.();
+			return withEntry(options.transaction?.isDone ? null : loaded, id);
+		});
+	}
 	function withLocalEntry(entry, id, context, options, withEntry) {
+		if (options.transaction?.isDone) return withEntry(null, id);
+		if (residencyPolicy && (!entry?.value || entry.metadataFlags & INVALIDATED)) {
+			const reason = databaseBaselineHoldReason(tableRootStore, context?.transaction);
+			if (reason) {
+				const slot = residencyPolicy.byAttribute ? entry?.residencySlot : calculateResidencySlot(id);
+				if (slot === undefined || residencyIsLocal(databaseName, slot, residencyPolicy.slots)) {
+					if (slot !== undefined && options.ensureLoaded && sourceLoad && context?.replicateFrom !== false)
+						return loadResidentRecord({ ...entry, key: id, residencySlot: slot }, id, options, withEntry);
+					throw new DatabaseShardingHeldError(databaseName, reason);
+				}
+			}
+		}
 		// skip recording reads for most system tables except hdb_analytics
 		// we want to track analytics reads in licensing, etc.
 		if (databaseName !== 'system' && (options.type === 'read' || !options.type)) {
@@ -10505,9 +10880,20 @@ export function makeTable(options): TableResourceClass {
 		// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 		// issues
 		freezeRecord(entry?.value);
+		if (
+			!entry?.value &&
+			residencyPolicy &&
+			!residencyPolicy.byAttribute &&
+			options.ensureLoaded &&
+			context?.replicateFrom !== false
+		) {
+			const owners = residencyOwners(databaseName, calculateResidencySlot(id), residencyPolicy.slots);
+			if (!owners.includes(server.hostname) && sourceLoad)
+				return loadResidentRecord({ key: id, residency: owners }, id, options, withEntry);
+		}
 		if (options.ensureLoaded && needsResidentLoad(entry, context)) {
 			// load from other node
-			return sourceLoad(entry).then((entry) => withEntry(entry, id));
+			return loadResidentRecord(entry, id, options, withEntry);
 		}
 		if (options.ensureLoaded && entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
 		if (entry && context) {
@@ -11048,6 +11434,19 @@ export function makeTable(options): TableResourceClass {
 		return primaryStore.getEntry(id, COMMITTED_READ);
 	}
 
+	function needsOwnerBody(id: Id, entry: Partial<Entry> | undefined): boolean {
+		if (!(entry?.metadataFlags & INVALIDATED)) return false;
+		try {
+			if (residencyPolicy) {
+				const slot = residencyPolicy.byAttribute ? entry.residencySlot : calculateResidencySlot(id);
+				if (!Number.isInteger(slot) || slot < 0 || slot >= residencyPolicy.slots) return true;
+				return residencyIsLocal(databaseName, slot, residencyPolicy.slots);
+			}
+			return !entry.residencyId || TableResource.getRecordResidency({ key: id, ...entry })?.includes(server.hostname);
+		} catch {
+			return true;
+		}
+	}
 	function isHeadIdentity(entry: Partial<Entry> | undefined, version: number, nodeId?: number): boolean {
 		return (
 			entry?.version === version &&
@@ -11308,6 +11707,10 @@ export function makeTable(options): TableResourceClass {
 						if (!reusedCachedRecord) assertFullTextWrite(updatedRecord, true);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
+					if (residencyPolicy && updatedRecord)
+						assertLocalShardWrite(
+							residencyOwners(databaseName, calculateResidencySlot(id, updatedRecord), residencyPolicy.slots)
+						);
 					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;
 					resolved = true;
 					const resolvedVersion =
@@ -11401,6 +11804,7 @@ export function makeTable(options): TableResourceClass {
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
+					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					entry: undefined,
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
@@ -11436,6 +11840,7 @@ export function makeTable(options): TableResourceClass {
 						let auditRecord: any;
 						let omitLocalRecord = false;
 						let residencyId: number;
+						let slot: number;
 						if (updatedRecord) {
 							// a first fill replacing a record that landed during the source call keeps its created time,
 							// as a put would; copied, since the caller already holds updatedRecord
@@ -11447,18 +11852,23 @@ export function makeTable(options): TableResourceClass {
 								const fillEntry = entryMap.get(updatedRecord);
 								if (fillEntry) entryMap.set(recordToStore, fillEntry);
 							}
-							if (existingEntry) {
+							if (existingEntry && !residencyPolicy) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
-							const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
+							slot = residencyPolicy && calculateWriteResidencySlot(sourceWrite, recordToStore, transaction, true);
+							const residency = residencyPolicy
+								? captureResidencyOwners(sourceWrite, slot, false, true, transaction)
+								: residencyFromFunction(TableResource.getResidency(recordToStore, context));
 							if (residency) {
 								if (!residency.includes(server.hostname)) {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
 									auditRecord = recordToStore;
 									omitLocalRecord = true;
-									recordToStore = TableResource.getResidencyById ? undefined : residencyStub(auditRecord, id);
+									recordToStore = (residencyPolicy ? !hasSecondaryIndices() : TableResource.getResidencyById)
+										? undefined
+										: residencyStub(auditRecord, id);
 								}
-								residencyId = getResidencyId(residency);
+								if (!residencyPolicy) residencyId = getResidencyId(residency);
 							}
 						}
 						// an id-based omission writes no row (the stored one, if any, stays), so its indexes stay too
@@ -11489,6 +11899,7 @@ export function makeTable(options): TableResourceClass {
 									user: (sourceContext as any)?.user,
 									expiresAt: sourceContext.expiresAt,
 									residencyId,
+									residencySlot: residencyPolicy?.byAttribute ? slot : undefined,
 									transaction,
 									write: sourceWrite,
 									tableToTrack: tableName,
@@ -11685,7 +12096,9 @@ export function makeTable(options): TableResourceClass {
 						logger.debug?.(`Eviction batch conflict for ${tableName}, retrying once`);
 						continue; // re-stage into a fresh transaction; version guards drop the conflicting record(s)
 					}
-					logger.warn?.(`Eviction batch commit error for ${tableName}:`, error);
+					if (error instanceof DatabaseShardingHeldError)
+						logger.trace?.(`Eviction batch commit error for ${tableName}:`, error);
+					else logger.warn?.(`Eviction batch commit error for ${tableName}:`, error);
 					return;
 				}
 			}
@@ -11961,6 +12374,82 @@ export function makeTable(options): TableResourceClass {
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
 		);
 	}
+	function assertLocalShardWrite(owners: readonly string[]): void {
+		assertResidencyWriteRoute(databaseName, owners, tableRootStore);
+		if (owners.includes(server.hostname)) {
+			const reason = databaseBaselineHoldReason(tableRootStore);
+			if (reason) throw new DatabaseShardingHeldError(databaseName, reason);
+		}
+	}
+	function isRetainedResidencyWrite(write: any, txn: any, localWrite: boolean): boolean {
+		return localWrite && txn?.isRetry && write.residencyTransaction === txn && Boolean(write.residencyOwners);
+	}
+	function retryResidencySlot(write: any, slot: number, txn: any, localWrite: boolean, reason?: string): number {
+		if (!isRetainedResidencyWrite(write, txn, localWrite) || (!reason && slot === write.residencyOwnerSlot))
+			return slot;
+		if (typeof txn.usesAbortMarkers === 'function' && txn.usesAbortMarkers() === true) {
+			const error = new ResidencyPlacementError(
+				`Slot changed during native retry for table ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)}; retry the write`,
+				409
+			);
+			(error as any).retryable = true;
+			throw error;
+		}
+		// Without abort markers the logged placement cannot be retracted.
+		if (write.warnedResidencyRetry !== txn) {
+			write.warnedResidencyRetry = txn;
+			logger.warn?.(
+				`Logged retry without abort markers for table ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)} keeps admitted slot ${write.residencyOwnerSlot}: ${reason ?? `merged slot ${slot}`}`
+			);
+		}
+		return write.residencyOwnerSlot;
+	}
+	function calculateWriteResidencySlot(write: any, record: any, txn: any, localWrite: boolean): number {
+		if (!isRetainedResidencyWrite(write, txn, localWrite)) return calculateResidencySlot(write.key, record);
+		let slot: number;
+		try {
+			slot = calculateResidencySlot(write.key, record);
+		} catch (error) {
+			return retryResidencySlot(
+				write,
+				undefined,
+				txn,
+				localWrite,
+				`invalid merged slot: ${String(error.message).slice(0, 256)}`
+			);
+		}
+		return retryResidencySlot(write, slot, txn, localWrite);
+	}
+	function captureResidencyOwners(
+		write: any,
+		slot: number,
+		replay = false,
+		localWrite = false,
+		txn?: any
+	): readonly string[] {
+		// Crash replay restores local rows before peer discovery.
+		if (replay) return residencyIsLocal(databaseName, slot, residencyPolicy.slots) ? [server.hostname] : [];
+		if (txn?.isRetry && write.residencyTransaction === txn && write.residencyOwners) {
+			if (write.residencyOwnerSlot === slot) return write.residencyOwners;
+			return capturedResidencyIsLocal(write.residencyOwners, slot) ? [server.hostname] : [];
+		}
+		write.residencyTransaction = txn;
+		const owners = residencyOwners(databaseName, slot, residencyPolicy.slots);
+		if (localWrite) assertLocalShardWrite(owners);
+		write.residencyOwners = owners;
+		write.residencyOwnerSlot = slot;
+		write.checkResidency = () => {
+			const current = residencyOwners(databaseName, slot, residencyPolicy.slots);
+			if (localWrite) assertLocalShardWrite(current);
+			if (current.length !== owners.length || current.some((name) => !owners.includes(name)))
+				throw new ResidencyPlacementError('Shard owners changed before commit; retry the write', 409);
+		};
+		return owners;
+	}
+	function hasSecondaryIndices(): boolean {
+		for (const name in indices) if (Object.hasOwn(indices, name)) return true;
+		return false;
+	}
 	function residencyStub(record: any, id: Id) {
 		const stub = primaryKey ? { [primaryKey]: id } : {};
 		for (const name in indices) {
@@ -11978,10 +12467,10 @@ export function makeTable(options): TableResourceClass {
 	}
 	function needsResidentLoad(entry: Partial<Entry> | undefined, context: Context | undefined): boolean {
 		return Boolean(
-			entry?.residencyId &&
+			(residencyPolicy || entry?.residencyId) &&
 			sourceLoad &&
 			context?.replicateFrom !== false &&
-			entry.metadataFlags & INVALIDATED &&
+			entry?.metadataFlags & INVALIDATED &&
 			!hasExpired(entry)
 		);
 	}
@@ -12156,16 +12645,21 @@ export function makeTable(options): TableResourceClass {
 		try {
 			const current: Entry = primaryStore.getEntry(id, options);
 			if (
-				!current?.residencyId ||
+				!(residencyPolicy ? current : current?.residencyId) ||
 				!(current.metadataFlags & INVALIDATED) ||
 				!answersStub(current, body, responseVersion, originNode, fullWriteHead)
 			)
+				return Promise.resolve(false);
+			if (residencyPolicy && TableResource.getRecordResidency(current).includes(server.hostname))
+				return Promise.resolve(false);
+			if (residencyPolicy?.byAttribute && calculateResidencySlot(id, body) !== current.residencySlot)
 				return Promise.resolve(false);
 			const rowExpiresAt = rowExpiresAtFor(body, residentExpiresAt);
 			const deadline = replicaDeadlineFor(rowExpiresAt);
 			const writeOptions = {
 				expiresAt: rowExpiresAt,
 				residencyId: current.residencyId,
+				residencySlot: current.residencySlot,
 				recordNodeId: current.nodeId,
 				transaction,
 			};
@@ -12175,6 +12669,7 @@ export function makeTable(options): TableResourceClass {
 			if (hasDerivedIndexRegistration(auditStore, tableId)) reserveLocalKey(primaryStore.rootStore, transaction);
 			updateRecord(id, body, base, current.version, REPLICA | FULL_WRITE_HEAD, false, writeOptions, 'put', true);
 			store.putSync(id, deadline, options);
+			const releaseBlobs = captureReplacedBlobs(current);
 			const completion = commitRawTransaction(transaction);
 			committed = true;
 			return trackMaintenanceCommit(
@@ -12183,11 +12678,8 @@ export function makeTable(options): TableResourceClass {
 						// the row is committed; nothing after this may turn a kept replica into "not kept"
 						if (stored) {
 							try {
-								const state = replicaSweep();
-								Atomics.add(state, 0, 1);
-								if (Atomics.load(state, 1) === 0)
-									void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
-								releaseReplacedBlobs(current);
+								noteReplicaStored();
+								releaseBlobs?.();
 							} catch (error) {
 								logger.warn?.('Error after storing replica', id, error);
 							}
@@ -12196,6 +12688,7 @@ export function makeTable(options): TableResourceClass {
 					},
 					(error) => {
 						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned replica write of busy record', id);
+						else if (error instanceof DatabaseShardingHeldError) logger.trace?.('Error storing replica', id, error);
 						else logger.warn?.('Error storing replica', id, error);
 						return false;
 					}
@@ -12253,11 +12746,83 @@ export function makeTable(options): TableResourceClass {
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
-	function releaseReplacedBlobs(replaced: Entry) {
+	function retainedAuditBlobFiles(
+		id: Id,
+		entry: Entry,
+		alreadyRetained?: Set<string>,
+		transaction?: any,
+		releaseBlobs?: ReturnType<typeof captureBlobReclamation>
+	): Set<string> | undefined {
+		if (!residencyPolicy || !audit || !(entry?.metadataFlags & REPLICA)) return;
+		const candidates = collectRetainedFileIds(entry.value) ?? new Set<string>();
+		for (const file of alreadyRetained ?? []) candidates.delete(file);
+		if (!candidates.size) return;
+		const retained = new Set<string>(alreadyRetained);
+		function* scan() {
+			const visited = new Set<string>();
+			let { version, nodeId, additionalAuditRefs } = entry;
+			while (version) {
+				const head = yield* resolveAuditHeadSteps(id, version, nodeId, additionalAuditRefs);
+				const identity = `${head.nodeId ?? 0}:${head.txnLogKey}`;
+				if (visited.has(identity)) break;
+				visited.add(identity);
+				let record = 'entry' in head && head.entry;
+				if (!record) {
+					yield;
+					record = auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
+				}
+				if (!record) break;
+				for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) {
+					if (candidates.delete(file)) retained.add(file);
+				}
+				if (!candidates.size || record.type === 'put' || record.type === 'delete') break;
+				version = record.previousVersion;
+				nodeId = record.previousNodeId;
+				additionalAuditRefs = record.previousAdditionalAuditRefs;
+			}
+		}
+		const steps = scan();
+		let next = steps.next();
+		const batch = () => {
+			for (let reads = 0; reads < REPLICA_BLOB_AUDIT_READ_BUDGET && !next.done; reads++) next = steps.next();
+		};
+		batch();
+		if (next.done) return retained;
+		releaseBlobs ??= captureBlobReclamation(entry.value);
+		const finish = () => {
+			void trackMaintenanceCommit(
+				(async () => {
+					do {
+						await rest();
+						if (maintenanceClosed || disposed) return;
+						batch();
+					} while (!next.done);
+					for (const file of collectRetainedFileIds(primaryStore.getEntry(id)?.value) ?? []) retained.add(file);
+					releaseBlobs(retained);
+				})().catch((error) => logger.warn?.('Error releasing replica blobs', id, error))
+			);
+		};
+		if (transaction) (transaction.replicaCommitNotifications ??= new Set()).add(finish);
+		else finish();
+		return new Set([...retained, ...candidates]);
+	}
+
+	function noteReplicaStored(): void {
+		const state = replicaSweep();
+		Atomics.add(state, 0, 1);
+		if (Atomics.load(state, 1) === 0)
+			void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+	}
+	function captureReplacedBlobs(replaced: Entry): (() => void) | undefined {
 		if (!(replaced.metadataFlags & HAS_BLOBS)) return;
-		// what the key holds now, not what this write stored: a later write may have re-referenced a file
-		const live = primaryStore.getEntry(replaced.key);
-		deleteBlobsInObject(replaced.value, collectRetainedFileIds(live?.value));
+		const releaseBlobs = captureBlobReclamation(replaced.value);
+		return () => {
+			const live = primaryStore.getEntry(replaced.key);
+			const retained = collectRetainedFileIds(live?.value) ?? new Set<string>();
+			for (const file of retainedAuditBlobFiles(replaced.key, replaced, retained, undefined, releaseBlobs) ?? [])
+				retained.add(file);
+			releaseBlobs(retained);
+		};
 	}
 	function replicaSweep(): Int32Array {
 		return (replicaSweepState ??= new Int32Array(
@@ -12400,13 +12965,15 @@ export function makeTable(options): TableResourceClass {
 		const writeOptions = {
 			expiresAt: entry.expiresAt,
 			residencyId: entry.residencyId,
+			residencySlot: entry.residencySlot,
 			recordNodeId: entry.nodeId,
 			additionalAuditRefs: entry.additionalAuditRefs,
 			transaction,
 		};
 		const renewed = () => observedDeadline !== undefined && store?.getSync(entry.key) !== observedDeadline;
+		const releaseReplaced = captureReplacedBlobs(entry);
 		const releaseBlobs = (stored: unknown) => {
-			if (stored !== false) releaseReplacedBlobs(entry);
+			if (stored !== false) releaseReplaced?.();
 		};
 		store?.removeSync(entry.key, { transaction });
 		if (renewed()) {

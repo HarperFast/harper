@@ -1,10 +1,17 @@
 import searchValidator from '../../validation/searchValidator.ts';
 import { randomUUID } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
-import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
+import {
+	handleHDBError,
+	ClientError,
+	DatabaseClosingError,
+	DatabaseShardingHeldError,
+	hdbErrors,
+} from '../../utility/errors/hdbError.ts';
 import {
 	table,
 	getDatabases,
+	assertDatabaseResidencyAvailable,
 	database,
 	databaseDropPreparationTargets,
 	dropDatabase,
@@ -278,7 +285,7 @@ export class ResourceBridge extends BridgeMethods {
 		// absent between them, subscribers see a single write rather than a delete followed by an
 		// insert, and `__createdtime__` survives (`Table._writeUpdate` retains the stored created time
 		// on a full update and only stamps a new one for a new entry).
-		const Table = getDatabases()[upsertObj.schema][upsertObj.table];
+		const Table = getTable(upsertObj);
 		const context: Context = {
 			user: upsertObj.hdb_user,
 			expiresAt: upsertObj.expiresAt,
@@ -356,7 +363,7 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async deleteRecords(deleteObj) {
-		const Table: any = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getTable(deleteObj);
 		const context: Context = { user: deleteObj.hdb_user };
 		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
 		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
@@ -392,7 +399,7 @@ export class ResourceBridge extends BridgeMethods {
 	 * @returns {undefined}
 	 */
 	async deleteRecordsBefore(deleteObj) {
-		const Table: any = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getTable(deleteObj);
 		if (!Table.createdTimeProperty) {
 			throw new ClientError(
 				`Table must have a '__createdtime__' attribute or @createdTime timestamp defined to perform this operation`
@@ -696,6 +703,7 @@ export class ResourceBridge extends BridgeMethods {
 	}): Promise<Readable> {
 		const databaseName = getBackupObj.database || getBackupObj.schema || 'data';
 		const database = getDatabases()[databaseName];
+		assertDatabaseResidencyAvailable(databaseName);
 		if (!database) {
 			throw new ClientError(`Database '${databaseName}' does not exist`, 404);
 		}
@@ -788,6 +796,13 @@ function getRecords(searchObject, returnKeyValue?) {
 							record = await table.get({ id, lazy, select } as any, context);
 							record = record && collapseData(record);
 						} catch (error) {
+							if (
+								error instanceof DatabaseShardingHeldError ||
+								(error instanceof DatabaseClosingError && error.code === 'DATABASE_SHARDING_BLOCKED')
+							) {
+								finishedIteration();
+								throw error;
+							}
 							record = {
 								message: errorToString(error),
 							};
@@ -829,6 +844,7 @@ function getRecords(searchObject, returnKeyValue?) {
 function getTable(operationObject: { database?: string; schema?: string; table?: string }): Table | undefined {
 	const databaseName = operationObject.database || operationObject.schema || DEFAULT_DATABASE;
 	const tables = getDatabases()[databaseName];
+	assertDatabaseResidencyAvailable(databaseName);
 	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(databaseName), 404);
 	// Presence check, not truthiness, so a table named "0" resolves when addressed numerically.
 	return operationObject.table != null ? tables[operationObject.table] : undefined;

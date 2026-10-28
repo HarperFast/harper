@@ -939,6 +939,46 @@ describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)',
 		assert.strictEqual((await Declared.get('g'))?.note, 'through the branch');
 	});
 
+	it('refuses branch residency before installing a map in the live database', async function () {
+		this.timeout(30000);
+		const applicationScope = await branchedApplicationScope();
+		const env = require('#src/utility/environment/environmentManager');
+		const { readResidencyMap } = require('#src/resources/residencyMaps');
+		const oldList = env.get('replication_shards'),
+			oldShard = env.get('replication_shard');
+		env.setProperty('replication_shards', [0]);
+		env.setProperty('replication_shard', 0);
+		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.branched-residency-'));
+		writeFileSync(
+			join(directory, 'schema.graphql'),
+			`type BranchSlots @table(database: "${BASE}") @sharded(slots: 2) { id: ID @primaryKey }`
+		);
+		const configFilePath = join(directory, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'schema.graphql' } }));
+		openScope = new Scope(basename(directory), 'graphqlSchema', directory, configFilePath, applicationScope);
+		await openScope.ready;
+		try {
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			await assert.rejects(handleApplication(openScope), /sharding.*branches/);
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			assert.strictEqual(applicationScope.branches.get(BASE).tables.BranchSlots, undefined);
+			const { scopedTableFactory } = require('#src/resources/databases');
+			assert.throws(
+				() =>
+					scopedTableFactory(applicationScope.branches)({
+						database: BASE,
+						table: 'BranchSlots',
+						residency: { slots: 2 },
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				/sharding.*branches/
+			);
+		} finally {
+			env.setProperty('replication_shards', oldList);
+			env.setProperty('replication_shard', oldShard);
+		}
+	});
+
 	it('lands scope.ensureTable in the branch', async function () {
 		this.timeout(30000);
 		const applicationScope = await branchedApplicationScope();
