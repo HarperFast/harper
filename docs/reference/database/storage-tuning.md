@@ -202,7 +202,7 @@ Changing this setting is safe for existing data — records already written keep
 
 To pin one table's encoding regardless of the global setting, use the [`@table(randomAccessFields:)`](./schema.md#randomaccessfields) directive when creating the table; editing the directive later does not repin an existing table. Tables that carry the directive ignore this option entirely, which also means a fleet-wide change to this setting will not move them.
 
-The typed dictionary is bounded, and reaching the bound is not an error: records with novel shapes past that point still write and read correctly, they are simply stored without random-access field encoding. [`describe_table`](../operations-api/operations.md#describe_table) reports both the current size and the ceiling in force (`typed_structure_count` against `typed_structure_limit`, 256 by default), which is the reliable way to see whether a table's shapes are staying within it. The classic dictionary is bounded far lower — 32 shared named-record structures — so a table with more than 32 distinct field-name sets sits at that number as a matter of course; it is a normal reading, not a leak.
+The typed dictionary is bounded, and reaching the bound is not an error: records with novel shapes past that point still write and read correctly, they are simply stored without random-access field encoding. [`describe_table`](../operations-api/operations.md#record-structure-dictionaries) reports both the current size and the ceiling in force (`typed_structure_count` against `typed_structure_limit`, 256 by default), which is the reliable way to see whether a table's shapes are staying within it. The classic dictionary is bounded far lower — 32 shared named-record structures — so a table with more than 32 distinct field-name sets sits at that number as a matter of course; it is a normal reading, not a leak.
 
 ## RocksDB Memory
 
@@ -394,6 +394,16 @@ storage:
   noReadAhead: true
   compression: true
 ```
+
+## `storage.fullText`
+
+<VersionBadge version="v5.4.0" />
+
+Type: `object`
+
+Default: See the [storage option reference](../configuration/options.md#storage).
+
+The [storage option reference](../configuration/options.md#storage) lists the full-text request and native process defaults. Raise the fetched-hit budget to allow more filtering work; raising it does not raise the separate retained-result limit. Larger limits can increase CPU, source reads and memory use for every permitted query. Native process budgets also share capacity across indexes, so tune them with concurrent workloads rather than a single query. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs and restart requirements; see [readiness and recovery](../resources/query-optimization.md#readiness-and-recovery) for failures.
 
 ## Related
 

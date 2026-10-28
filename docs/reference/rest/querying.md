@@ -55,6 +55,8 @@ Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompu
 | `=`, `===`           | Strict equality (no type conversion)   |
 | `!==`                | Strict inequality (no type conversion) |
 
+Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. Each has a negated form: `=not_matches=`, `=not_matches_all=`, `=not_matches_phrase=`, `=not_matches_prefix=`, `=not_matches_fuzzy=`, and `=not_matches_fuzzy_prefix=`. Combine a negated condition with a positive full-text condition on the same index; a structured filter alone does not qualify. These use the full-text index rather than ordinary string comparisons. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
+
 **Examples**:
 
 ```http
@@ -69,6 +71,34 @@ For date fields, colons must be URL-encoded as `%3A`:
 ```http
 GET /Product/?listDate=gt=2017-03-08T09%3A30%3A00.000Z
 ```
+
+### Full-Text Operators
+
+<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
+
+For a `FullText` field carrying `@fullText`, use the field name as the query attribute and choose a full-text comparator:
+
+```http
+GET /Product/?catalogSearch=matches=waterproof%20trail
+GET /Product/?catalogSearch=matches_phrase=trail%20running
+GET /Product/?catalogSearch=matches_prefix=waterproof%20tra&limit(10)
+```
+
+REST supports `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix`, plus a `not_` form of each. A negated full-text condition requires a non-negated condition on the same index. Repeat the parameter to provide both conditions:
+
+```http
+GET /Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather
+```
+
+REST's `limit(start,end)` uses an exclusive end. In v5.4, this prefix query skips 100 eligible products and requests the next 10, within request budgets:
+
+```http
+GET /Product/?catalogSearch=matches_prefix=waterproof%20tra&limit(100,110)
+```
+
+Use `Table.search()` or `search_by_conditions` when conditions need source-field selection, condition-level highlighting, or freshness controls. See [Querying Full-Text Indexes](../full-text-search/querying.md) for ranking, highlights, query combinations, and freshness controls.
+
+The REST URL syntax searches every source field in the index, so the caller must be allowed to read every source field. Before v5.4, prefix and fuzzy-prefix queries restrict `offset + limit` to 100. In v5.4, bounded full-text and autocomplete queries can pass that native window within request budgets; source-version checks and filters run before records count toward the offset and limit. Each page is a new query and can see concurrent changes. See [paging and prefix result windows](../full-text-search/querying.md#paging-and-prefix-result-windows). Full-text queries cannot provide an exact total count. On a REST interface with `exactCount: true`, a `Prefer: count=exact` request returns an unavailable total (`Content-Range: items <range>/*`). Without that opt-in, Harper applies `count=estimated` instead and can return an estimate.
 
 ### Chained Conditions (Range)
 
@@ -184,14 +214,18 @@ Use `limit(start,end)` to page through a collection, and opt in to a total match
 
 Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the page size (`end - start`, or `end` in the one-argument form) must be a non-negative integer no larger than **10,000**, and the window end (`offset + page size`) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
 
+Full-text and autocomplete queries use the same paging syntax. The page window counts eligible records after record filtering, rather than raw full-text hits. Harper fetches more ranked batches to fill that window when needed. A page can contain fewer records when no further matches remain; reaching a search work or time limit fails the query. A failure detected before response headers can set an error HTTP status. After streaming starts, the response can retain HTTP 200 and end with an error. For JSON-array responses, check for a terminal object shaped like `{ "error": "ErrorName: message" }` and treat the response as failed; do not render that element as a record. For other formats, detect stream or decoding failures as well. Neither status 200 nor count headers prove that a page completed successfully. Each page request runs a new query, so concurrent changes can cause repeats or omissions between pages. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for search work limits and recovery guidance.
+
+The count-header guardrails do not override query-specific limits such as the full-text work budget.
+
 ### Requesting a count
 
 Send a `Prefer` header on a `GET` (or `HEAD`) request to a collection:
 
-| Value             | Meaning                                                                                                                                                                                          |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `count=exact`     | The exact number of matching records. Scans the full matched set, so it is off by default (see [below](#enabling-exact-counts)) and served as an estimate unless enabled for the REST interface. |
-| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                                                                                                               |
+| Value             | Meaning                                                                                                                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `count=exact`     | The exact number of matching records when the query plan can count them. Scans the full matched set, so it is off by default (see [below](#enabling-exact-counts)) and served as an estimate unless enabled for the REST interface. When enabled, full-text and other custom-index queries report an unavailable total instead. |
+| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                                                                                                                                                                                                                                              |
 
 ```http
 GET /Product/?category=software&limit(0,25)
@@ -219,7 +253,9 @@ The response status is always `200` — `Content-Range` is informational (Harper
 
 ### Unavailable totals
 
-The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that hits its guardrail (counting the tail past the requested page is bounded by a 1,000,000-row cap and a ~1-second budget, and abandons the total rather than truncating the page), or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
+The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that hits its guardrail (counting the tail past the requested page is bounded by a 1,000,000-row cap and a ~1-second budget, and abandons the total rather than truncating the page), an enabled exact-count request using a full-text or other custom index, or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
+
+Full-text and autocomplete queries cannot provide an exact total. With REST exact counting enabled, `Prefer: count=exact` returns an unavailable total (`.../*`) and `Preference-Applied: count=exact`. With exact counting disabled (the default), the request uses estimated mode and `Preference-Applied: count=estimated`; its total is the planner estimate when available, or `*`. An estimated count may use the planner estimate when the query has no opaque row or vector filter. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
 ### Enabling exact counts
 

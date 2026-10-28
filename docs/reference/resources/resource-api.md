@@ -1027,13 +1027,21 @@ The `Query` object is accepted by `search()` and the static `get()` method.
 
 Array of condition objects to filter records. Each condition:
 
-| Property     | Description                                                                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `attribute`  | Property name, or an array for chained/joined properties (e.g. `['brand', 'name']`)                                                                      |
-| `value`      | The value to match                                                                                                                                       |
-| `comparator` | `equals` (default), `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `starts_with`, `contains`, `ends_with`, `between`, `not_equal` |
-| `conditions` | Nested conditions array                                                                                                                                  |
-| `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                      |
+| Property                   | Description                                                                                                                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `attribute`                | Property name, or an array for chained/joined properties (e.g. `['brand', 'name']`)                                                                                                                                                |
+| `value`                    | The value to match                                                                                                                                                                                                                 |
+| `comparator`               | `equals` (default), `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `starts_with`, `contains`, `ends_with`, `between`, `not_equal`, or a [full-text comparator](../full-text-search/querying.md#match-modes) |
+| `conditions`               | Nested conditions array                                                                                                                                                                                                            |
+| `operator`                 | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
+| `fields`                   | Full-text source fields to search; every name must belong to the selected full-text index                                                                                                                                          |
+| `includeHighlights`        | Include configured full-text highlights                                                                                                                                                                                            |
+| `maxIndexLagMilliseconds`  | Maximum accepted full-text index lag; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                                 |
+| `waitForIndexMilliseconds` | Time to wait for acceptable full-text coverage; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                       |
+
+The final four properties apply to full-text conditions (v5.3.0). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints, error behavior, and permission requirements for direct server-side searches.
+
+Full-text conditions use `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, or `matches_fuzzy_prefix` against a declared full-text index. Each comparator also has a `not_` form: `not_matches`, `not_matches_all`, `not_matches_phrase`, `not_matches_prefix`, `not_matches_fuzzy`, and `not_matches_fuzzy_prefix`. A negated condition requires a positive full-text condition on the same index. See [Full-text query execution](./query-optimization.md#full-text-search-work-and-paging) for paging costs and work limits.
 
 Example with nested conditions:
 
@@ -1085,6 +1093,13 @@ Special properties:
 - `$id` — Returns the primary key regardless of its name
 - `$updatedtime` — Returns the last-updated timestamp
 - `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
+
+<VersionBadge version="v5.3.0" />
+
+Full-text queries add two special properties:
+
+- `$score`: When a query uses a full-text index, returns its BM25 relevance score.
+- `$highlights`: Enables and returns full-text fragments and matching spans when the index has highlighting configured. See [Highlights](../full-text-search/querying.md#highlights).
 
 #### Selecting related records
 
@@ -1246,6 +1261,12 @@ If `true`, returns conditions reordered as Harper will execute them (for debuggi
 
 If `true`, forces conditions to execute in the order supplied, disabling Harper's automatic re-ordering optimization.
 
+### `checkPermission`
+
+Trusted server-side calls skip table authorization by default. When delegating a request to `Table.search()`, set `checkPermission: true` on the query and pass the authenticated `context` as the second argument. Harper then performs a one-shot read authorization using `context.user`, including table, selected-property, and full-text source-field permissions. Passing the context alone does not request this check. Record-level restrictions require a synchronous, server-controlled `rowFilter`.
+
+Set this flag in server-controlled code whenever the endpoint promises authorized access. Never accept its value or copy a permission object from client data.
+
 ---
 
 ## RequestTarget
@@ -1259,7 +1280,7 @@ Properties:
 - `id` — Primary key derived from the path
 - `isCollection` — `true` when the request targets a collection
 - `rowFilter` — Synchronous JavaScript predicate applied to candidate records during search. It cannot be set by REST or QUERY request data.
-- `checkPermission` — Framework-owned, one-shot request to run legacy operation authorization. Harper arms it for permission-checked dispatches. Trusted server-side code making a subsequent direct Resource call may set it to `true`, causing built-in table gates to derive permissions from `context.user`. Never accept or copy this field or a permission object from client data.
+- `checkPermission` — The same one-shot authorization request available on the [Query Object](#checkpermission). Harper arms it for permission-checked dispatches. Trusted server-side code making a direct Resource call may set it to `true`, causing built-in table gates to derive permissions from `context.user`. Never accept or copy this field or a permission object from client data.
 
 Standard `URLSearchParams` methods are available:
 

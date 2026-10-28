@@ -16,13 +16,17 @@ For the full list of configurable options, see [Configuration Options](./options
 
 ## Set Configuration
 
-Modifies one or more Harper configuration parameters. **Requires a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect** (a [restart](../operations-api/operations.md#restart) for `threads.v8Flags`). A change to `replication.threads` takes effect only on a full `restart`.
+Modifies one or more Harper configuration parameters. **Most changes require a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect** (a [restart](../operations-api/operations.md#restart) for `threads.v8Flags`). A change to `replication.threads` takes effect only on a full `restart`.
+
+Full-text request work limits (`storage.fullText.maxRawHitsPerRequest`, `storage.fullText.maxResultsPerRequest` and `storage.fullText.requestBudgetMilliseconds`) take effect in HTTP workers after `restart_service` or a full restart. Changes to `storage.fullText.runtime` require a full Harper process restart; `restart_service` does not replace the native process budget. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
 `operation` _(required)_ — must be `set_configuration`
 
 `replicated` _(optional)_ <VersionBadge version="v5.2.0" /> — set to `true` to apply the same configuration change to all cluster nodes in a single call. The origin node applies the change first; if its local write fails, nothing is sent to peers. Requires replication to be configured.
 
 Additional properties correspond to configuration keys in underscore-separated format (e.g. `logging_level` for `logging.level`, `clustering_enabled` for `clustering.enabled`).
+
+For full-text settings, use individual parameter names such as `storage_fullText_maxRawHitsPerRequest` or `storage_fullText_runtime_maxSearchThreads`. `set_configuration` does not accept a whole `storage_fullText` object; use `storage.fullText` as the section name only in the YAML configuration file.
 
 :::warning Replicate cluster-appropriate parameters only
 A replicated call sends the exact same values to every node. Do not include node-local parameters — ports, `node.hostname`, `rootPath`, storage/log file paths, TLS certificate or key paths, or `replication.hostname`/`url`/`routes` — as they would overwrite each peer's local values.
@@ -42,7 +46,7 @@ A replicated call sends the exact same values to every node. Do not include node
 
 ```json
 {
-	"message": "Configuration successfully set. You must restart HarperDB for new config settings to take effect."
+	"message": "Configuration successfully set. You must restart Harper for new config settings to take effect."
 }
 ```
 

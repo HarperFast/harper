@@ -73,18 +73,19 @@ type MyTable @table {
 
 Optional arguments:
 
-| Argument                 | Type      | Default                       | Description                                                                                                                                      |
-| ------------------------ | --------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `table`                  | `String`  | type name                     | Override the table name                                                                                                                          |
-| `database`               | `String`  | `"data"`                      | Database to place the table in                                                                                                                   |
-| `expiration`             | `Int`     | —                             | Seconds until a record goes stale (useful for caching tables)                                                                                    |
-| `eviction`               | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed                                                                      |
-| `scanInterval`           | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                                                                                                   |
-| `replicate`              | `Boolean` | true                          | Enable replication of this table                                                                                                                 |
-| `replicaExpiration`      | `Float`   | `3600`                        | Seconds a record fetched from another node is kept as a [local replica](#replicaexpiration-and-replicarefreshfraction); `0` stops new admissions |
-| `replicaRefreshFraction` | `Float`   | `0.5`                         | Fraction of `replicaExpiration` after which a read of a replica renews its lifetime; `1` never renews                                            |
-| `cacheControl`           | `String`  | —                             | `Cache-Control` header value emitted on anonymous GET/HEAD 200/304 responses for this table                                                      |
-| `randomAccessFields`     | `Boolean` | `storage.randomAccessFields`  | [Pin this table's record encoding](#randomaccessfields)                                                                                          |
+| Argument                 | Type      | Default                                | Description                                                                                                                                      |
+| ------------------------ | --------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `table`                  | `String`  | type name                              | Override the table name                                                                                                                          |
+| `database`               | `String`  | `"data"`                               | Database to place the table in                                                                                                                   |
+| `expiration`             | `Int`     | —                                      | Seconds until a record goes stale (useful for caching tables)                                                                                    |
+| `eviction`               | `Int`     | `0`                                    | Additional seconds after `expiration` before a record is physically removed                                                                      |
+| `scanInterval`           | `Int`     | `(expiration + eviction) / 4`          | Seconds between eviction scans                                                                                                                   |
+| `replicate`              | `Boolean` | true                                   | Enable replication of this table                                                                                                                 |
+| `replicaExpiration`      | `Float`   | `3600`                                 | Seconds a record fetched from another node is kept as a [local replica](#replicaexpiration-and-replicarefreshfraction); `0` stops new admissions |
+| `replicaRefreshFraction` | `Float`   | `0.5`                                  | Fraction of `replicaExpiration` after which a read of a replica renews its lifetime; `1` never renews                                            |
+| `audit`                  | `Boolean` | `logging.auditLog` for ordinary tables | Enable the table's transaction log; new tables with `@fullText` require explicit `true`                                                          |
+| `cacheControl`           | `String`  | —                                      | `Cache-Control` header value emitted on anonymous GET/HEAD 200/304 responses for this table                                                      |
+| `randomAccessFields`     | `Boolean` | `storage.randomAccessFields`           | [Pin this table's record encoding](#randomaccessfields)                                                                                          |
 
 **`expiration`, `eviction`, and `scanInterval`**
 
@@ -388,6 +389,24 @@ Write semantics:
 
 Multiple `@embed` attributes on one type are computed concurrently.
 
+### `@fullText`
+
+<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
+
+Creates a BM25-ranked full-text derived index from one or more stored text fields. Declare the directive on a nullable `FullText` field; that field's name identifies the index.
+
+```graphql
+type Product @table(database: "catalog", audit: true) {
+	id: ID @primaryKey
+	name: String
+	description: String
+	tags: [String]
+	catalogSearch: FullText @fullText(fields: [{ name: "name", weight: 3 }, { name: "description" }, { name: "tags" }])
+}
+```
+
+The `FullText` field is query-only. It is not stored with records or exposed as a selectable record property. Add another `FullText` field to create another independent index. Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for the complete field contract, structured filters, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
+
 ### `@decide`
 
 <VersionBadge version="v5.3.0" />
@@ -630,7 +649,7 @@ Computed properties that read other tables use the same [trusted server-side aut
 
 ### Computed Indexes
 
-Computed properties can be indexed with `@indexed`, enabling custom indexing strategies such as composite indexes, full-text search, or vector indexing:
+Computed properties can be indexed with `@indexed`, enabling custom lookup strategies such as composite keys. Use [`@fullText`](#fulltext) for native BM25-ranked text search and an HNSW `[Float]` field for vector indexing. The following computed secondary index splits a comma-separated string:
 
 ```graphql
 type Product @table {
@@ -889,19 +908,22 @@ Graph navigation runs on the quantized (approximate) distances. For nearest-neig
 
 Harper supports the following field types:
 
-| Type      | Description                                                                                    |
-| --------- | ---------------------------------------------------------------------------------------------- |
-| `String`  | Unicode text, UTF-8 encoded                                                                    |
-| `Int`     | 32-bit signed integer (−2,147,483,648 to 2,147,483,647)                                        |
-| `Long`    | 54-bit signed integer (−9,007,199,254,740,992 to 9,007,199,254,740,992)                        |
-| `Float`   | 64-bit double precision floating point                                                         |
-| `BigInt`  | Integer up to ~300 digits. Note: distinct JavaScript type; handle appropriately in custom code |
-| `Boolean` | `true` or `false`                                                                              |
-| `ID`      | String; indicates a non-human-readable identifier                                              |
-| `Any`     | Any primitive, object, or array                                                                |
-| `Date`    | JavaScript `Date` object                                                                       |
-| `Bytes`   | Binary data as `Buffer` or `Uint8Array`                                                        |
-| `Blob`    | Binary large object; designed for streaming content >20KB                                      |
+| Type       | Description                                                                                    |
+| ---------- | ---------------------------------------------------------------------------------------------- |
+| `String`   | Unicode text, UTF-8 encoded                                                                    |
+| `Int`      | 32-bit signed integer (−2,147,483,648 to 2,147,483,647)                                        |
+| `Long`     | 54-bit signed integer (−9,007,199,254,740,992 to 9,007,199,254,740,992)                        |
+| `Float`    | 64-bit double precision floating point                                                         |
+| `BigInt`   | Integer up to ~300 digits. Note: distinct JavaScript type; handle appropriately in custom code |
+| `Boolean`  | `true` or `false`                                                                              |
+| `ID`       | String; indicates a non-human-readable identifier                                              |
+| `Any`      | Any primitive, object, or array                                                                |
+| `Date`     | JavaScript `Date` object                                                                       |
+| `Bytes`    | Binary data as `Buffer` or `Uint8Array`                                                        |
+| `Blob`     | Binary large object; designed for streaming content >20KB                                      |
+| `FullText` | Query-only full-text index declaration; valid only with `@fullText` and never stored           |
+
+Added `FullText` in v5.3.0
 
 Added `BigInt` in v4.3.0
 

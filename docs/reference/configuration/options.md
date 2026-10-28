@@ -232,7 +232,7 @@ logging:
   level: warn
   root: ~/hdb/log
   stdStreams: false
-  auditLog: false
+  auditLog: true
   rotation:
     interval: 1D
     maxSize: 100M
@@ -244,7 +244,7 @@ logging:
 - `path` — Explicit log file path (overrides `root`)
 - `stdStreams` — Write to stdout/stderr; _Default_: `false`
 - `console` — Include `console.*` output; _Default_: `true`
-- `auditLog` — Enable table transaction audit logging; _Default_: `false`
+- `auditLog` — Enable table transaction audit logging; _Default_: `true`
 - `auditRetention` — Audit log retention duration; _Default_: `3d`
 - `external` — Logging for components using the logger API; sub-options: `level`, `path`
 - `rotation.enabled` / `rotation.compress` / `rotation.interval` / `rotation.maxSize` / `rotation.path` — Log file rotation (activates when `interval` or `maxSize` is set)
@@ -312,6 +312,19 @@ storage:
 ```
 
 - `engine` — The database storage engine to use for new databases. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`. Existing databases will use the engine that was used when they were created.
+- `fullText` <VersionBadge version="v5.4.0" /> — Full-text search work and native process limits. Sub-options:
+  - `maxRawHitsPerRequest` — Maximum fetched hits per request, including bounded prefix replay when traversal is needed; default `10000`.
+  - `maxResultsPerRequest` — Maximum retained offset plus limit. A request must also fit the separate raw-hit budget; default `10000`.
+  - `requestBudgetMilliseconds` — Execution budget across native batches, source checks and highlights, capped by the native execution limit; default `5000` ms. Reader acquisition and freshness waiting have separate bounds.
+  - `runtime.maxResidentIndexes` — Maximum resident native indexes; default `128`.
+  - `runtime.maxIndexingThreads` — Maximum aggregate indexing-thread reservations across resident native indexes; default `128`.
+  - `runtime.maxSearchThreads` — Maximum aggregate search-thread reservations across resident native indexes; default `256`.
+  - `runtime.maxWriterMemoryBytes` — Aggregate writer-memory reservations across resident native indexes; default `4294967296` (4 GiB).
+  - `runtime.maxQueuedBytes` — Aggregate queued-write reservations across resident native indexes; default `8589934592` (8 GiB).
+  - `runtime.maxExpensiveSearches` — Maximum concurrent expensive native searches; default `8`.
+
+  The runtime budgets apply together and are not hard bounds on total process memory. See [Set Configuration](./operations.md#set-configuration) for when request and native runtime changes take effect. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs; see [readiness and recovery](../resources/query-optimization.md#readiness-and-recovery) for failures.
+
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`

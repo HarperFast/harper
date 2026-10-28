@@ -23,7 +23,7 @@ On RocksDB (the default storage engine) the transaction log is physically a sing
 
 The transaction log is **enabled by default**. To disable it, set [`logging.auditLog`](../logging/configuration.md) to `false` in `harper-config.yaml` and restart Harper.
 
-> The transaction log is required for real-time messaging (WebSocket and MQTT subscriptions) and replication. Do not disable it if real-time features or replication are in use.
+> The transaction log is required for real-time messaging (WebSocket and MQTT subscriptions), replication and full-text indexing. Do not disable it while any of these features are in use.
 
 ## Operations
 
@@ -134,7 +134,7 @@ Deletes transaction log entries older than the specified timestamp. Deprecated i
 Deletes transaction log entries older than the specified timestamp.
 
 :::warning Database-wide and irreversible
-On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`. This purges whole log files whose entries predate the timestamp, removing [`read_audit_log`](#read_audit_log) history for **every table in the database** — there is no per-table survivor and no undo. The only recovery route is a [backup](../backups/overview.md), which restores the transaction log alongside the data. Purging below a lagging replica's catch-up position does not lose data on that replica — the sender detects that the requested start predates its retained history and forces a full base copy instead of incremental catch-up — but that full resync is far more expensive than incremental replication, so avoid purging below your slowest replica's position.
+On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`. This purges whole log files whose entries predate the timestamp, removing [`read_audit_log`](#read_audit_log) history for **every table in the database** — there is no per-table survivor and no undo. The only recovery route is a [backup](../backups/overview.md), which restores the transaction log alongside the data. Purging below a lagging replica's catch-up position does not lose data on that replica — the sender detects that the requested start predates its retained history and forces a full base copy instead of incremental catch-up — but that full resync is far more expensive than incremental replication, so avoid purging below your slowest replica's position. The same history can be required to bridge a [full-text index rebuild](../full-text-search/overview.md#startup-and-recovery) from its table scan to current writes. Cleanup that removes the bridge during a rebuild can fail that attempt; stop aggressive cleanup before retrying so the next attempt can scan from a fresh committed-log boundary. Size automatic retention for the workload.
 :::
 
 Parameters:
@@ -204,7 +204,7 @@ type Dog @table(audit: true) {
 }
 ```
 
-This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table.
+This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table. New schema tables with `@fullText` must explicitly declare `@table(audit: true)`, even when global audit logging is enabled. Existing audited tables can add an index without restating `audit`. Keep auditing enabled while any full-text index is declared. Setting `@table(audit: false)` while a full-text index is declared is rejected during schema registration; this is a per-table prerequisite, independent of the global default.
 
 ## Related Documentation
 
