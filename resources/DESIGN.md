@@ -793,6 +793,14 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 - **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following the filter-only
   convention (`contains`/`ends_with`): the negated flag always forces `needFullScan`, so `estimated_count` here is
   execution-cost ordering, not result cardinality — a narrow negated range must never become the driving condition.
+- **An AND group's estimate skips non-finite legs** (`estimateConditionForTable`). `Infinity` marks a leg that cannot
+  drive a scan (`contains`/`ends_with`, `ne <value>`, negated, rebuilding index) and says nothing about its siblings'
+  cardinality, so the intersection ignores it and the group is `Infinity` only when every leg is. `orderConditions`
+  sorts a nested group's children finite-first before the parent estimates it, so multiplying would make every group
+  holding such a leg `Infinity`, including SQL `!=`/`NOT IN` (`[ne <value>, ne null]`): the group then ties with a
+  filter-only sibling, the stable sort keeps that sibling as the lead, and the query fails 403 under
+  `allowFullScan: false` (and `count: 'estimated'` reports `null`). Pinned by `estimateFilterOnlySibling.test.js`.
+  `intersectionEstimate` (the incoming-row hint in `mapConditionsToFilters`) still multiplies `Infinity` in.
 - **Non-driving filters drop null and omitted values the way index ranges do** (`filterByType`, harper#3212). No index
   holds an omitted value and `lt`/`le` ranges start above `null`, so range filters and `ne null` reject omitted values
   and `lt`/`le` reject null. SQL `IS NULL` counts omitted as NULL, so it is pushed as filter-only `ne null, negated`.

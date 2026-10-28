@@ -2407,13 +2407,16 @@ export function estimateCondition(table) {
 						estimatedCount += subCondition.estimated_count;
 					}
 				} else {
-					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition
+					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition.
+					// A filter-only (Infinity) leg can't drive a scan and says nothing about the others' cardinality, so it's skipped:
+					// the group is Infinity only when every leg is.
 					estimatedCount = Infinity;
 					for (const subCondition of condition.conditions) {
-						estimateConditionForTable(subCondition);
+						const subCount = estimateConditionForTable(subCondition);
+						if (!isFinite(subCount)) continue;
 						estimatedCount = isFinite(estimatedCount)
-							? (estimatedCount * subCondition.estimated_count) / (estimatedEntryCount(table.primaryStore) || 1)
-							: subCondition.estimated_count;
+							? (estimatedCount * subCount) / (estimatedEntryCount(table.primaryStore) || 1)
+							: subCount;
 					}
 				}
 				condition.estimated_count = estimatedCount;

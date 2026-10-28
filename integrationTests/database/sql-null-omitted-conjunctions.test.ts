@@ -43,6 +43,14 @@ const CASES: { wheres: string[]; expected: string[] }[] = [
 	{ wheres: [`c = 'alpha' AND b IS NULL`, `b IS NULL AND c = 'alpha'`], expected: ['r_a1_babsent', 'r_a1_bnull'] },
 	{ wheres: [`c = 'alpha' AND (b IS NULL OR b = 5)`], expected: ['r_a1_b5', 'r_a1_babsent', 'r_a1_bnull'] },
 	{ wheres: [`c = 'alpha' AND (b IS NULL OR b IS NOT NULL)`], expected: ALPHA_IDS },
+	// A filter-only conjunct must not hide the index-backed estimate of the `!=` / NOT IN not-null guard group.
+	{ wheres: [`a IS NULL AND b != 5`, `b != 5 AND a IS NULL`], expected: ['r_aabsent_b1', 'r_anull_b1'] },
+	{ wheres: [`a IS NULL AND b NOT IN (5, 7)`], expected: ['r_aabsent_b1', 'r_anull_b1'] },
+	{ wheres: [`c LIKE '%lph%' AND b != 5`, `b != 5 AND c LIKE '%lph%'`], expected: ['r1'] },
+	{
+		wheres: [`c LIKE '%a' AND b != 5`, `c LIKE '%a' AND b NOT IN (5, 7)`],
+		expected: ['r1', 'r_a5_b1', 'r_aabsent_b1', 'r_anull_b1'],
+	},
 ];
 
 type Client = ReturnType<typeof createApiClient>;
@@ -98,7 +106,7 @@ for (const sqlEngine of ['auto', 'new']) {
 
 			before(async () => {
 				await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-					config: { threads: { count: 1 }, logging: { console: true, level: 'error' } },
+					config: { threads: { count: 1 }, logging: { console: true, level: 'error' }, sql: { allowFullScan: false } },
 					env: { HARPER_SQL_ENGINE: sqlEngine },
 				});
 				client = createApiClient(ctx.harper);
@@ -166,6 +174,20 @@ for (const sqlEngine of ['auto', 'new']) {
 					deepStrictEqual(sortedIds(response.body), expected);
 				});
 			}
+
+			test(`REST GET /${TABLE}/ reports an estimated total next to a filter-only condition`, async () => {
+				await reseed(client);
+				const response = await client
+					.reqRest(`/${TABLE}/?c=alpha&c=ct=lph&limit(2)`)
+					.set('Prefer', 'count=estimated')
+					.timeout(60_000);
+				strictEqual(response.status, 200);
+				strictEqual(
+					/^items 0-1\/\d+$/.test(response.headers['content-range']),
+					true,
+					response.headers['content-range']
+				);
+			});
 		}
 	);
 }
