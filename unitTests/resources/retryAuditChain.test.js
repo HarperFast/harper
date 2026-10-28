@@ -119,7 +119,7 @@ describe('Audit chain across a conflict retry', function () {
 		const id = 'intermediate';
 		const base = freshBase();
 		await retryOverIntermediateHead(id, base, patch(id, { meta: 'retried' }));
-		assert(namesHead(id, base + 200));
+		assert(namesHead(id, base + 200), 'the record names the head the retry committed over');
 		// older than the intermediate head, so its title has to lose to it
 		await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
 		const { title, meta } = await T.get(id);
@@ -134,7 +134,7 @@ describe('Audit chain across a conflict retry', function () {
 			const id = `intermediate-${kind}`;
 			const base = freshBase();
 			await retryOverIntermediateHead(id, base, write(id));
-			assert(namesHead(id, base + 200));
+			assert(namesHead(id, base + 200), 'the record names the head the retry committed over');
 			await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
 			assert.strictEqual((await T.get(id)).title, 'intermediate');
 		});
@@ -147,14 +147,14 @@ describe('Audit chain across a conflict retry', function () {
 			id,
 			(resource, options) => resource._writeInvalidate(id, undefined, options),
 		]);
-		assert(namesHead(id, base + 200));
+		assert(namesHead(id, base + 200), 'the record names the head the retry committed over');
 	});
 
 	it('keeps the earlier write’s ref when a retried transaction writes the key twice', async () => {
 		const id = 'chained';
 		const base = freshBase();
 		await retryOverIntermediateHead(id, base, patch(id, { meta: 'retried' }), patch(id, { other: 'second' }));
-		assert(namesHead(id, base + 200));
+		assert(namesHead(id, base + 200), 'the record names the head the retry committed over');
 		await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
 		const { title, meta, other } = await T.get(id);
 		assert.deepStrictEqual({ title, meta, other }, { title: 'intermediate', meta: 'retried', other: 'second' });
@@ -174,7 +174,7 @@ describe('Audit chain across a conflict retry', function () {
 		}
 		assert(interception.retried, 'the write must have retried');
 		assert.deepStrictEqual(refsOf('unmoved'), []);
-		assert(namesHead('moved', base + 200));
+		assert(namesHead('moved', base + 200), 'the record names the head the retry committed over');
 	});
 
 	it('recovers the ref when crash replay restages the retried write over the intermediate head', async function () {
