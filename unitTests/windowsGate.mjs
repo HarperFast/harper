@@ -57,6 +57,9 @@ const GROUPS = [
 	'unitTests/resources/closeLoadedDatabases.test.js',
 	'unitTests/resources/databaseAliasIdentity.test.js',
 	'unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js',
+	'unitTests/resources/nativeFullTextSchemaUpgrade.test.js',
+	'unitTests/resources/nativeFullTextUpgradeWorkers.test.js',
+	'unitTests/resources/nativeFullTextUpgradeCrash.test.js',
 ];
 
 const EXCLUDED = [

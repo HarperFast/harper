@@ -166,6 +166,7 @@ describe('Permissions through Resource API', () => {
 		const result = {
 			get [Symbol.for('harper.searchAuthorization')]() {
 				reads++;
+				return undefined;
 			},
 		};
 		class DefaultModeGet extends TestTable {
