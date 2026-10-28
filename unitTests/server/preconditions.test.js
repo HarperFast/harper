@@ -714,9 +714,22 @@ describe('REST preconditions with real table transactions', () => {
 				return { created: true };
 			}
 		}
+		const IntKeyed = table({
+			table: 'HttpOwnVerbIntKeys',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true, type: 'Int' }, { name: 'n' }],
+		});
+		class OwnIntVerb extends IntKeyed {
+			static put(target, data, context) {
+				seen.push(['OwnIntVerb', context.headers.get('if-match')]);
+				return { created: target.id };
+			}
+		}
 		resources.set('CustomStatic', CustomStatic, { rest: true });
 		resources.set('OwnConcurrency', OwnConcurrency, { rest: true });
+		resources.set('OwnIntVerb', OwnIntVerb, { rest: true });
 		for (const [method, path, headers] of [
+			['PUT', '/OwnIntVerb/new', { 'if-match': '"3"' }],
 			['PUT', '/CustomStatic/read', { 'if-match': '"3"' }],
 			['PUT', '/OwnConcurrency/x', { 'if-match': '"3"' }],
 			['POST', '/OwnConcurrency/', { 'if-none-match': '*' }],
@@ -725,6 +738,7 @@ describe('REST preconditions with real table transactions', () => {
 			assert.ok(response.status < 300, `${method} ${path}: ${response.status} ${await bodyOf(response)}`);
 		}
 		assert.deepStrictEqual(seen, [
+			['OwnIntVerb', '"3"'],
 			['CustomStatic', '"3"'],
 			['OwnConcurrency', '"3"'],
 			['OwnConcurrency', '*'],

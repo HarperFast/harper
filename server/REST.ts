@@ -199,16 +199,19 @@ function evaluatesWritePreconditions(resource, method: string): boolean {
 }
 
 // The record an own verb's optional condition guards, parsed as Resource parses a target: the verb may pass that record
-// on by id rather than by the target object.
+// on by id rather than by the target object. A target the parse rejects leaves the condition unbound, so the verb
+// still runs and sees the headers.
 function conditionRecordId(resource, target: RequestTarget, request) {
 	if (target.isCollection || target.select || target.id == null) return;
-	let id = target.id;
-	if (typeof id === 'string' && !resource.directURLMapping) {
-		const parsed = resource.parsePath(id, request);
-		if (parsed?.property !== undefined) return;
-		id = parsed && resource.coerceId(parsed);
+	if (resource.directURLMapping) return target.toString().slice(1);
+	if (typeof target.id !== 'string') return target.id;
+	try {
+		const parsed = resource.parsePath(target.id, { headers: request.headers });
+		if (parsed?.property !== undefined || !parsed) return;
+		return resource.coerceId(parsed);
+	} catch {
+		return;
 	}
-	return id ?? undefined;
 }
 
 function unapplied(writeCondition): boolean {
