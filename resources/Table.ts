@@ -1852,8 +1852,8 @@ export function makeTable(options): TableResourceClass {
 	/**
 	 * A write staged without appending a log entry, a conflict retry or a crash replay, stores its record from
 	 * an entry appended earlier, which chains to the head read then. When the commit base has moved past it,
-	 * the record's `refs` gain what the out-of-order walk needs to reach the base: its head, and its refs the
-	 * entry does not carry, behind this write's own head key. A put or delete entry ends every walk.
+	 * the record's `refs` gain what the out-of-order walk needs to reach the base: its refs the entry does not
+	 * carry and its head, behind this write's own head key. A put or delete entry ends every walk.
 	 */
 	function withRefsMissedByLoggedEntry(
 		refs: Array<{ version: number; nodeId: number }> | undefined,
@@ -1865,30 +1865,42 @@ export function makeTable(options): TableResourceClass {
 		options: any
 	): Array<{ version: number; nodeId: number }> | undefined {
 		if (!isRocksDB || !base) return refs;
-		const entry: AuditRecord | undefined =
-			options?.auditEntry ??
-			(transaction?.isRetry && write.appendedAuditEntry
-				? auditStore.get(ownKey, tableId, id, options?.nodeId ?? 0)
-				: undefined);
-		if (!entry || entry.type === 'put' || entry.type === 'delete') return refs;
-		const missed: Array<{ version: number; nodeId: number }> = [];
+		let type: string, previousVersion: number | undefined, covered: Array<{ version?: number; nodeId?: number }>;
+		const replayed: AuditRecord | undefined = options?.auditEntry;
+		if (replayed) {
+			type = replayed.type;
+			previousVersion = replayed.previousVersion;
+			covered = replayed.previousAdditionalAuditRefs;
+		} else if (transaction?.isRetry && write.loggedType !== undefined) {
+			type = write.loggedType;
+			previousVersion = write.loggedPreviousVersion;
+			covered = write.loggedPreviousRefs;
+		} else return refs;
+		if (type === 'put' || type === 'delete') return refs;
 		const head =
-			base.version === entry.previousVersion
+			base.version === previousVersion
 				? undefined
 				: resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
-		const covered = entry.previousAdditionalAuditRefs;
+		const isHead = (ref: { version: number; nodeId?: number }) =>
+			head !== undefined && ref.version === head.txnLogKey && (ref.nodeId ?? 0) === (head.nodeId ?? 0);
+		const missed: Array<{ version: number; nodeId: number }> = [];
 		for (const ref of base.additionalAuditRefs ?? []) {
-			if (head && ref.version === head.txnLogKey && (ref.nodeId ?? 0) === (head.nodeId ?? 0)) continue;
-			if (!covered || auditRefIndex(covered, ref.version, ref.nodeId) < 0) missed.push(ref);
+			if (!isHead(ref) && (!covered || auditRefIndex(covered, ref.version, ref.nodeId) < 0)) missed.push(ref);
 		}
-		// over budget the encoder drops refs from the front, after the first
-		if (head) missed.push({ version: head.txnLogKey, nodeId: head.nodeId });
-		if (missed.length === 0) return refs;
+		if (missed.length === 0 && !head) return refs;
 		refs ??= [];
 		const ownIndex = auditRefIndex(refs, ownKey, options?.nodeId);
 		if (ownIndex > 0) refs.unshift(refs.splice(ownIndex, 1)[0]);
 		else if (ownIndex < 0) refs.unshift({ version: ownKey, nodeId: options?.nodeId });
 		for (const ref of missed) if (auditRefIndex(refs, ref.version, ref.nodeId) < 0) refs.push(ref);
+		// last: over budget the encoder drops refs from the front, after the first
+		if (head) {
+			const headIndex = auditRefIndex(refs, head.txnLogKey, head.nodeId);
+			if (headIndex !== 0) {
+				if (headIndex > 0) refs.splice(headIndex, 1);
+				refs.push({ version: head.txnLogKey, nodeId: head.nodeId });
+			}
+		}
 		return refs;
 	}
 	function resolveAuditHead(
