@@ -17,12 +17,19 @@ const { hashResidencyKey, createResidencyMap } = require('#src/resources/residen
 const { server } = require('#src/server/Server');
 const env = require('#src/utility/environment/environmentManager');
 
-(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Public sharding policy', function () {
+(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Sharding policy validation', function () {
 	this.timeout(15000);
-	let priorShards, priorList, priorShard;
+	let priorShards, priorList, priorShard, priorExperimental, priorMarkers;
+	const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+	// Preserve the unsupported attribute cases for #1178 without bypassing native marker admission.
+	const attributeIt = typeof Transaction.prototype.usesAbortMarkers === 'function' ? it : it.skip;
 	let sequence = 0;
 	before(() => {
 		setupTestDBPath();
+		priorExperimental = env.get('replication_experimentalAttributeSlots');
+		priorMarkers = env.get('storage_rocks_transactionLogAbortMarkers');
+		env.setProperty('replication_experimentalAttributeSlots', true);
+		env.setProperty('storage_rocks_transactionLogAbortMarkers', true);
 		priorShards = server.shards;
 		priorList = env.get('replication_shards');
 		priorShard = env.get('replication_shard');
@@ -35,6 +42,8 @@ const env = require('#src/utility/environment/environmentManager');
 	});
 	after(() => {
 		server.shards = priorShards;
+		env.setProperty('replication_experimentalAttributeSlots', priorExperimental);
+		env.setProperty('storage_rocks_transactionLogAbortMarkers', priorMarkers);
 		env.setProperty('replication_shards', priorList);
 		env.setProperty('replication_shard', priorShard);
 	});
@@ -160,13 +169,13 @@ const env = require('#src/utility/environment/environmentManager');
 		assert.equal(policy.slots, 64);
 		assert.equal((await declare('@sharded', database)).residency.slots, 64);
 	});
-	it('accepts a declared stored primary key as the by field', async () => {
+	attributeIt('accepts a declared stored primary key as the by field', async () => {
 		const Rows = await declare('@sharded(by: "id")');
 		await Rows.put('key1', { id: 'key1', body: 'complete' });
 		assert.equal(Rows.primaryStore.getEntry('key1').residencySlot, hashResidencyKey('key1') % 1024);
 	});
 	for (const field of ['missing', 'derived'])
-		it(`refuses a by field that is not stored: ${field}`, async () => {
+		attributeIt(`refuses a by field that is not stored: ${field}`, async () => {
 			await assert.rejects(
 				loadGQLSchema(`type Rows @table(database: "sharded_virtual_${field}") @sharded(by: "${field}") {
 				id: ID @primaryKey tenantId: String @indexed derived: String @computed(from: "tenantId")
@@ -175,7 +184,7 @@ const env = require('#src/utility/environment/environmentManager');
 			);
 		});
 	for (const type of ['Date', 'Boolean', 'BigInt', 'Bytes', 'Blob', '[String]', 'Payload'])
-		it(`refuses a default by type that cannot be hashed before installing a map: ${type}`, async () => {
+		attributeIt(`refuses a default by type that cannot be hashed before installing a map: ${type}`, async () => {
 			const database = `sharded_type_${sequence++}`;
 			await assert.rejects(
 				loadGQLSchema(`type Payload { value: String }
@@ -187,7 +196,7 @@ const env = require('#src/utility/environment/environmentManager');
 			assert.equal(readResidencyMap(database), undefined);
 			assert.equal(databases[database]?.Rows, undefined);
 		});
-	it('refuses a relationship as the by field even with an explicit expression', async () => {
+	attributeIt('refuses a relationship as the by field even with an explicit expression', async () => {
 		const database = `sharded_type_${sequence++}`;
 		await assert.rejects(
 			loadGQLSchema(`type Tenant @table(database: "${database}") { id: ID @primaryKey }
@@ -198,7 +207,7 @@ const env = require('#src/utility/environment/environmentManager');
 		);
 		assert.equal(readResidencyMap(database), undefined);
 	});
-	it('allows a stored date when an explicit expression chooses the slot', async () => {
+	attributeIt('allows a stored date when an explicit expression chooses the slot', async () => {
 		const database = `sharded_type_${sequence++}`;
 		await loadGQLSchema(`type Rows @table(database: "${database}")
 			@sharded(by: "createdAt", slotFrom: "createdAt.getUTCMonth()") {
@@ -208,7 +217,7 @@ const env = require('#src/utility/environment/environmentManager');
 		await Rows.put('row', { id: 'row', createdAt: new Date('2026-01-01T00:00:00Z'), tag: 'date' });
 		assert.equal(Rows.primaryStore.getEntry('row').residencySlot, 0);
 	});
-	it('keeps negative-zero affinity through native encoding, source apply and patch', async () => {
+	attributeIt('keeps negative-zero affinity through native encoding, source apply and patch', async () => {
 		const database = `sharded_zero_${sequence++}`;
 		await initializeResidencySlots({ database, slots: 1024, ranges: [{ start: 0, end: 1024, shard: 0 }] });
 		const Origin = await declare('@sharded(by: "tenantId")', database, 'Origin');
@@ -225,7 +234,7 @@ const env = require('#src/utility/environment/environmentManager');
 		await Origin.patch('row', { body: 'updated' });
 		assert.equal(Origin.primaryStore.getEntry('row').residencySlot, slot);
 	});
-	it('refuses oversized hashed attributes before commit', async () => {
+	attributeIt('refuses oversized hashed attributes before commit', async () => {
 		const Rows = await declare('@sharded(by: "tenantId")');
 		for (const size of [2100, 100000]) {
 			await assert.rejects(async () => Rows.put('bad', { id: 'bad', tenantId: 'x'.repeat(size) }), /sharding/);
@@ -273,7 +282,7 @@ const env = require('#src/utility/environment/environmentManager');
 		);
 	});
 
-	it('refuses unindexed attribute sharding before initializing its map', async () => {
+	attributeIt('refuses unindexed attribute sharding before initializing its map', async () => {
 		const database = `sharded_no_index_${sequence++}`;
 		await assert.rejects(
 			loadGQLSchema(
@@ -288,7 +297,7 @@ const env = require('#src/utility/environment/environmentManager');
 		await assert.rejects(declare('@residency(slots: 1024)'), /Unknown.*@residency/);
 	});
 	for (const value of ['tenant-a', 'asia', 42, -12.5, 0])
-		it(`hashes the attribute value ${JSON.stringify(value)} with the key hash`, async () => {
+		attributeIt(`hashes the attribute value ${JSON.stringify(value)} with the key hash`, async () => {
 			const Rows = await declare('@sharded(by: "tenantId")');
 			const expected = hashResidencyKey(value) % 1024;
 			for (const id of ['first', 'second']) {
@@ -298,12 +307,12 @@ const env = require('#src/utility/environment/environmentManager');
 		});
 	for (const slotFrom of ['', ', slotFrom: "1"'])
 		for (const tenantId of [null, undefined])
-			it(`refuses ${tenantId} attribute values before commit (${slotFrom || 'hash'})`, async () => {
+			attributeIt(`refuses ${tenantId} attribute values before commit (${slotFrom || 'hash'})`, async () => {
 				const Rows = await declare(`@sharded(by: "tenantId"${slotFrom})`);
 				await assert.rejects(async () => Rows.put('bad', { id: 'bad', tenantId }), /tenantId.*null|tenantId.*missing/);
 				assert.equal(Rows.primaryStore.getEntry('bad'), undefined);
 			});
-	it('uses regional expression results as logical slots resolved by the map', async () => {
+	attributeIt('uses regional expression results as logical slots resolved by the map', async () => {
 		const database = `sharded_policy_${sequence++}`;
 		await initializeResidencySlots({
 			database,
@@ -325,7 +334,7 @@ const env = require('#src/utility/environment/environmentManager');
 		}
 	});
 	for (const expression of ['-1', '3', '1.5', '"2"', 'NaN', 'Infinity', 'undefined'])
-		it(`refuses expression result ${expression} with the result and slot count before commit`, async () => {
+		attributeIt(`refuses expression result ${expression} with the result and slot count before commit`, async () => {
 			const Rows = await declare(`@sharded(slots: 3, by: "region", slotFrom: ${JSON.stringify(expression)})`);
 			await assert.rejects(
 				async () => Rows.put('bad', { id: 'bad', region: 'asia' }),
@@ -344,7 +353,7 @@ const env = require('#src/utility/environment/environmentManager');
 			);
 		});
 	for (const expression of ['Object.create(null)', 'Symbol("bad")', '(() => { throw undefined; })()'])
-		it(`refuses unusual expression results safely: ${expression}`, async () => {
+		attributeIt(`refuses unusual expression results safely: ${expression}`, async () => {
 			const Rows = await declare(`@sharded(slots: 3, by: "region", slotFrom: ${JSON.stringify(expression)})`);
 			await assert.rejects(
 				async () => Rows.put('bad', { id: 'bad', region: 'asia' }),
@@ -356,7 +365,7 @@ const env = require('#src/utility/environment/environmentManager');
 			);
 			assert.equal(Rows.primaryStore.getEntry('bad'), undefined);
 		});
-	it('refuses a throwing expression before committing a primary or audit row', async () => {
+	attributeIt('refuses a throwing expression before committing a primary or audit row', async () => {
 		const expression = '(() => { throw new Error("region expression failed"); })()';
 		const Rows = await declare(`@sharded(slots: 3, by: "region", slotFrom: ${JSON.stringify(expression)})`);
 		await assert.rejects(async () => Rows.put('bad', { id: 'bad', region: 'asia' }), /region expression failed/);
@@ -375,7 +384,7 @@ const env = require('#src/utility/environment/environmentManager');
 		['by: "tenantId", slotFrom: "0"', 'by: "tenantId", slotFrom: "1"'],
 		['by: "tenantId", slotFrom: "0"', 'by: "otherTenant", slotFrom: "0"'],
 	])
-		it(`refuses changing populated placement from ${before} to ${after}`, async () => {
+		attributeIt(`refuses changing populated placement from ${before} to ${after}`, async () => {
 			const Rows = await declare(`@sharded(${before})`);
 			await Rows.put('row', { id: 'row', tenantId: 'tenant-a', otherTenant: 'tenant-b', body: 'complete' });
 			const original = Rows.residency;
