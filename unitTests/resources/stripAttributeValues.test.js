@@ -3,7 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED, FULL_WRITE_HEAD } = require('#src/resources/RecordEncoder');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 
@@ -29,6 +29,7 @@ describe('Table.stripAttributeValues', () => {
 			await Table.put(`row-${index}`, { id: `row-${index}`, a: index, keep: 'k' });
 		const before = ['row-0', 'row-1', 'row-2'].map((id) => readEntry(Table, id));
 		assert.ok(before.every((entry) => entry.expiresAt > Date.now()));
+		if (isRocksDB) assert.ok(before.every((entry) => entry.metadataFlags & FULL_WRITE_HEAD));
 
 		await Table.stripAttributeValues(['a']);
 
@@ -40,7 +41,8 @@ describe('Table.stripAttributeValues', () => {
 			assert.strictEqual(entry.nodeId, previous.nodeId);
 			assert.strictEqual(entry.residencyId, previous.residencyId);
 			assert.deepStrictEqual(entry.additionalAuditRefs, previous.additionalAuditRefs);
-			assert.strictEqual(entry.metadataFlags & ~VERSION_REUSED, previous.metadataFlags);
+			assert.strictEqual(entry.metadataFlags & ~VERSION_REUSED, previous.metadataFlags & ~FULL_WRITE_HEAD);
+			assert.strictEqual(entry.metadataFlags & FULL_WRITE_HEAD, 0);
 			if (isRocksDB) {
 				// the same version now names a different value, so no cache may vouch for the old one
 				assert.ok(entry.metadataFlags & VERSION_REUSED);
@@ -65,6 +67,7 @@ describe('Table.stripAttributeValues', () => {
 		const after = readEntry(Table, 'gone');
 		assert.strictEqual(after.value, tombstone.value);
 		assert.strictEqual(after.version, tombstone.version);
+		assert.strictEqual(after.metadataFlags, tombstone.metadataFlags);
 		assert.strictEqual(await Table.get('gone'), null);
 		assert.deepStrictEqual(Buffer.from(Table.primaryStore.getBinary('without')), Buffer.from(untouched));
 	});
