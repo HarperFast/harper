@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const http = require('node:http');
 const { setTimeout: sleep } = require('node:timers/promises');
 const fastify = require('fastify');
@@ -42,11 +42,11 @@ describe('reqBodyValidationHandler()', () => {
 		it(`rejects ${description} with exactly one 400 callback`, () => {
 			const calls = invoke({ body });
 
-			assert.equal(calls.length, 1, `done() must be signalled once, got ${calls.length}`);
+			assert.strictEqual(calls.length, 1, `done() must be signalled once, got ${calls.length}`);
 			const [error, data] = calls[0];
-			assert.equal(error.statusCode, 400);
-			assert.equal(error.http_resp_msg, message);
-			assert.equal(data, null);
+			assert.strictEqual(error.statusCode, 400);
+			assert.strictEqual(error.http_resp_msg, message);
+			assert.strictEqual(data, null);
 		});
 	}
 
@@ -58,18 +58,18 @@ describe('reqBodyValidationHandler()', () => {
 				return Reflect.ownKeys(target);
 			},
 		});
-		assert.equal(typeof body, 'function');
+		assert.strictEqual(typeof body, 'function');
 
 		const calls = invoke({ body });
 
-		assert.equal(enumerated, false);
-		assert.equal(calls.length, 1);
-		assert.equal(calls[0][0].http_resp_msg, INVALID_JSON);
+		assert.strictEqual(enumerated, false);
+		assert.strictEqual(calls.length, 1);
+		assert.strictEqual(calls[0][0].http_resp_msg, INVALID_JSON);
 	});
 
 	for (const operation of ['describe_all', '', 0, false]) {
 		it(`passes a body whose operation is ${JSON.stringify(operation)} on with a single successful callback`, () => {
-			assert.deepEqual(invoke({ body: { operation } }), [[]]);
+			assert.deepStrictEqual(invoke({ body: { operation } }), [[]]);
 		});
 	}
 });
@@ -176,12 +176,12 @@ describe('reqBodyValidationHandler() in the operations API Fastify wiring', () =
 			// a duplicate completion lands in the same tick as the first; the wait covers the late failures it causes
 			await sleep(100);
 
-			assert.equal(response.statusCode, 400);
-			assert.deepEqual(JSON.parse(response.text), { error: message });
-			assert.equal(nextHookCalls, 0, 'the hook after the validator ran for a rejected body');
-			assert.equal(routeCalls, 0);
-			assert.deepEqual(rejections, []);
-			assert.deepEqual(warnings, []);
+			assert.strictEqual(response.statusCode, 400);
+			assert.deepStrictEqual(JSON.parse(response.text), { error: message });
+			assert.strictEqual(nextHookCalls, 0, 'the hook after the validator ran for a rejected body');
+			assert.strictEqual(routeCalls, 0);
+			assert.deepStrictEqual(rejections, []);
+			assert.deepStrictEqual(warnings, []);
 		});
 	}
 
@@ -189,11 +189,11 @@ describe('reqBodyValidationHandler() in the operations API Fastify wiring', () =
 		const response = await post('{"operation":"describe_all"}');
 		await sleep(100);
 
-		assert.equal(response.statusCode, 200);
-		assert.deepEqual(JSON.parse(response.text), { ok: true });
-		assert.equal(nextHookCalls, 1);
-		assert.equal(routeCalls, 1);
-		assert.deepEqual(rejections, []);
-		assert.deepEqual(warnings, []);
+		assert.strictEqual(response.statusCode, 200);
+		assert.deepStrictEqual(JSON.parse(response.text), { ok: true });
+		assert.strictEqual(nextHookCalls, 1);
+		assert.strictEqual(routeCalls, 1);
+		assert.deepStrictEqual(rejections, []);
+		assert.deepStrictEqual(warnings, []);
 	});
 });

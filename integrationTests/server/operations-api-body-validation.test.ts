@@ -1,14 +1,11 @@
 /**
- * An Operations API body that fails validation is answered with one 400 and goes no further: the
- * authentication hook and the operation handler never see it, and hdb.log records no second response attempt.
- *
  * Run:
  *   npm run build && npm run test:integration -- "integrationTests/server/operations-api-body-validation.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -24,8 +21,9 @@ suite('an Operations API body that fails validation', (ctx: ContextWithHarper) =
 	let client: ReturnType<typeof createApiClient>;
 	let logPath: string;
 
+	// Throws when hdb.log is missing: an unreadable log would let every "nothing was logged" assertion pass.
 	function readLog(): string {
-		return existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
+		return readFileSync(logPath, 'utf8');
 	}
 
 	before(async () => {
@@ -33,6 +31,16 @@ suite('an Operations API body that fails validation', (ctx: ContextWithHarper) =
 		client = createApiClient(ctx.harper);
 		logPath = ctx.harper.logDir ? join(ctx.harper.logDir, 'hdb.log') : join(ctx.harper.dataRootDir, 'log', 'hdb.log');
 		await client.req().send({ operation: 'describe_all' }).expect(200);
+		const deadline = Date.now() + 15_000;
+		while (Date.now() < deadline) {
+			try {
+				readLog();
+				break;
+			} catch {
+				await sleep(100);
+			}
+		}
+		ok(readLog().length > 0, `${logPath} is empty after startup`);
 	});
 
 	after(async () => {
