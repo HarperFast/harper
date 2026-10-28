@@ -622,6 +622,8 @@ class DerivedIndexRunner {
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
 	#lastCaughtUpAt?: number;
+	/** Delivered work or acquisition; a wake that finds nothing to deliver does not extend the idle grace. */
+	#workAt = 0;
 	#lagTimer?: NodeJS.Timeout;
 	#lockRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
@@ -1036,6 +1038,7 @@ class DerivedIndexRunner {
 		this.#generation++;
 		this.#lastCaughtUpAt = undefined;
 		this.#unreadSince = this.#options.now();
+		this.#workAt = this.#unreadSince;
 		this.#reachedEndOfLog = false;
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
@@ -1325,6 +1328,7 @@ class DerivedIndexRunner {
 
 	#noteAccepted(batch: DerivedIndexBatch) {
 		const now = this.#options.now();
+		this.#workAt = now;
 		if (batch.through && !sameCursor(batch.through, this.#offered)) {
 			this.#offered = cloneCursor(batch.through);
 			this.#offeredCursors.push({
@@ -1688,15 +1692,18 @@ class DerivedIndexRunner {
 		this.#settleReady();
 		if (this.#idleTimer) return;
 		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
-		this.#idleTimer = setTimeout(() => {
-			this.#idleTimer = undefined;
-			if (this.#stopped) return;
-			try {
-				if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
-			} catch (error) {
-				this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
-			}
-		}, this.#options.idleGraceMilliseconds);
+		this.#idleTimer = setTimeout(
+			() => {
+				this.#idleTimer = undefined;
+				if (this.#stopped) return;
+				try {
+					if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
+				} catch (error) {
+					this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
+				}
+			},
+			Math.max(0, this.#workAt + this.#options.idleGraceMilliseconds - this.#options.now())
+		);
 	}
 
 	#publishUnchangedCoverage(capture?: CoverageCapture) {
@@ -1722,7 +1729,7 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend advanced to an unoffered cursor vector', 'cursor-unoffered');
 			return false;
 		}
-		// Every durable advance publishes catch-up, so the logs still unanchored are proven first.
+		// Any reconcile can publish coverage or ready, so the logs still unanchored are proven first.
 		if (!this.#checkUnanchoredLogs()) return false;
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
@@ -1899,6 +1906,9 @@ class DerivedIndexRunner {
 	}
 
 	#needsRebuild(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
+		// A failure while the database closes (rocksdb-js reports `closed` from the start of a close) is the
+		// close cutting work off, not evidence against the index, so it condemns nothing.
+		if (this.#logStore.rootStore.status === 'closed') return;
 		if (this.#rebuilding) {
 			this.#rebuildFailed(reason, code, error);
 			return;
