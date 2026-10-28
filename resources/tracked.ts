@@ -587,9 +587,9 @@ const SNAPSHOT = Symbol('snapshot');
 const IDENTITY = Symbol('identity');
 /**
  * Record the own properties a framework-constructed instance starts with (class fields such as `hits = 0`
- * on a Table subclass), so they enter a patch only once changed. A plain-data object can change in place,
- * so it is kept as a deep copy and compared by content; any other value (a helper instance, a Buffer,
- * a function) is compared by identity.
+ * on a Table subclass), so they enter a patch only once changed. An object `structuredClone` reproduces (plain
+ * data, a Date) can change in place, so it is kept as a deep copy and compared by content; any other value
+ * (a helper instance, a Buffer, a function) is compared by identity.
  */
 export function recordOwnBaseline(instance: any) {
 	let baseline;
