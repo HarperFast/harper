@@ -16,7 +16,7 @@ This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2
 | **Operations API**            | `operationsServer.ts` | Fastify-based JSON operations API (`{operation: 'create_table', ...}`). Internal/admin surface — not on the hot path for application data.                                                      |
 | **Custom Functions (legacy)** | `fastifyRoutes.ts`    | Legacy custom functions only. Wraps Fastify with autoload. Don't add new code here.                                                                                                             |
 
-A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Of the two Fastify files only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`.
+A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Of the two Fastify files only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`. Its `preValidation` chain (`reqBodyValidationHandler`, then `authHandler`) needs each hook to signal completion exactly once: Fastify's hook runner does not make `done` single-use, and the async `onSend` hooks keep `reply.sent` false long enough for a second call to reach `authHandler`. `unitTests/server/serverHelpers/reqBodyValidationHandler.test.js` pins it.
 
 ---
 
