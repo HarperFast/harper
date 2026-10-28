@@ -137,10 +137,10 @@ const ARM_CONFIG = {
 };
 const ARM_ENV = { HARPER_STORAGE_ENGINE: 'rocksdb' };
 
-// The seed has to cross the log's rotation size, because a purge against a single still-active
-// segment deletes nothing and would arm every assertion below vacuously. Sized from the log's own
-// `maxFileSize` rather than the 16MiB default, so a change to that default cannot silently turn the
-// arming into a permanent failure.
+// The seed has to cross the log's rotation size, because a purge against a single segment that is still
+// being written (not yet flushed to its end) deletes nothing and would arm every assertion below
+// vacuously. Sized from the log's own `maxFileSize` rather than the 16MiB default, so a change to that
+// default cannot silently turn the arming into a permanent failure.
 const VICTIM_PAD = 'x'.repeat(4200);
 const VICTIM_BATCH = 500;
 const VICTIM_OVERSHOOT = 1.3;
