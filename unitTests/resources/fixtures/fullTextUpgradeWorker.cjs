@@ -60,7 +60,13 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 							Atomics.add(gate, 4, 1);
 							Atomics.compareExchange(gate, 2, 0, Atomics.add(gate, 3, 1) + 1);
 						}
-						const reset = await binding.resetNativeFullTextIndex(options);
+						let reset;
+						try {
+							reset = await binding.resetNativeFullTextIndex(options);
+						} catch (error) {
+							if (Atomics.load(gate, 5) && error.code === 'E_LOCK_BUSY') Atomics.add(gate, 8, 1);
+							throw error;
+						}
 						if (data.holdReset) {
 							parentPort.postMessage({ event: 'reset-completed' });
 							await new Promise(() => {});

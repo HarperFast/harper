@@ -145,9 +145,6 @@ describe('published native full-text managed-worker rebuild safety', function ()
 	let database;
 	let workers;
 	let gate;
-	let resets;
-	let busyResets;
-	let trackResets;
 	let releaseActivation;
 	let mainWasWorker;
 
@@ -166,23 +163,19 @@ describe('published native full-text managed-worker rebuild safety', function ()
 	beforeEach(() => {
 		database = `fulltext-worker-upgrade-${Date.now()}`;
 		workers = [];
-		gate = new Int32Array(new SharedArrayBuffer(32));
-		resets = 0;
-		busyResets = 0;
-		trackResets = false;
+		gate = new Int32Array(new SharedArrayBuffer(36));
 		setFullTextNativeBindingForTests({
 			binding: {
 				...binding,
 				async resetNativeFullTextIndex(options) {
-					if (trackResets) {
-						resets++;
+					if (Atomics.load(gate, 5)) {
 						Atomics.add(gate, 4, 1);
 						Atomics.compareExchange(gate, 2, 0, Atomics.add(gate, 3, 1) + 1);
 					}
 					try {
 						return await binding.resetNativeFullTextIndex(options);
 					} catch (error) {
-						if (trackResets && error.code === 'E_LOCK_BUSY') busyResets++;
+						if (Atomics.load(gate, 5) && error.code === 'E_LOCK_BUSY') Atomics.add(gate, 8, 1);
 						throw error;
 					}
 				},
@@ -237,13 +230,12 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		searching.catch(() => {});
 		await waitFor(() => peer.events.includes('query-held'), 10000);
 		const nativePath = nativeFullTextIndexPath(Product.primaryStore.rootStore.path, 'Product/search');
-		trackResets = true;
 		Atomics.store(gate, 5, 1);
 		Product = table(declaration(database, false));
 		await waitFor(() => fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
 		assert(Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements?.length > 0);
 		await waitFor(() => !fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
-		assert.strictEqual(resets, 0, 'a failed peer acknowledgement must prevent native reset invocation');
+		assert.strictEqual(Atomics.load(gate, 4), 0, 'a failed peer acknowledgement must prevent native reset invocation');
 		assert(fs.existsSync(nativePath));
 		Atomics.store(gate, 0, 1);
 		Atomics.notify(gate, 0);
@@ -253,7 +245,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		assert(peer.events.includes('pause-delivered'), 'production schema ITC must reach the reader worker');
 		assert(Atomics.load(gate, 1) > 0, 'the native peer reader must close');
 		assert(Atomics.load(gate, 2) > Atomics.load(gate, 1), 'reader lease drain and close must precede native reset');
-		assert(resets > 0);
+		assert(Atomics.load(gate, 4) > 0);
 		assert.strictEqual(fs.existsSync(nativePath), false);
 	});
 
@@ -267,7 +259,6 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		await waitFor(() => peer.events.includes('responsive-lease-held'), 10000);
 		const nativePath = nativeFullTextIndexPath(Product.primaryStore.rootStore.path, 'Product/search');
 		Atomics.store(gate, 1, 0);
-		trackResets = true;
 		Atomics.store(gate, 5, 1);
 		Product = table(declaration(database, false));
 		await waitFor(() => fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
@@ -300,11 +291,9 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		const peer = await peerReader();
 		const nativePath = nativeFullTextIndexPath(Product.primaryStore.rootStore.path, 'Product/search');
 		await peer.request('fail-close');
-		trackResets = true;
 		Atomics.store(gate, 5, 1);
 		Product = table(declaration(database, false));
-		await waitFor(() => busyResets > 0, 5000);
-		await waitFor(() => !fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
+		await waitFor(() => Atomics.load(gate, 8) > 0, 5000);
 		assert(Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements?.length > 0);
 		assert(fs.existsSync(nativePath));
 		assert.strictEqual((await peer.request('inspect')).state, 'checkpointed');
@@ -313,8 +302,8 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		await waitFor(() => !Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements, 10000);
 		assert(peer.events.includes('close-refused'));
 		assert(peer.events.includes('pause-delivered'));
-		assert(busyResets > 0, 'a real unclosed native reader must refuse destructive reset');
-		assert(resets > busyResets, 'retirement must retry after the actual reader closes');
+		assert(Atomics.load(gate, 8) > 0, 'a real unclosed native reader must refuse destructive reset');
+		assert(Atomics.load(gate, 4) > Atomics.load(gate, 8), 'retirement must retry after the actual reader closes');
 		assert(Atomics.load(gate, 1) > 0);
 	});
 
