@@ -22,7 +22,7 @@ const WORD_PROPOSED = 0;
 const WORD_PUBLISHED = 1;
 const WORD_RATCHET = 2;
 // Non-zero once a key may have been issued from the ratchet rather than the native clock (the clock
-// was behind the recovered floor); native keys then pass through the ratchet word for the rest of
+// was behind a recovered floor or a runtime claim); native keys then pass through it for the rest of
 // the process, since any later hand-back to load-only admission races a fallback still in flight.
 const WORD_STRICT = 3;
 const HEADER_WORDS = 4;

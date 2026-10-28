@@ -773,7 +773,7 @@ export interface LockCoordinatorOptions {
 	writeControl: (entry: LockControlEntry) => Promise<number | void> | number | void;
 	/** Stable map key for a record id; core passes `writeKeyId`. */
 	keyIdOf: (key: any) => unknown;
-	/** Mints the holder's stamp; core passes the primary store's monotonic timestamp. */
+	/** Mints the holder's stamp; core passes the root store's local issuance allocator. */
 	nextTimestamp: () => number;
 	/** Monotonic clock. Every expiry decision is made on this. */
 	monotonic?: () => number;

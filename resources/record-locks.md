@@ -203,9 +203,9 @@ valid timestamp exceeds fails the admission with a 409 and gives the key back. A
 or a local issuance ceiling is reserved.
 
 A floor above the handle's `acquiredAt` is not used as is (`admissionStamp`): every holder admitted on
-state one transaction left would share it, as the version of every write in its explicit transaction
-and as its log key, and two writes with an equal version and log key on one record read as a
-re-delivery — a shared counter loses an increment. A floor the clock has already passed takes the
+state one transaction left would share it as their record version, so separate writes on one record
+could read as a re-delivery — a shared counter loses an increment. Each write's log key is reserved
+separately at save. A floor the clock has already passed takes the
 clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
 value falls back to it with a warning; read once per thread) is claimed as a unique local key
 (`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
@@ -217,17 +217,18 @@ peer's clock, rewrite from that origin, or wait. A key the
 ratchet issues ahead of the clock is persisted as a ceiling before it is used and seeds issuance at
 open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
 reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
-not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry,
-coalesced followers and scoped → hold upgrades are not admissions and raise nothing.
+not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry and
+coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
+before changing modes and can claim a deferred floor.
 
 The floor reaches the write through the existing stamps. An explicit transaction's clock takes it only
 while nothing else would move with it — no log key reserved yet and no unlocked write staged first
 (`hasUnlockedWrite`, one pass over the writes for all of a transaction's locks); otherwise the clock
-stays put, the holder's ordering is best-effort, and nothing throws. Likewise a hold saved later in a
+stays put and the admitted holder's ordering is best-effort. Likewise a hold saved later in a
 different explicit transaction is stamped by that transaction's clock, not the floor. An
-`ImmediateTransaction` stamps holder writes from the handle as above, and each write commits on its own
-native handle whose log key is reserved at or above that write's stamp, because a replica applies a write
-at no more than its log key. A deferred write that has not been saved takes its stamp at its own save. A holder write saved while the same
+`ImmediateTransaction` stamps holder writes from the handle as above. Each native commit reserves a log
+key at least as high as the holder stamps it accepts, because a replica bounds an applied version by
+its origin log key. A deferred write takes its stamp at its own save. A holder write saved while the same
 context's previous commit is still in flight (awaiting a streamed blob) would join that commit's handle,
 whose log key is already reserved; if that key is below the write's stamp it is refused with a 409
 before staging (harper#3238), because a replica would apply it at the lower key and could keep the
@@ -235,9 +236,10 @@ predecessor's value while the origin keeps the holder's. The caller unlocks, the
 the earlier commit settles. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
 ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
-issues. A step taken once the clock has passed a claimed version stays one ulp above it, keeping the
-hold's writes at their acquisition order; an unlocked write to the held record that the ratchet
-issued that exact key during the lead then drops the hold's save as its re-delivery (harper#3246).
+issues. A step at or below the ratchet's next key is also claimed, even after clock catch-up, so it
+cannot repeat a key issued during the lead. Such a claim can advance a hold save beyond a later plain
+write rather than retain acquisition order; plain writes remain ungated. The Phase 0 ordering tradeoff
+is tracked in harper#3246.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after

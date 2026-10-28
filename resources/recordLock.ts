@@ -213,9 +213,9 @@ function maxLockClockSkewMs(): number {
 export { parseDurationMs as parseMaxLockClockSkewMs };
 
 /**
- * The stamp a new holder's writes start from, given its admission floor. A floor above `acquiredAt` is
- * the same for every holder admitted on state one transaction left, and as an explicit stamp it would
- * become each one's log key, so it is replaced by a key no other local append is issued. A floor ahead
+ * The stamp a new holder's writes start from, given its admission floor. Holders admitted on one
+ * predecessor's state share a floor, so each claims a distinct record version to avoid treating
+ * separate writes as re-deliveries. Their log keys are reserved separately at save. A floor ahead
  * of the clock within the configured skew lifts every later local key on this node above it; a floor
  * beyond that limit is rejected before it can reserve a local key.
  */
@@ -320,9 +320,9 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	/**
-	 * The smallest step past the holder's last version, which prevents an exact LWW tie with it. Ahead of
-	 * the clock it is claimed like an admission stamp: one ulp above the ratchet is otherwise the next key
-	 * the ratchet issues.
+	 * The smallest step past the holder's last version, claimed when it could repeat an issued key,
+	 * including after clock catch-up. Ahead of the clock it is claimed like an admission stamp:
+	 * one ulp above the ratchet is otherwise the next key the ratchet issues.
 	 */
 	#stepPast(version: number): number {
 		const step = timestampAbove(version);
