@@ -117,13 +117,11 @@ async function schemaHandler(event?: any) {
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
-	let resumeBlobSavesFor;
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
 		if (event.message.restorePhase === 'reload') {
-			resumeBlobSavesFor = {
-				token: event.message.restoreToken,
-				generationReplaced: event.message.generationReplaced !== false,
-			};
+			// before the rescan: opening the published generation replays its log, which saves blobs, and
+			// whatever that replay queues for reclamation belongs to the new generation, not the replaced one
+			resumeBlobSavesForRestore(event.message.restoreToken, event.message.generationReplaced !== false);
 		} else {
 			const { schema, databaseDir, restoreToken } = event.message;
 			// Stop and drain blob writes before releasing the handles: closing a database is not a
@@ -149,12 +147,8 @@ async function schemaHandler(event?: any) {
 			}
 		}
 	}
-	try {
-		await cleanLmdbMap(event.message);
-		await syncSchemaMetadata(event.message);
-	} finally {
-		if (resumeBlobSavesFor) resumeBlobSavesForRestore(resumeBlobSavesFor.token, resumeBlobSavesFor.generationReplaced);
-	}
+	await cleanLmdbMap(event.message);
+	await syncSchemaMetadata(event.message);
 	for (let listener of schemaListeners) {
 		try {
 			listener(event?.message);

@@ -80,7 +80,9 @@ describe('Test hdbChildIpcHandler module', () => {
 				}),
 				closeDatabase: (databaseName) => calls.push(`close:${databaseName}`),
 				cleanLmdbMap: async () => {},
-				syncSchemaMetadata: async () => {},
+				syncSchemaMetadata: async (message) => {
+					if (message.restorePhase === 'reload') calls.push('rescan');
+				},
 			});
 			try {
 				const closing = schema_handler({
@@ -103,7 +105,8 @@ describe('Test hdbChildIpcHandler module', () => {
 						restoreToken: 'orders-restore',
 					},
 				});
-				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders-restore']);
+				// the rescan opens the restored generation and replays its log, which saves blobs
+				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders-restore', 'rescan']);
 			} finally {
 				restore();
 			}
