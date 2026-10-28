@@ -628,8 +628,10 @@ function upgradeNativeOptions(configuration, lifecycle) {
 		generation: createHash('sha256').update(configuration.sourceGeneration).digest('hex'),
 		fields: configuration.fields,
 		analyzer: configuration.analyzer,
+		stopWords: configuration.stopWords,
 		positions: configuration.positions,
 		surfaceTerms: configuration.surfaceTerms,
+		synonyms: configuration.synonyms,
 		limits: configuration.limits,
 	};
 }
