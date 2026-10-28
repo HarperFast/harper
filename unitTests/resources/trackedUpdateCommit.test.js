@@ -941,6 +941,41 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			await WithField.patch('sealed-object', { title: 'patched' });
 			assert.strictEqual((await SealedTable.get('sealed-object')).title, 'patched');
 		});
+		it('a helper object class field is compared by identity, so a sealed table accepts a patch', async () => {
+			class Helper {
+				calls = 0;
+			}
+			class WithField extends SealedTable {
+				helper = new Helper();
+			}
+			await SealedTable.put('sealed-helper', { title: 't' });
+			await WithField.patch('sealed-helper', { title: 'patched' });
+			const saved = await SealedTable.get('sealed-helper');
+			assert.strictEqual(saved.title, 'patched');
+			assert.strictEqual(saved.helper, undefined);
+		});
+		it('a field changed only through its pending changes keeps its baseline after the commit', () => {
+			let record = { id: 'pending', hits: 100 };
+			let changes;
+			class Instance {
+				hits = 0;
+				getRecord() {
+					return record;
+				}
+				getChanges() {
+					return changes;
+				}
+			}
+			const instance = new Instance();
+			recordOwnBaseline(instance);
+			changes = { hits: { __op__: 'add', value: 5 } };
+			const patch = collapseChanges(instance, changes);
+			assert.strictEqual(patch.hits.value, 5);
+			releaseOwnBaseline(instance, patch); // as the commit does
+			record = { id: 'pending', hits: 105 };
+			changes = { title: 'v2' };
+			assert.deepStrictEqual({ ...collapseChanges(instance, changes) }, { title: 'v2' });
+		});
 		it('an object class field changed in place is written', async () => {
 			class WithField extends QA1955Table {
 				meta = { value: 0 };

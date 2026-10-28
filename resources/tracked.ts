@@ -580,11 +580,12 @@ export function hasChanges(target) {
 }
 const ownBaselines = new WeakMap<object, any>();
 const SNAPSHOT = Symbol('snapshot');
+const IDENTITY = Symbol('identity');
 /**
  * Record the own properties a framework-constructed instance starts with (class fields such as `hits = 0`
- * on a Table subclass), so they enter a patch only once changed. An object value can change in place, so
- * it is kept as a deep copy and compared by content; one that does not survive structuredClone as the
- * same content is not recorded, and stays part of the patch.
+ * on a Table subclass), so they enter a patch only once changed. A plain-data object can change in place,
+ * so it is kept as a deep copy and compared by content; any other object (a helper instance, a Buffer) is
+ * compared by identity.
  */
 export function recordOwnBaseline(instance: any) {
 	let baseline;
@@ -592,13 +593,11 @@ export function recordOwnBaseline(instance: any) {
 		let value = instance[key];
 		if (typeof value === 'function') continue;
 		if (value !== null && typeof value === 'object') {
+			let copy;
 			try {
-				const copy = structuredClone(value);
-				if (!isDeepStrictEqual(copy, value)) continue;
-				value = { [SNAPSHOT]: copy };
-			} catch {
-				continue;
-			}
+				copy = structuredClone(value);
+			} catch {}
+			value = copy !== undefined && isDeepStrictEqual(copy, value) ? { [SNAPSHOT]: copy } : { [IDENTITY]: value };
 		}
 		(baseline ??= Object.create(null))[key] = value;
 	}
@@ -608,13 +607,18 @@ function atOwnBaseline(target, key: string, value) {
 	const baseline = ownBaselines.get(target);
 	if (baseline === undefined || !(key in baseline)) return false;
 	const initial = baseline[key];
-	return initial?.[SNAPSHOT] ? isDeepStrictEqual(value, initial[SNAPSHOT]) : sameValue(value, initial);
+	if (initial?.[SNAPSHOT]) return isDeepStrictEqual(value, initial[SNAPSHOT]);
+	if (initial?.[IDENTITY]) return value === initial[IDENTITY];
+	return sameValue(value, initial);
 }
-/** After a commit, a written own property is compared with the record, not its initial value */
+/** After a commit, an own property it wrote is compared with the record, not with its initial value */
 export function releaseOwnBaseline(target, patch) {
 	const baseline = ownBaselines.get(target);
 	if (baseline === undefined) return;
-	for (const key in patch) delete baseline[key];
+	for (const key in patch) {
+		if (key in baseline && hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]))
+			delete baseline[key];
+	}
 }
 /** Whether an own property of the instance is data to write, rather than an untouched class field */
 export function hasOwnChange(target, key: string) {
