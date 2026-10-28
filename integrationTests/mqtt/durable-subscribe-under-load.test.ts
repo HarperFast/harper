@@ -31,7 +31,6 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'durable-subscribe-under-load'
 const ENGINES = ['rocksdb', 'lmdb'] as const;
 const STREAM_PER_SECOND = 200;
 const TICK_MS = 2;
-// longer than the 5 ms between acknowledgements, so every save finds the session dirtied again
 const SAVE_LATENCY_MS = 10;
 const REPLY_DEADLINE_MS = 5_000;
 const SUBACK_BOUND_MS = 1_000;
@@ -202,7 +201,6 @@ for (const engine of ENGINES) {
 				deepStrictEqual(unsubscribed.topics, ['Stream/#'], 'the UNSUBACK follows the save that holds the removal');
 				ok(unsubscribed.elapsed < SUBACK_BOUND_MS, `UNSUBACK took ${Math.round(unsubscribed.elapsed)} ms`);
 
-				// the load was real throughout: the replies did not come from a pause in the stream
 				const rate = ((received.length - streamStart) * 1000) / (performance.now() - windowStart);
 				t.diagnostic(
 					`${Math.round(rate)} msg/s; SUBACK ${Math.round(subscribed.elapsed)} ms, UNSUBACK ${Math.round(unsubscribed.elapsed)} ms`
