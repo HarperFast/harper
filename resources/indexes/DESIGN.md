@@ -740,10 +740,14 @@ certifies an unchanged index after owner release or process restart, when no usa
 An old owner can race with a non-ready transition and restore an earlier coverage time, but consumers
 gate the time on stable ready readiness; after rebuild, the rebuilt anchor still covers that earlier true
 prefix.
-Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
-time out, or abort. A first waiter nudges its local runner without changing writer-lag accounting or
-retrying a deferred batch; an active peer owner already refreshes at flush cadence. No cross-worker
-notification or per-query persisted coverage write is needed. Closing a registration rejects its waiters.
+Concurrent waiters on one worker/index share a 25 ms poll timer; a new waiter is checked at once and
+moves it only for a sooner deadline. A waiter's target postdates the owner's commit drain, so only a
+later drain answers it: the poll requests one, waking the local runner (which takes an ownerless index)
+and, on a non-owner, notifying the stable-id `derived-index:<id>:coverage` buffer, which only the owner
+acts on, with the coverage wake (no writer-lag accounting, no deferred retry). It is not `:wake`, whose
+notifies are release handoffs a releaser consumes as its own. A request at clock `R` is answered by any
+owner drain after it, so the next goes out only once coverage reaches `R` with a waiter unresolved. A
+failed notify falls back to the flush-cadence refresh. Closing a registration rejects its waiters.
 A completed nonempty drain also attaches its capture to the accepted boundary; ongoing writes need
 not leave an empty turn between batches. The capture remains fenced behind every indexed mutation
 accepted through that boundary.

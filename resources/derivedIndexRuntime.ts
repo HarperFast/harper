@@ -54,7 +54,12 @@ export function derivedIndexTime(store: RocksDatabase): bigint {
 /** `bound`: taken on an idle pass, so the offered vector reflects every commit at or before it and none after. */
 type CoverageCapture = { time: bigint; positions: DerivedIndexPositions; bound?: true };
 type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknown) => void };
-type CoverageWaitGroup = { waiters: Set<CoverageWaiter>; timer?: NodeJS.Timeout };
+type CoverageWaitGroup = {
+	waiters: Set<CoverageWaiter>;
+	timer?: NodeJS.Timeout;
+	due?: number;
+	requestedAt?: bigint;
+};
 
 export type DerivedIndexState =
 	| { kind: 'record'; version: number; projection: unknown }
@@ -402,11 +407,11 @@ export class DerivedIndexRuntime {
 		if (this.#stopped || !this.#runners.has(backendId))
 			return Promise.reject(new ServerError('The derived index is unavailable', 503));
 		let group = this.#coverageWaits.get(backendId);
-		const first = !group;
 		if (!group) this.#coverageWaits.set(backendId, (group = { waiters: new Set() }));
 		const waiting = group;
+		let admitted!: CoverageWaiter;
 		const result = new Promise<void>((resolve, reject) => {
-			const waiter: CoverageWaiter = {
+			const waiter: CoverageWaiter = (admitted = {
 				since,
 				deadline: since + BigInt(Math.ceil(timeout * 1e6)),
 				finish: (error) => {
@@ -419,25 +424,17 @@ export class DerivedIndexRuntime {
 					if (error !== undefined) reject(error);
 					else resolve();
 				},
-			};
+			});
 			const abort = () => waiter.finish(signal.reason ?? new Error('Index wait aborted'));
 			waiting.waiters.add(waiter);
 			signal?.addEventListener('abort', abort, { once: true });
 			if (signal?.aborted) abort();
 		});
-		if (first && waiting.waiters.size) {
-			// Demand must not retry a deferred batch or count as unread writes for writer backpressure.
-			try {
-				this.#runners.get(backendId)?.wake(false, true);
-				this.#pollCoverage(backendId, waiting);
-			} catch (error) {
-				for (const waiter of waiting.waiters) waiter.finish(error);
-			}
-		}
+		if (waiting.waiters.has(admitted)) this.#pollCoverage(backendId, waiting, admitted);
 		return result;
 	}
 
-	#pollCoverage(backendId: string, group: CoverageWaitGroup) {
+	#pollCoverage(backendId: string, group: CoverageWaitGroup, admitted?: CoverageWaiter) {
 		try {
 			const views = getReadinessViews(this.#logStore, this.#runners.get(backendId)?.readinessId ?? backendId);
 			const before = readReadiness(views);
@@ -450,13 +447,27 @@ export class DerivedIndexRuntime {
 				);
 			const now = derivedIndexTime(this.#logStore.rootStore);
 			let delay = 25;
-			for (const waiter of group.waiters) {
+			for (const waiter of admitted ? [admitted] : group.waiters) {
 				if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since) waiter.finish();
 				else if (now >= waiter.deadline)
 					waiter.finish(new DerivedIndexLagError('Timed out waiting for derived index coverage; retry this query'));
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
-			if (group.waiters.size) group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
+			if (admitted ? !group.waiters.has(admitted) : !group.waiters.size) return;
+			if (group.requestedAt === undefined || time >= group.requestedAt) {
+				group.requestedAt = now;
+				this.#runners.get(backendId)?.requestCoverage();
+			}
+			const due = performance.now() + delay;
+			if (group.timer !== undefined) {
+				if (group.due! <= due) return;
+				clearTimeout(group.timer);
+			}
+			group.due = due;
+			group.timer = setTimeout(() => {
+				group.timer = undefined;
+				this.#pollCoverage(backendId, group);
+			}, delay);
 		} catch (error) {
 			for (const waiter of group.waiters) waiter.finish(error);
 		}
@@ -664,6 +675,7 @@ class DerivedIndexRunner {
 	#ownerEpoch?: bigint;
 	#readinessBuffer: SharedReadinessBuffer;
 	#wakeBuffer: SharedReadinessBuffer;
+	#coverageBuffer: SharedReadinessBuffer;
 	#publicationBuffer?: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
 	#publicationRevision?: BigInt64Array;
@@ -719,6 +731,9 @@ class DerivedIndexRunner {
 			this.readinessId === this.id ? notified : undefined
 		);
 		this.#wakeBuffer = this.readinessId === this.id ? this.#readinessBuffer : wakeBuffer(logStore, this.id, notified);
+		this.#coverageBuffer = coverageBuffer(logStore, this.id, () => {
+			if (this.#owned) this.wake(false, true);
+		});
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
 		if (registration.backend.publishesQueryRevisions) {
 			this.#publicationBuffer = publicationBuffer(logStore, this.readinessId);
@@ -736,6 +751,7 @@ class DerivedIndexRunner {
 		} catch (error) {
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
+			this.#coverageBuffer.cancel?.();
 			this.#publicationBuffer?.cancel?.();
 			throw error;
 		}
@@ -782,6 +798,17 @@ class DerivedIndexRunner {
 		});
 	}
 
+	/** The owner may be another worker, which only the coverage buffer reaches. */
+	requestCoverage() {
+		this.wake(false, true);
+		if (this.#owned) return;
+		try {
+			this.#coverageBuffer.notify?.();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.id}' could not request coverage from its owner`, error);
+		}
+	}
+
 	/**
 	 * Rejects when the backend could not prove its queued work quiescent; the runner lock stays held
 	 * then. Callers await it before closing storage: it resolves only once nothing can still write.
@@ -798,6 +825,7 @@ class DerivedIndexRunner {
 			this.#unsubscribeBackend?.();
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
+			this.#coverageBuffer.cancel?.();
 			this.#publicationBuffer?.cancel?.();
 		} catch (error) {
 			logger.warn?.(`Derived index '${this.id}' cleanup hook threw`, error);
@@ -2320,6 +2348,17 @@ function wakeBuffer(
 	callback: () => void
 ): SharedReadinessBuffer {
 	return logStore.getUserSharedBuffer(`derived-index:${backendId}:wake`, new ArrayBuffer(1), {
+		callback,
+	}) as SharedReadinessBuffer;
+}
+
+/** Notify-only, apart from `:wake`: a demand there would be taken for a release notification. */
+function coverageBuffer(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback: () => void
+): SharedReadinessBuffer {
+	return logStore.getUserSharedBuffer(`derived-index:${backendId}:coverage`, new ArrayBuffer(1), {
 		callback,
 	}) as SharedReadinessBuffer;
 }

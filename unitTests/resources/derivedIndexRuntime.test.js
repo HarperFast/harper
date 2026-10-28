@@ -4,6 +4,7 @@ const { waitFor } = require('../waitFor');
 const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
+	READINESS_BYTES,
 	DerivedIndexRuntime,
 	derivedIndexTime,
 	publishDerivedIndexReadiness,
@@ -292,6 +293,160 @@ describe('DerivedIndexRuntime', () => {
 		backend.stateChange();
 		await waitFor(() => persisted.some(({ cursor }) => cursor.logs.local === 20), { timeout: 5000 });
 		await runtime.stop();
+	});
+
+	describe('coverage demand', () => {
+		// A 60 s flush age keeps the owner's periodic coverage refresh out of every wait below.
+		const options = { idleGraceMilliseconds: 60_000, maxFlushAgeMilliseconds: 60_000, lockRetryMilliseconds: 60_000 };
+		const coverageBackend = (id, deliver) => {
+			const backend = new FakeBackend(id, cursor(10), deliver);
+			backend.publishCoverage = () => {};
+			return backend;
+		};
+		const countCoverageNotifies = (store) => {
+			const counts = { notifies: 0, lockAttempts: 0 };
+			const { getUserSharedBuffer, tryLock } = store;
+			store.getUserSharedBuffer = function (key, ...rest) {
+				const buffer = getUserSharedBuffer.call(this, key, ...rest);
+				if (String(key).endsWith(':coverage')) {
+					const { notify } = buffer;
+					buffer.notify = () => {
+						counts.notifies++;
+						notify();
+					};
+				}
+				return buffer;
+			};
+			store.tryLock = function (...args) {
+				counts.lockAttempts++;
+				return tryLock.apply(this, args);
+			};
+			return counts;
+		};
+		const coverageTime = (store, id) =>
+			Atomics.load(
+				new BigInt64Array(
+					store.getUserSharedBuffer(`derived-index:${id}:readiness`, new ArrayBuffer(READINESS_BYTES)),
+					READINESS_BYTES - 8,
+					1
+				),
+				0
+			);
+
+		it("answers a non-owner's wait from the owning runtime", async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const counts = countCoverageNotifies(store);
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-demand')));
+			await waitFor(() => coverageTime(store, 'coverage-demand') > 0n);
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-demand')));
+			await waitFor(() => counts.lockAttempts === 2);
+
+			const started = performance.now();
+			await peer.waitForCoverage('coverage-demand', derivedIndexTime(store.rootStore), 1000);
+			assert(performance.now() - started < 500);
+			assert.strictEqual(counts.notifies, 1);
+			assert.strictEqual(counts.lockAttempts, 2, 'a parked peer must not re-probe the runner lock on demand');
+			await peer.stop();
+			await owner.stop();
+		});
+
+		it('requests again for a waiter that joins after the first request was answered', async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			let clock = 1000;
+			store.rootStore.getMonotonicTimestamp = () => clock;
+			const counts = countCoverageNotifies(store);
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-joiner')));
+			await waitFor(() => coverageTime(store, 'coverage-joiner') > 0n);
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-joiner')));
+
+			const controller = new AbortController();
+			clock++;
+			const held = peer.waitForCoverage(
+				'coverage-joiner',
+				derivedIndexTime(store.rootStore) + 60_000_000_000n,
+				1000,
+				controller.signal
+			);
+			const cancelled = assert.rejects(held, { message: 'held waiter complete' });
+			try {
+				assert.strictEqual(counts.notifies, 1);
+				clock++;
+				const answered = derivedIndexTime(store.rootStore);
+				await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
+				clock++;
+				const before = counts.notifies;
+				const joined = peer.waitForCoverage(
+					'coverage-joiner',
+					derivedIndexTime(store.rootStore),
+					1000,
+					controller.signal
+				);
+				let joinedFinished = false;
+				const markJoinedFinished = () => {
+					joinedFinished = true;
+				};
+				joined.then(markJoinedFinished, markJoinedFinished);
+				assert.strictEqual(counts.notifies, before + 1, 'admission must request coverage before the next poll');
+				await waitFor(() => joinedFinished, { timeout: 1000, message: 'the joining waiter did not finish' });
+				await joined;
+			} finally {
+				controller.abort(new Error('held waiter complete'));
+				await cancelled;
+				await peer.stop();
+				await owner.stop();
+			}
+		});
+
+		it('times a wait out as lagging when the coverage request cannot be sent', async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-unsent')));
+			await waitFor(() => coverageTime(store, 'coverage-unsent') > 0n);
+			const { getUserSharedBuffer } = store;
+			store.getUserSharedBuffer = function (key, ...rest) {
+				const buffer = getUserSharedBuffer.call(this, key, ...rest);
+				if (String(key).endsWith(':coverage'))
+					buffer.notify = () => {
+						throw new Error('notify failed');
+					};
+				return buffer;
+			};
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-unsent')));
+
+			await assert.rejects(peer.waitForCoverage('coverage-unsent', derivedIndexTime(store.rootStore), 100), {
+				code: 'DERIVED_INDEX_LAGGING',
+			});
+			await peer.stop();
+			await owner.stop();
+		});
+
+		it('does not retry a deferred batch or repeat an unanswered request', async () => {
+			const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const counts = countCoverageNotifies(store);
+			const backend = coverageBackend('coverage-deferred', () => DERIVED_INDEX_DEFERRED);
+			const owner = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), options).runtime;
+			owner.register(registration(backend));
+			await waitFor(() => owner.getStatus('coverage-deferred').state === 'deferred');
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-deferred')));
+
+			await assert.rejects(peer.waitForCoverage('coverage-deferred', derivedIndexTime(store.rootStore), 200), {
+				code: 'DERIVED_INDEX_LAGGING',
+			});
+			assert.strictEqual(backend.deliveries.length, 1);
+			assert.strictEqual(counts.notifies, 1);
+			await peer.stop();
+			await owner.stop();
+		});
 	});
 
 	it('does not let a local setup failure replace peer-owned readiness', () => {
