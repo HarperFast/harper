@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import {
 	ORIGIN_ID,
 	admitCheckpoint,
@@ -1268,7 +1269,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const needed = this.savesStarted + 1;
 		return new Promise((resolve, reject) => {
 			this.saveWaiters.push({ needed, resolve, reject });
-			this.persist().catch(() => {});
+			this.persist();
 		});
 	}
 	/** The final save waits for inbound QoS 2 publishes still committing, so it keeps their ids; nothing saves after it. */
@@ -1344,7 +1345,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 			} else started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
-			if (durable || started) await this.persist();
+			if (durable || started) await this.saveExchanges();
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
@@ -1375,7 +1376,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state) this.forgetTopic(state);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
-			if (saved || this.dirty || this.saving) await this.persist();
+			if (saved || this.dirty || this.saving) await this.saveExchanges();
 			return result || saved;
 		});
 	}
@@ -1627,7 +1628,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.settleSaveWaiters(saveNumber);
 	}
 	endedError() {
-		return new Error(`MQTT session ${this.sessionId} has ended`);
+		return new SessionEndedError(this.sessionId);
 	}
 	settleSaveWaiters(saveNumber: number, error?: Error) {
 		if (this.saveWaiters.length === 0) return;
@@ -1702,6 +1703,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		super.disconnect(clientTerminated);
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
 		this.seal((changed || this.dirty || this.hasInFlight()) && !this.discarded);
+	}
+}
+
+class SessionEndedError extends ClientError {
+	constructor(sessionId: string) {
+		super(`MQTT session ${sessionId} has ended`, 409);
+		this.name = 'SessionEndedError';
 	}
 }
 

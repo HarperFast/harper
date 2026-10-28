@@ -665,13 +665,13 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		}
 	});
 
-	it('starts no checkpoint timer for a SUBSCRIBE that finishes after the session disconnected', async () => {
+	it('refuses a SUBSCRIBE that finishes after the session disconnected, and starts no checkpoint timer for it', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const { session } = await connect(`late-subscribe-${name}`);
 		const subscribing = session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 		session.disconnect(true);
-		await subscribing;
+		await assert.rejects(subscribing, { name: 'SessionEndedError', statusCode: 409, message: /has ended/ });
 		assert.strictEqual(session.checkpointTimer, undefined);
 	});
 
