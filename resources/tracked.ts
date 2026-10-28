@@ -573,7 +573,7 @@ export function hasChanges(target) {
 		}
 		for (const key of Object.keys(target)) {
 			const value = target[key];
-			if (!sameValue(value, source?.[key]) && !atOwnBaseline(target, key, value)) return true;
+			if (!sameOwnValue(value, source?.[key]) && !atOwnBaseline(target, key, value)) return true;
 		}
 	}
 	return false;
@@ -624,6 +624,26 @@ export function releaseOwnBaseline(target, patch) {
 export function hasOwnChange(target, key: string) {
 	return hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]);
 }
+// An own object value is not tracked: the record gets a copy, so a later in-place edit of the instance's
+// object is a difference in content rather than invisible
+function plainCopy(value) {
+	if (value === null || typeof value !== 'object' || (value.constructor !== Object && value.constructor !== Array))
+		return value;
+	try {
+		return structuredClone(value);
+	} catch {
+		return value;
+	}
+}
+function sameOwnValue(value, recordValue) {
+	if (sameValue(value, recordValue)) return true;
+	return (
+		value !== null &&
+		typeof value === 'object' &&
+		(value.constructor === Object || value.constructor === Array) &&
+		isDeepStrictEqual(value, recordValue)
+	);
+}
 function sameValue(a, b) {
 	return a === b || (a !== a && b !== b); // NaN
 }
@@ -667,9 +687,9 @@ export function collapseChanges(target, changes) {
 	}
 	for (const key of ownKeys) {
 		const value = target[key];
-		if (sameValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
+		if (sameOwnValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
 		if (patch === changes) patch = Object.assign(Object.create(null), changes);
-		patch[key] = value?.getRecord ? collapseData(value) : value;
+		patch[key] = value?.getRecord ? collapseData(value) : plainCopy(value);
 		keyCount++;
 	}
 	// with no record to compare against, any update (even an empty one) writes, as hasChanges decides

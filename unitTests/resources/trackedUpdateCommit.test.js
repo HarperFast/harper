@@ -976,6 +976,26 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			changes = { title: 'v2' };
 			assert.deepStrictEqual({ ...collapseChanges(instance, changes) }, { title: 'v2' });
 		});
+		it('an own object is committed as a copy, so a later in-place edit is still a change', () => {
+			let record = { id: 'own-object' };
+			class Instance {
+				getRecord() {
+					return record;
+				}
+				getChanges() {
+					return undefined;
+				}
+			}
+			const instance = new Instance();
+			instance.meta = { value: 1 };
+			const patch = collapseChanges(instance, undefined);
+			assert.notStrictEqual(patch.meta, instance.meta);
+			assert.deepStrictEqual(patch.meta, { value: 1 });
+			record = { id: 'own-object', meta: patch.meta }; // committed
+			assert.strictEqual(collapseChanges(instance, undefined), undefined);
+			instance.meta.value = 2;
+			assert.deepStrictEqual(collapseChanges(instance, undefined).meta, { value: 2 });
+		});
 		it('an object class field changed in place is written', async () => {
 			class WithField extends QA1955Table {
 				meta = { value: 0 };
