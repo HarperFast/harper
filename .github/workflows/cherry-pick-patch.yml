@@ -637,16 +637,29 @@ jobs:
           # Pin the Node matrix. These inputs default to `all`, which is the
           # nightly-scale matrix (~43 jobs); a PR push runs a single version.
           # Unpinned, one push to a PR milestoned onto three release branches
-          # dispatches that matrix three times. Release branches cut before
-          # #3659 offer 26 as an input but still wire their Bun and uWS jobs to
-          # harper-build-artifacts-node-24, so match the artifact the branch's
-          # integration workflow downloads.
-          NODE_VERSION=24
-          if git show "${BRANCH}:.github/workflows/integration-tests.yml" | grep -q 'harper-build-artifacts-node-26'; then
-            NODE_VERSION=26
+          # dispatches that matrix three times. Integration tests must build the
+          # artifact version that the branch's non-matrixed Bun and uWS jobs
+          # download (falling back to the unit-test version when every artifact
+          # name is matrixed, as on v5.0).
+          UNIT_NODE=24
+          if git show "${BRANCH}:.github/workflows/unit-test.yml" | grep -qE "^[[:space:]]*- '26'[[:space:]]*$"; then
+            UNIT_NODE=26
           fi
-          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$NODE_VERSION"
-          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$NODE_VERSION"
+          INTEGRATION_NODE=$(
+            git show "${BRANCH}:.github/workflows/integration-tests.yml" \
+              | grep -oE 'harper-build-artifacts-node-[0-9]+' \
+              | sed 's/.*-//' \
+              | sort -u || true
+          )
+          case "$INTEGRATION_NODE" in
+            '') INTEGRATION_NODE="$UNIT_NODE" ;;
+            *[!0-9]*)
+              echo "::error::Multiple or invalid artifact Node versions in ${BRANCH}:.github/workflows/integration-tests.yml: ${INTEGRATION_NODE}"
+              exit 1
+              ;;
+          esac
+          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$INTEGRATION_NODE"
+          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$UNIT_NODE"
 
           # Locate the dispatched integration-tests run id (creation is async)
           RUN_ID=""
