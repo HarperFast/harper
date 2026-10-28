@@ -21,7 +21,6 @@ suite('an Operations API body that fails validation', (ctx: ContextWithHarper) =
 	let client: ReturnType<typeof createApiClient>;
 	let logPath: string;
 
-	// Throws when hdb.log is missing: an unreadable log would let every "nothing was logged" assertion pass.
 	function readLog(): string {
 		return readFileSync(logPath, 'utf8');
 	}
@@ -34,11 +33,9 @@ suite('an Operations API body that fails validation', (ctx: ContextWithHarper) =
 		const deadline = Date.now() + 15_000;
 		while (Date.now() < deadline) {
 			try {
-				readLog();
-				break;
-			} catch {
-				await sleep(100);
-			}
+				if (readLog().length > 0) break;
+			} catch {}
+			await sleep(100);
 		}
 		ok(readLog().length > 0, `${logPath} is empty after startup`);
 	});
