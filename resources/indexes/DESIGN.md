@@ -147,8 +147,9 @@ whole change removed, reintroduced in miniature. An `ef` above the node count is
 traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
 
 The filter budget deliberately does not follow a limit-derived `ef`: it is the index's own resolved
-`ef` (capped as in the auto-scale note) times `filterExpansion`. Multiplying it by a caller's `limit`
-would turn a filtered vector query into a record-loading scan wearing an index's clothes.
+`ef` (capped as in the [auto-scale note](#efconstruction-and-the-search-ef-ceiling-both-auto-scale-with-the-graph))
+times `filterExpansion`. Multiplying it by a caller's `limit` would turn a filtered vector query into a
+record-loading scan wearing an index's clothes.
 
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
@@ -703,7 +704,8 @@ is durable. Unrelated-only progress may publish without a new barrier only if **
 registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
 be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
 optional `coverage` field in the existing durable cursor value, kept and persisted under the binding
-rules in Ownership and wake-up, and removed with the cursor before reset. No native file format changes.
+rules in [Ownership and wake-up](#ownership-and-wake-up), and removed with the cursor before reset. No
+native file format changes.
 
 Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic, except
 that a durable vector advance resets the cadence, since the backend dropped the old vector's coverage. The
