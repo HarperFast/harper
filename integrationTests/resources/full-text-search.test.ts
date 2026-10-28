@@ -567,13 +567,21 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				headers: { Authorization: authorization },
 				signal: AbortSignal.timeout(10_000),
 			});
-			const body = await response.text();
+			let body: string;
+			try {
+				body = await response.text();
+			} catch (error) {
+				assert.strictEqual(response.status, 200);
+				assert.strictEqual(error.name, 'TypeError');
+				assert.strictEqual(error.cause?.code, 'UND_ERR_SOCKET');
+				await delay(25);
+				continue;
+			}
 			assert.ok(response.status === 200 || response.status === 503, body);
 			if (response.status === 200) {
 				const records = JSON.parse(body);
-				if (records.length === 1 && typeof records[0].error === 'string') {
-					assert.match(records[0].error, /IndexRebuildingError|DerivedIndexLagError/);
-				} else {
+				assert.ok(Array.isArray(records));
+				if (records.length) {
 					assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
 					ready = true;
 				}

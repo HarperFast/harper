@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const { createServer } = require('node:http');
+const { pipeline } = require('node:stream');
 const { toBufferKey } = require('ordered-binary');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
@@ -53,6 +54,8 @@ describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function
 		`;
 		let Product;
 		let server;
+		let failedResponse;
+		let streamFailure;
 		let reader;
 		const resetGate = gate();
 		const publishGate = gate();
@@ -231,24 +234,37 @@ describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function
 					output.writeHead(response.status, Object.fromEntries(response.headers));
 					if (typeof response.body === 'string' || Buffer.isBuffer(response.body)) output.end(response.body);
 					else {
-						for await (const chunk of response.body || []) output.write(chunk);
-						output.end();
+						pipeline(response.body, output, (error) => {
+							if (error) {
+								streamFailure = error;
+								failedResponse = output;
+							}
+						});
 					}
 				} catch (error) {
+					if (output.headersSent || output.destroyed) {
+						streamFailure = error;
+						failedResponse = output;
+						output.destroy(error);
+						return;
+					}
 					output.writeHead(error.statusCode || 500);
 					output.end(error.message);
 				}
 			});
 			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 			const url = `http://127.0.0.1:${server.address().port}/Product/?catalogSearch=matches=added&select(id,title)&limit(20)`;
-			const streamed = await fetch(url, { signal: AbortSignal.timeout(30000) });
-			const streamedText = await streamed.text();
-			if (streamed.status === 200) {
-				const framed = JSON.parse(streamedText);
-				assert.strictEqual(framed.length, 1);
-				assert.deepStrictEqual(Object.keys(framed[0]), ['error']);
-				assert.match(framed[0].error, /^IndexRebuildingError:/);
-			} else assert.strictEqual(streamed.status, 503, streamedText);
+			const terminated = (error) => error.name === 'TypeError' && error.cause?.code === 'UND_ERR_SOCKET';
+			const streamed = await fetch(url, { signal: AbortSignal.timeout(5000) }).catch((error) => {
+				assert.ok(terminated(error), String(error));
+			});
+			if (streamed?.status === 200) await assert.rejects(() => streamed.text(), terminated);
+			else if (streamed) assert.strictEqual(streamed.status, 503, await streamed.text());
+			if (!streamed || streamed.status === 200) {
+				await waitFor(() => streamFailure !== undefined, 5000);
+				assert.strictEqual(streamFailure.code, 'INDEX_REBUILDING');
+				assert.strictEqual(failedResponse.destroyed, true);
+			}
 			const unavailable = await fetch(url, { headers: { Prefer: 'count=exact' }, signal: AbortSignal.timeout(30000) });
 			assert.strictEqual(unavailable.status, 503, await unavailable.text());
 			resetGate.release();
