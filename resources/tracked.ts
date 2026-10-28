@@ -2,6 +2,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { isDeepStrictEqual } from 'node:util';
 
 export const ASSERT_TRACKED_WRITABLE = Symbol('assert-tracked-writable');
 export const GET_TRACKED_WRITE_GENERATION = Symbol('get-tracked-write-generation');
@@ -578,23 +579,42 @@ export function hasChanges(target) {
 	return false;
 }
 const ownBaselines = new WeakMap<object, any>();
+const SNAPSHOT = Symbol('snapshot');
 /**
- * Record the primitive own properties a framework-constructed instance starts with (class fields such as
- * `hits = 0` on a Table subclass), so they enter a patch only once changed. An object value can change in
- * place, so it is not recorded and stays part of the patch.
+ * Record the own properties a framework-constructed instance starts with (class fields such as `hits = 0`
+ * on a Table subclass), so they enter a patch only once changed. An object value can change in place, so
+ * it is kept as a deep copy and compared by content; one that does not survive structuredClone as the
+ * same content is not recorded, and stays part of the patch.
  */
 export function recordOwnBaseline(instance: any) {
 	let baseline;
 	for (const key of Object.keys(instance)) {
-		const value = instance[key];
-		if (value !== null && (typeof value === 'object' || typeof value === 'function')) continue;
+		let value = instance[key];
+		if (typeof value === 'function') continue;
+		if (value !== null && typeof value === 'object') {
+			try {
+				const copy = structuredClone(value);
+				if (!isDeepStrictEqual(copy, value)) continue;
+				value = { [SNAPSHOT]: copy };
+			} catch {
+				continue;
+			}
+		}
 		(baseline ??= Object.create(null))[key] = value;
 	}
 	if (baseline) ownBaselines.set(instance, baseline);
 }
 function atOwnBaseline(target, key: string, value) {
 	const baseline = ownBaselines.get(target);
-	return baseline !== undefined && key in baseline && sameValue(value, baseline[key]);
+	if (baseline === undefined || !(key in baseline)) return false;
+	const initial = baseline[key];
+	return initial?.[SNAPSHOT] ? isDeepStrictEqual(value, initial[SNAPSHOT]) : sameValue(value, initial);
+}
+/** After a commit, a written own property is compared with the record, not its initial value */
+export function releaseOwnBaseline(target, patch) {
+	const baseline = ownBaselines.get(target);
+	if (baseline === undefined) return;
+	for (const key in patch) delete baseline[key];
 }
 /** Whether an own property of the instance is data to write, rather than an untouched class field */
 export function hasOwnChange(target, key: string) {
@@ -644,8 +664,6 @@ export function collapseChanges(target, changes) {
 	for (const key of ownKeys) {
 		const value = target[key];
 		if (sameValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
-		// once written, the field is compared with the record, so setting it back to its initial value is a change
-		delete ownBaselines.get(target)?.[key];
 		if (patch === changes) patch = Object.assign(Object.create(null), changes);
 		patch[key] = value?.getRecord ? collapseData(value) : value;
 		keyCount++;

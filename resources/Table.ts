@@ -190,6 +190,7 @@ import {
 	collapseChanges,
 	recordOwnBaseline,
 	hasOwnChange,
+	releaseOwnBaseline,
 	updateAndFreeze,
 	hasChanges,
 	GenericTrackedObject,
@@ -5525,7 +5526,8 @@ export function makeTable(options): TableResourceClass {
 				let captured = false;
 				captureChanges = () => {
 					if (!captured) {
-						captured = true;
+						// with no changes object yet (an own-property-only save), one made later is still this write's
+						captured = this.#changes !== undefined;
 						recordUpdate = this.#changes;
 						if (tracksInstance) instanceChanges = recordUpdate;
 					}
@@ -6600,6 +6602,7 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
+					if (tracksInstance) releaseOwnBaseline(this, recordUpdate);
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');

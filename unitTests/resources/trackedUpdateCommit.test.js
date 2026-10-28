@@ -1,7 +1,13 @@
 const assert = require('node:assert');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { collapseData, hasChanges, collapseChanges, recordOwnBaseline } = require('#src/resources/tracked');
+const {
+	collapseData,
+	hasChanges,
+	collapseChanges,
+	recordOwnBaseline,
+	releaseOwnBaseline,
+} = require('#src/resources/tracked');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { createBlob, isSaving, getFilePathForBlob } = require('#src/resources/blob');
@@ -689,6 +695,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				const rec = await DatedCopyTable.update('edit', ctx);
 				assert.strictEqual(rec.when, rec.when);
 				rec.when.setTime(2000);
+				assert(Buffer.isBuffer(rec.bytes));
 				rec.bytes[0] = 9;
 				assert.strictEqual(rec.when.getTime(), 2000);
 				// the loaded record can be the commit base, so it must not see the edit
@@ -920,6 +927,20 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				.at(-1);
 			assert.strictEqual(audited.hits.__op__, 'add');
 		});
+		it('an unchanged object class field is not written, so a sealed table accepts a patch', async () => {
+			class WithField extends SealedTable {
+				meta = { values: [1] };
+			}
+			await SealedTable.put('sealed-object', { title: 't' });
+			const versionBefore = SealedTable.primaryStore.getEntry('sealed-object').version;
+			await transaction(async (ctx) => {
+				const rec = await WithField.update('sealed-object', ctx);
+				assert.strictEqual(rec.title, 't');
+			});
+			assert.strictEqual(SealedTable.primaryStore.getEntry('sealed-object').version, versionBefore);
+			await WithField.patch('sealed-object', { title: 'patched' });
+			assert.strictEqual((await SealedTable.get('sealed-object')).title, 'patched');
+		});
 		it('an object class field changed in place is written', async () => {
 			class WithField extends QA1955Table {
 				meta = { value: 0 };
@@ -947,8 +968,14 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			recordOwnBaseline(instance);
 			assert.strictEqual(collapseChanges(instance, undefined), undefined);
 			instance.hits = 5;
-			assert.deepStrictEqual({ ...collapseChanges(instance, undefined) }, { hits: 5 });
-			record = { id: 'reset', hits: 5 }; // committed
+			const patch = collapseChanges(instance, undefined);
+			assert.deepStrictEqual({ ...patch }, { hits: 5 });
+			// an aborted write keeps the baseline
+			instance.hits = 0;
+			assert.strictEqual(collapseChanges(instance, undefined), undefined);
+			instance.hits = 5;
+			releaseOwnBaseline(instance, patch); // as the commit does
+			record = { id: 'reset', hits: 5 };
 			instance.hits = 0;
 			assert.deepStrictEqual({ ...collapseChanges(instance, undefined) }, { hits: 0 });
 		});
