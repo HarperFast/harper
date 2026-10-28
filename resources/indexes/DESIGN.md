@@ -306,8 +306,8 @@ from any cursor they write after applying records (HNSW `#appliedPastCoverage`, 
 `#hasStagedMutations`). The conversion is an empty `#pendingBatch` carrying the old coverage (it reflects
 the same commits), so the saved vector stays offered until it is durable. Anything else rebuilds: a
 flushed post-purge write, lagging coverage, other range failures, an unproven sibling. Accepted: coverage
-persisted by an older build, and the window between a native flush and its cursor write, both reachable
-only with a power loss (#3673). A runner's idle grace counts from its last delivered work or acquisition,
+persisted by an older build, the window between a native flush and its cursor write, and a segment that
+power-loss recovery shortened to W and a purge then removed, all reachable only with a power loss (#3673). A runner's idle grace counts from its last delivered work or acquisition,
 not from its last wake: commits with no log work (the origin-closed floor, every 5 s) wake every runner,
 and must not keep it from releasing. A failure while the root store is closing or closed condemns nothing.
 

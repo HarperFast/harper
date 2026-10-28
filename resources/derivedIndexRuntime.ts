@@ -1909,7 +1909,11 @@ class DerivedIndexRunner {
 		// A failure while the database closes is the close cutting work off, not evidence against the index,
 		// so it condemns nothing (rocksdb-js already reports `closed` from the start of a close).
 		const storeStatus: string = this.#logStore.rootStore.status;
-		if (storeStatus === 'closing' || storeStatus === 'closed') return;
+		if (storeStatus === 'closing' || storeStatus === 'closed') {
+			// Local only: stops an install or drain from going on, and publishes nothing shared.
+			this.status = { state: 'unavailable', reason: `database closing: ${reason}`, ownerEpoch: this.#ownerEpoch };
+			return;
+		}
 		if (this.#rebuilding) {
 			this.#rebuildFailed(reason, code, error);
 			return;
