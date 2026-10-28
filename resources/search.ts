@@ -2407,9 +2407,8 @@ export function estimateCondition(table) {
 						estimatedCount += subCondition.estimated_count;
 					}
 				} else {
-					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition.
-					// A filter-only (Infinity) leg can't drive a scan and says nothing about the others' cardinality, so it's skipped:
-					// the group is Infinity only when every leg is.
+					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition
+					// (Infinity marks a filter-only leg: it can't drive a scan and says nothing about its siblings' cardinality)
 					estimatedCount = Infinity;
 					for (const subCondition of condition.conditions) {
 						const subCount = estimateConditionForTable(subCondition);

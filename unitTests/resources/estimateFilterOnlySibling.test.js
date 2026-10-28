@@ -1,6 +1,3 @@
-// A filter-only sibling (IS NULL, LIKE '%x%', LIKE '%x', a negated condition) estimates Infinity because it cannot
-// drive an index scan. It must not turn the finite, index-backed estimate of the AND group it sits in into Infinity.
-
 require('../testUtils');
 const assert = require('node:assert');
 const alasql = require('alasql');
@@ -13,7 +10,6 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('estimateCondition AND intersection ignores filter-only legs', function () {
 	describe('reducer arithmetic', () => {
-		// a fixed denominator and cached leg estimates isolate the arithmetic from any store
 		const fakeTable = {
 			primaryKey: 'id',
 			primaryStore: { estimatedEntryCount: 100, estimatedEntryCountExpires: Infinity },
@@ -96,7 +92,6 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 					{ name: 'flag', type: 'String' },
 				],
 			});
-			// explicit nulls, omitted attributes, values the != / NOT IN lists exclude, and matches
 			seed = [];
 			for (let i = 0; i < 60; i++) {
 				const row = { id: `r${String(i).padStart(2, '0')}`, c: i < 50 ? 'common' : 'rare', flag: 'none' };
@@ -141,7 +136,6 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 				.map((row) => row.id)
 				.sort();
 
-		// `!=` / NOT IN lower to a compound AND group (the value legs plus a `ne null` guard) in the SQL engine
 		const SQL_CASES = [
 			{ where: `a IS NULL AND b != 5`, matches: (row) => !present(row.a) && notFive(row) },
 			{ where: `b != 5 AND a IS NULL`, matches: (row) => !present(row.a) && notFive(row) },
@@ -172,6 +166,10 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		}
 
 		describe('SQL under allowFullScan: false', () => {
+			it('rejects a lone filter-only condition, so the cases below cannot pass by scanning', async () => {
+				await assert.rejects(runSql(`SELECT id FROM test.EstimateFilterOnlySibling WHERE a IS NULL`), /index/);
+			});
+
 			for (const { where, matches } of SQL_CASES) {
 				it(`SELECT ... WHERE ${where}`, async () => {
 					const expected = idsWhere(matches);

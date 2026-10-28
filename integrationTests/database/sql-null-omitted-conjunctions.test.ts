@@ -43,7 +43,6 @@ const CASES: { wheres: string[]; expected: string[] }[] = [
 	{ wheres: [`c = 'alpha' AND b IS NULL`, `b IS NULL AND c = 'alpha'`], expected: ['r_a1_babsent', 'r_a1_bnull'] },
 	{ wheres: [`c = 'alpha' AND (b IS NULL OR b = 5)`], expected: ['r_a1_b5', 'r_a1_babsent', 'r_a1_bnull'] },
 	{ wheres: [`c = 'alpha' AND (b IS NULL OR b IS NOT NULL)`], expected: ALPHA_IDS },
-	// A filter-only conjunct must not hide the index-backed estimate of the `!=` / NOT IN not-null guard group.
 	{ wheres: [`a IS NULL AND b != 5`, `b != 5 AND a IS NULL`], expected: ['r_aabsent_b1', 'r_anull_b1'] },
 	{ wheres: [`a IS NULL AND b NOT IN (5, 7)`], expected: ['r_aabsent_b1', 'r_anull_b1'] },
 	{ wheres: [`c LIKE '%lph%' AND b != 5`, `b != 5 AND c LIKE '%lph%'`], expected: ['r1'] },
@@ -182,11 +181,8 @@ for (const sqlEngine of ['auto', 'new']) {
 					.set('Prefer', 'count=estimated')
 					.timeout(60_000);
 				strictEqual(response.status, 200);
-				strictEqual(
-					/^items 0-1\/\d+$/.test(response.headers['content-range']),
-					true,
-					response.headers['content-range']
-				);
+				const total = Number(/^items 0-1\/(\d+)$/.exec(response.headers['content-range'])?.[1]);
+				strictEqual(total >= 2 && total <= SEED.length, true, response.headers['content-range']);
 			});
 		}
 	);
