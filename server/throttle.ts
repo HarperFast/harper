@@ -134,9 +134,7 @@ setTimeout(() => {
 		session.on('inspectorNotification', ({ method }) => {
 			if (method === 'Debugger.resumed') {
 				// reset if we are resuming
-				lastEventQueueCheck = performance.now();
-				loopProbePending = false;
-				callsSinceProbe = false;
+				lastEventQueueCheck = loopIterationStart = performance.now();
 			}
 		});
 	}

@@ -67,18 +67,16 @@ function spin(ms) {
 
 describe('HTTP method request admission', function () {
 	this.timeout(5000);
-	let previousReadLimit, previousWriteLimit;
-	let hasPreviousLimits = false;
+	const unset = Symbol();
+	let previousReadLimit = unset;
+	let previousWriteLimit = unset;
 	beforeEach(() => {
 		previousReadLimit = env.get('http_readRequestQueueLimit');
 		previousWriteLimit = env.get('http_requestQueueLimit');
-		hasPreviousLimits = true;
 	});
 	afterEach(() => {
-		if (!hasPreviousLimits) return;
-		env.setProperty('http_readRequestQueueLimit', previousReadLimit);
-		env.setProperty('http_requestQueueLimit', previousWriteLimit);
-		hasPreviousLimits = false;
+		if (previousReadLimit !== unset) env.setProperty('http_readRequestQueueLimit', previousReadLimit);
+		if (previousWriteLimit !== unset) env.setProperty('http_requestQueueLimit', previousWriteLimit);
 	});
 
 	for (const backend of ['Node', 'uWS']) {
