@@ -548,9 +548,9 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
 	});
 
-	it('issuance on a fresh registry starts above its recovered ceiling', () => {
+	it('fresh and fully reopened registries issue above their recovered ceilings', () => {
 		const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'issuance-seed-'));
-		const recoveredRoot = RocksDatabase.open(directory);
+		let recoveredRoot = RocksDatabase.open(directory);
 		try {
 			const recoveredAudit = new RocksTransactionLogStore(recoveredRoot);
 			const ceiling = coverLocalIssuance(recoveredAudit, Date.now() + 200);
@@ -558,6 +558,15 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			const key = freshLocalKey(recoveredRoot);
 			assert.ok(key > ceiling, 'the first key after the open-time seed is above the ceiling');
 			assert.ok(readLocalIssuanceCeiling(recoveredAudit) > key, 'a future key is covered before publication');
+			const latestCeiling = readLocalIssuanceCeiling(recoveredAudit);
+			forgetOriginFloorRegistry(recoveredRoot);
+			recoveredRoot.close();
+			recoveredRoot = RocksDatabase.open(directory);
+			const reopenedAudit = new RocksTransactionLogStore(recoveredRoot);
+			seedLocalIssuance(recoveredRoot, readLocalIssuanceCeiling(reopenedAudit), (next) =>
+				coverLocalIssuance(reopenedAudit, next)
+			);
+			assert.ok(freshLocalKey(recoveredRoot) > latestCeiling, 'full close must discard the old recovery snapshot');
 		} finally {
 			forgetOriginFloorRegistry(recoveredRoot);
 			recoveredRoot.close();

@@ -36,7 +36,7 @@ ahead of wall time, affecting unrelated local writes until the clock catches up.
 
 If persisting the issuance ceiling for a holder-write stamp fails, that save rejects and its unsaved
 operation is detached from the transaction. The caller must unlock and acquire a fresh lock before
-retrying the change; the refused operation cannot be reused through the same record instance.
+retrying the change; the refused operation cannot be reused through the same record instance. All unsaved writes on that handle in the refusing transaction are void when refusal is observed; already saved writes retain their replay state. Unsaved writes in another transaction still fail at that transaction's own commit. Re-entering lock() without unlocking does not recover the handle; unlock first, then acquire a fresh lock.
 
 Consequences that shape the code:
 

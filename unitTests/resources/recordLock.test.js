@@ -2117,29 +2117,36 @@ describe('Record locks (harper#483)', () => {
 					}
 					const refused = assert.rejects(attempted, (error) => error.statusCode === 409);
 					await refused;
-					if (stagedBeforeRefusal) {
-						await assert.rejects(
-							async () => holder.update(lockedId, { n: 4 }),
-							(error) => error.statusCode === 409
-						);
-						assert.ok(!context.transaction.writes.some((write) => write?.key === lockedId && !write.saved));
-					}
+					assert.ok(
+						!context.transaction.writes.some((write) => write?.key === lockedId && !write.saved),
+						'the first refusal detached every unsaved sibling without another mutation'
+					);
 					stream.end('payload');
 					await blobbed;
 					await transaction(context, async () => {
-						try {
-							await holder.update(lockedId, { n: 5 });
-							await holder.update(lockedId, { n: 6 });
-							await holder.save();
-							assert.fail('the refused handle must reject the mutation');
-						} catch (error) {
-							assert.strictEqual(error.statusCode, 409);
-						}
+						if (!stagedBeforeRefusal)
+							try {
+								await holder.update(lockedId, { n: 5 });
+								await holder.update(lockedId, { n: 6 });
+								await holder.save();
+								assert.fail('the refused handle must reject the mutation');
+							} catch (error) {
+								assert.strictEqual(error.statusCode, 409);
+							}
 						await LockTest.put({ id: otherId, n: 1 });
 					});
 					assert.strictEqual(entryOf(lockedId).value.n, 0, 'neither refused write landed');
 					assert.strictEqual(entryOf(otherId).value.n, 1, 'the unrelated write committed');
 					assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier accepted write committed');
+					await assert.rejects(
+						async () => holder.lock(),
+						(error) => error.statusCode === 409
+					);
+					await holder.unlock();
+					holder = await holder.lock({ hold: true, lease: 30_000 });
+					holder.set('n', 7);
+					await holder.save();
+					assert.strictEqual(entryOf(lockedId).value.n, 7, 'unlock then lock obtains a writable fresh handle');
 				} finally {
 					stream.end();
 					await blobbed.catch(() => {});
@@ -2147,6 +2154,72 @@ describe('Record locks (harper#483)', () => {
 				}
 			});
 		}
+
+		it('detaches all unsaved siblings when reserving a log key fails', async function () {
+			if (isLMDB) return this.skip();
+			const fs = require('node:fs');
+			const path = require('node:path');
+			const { PID_DIR_PATH } = require('../perPidRoot');
+			const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+			const { persistOriginClosedFloor } = require('#src/resources/auditStore');
+			const { publishOriginFloor } = require('#src/resources/originClosedFloor');
+			const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'refused-reservation-'));
+			const failedRoot = RocksDatabase.open(directory);
+			const failedAudit = new RocksTransactionLogStore(failedRoot);
+			failedRoot.close();
+			const lockedId = id();
+			const otherId = id();
+			await LockTest.put({ id: lockedId, n: 0 });
+			const context = {};
+			const holder = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
+			const root = LockTest.primaryStore.rootStore;
+			let coverageError;
+			try {
+				const lead =
+					Math.max(Date.now(), localIssuanceRatchet(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
+				aheadUntil = Math.max(aheadUntil, lead + 1000);
+				persistOriginClosedFloor(LockTest.auditStore, lead);
+				publishOriginFloor(root, lead);
+				seedLocalIssuance(root, readLocalIssuanceCeiling(LockTest.auditStore), (key) => {
+					try {
+						return coverLocalIssuance(failedAudit, key);
+					} catch (error) {
+						coverageError = error;
+						throw error;
+					}
+				});
+				await transaction(context, async () => {
+					await holder.update(lockedId, { n: 2 });
+					await holder.update(lockedId, { n: 3 });
+					const owner = context.transaction;
+					assert.ok(
+						owner.writes.filter((write) => write?.key === lockedId && !write.saved).length >= 2,
+						'both deferred siblings are staged before reservation'
+					);
+					await assert.rejects(
+						async () => holder.save(),
+						(error) => coverageError !== undefined && error === coverageError
+					);
+					assert.ok(
+						!owner.writes.some((write) => write?.key === lockedId && !write.saved),
+						'the first reservation refusal detaches all unsaved siblings'
+					);
+					seedLocalIssuance(root, readLocalIssuanceCeiling(LockTest.auditStore), (key) =>
+						coverLocalIssuance(LockTest.auditStore, key)
+					);
+					await LockTest.put({ id: otherId, n: 1 });
+				});
+				assert.strictEqual(entryOf(lockedId).value.n, 0);
+				assert.strictEqual(entryOf(otherId).value.n, 1, 'the caught reservation failure did not abort unrelated work');
+			} finally {
+				seedLocalIssuance(root, readLocalIssuanceCeiling(LockTest.auditStore), (key) =>
+					coverLocalIssuance(LockTest.auditStore, key)
+				);
+				await holder.unlock();
+				fs.rmSync(directory, { recursive: true, force: true });
+			}
+		});
 
 		it('detaches a holder write when allocating its next stamp fails, and retries after reacquiring the lock', async function () {
 			if (isLMDB) return this.skip();

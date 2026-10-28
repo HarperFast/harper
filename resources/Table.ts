@@ -2090,13 +2090,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		#rejectRefusedLockWrite(handle: RecordLockHandle): never {
 			const owner = this.#savingOperation?.stagedIn ?? txnForContext(this.getContext());
-			for (const write of owner?.writes ?? [this.#savingOperation]) {
-				if (write?.lockHandle === handle && !write.saved) {
-					write.dropped = true;
-					write.lockWriteRefused = true;
-					write.stagedIn?.detachWrite(write);
-				}
-			}
+			owner.refuseLockWrites(handle, this.#savingOperation);
 			throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
 		}
 		// #section: static-config
