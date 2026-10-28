@@ -385,6 +385,7 @@ class Subscription extends IterableEventQueue {
 	 */
 	localResumeStart?: number;
 	sentCount?: number;
+	lowestLateUnconsumed?: (consumed: number) => number | undefined;
 	progress?: () => number | undefined;
 	checkpoint?: (holds?: Map<number, number>) => any;
 	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;

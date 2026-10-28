@@ -2839,6 +2839,92 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		}
 	});
 
+	it('does not pass a late lower key that is queued behind a delivery, and replays it after a reconnect', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-queued-whole-${name}`;
+		const { session } = await connect(clientId);
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		// every message is acknowledged as it is sent; 'stall' never finishes sending, so what follows it stays queued
+		session.setListener((_topic, message, messageId) => {
+			session.acknowledge(messageId);
+			return message?.value === 'stall' ? stalled : true;
+		});
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		const state = session.topics.get(topic);
+		await waitFor(() => state.deliveredKey === T.primaryStore.getEntry('stall').version);
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		await waitFor(() => state.subscription.queue?.some((event) => event.localTime === lateKey));
+		await waitFor(() => state.subscription.progress() > lateKey);
+		session.advancePositions();
+		assert.ok(
+			state.entry.startTime < lateKey,
+			`the position ${state.entry.startTime} passed the queued key ${lateKey}`
+		);
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the saved position passed it');
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		second.session.disconnect(true);
+	});
+
+	it('does not pass a late key a resumed replay reads after higher ones when the topic is subscribed again', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-replayed-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		await waitFor(() => delivery(first.received, 'stall'));
+		await ackAll(first.session, first.received);
+		first.session.disconnect(true);
+		await first.session.writes;
+		// the late write commits while the client is away: the log holds it after the higher keys
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'precondition: saved below the late key');
+		const { session } = await connect(clientId);
+		const sent = [];
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		let stallOnce = true;
+		session.setListener((_topic, message, messageId) => {
+			sent.push(message?.value);
+			session.acknowledge(messageId);
+			if (message?.value === 'stall' && stallOnce) {
+				stallOnce = false;
+				return stalled;
+			}
+			return true;
+		});
+		await session.resume();
+		const state = session.topics.get(topic);
+		await waitFor(() => state.verified && sent.includes('stall'));
+		assert.ok(
+			state.subscription.queue?.some((event) => event.localTime === lateKey),
+			'precondition: the replay queued the late key behind the higher ones'
+		);
+		await waitFor(() => state.subscription.progress() >= lateKey);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		unstall();
+		await waitFor(() => sent.includes('late'), { message: `the replacement skipped the late key; sent ${sent}` });
+		session.disconnect(true);
+	});
+
 	it('holds the position at the bound a thread parked mid-reservation carries, through every retry (worker thread)', async function () {
 		if (!isRocksDB) this.skip();
 		const name = `DurableTopic${++sequence}`;

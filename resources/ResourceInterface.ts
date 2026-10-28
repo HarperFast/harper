@@ -373,6 +373,11 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	/** Present only when subscribed with `reportProgress`: how many events have been sent to this subscription. */
 	sentCount?: number;
 	/**
+	 * Present only when subscribed with `reportProgress`: the lowest log key among the events sent after the first
+	 * `consumed`, counting only events sent below a key sent before them (a later event never is), or undefined.
+	 */
+	lowestLateUnconsumed?: (consumed: number) => number | undefined;
+	/**
 	 * Present only when subscribed with `reportProgress` (RocksDB): the compact per-origin checkpoint every event
 	 * below which has been taken from this subscription, or undefined while none can be certified. `holds` lowers
 	 * an origin's boundary to a delivery the consumer has not yet consumed, by origin node id.

@@ -8791,10 +8791,32 @@ export function makeTable(options): TableResourceClass {
 			if (request.reportProgress && subscription.reportsProgress) {
 				reportingProgress = true;
 				subscription.sentCount = 0;
+				// [ordinal, key] pairs in send order, for events sent below a key sent before them: one can wait in the
+				// queue behind deliveries of higher keys
+				const lateSends: number[] = [];
+				let highestSent = -Infinity;
+				// a for-await consumer takes the next event only after finishing the last, so only that one can be in hand
+				const pruneLate = (through: number) => {
+					let start = 0;
+					while (start < lateSends.length && lateSends[start] <= through) start += 2;
+					if (start > 0) lateSends.splice(0, start);
+				};
 				const queueSend = subscription.send;
 				subscription.send = function (event) {
-					this.sentCount++;
+					if (lateSends.length > 0) pruneLate(this.sentCount - (this.queue?.length ?? 0) - 1);
+					const ordinal = ++this.sentCount;
+					const key = event?.localTime;
+					if (typeof key === 'number' && !event.fromScan) {
+						if (key < highestSent) lateSends.push(ordinal, key);
+						else highestSent = key;
+					}
 					return queueSend.call(this, event);
+				};
+				subscription.lowestLateUnconsumed = (consumed: number): number | undefined => {
+					pruneLate(consumed);
+					let lowest: number | undefined;
+					for (let i = 1; i < lateSends.length; i += 2) if (!(lowest <= lateSends[i])) lowest = lateSends[i];
+					return lowest;
 				};
 				const collection = request.isCollection ?? thisId == null;
 				// a checkpoint resume's scalar shadow is just below its lowest boundary, which is not yet delivered; a

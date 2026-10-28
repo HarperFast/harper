@@ -1416,6 +1416,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.lateUnacked === 0) break;
 		}
 		if (boundary === undefined || !certified) return boundary;
+		if (subscription.sentCount !== state.consumed) {
+			// an event sent below a key sent before it (a late commit, or a replay reading the log in commit order) can
+			// still be queued behind deliveries of higher keys; every other queued event is at or above the delivered key
+			const late = subscription.lowestLateUnconsumed?.(state.consumed);
+			if (late !== undefined) {
+				const before = positionBefore(late);
+				if (before < boundary) boundary = before;
+			}
+		}
 		const progress = subscription.progress();
 		// nothing certifies an advance yet, but holding below an unacknowledged delivery needs no certificate
 		if (progress === undefined) return boundary < state.entry.startTime ? boundary : undefined;
