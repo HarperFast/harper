@@ -382,6 +382,7 @@ analytics:
 - `storageInterval` — Aggregation cycles between storage-volume measurements (`0` disables); _Default_: `10`
 - `replicate` — Replicate analytics data across cluster; _Default_: `false`
 - `logging` — Per-subsystem logger override for analytics writes. See [Logging Configuration](../logging/configuration.md#analyticslogging)
+- `profiling` <VersionBadge type="changed" version="v5.4.0" /> — Harper Pro only. Run the CPU profiler that records `cpu-usage`; it samples only in short windows and flags the `utilization` samples it affects. See [`analytics.profiling`](../analytics/overview.md#analyticsprofiling); _Default_: `true`
 
 ---
 
