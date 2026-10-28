@@ -1872,13 +1872,14 @@ export function makeTable(options): TableResourceClass {
 				: undefined);
 		if (!entry || entry.type === 'put' || entry.type === 'delete') return refs;
 		const missed: Array<{ version: number; nodeId: number }> = [];
-		if (base.version !== entry.previousVersion) {
-			const head = resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
-			missed.push({ version: head.txnLogKey, nodeId: head.nodeId });
-		}
 		const covered = entry.previousAdditionalAuditRefs;
 		for (const ref of base.additionalAuditRefs ?? []) {
 			if (!covered || auditRefIndex(covered, ref.version, ref.nodeId) < 0) missed.push(ref);
+		}
+		// last, since the encoder keeps the last ref when the list is over its budget
+		if (base.version !== entry.previousVersion) {
+			const head = resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
+			missed.push({ version: head.txnLogKey, nodeId: head.nodeId });
 		}
 		if (missed.length === 0) return refs;
 		refs ??= [];
