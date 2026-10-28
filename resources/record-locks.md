@@ -214,8 +214,9 @@ fails with `LockUnavailableError` before a holder write is staged or an issuance
 version can therefore leave the record unavailable until wall time catches up. Rewriting or deleting
 from a correctly timed node does not resolve it because those writes still lose LWW; repair the source
 peer's clock, rewrite from that origin, or wait. A key the
-ratchet issues ahead of the clock is persisted as a ceiling before it is used and seeds issuance at
-open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
+ratchet issues ahead of the clock is covered by a ceiling flushed before use, including when another
+worker stored that ceiling. Coverage reserves one second of headroom; restart seeds above that whole
+reserve, so it can add up to a second of clock lead while preventing key reuse (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
 reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
 not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry and
 coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
@@ -226,13 +227,13 @@ while nothing else would move with it — no log key reserved yet and no unlocke
 (`hasUnlockedWrite`, one pass over the writes for all of a transaction's locks); otherwise the clock
 stays put and the admitted holder's ordering is best-effort. Likewise a hold saved later in a
 different explicit transaction is stamped by that transaction's clock, not the floor. An
-`ImmediateTransaction` stamps holder writes from the handle as above. Each native commit reserves a log
-key at least as high as the holder stamps it accepts, because a replica bounds an applied version by
-its origin log key. A deferred write takes its stamp at its own save. A holder write saved while the same
-context's previous commit is still in flight (awaiting a streamed blob) would join that commit's handle,
-whose log key is already reserved; if that key is below the write's stamp it is refused with a 409
-before staging (harper#3238), because a replica would apply it at the lower key and could keep the
-predecessor's value while the origin keeps the holder's. The caller unlocks, then locks and retries once
+`ImmediateTransaction` uses the handle's per-write stamp and reserves its log key separately. A deferred
+write takes its stamp at its own save. A holder write saved while the same context's previous commit
+is still in flight (awaiting a streamed blob) would join that commit's handle, whose log key is already
+reserved; this PR's joined-commit policy refuses it with a 409 before staging when that key is below
+its stamp (harper#3238). This is a local admission policy, not a replica version clamp: applied writes
+preserve an explicit record version even when it exceeds the origin log key. The caller unlocks, then
+locks and retries once
 the earlier commit settles. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
 ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it

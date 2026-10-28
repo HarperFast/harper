@@ -197,8 +197,8 @@ const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
  * so a restart before the clock passes them cannot issue them again. RocksDB only.
  */
 const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
-// Past each covered key: the one-ulp keys that follow it (~200k at this magnitude) cost no write.
-const ISSUANCE_CEILING_HEADROOM_MS = 50;
+// Amortize durability barriers across keys; restart seeds above this whole reserve.
+const ISSUANCE_CEILING_HEADROOM_MS = 1000;
 
 function isRocksStore(store: any): boolean {
 	return store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
@@ -1022,6 +1022,9 @@ export function coverLocalIssuance(auditStore: any, key: number): number {
 		},
 		'local issuance ceiling'
 	);
+	// A WAL append alone can be lost after another node observes an issued key. An existing ceiling
+	// also needs this barrier: its writer may not have completed its flush yet.
+	(auditStore.rootStore ?? auditStore).flushSync({ allowWriteStall: true });
 	return stored;
 }
 

@@ -4265,8 +4265,14 @@ export function makeTable(options): TableResourceClass {
 		save() {
 			const operation = this.#savingOperation;
 			const lockHandle = operation ? operation.lockHandle : this.#lockHandle;
-			if (this.#lockWritable && lockHandle?.writeRefused)
+			if (this.#lockWritable && lockHandle?.writeRefused) {
+				if (operation && !operation.saved) {
+					operation.dropped = true;
+					operation.lockWriteRefused = true;
+					operation.stagedIn?.detachWrite(operation);
+				}
 				throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
+			}
 			if (
 				!this.#lockWritable &&
 				this.#writeGeneration?.closed &&
