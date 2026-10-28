@@ -22,6 +22,12 @@ const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform')
 
 const FIXTURE = path.join(__dirname, 'fixtures/fullTextUpgradeWorker.cjs');
 
+const LIFECYCLE_TIMEOUTS = {
+	closeTimeoutMilliseconds: 1000,
+	shutdownTimeoutMilliseconds: 2500,
+	readerCoordinationTimeoutMilliseconds: 250,
+};
+
 function declaration(database, indexed = true) {
 	return {
 		database,
@@ -160,7 +166,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 	beforeEach(() => {
 		database = `fulltext-worker-upgrade-${Date.now()}`;
 		workers = [];
-		gate = new Int32Array(new SharedArrayBuffer(16));
+		gate = new Int32Array(new SharedArrayBuffer(32));
 		resets = 0;
 		busyResets = 0;
 		trackResets = false;
@@ -170,6 +176,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 				async resetNativeFullTextIndex(options) {
 					if (trackResets) {
 						resets++;
+						Atomics.add(gate, 4, 1);
 						Atomics.compareExchange(gate, 2, 0, Atomics.add(gate, 3, 1) + 1);
 					}
 					try {
@@ -180,9 +187,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 					}
 				},
 			},
-			closeTimeoutMilliseconds: 1000,
-			shutdownTimeoutMilliseconds: 2500,
-			readerCoordinationTimeoutMilliseconds: 250,
+			...LIFECYCLE_TIMEOUTS,
 		});
 	});
 
@@ -209,6 +214,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		workers.push(peer);
 		const initialized = await peer.request('initialize', {
 			environment: environment(),
+			lifecycleTimeouts: LIFECYCLE_TIMEOUTS,
 			gate: gate.buffer,
 			declaration: declaration(database),
 		});
@@ -232,6 +238,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		await waitFor(() => peer.events.includes('query-held'), 10000);
 		const nativePath = nativeFullTextIndexPath(Product.primaryStore.rootStore.path, 'Product/search');
 		trackResets = true;
+		Atomics.store(gate, 5, 1);
 		Product = table(declaration(database, false));
 		await waitFor(() => fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
 		assert(Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements?.length > 0);
@@ -261,11 +268,15 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		const nativePath = nativeFullTextIndexPath(Product.primaryStore.rootStore.path, 'Product/search');
 		Atomics.store(gate, 1, 0);
 		trackResets = true;
+		Atomics.store(gate, 5, 1);
 		Product = table(declaration(database, false));
 		await waitFor(() => fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
 		await waitFor(() => peer.events.includes('pause-delivered'), 5000);
-		await waitFor(() => !fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
-		assert.strictEqual(resets, 0, 'a delivered pause must wait for the active query lease before invoking reset');
+		assert.strictEqual(
+			Atomics.load(gate, 4),
+			0,
+			'a delivered pause must wait for the active query lease before invoking reset'
+		);
 		assert.strictEqual(Atomics.load(gate, 1), 0, 'pause must not close a native reader with an active lease');
 		assert(fs.existsSync(nativePath));
 		assert(Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements?.length > 0);
@@ -273,8 +284,14 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		assert.deepStrictEqual(await searching, ['shoe-1']);
 		Product = table(declaration(database, false));
 		await waitFor(() => !Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements, 10000);
-		assert(Atomics.load(gate, 1) > 0);
+		assert(Atomics.load(gate, 6) > 0);
+		assert(
+			Atomics.load(gate, 7) > Atomics.load(gate, 6),
+			'native reader close must not start before the held query is released'
+		);
+		assert(Atomics.load(gate, 1) >= Atomics.load(gate, 7));
 		assert(Atomics.load(gate, 2) > Atomics.load(gate, 1), 'the first reset must follow native reader drain and close');
+		assert(Atomics.load(gate, 4) > 0);
 		assert.strictEqual(fs.existsSync(nativePath), false);
 	});
 
@@ -284,6 +301,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		const nativePath = nativeFullTextIndexPath(Product.primaryStore.rootStore.path, 'Product/search');
 		await peer.request('fail-close');
 		trackResets = true;
+		Atomics.store(gate, 5, 1);
 		Product = table(declaration(database, false));
 		await waitFor(() => busyResets > 0, 5000);
 		await waitFor(() => !fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
@@ -308,6 +326,7 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		workers.push(owner);
 		const initialized = await owner.request('initialize', {
 			environment: environment(),
+			lifecycleTimeouts: LIFECYCLE_TIMEOUTS,
 			gate: gate.buffer,
 			declaration: declaration(database),
 			holdReset: true,

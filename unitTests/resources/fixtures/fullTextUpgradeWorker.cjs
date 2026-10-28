@@ -15,7 +15,7 @@ const failedReaders = new Set();
 
 onMessageFromWorkers((event) => {
 	if (event.message?.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
-		parentPort.postMessage({ event: 'pause-delivered' });
+		setImmediate(() => parentPort.postMessage({ event: 'pause-delivered' }));
 });
 
 parentPort.on('message', async ({ id, command, ...data }) => {
@@ -44,6 +44,7 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 											parentPort.postMessage({ event: 'close-refused' });
 											throw new Error('injected reader close failure');
 										}
+										if (Atomics.load(gate, 5)) Atomics.compareExchange(gate, 7, 0, Atomics.add(gate, 3, 1) + 1);
 										const closed = await target.close();
 										Atomics.store(gate, 1, Atomics.add(gate, 3, 1) + 1);
 										parentPort.postMessage({ event: 'reader-closed' });
@@ -55,6 +56,10 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 						});
 					},
 					async resetNativeFullTextIndex(options) {
+						if (Atomics.load(gate, 5)) {
+							Atomics.add(gate, 4, 1);
+							Atomics.compareExchange(gate, 2, 0, Atomics.add(gate, 3, 1) + 1);
+						}
 						const reset = await binding.resetNativeFullTextIndex(options);
 						if (data.holdReset) {
 							parentPort.postMessage({ event: 'reset-completed' });
@@ -63,8 +68,7 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 						return reset;
 					},
 				},
-				closeTimeoutMilliseconds: 5000,
-				shutdownTimeoutMilliseconds: 10000,
+				...data.lifecycleTimeouts,
 			});
 			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS, 30000);
 			const databases = require('#src/resources/databases');
@@ -114,8 +118,10 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 				}
 			);
 			result = hits.map(({ key }) => key);
-		} else if (command === 'release-responsive-lease') releaseLease?.();
-		else if (command === 'inspect') result = nativeBinding.inspectNativeFullTextIndex(readerOptions);
+		} else if (command === 'release-responsive-lease') {
+			Atomics.store(gate, 6, Atomics.add(gate, 3, 1) + 1);
+			releaseLease?.();
+		} else if (command === 'inspect') result = nativeBinding.inspectNativeFullTextIndex(readerOptions);
 		else if (command === 'fail-close') failClose = true;
 		else if (command === 'release-close') {
 			for (const reader of failedReaders) {
