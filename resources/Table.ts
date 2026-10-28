@@ -6102,38 +6102,33 @@ export function makeTable(options): TableResourceClass {
 									let extraFrameEntries: any[] | undefined;
 									if (isRocksDB && fullUpdate) {
 										let frameComplete = false;
-										let frameSeen = false;
 										// A keyed lookup hides unreadable siblings before its first match, and a message or older
-										// version can precede newer mutations in the same frame. A frame past the committed
-										// watermark is read past it, as `RocksTransactionLogStore.getSync` does.
-										for (const readUncommitted of [false, true]) {
-											for (const entry of auditStore.getRange({
-												start: localTime,
-												exactStart: true,
-												log: nodeId,
-												readUncommitted,
-											})) {
-												if (entry.txnLogKey !== localTime) break;
-												frameSeen = true;
-												if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
-													auditWalkCapped = true;
-													break;
-												}
-												if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
-												if (entry.tableId === tableId) {
-													const entryId = entry.recordId;
-													if (entryId === undefined) auditHistoryMissing = true;
-													if (entryId === id) {
-														if (!auditRecord) auditRecord = entry;
-														else (extraFrameEntries ??= []).push(entry);
-													}
-												}
-												if (auditRecord && entry.endTxn) {
-													frameComplete = true;
-													break;
+										// version can precede newer mutations in the same frame. Read past the committed watermark, as
+										// `RocksTransactionLogStore.getSync` does.
+										for (const entry of auditStore.getRange({
+											start: localTime,
+											exactStart: true,
+											log: nodeId,
+											readUncommitted: true,
+										})) {
+											if (entry.txnLogKey !== localTime) break;
+											if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+												auditWalkCapped = true;
+												break;
+											}
+											if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+											if (entry.tableId === tableId) {
+												const entryId = entry.recordId;
+												if (entryId === undefined) auditHistoryMissing = true;
+												if (entryId === id) {
+													if (!auditRecord) auditRecord = entry;
+													else (extraFrameEntries ??= []).push(entry);
 												}
 											}
-											if (frameSeen) break;
+											if (auditRecord && entry.endTxn) {
+												frameComplete = true;
+												break;
+											}
 										}
 										if (auditWalkCapped && !auditRecord) break;
 										if (auditRecord && !frameComplete) auditHistoryMissing = true;

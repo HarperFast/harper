@@ -10,14 +10,11 @@
  * arm's updates never read the record first; the other's read it in the same transaction.
  *
  * A RocksDB transaction appends its transaction-log entry at its first commit attempt, and a retry
- * after a conflict appends nothing. Before the fix about one record in six lost a write with 4
- * workers, and an occasional one with 1:
- * - While a retrying transaction's entry is uncommitted it holds back the log's committed watermark, and
- *   the out-of-order walk's keyed lookups (`RocksTransactionLogStore.getSync`) could not see any newer
- *   entry, so the walk stopped at the record head and the older write's values replaced newer ones.
+ * after a conflict appends nothing. The test covers both ways that loses a write:
+ * - While a retrying transaction's entry is uncommitted it holds back the log's committed watermark, so
+ *   the out-of-order walk's keyed lookups (`RocksTransactionLogStore.getSync`) must read past it.
  * - A retry that commits in order keeps the entry it appended before, which names the head it read
- *   then. A write that committed in between dropped out of the record's audit chain, and a later
- *   out-of-order walk never ordered against it.
+ *   then, so the record has to name a write that committed in between.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/rocksdb-concurrent-patch-reconciliation.test.ts"
@@ -79,7 +76,6 @@ async function connectToEveryWorker(httpURL: string, auth: string, workerCount: 
 	return clients;
 }
 
-/** Runs the rounds and returns a description of every record that lost a write. */
 async function runRounds(clients: Client[], auth: string, updater: string, rounds: number): Promise<string[]> {
 	const losses: string[] = [];
 	for (let round = 0; round < rounds; round++) {
