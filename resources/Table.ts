@@ -2432,9 +2432,9 @@ export function makeTable(options): TableResourceClass {
 							const originFloorRevocations: (number | [number, string?])[] | undefined = certifyingStream
 								? event.originFloorRevocations
 								: undefined;
-							// `[id, certifiedFrom, partialHistory, hole, generation?]`: a mark derived under one origin generation
-							// says nothing about another, so a generation it names must be the row's
-							const originRouteStates: [number, number | undefined, boolean, boolean, string?][] | undefined =
+							// `[id, certifiedFrom, partialHistory, hole, generation?, fullCoverage?]`: a mark derived under one origin
+							// generation says nothing about another, so a generation it names must be the row's
+							const originRouteStates: [number, number | undefined, boolean, boolean, string?, boolean?][] | undefined =
 								certifyingStream ? event.originRouteStates : undefined;
 							let qualifiersChanged = false;
 							// the key for tracking the sequence ids and txn times received from this node
@@ -2536,6 +2536,15 @@ export function makeTable(options): TableResourceClass {
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (nodeState.floorRevoked === true) continue;
 									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									if (generation === undefined && typeof nodeState.originGeneration !== 'string') {
+										// a level-1 floor has no generation to stay revoked within: clear it, and a later certificate floors again
+										if (nodeState.closedFloor !== undefined || nodeState.relayable) {
+											nodeState.closedFloor = undefined;
+											nodeState.relayable = false;
+											originCursorsChanged = true;
+										}
+										continue;
+									}
 									nodeState.floorRevoked = true;
 									// the floor it was revoked at still dates this generation against another's rows
 									if (isValidFloor(nodeState.closedFloor)) nodeState.revokedFloor = nodeState.closedFloor;
@@ -2544,7 +2553,14 @@ export function makeTable(options): TableResourceClass {
 									qualifiersChanged = true;
 								}
 							if (originRouteStates)
-								for (const [nodeId, certifiedFrom, partialHistory, hole, generation] of originRouteStates) {
+								for (const [
+									nodeId,
+									certifiedFrom,
+									partialHistory,
+									hole,
+									generation,
+									fullCoverage,
+								] of originRouteStates) {
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
@@ -2573,6 +2589,14 @@ export function makeTable(options): TableResourceClass {
 									}
 									if (hole === true && nodeState.hole !== true) {
 										nodeState.hole = true;
+										qualifiersChanged = true;
+									}
+									if (
+										fullCoverage === true &&
+										typeof nodeState.originGeneration === 'string' &&
+										nodeState.fullCoverage === false
+									) {
+										nodeState.fullCoverage = true;
 										qualifiersChanged = true;
 									}
 								}
@@ -2716,6 +2740,7 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									const advancesSequence = !!event.localTime && stream.lastSequenceId !== event.localTime;
+									const previousSequenceId = stream.lastSequenceId;
 									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
@@ -2779,7 +2804,15 @@ export function makeTable(options): TableResourceClass {
 											event.originRouteStates?.length > 0 ||
 											event.originFloorRevocations?.length > 0)
 									)
-										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
+										try {
+											await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
+										} catch (error) {
+											// the transaction landed but its position and route state did not: a repeat of this position
+											// must write again, and the source that attached them must learn it, or it counts them as recorded
+											stream.lastSequenceId = previousSequenceId;
+											if (event.onFailure && (await event.onFailure(error, failurePosition, true))) stream.held = true;
+											throw error;
+										}
 									continue;
 								}
 								if (txnInProgress) {
