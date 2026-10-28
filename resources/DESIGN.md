@@ -794,9 +794,15 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
   convention (`contains`/`ends_with`): the negated flag always forces `needFullScan`, so `estimated_count` here is
   execution-cost ordering, not result cardinality — a narrow negated range must never become the driving condition.
 - **An AND group's estimate ignores filter-only (`Infinity`) legs and is `Infinity` only when every leg is**
-  (`estimateConditionForTable`, pinned by `estimateFilterOnlySibling.test.js`). Known gaps: `in`, an empty
-  `starts_with` and an unindexed range leg estimate a finite cardinality yet full-scan, and `intersectionEstimate`
+  (`estimateConditionForTable`, pinned by `estimateFilterOnlySibling.test.js`). Known gap: `intersectionEstimate`
   still multiplies `Infinity` into the incoming-row hint.
+- **Lead selection ranks "can drive an index scan" ahead of the estimate** (`conditionDrivesIndex`, used as the first
+  `sortBy` key in `orderConditions`). `in`, an empty `starts_with` and a range on an unindexed attribute or plain
+  JSON path estimate a finite cardinality yet full-scan; their estimates stay finite because `count: 'estimated'`
+  and the lazy index switch read them as counts. The predicate mirrors `searchByIndex`'s full-scan and missing-index
+  decisions, and a test pins the two to agree leaf by leaf.
+- **A relationship condition that filters rather than leads registers `filtered[attribute]` on its first match**, after
+  the select transform is prepared, so select paths read `filtered` per record, never at preparation.
 - **Non-driving filters drop null and omitted values the way index ranges do** (`filterByType`, harper#3212). No index
   holds an omitted value and `lt`/`le` ranges start above `null`, so range filters and `ne null` reject omitted values
   and `lt`/`le` reject null. SQL `IS NULL` counts omitted as NULL, so it is pushed as filter-only `ne null, negated`.

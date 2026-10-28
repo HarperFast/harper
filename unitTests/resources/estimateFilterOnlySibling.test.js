@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const alasql = require('alasql');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { estimateCondition, estimatedEntryCount } = require('#src/resources/search');
+const { estimateCondition, estimatedEntryCount, conditionDrivesIndex } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { runStatement } = require('#src/sqlEngine/index');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -67,6 +67,44 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		});
 	});
 
+	describe('conditionDrivesIndex across a relationship', () => {
+		const relatedTable = {
+			primaryKey: 'id',
+			primaryStore: {},
+			attributes: [{ name: 'id' }, { name: 'name' }, { name: 'note' }],
+			indices: { name: {} },
+		};
+		const makeTable = (indices) => ({
+			primaryKey: 'id',
+			primaryStore: {},
+			attributes: [
+				{ name: 'owner', relationship: { from: 'ownerId' }, definition: { tableClass: relatedTable } },
+				{ name: 'items', relationship: { to: 'ownerId' }, elements: { definition: { tableClass: relatedTable } } },
+				{ name: 'json' },
+			],
+			indices,
+		});
+		const drives = (indices, attribute, comparator = 'equals') =>
+			conditionDrivesIndex(makeTable(indices), { attribute, comparator, value: 'v' });
+
+		it('drives by an indexed attribute of the related table through the local join index', () => {
+			assert.strictEqual(drives({ ownerId: {} }, ['owner', 'name']), true);
+			assert.strictEqual(drives({}, ['items', 'name']), true);
+		});
+
+		it('does not drive by an unindexed related attribute, or without a usable local join index', () => {
+			assert.strictEqual(drives({ ownerId: {} }, ['owner', 'note']), false);
+			assert.strictEqual(drives({}, ['owner', 'name']), false);
+			assert.strictEqual(drives({ ownerId: { isIndexing: true } }, ['owner', 'name']), false);
+			assert.strictEqual(drives({ ownerId: {} }, ['owner', 'name'], 'in'), false);
+		});
+
+		it('does not drive by a plain nested JSON path', () => {
+			assert.strictEqual(drives({}, ['json', 'k']), false);
+			assert.strictEqual(drives({}, ['json', 'k'], 'ge'), false);
+		});
+	});
+
 	describe('against real tables', function () {
 		this.timeout(60000);
 
@@ -89,11 +127,13 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 					{ name: 'b', type: 'Int', indexed: true },
 					{ name: 'c', type: 'String', indexed: true },
 					{ name: 'flag', type: 'String' },
+					{ name: 'meta' },
 				],
 			});
 			seed = [];
 			for (let i = 0; i < 60; i++) {
 				const row = { id: `r${String(i).padStart(2, '0')}`, c: i < 50 ? 'common' : 'rare', flag: 'none' };
+				if (i % 2 === 0) row.meta = { k: i };
 				if (i % 5 !== 0) row.a = i % 3 === 0 ? `x-${i}` : `plain-${i}`;
 				if (i % 4 !== 0) row.b = i % 8;
 				else if (i % 8 === 0) row.b = null;
@@ -104,6 +144,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		beforeEach(reseed);
 
 		after(() => {
+			Table.primaryStore.estimatedEntryCountExpires = 0;
 			if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 			else process.env.HARPER_SQL_ENGINE = originalEngine;
 		});
@@ -112,6 +153,9 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 			for (const existing of await collect(Table.search({ allowFullScan: true }))) await Table.delete(existing.id);
 			await Promise.all(seed.map((row) => Table.put({ ...row })));
 			if (Table.indexingOperation) await Table.indexingOperation;
+			// RocksDB's entry-count estimate grows with every delete-and-reput, which moves the table-fraction estimates
+			Table.primaryStore.estimatedEntryCount = seed.length;
+			Table.primaryStore.estimatedEntryCountExpires = Infinity;
 		}
 
 		async function collect(iterable) {
@@ -247,6 +291,153 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 					Infinity
 				);
 				assert.strictEqual(estimate({ conditions: [equals(), filterOnly()], operator: 'or' }), Infinity);
+			});
+		});
+
+		describe('lead selection ranks a leg that can drive an index scan first', () => {
+			const common = () => ({ attribute: 'c', value: 'common' });
+			const contains = () => ({ attribute: 'a', comparator: 'contains', value: 'x' });
+			const inLeg = () => ({ attribute: 'b', comparator: 'in', value: [3] });
+			// each estimates a finite count below `c = common`, yet searchByIndex answers it with a full scan
+			const FULL_SCAN_LEGS = [
+				['in', inLeg],
+				['an empty starts_with', () => ({ attribute: 'a', comparator: 'starts_with', value: '' })],
+				['an unindexed starts_with', () => ({ attribute: 'flag', comparator: 'starts_with', value: 'n' })],
+				['an unindexed range', () => ({ attribute: 'flag', comparator: 'ge', value: 'n' })],
+				['a nested JSON path range', () => ({ attribute: ['meta', 'k'], comparator: 'ge', value: 10 })],
+			];
+			const plan = async (conditions, options) =>
+				(await Table.search({ conditions, allowFullScan: false, explain: true, ...options })).conditions;
+			const run = (conditions) => ids(Table.search({ conditions, allowFullScan: false }));
+			const scan = (conditions) => ids(Table.search({ conditions, allowFullScan: true, enforceExecutionOrder: true }));
+			const intersect = async (...queries) => {
+				const sets = await Promise.all(queries.map((conditions) => scan(conditions)));
+				return sets.reduce((left, right) => left.filter((id) => right.includes(id)));
+			};
+
+			for (const [name, leg] of FULL_SCAN_LEGS) {
+				it(`seeks c = common ahead of ${name}`, async () => {
+					assert.ok(estimateCondition(Table)(leg()) < estimateCondition(Table)(common()), 'the leg estimates lower');
+					for (const conditions of [
+						[common(), leg()],
+						[leg(), common()],
+					]) {
+						assert.strictEqual((await plan(conditions))[0].attribute, 'c');
+						const expected = await intersect([leg()], [common()]);
+						assert.ok(expected.length > 0, 'the fixture must match something');
+						assert.deepStrictEqual(await run(conditions), expected);
+					}
+				});
+
+				it(`seeks c = common ahead of a group pairing ${name} with a filter-only leg`, async () => {
+					const conditions = () => [common(), { operator: 'and', conditions: [leg(), contains()] }];
+					assert.strictEqual((await plan(conditions()))[0].attribute, 'c');
+					assert.deepStrictEqual(await run(conditions()), await intersect([leg()], [contains()], [common()]));
+				});
+
+				it(`keeps the count: 'estimated' total of ${name}`, async () => {
+					const estimate = estimateCondition(Table)(leg());
+					assert.ok(Number.isFinite(estimate));
+					const page = await Table.search({ conditions: [leg()], limit: 1, count: 'estimated', allowFullScan: true });
+					assert.strictEqual(page.recordCount, Math.max(Math.round(estimate), page.length));
+				});
+			}
+
+			it("keeps an `in` leg's estimate the sum of its values' index counts", () => {
+				assert.strictEqual(
+					estimateCondition(Table)({ attribute: 'b', comparator: 'in', value: [3, 5] }),
+					Table.indices.b.getValuesCount(3) + Table.indices.b.getValuesCount(5)
+				);
+			});
+
+			it('seeks a singleton primary-key path the estimator cannot size ahead of an `in` leg', async () => {
+				const conditions = () => [inLeg(), { attribute: ['id'], value: 'r03' }];
+				assert.deepStrictEqual((await plan(conditions()))[0].attribute, ['id']);
+				assert.deepStrictEqual(await run(conditions()), ['r03']);
+			});
+
+			it('seeks c = common ahead of a union with a branch that cannot drive', async () => {
+				const conditions = () => [
+					common(),
+					{ operator: 'or', conditions: [{ attribute: 'c', value: 'rare' }, inLeg()] },
+				];
+				assert.strictEqual((await plan(conditions()))[0].attribute, 'c');
+				assert.deepStrictEqual(await run(conditions()), await intersect([inLeg()], [common()]));
+			});
+
+			it('still leads with a narrower union whose every branch drives', async () => {
+				const union = () => ({
+					operator: 'or',
+					conditions: [
+						{ attribute: 'c', value: 'rare' },
+						{ attribute: 'b', value: 3 },
+					],
+				});
+				assert.ok((await plan([common(), union()]))[0].conditions);
+				assert.deepStrictEqual(await run([common(), union()]), await intersect([common()], [union()]));
+			});
+
+			it('does not lead with a null equality on an index that leaves nulls out', async () => {
+				const indexNulls = Table.indices.b.indexNulls;
+				Table.indices.b.indexNulls = false;
+				try {
+					assert.strictEqual((await plan([common(), { attribute: 'b', value: null }]))[0].attribute, 'c');
+				} finally {
+					Table.indices.b.indexNulls = indexNulls;
+				}
+			});
+
+			it('still leads with a primary-key range, and with an indexed range on a store without estimateCount', async () => {
+				const primaryKeyRange = () => ({ attribute: 'id', comparator: 'ge', value: 'r55' });
+				const indexedRange = () => ({ attribute: 'a', comparator: 'starts_with', value: 'plain' });
+				const index = Table.indices.a;
+				const hadOwn = Object.hasOwn(index, 'estimateCount');
+				const own = index.estimateCount;
+				index.estimateCount = undefined;
+				try {
+					for (const range of [primaryKeyRange, indexedRange])
+						for (const sibling of [contains, inLeg]) {
+							const conditions = () => [sibling(), range()];
+							assert.strictEqual((await plan(conditions()))[0].attribute, range().attribute);
+							assert.deepStrictEqual(await run(conditions()), await intersect([sibling()], [range()]));
+						}
+				} finally {
+					if (hadOwn) index.estimateCount = own;
+					else delete index.estimateCount;
+				}
+			});
+
+			it('keeps the written order under enforceExecutionOrder', async () => {
+				assert.strictEqual((await plan([inLeg(), common()], { enforceExecutionOrder: true }))[0].attribute, 'b');
+			});
+
+			it('agrees with searchByIndex on which single conditions it can answer without a full scan', async () => {
+				const LEAVES = [
+					{ attribute: 'c', value: 'rare' },
+					{ attribute: ['id'], value: 'r03' },
+					{ attribute: 'id', comparator: 'ge', value: 'r55' },
+					{ attribute: 'a', comparator: 'starts_with', value: 'plain' },
+					{ attribute: 'b', comparator: 'between', value: [1, 3] },
+					{ attribute: 'b', comparator: 'lt', value: 3 },
+					{ attribute: 'b', comparator: 'ne', value: null },
+					{ attribute: 'b', value: null },
+					...FULL_SCAN_LEGS.map(([, leg]) => leg()),
+					{ attribute: 'flag', value: 'none' },
+					{ attribute: 'b', comparator: 'ne', value: 5 },
+					{ attribute: 'a', comparator: 'contains', value: 'x' },
+					{ attribute: 'a', comparator: 'ends_with', value: '1' },
+					{ attribute: 'a', value: 'x-3', negated: true },
+				];
+				for (const leaf of LEAVES) {
+					let answered = true;
+					try {
+						await run([{ ...leaf }]);
+					} catch (error) {
+						assert.ok([400, 403, 404].includes(error.statusCode), `${JSON.stringify(leaf)}: ${error.message}`);
+						answered = false;
+					}
+					assert.strictEqual(conditionDrivesIndex(Table, { ...leaf }), answered, JSON.stringify(leaf));
+				}
 			});
 		});
 

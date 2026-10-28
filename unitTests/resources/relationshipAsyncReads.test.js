@@ -443,6 +443,23 @@ describe('Queries read related records asynchronously', () => {
 			assert.equal(childReads.sync, 0);
 		});
 
+		it('select of a many-to-many relationship with a nested sort keeps the filter of a relationship condition that does not lead', async function () {
+			const results = await collect(
+				ColdParent.search({
+					enforceExecutionOrder: true,
+					conditions: [
+						firstFourParents,
+						{ attribute: ['children', 'label'], comparator: 'starts_with', value: 'label 1' },
+					],
+					select: ['id', { name: 'children', select: ['name'], sort: { attribute: 'name' } }],
+				})
+			);
+			assert.deepEqual(results, [
+				{ id: 'parent-2', children: [{ name: 'child 10' }] },
+				{ id: 'parent-3', children: [{ name: 'child 11' }] },
+			]);
+		});
+
 		it('select of a filtered relationship on a row whose foreign key is null', async function () {
 			const results = await collect(
 				ColdParent.search({

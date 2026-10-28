@@ -2376,6 +2376,56 @@ function usableIndex(table, attributeName): any {
 }
 
 /**
+ * Whether searchByIndex answers this condition from an index range or the primary store, rather than with a
+ * full scan it filters or an error. Lead selection ranks on this ahead of the row estimate, which several
+ * full-scan conditions (`in`, an empty `starts_with`, a range on an unindexed attribute) report as finite.
+ * Mirrors searchByIndex's `needFullScan` and missing-index decisions; `sort` counts as driving because an
+ * index-ordered lead is deliberate planning.
+ */
+export function conditionDrivesIndex(table, condition): boolean {
+	if (condition.conditions) {
+		return condition.operator === 'or'
+			? condition.conditions.length > 0 && condition.conditions.every((branch) => conditionDrivesIndex(table, branch))
+			: condition.conditions.some((leg) => conditionDrivesIndex(table, leg));
+	}
+	if (condition.negated) return false;
+	let attributeName = condition[0] ?? condition.attribute;
+	const value = condition[1] ?? condition.value;
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	if (Array.isArray(attributeName)) {
+		if (attributeName.length > 1) {
+			const attribute = findAttribute(table.attributes, attributeName[0]);
+			const relatedTable = attribute?.definition?.tableClass || attribute?.elements?.definition?.tableClass;
+			if (!attribute?.relationship || !relatedTable) return false;
+			if (attribute.relationship.from && !usableIndex(table, attribute.relationship.from)) return false;
+			return conditionDrivesIndex(relatedTable, {
+				attribute: attributeName.length > 2 ? attributeName.slice(1) : attributeName[1],
+				comparator,
+				value,
+			});
+		}
+		attributeName = attributeName[0];
+	}
+	if (fullTextComparatorMode(comparator)) return true;
+	switch (comparator) {
+		case 'in':
+		case 'contains':
+		case 'ends_with':
+			return false;
+		case 'ne':
+			if (value !== null) return false;
+			break;
+		case 'starts_with':
+			if (value?.toString().length === 0) return false;
+	}
+	const index =
+		attributeName == null || attributeName === table.primaryKey
+			? table.primaryStore
+			: usableIndex(table, attributeName);
+	return Boolean(index) && !(value === null && !index.indexNulls);
+}
+
+/**
  * True when an index this attribute would have to be driven by is still being built, following a
  * relationship path to the local join index and on to the related table's leaf index.
  */

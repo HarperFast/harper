@@ -174,6 +174,7 @@ import {
 	releaseRelatedLeases,
 	findAttribute,
 	estimateCondition,
+	conditionDrivesIndex,
 	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
@@ -7531,10 +7532,15 @@ export function makeTable(options): TableResourceClass {
 				for (const condition of conditions) {
 					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
 				}
-				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering.
+				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering,
+				// behind every condition that can drive an index scan the ones that can't, whatever they estimate.
 				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
 				// order for their query.
-				if (conditions.length > 1 && operator !== 'or') return sortBy(conditions, estimateCondition(TableResource));
+				if (conditions.length > 1 && operator !== 'or')
+					return sortBy(conditions, [
+						(condition) => (conditionDrivesIndex(TableResource, condition) ? 0 : 1),
+						estimateCondition(TableResource),
+					]);
 				else return conditions;
 			}
 			const operator = target.operator;
