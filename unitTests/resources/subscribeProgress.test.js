@@ -266,6 +266,150 @@ describe('Certified subscription progress', function () {
 		}
 	});
 
+	for (const crossThreads of [true, false]) {
+		it(`certifies a held scalar replay after release without another commit (crossThreads: ${crossThreads})`, async () => {
+			setOriginCaptureIntervalForTests(60_000);
+			const name = `Replay${++sequence}`;
+			const T = tableInOwnDatabase(name);
+			const Other = table({
+				table: 'Other',
+				database: `progress_${name}`,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			let release;
+			let held;
+			let subscription;
+			let other;
+			try {
+				await T.put('seed', { value: 0 });
+				const startTime = T.primaryStore.getEntry('seed').version;
+				held = transaction({}, async (context) => {
+					await T.put('held', { value: 'held' }, context);
+					await new Promise((resolve) => (release = resolve));
+				});
+				await waitFor(() => release);
+				await T.put('higher', { value: 'higher' });
+				const higher = T.primaryStore.getEntry('higher').version;
+				other = await Other.subscribe({ omitCurrent: true, reportProgress: true });
+				subscription = await T.subscribe({
+					databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+					startTime,
+					reportProgress: true,
+					crossThreads,
+					listener: () => {},
+				});
+				assert.strictEqual(await subscription.resumeVerified, true);
+				assert.ok(!(subscription.progress() >= higher), 'replay cannot override the reservation ceiling');
+				assert.ok(!(other.progress() >= higher), 'the sibling table shares the held certificate');
+				if (!crossThreads) {
+					assert.strictEqual(subscription.progress(), undefined, 'same-thread replay uses only its live certificate');
+					assert.strictEqual(
+						registry(subscription).dispatchedThrough,
+						undefined,
+						'cross-thread history is not injected'
+					);
+				}
+				release();
+				await held;
+				if (crossThreads) {
+					await waitFor(() => subscription.progress() >= higher && other.progress() >= higher, {
+						message: 'completed replay did not catch up without an unrelated write or capture tick',
+					});
+				} else {
+					await T.put('own-live', { value: 'own-live' });
+					await waitFor(() => subscription.progress() >= T.primaryStore.getEntry('own-live').version);
+				}
+			} finally {
+				release?.();
+				await held;
+				subscription?.end();
+				other?.end();
+				setOriginCaptureIntervalForTests(5000);
+			}
+		});
+	}
+
+	it('completes scalar replay while a notify pass is yielded without certifying its partial transaction', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const startTime = T.primaryStore.getEntry('seed').version;
+		let replay;
+		let replayTask;
+		let sawYield = false;
+		const seen = [];
+		const live = await T.subscribe({
+			omitCurrent: true,
+			reportProgress: true,
+			listener: (event) => {
+				seen.push(event);
+				if (seen.length === 1)
+					replayTask = new Promise((resolve, reject) =>
+						setImmediate(async () => {
+							try {
+								sawYield = registry(live).passYielded;
+								assert.ok(sawYield, 'the first transaction is only partly dispatched');
+								replay = await T.subscribe({
+									startTime,
+									databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+									reportProgress: true,
+									listener: () => {},
+								});
+								assert.strictEqual(await replay.resumeVerified, true);
+								if (registry(live).passYielded)
+									assert.ok(
+										!(live.progress() >= event.localTime),
+										'a yielded pass cannot certify a partial transaction'
+									);
+								resolve();
+							} catch (error) {
+								reject(error);
+							}
+						})
+					);
+			},
+		});
+		try {
+			await transaction({}, async (context) => {
+				for (let i = 0; i < 300; i++) await T.put(`bulk${i}`, { value: i }, context);
+			});
+			await waitFor(() => Boolean(replayTask));
+			await replayTask;
+			await waitFor(() => seen.length === 300 && live.progress() >= seen[0].localTime);
+			assert.ok(sawYield);
+			assert.strictEqual(seen.length, 300, 'the replay did not start an overlapping live drain');
+		} finally {
+			replay?.end();
+			live.end();
+		}
+	});
+
+	it('does not inject replay progress after a failed live range read', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const startTime = T.primaryStore.getEntry('seed').version;
+		await T.put('higher', { value: 1 });
+		const live = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		const range = T.auditStore.subscriptionLogRange;
+		range.failedLogs.add('unreadable');
+		let replay;
+		try {
+			replay = await T.subscribe({
+				startTime,
+				databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+				reportProgress: true,
+				listener: () => {},
+			});
+			await replay.resumeVerified;
+			assert.strictEqual(deliveryCertified(replay), false);
+			assert.strictEqual(registry(live).dispatchedThrough, undefined);
+		} finally {
+			range.failedLogs.delete('unreadable');
+			replay?.end();
+			live.end();
+		}
+	});
+
 	it('follows a checked replay, then the watermark', async () => {
 		const T = tableInOwnDatabase();
 		const positions = [];

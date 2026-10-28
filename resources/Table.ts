@@ -108,7 +108,7 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription, certifiedFloors, certifiedThrough } from './transactionBroadcast.ts';
+import { addSubscription, certifiedFloors, certifiedThrough, completedReplayThrough } from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
 	ORIGIN_ID,
@@ -8850,6 +8850,16 @@ export function makeTable(options): TableResourceClass {
 				};
 				goLive = () => {
 					progressFloor = beforeLive();
+					if (resuming && collection && !plan) {
+						const replayThrough = progressFloor;
+						const sameThread = subscription.subscriptions.tables.envs.sameThread === true;
+						// The replay walked committed keys; only the pre-replay sample also bounds still-open writes.
+						progressFloor =
+							sameThread || subscription.localResumeStart === undefined
+								? undefined
+								: Math.min(replayThrough, subscription.localResumeStart);
+						if (!sameThread && replayThrough > request.startTime) completedReplayThrough(subscription, replayThrough);
+					}
 					progressLive = true;
 					// a certified subscription takes every live entry from here: the key gate would drop a late
 					// lower-key commit that a floor then certifies as delivered

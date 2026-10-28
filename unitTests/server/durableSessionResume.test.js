@@ -19,7 +19,7 @@ const {
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const commonUtility = require('#src/utility/lmdb/commonUtility');
-const { getOriginClosedFloor } = require('#src/resources/originClosedFloor');
+const { getOriginClosedFloor, localStartBound } = require('#src/resources/originClosedFloor');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -2680,6 +2680,76 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		await second.session.resume();
 		await waitFor(() => delivery(second.received, 'late'), { message: 'the late commit was not replayed' });
 		second.session.disconnect(true);
+	});
+
+	it('keeps a scalar replay below a local write still open when it replays a higher key', async function () {
+		if (!isRocksDB) this.skip();
+		setOriginCaptureIntervalForTests(60_000);
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const clientId = `scalar-replay-held-${name}`;
+		const sessions = [];
+		let commitLate;
+		try {
+			await T.put('seed', { value: 0 });
+			const first = await connect(clientId);
+			sessions.push(first.session);
+			await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			await T.put('established', { value: 'established' });
+			await waitFor(() => delivery(first.received, 'established'));
+			await waitFor(
+				() => first.session.topics.get(topic).subscription.progress() >= T.primaryStore.getEntry('established').version
+			);
+			await ackAll(first.session, first.received);
+			first.session.checkpoint();
+			await first.session.writes;
+			await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+			first.session.disconnect(true);
+			await first.session.writes;
+			commitLate = await heldTransaction(T, 'late');
+			await T.put('after', { value: 'after' });
+			const second = await connect(clientId);
+			sessions.push(second.session);
+			await second.session.resume();
+			const state = second.session.topics.get(topic);
+			await waitFor(() => state.verified && delivery(second.received, 'after'));
+			assert.ok(state.subscription.resumeVerified, 'the scalar replay checks its database generation');
+			assert.strictEqual(await state.subscription.resumeVerified, true);
+			assert.strictEqual(state.entry.checkpoint, undefined, 'the resume uses a scalar position');
+			assert.strictEqual(getOriginClosedFloor(T.primaryStore.rootStore), undefined, 'no origin floor is published');
+			const heldBound = localStartBound(T.primaryStore.rootStore);
+			assert.ok('atOrAbove' in heldBound, 'the lower local write still owns a reservation');
+			const replayProgress = state.subscription.progress();
+			await waitFor(() => state.consumed === state.subscription.sentCount);
+			await ackAll(second.session, second.received);
+			second.session.checkpoint();
+			await second.session.writes;
+			second.session.disconnect(true);
+			await second.session.writes;
+			const savedStart = (await stored(clientId)).subscriptions[0].startTime;
+			await commitLate();
+			const lateAudit = [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === 'late');
+			const lateKey = lateAudit.txnLogKey;
+			assert.strictEqual(
+				lateKey,
+				heldBound.atOrAbove,
+				JSON.stringify({ replayProgress, heldBound, lateKey, savedStart })
+			);
+			const third = await connect(clientId);
+			sessions.push(third.session);
+			await third.session.resume();
+			await waitFor(() => delivery(third.received, 'late'), {
+				message: `the held key ${lateKey} was skipped after replay saved ${savedStart}`,
+			});
+			assert.ok(savedStart < lateKey, `the replay position ${savedStart} passed the held key ${lateKey}`);
+		} finally {
+			await commitLate?.();
+			for (const session of sessions) {
+				session.disconnect(true);
+				await session.writes;
+			}
+			setOriginCaptureIntervalForTests(5000);
+		}
 	});
 
 	it('does not pass a lower key that committed and released its reservation before its notify pass ran', async function () {

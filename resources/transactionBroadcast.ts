@@ -158,7 +158,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
 		subscription.reportsProgress = true;
 		subscription.registeredThrough = databaseSubscriptions.certifiedThrough;
-		if (subscription.registeredThrough === undefined && startBound)
+		if (startBound)
 			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
 		if (dbisDb && !databaseSubscriptions.sameThread && !databaseSubscriptions.originFloorTimer)
@@ -253,6 +253,22 @@ function advanceProgress(subscriptions: any, key: number, range: any): boolean {
 	return true;
 }
 
+/**
+ * Preserve a completed scalar replay's observed key as a candidate, never as a certificate. Entries before
+ * registration belong to the replay; the registry delivers entries committed since registration. Even a pass
+ * already in progress may certify this candidate only below its pre-drain reservation ceiling, after draining.
+ */
+export function completedReplayThrough(subscription: any, key: number): void {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscription.reportsProgress || !subscriptions?.progressConsumers || subscriptions.progressStopped) return;
+	if (subscriptions.sameThread) return;
+	if (!advanceProgress(subscriptions, key, subscriptions.auditStore?.subscriptionLogRange)) return;
+	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
+	if (subscriptions.auditStore?.rootStore?.status !== 'open') return;
+	subscriptions.notifyScheduled = true;
+	setImmediate(() => notifyFromTransactionData(subscriptions, subscriptions.auditStore.subscriptionLogRange, true));
+}
+
 function stopProgress(databaseSubscriptions: any) {
 	if (databaseSubscriptions.progressStopped) return;
 	databaseSubscriptions.progressStopped = true;
@@ -276,7 +292,8 @@ export function deliveryCertified(subscription: any): boolean {
 /**
  * The key below which every local write the registry delivers (every thread's for the cross-thread registry,
  * this thread's for a `crossThreads: false` one) has been dispatched to every subscriber registered at the time,
- * and none can still land: the newest fully dispatched transaction, held at the ceiling the dispatching pass
+ * and none can still land. A completed scalar replay may supply a candidate from before registration, outside
+ * the registry's live-delivery contract. Either candidate is held at the ceiling the dispatching pass
  * captured (`captureCeiling`). Undefined before a pass has certified one since progress tracking began.
  */
 export function certifiedThrough(subscription: any): number | undefined {
