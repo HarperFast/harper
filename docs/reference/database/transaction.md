@@ -134,7 +134,7 @@ Deletes transaction log entries older than the specified timestamp. Deprecated i
 Deletes transaction log entries older than the specified timestamp.
 
 :::warning Database-wide and irreversible
-On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`. This purges whole log files whose entries predate the timestamp, removing [`read_audit_log`](#read_audit_log) history for **every table in the database** — there is no per-table survivor and no undo. The only recovery route is a [backup](../backups/overview.md), which restores the transaction log alongside the data. Purging below a lagging replica's catch-up position does not lose data on that replica — the sender detects that the requested start predates its retained history and forces a full base copy instead of incremental catch-up — but that full resync is far more expensive than incremental replication, so avoid purging below your slowest replica's position.
+On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`. This purges whole log files whose entries predate the timestamp, removing [`read_audit_log`](#read_audit_log) history for **every table in the database** — there is no per-table survivor and no undo. The only recovery route is a [backup](../backups/overview.md), which restores the transaction log alongside the data. Purging below a lagging replica's catch-up position does not lose data on that replica — the sender detects that the requested start predates its retained history and forces a full base copy instead of incremental catch-up — but that full resync is far more expensive than incremental replication, so avoid purging below your slowest replica's position. A full-text rebuild also needs retained history to replay writes committed during its scan; purging that history can force another full rebuild and extend the search outage. Pause manual cleanup during an upgrade rebuild and size automatic retention for the workload.
 :::
 
 Parameters:
@@ -204,7 +204,7 @@ type Dog @table(audit: true) {
 }
 ```
 
-This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table. New schema tables with `@fullText` must explicitly declare `@table(audit: true)`, even when global audit logging is enabled. Existing audited tables can add an index without restating `audit`. Keep auditing enabled while any full-text index is declared; disabling it is rejected.
+This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table. New schema tables with `@fullText` must explicitly declare `@table(audit: true)`, even when global audit logging is enabled. Existing audited tables can add an index without restating `audit`. Keep auditing enabled while any full-text index is declared. Setting `@table(audit: false)` while a full-text index is declared is rejected during schema registration; this is a per-table prerequisite, independent of the global default.
 
 ## Related Documentation
 
