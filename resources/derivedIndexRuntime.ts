@@ -51,7 +51,8 @@ export function derivedIndexTime(store: RocksDatabase): bigint {
 	return BigInt(whole) * 1_000_000n + BigInt(Math.round((milliseconds - whole) * 1_000_000));
 }
 
-type CoverageCapture = { time: bigint; positions: DerivedIndexPositions };
+/** `bound`: taken on an idle pass, so the offered vector reflects every commit at or before it and none after. */
+type CoverageCapture = { time: bigint; positions: DerivedIndexPositions; bound?: true };
 type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknown) => void };
 type CoverageWaitGroup = { waiters: Set<CoverageWaiter>; timer?: NodeJS.Timeout };
 
@@ -621,6 +622,8 @@ class DerivedIndexRunner {
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
 	#lastCaughtUpAt?: number;
+	/** Delivered work or acquisition; a wake that finds nothing to deliver does not extend the idle grace. */
+	#workAt = 0;
 	#lagTimer?: NodeJS.Timeout;
 	#lockRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
@@ -1035,6 +1038,7 @@ class DerivedIndexRunner {
 		this.#generation++;
 		this.#lastCaughtUpAt = undefined;
 		this.#unreadSince = this.#options.now();
+		this.#workAt = this.#unreadSince;
 		this.#reachedEndOfLog = false;
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
@@ -1128,6 +1132,20 @@ class DerivedIndexRunner {
 			this.#pendingTimestamps.set(logName, [timestamp]);
 			this.#seenTimestamps.set(logName, new Set([timestamp]));
 		}
+		this.#openRange(cursor);
+		const recovered = this.#recoverPurgedAnchors(cursor);
+		if (recovered) {
+			this.#openRange(recovered);
+			// Ahead of any log work, so the saved vector stays offered until the conversion is durable.
+			const { batch } = this.#newChunk(false);
+			// The conversion reflects the same commits, so the bound coverage still describes it.
+			batch.through = cursor.coverage ? { ...recovered, coverage: cursor.coverage } : recovered;
+			this.#pendingBatch = batch;
+		}
+		return this.#checkRangeHealth();
+	}
+
+	#openRange(cursor: DerivedIndexCursor) {
 		this.#iterable = this.#logStore.getRange({
 			startByLog: new Map(Object.entries(cursor.logs)),
 			exactStart: true,
@@ -1136,7 +1154,30 @@ class DerivedIndexRunner {
 			includeLogName: true,
 		});
 		this.#iterator = this.#iterable[Symbol.iterator]();
-		return this.#checkRangeHealth();
+	}
+
+	/**
+	 * The floor's inventory and the witness come from two getStats calls, inventory first: within one call
+	 * the flush position is read before the inventory.
+	 */
+	#recoverPurgedAnchors(cursor: DerivedIndexCursor): DerivedIndexCursor | undefined {
+		const iterable = this.#iterable!;
+		if (iterable.exactStartFailures.size === 0 || iterable.corruptFrameStop.breaks > 0 || iterable.failedLogs.size > 0)
+			return;
+		let recovered: DerivedIndexCursor | undefined;
+		for (const [logName, failure] of iterable.exactStartFailures) {
+			const covered = cursor.coverage?.[logName];
+			if (failure !== 'missing' || !isLogPosition(covered)) return;
+			const log = this.#logStore.rootStore.useLog(logName);
+			const inventory = log.getStats();
+			const witness = log.getStats().lastFlushedPosition;
+			if (!isLogPosition(witness) || !flushedThrough(witness, covered, inventory)) return;
+			recovered ??= cloneCursor(cursor);
+			delete recovered.logs[logName];
+			const floor = inventory.fileCount === 0 ? inventory.currentSequenceNumber : inventory.oldestSequenceNumber;
+			if (floor > 1) (recovered.floors ??= {})[logName] = floor;
+		}
+		return recovered;
 	}
 
 	#validateLogSet(cursor: DerivedIndexCursor) {
@@ -1287,6 +1328,7 @@ class DerivedIndexRunner {
 
 	#noteAccepted(batch: DerivedIndexBatch) {
 		const now = this.#options.now();
+		this.#workAt = now;
 		if (batch.through && !sameCursor(batch.through, this.#offered)) {
 			this.#offered = cloneCursor(batch.through);
 			this.#offeredCursors.push({
@@ -1634,7 +1676,10 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend lost its durable cursor', 'cursor-missing');
 			return;
 		}
-		if (capture) this.#offeredCursors.at(-1)!.coverage = capture;
+		if (capture) {
+			capture.bound = true;
+			this.#offeredCursors.at(-1)!.coverage = capture;
+		}
 		if (!this.#reconcileDurableCursor(durable)) return;
 		this.#publishUnchangedCoverage(capture);
 		this.#armCoverageTimer();
@@ -1647,25 +1692,30 @@ class DerivedIndexRunner {
 		this.#settleReady();
 		if (this.#idleTimer) return;
 		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
-		this.#idleTimer = setTimeout(() => {
-			this.#idleTimer = undefined;
-			if (this.#stopped) return;
-			try {
-				if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
-			} catch (error) {
-				this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
-			}
-		}, this.#options.idleGraceMilliseconds);
+		this.#idleTimer = setTimeout(
+			() => {
+				this.#idleTimer = undefined;
+				if (this.#stopped) return;
+				try {
+					if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
+				} catch (error) {
+					this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
+				}
+			},
+			Math.max(0, this.#workAt + this.#options.idleGraceMilliseconds - this.#options.now())
+		);
 	}
 
 	#publishUnchangedCoverage(capture?: CoverageCapture) {
-		if (
-			capture &&
+		if (capture && this.#indexUnchangedSinceDurable()) this.#publishCoverage(capture);
+	}
+
+	#indexUnchangedSinceDurable(): boolean {
+		return (
 			!this.#boundaryPending &&
 			this.#unanchoredMutations === 0 &&
 			this.#offeredCursors.slice(1).every((offered) => offered.mutations === 0)
-		)
-			this.#publishCoverage(capture);
+		);
 	}
 
 	#reconcileDurableCursor(cursor = this.#registration.backend.getDurableCursor()): boolean {
@@ -1679,7 +1729,7 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend advanced to an unoffered cursor vector', 'cursor-unoffered');
 			return false;
 		}
-		// Every durable advance publishes catch-up, so the logs still unanchored are proven first.
+		// Any reconcile can publish coverage or ready, so the logs still unanchored are proven first.
 		if (!this.#checkUnanchoredLogs()) return false;
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
@@ -1703,6 +1753,8 @@ class DerivedIndexRunner {
 			}
 		}
 		if (offeredIndex > 0) {
+			// The backend dropped coverage with the old vector, so the next bound capture is not throttled.
+			this.#lastPersistedCoverageTime = 0n;
 			this.#offeredCursors.splice(0, offeredIndex);
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
@@ -1722,8 +1774,15 @@ class DerivedIndexRunner {
 
 	#publishCoverage(capture: CoverageCapture) {
 		if (!this.#owned || this.#rebuilding || Atomics.load(this.#shared().epoch, 0) !== this.#ownerEpoch) return;
-		if (capture.time <= Atomics.load(this.#shared().coverage, 0)) return;
-		if (Number(capture.time - this.#lastPersistedCoverageTime) / 1e6 >= this.#options.maxFlushAgeMilliseconds) {
+		// A reconcile can advance the clock with a capture it may not yet persist; persisting it later is allowed.
+		const advancesClock = capture.time > Atomics.load(this.#shared().coverage, 0);
+		// Persisted coverage is resume evidence (#recoverPurgedAnchors): it must reflect exactly the commits
+		// the vector a backend stores it with reflects, so only a bound capture with no mutations past it.
+		if (
+			capture.bound &&
+			this.#indexUnchangedSinceDurable() &&
+			Number(capture.time - this.#lastPersistedCoverageTime) / 1e6 >= this.#options.maxFlushAgeMilliseconds
+		) {
 			try {
 				this.#registration.backend.publishCoverage!(capture.positions, this.#ownerEpoch!);
 				this.#lastPersistedCoverageTime = capture.time;
@@ -1732,7 +1791,7 @@ class DerivedIndexRunner {
 				return;
 			}
 		}
-		Atomics.store(this.#shared().coverage, 0, capture.time);
+		if (advancesClock) Atomics.store(this.#shared().coverage, 0, capture.time);
 	}
 
 	#armCoverageTimer() {
@@ -1847,6 +1906,14 @@ class DerivedIndexRunner {
 	}
 
 	#needsRebuild(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
+		// A failure while the database closes is the close cutting work off, not evidence against the index,
+		// so it condemns nothing (rocksdb-js already reports `closed` from the start of a close).
+		const storeStatus: string = this.#logStore.rootStore.status;
+		if (storeStatus === 'closing' || storeStatus === 'closed') {
+			// Local only: stops an install or drain from going on, and publishes nothing shared.
+			this.status = { state: 'unavailable', reason: `database closing: ${reason}`, ownerEpoch: this.#ownerEpoch };
+			return;
+		}
 		if (this.#rebuilding) {
 			this.#rebuildFailed(reason, code, error);
 			return;
@@ -2523,6 +2590,36 @@ function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is Derive
 		}
 	}
 	return true;
+}
+
+function isLogPosition(position: unknown): position is { sequence: number; offset: number } {
+	if (!position || typeof position !== 'object') return false;
+	const { sequence, offset } = position as { sequence: unknown; offset: unknown };
+	return Number.isInteger(sequence) && Number.isInteger(offset) && (sequence as number) >= 0 && (offset as number) >= 0;
+}
+
+/**
+ * The flush witness sits exactly at the covered tail, or at the end of a segment a purge removed when the
+ * tail was captured at the start of the next: a witness short of coverage may have lost the tail at power
+ * loss, one past it may have purged commits the cursor never reflected. A rotation also starts the next
+ * segment, so only a removed segment (purge takes only a fully flushed one) proves the witness is its end.
+ */
+function flushedThrough(
+	witness: { sequence: number; offset: number },
+	covered: { sequence: number; offset: number },
+	inventory: { fileCount: number; oldestSequenceNumber: number; currentSequenceNumber: number }
+) {
+	if (witness.sequence === 0 && witness.offset === 0) return false;
+	if (witness.sequence === covered.sequence) return witness.offset === covered.offset;
+	const removed =
+		inventory.fileCount === 0
+			? inventory.currentSequenceNumber > witness.sequence
+			: inventory.oldestSequenceNumber > witness.sequence;
+	return removed && covered.offset === 0 && covered.sequence === witness.sequence + 1;
+}
+
+export function sameDerivedIndexCursorVector(left: DerivedIndexCursor, right: DerivedIndexCursor): boolean {
+	return sameCursor(left, right);
 }
 
 function cloneCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
