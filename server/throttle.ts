@@ -135,6 +135,8 @@ setTimeout(() => {
 			if (method === 'Debugger.resumed') {
 				// reset if we are resuming
 				lastEventQueueCheck = performance.now();
+				loopProbePending = false;
+				callsSinceProbe = false;
 			}
 		});
 	}

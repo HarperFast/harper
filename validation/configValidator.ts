@@ -323,8 +323,6 @@ const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(
 	.prefs({ convert: false })
 	.optional();
 
-// flattenConfig() lowercases keys and merges customFunctions.network over http after configValidator() runs, so
-// these are checked again on the flattened values listeners read; the 503 path uses them outside any error handling.
 export function effectiveHttpConfigValidator(flatConfig) {
 	return Joi.object({
 		http_readrequestqueuelimit: readRequestQueueLimitConstraints,

@@ -52,6 +52,7 @@ import { getComponentName } from '../components/componentLoader.ts';
 import { rejectWhenLoopDelayed, throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { isolatedApplicationUnavailable } from './isolatedHostGuard.ts';
+import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 import { WebSocketServer } from 'ws';
 import { loadNativePackage } from '../utility/packageUtils.js';
 
@@ -764,7 +765,7 @@ function isReadMethod(method) {
 function readRejectionHeaders(isOperationsServer: boolean) {
 	const prefix = isOperationsServer ? 'operationsApi_network' : 'http';
 	const cors = env.get(prefix + '_cors');
-	const accessList = [].concat(env.get(prefix + '_corsAccessList') ?? []);
+	const accessList = env.get(prefix + '_corsAccessList');
 	const allowCredentials = env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
 	const allowHeaders =
 		env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
@@ -773,7 +774,7 @@ function readRejectionHeaders(isOperationsServer: boolean) {
 		applyUniversalHeaders(headers);
 		if (cors) {
 			addVaryHeader(headers, 'Origin');
-			if (origin && (accessList.includes(origin) || accessList.includes('*'))) {
+			if (origin && corsAccessListAllows(accessList, origin)) {
 				headers.set('Access-Control-Allow-Origin', origin);
 				if (allowCredentials) headers.set('Access-Control-Allow-Credentials', 'true');
 				headers.set('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');

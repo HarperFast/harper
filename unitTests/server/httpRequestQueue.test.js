@@ -68,13 +68,17 @@ function spin(ms) {
 describe('HTTP method request admission', function () {
 	this.timeout(5000);
 	let previousReadLimit, previousWriteLimit;
+	let hasPreviousLimits = false;
 	beforeEach(() => {
 		previousReadLimit = env.get('http_readRequestQueueLimit');
 		previousWriteLimit = env.get('http_requestQueueLimit');
+		hasPreviousLimits = true;
 	});
 	afterEach(() => {
+		if (!hasPreviousLimits) return;
 		env.setProperty('http_readRequestQueueLimit', previousReadLimit);
 		env.setProperty('http_requestQueueLimit', previousWriteLimit);
+		hasPreviousLimits = false;
 	});
 
 	for (const backend of ['Node', 'uWS']) {
@@ -154,15 +158,21 @@ describe('HTTP method request admission', function () {
 				universalHeaders.push(ownedHeader);
 				try {
 					env.setProperty('http_cors', true);
-					env.setProperty('http_corsAccessList', ['https://queue.example']);
+					env.setProperty('http_corsAccessList', ['https://queue.example', 'https://*.wildcard.example']);
 					const send = createHandler(backend, 1);
 					const pending = send('GET');
 					spin(5);
-					const [allowed, denied] = await Promise.all([send('GET'), send('GET', undefined, 'https://denied.example')]);
+					const [allowed, wildcard, denied] = await Promise.all([
+						send('GET'),
+						send('GET', undefined, 'https://sub.wildcard.example'),
+						send('GET', undefined, 'https://denied.example'),
+					]);
 					assert.equal(allowed.status, 503);
 					assert.equal(allowed.headers.get('Access-Control-Allow-Origin'), 'https://queue.example');
 					assert.equal(allowed.headers.get('X-Queue-Test'), 'present');
 					assert(allowed.headers.get('Vary').toLowerCase().includes('origin'));
+					assert.equal(wildcard.status, 503);
+					assert.equal(wildcard.headers.get('Access-Control-Allow-Origin'), 'https://sub.wildcard.example');
 					assert.equal(denied.status, 503);
 					assert(!denied.headers.get('Access-Control-Allow-Origin'));
 					await pending;
