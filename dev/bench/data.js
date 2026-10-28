@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793094322517,
+  "lastUpdate": 1793172218845,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8375,6 +8375,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 899.08,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3ab3c6197276863f99ed70bccab3c1781f54b477",
+          "message": "Resume a derived index without a rebuild when retention purges an idle log's anchor (#3675)\n\n* Resume a derived index whose anchor file retention purged when nothing after it was lost\n\nrocksdb-js 2.12 retention deletes every fully flushed file of an idle log,\nthe one holding a derived index's timestamp anchor included. The next\ninstall (a restart, or the first acquisition after an idle release) found\nthat boundary missing and condemned the cursor, so every HNSW and\nfull-text index over the database rebuilt from a full scan although no\ncommit followed the anchor, once per idle period.\n\nThe durable cursor already persists coverage: the committed tail it\ncovers, carried into newer cursors by both backends. Purge deletes only\nfiles at or before the flush witness (txn.state, never moved backwards),\nso while that witness is not past the covered position nothing after it\nwas lost. #installCursor now proves exactly that for a missing anchor and\nre-anchors the log by a floor taken from the current file inventory,\nread in a getStats call before the one that supplies the witness (one\ncall reads the flush position before the inventory). The converted\ncursor is delivered as an empty pending batch ahead of any log work, so\nthe saved vector stays offered until the conversion is durable. Any other\nrange failure, or an unproven sibling, still condemns.\n\nFixes #3631\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Require purge evidence before resuming past a missing anchor; tighten the tests\n\nA log tail lost at power loss can also leave the anchor missing with the\nflush witness at or before coverage, while a full-text publication made\nbefore it is already durable. A purge leaves no file at or below the\nwitness's sequence; a lost tail leaves the file holding the witness, so a\nretained file there now condemns as before.\n\nThe integration test counts rebuild lines before the restart and asserts\nnone are added after it. An unrelated lag test's wait went back to two\ndeliveries.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Bind persisted coverage to its cursor vector so a purged-anchor resume needs an exact flush witness\n\nCoverage stamped onto a newer anchor does not bound that anchor: a\nfull-text publication can be durable for a commit whose log tail power\nloss then takes, with the witness still at the older coverage. The proof\nneeds coverage that reflects exactly the commits its vector reflects.\n\nOnly an idle pass's capture is persisted now (a turn that reads entries\ncan read some appended after its capture), only when nothing accepted\npast the durable vector carries a mutation, and both backends keep\ncoverage on a cursor write only for the same vector. With coverage\nbound, the resume proof requires the flush witness to equal it, or the\ncoverage to sit at the start of the sequence after the one a purge\nretired: short of it the tail may be lost, past it unreflected commits\nmay be purged. The earlier same-file heuristic is subsumed.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Carry the bound coverage through a floor conversion and persist the next capture after a vector change\n\nThe conversion reflects the same commits as the vector it replaces, so\nits delivery keeps that vector's coverage instead of leaving the index\nwithout resume evidence until the next idle capture. Backends drop\ncoverage when the durable vector changes, so the persistence throttle\nresets with it and the next bound capture persists at once.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Persist a bound idle capture even when the coverage clock already holds its time\n\nA reconcile publishes the idle pass's capture to the shared clock before\nthat pass can persist it (the vector it binds to becomes durable in the\nsame pass), so the clock check returned early and the first bound\ncapture after a durable advance waited a full coverage-timer period.\nPersistence is now decided apart from advancing the clock.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Correct why a bound capture can find the coverage clock already at its time\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Accept the next-segment witness shape only after a purge, and drop coverage once records apply under its vector\n\nA size rotation also starts the next segment, so coverage at its offset 0\nproves the witness is the end of its own segment only when that segment\nis gone from the inventory; a purge removes it only once fully flushed.\n\nA transaction's first chunks arrive under the vector it has not\ncompleted, so a same-vector cursor write could keep coverage while the\nindex already held rows past it. HNSW now drops coverage once any record\nis applied after it was published, and full-text drops it from a\npublication with staged mutations.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Strip coverage from any cursor a backend writes once records applied past it\n\nA floor conversion's cursor carries its coverage, and an unanchored\nchunk applied after it, or one with no cursor at all, left that coverage\non the written cursor. HNSW now strips it from whatever cursor it writes\nonce a record was applied since coverage was published (rewriting the\ndurable cursor when no new one arrived), and full-text strips it from a\npublication with staged mutations.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Fence HNSW's coverage-stripping write by the applying batch's epoch and clear the flag on reset\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Compress the purged-anchor design note under the DESIGN.md line budget\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Let derived-index runners idle out under no-op commits, and never condemn on a drain cut off by close\n\nA runner's idle grace restarted on every 'committed' event, and on main\nthe origin-closed floor (#3085) commits every 5 s, so on a live server a\nrunner never released at any retention. The grace now counts from the\nlast delivered work or acquisition; a wake that delivers nothing re-arms\nonly the remainder.\n\nDuring a database close the drain's coverage clock throws and the runner\ncondemned the index, writing a marker that, if it won against the close,\nforced a rebuild on a clean restart. #needsRebuild now does nothing once\nthe root store reports closed (rocksdb-js reports that from the start of\na close).\n\nAlso: an integration suite at the default retention cadence (coverage\npersists and the runner releases), a second restart in the purged-anchor\nsuite reading the floor-bearing HNSW cursor back from RocksDB, and the\nstale QA-822 purge wording (2.12 purges files at or before the flushed\nposition).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Record the idle-grace and closing-store rules in the derived-index design note\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Treat a closing root store like a closed one in the condemnation guard\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Name both closing states in the condemnation guard's note\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n* Leave a runner unavailable, not condemned, when the closing database cuts it off; name the accepted truncation window\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-3265-port-v53\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-28T04:50:42Z",
+          "url": "https://github.com/HarperFast/harper/commit/3ab3c6197276863f99ed70bccab3c1781f54b477"
+        },
+        "date": 1793172216765,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6015.22,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8180.79,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8248.86,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6369.29,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4485.63,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8215.05,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 971.4,
             "unit": "ops/sec"
           }
         ]
