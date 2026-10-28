@@ -157,7 +157,7 @@ Changing source weights or highlighting settings changes query behavior without 
 
 ## Inspecting an index
 
-`describe_table` reports `full_text_indexes`, including fields, analyzer options, supported query modes, and readiness:
+With readable index sources, `describe_table` reports `full_text_indexes`, including fields, analyzer options, supported query modes, and readiness:
 
 ```json
 {

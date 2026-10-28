@@ -1127,7 +1127,99 @@ When a field is defined as a [relationship](../database/schema.md#relationships)
 
 A to-many relationship resolves to an array of records; depending on access pattern you may need to `await` the property before iterating it.
 
-**Join behavior:** selecting a relationship _without_ filtering on it behaves as a **LEFT JOIN** — records with no related row are still returned (the relationship property is omitted or empty). Adding a condition on a related attribute (e.g. `attribute: ['author', 'name']`) behaves as an **INNER JOIN** — only records with a matching related row are returned.
+**Join behavior:** selecting a relationship without an outer condition on it behaves as a **LEFT JOIN**: parents with no related row remain present, with the relationship omitted or empty. A top-level `conditions` entry on a related attribute (for example, `attribute: ['author', 'name']`) behaves as an **INNER JOIN**: it removes parents without a matching related row and restricts the selected related records. A `conditions` array inside a nested `select` object only filters the displayed children; it does not remove a parent.
+
+#### Constraining related records
+
+:::note Pending release
+
+Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+
+:::
+
+A relationship selection object accepts `conditions`, `operator`, `sort`, `offset`, and `limit`, with an optional `select` projection:
+
+```javascript
+const brand = await Brand.get({
+	id: 42,
+	select: [
+		'id',
+		{
+			name: 'products',
+			conditions: [{ attribute: 'price', comparator: 'greater_than_equal', value: 30 }],
+			sort: { attribute: 'price' },
+			offset: 0,
+			limit: 1,
+			select: ['id', 'price'],
+		},
+	],
+});
+```
+
+The single-record example returns:
+
+```json
+{
+	"id": 42,
+	"products": [
+		{
+			"id": "p2",
+			"price": 35
+		}
+	]
+}
+```
+
+**Outer relationship conditions also restrict nested results.** You do not need to repeat an outer product-price condition inside the `products` selection. For example, this returns only brands with products costing at least 30, and includes their cheapest qualifying product:
+
+```javascript
+const brands = [];
+for await (const brand of Brand.search({
+	conditions: [{ attribute: ['products', 'price'], comparator: 'greater_than_equal', value: 30 }],
+	select: ['id', 'name', { name: 'products', sort: { attribute: 'price' }, limit: 1, select: ['id', 'name', 'price'] }],
+})) {
+	brands.push(brand);
+}
+```
+
+Using the [sample brand and product data](../rest/querying.md#filtering-and-paging-each-relationship), `brands` contains:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+Add a nested `conditions` array only to narrow these inherited candidates further; it does not remove qualifying parents. See the [REST scenarios](../rest/querying.md#filtering-and-paging-each-relationship) for nested-only filtering, stricter child filters, and per-parent pagination.
+
+`operator` defaults to `and`; use `or` to combine the nested conditions as alternatives.
+
+For production collections, also set a top-level `limit` to bound parents. Use a unique final sort key for both parent and child order, and remember that a small child limit does not bound sorting work. See [parent pagination and stable sorting](../rest/querying.md#bound-parent-pages-and-use-stable-sorting) for an example and performance guidance.
+
+These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. These nested options do not remove parents: a parent with no matching children remains present with an empty to-many array. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Top-level `conditions` on that relationship still restrict the child candidates available to the nested selection, so an identical condition need not be repeated.
+
+See [Filtering and Paging Each Relationship](../rest/querying.md#filtering-and-paging-each-relationship) for missing-value behavior, authorization, cache-local eligibility and ordering, scan costs, and unsupported constraints.
 
 ### `sort`
 
@@ -1139,7 +1231,7 @@ Sort order object:
 | `descending` | Sort descending if `true` (default: `false`)               |
 | `next`       | Secondary sort to resolve ties (same structure)            |
 
-Harper uses an index to provide sort order, so a `sort` needs one of:
+For top-level collection queries, Harper uses an index to provide sort order, so a `sort` needs one of:
 
 - An `@indexed` sort `attribute`. Harper aligns the scan with the index automatically — **no condition is required**, and the condition (if any) does not have to be on the sort attribute.
 - At least one `conditions` entry (on **any** attribute) when the sort `attribute` is not indexed. Harper filters by the condition and then orders the result set in memory.

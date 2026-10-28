@@ -649,7 +649,7 @@ Computed properties that read other tables use the same [trusted server-side aut
 
 ### Computed Indexes
 
-Computed properties can be indexed with `@indexed`, enabling custom lookup strategies such as composite keys. Use [`@fullText`](#fulltext) for native BM25-ranked text search and an HNSW `[Float]` field for vector indexing:
+Computed properties can be indexed with `@indexed`, enabling custom lookup strategies such as composite keys. Use [`@fullText`](#fulltext) for native BM25-ranked text search and an HNSW `[Float]` field for vector indexing. The following computed secondary index splits a comma-separated string:
 
 ```graphql
 type Product @table {
