@@ -58,6 +58,18 @@ function discardUncommittedStructures(encoder: {
 	encoder.lastTypedStructuresLength = 0;
 }
 
+// No re-pack follows a throw, and harper-pro's replication sender ships this encoder's arrays without
+// checking `uninitialized`, so reload now. If that fails too, leave `typedStructs` unset: the sender
+// reloads on `!typedStructs` rather than ship empty dictionaries, and structon recreates it on load.
+function discardStructuresAfterThrow(encoder: any): void {
+	discardUncommittedStructures(encoder);
+	try {
+		encoder._mergeStructures(encoder.getStructures());
+	} catch {
+		encoder.typedStructs = undefined;
+	}
+}
+
 // Analytics counter incremented whenever a record cannot be decoded because its shared structure is
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
 // monitoring; the store name is passed as the metric path.
@@ -557,7 +569,7 @@ export class RecordEncoder extends StructonEncoder {
 						{ retryOnBusy: true }
 					);
 				} catch (error) {
-					discardUncommittedStructures(this);
+					discardStructuresAfterThrow(this);
 					throw error;
 				}
 				// Only record the structure update once the txn has actually committed. Setting it
@@ -576,14 +588,7 @@ export class RecordEncoder extends StructonEncoder {
 			try {
 				result = superSaveStructures.call(this, structures, isCompatible);
 			} catch (error) {
-				discardUncommittedStructures(this);
-				// No re-pack follows a throw, and harper-pro's LMDB replication sender ships this encoder's
-				// arrays without reloading, so reload now rather than leave them empty.
-				try {
-					this._mergeStructures(this.getStructures());
-				} catch {
-					// The discard's uninitialized marker still reloads on the next encode.
-				}
+				discardStructuresAfterThrow(this);
 				throw error;
 			}
 			// A decline still flags an update: the re-pack may reuse a peer's new structures (resources/DESIGN.md).

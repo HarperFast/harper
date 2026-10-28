@@ -215,6 +215,34 @@ describe('RecordEncoder discards structures from a structure save that did not c
 				assert.deepEqual(reader.get('good'), { alpha: 1, beta: 2 });
 			});
 
+			it('leaves typedStructs unset when the reload after a throwing save fails too', () => {
+				const writer = openHandle();
+				writer.put('k0', { x: 1, y: 2 });
+				const encoder = writer.db.encoder;
+				const getStructures = encoder.getStructures;
+				let loadFails = false;
+				encoder.getStructures = function () {
+					if (loadFails) throw new Error('injected structure-load failure');
+					return getStructures.call(this);
+				};
+				const restore = failSaves(writer, () => {
+					loadFails = true;
+					throwInSave();
+				});
+				assert.throws(() => writer.put('bad', { alpha: 1, beta: 2 }), /injected structure-save failure/);
+				restore();
+				encoder.getStructures = getStructures;
+				// harper-pro's replication sender reloads on a missing typedStructs, not on an empty one.
+				assert.strictEqual(encoder.typedStructs, undefined);
+
+				assert.deepEqual(writer.get('k0'), { x: 1, y: 2 });
+				writer.put('k2', { alpha: 1, beta: 2 });
+				assertTypedRecord(writer, 'k2');
+				const reader = reopen(writer);
+				assert.deepEqual(reader.get('k0'), { x: 1, y: 2 });
+				assert.deepEqual(reader.get('k2'), { alpha: 1, beta: 2 });
+			});
+
 			it('re-mints a typed structure whose save lost to a classic-only dictionary', () => {
 				// Classic-only dictionaries are saved without their typed half, and structon's reload of
 				// that form keeps the encoder's own typed structures, including the one that lost. An
