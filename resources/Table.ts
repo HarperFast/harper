@@ -5845,6 +5845,15 @@ export function makeTable(options): TableResourceClass {
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
+						// A publish or relocate of this transaction saves when it is added and restamps the head, before or
+						// after this deferred write, so a tie it made says nothing about this write: order it against the
+						// committed head. LMDB commits pass no committedBy, so it keeps the predecessor exception below.
+						if (isRocksDB && !audit && precedesExisting === 0)
+							precedesExisting = precedesExistingVersion(
+								txnTime,
+								identityBase(write, existingEntry, committedBy),
+								options?.nodeId
+							);
 						if (audit && !belowAuditFloor) {
 							// incremental CRDT updates are only available with audit logging on
 							const initialAuditHead: { txnLogKey: number; nodeId: number; entry?: any } = isRocksDB
@@ -6195,6 +6204,8 @@ export function makeTable(options): TableResourceClass {
 							// is the backstop).
 							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
 								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+						} else if (precedesExisting > 0 || (!isRocksDB && precedesExisting === 0 && followsAppliedWrite(write))) {
+							// Newer than the committed head, or on LMDB tied after an unskipped earlier write: applies in order.
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -6202,7 +6213,19 @@ export function makeTable(options): TableResourceClass {
 							write.skipped = true;
 							return writeCommit(false);
 						} else {
-							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
+							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
+							// Without a log, a tie with the head or a listed ref is the only sign this write was already applied,
+							// and an older write must not give a deleted or publish-only head a record.
+							if (
+								precedesExisting === 0 ||
+								existingRecord == null ||
+								(existingEntry.receivedIdentityRefs &&
+									!followsAppliedWrite(write) &&
+									auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+							) {
+								write.skipped = true;
+								return writeCommit(false);
+							}
 							incrementalUpdateToApply = remainingAgainstRecord(recordUpdate, existingRecord);
 							logger.debug?.('Rebuilding update without audit:', incrementalUpdateToApply);
 							if (!incrementalUpdateToApply) {
@@ -6212,6 +6235,14 @@ export function makeTable(options): TableResourceClass {
 							// fields dropped from the update leave their pre-saved blobs unreferenced; the commit's
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
+							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
+							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
+							// only a commutative op applies again on re-delivery; the plain keys merged here are dropped then
+							if (
+								commutativeOpsOf(incrementalUpdateToApply) &&
+								!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+							)
+								(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
