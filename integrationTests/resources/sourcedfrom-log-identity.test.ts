@@ -65,7 +65,13 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 
 	async function neighbors(target: number[]) {
 		const records = await request('/Probe/', 'QUERY', {
-			sort: { attribute: 'vector', target, distance: 'cosine' },
+			sort: {
+				attribute: 'vector',
+				target,
+				distance: 'cosine',
+				maxIndexLagMilliseconds: 0,
+				waitForIndexMilliseconds: 30_000,
+			},
 			select: ['id', '$distance'],
 			limit: 1,
 		});
