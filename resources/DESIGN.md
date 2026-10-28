@@ -76,6 +76,8 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 `getRecordAtTime` (`crdt.ts`) undoes only patches. Past a newer put, delete or invalidate it rebuilds forward (`reconstructForward`): carrying an image back returns a future state. A reversed field survives only when the reversal is exact. An unlinked put ends the chain without implying an empty past (`crdt.test.js`).
 
+History readers skip entries that are not a record's history, through `isNonHistoryType` (`auditStore.ts`): `getHistory` and `getHistoryOfRecord` omit eviction, lock-control and the whole-table `reload` marker (`recordId: null`), so a marker never reaches `read_audit_log`. The `startTime` replay and the `previousCount` backfill must not use it: they handle a `reload` themselves (refuse or re-snapshot). A record with no audit position (an LMDB entry without `localTime`) has an empty history, like an absent record; carrying history across an audit-less base copy is harper#2212's design (`unitTests/resources/historyNonRecordEntries.test.js`).
+
 ## Path routing & parameterised routes
 
 Parameterised routes sit outside the base map (`paramRoutes`), so exact and prefix matching stays fast and static routes win (`Resources.getMatch`). Literal > `:param` > `*`; a wildcard is last. `openApi.ts` and `components/mcp/resources.ts` each convert templates, so a syntax change touches both (`paramRoutes.test.js`).
