@@ -7535,12 +7535,21 @@ export function makeTable(options): TableResourceClass {
 				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering.
 				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
 				// order for their query.
-				if (conditions.length > 1 && operator !== 'or')
-					return sortBy(conditions, [
-						(condition) => (conditionDrivesIndex(TableResource, condition) ? 0 : 1),
-						estimateCondition(TableResource),
-					]);
-				else return conditions;
+				if (conditions.length > 1 && operator !== 'or') {
+					const estimate = estimateCondition(TableResource);
+					const ordered = sortBy(
+						conditions.filter((condition) => condition !== syntheticOrderCondition),
+						[(condition) => (conditionDrivesIndex(TableResource, condition) ? 0 : 1), estimate]
+					);
+					if (ordered.length < conditions.length) {
+						// the index-order scan full-scans yet streams a sorted page, so it leads exactly when it is narrower
+						// than every other condition, whether or not they can drive; anywhere else it is dropped below
+						const sortLeads = ordered.every((condition) => estimate(syntheticOrderCondition) < estimate(condition));
+						if (sortLeads) ordered.unshift(syntheticOrderCondition);
+						else ordered.push(syntheticOrderCondition);
+					}
+					return ordered;
+				} else return conditions;
 			}
 			const operator = target.operator;
 			const prepared = TableResource._prepareQueryConditions(conditions, operator, target, context);

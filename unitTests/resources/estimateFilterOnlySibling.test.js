@@ -409,6 +409,27 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 				}
 			});
 
+			it('leads with the index-order sort only when it is narrower than every other condition', async () => {
+				const sortLeads = async (conditions, sort) => (await plan(conditions, { sort }))[0]?.comparator === 'sort';
+				assert.strictEqual(await sortLeads([inLeg()], { attribute: 'a' }), false, 'a narrower `in` still leads');
+				assert.deepStrictEqual(
+					await ids(Table.search({ conditions: [inLeg()], sort: { attribute: 'a' } })),
+					await scan([inLeg()]),
+					'rows missing the sort attribute are kept'
+				);
+				const broadIn = { attribute: 'b', comparator: 'in', value: [1, 2, 3, 5, 6, 7] };
+				assert.strictEqual(
+					await sortLeads([broadIn], { attribute: 'a' }),
+					true,
+					'a broader `in` still yields to the sort'
+				);
+				assert.strictEqual(
+					await sortLeads([common()], { attribute: 'b' }),
+					true,
+					'so does a broader indexed condition'
+				);
+			});
+
 			it('keeps the written order under enforceExecutionOrder', async () => {
 				assert.strictEqual((await plan([inLeg(), common()], { enforceExecutionOrder: true }))[0].attribute, 'b');
 			});

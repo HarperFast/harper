@@ -2379,8 +2379,7 @@ function usableIndex(table, attributeName): any {
  * Whether searchByIndex answers this condition from an index range or the primary store, rather than with a
  * full scan it filters or an error. Lead selection ranks on this ahead of the row estimate, which several
  * full-scan conditions (`in`, an empty `starts_with`, a range on an unindexed attribute) report as finite.
- * Mirrors searchByIndex's `needFullScan` and missing-index decisions; `sort` counts as driving because an
- * index-ordered lead is deliberate planning.
+ * Mirrors searchByIndex's `needFullScan` and missing-index decisions.
  */
 export function conditionDrivesIndex(table, condition): boolean {
 	if (condition.conditions) {
@@ -2412,6 +2411,7 @@ export function conditionDrivesIndex(table, condition): boolean {
 		case 'in':
 		case 'contains':
 		case 'ends_with':
+		case 'sort':
 			return false;
 		case 'ne':
 			if (value !== null) return false;
