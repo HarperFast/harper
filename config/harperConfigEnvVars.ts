@@ -256,7 +256,7 @@ function resolveLeafValue(currentValue: any, leafValue: any, path: string): any 
 export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
 
 /**
- * Filters out arguments that are already set in HARPER_CONFIG or HARPER_SET_CONFIG.
+ * Filters arguments whose write paths overlap HARPER_CONFIG or HARPER_SET_CONFIG paths.
  * This prevents individual environment variables from overriding reasserting runtime
  * configuration layers on subsequent boots (where bin/run.ts calls updateConfigValue
  * after initConfig()).
@@ -313,11 +313,24 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 		return args;
 	}
 
+	const runtimeConfigAncestors = new Set<string>();
+	for (const key of runtimeConfigKeys) {
+		for (let end = key.indexOf('_'); end !== -1; end = key.indexOf('_', end + 1)) {
+			runtimeConfigAncestors.add(key.slice(0, end));
+		}
+	}
+
 	const filteredArgs: Record<string, any> = {};
 	for (const key in args) {
 		const lowerKey = key.toLowerCase();
-		const canonicalKey = (hdbTerms.CONFIG_PARAM_MAP[lowerKey] ?? lowerKey).toLowerCase();
-		if (!runtimeConfigKeys.has(lowerKey) && !runtimeConfigKeys.has(canonicalKey)) {
+		const canonicalKey = (
+			Object.hasOwn(hdbTerms.CONFIG_PARAM_MAP, lowerKey) ? hdbTerms.CONFIG_PARAM_MAP[lowerKey] : lowerKey
+		).toLowerCase();
+		let overlaps = runtimeConfigKeys.has(lowerKey) || runtimeConfigAncestors.has(canonicalKey);
+		for (let end = canonicalKey.length; !overlaps && end > 0; end = canonicalKey.lastIndexOf('_', end - 1)) {
+			overlaps = runtimeConfigKeys.has(canonicalKey.slice(0, end));
+		}
+		if (!overlaps) {
 			filteredArgs[key] = args[key];
 		}
 	}
