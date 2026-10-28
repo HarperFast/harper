@@ -1334,7 +1334,7 @@ export function isLockControlType(type: unknown): boolean {
 	return type === 'lockRelease' || type === 'lockBarrier';
 }
 
-/** Entry types that belong to no record's history: eviction, lock control and the whole-table `reload` marker. */
+/** Not for replay or backfill: those refuse or re-snapshot on a `reload` marker rather than skipping it. */
 export function isNonHistoryType(type: unknown): boolean {
 	return type === 'evict' || type === 'reload' || isLockControlType(type);
 }
