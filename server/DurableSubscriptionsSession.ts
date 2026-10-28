@@ -1268,7 +1268,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const needed = this.savesStarted + 1;
 		return new Promise((resolve, reject) => {
 			this.saveWaiters.push({ needed, resolve, reject });
-			this.persist().catch(() => {});
+			this.persist();
 		});
 	}
 	/** The final save waits for inbound QoS 2 publishes still committing, so it keeps their ids; nothing saves after it. */
@@ -1344,7 +1344,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 			} else started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
-			if (durable || started) await this.persist();
+			if (durable || started) await this.saveExchanges();
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
@@ -1375,7 +1375,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state) this.forgetTopic(state);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
-			if (saved || this.dirty || this.saving) await this.persist();
+			if (saved || this.dirty || this.saving) await this.saveExchanges();
 			return result || saved;
 		});
 	}
