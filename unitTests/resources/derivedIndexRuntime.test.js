@@ -358,17 +358,23 @@ describe('DerivedIndexRuntime', () => {
 		it('requests again for a waiter that joins after the first request was answered', async () => {
 			const store = new FakeLogStore(new Map([[10, []]]));
 			store.committedPosition = { sequence: 1, offset: 64 };
-			const runtime = runtimeFor(store, new Map(), options).runtime;
-			runtime.register(registration(coverageBackend('coverage-joiner')));
+			const counts = countCoverageNotifies(store);
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-joiner')));
 			await waitFor(() => coverageTime(store, 'coverage-joiner') > 0n);
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-joiner')));
 
-			const first = runtime.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
+			// No capture can meet this target for 300 ms, so the group outlives the request that answers it.
+			const held = peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore) + 300_000_000n, 1000);
 			const answered = derivedIndexTime(store.rootStore);
 			await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
-			// Joins the first waiter's group before its next poll, with a target past the capture that answered it.
-			const second = runtime.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
-			await Promise.all([first, second]);
-			await runtime.stop();
+			const notifies = counts.notifies;
+			await peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
+			assert(counts.notifies > notifies);
+			await held;
+			await peer.stop();
+			await owner.stop();
 		});
 
 		it('does not retry a deferred batch or repeat an unanswered request', async () => {

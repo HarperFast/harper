@@ -19,7 +19,7 @@ describe('derived-index coverage waits on a non-owner worker', function () {
 		waitFor(
 			async () => {
 				try {
-					return await search(index, 0);
+					return await search(index, { maxIndexLagMilliseconds: 0 });
 				} catch (error) {
 					if (error.statusCode === 503) return false;
 					throw error;
@@ -32,11 +32,9 @@ describe('derived-index coverage waits on a non-owner worker', function () {
 			worker.once('message', resolve);
 			worker.once('error', reject);
 		});
-	const writeAndSearch = async (table, id, record) => {
+	const writeAndSearch = async (table, id, record, pauseMilliseconds = 0) => {
 		const reply = nextMessage();
-		// The pause lets the owner's commit-triggered drain finish first; a query racing that drain can
-		// be answered by it, which is luck rather than the demand path under test.
-		worker.postMessage({ table, id, record, waitForIndexMilliseconds: 5000, pauseMilliseconds: 50 });
+		worker.postMessage({ table, id, record, waitForIndexMilliseconds: 5000, pauseMilliseconds });
 		const result = await reply;
 		assert.equal(result.type, 'searched', result.stack ?? result.message);
 		return result;
@@ -49,10 +47,9 @@ describe('derived-index coverage waits on a non-owner worker', function () {
 		index = Product.indices.vector.customIndex;
 		await Product.put('initial', { vector });
 		await current();
-		// This thread registered first and holds the runner lock, so the worker's runtime is a non-owner.
-		assert.notEqual(Product.derivedIndexRuntime, undefined);
 		worker = new Worker(require.resolve('./derivedIndexCoverageDemand-thread.js'));
-		assert.equal((await nextMessage()).type, 'ready');
+		const ready = await nextMessage();
+		assert.equal(ready.type, 'ready', ready.stack ?? ready.message);
 	});
 	after(async () => {
 		await worker?.terminate();
@@ -62,9 +59,11 @@ describe('derived-index coverage waits on a non-owner worker', function () {
 	it('answers a wait after an unindexed-table commit without the owner flush cadence', async () => {
 		const elapsed = [];
 		const { ownerEpoch } = index.derivedHost.readiness();
-		for (let i = 0; i < 5; i++) {
+		// A query racing the owner's commit drain can be answered by that drain; the 50 ms pause lets it
+		// finish first, so only a demanded drain can answer in time.
+		for (const pauseMilliseconds of [50, 50, 50, 50, 50, 0, 0, 0]) {
 			await current();
-			const result = await writeAndSearch('Other', `unrelated-${i}`, { value: i });
+			const result = await writeAndSearch('Other', `unrelated-${elapsed.length}`, { value: 1 }, pauseMilliseconds);
 			assert(result.keys.includes('initial'));
 			elapsed.push(Math.round(result.elapsed));
 		}

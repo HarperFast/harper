@@ -3,6 +3,7 @@ const { parentPort } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { waitFor } = require('../waitFor');
 
 const vector = [1, 0, 0, 0];
 
@@ -25,9 +26,9 @@ function defineTables() {
 	return { Product, Other };
 }
 
-function search(index, waitForIndexMilliseconds) {
+function search(index, coverage) {
 	return index.search(
-		{ target: vector, comparator: 'sort', distance: 'cosine', ef: 200, waitForIndexMilliseconds },
+		{ target: vector, comparator: 'sort', distance: 'cosine', ef: 200, ...coverage },
 		{ transaction: undefined }
 	);
 }
@@ -40,19 +41,17 @@ if (parentPort) {
 	const { Product, Other } = defineTables();
 	const index = Product.indices.vector.customIndex;
 
-	async function waitUntilReady() {
-		await Product.indexingOperation;
-		while (index.derivedHost?.readiness().state !== 'ready') await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-
-	void waitUntilReady().then(() => parentPort.postMessage({ type: 'ready' }));
+	void waitFor(() => index.derivedHost?.readiness().state === 'ready', 15_000).then(
+		() => parentPort.postMessage({ type: 'ready' }),
+		(error) => parentPort.postMessage({ type: 'error', message: error.message, stack: error.stack })
+	);
 	parentPort.on('message', async (message) => {
 		try {
 			const Table = message.table === 'Product' ? Product : Other;
 			await Table.put(message.id, message.record);
 			await new Promise((resolve) => setTimeout(resolve, message.pauseMilliseconds));
 			const started = performance.now();
-			const results = await search(index, message.waitForIndexMilliseconds);
+			const results = await search(index, { waitForIndexMilliseconds: message.waitForIndexMilliseconds });
 			parentPort.postMessage({
 				type: 'searched',
 				elapsed: performance.now() - started,
