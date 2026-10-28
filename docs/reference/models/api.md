@@ -68,13 +68,14 @@ Additional options apply only when `toolMode: 'auto'`; they are documented in [T
 
 ### GenerateResult
 
-| Field          | Type                                                           | Description                                                                                                                                  |
-| -------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `content`      | `string`                                                       | The generated text                                                                                                                           |
-| `finishReason` | `'stop'` \| `'length'` \| `'tool_calls'` \| `'content_filter'` | Why generation stopped, normalized across backends                                                                                           |
-| `toolCalls`    | `ToolCall[]`                                                   | Tool calls the model requested, when `finishReason` is `'tool_calls'` (each `{ id, name, arguments }`, with `arguments` parsed to an object) |
-| `usage`        | `TokenUsage`                                                   | Token usage reported by the backend (`promptTokens`, `completionTokens`, …), when available                                                  |
-| `trace`        | `ToolTraceEntry[]`                                             | Per-tool-invocation trace; only populated by the `toolMode: 'auto'` loop — see [Tool Calling](./tool-calling)                                |
+| Field          | Type                                                           | Description                                                                                                                                                                                                   |
+| -------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `content`      | `string`                                                       | The generated text                                                                                                                                                                                            |
+| `finishReason` | `'stop'` \| `'length'` \| `'tool_calls'` \| `'content_filter'` | Why generation stopped, normalized across backends                                                                                                                                                            |
+| `toolCalls`    | `ToolCall[]`                                                   | Tool calls the model requested, when `finishReason` is `'tool_calls'` (each `{ id, name, arguments }`, with `arguments` parsed to an object)                                                                  |
+| `usage`        | `TokenUsage`                                                   | Token usage reported by the backend (`promptTokens`, `completionTokens`, …), when available                                                                                                                   |
+| `costUsd`      | `number`                                                       | From v5.4.0, the call's cost from the serving entry's [pricing](./overview#pricing); absent when that entry is unpriced or usage is incomplete. With `toolMode: 'auto'`, the final round's only, like `usage` |
+| `trace`        | `ToolTraceEntry[]`                                             | Per-tool-invocation trace; only populated by the `toolMode: 'auto'` loop — see [Tool Calling](./tool-calling)                                                                                                 |
 
 ## generateStream()
 
@@ -82,7 +83,7 @@ Additional options apply only when `toolMode: 'auto'`; they are documented in [T
 models.generateStream(input: GenerateInput, options?: GenerateOpts): AsyncIterable<GenerateChunk>
 ```
 
-Identical to `generate()` but yields the completion incrementally:
+Identical to `generate()` but yields the completion incrementally. Streamed calls are not [priced](./overview#pricing), so no chunk carries `costUsd`:
 
 ```javascript
 let text = '';

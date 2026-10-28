@@ -1926,9 +1926,9 @@ A session's `status` is one of:
 | `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`               |
 | `completed`         | The run ended with a final answer, or at the `maxTurns` ceiling; check `lastError` |
 | `aborted`           | Cancelled by an operator via `cancel_agent_run`                                    |
-| `error`             | The run failed; `lastError` carries the message                                    |
+| `error`             | The run failed or a spend cap stopped it; `lastError` carries the message          |
 
-`completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
+`completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished. From v5.4.0 a final answer that reached a [spend cap](../configuration/options.md#agent-spend-caps) also ends `completed` with `lastError` set, naming the cap.
 
 As of v5.4.0, a model reply that did not finish ends the run `error`, never `completed`, and `lastError` says why. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent) or at the model's context window, one stopped by the provider's content filter or a model refusal, one that asks for tool calls of which none could be parsed, and one with neither text nor tool calls. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
 
@@ -1965,11 +1965,33 @@ Response:
 { "session_id": "3f7c...", "status": "running" }
 ```
 
-A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first.
+A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first. From v5.4.0 a session also answers 409 while a cancelled run is still finishing its current model call or tool. Nothing is recorded, and the session already reads `aborted`, so send the prompt again once [`get_agent_session`](#get_agent_session) on the node you prompted reports `runInFlight: false`, since each node reports only its own runs; the wait lasts as long as that call, at most the model's `requestTimeoutMs` or the tool's own run time. A prompt accepted while a [`cancel_agent_run`](#cancel_agent_run) for the same session arrives also answers 409. That prompt may already be in the transcript, where the next prompt's run sees it.
+
+From v5.4.0 each of these 409s carries a `code` and `retryable` beside `error`. `retryable: true` means nothing was recorded, so the same prompt can be sent again once the condition clears; `retryable: false` means the prompt was saved, and sending it again would add it twice:
+
+| `code`                   | `retryable` | When                                                                         |
+| ------------------------ | ----------- | ---------------------------------------------------------------------------- |
+| `AGENT_SESSION_BUSY`     | `true`      | The session is `running` or `awaiting_approval`                              |
+| `AGENT_RUN_FINISHING`    | `true`      | A cancelled run is still finishing; `runInFlight` turns `false` when it ends |
+| `AGENT_PROMPT_CANCELLED` | `true`      | A cancel arrived before the prompt was saved                                 |
+| `AGENT_PROMPT_NOT_RUN`   | `false`     | A cancel arrived after the prompt was saved, so no run started               |
 
 ### `get_agent_session`
 
 Returns the full session record: `status`, `user` (the Operations API caller who created the session, falling back to `agent.user`), the `messages` transcript (user, assistant, and tool messages, including tool calls and their observations), `pendingApprovals`, `model`, `provider`, `createdAt`/`updatedAt`, and `lastError`. This is the polling endpoint for a run in flight.
+
+From v5.4.0 each assistant message carries the `usage` its model call reported (`promptTokens`, `completionTokens`, and `costUsd` when the model is [priced](../models/overview.md#pricing)), and the response adds the session's totals:
+
+```json
+{
+	"session_id": "3f7c...",
+	"status": "completed",
+	"usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 },
+	"runInFlight": false
+}
+```
+
+`calls` counts the model calls that returned, including a reply the agent rejected as cut off or empty. That reply is kept out of `messages`, and its usage is listed in the session's `rejectedCalls`. A failed call is not counted. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals. `runInFlight` is `true` while a run for the session is still executing on the node that answered, including a cancelled run finishing its current step.
 
 ```json
 { "operation": "get_agent_session", "session_id": "3f7c..." }
@@ -1979,7 +2001,7 @@ Unknown `session_id` returns a 404.
 
 ### `list_agent_sessions`
 
-Lists agent sessions.
+Lists agent sessions, each with the same `usage` totals as `get_agent_session`.
 
 | Parameter | Type    | Description                              |
 | --------- | ------- | ---------------------------------------- |
@@ -2016,13 +2038,15 @@ When `agent.autoApprove` is off (the default), any tool call the agent makes to 
 }
 ```
 
-Both decisions resume the loop: an approval executes the saved tool call, and a denial hands the refusal back to the model as an observation so it can adjust. Neither ends the run — use `cancel_agent_run` for that. If a single turn produced several gated calls, the session stays `awaiting_approval` until every one of them is resolved. Resolving an already-resolved approval is an error.
+Both decisions resume the loop: an approval executes the saved tool call, and a denial hands the refusal back to the model as an observation so it can adjust. Neither ends the run — use `cancel_agent_run` for that. If a single turn produced several gated calls, the session stays `awaiting_approval` until every one of them is resolved. Resolving an already-resolved approval is an error. From v5.4.0 an approved action runs at most once: it is marked taken just before it runs, and if Harper stops after that and before recording its result, the next run answers that call `interrupted` with an unknown outcome instead of running it again. A tool call that needed no approval and was cut off the same way is answered `interrupted` too, so the session can continue. An approval still awaiting a decision stays pending.
 
 Whether a tool is treated as destructive at all is governed by `agent.allowDestructive`: when it is `false` (the default), destructive tools are removed from the agent's toolset entirely rather than gated. Which tools carry that mark is fixed in core — `write_file`, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) — so an operation outside it (`drop_component` and `deploy_component` among them) is neither removed nor gated.
 
 ### `cancel_agent_run`
 
 Cancels a session's run, clears any followups it scheduled, and marks the session `aborted`. Works on a paused (`awaiting_approval`) or `idle` session as well as an actively running one.
+
+From v5.4.0 the cancel also answers every pending approval, decided or not, with a `cancelled_by_operator` result, in the same write that marks the session `aborted`. An approved action that has not started by then never runs, neither in the cancelled run nor when you next prompt the session, and nothing is left awaiting a decision. An approved action that had already started is not answered by the cancel: if it finished, its result is recorded, and if Harper stopped before recording one, the next run answers it `interrupted`. A cancel between a turn's tool calls answers the rest of that turn `cancelled_by_operator`. The session stays `aborted`. A run caught mid-step finishes that step without marking the session `completed`, `error` or `awaiting_approval`. A tool call it then asks to have approved is answered `cancelled_by_operator` instead, and the run makes no further model call.
 
 ```json
 { "operation": "cancel_agent_run", "session_id": "3f7c..." }
@@ -2042,7 +2066,7 @@ One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch`, `componentsScope`, or `configScope` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) and the [filesystem scopes](../configuration/options.md#filesystem-scopes) are read at startup only. A `maxTokens` that is not a positive integer is rejected the same way. A `maxToolResultBytes` that is not an integer from `1024` to `1048576` is rejected the same way.
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxSessionTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Set `maxSessionTokens` or `maxCostUsd` to `null` to remove that cap. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch`, `componentsScope`, or `configScope` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) and the [filesystem scopes](../configuration/options.md#filesystem-scopes) are read at startup only. A `maxTurns` or `maxTokens` that is not a positive integer, or a cap that is not a usable number, is rejected the same way. A `maxToolResultBytes` that is not an integer from `1024` to `1048576` is rejected the same way.
 
 ```json
 { "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
@@ -2051,7 +2075,7 @@ Updates agent settings and returns the resulting configuration. Accepts any of `
 Three limits are worth knowing:
 
 - **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
-- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTokens`, `maxToolResultBytes`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run, and a paused run that `approve_agent_action` resumes counts as a new one: it picks up the current settings. To stop a run immediately, use `cancel_agent_run`.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `systemPromptAppend` and spend caps are all captured at start. Changes take effect on the next run, and a paused run that `approve_agent_action` resumes counts as a new one: it picks up the current settings. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
 ### MCP access

@@ -145,6 +145,30 @@ The logical name `default` is used when application code does not pass an explic
 
 See [Backends](./backends) for the full set of configuration fields supported by each backend.
 
+### Pricing
+
+<VersionBadge version="v5.4.0" />
+
+A `generative` entry can declare what you pay for its model, so Harper can put a dollar figure on each call. Harper ships no prices of its own: the rates are yours to keep current.
+
+```yaml
+models:
+  generative:
+    default:
+      backend: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o
+      pricing:
+        inputPerMtok: 2.5 # USD per million prompt tokens
+        outputPerMtok: 10 # USD per million completion tokens
+```
+
+Each `generate()` call is priced at the rates of the entry that served it, and the result carries `costUsd`. With `toolMode: 'auto'`, the result's `costUsd` covers the final round only, like its `usage`. A call that fell back to another entry in a [fallback group](./routing#fallback-groups) is priced at that entry's rates, not the requested one's. A call has no `costUsd` when the entry that served it declares no `pricing`, or when the provider did not report both a prompt and a completion token count.
+
+The two rates are the only cost inputs Harper uses. Discounts for cached prompt tokens, long-context surcharges and provisioned capacity are not, so set rates that match what an average call costs you, or rates that overestimate it if the figure backs a cap. Streaming calls (`generateStream()`) are not priced.
+
+The price is read by [`maxCostUsd`](./tool-calling#options) on `toolMode: 'auto'` calls and by the [built-in agent's `maxCostUsd`](../configuration/options#agent-spend-caps). `pricing` is accepted only on `generative` entries; on an `embedding` or `decision` entry it fails configuration validation. A price change applies on config reload, except on an entry whose `backend` is a module rather than a built-in, which takes it on restart like any other change to that entry. It does not affect [calibration](./calibration).
+
 ### Credentials
 
 String values in model entries support environment-variable indirection with `${VAR_NAME}` syntax, resolved at startup. Use this for API keys rather than placing the literal key in the configuration file — Harper logs a warning at startup when a credential field contains a literal value. If the referenced environment variable is unset, the placeholder is left as-is; for credential fields the backend rejects the unresolved placeholder at startup, while other fields (such as `host` or `model`) carry the literal placeholder into requests — surfacing as per-request failures rather than a startup error. Indirection applies to string-typed fields only; numeric fields such as `requestTimeoutMs` must be literal values.
