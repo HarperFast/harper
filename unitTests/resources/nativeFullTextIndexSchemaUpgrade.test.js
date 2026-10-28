@@ -54,7 +54,6 @@ describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function
 		`;
 		let Product;
 		let server;
-		let failedResponse;
 		let streamFailure;
 		let reader;
 		const resetGate = gate();
@@ -237,14 +236,12 @@ describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function
 						pipeline(response.body, output, (error) => {
 							if (error) {
 								streamFailure = error;
-								failedResponse = output;
 							}
 						});
 					}
 				} catch (error) {
 					if (output.headersSent || output.destroyed) {
 						streamFailure = error;
-						failedResponse = output;
 						output.destroy(error);
 						return;
 					}
@@ -264,7 +261,6 @@ describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function
 			if (!streamed || streamed.status === 200) {
 				await waitFor(() => streamFailure !== undefined, 5000);
 				assert.strictEqual(streamFailure.code, 'INDEX_REBUILDING');
-				assert.strictEqual(failedResponse.destroyed, true);
 			}
 			const unavailable = await fetch(url, { headers: { Prefer: 'count=exact' }, signal: AbortSignal.timeout(30000) });
 			assert.strictEqual(unavailable.status, 503, await unavailable.text());

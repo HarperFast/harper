@@ -584,21 +584,8 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			if (response.status === 200) {
 				const records = JSON.parse(body);
 				assert.ok(Array.isArray(records));
-				if (records.length) {
-					assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
-					ready = true;
-				} else {
-					const description = await operation({
-						operation: 'describe_table',
-						schema: 'data',
-						table: 'LifecycleProduct',
-					});
-					assert.strictEqual(
-						description.full_text_indexes.find(({ name }) => name === 'catalogSearch')?.readiness.state,
-						'ready',
-						'an empty completed page must not bypass the rebuild fence'
-					);
-				}
+				assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
+				ready = true;
 			} else assert.ok(body.length > 0);
 			if (!ready) await delay(25);
 		} while (!ready && Date.now() < deadline);

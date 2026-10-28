@@ -94,7 +94,7 @@ describe('Test JSONStream module ', () => {
 		});
 
 		it('an iterator throwing before its first row', async function () {
-			// eslint-disable-next-line require-yield -- this generator must fail before yielding a row
+			// eslint-disable-next-line require-yield
 			async function* rows() {
 				throw new Error('boom');
 			}
