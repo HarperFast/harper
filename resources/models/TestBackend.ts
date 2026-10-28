@@ -1,4 +1,5 @@
 import { allowedValues, isObjectSchema } from './decision.ts';
+import { ServerError } from '../../utility/errors/hdbError.ts';
 import type {
 	BackendOpts,
 	ChoiceScores,
@@ -25,9 +26,17 @@ import type {
  * Same input always produces the same output — no external services, no model
  * files, no network. Lets the facade, registry, accounting, and analytics
  * paths be exercised end-to-end without an Ollama / OpenAI / fabric backend.
+ *
+ * `contextWindow` (characters) gives `embed` a limit: a longer input fails with
+ * `contextWindowExceeded`, or with `truncate: true` is cut to the window, keeping its start.
  */
 export class TestBackend implements ModelBackend {
 	readonly name = 'test';
+	readonly #contextWindow?: number;
+
+	constructor(options: { contextWindow?: number } = {}) {
+		this.#contextWindow = options.contextWindow;
+	}
 
 	capabilities(): ModelCapabilities {
 		return {
@@ -39,11 +48,22 @@ export class TestBackend implements ModelBackend {
 			decide: true,
 			calibrated: false,
 			scoreChoices: true,
+			truncate: true,
 		};
 	}
 
-	async embed(input: string | string[], _opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
-		const texts = Array.isArray(input) ? input : [input];
+	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
+		const window = this.#contextWindow;
+		const texts = (Array.isArray(input) ? input : [input]).map((text) => {
+			if (window === undefined || text.length <= window) return text;
+			if (opts.truncate === true) return text.slice(0, window);
+			throw Object.assign(
+				new ServerError(
+					`TestBackend input of ${text.length} characters exceeds its ${window}-character context window`
+				),
+				{ contextWindowExceeded: true }
+			);
+		});
 		const vectors = texts.map((t) => deterministicVector(t, 16));
 		const embeddingTokens = texts.reduce((sum, t) => sum + t.length, 0);
 		return { status: 'completed', output: vectors, usage: { embeddingTokens, latencyMs: 0 } };

@@ -163,7 +163,9 @@ export class Models implements ModelsContract {
 	): Promise<{ vectors: Float32Array[]; usage?: TokenUsage }> {
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
-		const resolved = resolveCandidates('embedding', opts.model, buildRequires('embed', opts.requires, false));
+		const requires = buildRequires('embed', opts.requires, false);
+		if (opts.truncate === true && !requires.includes('truncate')) requires.push('truncate');
+		const resolved = resolveCandidates('embedding', opts.model, requires);
 		if ('error' in resolved) {
 			this.#recordFailure(resolved.backend, 'embed', opts.model, accounting, undefined, startedAt, resolved.error);
 			throw resolved.error;
