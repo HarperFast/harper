@@ -731,6 +731,58 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 
+	it("applies the condition when a table class's own verb delegates to the table", async () => {
+		class Delegating extends Row {
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		resources.set('Delegating', Delegating, { rest: true });
+		await Row.put('delegate', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('delegate').version);
+		assert.strictEqual((await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-match': '"1"' })).status, 412);
+		assert.strictEqual((await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-none-match': '*' })).status, 412);
+		assert.strictEqual((await Row.get('delegate')).n, 1);
+		const response = await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-match': etag });
+		assert.ok(response.status < 300, await bodyOf(response));
+		assert.strictEqual((await Row.get('delegate')).n, 2);
+	});
+
+	it('leaves the condition to a table class whose own verb the table cannot apply it to, or that opts out', async () => {
+		class CustomRepresentation extends Row {
+			static get(...args) {
+				return super.get(...args);
+			}
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		const seen = [];
+		class SelfChecked extends Row {
+			static preconditions = false;
+			static put(target, data, context) {
+				seen.push(context.headers.get('if-match'));
+				return super.put(target, data, context);
+			}
+		}
+		resources.set('CustomRepresentation', CustomRepresentation, { rest: true });
+		resources.set('SelfChecked', SelfChecked, { rest: true });
+		await Row.put('declined', { n: 1 });
+		for (const [path, n] of [
+			['/CustomRepresentation/declined', 2],
+			['/SelfChecked/declined', 3],
+		]) {
+			const response = await request('PUT', path, { n }, { 'if-match': '"1"' });
+			assert.ok(response.status < 300, `${path}: ${response.status} ${await bodyOf(response)}`);
+			assert.strictEqual((await Row.get('declined')).n, n);
+		}
+		assert.deepStrictEqual(seen, ['"1"']);
+		const collection = await request('PUT', '/CustomRepresentation/', [{ id: 'declined', n: 4 }], {
+			'if-match': '"1"',
+		});
+		assert.ok(collection.status < 300, `${collection.status} ${await bodyOf(collection)}`);
+	});
+
 	it('rejects table handlers that never consume the condition', async () => {
 		class Noop extends Row {
 			patch() {}

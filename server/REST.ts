@@ -186,9 +186,22 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
-// Any other handler receives write preconditions unevaluated, in its request headers.
-function isTableVerb(resource, verb: string): boolean {
-	return Boolean(resource?.prototype?.getMetadata) && resource[verb] === Resource[verb];
+// A table class that defines its own verb may evaluate the headers itself: Harper applies its condition only if that
+// verb reaches the table's write, and any other handler receives the preconditions unevaluated, as on 5.3.
+function definesOwnVerb(resource, method: string): boolean {
+	return resource[method.toLowerCase()] !== Resource[method.toLowerCase()];
+}
+
+function evaluatesWritePreconditions(resource, method: string): boolean {
+	return (
+		Boolean(resource?.prototype?.getMetadata) &&
+		resource.preconditions !== false &&
+		(['PUT', 'PATCH', 'DELETE'].includes(method) || !definesOwnVerb(resource, method))
+	);
+}
+
+function unapplied(writeCondition): boolean {
+	return Boolean(writeCondition && !writeCondition.consumed && !writeCondition.optional);
 }
 
 function isDeferredRead(data): boolean {
@@ -400,13 +413,14 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			method !== 'CONNECT' &&
 			method !== 'QUERY' &&
 			hasWritePreconditions(headersObject) &&
-			isTableVerb(resource, method.toLowerCase())
+			evaluatesWritePreconditions(resource, method)
 		) {
 			if (!['PUT', 'PATCH', 'DELETE'].includes(method))
 				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
 			writeCondition = {
 				Resource: resource,
 				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
+				optional: definesOwnVerb(resource, method),
 				consumed: false,
 				release: undefined,
 				check(entry) {
@@ -530,7 +544,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 							const replyStatus = result?.headers
 								? (result.status ?? request.response.status)
 								: request.response.status;
-							if (!writeCondition.consumed && !(replyStatus >= 400)) {
+							if (unapplied(writeCondition) && !(replyStatus >= 400)) {
 								if (result?.headers) discardSerializedStream(result.body);
 								throw new ClientError('The resource did not apply the write precondition', 501);
 							}
@@ -666,7 +680,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
 		if (error instanceof Response) {
-			if (writeCondition && !writeCondition.consumed && error.status < 400) {
+			if (unapplied(writeCondition) && error.status < 400) {
 				discardSerializedStream(error.body);
 				error = new ClientError('The resource did not apply the write precondition', 501);
 			} else {
@@ -679,7 +693,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
-		if (writeCondition && !writeCondition.consumed && (statusCode || 500) < 400) {
+		if (unapplied(writeCondition) && (statusCode || 500) < 400) {
 			error = new ClientError('The resource did not apply the write precondition', 501);
 			statusCode = 501;
 		}

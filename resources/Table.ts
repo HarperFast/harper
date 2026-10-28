@@ -515,6 +515,12 @@ export function withUpdateAttributesLockNonBlocking<Callback extends () => unkno
 // concurrent worker may already have dropped it; the storage engine reports
 // that as "Column family already dropped!". The family being gone is the
 // intended outcome, so swallow that specific error and rethrow anything else.
+// An optional condition (from a class's own verb) that the table cannot apply is left to that verb, unevaluated.
+function declineCondition(condition, message: string): void {
+	if (!condition.optional) throw new ClientError(message, 501);
+	condition.declined = true;
+}
+
 export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
@@ -1287,6 +1293,7 @@ interface TableResourceClass {
 	path?: string;
 	directURLMapping: boolean;
 	loadAsInstance: boolean;
+	preconditions?: boolean;
 	requestContract?: Contract;
 	inputSchemas?: {
 		[verb: string]: {
@@ -1951,6 +1958,7 @@ export function makeTable(options): TableResourceClass {
 		const matches =
 			condition?.Resource.primaryStore === primaryStore &&
 			condition.prepared &&
+			!condition.declined &&
 			writeKeyId(id) === writeKeyId(condition.id);
 		if (matches && condition.finished) throw new ClientError('Conditional request already completed', 409);
 		return matches ? condition : undefined;
@@ -3005,13 +3013,15 @@ export function makeTable(options): TableResourceClass {
 					this.source ||
 					this.get !== Resource.get ||
 					this.prototype.get !== TableResource.prototype.get
-				)
-					throw new ClientError(
-						'Conditional writes require a single local table record with its default representation',
-						501
+				) {
+					declineCondition(
+						condition,
+						'Conditional writes require a single local table record with its default representation'
 					);
-				condition.id = target.id;
-				txnForContext(request);
+				} else {
+					condition.id = target.id;
+					txnForContext(request);
+				}
 			}
 			if (this.loadAsInstance !== false) {
 				return resource._loadRecord(target, request, resourceOptions);
@@ -5262,8 +5272,9 @@ export function makeTable(options): TableResourceClass {
 						}
 						// standard path, handle arrays as multiple updates, and otherwise do a direct update
 						if (Array.isArray(record)) {
-							if (context?.[WRITE_CONDITION]?.Resource.primaryStore === primaryStore)
-								throw new ClientError('Conditional writes require a single record body', 501);
+							const condition = context?.[WRITE_CONDITION];
+							if (condition?.Resource.primaryStore === primaryStore)
+								declineCondition(condition, 'Conditional writes require a single record body');
 							// Capture each element's operation synchronously (before any async `@embed`
 							// hook resolves): `#savingOperation` is a single field that parallel writes
 							// would otherwise clobber, so a deferred `save()` would commit the wrong op
