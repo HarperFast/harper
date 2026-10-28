@@ -186,6 +186,14 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
+/**
+ * Write preconditions are evaluated here only against a table's own verb. A resource that defines the verb itself,
+ * or is not a table, receives the If-Match/If-None-Match headers to evaluate as it always did.
+ */
+function isTableVerb(resource, verb: string): boolean {
+	return Boolean(resource?.prototype?.getMetadata) && resource[verb] === Resource[verb];
+}
+
 function isDeferredRead(data): boolean {
 	return Boolean(
 		data &&
@@ -394,14 +402,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			method !== 'TRACE' &&
 			method !== 'CONNECT' &&
 			method !== 'QUERY' &&
-			hasWritePreconditions(headersObject)
+			hasWritePreconditions(headersObject) &&
+			isTableVerb(resource, method.toLowerCase())
 		) {
-			const verb = method.toLowerCase();
-			if (
-				!['PUT', 'PATCH', 'DELETE'].includes(method) ||
-				resource?.[verb] !== Resource[verb] ||
-				!(resource?.prototype as any)?.getMetadata
-			)
+			if (!['PUT', 'PATCH', 'DELETE'].includes(method))
 				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
 			writeCondition = {
 				Resource: resource,

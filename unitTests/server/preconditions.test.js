@@ -695,12 +695,43 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
-	it('rejects custom statics and handlers that never consume the condition', async () => {
+	it('leaves preconditions to resources that define their own verb or are not tables', async () => {
+		const seen = [];
 		class CustomStatic extends Row {
-			static put() {
-				throw new Error('must not dispatch');
+			static put(target, data, context) {
+				seen.push(['CustomStatic', context.headers.get('if-match')]);
+				return { revised: true };
 			}
 		}
+		class OwnConcurrency extends Resource {
+			static put(target, data, context) {
+				seen.push(['OwnConcurrency', context.headers.get('if-match')]);
+				return { revised: true };
+			}
+			static post(target, data, context) {
+				seen.push(['OwnConcurrency', context.headers.get('if-none-match')]);
+				return { created: true };
+			}
+		}
+		resources.set('CustomStatic', CustomStatic, { rest: true });
+		resources.set('OwnConcurrency', OwnConcurrency, { rest: true });
+		for (const [method, path, headers] of [
+			['PUT', '/CustomStatic/read', { 'if-match': '"3"' }],
+			['PUT', '/OwnConcurrency/x', { 'if-match': '"3"' }],
+			['POST', '/OwnConcurrency/', { 'if-none-match': '*' }],
+		]) {
+			const response = await request(method, path, { n: 2 }, headers);
+			assert.ok(response.status < 300, `${method} ${path}: ${response.status} ${await bodyOf(response)}`);
+		}
+		assert.deepStrictEqual(seen, [
+			['CustomStatic', '"3"'],
+			['OwnConcurrency', '"3"'],
+			['OwnConcurrency', '*'],
+		]);
+		assert.strictEqual((await Row.get('read')).n, 1);
+	});
+
+	it('rejects table handlers that never consume the condition', async () => {
 		class Noop extends Row {
 			patch() {}
 		}
@@ -709,10 +740,9 @@ describe('REST preconditions with real table transactions', () => {
 				throw new Response('ok', { status: 200 });
 			}
 		}
-		resources.set('CustomStatic', CustomStatic, { rest: true });
 		resources.set('Noop', Noop, { rest: true });
 		resources.set('ThrownSuccess', ThrownSuccess, { rest: true });
-		assert.strictEqual((await request('PUT', '/CustomStatic/read', { n: 2 }, { 'if-match': '*' })).status, 501);
+		assert.strictEqual((await request('POST', '/Row/', { n: 2 }, { 'if-none-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/Noop/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/ThrownSuccess/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await Row.get('read')).n, 1);
