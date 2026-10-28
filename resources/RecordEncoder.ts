@@ -703,7 +703,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 	store.rootStore = rootStore;
 	store.encoder.rootStore = rootStore;
 	store.decoder = store.encoder;
-	// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
+	// the store's prototype carries the computed-attribute getters
 	const asRecordObject = (value) =>
 		value?.constructor === Object
 			? assignStoredFields(new store.encoder.structPrototype.constructor(), value, store.encoder)
