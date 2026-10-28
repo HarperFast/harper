@@ -800,8 +800,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			? assignStoredFields(new store.encoder.structPrototype.constructor(), value, store.encoder)
 			: value;
 	if (store.cache) {
-		// lmdb-js caches a WeakRef to the value it passes here, and readers of a cached entry take its deref(),
-		// so the target must already be the record object that the entry's .value will hold
+		// the WeakRef lmdb-js makes of this value cannot be retargeted, so it must be the promoted record
 		const cacheSetValue = store.cache.setValue;
 		store.cache.setValue = function (key, value, expirationPriority) {
 			return cacheSetValue.call(this, key, asRecordObject(value), expirationPriority);
