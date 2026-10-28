@@ -717,6 +717,7 @@ export async function restoreBackup(request: any) {
 			backupDir: archive?.backupDir ?? backupDirForDatabase(databaseName),
 			requestedBackupId: archive?.backupId ?? requestedBackupId,
 			restoredFrom: archive?.restoredFrom,
+			sourceKind: archive ? ('staged_tree' as const) : undefined,
 		};
 		if (onRestart) {
 			return await requestRestartRestore({
@@ -759,13 +760,15 @@ function restoreOnline(
 		backupDir: string;
 		requestedBackupId?: number;
 		restoredFrom?: string;
+		sourceKind?: 'staged_tree';
 		allowEngineOnly: boolean;
 		acceptIncompatible: boolean;
 		acceptUnverifiedBlobs: boolean;
 		immutableSource: boolean;
 	}
 ) {
-	const { databaseName, targetDatabase, inPlace, databaseDir, backupDir, requestedBackupId, restoredFrom } = options;
+	const { databaseName, targetDatabase, inPlace, databaseDir, backupDir, requestedBackupId, restoredFrom, sourceKind } =
+		options;
 	const { allowEngineOnly, acceptIncompatible, acceptUnverifiedBlobs, immutableSource } = options;
 	const restoreToken = randomUUID();
 	return publishRestore({
@@ -778,6 +781,7 @@ function restoreOnline(
 		blobRoots: getBlobPathsForDatabaseName(targetDatabase),
 		requestedBackupId,
 		restoredFrom,
+		sourceKind,
 		allowEngineOnly,
 		acceptIncompatible,
 		acceptUnverifiedBlobs,
@@ -1410,6 +1414,7 @@ export async function restoreBackupOffline(
 			blobRoots: getBlobPathsForDatabaseName(target),
 			requestedBackupId: archive?.backupId ?? requestedBackupId,
 			restoredFrom: archive?.restoredFrom,
+			sourceKind: archive ? 'staged_tree' : undefined,
 			allowEngineOnly,
 			acceptIncompatible,
 			acceptUnverifiedBlobs,

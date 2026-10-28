@@ -59,6 +59,7 @@ const GROUPS = [
 	'unitTests/dataLayer/restoreIntent.test.js',
 	'unitTests/dataLayer/restoreMarker.test.js',
 	'unitTests/dataLayer/restoreReceipt.test.js',
+	'unitTests/dataLayer/stagedTreeInstall.test.js',
 	'unitTests/resources/blob.test.js',
 	'unitTests/resources/closeLoadedDatabases.test.js',
 	'unitTests/resources/databaseAliasIdentity.test.js',

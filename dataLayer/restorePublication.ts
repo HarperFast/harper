@@ -11,7 +11,7 @@ import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { acquireMembershipFence, assertNoReplicationPeers } from '../server/replicationMembership.ts';
 import { pinBackup, unpinBackup, readBackupPins } from './backupRepository.ts';
-import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
+import { assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
 import type { BackupManifest } from './backupManifest.ts';
 import {
 	acquireRestoreLock,
@@ -30,15 +30,15 @@ import {
 	writeRestoreReceipt,
 	type RestoreReceipt,
 	type RestoreRoute,
+	type RestoreSourceKind,
 } from './restoreReceipt.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { releaseArchiveStaging } from './restoreArchive.ts';
+import { releaseArchiveStaging, resolveRestoreSource } from './restoreArchive.ts';
 import type { RestoreEvidence } from './restoreChildCommands.ts';
 import {
 	assertTargetClaimable,
 	beginRestoreForDatabase,
 	logCompatibilityWaived,
-	resolveCompleteBackup,
 	restorePinId,
 	warnImmutableSource,
 	withRepository,
@@ -66,8 +66,10 @@ export interface PublishRestoreRequest {
 	acceptIncompatible: boolean;
 	acceptUnverifiedBlobs: boolean;
 	immutableSource: boolean;
-	/** Set for an archive staged into a private repository: what to report instead of its backup id. */
+	/** Set for an archive: what to report instead of its backup id. */
 	restoredFrom?: string;
+	/** `staged_tree` when `backupDir` is a staging area holding an extracted archive. */
+	sourceKind?: RestoreSourceKind;
 	/** A restore of `system` itself replaces the peer list, so it is the one route that skips the check. */
 	checkPeers: boolean;
 	/**
@@ -219,13 +221,14 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 		backupDir,
 		sourceDatabase,
 		async () => {
-			const selected = await resolveCompleteBackup(
+			const selected = await resolveRestoreSource({
+				kind: request.sourceKind,
 				backupDir,
-				request.requestedBackupId,
+				requestedBackupId: request.requestedBackupId,
 				sourceDatabase,
-				request.acceptIncompatible
-			);
-			await assertBlobSnapshotRestorable(backupDir, selected.backupId, request.blobRoots);
+				acceptIncompatible: request.acceptIncompatible,
+				blobRoots: request.blobRoots,
+			});
 			assertEngineOnlyRestoreAllowed(targetDatabase, {
 				backupHasBlobs: selected.manifest.blobs,
 				allowEngineOnly: request.allowEngineOnly,
@@ -250,6 +253,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 						backup_dir: backupDir,
 						backup_id: selected.backupId,
 						...(request.restoredFrom !== undefined ? { restored_from: request.restoredFrom } : {}),
+						...(request.sourceKind !== undefined ? { source_kind: request.sourceKind } : {}),
 						job_id: request.jobId,
 						requested_by: request.requestedBy,
 						options: {
@@ -271,7 +275,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 		await request.online?.close();
 		evidence = await runRestoreChild<RestoreEvidence>(
 			'apply-and-prove',
-			applyArgs(request, backupId, manifest, lock.preexisting),
+			applyArgs(request, backupId, manifest, lock.preexisting, receipt.operation_id),
 			{
 				databasePath: databaseDir,
 				receipt: { databasePath: databaseDir, operationId: receipt.operation_id, attempt: receipt.attempts },
@@ -329,8 +333,16 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	};
 }
 
-function applyArgs(request: PublishRestoreRequest, backupId: number, manifest: BackupManifest, interrupted: boolean) {
+function applyArgs(
+	request: PublishRestoreRequest,
+	backupId: number,
+	manifest: BackupManifest,
+	interrupted: boolean,
+	operationId: string
+) {
 	return {
+		sourceKind: request.sourceKind,
+		operationId,
 		databaseName: request.targetDatabase,
 		sourceDatabase: request.sourceDatabase,
 		databasePath: request.databaseDir,

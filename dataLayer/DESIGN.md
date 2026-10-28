@@ -290,22 +290,32 @@ protocol, because "the files were copied" was never proof that the restored gene
   is what lets a crashed offline `system` restore finish. Directory fsync is a no-op where
   unsupported (Windows); the evidence reports `durability: 'no-directory-fsync'` there.
 
-## Restoring from an archive: a private staged repository (`dataLayer/restoreArchive.ts`, `dataLayer/archiveStaging.ts`)
+## Restoring from an archive: a verified staged tree (`dataLayer/restoreArchive.ts`, `dataLayer/archiveStaging.ts`, `dataLayer/stagedTreeInstall.ts`)
 
 - **Invariant.** A `restore_backup` from a `get_backup` archive never writes into the database's backup
-  repository except its own rollback copy. The child stages the archive into a one-backup repository
-  at `<backupsRoot>/<db>/.staging/<id>/repo`, and `publishRestore` / the restart route then run
-  unchanged with that as `backup_dir`, so the target is only ever written by `apply-and-prove`. The
-  receipt's `rollback_dir` (the real repository) is where the rollback copy goes and is pinned;
-  `restored_from` replaces the meaningless private `backup_id` in results.
+  repository except its own rollback copy, and until the restore publishes, its staged source stays
+  whole. The child extracts the archive to `<backupsRoot>/<db>/.staging/<id>/tree`, proves its logs and
+  catalogue, reads every record and index entry (RocksDB checks each block's checksum on read — the
+  tree has no backup checksums), and records every file's sha256 in `inventory.json`; `staged.json`,
+  written last, makes the area a source (`source_kind: staged_tree`, `backup_dir` = the area). The
+  receipt's `rollback_dir` (the real repository) is where the rollback copy goes.
+- **Install, not engine restore.** `apply-and-prove` re-hashes every staged file against the inventory
+  and checks each destination device's room (copies only; links are free; a purge is credited only
+  for single-link files) before destruction, then purges the target and installs: table and blob files
+  (`*.sst`, `*.blob`, Harper blob files), which never change once written, are hard-linked where the
+  filesystem allows; everything else — and everything across devices, such as a mounted `.staging` —
+  is copied through a temp name with its sha256 checked, `CURRENT` last, every new directory and file
+  fsynced. The tree is never consumed, so a failure anywhere — including after `stamp` and the proof
+  replay have mutated the target — is rerun by purging and installing again. Peak in `.staging` is
+  about one database (plus the archive while extracting; an upload is deleted once extracted).
 - **Sources.** A `server_path` archive is read in place, never copied or removed, and only when
   `server_path_identity` (device, inode, size, mtime) matches: a remote caller cannot know those, so a
   match proves a shared filesystem. A mismatch and a missing file both answer 412 before any job
   exists, and the CLI's `file=` then uploads; the child checks again before reading. An upload is
   spooled raw into thread-owned staging and handed to the job before the job row exists; `url`/`s3`
   are fetched by the child. Harper creates `.staging` but only ever removes `<id>` entries.
-- **Staging lifetime is pin liveness.** An area lives while its job runs, then while any pin in its
-  repository is live (`hasLivePin`: target lock, marker, or any receipt, unreadable included). So a
+- **Staging lifetime is pin liveness.** An area lives while its job runs, then while any pin in it
+  is live (`hasLivePin`: target lock, marker, or any receipt, unreadable included). So a
   failed attempt that began destroying its target keeps its only source — `cancel` drops the receipt
   but keeps the marker and pins — and a rerun takes the target over (the target's own receipt
   vouches for the marker's source) and releases the earlier area once it publishes. Releases happen
@@ -315,8 +325,7 @@ protocol, because "the files were copied" was never proof that the restored gene
 - **The child's pipeline** is the bounded restore child's: fetch (`safeFetch`, https only,
   address-pinned, redirects re-validated, URLs redacted), digest, tally, ledger reservation, extract
   through the entry filter (`archiveExtraction.ts`), strict transaction-log validation, catalogue
-  proof, `db.backup()` into the private repository, blob snapshot by recorded root index, verify, and
-  the completion manifest last.
+  proof and full read, inventory.
 - **The disk ledger (`diskLedger.ts`)** charges each device by its `statfs` id, never by path
   prefix. A sample re-bases only when it is newer than both the previous sample and the last
   charge, because a stale quota sample (re-read for up to ~90 s) cannot see bytes written after it.

@@ -1,7 +1,7 @@
 /**
  * `restore_backup` from a `get_backup` archive instead of a managed backup. The archive is staged into
- * a private, one-backup repository under `<backupsRoot>/<db>/.staging/<id>/repo` — never the
- * database's own repository — and the restore then publishes from it exactly as from any backup.
+ * `<backupsRoot>/<db>/.staging/<id>/` — never the database's own repository — as an extracted,
+ * verified tree, which the restore child installs into the target (dataLayer/stagedTreeInstall.ts).
  * Sources:
  *
  * - a multipart upload, spooled raw — no gzip or tar work on the serving thread — into staging;
@@ -11,7 +11,7 @@
  * - `url` (https) or `s3`, fetched by the job.
  *
  * Extraction, validation and conversion run in the bounded restore child. A staging area lives while
- * its job runs, and afterwards for as long as a pin in its repository is live — a failed restore that
+ * its job runs, and afterwards for as long as a pin in it is live — a failed restore that
  * began replacing its target keeps its only source. Harper creates `.staging` but only ever removes
  * `<id>` entries, since it may be a mount point.
  */
@@ -27,7 +27,7 @@ import {
 	statSync,
 	type Stats,
 } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import { isMainThread, parentPort, threadId } from 'node:worker_threads';
@@ -41,7 +41,9 @@ import { fileIdentity, isFileIdentity, sameFileIdentity, type FileIdentity } fro
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import { hasLivePin } from './backupRepository.ts';
-import { stagedRepositoryDir } from './archiveStaging.ts';
+import { readStagedSource, STAGED_TREE_BACKUP_ID } from './archiveStaging.ts';
+import type { BackupManifest } from './backupManifest.ts';
+import type { RestoreSourceKind } from './restoreReceipt.ts';
 import { DiskLedger, ledgerMeter } from './diskLedger.ts';
 import { backupDirForDatabase, getBackupsRoot, getDatabaseName, requireSuperUser } from './rocksdbBackup.ts';
 
@@ -391,12 +393,43 @@ export async function stageArchiveForRestore(request: any, databaseName: string)
 	}
 }
 
-/** The staging area holding a staged repository, or undefined for a managed backup's repository. */
+/**
+ * The backup a restore applies: a managed backup from its repository, or the staged archive in a
+ * staging area, which presents as one backup with the manifest staging recorded.
+ */
+export async function resolveRestoreSource(source: {
+	kind?: RestoreSourceKind;
+	backupDir: string;
+	requestedBackupId?: number;
+	sourceDatabase: string;
+	acceptIncompatible: boolean;
+	blobRoots: string[];
+}): Promise<{ backupId: number; manifest: BackupManifest; waived: string[] }> {
+	if (source.kind === 'staged_tree') {
+		const staged = readStagedSource(source.backupDir);
+		const beyond = staged.manifest.blobs ? staged.blobIndices.filter((index) => index >= source.blobRoots.length) : [];
+		if (beyond.length > 0) {
+			throw new ClientError(
+				`The archive has blob root(s) ${beyond.join(', ')}, but this instance has ${source.blobRoots.length} blob path(s); configure matching storage.blobPaths before restoring`
+			);
+		}
+		return { backupId: STAGED_TREE_BACKUP_ID, manifest: staged.manifest, waived: staged.waived };
+	}
+	const { resolveCompleteBackup } = await import('./rocksdbBackup.ts');
+	const { assertBlobSnapshotRestorable } = await import('./blobBackup.ts');
+	const selected = await resolveCompleteBackup(
+		source.backupDir,
+		source.requestedBackupId,
+		source.sourceDatabase,
+		source.acceptIncompatible
+	);
+	await assertBlobSnapshotRestorable(source.backupDir, selected.backupId, source.blobRoots);
+	return selected;
+}
+
+/** The staging area a staged archive restores from, or undefined for a managed backup's repository. */
 export function stagingDirOfRepository(backupDir: string): string | undefined {
-	const stagingDir = join(backupDir, '..');
-	return stagedRepositoryDir(stagingDir) === backupDir && join(stagingDir, '..').endsWith(IMPORT_STAGING_DIR)
-		? stagingDir
-		: undefined;
+	return basename(join(backupDir, '..')) === IMPORT_STAGING_DIR ? backupDir : undefined;
 }
 
 /**
@@ -406,7 +439,7 @@ export function stagingDirOfRepository(backupDir: string): string | undefined {
  */
 export function releaseStagingIfUnowned(stagingDir: string): boolean {
 	try {
-		if (hasLivePin(stagedRepositoryDir(stagingDir))) return false;
+		if (hasLivePin(stagingDir)) return false;
 		rmSync(stagingDir, { recursive: true, force: true });
 		return true;
 	} catch (error) {
@@ -442,7 +475,7 @@ export function sweepImportStaging(isOwned: (owner: any) => boolean): number {
 			} catch {
 				owner = undefined;
 			}
-			if (isOwned(owner) || hasLivePin(stagedRepositoryDir(dir))) continue;
+			if (isOwned(owner) || hasLivePin(dir)) continue;
 			rmSync(dir, { recursive: true, force: true });
 			removed++;
 		}

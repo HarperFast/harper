@@ -26,6 +26,8 @@ export interface RestoreReceiptOptions {
  * anything destructive and moves it to `committed` before the marker clears, so a crash at any point
  * leaves a record that says whether the target must be re-applied or only finished.
  */
+export type RestoreSourceKind = 'staged_tree';
+
 export interface RestoreReceipt {
 	version: number;
 	operation_id: string;
@@ -38,8 +40,10 @@ export interface RestoreReceipt {
 	backup_id: number;
 	/** Where the rollback copy goes when it is not `backup_dir`: a staged archive's repository is temporary. */
 	rollback_dir?: string;
-	/** An archive restore's source, redacted; its `backup_id` names only a private staged repository. */
+	/** An archive restore's source, redacted; its `backup_id` names nothing outside its staging area. */
 	restored_from?: string;
+	/** Absent for a managed backup. `staged_tree`: `backup_dir` is a staging area holding an extracted archive. */
+	source_kind?: RestoreSourceKind;
 	job_id?: string;
 	retain_previous?: boolean;
 	pre_restore_started_at?: number;
@@ -105,6 +109,10 @@ export function readRestoreReceiptFile(receiptPath: string): RestoreReceiptRead 
 		!Number.isInteger(parsed.attempts)
 	) {
 		return { kind: 'unreadable', reason: 'missing or malformed fields' };
+	}
+	if (parsed.source_kind !== undefined && parsed.source_kind !== 'staged_tree') {
+		// applying a source this build cannot interpret would re-apply or drop the wrong thing
+		return { kind: 'unreadable', reason: `unknown source kind ${JSON.stringify(parsed.source_kind)}` };
 	}
 	return { kind: 'valid', receipt: parsed as RestoreReceipt };
 }

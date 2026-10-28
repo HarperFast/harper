@@ -10,6 +10,7 @@ import { replayLogs, type ReplaySummary } from '../resources/replayLogs.ts';
 import { assessBlobReferences, type BlobReferenceAssessment } from '../resources/blob.ts';
 import { restoreBlobSnapshot } from './blobBackup.ts';
 import type { BackupManifest } from './backupManifest.ts';
+import type { RestoreSourceKind } from './restoreReceipt.ts';
 import { readRestoreReceipt } from './restoreReceipt.ts';
 import type { ReceiptAuthorization, RestoreChildCommand, RestoreChildSpec } from './restoreChildRunner.ts';
 import {
@@ -39,6 +40,9 @@ export function assertReceiptAuthorizes(authorization: ReceiptAuthorization): bo
 }
 
 export interface ApplyAndProveArgs {
+	/** `staged_tree`: `backupDir` is a staging area whose extracted archive is installed, not engine-restored. */
+	sourceKind?: RestoreSourceKind;
+	operationId?: string;
 	databaseName: string;
 	sourceDatabase: string;
 	databasePath: string;
@@ -110,6 +114,7 @@ function announceDestruction(): Promise<void> {
 }
 
 export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
+	if (args.sourceKind === 'staged_tree') return applyStagedTreeAndProve(args);
 	await inPhase('verify', () =>
 		assertBackupReadable(
 			args.backupDir,
@@ -129,6 +134,30 @@ export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvi
 				durable: true,
 			});
 		}
+		await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
+	});
+	return inPhase('prove', () => prove(args));
+}
+
+async function applyStagedTreeAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
+	const { verifyStagedTree, assertInstallFits, installStagedTree } = await import('./stagedTreeInstall.ts');
+	const installBlobs = args.manifest.blobs;
+	const files = await inPhase('verify', async () => {
+		const verified = await verifyStagedTree(args.backupDir);
+		await assertInstallFits(args.backupDir, verified, args.databasePath, args.blobRoots, installBlobs);
+		return verified;
+	});
+	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));
+	await inPhase('apply', async () => {
+		await announceDestruction();
+		await installStagedTree(
+			args.backupDir,
+			files,
+			args.databasePath,
+			args.blobRoots,
+			installBlobs,
+			args.operationId ?? String(process.pid)
+		);
 		await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
 	});
 	return inPhase('prove', () => prove(args));

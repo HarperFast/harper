@@ -1,22 +1,30 @@
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statfsSync } from 'node:fs';
-import { rename } from 'node:fs/promises';
+import {
+	createReadStream,
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statfsSync,
+	statSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { RocksDatabase, validateTransactionLogStore } from '@harperfast/rocksdb-js';
+import { validateTransactionLogStore } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { fsyncDirectory } from '../utility/durableFile.ts';
+import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 import { safeFetchToFile } from '../utility/safeFetch.ts';
 import { openRestoredGeneration, closeRestoredGeneration } from '../resources/databases.ts';
 import { DiskLedger, ledgerMeter } from './diskLedger.ts';
 import { extractArchive, tallyArchive } from './archiveExtraction.ts';
-import { withBackupRepositoryLock } from './backupRepository.ts';
-import { blobSnapshotDir, copyTree, fsyncTree } from './blobBackup.ts';
-import { writeBackupManifest, type BackupManifest } from './backupManifest.ts';
+import { fsyncTree } from './blobBackup.ts';
+import type { BackupManifest } from './backupManifest.ts';
+import { ARCHIVE_MANIFEST_ENTRY } from './backupArchiveManifest.ts';
 import { resolveServerPath } from './restoreArchive.ts';
 import type { FileIdentity } from '../utility/fileIdentity.ts';
-import { verifyBackupFiles } from './rocksdbBackup.ts';
 
 const FETCH_TOTAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const FETCH_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -99,39 +107,98 @@ async function validateTransactionLogs(treeDir: string): Promise<void> {
 	}
 }
 
-/** The tables the archive's catalogue loads, proving every column family it requires is present. */
+/**
+ * The tables the archive's catalogue loads, proving every column family it requires is present, and
+ * every record and index entry read once: RocksDB checks each block's checksum as it reads it, the only
+ * whole-database verification an extracted tree (which carries no backup checksums) can have.
+ */
 function provenTables(treeDir: string, databaseName: string): string[] {
 	const generation = openRestoredGeneration(treeDir, databaseName);
-	const tables = Object.keys(generation.tables);
+	let tables: string[];
+	try {
+		tables = Object.keys(generation.tables);
+		for (const table of Object.values(generation.tables) as any[]) {
+			for (const _entry of table.primaryStore.getRange({ versions: true })) {
+				// reading is the check
+			}
+			for (const index of Object.values(table.indices ?? {}) as any[]) {
+				for (const _entry of index.getRange({})) {
+					// reading is the check
+				}
+			}
+		}
+	} catch (error) {
+		closeRestoredGeneration(treeDir, generation);
+		throw error;
+	}
 	const failures = closeRestoredGeneration(treeDir, generation);
 	if (failures.length > 0) throw new AggregateError(failures, 'The archived database did not close cleanly');
 	return tables;
 }
 
-async function snapshotArchiveBlobs(treeDir: string, backupDir: string, backupId: number, indices: number[]) {
-	const snapshotDir = blobSnapshotDir(backupDir, backupId);
-	const tempDir = snapshotDir + '.tmp';
-	rmSync(tempDir, { recursive: true, force: true });
-	mkdirSync(tempDir, { recursive: true });
-	for (const index of indices) {
-		await copyTree(join(treeDir, 'blobs', String(index)), join(tempDir, String(index)), true);
-	}
-	await fsyncTree(tempDir);
-	rmSync(snapshotDir, { recursive: true, force: true });
-	await rename(tempDir, snapshotDir);
-	fsyncDirectory(join(snapshotDir, '..'));
+/** A staged archive is one source, so it always presents as backup 1 of its staging area. */
+export const STAGED_TREE_BACKUP_ID = 1;
+const STAGED_SOURCE_FILE = 'staged.json';
+export const STAGED_INVENTORY_FILE = 'inventory.json';
+
+export function stagedTreeDir(stagingDir: string): string {
+	return join(stagingDir, 'tree');
 }
 
-/** The private repository a staged archive becomes: one backup, seen by nothing but its own restore. */
-export function stagedRepositoryDir(stagingDir: string): string {
-	return join(stagingDir, 'repo');
+/** What the restore needs to know about a staged archive, read by the parent without the inventory. */
+export interface StagedSource {
+	manifest: BackupManifest;
+	waived: string[];
+	blobIndices: number[];
+}
+
+export function readStagedSource(stagingDir: string): StagedSource {
+	let parsed: any;
+	try {
+		parsed = JSON.parse(readFileSync(join(stagingDir, STAGED_SOURCE_FILE), 'utf8'));
+	} catch (error: any) {
+		throw new ClientError(
+			`The staged archive at ${stagingDir} is not complete (${error?.code ?? error?.message})`,
+			410
+		);
+	}
+	return parsed as StagedSource;
+}
+
+/** Files RocksDB rewrites on its own or that only describe a past open; a restore does not carry them. */
+const UNINSTALLED_FILE = /^(LOCK|LOG|LOG\.old\..*)$/;
+
+export interface InventoryFile {
+	path: string;
+	size: number;
+	sha256: string;
+}
+
+async function inventoryTree(treeDir: string): Promise<InventoryFile[]> {
+	const files: InventoryFile[] = [];
+	const visit = async (directory: string, prefix: string) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+			const path = join(directory, entry.name);
+			if (entry.isDirectory()) await visit(path, relativePath);
+			else if (entry.isFile()) {
+				if (!prefix && (UNINSTALLED_FILE.test(entry.name) || entry.name === ARCHIVE_MANIFEST_ENTRY)) {
+					rmSync(path, { force: true });
+					continue;
+				}
+				files.push({ path: relativePath, size: statSync(path).size, sha256: await sha256File(path) });
+			}
+		}
+	};
+	await visit(treeDir, '');
+	return files;
 }
 
 /**
  * Brings the archive onto disk, tallies it, reserves the peak it needs, extracts it under the entry
- * filter, proves its logs and catalogue, and converts it into a one-backup repository inside its own
- * staging area — never the database's repository — verified, with the completion manifest written
- * last. A restore then publishes from that repository exactly as from any other.
+ * filter, proves its logs and catalogue, reads every record, and records every file's digest. The
+ * extracted tree then is the restore's source: the install verifies it against that inventory before
+ * destroying anything and links or copies it into place, leaving it whole until the restore publishes.
  */
 export async function stageArchive(args: StageArchiveArgs) {
 	const { databaseName, stagingDir } = args;
@@ -140,7 +207,6 @@ export async function stageArchive(args: StageArchiveArgs) {
 	fsyncDirectory(join(stagingRoot, '..'));
 	mkdirSync(stagingDir, { recursive: true });
 	fsyncDirectory(stagingRoot);
-	const repoDir = stagedRepositoryDir(stagingDir);
 	const ledger = new DiskLedger();
 	let archivePath: string;
 	if (args.serverPath !== undefined) {
@@ -202,35 +268,27 @@ export async function stageArchive(args: StageArchiveArgs) {
 		const tables = provenTables(treeDir, databaseName);
 		const blobIndices = archiveBlobRootIndices(treeDir);
 		const hasBlobs = extracted.manifest ? extracted.manifest.blobs : blobIndices.length > 0;
-		const backupId = await withBackupRepositoryLock(
-			repoDir,
-			databaseName,
-			async () => {
-				// a destructive restore will depend on this repository surviving a power loss
-				fsyncDirectory(stagingDir);
-				const database = RocksDatabase.open(treeDir);
-				let id: number;
-				try {
-					id = await database.backup(repoDir, { transactionLogs: true });
-				} finally {
-					database.close();
-				}
-				if (hasBlobs) await snapshotArchiveBlobs(treeDir, repoDir, id, blobIndices);
-				const candidate: BackupManifest = { backupId: id, blobs: hasBlobs, completedAt: Date.now() };
-				await verifyBackupFiles(repoDir, id, candidate, databaseName, false, true);
-				fsyncDirectory(repoDir);
-				await writeBackupManifest(repoDir, id, hasBlobs, extracted.manifest ?? undefined, {
-					tables,
-					imported_from: args.restoredFrom,
-					digest,
-				});
-				return id;
-			},
-			true
+		// read after the scan: opening the tree rewrites its MANIFEST and OPTIONS
+		const files = await inventoryTree(treeDir);
+		await fsyncTree(treeDir);
+		const manifest: BackupManifest = {
+			backupId: STAGED_TREE_BACKUP_ID,
+			blobs: hasBlobs,
+			completedAt: Date.now(),
+			tables,
+		};
+		writeFileDurably(
+			join(stagingDir, STAGED_INVENTORY_FILE),
+			JSON.stringify({ files }),
+			`${STAGED_INVENTORY_FILE}.tmp`
 		);
+		const staged: StagedSource = { manifest, waived: extracted.waived, blobIndices };
+		// written last: its presence is what makes the staging area a restorable source
+		writeFileDurably(join(stagingDir, STAGED_SOURCE_FILE), JSON.stringify(staged), `${STAGED_SOURCE_FILE}.tmp`);
+		fsyncDirectory(stagingDir);
 		return {
-			backupDir: repoDir,
-			backupId,
+			backupDir: stagingDir,
+			backupId: STAGED_TREE_BACKUP_ID,
 			tables,
 			identified: extracted.manifest !== null,
 			...(extracted.waived.length > 0 ? { compatibility_waived: extracted.waived } : {}),
@@ -242,6 +300,5 @@ export async function stageArchive(args: StageArchiveArgs) {
 		};
 	} finally {
 		conversionHold.release(0);
-		rmSync(treeDir, { recursive: true, force: true });
 	}
 }

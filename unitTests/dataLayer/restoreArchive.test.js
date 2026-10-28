@@ -548,10 +548,11 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 				assert.strictEqual(failed.restored_from, gzArchive);
 				const [firstId] = stagingEntries(name);
 				assert.strictEqual(stagingEntries(name).length, 1, 'the only source of the restore survives');
-				const firstRepo = join(stagingRoot(name), firstId, 'repo');
-				assert.strictEqual(failed.backup_dir, firstRepo);
-				assert.ok(existsSync(firstRepo), 'its staged repository is intact');
-				assert.strictEqual(readBackupPins(firstRepo).length > 0, true, 'a pin keeps it');
+				const firstStaging = join(stagingRoot(name), firstId);
+				assert.strictEqual(failed.backup_dir, firstStaging);
+				assert.strictEqual(failed.source_kind, 'staged_tree');
+				assert.ok(existsSync(join(firstStaging, 'tree', 'CURRENT')), 'its staged tree is intact');
+				assert.strictEqual(readBackupPins(firstStaging).length > 0, true, 'a pin keeps it');
 
 				resetImportStagingSweepForTesting();
 				sweepImportStagingAtStartup();
@@ -584,8 +585,9 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 				assert.strictEqual(receipt.rollback_dir, realRepository);
 				const [stagingId] = stagingEntries(name);
 				assert.strictEqual(stagingEntries(name).length, 1);
-				assert.strictEqual(receipt.backup_dir, join(stagingRoot(name), stagingId, 'repo'));
-				assert.ok(existsSync(receipt.backup_dir));
+				assert.strictEqual(receipt.backup_dir, join(stagingRoot(name), stagingId));
+				assert.strictEqual(receipt.source_kind, 'staged_tree');
+				assert.ok(existsSync(join(receipt.backup_dir, 'tree', 'CURRENT')));
 				assert.deepStrictEqual(
 					await repositoryState(name),
 					repositoryBefore,
@@ -629,6 +631,35 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 				assert.strictEqual((await Items.get('junk')).label, 'junk', 'the pre-restore data is back');
 				assert.strictEqual((await Items.get(0)).label, 'mutated');
 				assert.ok(!(await Items.get('with-blob')));
+			});
+
+			it('fails the attempt without marking the target when the staged tree changed after the request', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				const dir = resolveDatabasePath(name);
+				await requestRestore(name, { on_restart: true, ...serverFile(gzArchive) });
+				const treeDir = join(receiptOf(dir).backup_dir, 'tree');
+				const [sst] = readdirSync(treeDir)
+					.filter((file) => file.endsWith('.sst'))
+					.sort((a, b) => statSync(join(treeDir, b)).size - statSync(join(treeDir, a)).size);
+				const bytes = readFileSync(join(treeDir, sst));
+				bytes[Math.floor(bytes.length / 2)] ^= 0xff;
+				writeFileSync(join(treeDir, sst), bytes);
+
+				await boot(name);
+
+				const receipt = receiptOf(dir);
+				assert.ok(receipt.attempts >= 1);
+				assert.ok(receipt.last_error.includes(sst), receipt.last_error);
+				assert.strictEqual(restoreMarkerPresent(dir), false, 'the target was never marked');
+				assert.ok(await restoreBackup({ ...SU, database: name, cancel: true }));
+				resetDatabases();
+				const Items = await waitFor(() => getDatabases()[name]?.Items, {
+					timeout: 10000,
+					message: 'the target never reloaded',
+				});
+				assert.strictEqual((await Items.get('junk')).label, 'junk', 'the live data is unchanged');
+				assert.strictEqual((await Items.get(0)).label, 'mutated');
 			});
 
 			it('removes the staging of a cancelled restore', async function () {

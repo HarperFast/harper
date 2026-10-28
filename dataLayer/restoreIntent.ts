@@ -23,7 +23,7 @@ import {
 } from '../server/replicationMembership.ts';
 import { pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
 import { readAllManifests, readBackupManifest } from './backupManifest.ts';
-import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
+import { assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
 import {
 	RESTORE_META_DIR,
 	acquireRestoreLock,
@@ -45,9 +45,10 @@ import {
 	writeRestoreReceipt,
 	type RestoreReceipt,
 	type RestoreReceiptRead,
+	type RestoreSourceKind,
 } from './restoreReceipt.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { releaseArchiveStaging } from './restoreArchive.ts';
+import { releaseArchiveStaging, resolveRestoreSource } from './restoreArchive.ts';
 import type { RestoreEvidence } from './restoreChildCommands.ts';
 import {
 	finishCommittedRestore,
@@ -56,7 +57,7 @@ import {
 	preRestorePinId,
 	settleRestoreJob,
 } from './restorePublication.ts';
-import { listBackupsInDir, resolveCompleteBackup, restorePinId } from './rocksdbBackup.ts';
+import { listBackupsInDir, restorePinId } from './rocksdbBackup.ts';
 
 export const RESTORE_INTENT_OWNER = 'restore-intent';
 // room beyond the live size, since a backup also writes its transaction logs and blob snapshot
@@ -149,6 +150,7 @@ export interface RestartRestoreRequest {
 	/** Where the rollback copy goes; defaults to `backupDir`, which for a staged archive is temporary. */
 	rollbackDir?: string;
 	restoredFrom?: string;
+	sourceKind?: RestoreSourceKind;
 	requestedBackupId?: number;
 	allowEngineOnly: boolean;
 	acceptIncompatible: boolean;
@@ -174,13 +176,14 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 		assertNoReplicationPeers(databaseName);
 		if (request.retainPrevious) await assertRoomForPreRestoreBackup(databaseName, databaseDir, rollbackDir);
 		await withBackupRepositoryLock(backupDir, databaseName, async () => {
-			const selected = await resolveCompleteBackup(
+			const selected = await resolveRestoreSource({
+				kind: request.sourceKind,
 				backupDir,
-				request.requestedBackupId,
-				databaseName,
-				request.acceptIncompatible
-			);
-			await assertBlobSnapshotRestorable(backupDir, selected.backupId, getBlobPathsForDatabaseName(databaseName));
+				requestedBackupId: request.requestedBackupId,
+				sourceDatabase: databaseName,
+				acceptIncompatible: request.acceptIncompatible,
+				blobRoots: getBlobPathsForDatabaseName(databaseName),
+			});
 			assertEngineOnlyRestoreAllowed(databaseName, {
 				backupHasBlobs: selected.manifest.blobs,
 				allowEngineOnly: request.allowEngineOnly,
@@ -214,6 +217,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					backup_dir: backupDir,
 					backup_id: selected.backupId,
 					...(request.restoredFrom !== undefined ? { restored_from: request.restoredFrom } : {}),
+					...(request.sourceKind !== undefined ? { source_kind: request.sourceKind } : {}),
 					...(plannedRollbackDir !== backupDir ? { rollback_dir: plannedRollbackDir } : {}),
 					job_id: request.jobId,
 					requested_by: request.requestedBy,
@@ -556,24 +560,29 @@ async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 		) {
 			receipt = await adoptOrTakePreRestoreBackup(lock, receipt);
 		}
-		const { manifest } = await resolveCompleteBackup(
-			receipt.backup_dir,
-			receipt.backup_id,
-			receipt.source_database,
-			receipt.options.accept_incompatible_backup
-		);
+		const blobRoots = getBlobPathsForDatabaseName(receipt.database);
+		const { manifest } = await resolveRestoreSource({
+			kind: receipt.source_kind,
+			backupDir: receipt.backup_dir,
+			requestedBackupId: receipt.backup_id,
+			sourceDatabase: receipt.source_database,
+			acceptIncompatible: receipt.options.accept_incompatible_backup === true,
+			blobRoots,
+		});
 		const interrupted = restoreMarkerPresent(receipt.database_path);
 		receipt = writeRestoreReceipt(lock, { ...receipt, state: 'applying' });
 		const evidence = await runRestoreChild<RestoreEvidence>(
 			'apply-and-prove',
 			{
+				sourceKind: receipt.source_kind,
+				operationId: receipt.operation_id,
 				databaseName: receipt.database,
 				sourceDatabase: receipt.source_database,
 				databasePath: receipt.database_path,
 				backupDir: receipt.backup_dir,
 				backupId: receipt.backup_id,
 				manifest,
-				blobRoots: getBlobPathsForDatabaseName(receipt.database),
+				blobRoots,
 				probe: false,
 				interrupted,
 				expectedTables: receipt.expected_tables,
