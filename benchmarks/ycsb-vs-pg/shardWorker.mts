@@ -11,14 +11,14 @@ import { KeyState, buildRecord, formatKey, runOperations, WORKLOADS } from '../y
 import type { PhaseResult, RecordShape } from '../ycsb/workload.mts';
 
 export interface ShardCommand {
-	phase: 'load' | 'run';
+	phase: 'load' | 'readAll' | 'run';
 	baseUrl: string;
 	table: string;
 	concurrency: number;
 	shape: RecordShape;
 	keyWidth: number;
 	maxScanLength: number;
-	/** load: the [from, to) key range this shard inserts. */
+	/** load / readAll: the [from, to) key range this shard inserts or reads. */
 	from?: number;
 	to?: number;
 	/** run: workload name, op count for this shard, and the loaded keyspace size. */
@@ -30,7 +30,8 @@ export interface ShardCommand {
 	distribution?: 'uniform' | 'zipfian' | 'latest';
 }
 
-async function loadPhase(command: ShardCommand): Promise<PhaseResult> {
+/** Inserts (load) or reads (readAll) every key in [from, to) exactly once. */
+async function rangePhase(command: ShardCommand): Promise<PhaseResult> {
 	const executor = createRestExecutor({
 		baseUrls: [command.baseUrl],
 		table: command.table,
@@ -46,7 +47,9 @@ async function loadPhase(command: ShardCommand): Promise<PhaseResult> {
 			const index = next++;
 			if (index >= to) break;
 			try {
-				await executor.insert(formatKey(index, command.keyWidth), buildRecord(command.shape));
+				const key = formatKey(index, command.keyWidth);
+				if (command.phase === 'load') await executor.insert(key, buildRecord(command.shape));
+				else await executor.read(key);
 			} catch {
 				errors++;
 			}
@@ -86,7 +89,7 @@ async function runPhase(command: ShardCommand): Promise<PhaseResult> {
 
 process.on('message', async (command: ShardCommand) => {
 	try {
-		const result = command.phase === 'load' ? await loadPhase(command) : await runPhase(command);
+		const result = command.phase === 'run' ? await runPhase(command) : await rangePhase(command);
 		process.send!({ ok: true, result });
 	} catch (error) {
 		process.send!({ ok: false, error: (error as Error).message });

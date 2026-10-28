@@ -9,7 +9,7 @@ import { mkdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
-import { pinProcesses } from './resources.mts';
+import { verifyAffinity, verifyCgroupCpuset } from './resources.mts';
 
 const exec = promisify(execFile);
 const DIR = import.meta.dirname;
@@ -18,10 +18,20 @@ const COMPOSE = ['compose', '-f', join(DIR, 'docker-compose.yml'), '-p', 'ycsb-v
 /** Where PGDATA lives on the host. Must be a real disk, and the same filesystem Harper uses. */
 export const dataDir = (): string => process.env.YCSB_VS_PG_DATA_DIR || join(DIR, 'data');
 
+/**
+ * How the target's memory budget is split across the stack's containers. The Fastify cluster
+ * runs on the host and takes the remainder, measured rather than enforced.
+ */
+export const STACK_MEMORY = { postgres: '6g', redis: '1g', redisMaxmemory: '768mb' };
+
+let composeCpuset = '';
 const composeEnv = (): NodeJS.ProcessEnv => ({
 	...process.env,
 	YCSB_VS_PG_DATA_DIR: dataDir(),
-	YCSB_REDIS_MAXMEMORY: process.env.YCSB_REDIS_MAXMEMORY || '8gb',
+	YCSB_TARGET_CPUSET: composeCpuset,
+	YCSB_PG_MEM_LIMIT: STACK_MEMORY.postgres,
+	YCSB_REDIS_MEM_LIMIT: STACK_MEMORY.redis,
+	YCSB_REDIS_MAXMEMORY: process.env.YCSB_REDIS_MAXMEMORY || STACK_MEMORY.redisMaxmemory,
 });
 
 /**
@@ -55,12 +65,14 @@ export interface PgStackOptions {
 	useCache: boolean;
 	fields: number;
 	poolSize: number;
-	/** CPU list the whole server side (Fastify + Postgres + Redis) is confined to. */
-	serverCpus?: string;
+	/** CPUs the whole server side (Fastify + Postgres + Redis) shares, with no per-service split. */
+	serverCpus: number[];
 }
 
 export interface PgStack {
 	baseUrl: string;
+	/** The Fastify cluster's primary; its workers are its children. */
+	appPid: number;
 	/** Container cgroup scopes, so Postgres' per-connection backends are all counted. */
 	cgroups: Record<string, string>;
 	/** Command that prints Redis INFO stats, for cache hit-rate sampling. */
@@ -104,11 +116,34 @@ async function waitForPostgres(timeoutMs: number): Promise<void> {
 	throw new Error(`postgres did not become ready: ${(lastError as Error)?.message ?? 'unknown'}`);
 }
 
+const composeDown = () => exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24, env: composeEnv() });
+
 export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
-	// Stop first: `up -d` will not recreate an already-running container, so wiping
-	// PGDATA while one is live deletes the data directory out from under it.
-	await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24, env: composeEnv() }).catch(() => {});
+	composeCpuset = options.serverCpus.join(',');
+	// Stop first, and let a failure abort: `up -d` will not recreate an already-running
+	// container, so wiping PGDATA while one is live deletes the data directory out from under it.
+	await composeDown();
 	await wipePgData();
+	let child: ChildProcess | undefined;
+	const stop = async (): Promise<void> => {
+		child?.kill('SIGKILL');
+		await composeDown();
+	};
+	try {
+		return await startServices(options, (spawned) => (child = spawned), stop);
+	} catch (error) {
+		await stop().catch(() => {});
+		throw error;
+	}
+}
+
+async function startServices(
+	options: PgStackOptions,
+	onSpawn: (child: ChildProcess) => void,
+	stop: () => Promise<void>
+): Promise<PgStack> {
+	// The containers get their cpuset at creation (compose `cpuset`), so initdb and every
+	// Postgres backend forked later are inside it from the start.
 	await exec('docker', [...COMPOSE, 'up', '-d'], { maxBuffer: 1 << 24, env: composeEnv() });
 	await waitForPostgres(120_000);
 
@@ -137,19 +172,25 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 		env: composeEnv(),
 	});
 
-	const child: ChildProcess = spawn(process.execPath, [join(DIR, 'pg-app', 'server.mjs')], {
-		env: {
-			...process.env,
-			PORT: String(PG_APP_PORT),
-			WORKERS: String(options.workers),
-			FIELDS: String(options.fields),
-			PG_POOL: String(options.poolSize),
-			USE_CACHE: String(options.useCache),
-			PG_URL,
-			REDIS_URL,
-		},
-		stdio: ['ignore', 'pipe', 'inherit'],
-	});
+	// taskset at spawn: the cluster primary and every worker it forks inherit the target cpuset.
+	const child: ChildProcess = spawn(
+		'taskset',
+		['-c', options.serverCpus.join(','), process.execPath, join(DIR, 'pg-app', 'server.mjs')],
+		{
+			env: {
+				...process.env,
+				PORT: String(PG_APP_PORT),
+				WORKERS: String(options.workers),
+				FIELDS: String(options.fields),
+				PG_POOL: String(options.poolSize),
+				USE_CACHE: String(options.useCache),
+				PG_URL,
+				REDIS_URL,
+			},
+			stdio: ['ignore', 'pipe', 'inherit'],
+		}
+	);
+	onSpawn(child);
 
 	await new Promise<void>((resolve, reject) => {
 		let buffer = '';
@@ -169,27 +210,16 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 		postgres: await containerCgroup('postgres'),
 	};
 	if (options.useCache) cgroups.redis = await containerCgroup('redis');
-
-	if (options.serverCpus) {
-		// The three server processes share one CPU budget, the same one Harper gets, so
-		// ops-per-server-CPU-second compares like with like. Containers take a cpuset rather
-		// than taskset, which cannot reach inside them.
-		for (const service of options.useCache ? ['postgres', 'redis'] : ['postgres']) {
-			const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', service], { env: composeEnv() });
-			await exec('docker', ['update', `--cpuset-cpus=${options.serverCpus}`, stdout.trim()]);
-		}
-		// Every cluster worker, not just the parent: they are already forked by this point and
-		// taskset -acp on the parent would not reach them.
-		await pinProcesses('pg-app/server.mjs', options.serverCpus);
-	}
+	for (const [name, scope] of Object.entries(cgroups)) await verifyCgroupCpuset(name, scope, options.serverCpus);
+	verifyAffinity('fastify', child.pid!, options.serverCpus);
 
 	return {
 		baseUrl: `http://127.0.0.1:${PG_APP_PORT}`,
+		appPid: child.pid!,
 		cgroups,
+		// pg-only still runs the redis container (idle, never connected to) so both stacks share
+		// one compose file; its CPU and memory are not charged since the app never uses it.
 		redisExec: ['docker', ...COMPOSE, 'exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'info', 'stats'],
-		async stop(): Promise<void> {
-			child.kill('SIGKILL');
-			await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24, env: composeEnv() });
-		},
+		stop,
 	};
 }

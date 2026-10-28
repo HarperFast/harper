@@ -52,7 +52,12 @@ class ShardPool {
 				(command, i) =>
 					new Promise<PhaseResult>((resolve, reject) => {
 						const child = this.children[i];
+						// A shard that dies mid-command never replies; without this the session hangs.
+						const onExit = (code: number | null, signal: string | null) =>
+							reject(new Error(`shard ${i} exited (${code ?? signal}) before replying`));
+						child.once('exit', onExit);
 						child.once('message', (reply: { ok: boolean; result?: PhaseResult; error?: string }) => {
+							child.off('exit', onExit);
 							if (reply.ok) resolve(reply.result!);
 							else reject(new Error(`shard ${i}: ${reply.error}`));
 						});
@@ -60,6 +65,10 @@ class ShardPool {
 					})
 			)
 		);
+	}
+
+	get pids(): number[] {
+		return this.children.map((child) => child.pid!);
 	}
 
 	get size(): number {
@@ -114,6 +123,10 @@ function split(total: number, parts: number): number[] {
 
 export interface DriverRun {
 	load: PhaseResult;
+	/** Generator process PIDs, for CPU accounting and affinity checks. */
+	pids: number[];
+	/** Reads every loaded key exactly once, split across shards by key range. */
+	readAll(): Promise<PhaseResult>;
 	runWorkload(
 		name: string,
 		distribution?: 'uniform' | 'zipfian' | 'latest',
@@ -136,26 +149,23 @@ export async function startDriver(config: DriverConfig): Promise<DriverRun> {
 		maxScanLength: config.maxScanLength,
 	};
 
-	const loadSizes = split(config.records, config.shards);
-	let cursor = 0;
-	const loadCommands: ShardCommand[] = loadSizes.map((size, i) => {
-		const from = cursor;
-		cursor += size;
-		return {
-			...base,
-			phase: 'load',
-			concurrency: split(config.concurrency, config.shards)[i],
-			from,
-			to: cursor,
-		};
-	});
-	const load = mergeShardResults(await pool.dispatch(loadCommands));
+	const rangeCommands = (phase: 'load' | 'readAll'): ShardCommand[] => {
+		let cursor = 0;
+		return split(config.records, config.shards).map((size, i) => {
+			const from = cursor;
+			cursor += size;
+			return { ...base, phase, concurrency: split(config.concurrency, config.shards)[i], from, to: cursor };
+		});
+	};
+	const load = mergeShardResults(await pool.dispatch(rangeCommands('load')));
 
 	// Inserting workloads can't be split without cross-shard key coordination.
 	const shardsFor = (name: string) => (WORKLOADS[name].mix.insert ? 1 : config.shards);
 
 	return {
 		load,
+		pids: pool.pids,
+		readAll: async () => mergeShardResults(await pool.dispatch(rangeCommands('readAll'))),
 		shardsUsed: shardsFor,
 		async runWorkload(name, distribution, opsOverride, mix) {
 			const shards = shardsFor(name);

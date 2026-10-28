@@ -15,16 +15,19 @@
 import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createHarperContext, setupHarperWithFixture, teardownHarper } from '@harperfast/integration-testing';
 import { startDriver } from './shardedDriver.mts';
 import { startPgStack, dataDir } from './pgStack.mts';
 import {
 	sampleResources,
 	diffResources,
-	pinProcesses,
 	ClockProbe,
 	parseCpuList,
-	onlineCpus,
+	readTopology,
+	chooseCpuSets,
+	assertDisjointCores,
+	pinPid,
+	writePinnedRuntime,
+	verifyAffinity,
 	type ResourceTargets,
 } from './resources.mts';
 import { mkdir } from 'node:fs/promises';
@@ -34,24 +37,31 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..');
 
 const { values } = parseArgs({
 	options: {
-		target: { type: 'string', default: 'harper' },
-		ratios: { type: 'string', default: '0,0.005,0.01,0.02,0.05,0.1,0.25,0.5' },
-		records: { type: 'string', default: '200000' },
-		ops: { type: 'string', default: '300000' },
-		concurrency: { type: 'string', default: '128' },
-		threads: { type: 'string', default: '8' },
-		shards: { type: 'string', default: '6' },
-		reps: { type: 'string', default: '2' },
-		// Disjoint, homogeneous CPU sets for server and load generator. See pinProcesses().
-		serverCpus: { type: 'string' },
-		driverCpus: { type: 'string' },
+		'target': { type: 'string', default: 'harper' },
+		'ratios': { type: 'string', default: '0,0.005,0.01,0.02,0.05,0.1,0.25,0.5' },
+		'records': { type: 'string', default: '200000' },
+		'ops': { type: 'string', default: '300000' },
+		'concurrency': { type: 'string', default: '128' },
+		'shards': { type: 'string', default: '6' },
+		'reps': { type: 'string', default: '2' },
+		// Same placement rules as run-compare.mts: K target cores, generator on disjoint cores.
+		'target-cpus': { type: 'string', default: '4' },
+		'serverCpus': { type: 'string' },
+		'driverCpus': { type: 'string' },
 	},
 });
+
+const topology = readTopology();
+const { server: SERVER_CPUS, driver: DRIVER_CPUS } =
+	values.serverCpus && values.driverCpus
+		? { server: parseCpuList(values.serverCpus), driver: parseCpuList(values.driverCpus) }
+		: chooseCpuSets(topology, Number(values['target-cpus']));
+assertDisjointCores(topology, SERVER_CPUS, DRIVER_CPUS);
 
 const RECORDS = Number(values.records);
 const OPS = Number(values.ops);
 const CONCURRENCY = Number(values.concurrency);
-const THREADS = Number(values.threads);
+const THREADS = SERVER_CPUS.length;
 const SHARDS = Number(values.shards);
 const REPS = Number(values.reps);
 const RATIOS = (values.ratios as string).split(',').map(Number);
@@ -73,12 +83,9 @@ async function waitForRoute(url: string, deadlineMs: number): Promise<void> {
 
 /** One freshly started server per ratio, matching run-compare's isolation. */
 async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: number; opsPerCore: number }> {
-	const mix = ratio === 0 ? { read: 1 } : { read: 1 - ratio, update: ratio };
+	const mix: Record<string, number> = ratio === 0 ? { read: 1 } : { read: 1 - ratio, update: ratio };
 	const run = async (baseUrl: string, targets: ResourceTargets) => {
-		if (values.serverCpus) {
-			const n = await pinProcesses(Object.values(targets.processes)[0], values.serverCpus);
-			console.log(`    pinned ${n} server process(es) to cpus ${values.serverCpus}`);
-		}
+		for (const [name, pid] of Object.entries(targets.processes)) verifyAffinity(name, pid, SERVER_CPUS);
 		const driver = await startDriver({
 			baseUrl,
 			table: 'usertable',
@@ -91,15 +98,10 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 			maxScanLength: 100,
 		});
 		try {
-			if (values.driverCpus) {
-				const n = await pinProcesses('shardWorker.mts', values.driverCpus);
-				console.log(`    pinned ${n} shard worker(s) to cpus ${values.driverCpus}`);
-			}
 			await driver.runWorkload('C', 'uniform', RECORDS * 2);
 			const reps: { throughput: number; cpu: number }[] = [];
-			const clockCpus = values.serverCpus ? parseCpuList(values.serverCpus) : onlineCpus();
 			for (let rep = 0; rep < REPS; rep++) {
-				const clock = new ClockProbe(clockCpus);
+				const clock = new ClockProbe(SERVER_CPUS);
 				const before = await sampleResources(targets);
 				clock.start();
 				const result = await driver.runWorkload('C', 'zipfian', OPS, mix);
@@ -124,8 +126,10 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 	};
 
 	if (values.target === 'harper') {
+		const { createHarperContext, setupHarperWithFixture, teardownHarper } =
+			await import('@harperfast/integration-testing');
 		const ctx = createHarperContext('ycsb-sweep');
-		await setupHarperWithFixture(ctx, join(REPO_ROOT, 'benchmarks', 'ycsb', 'app'), {
+		const started = await setupHarperWithFixture(ctx, join(REPO_ROOT, 'benchmarks', 'ycsb', 'app'), {
 			harperBinPath: join(REPO_ROOT, 'dist', 'bin', 'harper.js'),
 			config: { threads: { count: THREADS }, analytics: { aggregatePeriod: -1 }, logging: { level: 'warn' } },
 			// HARPER_NODE_OPTIONS reaches only the server, so a --cpu-prof run does not also
@@ -137,18 +141,25 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 			startupTimeoutMs: 120_000,
 		});
 		try {
-			await waitForRoute(`${ctx.harper.httpURL}/usertable/`, 30_000);
-			return await run(ctx.harper.httpURL, { processes: { harper: 'dist/bin/harper.js' }, cgroups: {} });
+			await waitForRoute(`${started.harper.httpURL}/usertable/`, 30_000);
+			const pid = (started.harper as unknown as { process: { pid: number } }).process.pid;
+			return await run(started.harper.httpURL, { processes: { harper: pid }, cgroups: {} });
 		} finally {
-			await teardownHarper(ctx);
+			await teardownHarper(started);
 		}
 	}
 
-	const stack = await startPgStack({ workers: THREADS, useCache: true, fields: 10, poolSize: 20 });
+	const stack = await startPgStack({
+		workers: THREADS,
+		useCache: true,
+		fields: 10,
+		poolSize: 20,
+		serverCpus: SERVER_CPUS,
+	});
 	try {
 		await waitForRoute(`${stack.baseUrl}/usertable/`, 30_000);
 		return await run(stack.baseUrl, {
-			processes: { fastify: 'pg-app/server.mjs' },
+			processes: { fastify: stack.appPid },
 			cgroups: stack.cgroups,
 			redisExec: stack.redisExec,
 		});
@@ -162,6 +173,8 @@ async function main(): Promise<void> {
 	await mkdir(join(base, 'harper'), { recursive: true });
 	process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR = join(base, 'harper');
 	statSync(base); // fail fast if the data dir is missing
+	await pinPid(process.pid, DRIVER_CPUS);
+	process.env.HARPER_RUNTIME = await writePinnedRuntime(join(import.meta.dirname, 'results'), SERVER_CPUS);
 
 	console.log(`write-ratio sweep — target=${values.target} records=${RECORDS} ops=${OPS} reps=${REPS}\n`);
 	const rows: { ratio: number; throughput: number; cpu: number; opsPerCore: number }[] = [];

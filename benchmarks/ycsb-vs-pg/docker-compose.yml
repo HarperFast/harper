@@ -5,6 +5,9 @@ services:
   postgres:
     image: postgres:17-alpine
     network_mode: host
+    # The target's K cores, shared with Redis and the Fastify cluster with no per-service quota.
+    cpuset: ${YCSB_TARGET_CPUSET}
+    mem_limit: ${YCSB_PG_MEM_LIMIT:-6g}
     environment:
       POSTGRES_PASSWORD: ycsb
       POSTGRES_USER: ycsb
@@ -18,7 +21,7 @@ services:
       - -c
       - shared_buffers=4GB
       - -c
-      - effective_cache_size=16GB
+      - effective_cache_size=6GB
       - -c
       - max_connections=300
       - -c
@@ -35,10 +38,11 @@ services:
   redis:
     image: redis:7-alpine
     network_mode: host
-    # Cache role: no persistence, LRU eviction. maxmemory is a knob, not a constant:
-    # at the default the whole ~220MB dataset fits and every read is a hit, which
-    # measures Fastify+Redis with Postgres idle. Shrink it (YCSB_REDIS_MAXMEMORY=64mb)
-    # to evict under LRU and get a partial hit rate that actually exercises Postgres.
+    cpuset: ${YCSB_TARGET_CPUSET}
+    mem_limit: ${YCSB_REDIS_MEM_LIMIT:-1g}
+    # Cache role: no persistence, LRU eviction. At the default 768mb the whole
+    # ~260MB standard-scale dataset fits; --cache=warm asserts it is resident. Shrink
+    # it (YCSB_REDIS_MAXMEMORY=64mb) to force a partial hit rate.
     command:
       - redis-server
       - --port
@@ -48,6 +52,6 @@ services:
       - --appendonly
       - 'no'
       - --maxmemory
-      - ${YCSB_REDIS_MAXMEMORY:-8gb}
+      - ${YCSB_REDIS_MAXMEMORY:-768mb}
       - --maxmemory-policy
       - allkeys-lru
