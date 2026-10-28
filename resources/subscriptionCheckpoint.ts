@@ -140,7 +140,10 @@ export interface CopyBoundChange {
 	/** Max-merged into the row `[copyBound, peerId, ...at]`. */
 	raise?: ReadonlyMap<number, number>;
 	at?: (string | number)[];
-	/** Rows `[copyBound, peerId, ...slot]` to remove; whatever they held must already be covered by a row that stays. */
+	/**
+	 * Rows `[copyBound, peerId, ...slot]` to remove. Every copied row they covered must already be covered by a row that
+	 * stays; their values need not be, since a reservation can over-approximate what its pass copied.
+	 */
 	release?: (string | number)[][];
 }
 
@@ -162,7 +165,10 @@ export async function writeCopyBounds(
 		);
 	}
 	if (!(Number.isInteger(peerId) && peerId >= 0)) throw new Error(`Invalid copy bound peer id: ${peerId}`);
-	if (raise && release.some((slot) => slot.length === at.length && slot.every((part, index) => part === at[index]))) {
+	if (
+		raise?.size &&
+		release.some((slot) => slot.length === at.length && slot.every((part, index) => part === at[index]))
+	) {
 		throw new Error('A copy bound change cannot raise and release the same row');
 	}
 	if (raise) {

@@ -700,6 +700,11 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				writeCopyBounds(rootStore, 7, { raise: new Map([[3, 900]]), at: ['s'], release: [['s']] }),
 				/same row/
 			);
+			// an empty raise raises nothing, so it may release the row it names
+			await writeCopyBounds(rootStore, 7, { raise: new Map([[3, 900]]), at: ['s'] });
+			assert.strictEqual(await writeCopyBounds(rootStore, 7, { raise: new Map(), at: ['s'], release: [['s']] }), true);
+			assert.strictEqual(row(7, 's'), undefined);
+			assert.ok(bumped());
 			T.dbisDB.putSync([COPY_BOUND_KEY, 9], { 3: 'not a version' });
 			await assert.rejects(
 				writeCopyBounds(rootStore, 9, { raise: new Map([[3, 1]]) }),

@@ -357,6 +357,9 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				// a revocation for another generation is ignored; one for the row's clears the floor and sticks
 				update({ originFloorRevocations: [[9, 'gen-0']] }),
 				update({ originFloorRevocations: [[9, 'gen-1']] }),
+				// marks for an origin this route never certified are ignored, and leave it out of the row
+				update({ originFloorRevocations: [[10, 'gen-1'], 10] }),
+				update({ originRouteStates: [[10, now - 25, undefined, undefined, 'gen-1']] }),
 				floors([[9, now - 5, true, 'gen-1', true]]),
 				// a new origin generation starts the origin over
 				floors([[9, now - 3, true, 'gen-2', true]]),
@@ -371,7 +374,12 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				timeout: 5000,
 				message: 'the frame after the qualifier updates recorded its sequence id',
 			});
-			const [state] = readCursor(ReplicatedTable, 51).nodes;
+			const { nodes } = readCursor(ReplicatedTable, 51);
+			assert.deepEqual(
+				nodes.map((node) => node.id),
+				[9]
+			);
+			const [state] = nodes;
 			assert.deepEqual(
 				{ ...state },
 				{

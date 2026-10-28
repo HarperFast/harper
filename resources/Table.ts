@@ -2618,8 +2618,9 @@ export function makeTable(options): TableResourceClass {
 								for (const revocation of originFloorRevocations) {
 									const nodeId = Array.isArray(revocation) ? revocation[0] : revocation;
 									const generation = Array.isArray(revocation) ? revocation[1] : undefined;
-									const nodeState = nodeStateFor(nodeId);
-									if (nodeState.floorRevoked === true) continue;
+									// a route that never certified the origin has nothing to revoke, and must not make it known here
+									const nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState || nodeState.floorRevoked === true) continue;
 									// a route at level 1 still stands for the generation it last certified
 									if (
 										generation !== undefined &&
@@ -2649,10 +2650,14 @@ export function makeTable(options): TableResourceClass {
 									generation,
 									fullCoverage,
 								] of originRouteStates) {
-									const nodeState = nodeStateFor(nodeId);
+									// a mark for a generation the route has not certified is ignored, so it must not add the origin
+									const nodeState =
+										generation === undefined
+											? nodeStateFor(nodeId)
+											: nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (
 										generation !== undefined &&
-										(nodeState.originGeneration ?? nodeState.lastGeneration) !== generation
+										(nodeState?.originGeneration ?? nodeState?.lastGeneration) !== generation
 									)
 										continue;
 									if (
