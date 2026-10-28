@@ -73,6 +73,7 @@ describe('search select projection matches single-record projection', function (
 				{ name: 'asyncDigest', computed: true },
 				{ name: 'computedMeta', computed: true },
 				{ name: 'asyncComputedMeta', computed: true },
+				{ name: 'asyncPendingMeta', computed: true },
 				{ name: 'failingComputed', computed: true },
 				{ name: 'thenableShapedMeta', computed: true },
 				{ name: 'asyncDate', computed: true },
@@ -93,6 +94,10 @@ describe('search select projection matches single-record projection', function (
 		Article.setComputedAttribute('asyncComputedMeta', async (record) => ({
 			publicSummary: 'ASYNC_PUBLIC:' + record.title,
 			internalSecret: 'DO_NOT_LEAK',
+		}));
+		Article.setComputedAttribute('asyncPendingMeta', async () => ({
+			child: new Promise((resolve) => setTimeout(() => resolve('settled'), 5)),
+			hidden: 'omit',
 		}));
 		Article.setComputedAttribute('thenableShapedMeta', () => ({ label: 'kept', then: 'next-step', hidden: 'omit' }));
 		Article.setComputedAttribute('asyncDate', async () => new Date('2026-01-01T00:00:00.000Z'));
@@ -197,6 +202,11 @@ describe('search select projection matches single-record projection', function (
 			name: 'sub-select on an async object-returning @computed',
 			select: ['id', nested('asyncComputedMeta', ['publicSummary'])],
 			expected: { id: 'a1', asyncComputedMeta: { publicSummary: 'ASYNC_PUBLIC:Main Article' } },
+		},
+		{
+			name: 'sub-select on an async @computed whose projection is itself async',
+			select: ['id', nested('asyncPendingMeta', ['child'])],
+			expected: { id: 'a1', asyncPendingMeta: { child: 'settled' } },
 		},
 		{
 			name: 'nested wildcard returns the whole plain sub-object',

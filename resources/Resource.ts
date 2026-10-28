@@ -1105,7 +1105,9 @@ export function readSelectedProperty(object: any, property: string) {
  */
 function selectFromObject(object, propertyResolvers, context, selectsPrototype: boolean) {
 	// TODO: eventually we will do aggregate functions here
-	return (property) => readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype);
+	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
+	const ownData = record ? object.getChanges?.() : undefined;
+	return (property) => readProperty(object, record, ownData, property, propertyResolvers, context, selectsPrototype);
 }
 export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
 function settleAll(results: any[]) {
@@ -1240,12 +1242,16 @@ export function nestedSelectTransform(property: any, targetResource?: any): (val
 
 function readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype: boolean) {
 	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
+	const ownData = record ? object.getChanges?.() : undefined;
+	return readProperty(object, record, ownData, property, propertyResolvers, context, selectsPrototype);
+}
+
+function readProperty(object, record, ownData, property, propertyResolvers, context, selectsPrototype: boolean) {
 	let value, resolver;
 	if (record) {
 		if (Object.hasOwn(object, property) && typeof (value = object[property]) !== 'function') {
 			return value;
 		}
-		const ownData = object.getChanges?.();
 		if (ownData && Object.hasOwn(ownData, property)) {
 			value = selectsPrototype ? readSelectedProperty(ownData, property) : ownData[property];
 			return typeof value === 'function' ? undefined : value;

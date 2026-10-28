@@ -6526,17 +6526,15 @@ export function makeTable(options): TableResourceClass {
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
-							const handleResolvedValue = (value: any) => {
+							const handleResolvedValue = (value: any): Promise<void> | void => {
 								if (resolver.directReturn) {
 									if (attribute_name !== attribute && value && typeof value === 'object' && !(value instanceof Date)) {
 										value = projectPlainValue((transformCache ??= new Map()), attribute, value);
-										if (typeof value?.then === 'function') {
-											if (!promises) promises = [];
-											promises.push(value.then((value: any) => callback(value, attribute_name)));
-											return;
-										}
+										if (typeof value?.then === 'function')
+											return value.then((value: any) => callback(value, attribute_name));
 									}
-									return callback(value, attribute_name);
+									callback(value, attribute_name);
+									return;
 								}
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
@@ -6584,27 +6582,21 @@ export function makeTable(options): TableResourceClass {
 											}
 											callback(results, attribute_name);
 										};
-										const promised = nextValue(iterator.next());
-										if (promised) {
-											if (!promises) promises = [];
-											promises.push(promised);
-										}
-										return;
+										return nextValue(iterator.next());
 									} else {
 										value = transform.call(this, value);
-										if (typeof value?.then === 'function') {
-											if (!promises) promises = [];
-											promises.push(value.then((value: any) => callback(value, attribute_name)));
-											return;
-										}
+										if (typeof value?.then === 'function')
+											return value.then((value: any) => callback(value, attribute_name));
 									}
 								}
 								callback(value, attribute_name);
 							};
-							if (typeof value?.then === 'function') {
+							const pending =
+								typeof value?.then === 'function' ? value.then(handleResolvedValue) : handleResolvedValue(value);
+							if (pending) {
 								if (!promises) promises = [];
-								promises.push(value.then(handleResolvedValue));
-							} else handleResolvedValue(value);
+								promises.push(pending);
+							}
 							return;
 						} else {
 							value = selectsPrototype ? readSelectedProperty(record, attribute_name) : record[attribute_name];
