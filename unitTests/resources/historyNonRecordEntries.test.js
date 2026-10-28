@@ -122,7 +122,6 @@ describe('history readers and non-record audit entries', function () {
 		it('has an empty history, not an error', async function () {
 			if (!isLMDB) return this.skip(); // RocksDB resolves the audit position from the record's version
 			const T = newTable();
-			// a write that bypasses the audit path, as a base copy does
 			T.primaryStore.putSync('orphan', { id: 'orphan', name: 'unaudited' }, Date.now());
 			assert.strictEqual(T.primaryStore.getEntry('orphan').localTime, undefined);
 
