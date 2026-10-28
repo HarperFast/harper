@@ -174,7 +174,6 @@ describe('resolveRocksArenaBlockSize', function () {
 	});
 
 	it('is undefined for non-number values', function () {
-		// castConfigValue turns numeric YAML/env/CLI text into a number before it reaches the resolver
 		for (const value of ['65536', true, {}, [65536]]) {
 			assert.strictEqual(resolveRocksArenaBlockSize(value), undefined, String(value));
 		}

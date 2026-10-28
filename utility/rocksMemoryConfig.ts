@@ -16,7 +16,6 @@ export interface RocksMemoryConfigInput {
 	availableMemory: number;
 }
 
-// Mirrors rocksdb-js's WriteBufferManagerFlushPolicy, which the pinned release does not export yet.
 const FLUSH_POLICIES = ['oldest', 'largest', 'largestAcrossDBs'] as const;
 type WriteBufferManagerFlushPolicy = (typeof FLUSH_POLICIES)[number];
 
@@ -60,8 +59,6 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 		config.writeBufferManagerSize = writeBufferManagerSize;
 		config.writeBufferManagerCostToCache = typeof configuredCostToCache === 'boolean' ? configuredCostToCache : true;
 		config.writeBufferManagerAllowStall = typeof configuredAllowStall === 'boolean' ? configuredAllowStall : false;
-		// Left unset unless configured: rocksdb-js then picks largestAcrossDBs while stalls are allowed
-		// (oldest can stall forever on budget held by idle databases) and oldest otherwise.
 		if ((FLUSH_POLICIES as readonly unknown[]).includes(configuredFlushPolicy)) {
 			config.writeBufferManagerFlushPolicy = configuredFlushPolicy as WriteBufferManagerFlushPolicy;
 		}
@@ -69,9 +66,7 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 	return config;
 }
 
-// Memtable arena block size for every column family a RocksDB open touches. Unset (and anything
-// that is not a positive safe integer, which the native layer would reject) leaves rocksdb-js's
-// automatic size, derived from the WriteBufferManager budget.
+// The native layer throws on anything but a non-negative safe integer, and 0 means automatic.
 export function resolveRocksArenaBlockSize(configuredArenaBlockSize: unknown): number | undefined {
 	return Number.isSafeInteger(configuredArenaBlockSize) && (configuredArenaBlockSize as number) > 0
 		? (configuredArenaBlockSize as number)

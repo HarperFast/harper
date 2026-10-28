@@ -74,10 +74,15 @@ describe('openRocksDatabase storage.rocks config', function () {
 		for (const options of [rootOptions, familyOptions, indexOptions])
 			assert.strictEqual(options.arenaBlockSize, 131072);
 		if (!nativeSupport) return;
-		const arenaBlockSizes = latestColumnFamilyOptions(databasePath);
-		for (const family of ['default', 'records', 'records/index']) {
-			assert.strictEqual(arenaBlockSizes.get(family), 131072, family);
-		}
+		const families = ['default', 'records', 'records/index'];
+		for (const family of families)
+			assert.strictEqual(latestColumnFamilyOptions(databasePath).get(family), 131072, family);
+		// a restart opens every existing family with the root, at the size configured then
+		while (openStores.length) openStores.pop().close();
+		env.setProperty(CONFIG_PARAMS.STORAGE_ROCKS_ARENABLOCKSIZE, 262144);
+		open({});
+		for (const family of families)
+			assert.strictEqual(latestColumnFamilyOptions(databasePath).get(family), 262144, family);
 	});
 
 	it('leaves arenaBlockSize to rocksdb-js when unset or invalid', function () {
@@ -95,7 +100,8 @@ describe('openRocksDatabase storage.rocks config', function () {
 		// Recorded but not applied: rocksdb-js keeps an explicit policy for the life of the process.
 		const restore = stubMethod(RocksDatabase, 'config', (config) => {
 			configCalls.push(config);
-			originalConfig.call(RocksDatabase, { ...config, writeBufferManagerFlushPolicy: undefined });
+			const { writeBufferManagerFlushPolicy: _policy, ...rest } = config;
+			originalConfig.call(RocksDatabase, rest);
 		});
 		try {
 			env.setProperty(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY, 'largestAcrossDBs');

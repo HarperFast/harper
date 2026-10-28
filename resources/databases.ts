@@ -487,8 +487,8 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
 	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
 	// In practice that's fine — these come from process-level config that doesn't change.
-	// writeBufferManagerFlushPolicy does apply live, but rocksdb-js keeps an explicit policy for the
-	// life of the process, so removing it from config takes effect only after a full restart.
+	// An explicit writeBufferManagerFlushPolicy takes effect on the live manager, but rocksdb-js keeps
+	// it for the life of the process: removing the key restores the automatic policy only on restart.
 	RocksDatabase.config({
 		...resolveRocksMemoryConfig({
 			configuredBlockCacheSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE),
