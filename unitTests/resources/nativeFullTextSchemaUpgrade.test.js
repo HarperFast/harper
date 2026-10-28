@@ -10,6 +10,7 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const { Resources } = require('#src/resources/Resources');
 const { fullTextDerivedIndexReadiness, setFullTextNativeBindingForTests } = require('#src/resources/derivedIndexes');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
+const { derivedIndexWriteRejection } = require('#src/resources/derivedIndexRegistry');
 const {
 	encodeFullTextCursorPayload,
 	decodeFullTextCursorPayload,
@@ -33,7 +34,7 @@ function gate() {
 	return { promise, release };
 }
 
-describe('schema-declared native full-text checkpoint upgrade', function () {
+describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function () {
 	this.timeout(60_000);
 
 	it('fences public search, rebuilds the old checkpoint and replays writes through the production runtime', async function () {
@@ -55,6 +56,9 @@ describe('schema-declared native full-text checkpoint upgrade', function () {
 		let reader;
 		const resetGate = gate();
 		const publishGate = gate();
+		const lagPublishGate = gate();
+		let holdLagPublication = false;
+		let lagPublishEntered = false;
 		let resetEntered = false;
 		let publishEntered = false;
 		let seeded;
@@ -149,6 +153,11 @@ describe('schema-declared native full-text checkpoint upgrade', function () {
 											publishEntered = true;
 											await publishGate.promise;
 										}
+										if (holdLagPublication) {
+											holdLagPublication = false;
+											lagPublishEntered = true;
+											await lagPublishGate.promise;
+										}
 										return target.publish(...args);
 									};
 								const value = Reflect.get(target, key);
@@ -157,7 +166,12 @@ describe('schema-declared native full-text checkpoint upgrade', function () {
 						});
 					},
 				},
-				runnerOptions: { maxChunkRecords: 1, flushAfterMutations: 1, maxFlushAgeMilliseconds: 10 },
+				runnerOptions: {
+					maxChunkRecords: 1,
+					flushAfterMutations: 1,
+					maxFlushAgeMilliseconds: 10,
+					maxLagMilliseconds: 10000,
+				},
 				closeTimeoutMilliseconds: 5000,
 				shutdownTimeoutMilliseconds: 10000,
 			});
@@ -292,7 +306,27 @@ describe('schema-declared native full-text checkpoint upgrade', function () {
 			assert.strictEqual(Product.fullTextIndexGenerations.catalogSearch, generation);
 			assert.deepStrictEqual(audit(), auditAfterWrites);
 			assert.deepStrictEqual(auditAfterWrites.slice(0, auditBefore.length), auditBefore);
+			assert.strictEqual(derivedIndexWriteRejection(Product.auditStore, Product.tableId), undefined);
+			holdLagPublication = true;
+			await Product.put('lag-trigger', { title: 'backlogprobe' });
+			await waitFor(() => lagPublishEntered, 5000);
+			await waitFor(() => derivedIndexWriteRejection(Product.auditStore, Product.tableId) !== undefined, 20000);
+			const beforeRefusal = audit();
+			await assert.rejects(
+				async () => Product.put('retry-write', { title: 'retryprobe' }),
+				(error) => error.statusCode === 503 && error.code === 'DERIVED_INDEX_LAGGING' && error.retryable === true
+			);
+			assert.strictEqual(Product.primaryStore.get('retry-write'), undefined);
+			assert.deepStrictEqual(audit(), beforeRefusal);
+			lagPublishGate.release();
+			await waitFor(() => derivedIndexWriteRejection(Product.auditStore, Product.tableId) === undefined, 15000);
+			await Product.put('retry-write', { title: 'retryprobe' });
+			assert.deepStrictEqual(
+				(await collect(Product.search(query('retryprobe', true)))).map(({ id }) => id),
+				['retry-write']
+			);
 		} finally {
+			lagPublishGate.release();
 			resetGate.release();
 			publishGate.release();
 			await reader?.close();

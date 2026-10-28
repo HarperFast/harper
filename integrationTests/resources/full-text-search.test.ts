@@ -494,7 +494,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForIds(query('asteroid'), []);
 	});
 
-	test('upgrades a real 0.6 checkpoint on two workers and recovers after an old-engine refusal', async () => {
+	test('upgrades a real 0.5 checkpoint on two workers and recovers after an old-engine refusal', async () => {
 		const records = [
 			{ id: 'upgrade-added', title: 'added waterproof' },
 			{ id: 'upgrade-ad', title: 'ad' },
@@ -509,6 +509,8 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
 		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
 		const before = (await request('/FullTextState/')).LifecycleProduct;
+		const previousLogPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const previousLogLength = (await readFile(previousLogPath, 'utf8')).length;
 		await killHarper(ctx);
 		assert.ok(ctx.harper.process.exitCode !== null || ctx.harper.process.signalCode !== null);
 		const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -580,14 +582,17 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		} while (!ready && Date.now() < deadline);
 		assert.ok(ready, 'upgraded public search did not become ready');
 		await waitForReady('LifecycleProduct');
-		const upgradeLog = await readFile(
-			join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log'),
-			'utf8'
-		);
-		assert.match(
-			upgradeLog,
-			/fulltext:LifecycleProduct\/catalogSearch.*is incompatible \(E_IDENTITY_MISMATCH\); rebuilding/
-		);
+		const mismatch = /fulltext:LifecycleProduct\/catalogSearch.*is incompatible \(E_IDENTITY_MISMATCH\); rebuilding/;
+		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const logDeadline = Date.now() + 10_000;
+		let upgradeLog: string;
+		do {
+			upgradeLog = (await readFile(previousLogPath, 'utf8')).slice(previousLogLength);
+			if (logPath !== previousLogPath) upgradeLog += await readFile(logPath, 'utf8');
+			if (mismatch.test(upgradeLog)) break;
+			await delay(25);
+		} while (Date.now() < logDeadline);
+		assert.match(upgradeLog, mismatch);
 		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
 		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
 		await request('/LifecycleProduct/upgrade-deleted', { method: 'DELETE' });
@@ -616,6 +621,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
 		assert.deepStrictEqual(await searchLifecycle('migrationwitness'), []);
 		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
+		await waitForReady('Product');
 		await waitForIds(query('waterproof'), ['one', 'two']);
 	});
 

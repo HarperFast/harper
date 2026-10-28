@@ -8,7 +8,7 @@ const assert = require('node:assert');
 	const { mode, options, documents, payload } = JSON.parse(Buffer.concat(chunks));
 	const binding = await import('@harperfast/fulltext-previous/native');
 	const info = await binding.runtimeInfo();
-	assert.strictEqual(info.packageVersion, '0.6.0');
+	assert.strictEqual(info.packageVersion, '0.5.0');
 	assert.strictEqual(info.tantivyVersion, '0.26.2');
 	let index;
 	let ghostIds;

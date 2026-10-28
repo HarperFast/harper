@@ -634,7 +634,7 @@ function upgradeNativeOptions(configuration, lifecycle) {
 	};
 }
 
-describe('published full-text 0.6.0 to 0.7.0 migration', function () {
+describe('published full-text 0.5.0 to 0.7.0 migration', function () {
 	this.timeout(60_000);
 	let binding;
 	let rootPath;

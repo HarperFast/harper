@@ -153,7 +153,9 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		binding = await loadFullTextNativeBinding();
 	});
 
-	after(() => setMainIsWorker(mainWasWorker));
+	after(() => {
+		if (mainWasWorker !== undefined) setMainIsWorker(mainWasWorker);
+	});
 
 	beforeEach(() => {
 		database = `fulltext-worker-upgrade-${Date.now()}`;
@@ -185,15 +187,17 @@ describe('published native full-text managed-worker rebuild safety', function ()
 	});
 
 	afterEach(async () => {
-		Atomics.store(gate, 0, 1);
-		Atomics.notify(gate, 0);
+		if (gate) {
+			Atomics.store(gate, 0, 1);
+			Atomics.notify(gate, 0);
+		}
 		releaseActivation?.();
 		releaseActivation = undefined;
-		for (const peer of workers) {
+		for (const peer of workers ?? []) {
 			peer.worker.wasShutdown = true;
 			await peer.worker.terminate();
 		}
-		await closeDatabase(database);
+		if (database) await closeDatabase(database);
 		Product = undefined;
 		setFullTextNativeBindingForTests(undefined);
 	});
@@ -241,6 +245,34 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		assert(Atomics.load(gate, 1) > 0, 'the native peer reader must close');
 		assert(Atomics.load(gate, 2) > Atomics.load(gate, 1), 'reader lease drain and close must precede native reset');
 		assert(resets > 0);
+		assert.strictEqual(fs.existsSync(nativePath), false);
+	});
+
+	it('drains a responsive worker’s active native lease through the internal candidate-key query contract', async () => {
+		await readyProduct();
+		await Product.put('other', { title: 'Unrelated record' });
+		await records(Product);
+		const peer = await peerReader();
+		const searching = peer.request('hold-responsive-lease');
+		searching.catch(() => {});
+		await waitFor(() => peer.events.includes('responsive-lease-held'), 10000);
+		const nativePath = nativeFullTextIndexPath(Product.primaryStore.rootStore.path, 'Product/search');
+		Atomics.store(gate, 1, 0);
+		trackResets = true;
+		Product = table(declaration(database, false));
+		await waitFor(() => fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
+		await waitFor(() => peer.events.includes('pause-delivered'), 5000);
+		await waitFor(() => !fullTextRetirementInProgress(Product.primaryStore.rootStore, 'Product'), 5000);
+		assert.strictEqual(resets, 0, 'a delivered pause must wait for the active query lease before invoking reset');
+		assert.strictEqual(Atomics.load(gate, 1), 0, 'pause must not close a native reader with an active lease');
+		assert(fs.existsSync(nativePath));
+		assert(Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements?.length > 0);
+		await peer.request('release-responsive-lease');
+		assert.deepStrictEqual(await searching, ['shoe-1']);
+		Product = table(declaration(database, false));
+		await waitFor(() => !Product.dbisDB.getSync('Product/')?.fullTextIndexRetirements, 10000);
+		assert(Atomics.load(gate, 1) > 0);
+		assert(Atomics.load(gate, 2) > Atomics.load(gate, 1), 'the first reset must follow native reader drain and close');
 		assert.strictEqual(fs.existsSync(nativePath), false);
 	});
 

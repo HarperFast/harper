@@ -8,11 +8,10 @@ const { FULL_TEXT_QUERY_PAUSE_OPERATION } = require('#src/resources/indexes/full
 let Product;
 let gate;
 let failClose = false;
-let releaseReset;
+let releaseLease;
 let nativeBinding;
 let readerOptions;
 const failedReaders = new Set();
-const keepAlive = setInterval(() => {}, 10000);
 
 onMessageFromWorkers((event) => {
 	if (event.message?.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
@@ -59,7 +58,7 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 						const reset = await binding.resetNativeFullTextIndex(options);
 						if (data.holdReset) {
 							parentPort.postMessage({ event: 'reset-completed' });
-							await new Promise((resolve) => (releaseReset = resolve));
+							await new Promise(() => {});
 						}
 						return reset;
 					},
@@ -93,7 +92,30 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 			}))
 				rows.push(row.id);
 			result = rows;
-		} else if (command === 'inspect') result = nativeBinding.inspectNativeFullTextIndex(readerOptions);
+		} else if (command === 'hold-responsive-lease') {
+			const leaseGate = Promise.withResolvers();
+			releaseLease = leaseGate.resolve;
+			const queryIndex = Product.fullTextQueryIndexes.search.customIndex;
+			const hits = await queryIndex.search(
+				{ comparator: 'matches', value: 'shoe', maxIndexLagMilliseconds: 30000 },
+				undefined,
+				{
+					minResults: 1,
+					filter: () => true,
+					candidateKeys: {
+						estimatedCount: 1,
+						async collect(maxKeys) {
+							if (maxKeys < 1) throw new Error('candidate collection was not admitted');
+							parentPort.postMessage({ event: 'responsive-lease-held' });
+							await leaseGate.promise;
+							return { keys: new Set(['shoe-1']), complete: true };
+						},
+					},
+				}
+			);
+			result = hits.map(({ key }) => key);
+		} else if (command === 'release-responsive-lease') releaseLease?.();
+		else if (command === 'inspect') result = nativeBinding.inspectNativeFullTextIndex(readerOptions);
 		else if (command === 'fail-close') failClose = true;
 		else if (command === 'release-close') {
 			for (const reader of failedReaders) {
@@ -101,13 +123,11 @@ parentPort.on('message', async ({ id, command, ...data }) => {
 				Atomics.store(gate, 1, Atomics.add(gate, 3, 1) + 1);
 			}
 			failedReaders.clear();
-		} else if (command === 'release-reset') releaseReset?.();
-		else if (command === 'close') {
-			await Product?.derivedIndexRuntime?.close();
-			clearInterval(keepAlive);
 		}
 		parentPort.postMessage({ id, result });
 	} catch (error) {
 		parentPort.postMessage({ id, error: { message: error.message, stack: error.stack, code: error.code } });
 	}
 });
+
+parentPort.ref();

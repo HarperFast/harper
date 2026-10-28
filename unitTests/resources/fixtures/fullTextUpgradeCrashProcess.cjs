@@ -9,6 +9,10 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 
 (async () => {
 	const [directory, phase] = process.argv.slice(2);
+	const watchdog = setTimeout(() => {
+		console.error(`Incomplete full-text upgrade crash phase: ${phase}`);
+		process.exit(1);
+	}, 40_000);
 	const env = require('#src/utility/environment/environmentManager');
 	const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 	env.initSync();
@@ -18,6 +22,7 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 		setFullTextNativeBindingForTests,
 		fullTextDerivedIndexReadiness,
 		fullTextDerivedIndexId,
+		suspendDerivedIndexActivation,
 	} = require('#src/resources/derivedIndexes');
 	const { nativeFullTextIndexPath } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
 	const {
@@ -157,7 +162,7 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 			maxFlushAgeMilliseconds: 5,
 		},
 	});
-	Product = table({
+	const declaration = {
 		database: 'upgradeCrash',
 		table: 'Product',
 		audit: true,
@@ -176,7 +181,14 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 				synonyms: [],
 			},
 		],
-	});
+	};
+	let releaseActivation;
+	if (phase === 'seed') {
+		const { fullTextIndexes: _, ...plainDeclaration } = declaration;
+		Product = table(plainDeclaration);
+		releaseActivation = suspendDerivedIndexActivation(Product.primaryStore.rootStore);
+	}
+	Product = table(declaration);
 	if (phase === 'seed') {
 		await Product.put(['a', 'b', 'c', 'd'].map((id) => ({ id, title: 'added boots' })));
 		await Product.put('ad', { title: 'ad' });
@@ -226,6 +238,9 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 			JSON.stringify({ source, audit: before, generation: Product.fullTextIndexGenerations.catalogSearch, options })
 		);
 		await closeLoadedDatabases();
+		releaseActivation();
+		clearTimeout(watchdog);
+		console.log(JSON.stringify({ seeded: true }));
 		process.exit(0);
 	}
 	const seeded = JSON.parse(fs.readFileSync(path.join(directory, 'seed.json')));
@@ -264,6 +279,7 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 	assert.deepStrictEqual(records(), seeded.source);
 	assert.deepStrictEqual(audit(), seeded.audit);
 	await closeLoadedDatabases();
+	clearTimeout(watchdog);
 	console.log(JSON.stringify({ recovered: true, resets, applied, admissionChecks }));
 	process.exit(0);
 })().catch((error) => {

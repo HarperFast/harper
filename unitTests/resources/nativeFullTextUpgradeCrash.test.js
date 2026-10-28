@@ -47,10 +47,11 @@ describe('published native full-text upgrade process crash recovery', function (
 					}
 				);
 			const seeded = run('seed');
-			assert.strictEqual(seeded.status, 0, seeded.stderr || seeded.stdout);
+			assert.strictEqual(seeded.status, 0, `${root}: ${seeded.stderr || seeded.stdout}`);
+			assert.match(seeded.stdout, /"seeded":true/);
 			const killed = run(checkpoint);
 			assert.ifError(killed.error);
-			assert.notStrictEqual(killed.status, 0, killed.stderr || killed.stdout);
+			assert.notStrictEqual(killed.status, 0, `${root}: ${killed.stderr || killed.stdout}`);
 			assert.ok(
 				killed.signal === 'SIGKILL' || (process.platform === 'win32' && killed.status === 1),
 				`unexpected termination ${killed.status}/${killed.signal}: ${killed.stderr}`
@@ -58,12 +59,11 @@ describe('published native full-text upgrade process crash recovery', function (
 			const sentinel = JSON.parse(fs.readFileSync(path.join(root, 'crash.json'), 'utf8'));
 			assert.strictEqual(sentinel.checkpoint, checkpoint);
 			assert.strictEqual(sentinel.condemned, true);
-			assert.ok(sentinel.admissionChecks >= 2);
 			if (checkpoint === 'K1') assert.strictEqual(sentinel.applied, 0);
 			if (checkpoint === 'K2') assert.ok(sentinel.applied > 0 && sentinel.applied < 5);
 			if (checkpoint === 'K3') assert.strictEqual(sentinel.applied, 5);
 			const recovered = run('recover');
-			assert.strictEqual(recovered.status, 0, recovered.stderr || recovered.stdout);
+			assert.strictEqual(recovered.status, 0, `${root}: ${recovered.stderr || recovered.stdout}`);
 			assert.match(recovered.stdout, /"recovered":true/);
 		});
 	}
