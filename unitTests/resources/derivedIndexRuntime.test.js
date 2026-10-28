@@ -381,8 +381,19 @@ describe('DerivedIndexRuntime', () => {
 				await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
 				clock++;
 				const before = counts.notifies;
-				const joined = peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
+				const joined = peer.waitForCoverage(
+					'coverage-joiner',
+					derivedIndexTime(store.rootStore),
+					1000,
+					controller.signal
+				);
+				let joinedFinished = false;
+				const markJoinedFinished = () => {
+					joinedFinished = true;
+				};
+				joined.then(markJoinedFinished, markJoinedFinished);
 				assert.strictEqual(counts.notifies, before + 1, 'admission must request coverage before the next poll');
+				await waitFor(() => joinedFinished, { timeout: 1000, message: 'the joining waiter did not finish' });
 				await joined;
 			} finally {
 				controller.abort(new Error('held waiter complete'));
