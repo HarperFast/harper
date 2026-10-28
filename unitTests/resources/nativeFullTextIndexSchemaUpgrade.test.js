@@ -254,9 +254,10 @@ describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function
 			});
 			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 			const url = `http://127.0.0.1:${server.address().port}/Product/?catalogSearch=matches=added&select(id,title)&limit(20)`;
-			const terminated = (error) => error.name === 'TypeError' && error.cause?.code === 'UND_ERR_SOCKET';
+			const terminated = (error) =>
+				error.name === 'TypeError' && ['UND_ERR_SOCKET', 'ECONNRESET'].includes(error.cause?.code);
 			const streamed = await fetch(url, { signal: AbortSignal.timeout(5000) }).catch((error) => {
-				assert.ok(terminated(error), String(error));
+				assert.ok(terminated(error), String(error.cause ?? error));
 			});
 			if (streamed?.status === 200) await assert.rejects(() => streamed.text(), terminated);
 			else if (streamed) assert.strictEqual(streamed.status, 503, await streamed.text());

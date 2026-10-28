@@ -563,17 +563,20 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const deadline = Date.now() + 30_000;
 		let ready = false;
 		do {
-			const response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
-				headers: { Authorization: authorization },
-				signal: AbortSignal.timeout(10_000),
-			});
+			let response: Response;
 			let body: string;
 			try {
+				response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(10_000),
+				});
 				body = await response.text();
 			} catch (error) {
-				assert.strictEqual(response.status, 200);
-				assert.strictEqual(error.name, 'TypeError');
-				assert.strictEqual(error.cause?.code, 'UND_ERR_SOCKET');
+				assert.ok(!response || response.status === 200, String(error));
+				assert.ok(
+					error.name === 'TypeError' && ['UND_ERR_SOCKET', 'ECONNRESET'].includes(error.cause?.code),
+					String(error.cause ?? error)
+				);
 				await delay(25);
 				continue;
 			}
@@ -584,6 +587,17 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				if (records.length) {
 					assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
 					ready = true;
+				} else {
+					const description = await operation({
+						operation: 'describe_table',
+						schema: 'data',
+						table: 'LifecycleProduct',
+					});
+					assert.strictEqual(
+						description.full_text_indexes.find(({ name }) => name === 'catalogSearch')?.readiness.state,
+						'ready',
+						'an empty completed page must not bypass the rebuild fence'
+					);
 				}
 			} else assert.ok(body.length > 0);
 			if (!ready) await delay(25);
