@@ -57,6 +57,7 @@ import {
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
+	getReadTransactionGuard,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -6953,20 +6954,32 @@ export function makeTable(options): TableResourceClass {
 			let selectionStopped = false;
 			const relationshipSelection = (record, entry?, isSync = false) => {
 				if (selectionStopped) return undefined;
+				const readsKeys =
+					!isSync && (filterMap ? !filterMap.hasMappings && resolver.toMany : Boolean(resolver.resolveKeys));
 				let value;
 				if (filterMap?.hasMappings) {
 					const key = resolver.from ? record[resolver.from] : flattenKey(entry?.key ?? record[primaryKey]);
 					value = filterMap.get(key) || [];
-				} else if (filterMap) value = filterMap.fromRecord?.(record);
+				} else if (filterMap) value = filterMap.fromRecord?.(record, isSync);
+				else if (readsKeys) value = resolver.resolveKeys(record, context);
 				else value = resolver(record, context, entry, true, undefined, undefined, true);
 				return when(value, (value) => {
 					if (selectionStopped) return undefined;
 					if (value == null) return value;
-					const many =
-						Array.isArray(value) ||
-						typeof value[Symbol.iterator] === 'function' ||
-						typeof value[Symbol.asyncIterator] === 'function';
-					const source = many ? value : [value];
+					const many = readsKeys
+						? resolver.toMany
+						: Array.isArray(value) ||
+							typeof value[Symbol.iterator] === 'function' ||
+							typeof value[Symbol.asyncIterator] === 'function';
+					const readTxn = targetTable._readTxnForContext(context);
+					const source = readsKeys
+						? new ExtendedIterable(many ? value : [value]).map((key) =>
+								when(targetTable.primaryStore.getEntry(key, { transaction: readTxn, async: true }), freezeRelatedEntry)
+							)
+						: many
+							? value
+							: [value];
+					const skipMissing = readsKeys && resolver.filterMissing;
 					let candidates = new ExtendedIterable();
 					candidates.iterate = (options) => {
 						const sourceIterator =
@@ -6985,11 +6998,10 @@ export function makeTable(options): TableResourceClass {
 							},
 						};
 					};
-					const readTxn = targetTable._readTxnForContext(context);
 					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
 							if (stopped) return SKIP;
-							if (candidate == null) return predicate ? SKIP : candidate;
+							if (candidate == null) return predicate || skipMissing ? SKIP : candidate;
 							const entry =
 								typeof candidate === 'object' && candidate.key !== undefined
 									? candidate
@@ -7347,16 +7359,41 @@ export function makeTable(options): TableResourceClass {
 							: entries[Symbol.iterator]();
 					let dbDone: boolean;
 					let closed = false;
+					// A released read snapshot ends the scan the way a range read over it does: RocksDB's guard
+					// throws the expired-snapshot error (teardown runs onDone() without returning this iterator),
+					// and an LMDB transaction reports isDone
+					const checkActive = getReadTransactionGuard(readTxn);
+					const stopped = () => {
+						if (closed) return true;
+						checkActive?.();
+						return readTxn?.isDone;
+					};
 					const dbOrderedAttribute = (sort as any).dbOrderedAttribute;
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
-					function collect(entry) {
+					function collect(entry): Promise<unknown> | undefined {
 						ordered.push(entry);
-						for (let i = 0; i < clauseCount; i++) {
-							const clause = clauses[i];
-							orderedKeys[i].push(convertToComparableKeys(getAttributeValue(entry, clause.attribute, context, clause)));
+						let pending: Promise<void>[];
+						try {
+							for (let i = 0; i < clauseCount; i++) {
+								const clause = clauses[i];
+								const keys = orderedKeys[i];
+								const value = getAttributeValue(entry, clause.attribute, context, clause);
+								if (value?.then) {
+									const position = keys.push(undefined) - 1;
+									(pending ??= []).push(
+										value.then((value) => {
+											keys[position] = convertToComparableKeys(value);
+										})
+									);
+								} else keys.push(convertToComparableKeys(value));
+							}
+						} catch (error) {
+							if (pending) Promise.all(pending).catch(() => {});
+							throw error;
 						}
+						if (pending) return Promise.all(pending);
 					}
 					function comparePositions(positionA: number, positionB: number): number {
 						for (let i = 0; i < clauseCount; i++) {
@@ -7375,79 +7412,103 @@ export function makeTable(options): TableResourceClass {
 					}
 					return {
 						async next() {
-							for (;;) {
-								if (closed) return { done: true, value: undefined };
-								let iteration: IteratorResult<any>;
-								if (sortedPositions) {
-									iteration = nextSorted();
-									if (iteration.done) {
-										if (dbDone) {
-											if (results.onDone) results.onDone();
-											return iteration;
+							try {
+								for (;;) {
+									if (stopped()) return { done: true, value: undefined };
+									let iteration: IteratorResult<any>;
+									if (sortedPositions) {
+										iteration = nextSorted();
+										if (iteration.done) {
+											if (dbDone) {
+												if (results.onDone) results.onDone();
+												return iteration;
+											}
+										} else {
+											const value = await transformToRecord.call(this, iteration.value);
+											if (stopped()) return { done: true, value: undefined };
+											if (value !== SKIP) return { value };
+											continue;
 										}
-									} else {
+									}
+									ordered = [];
+									orderedKeys = [];
+									for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
+									if (enqueuedEntryForNextGroup) {
+										const collecting = collect(enqueuedEntryForNextGroup);
+										if (collecting) await collecting;
+									}
+									// need to load all the entries into ordered
+									do {
+										if (stopped()) return { done: true, value: undefined };
+										iteration = await dbIterator.next();
+										if (stopped()) return { done: true, value: undefined };
+										if (iteration.done) {
+											dbDone = true;
+											if (!ordered.length) {
+												if (results.onDone) results.onDone();
+												return iteration;
+											} else break;
+										} else {
+											let entry = iteration.value;
+											if (entry?.then) {
+												entry = await entry;
+												if (stopped()) return { done: true, value: undefined };
+											}
+											if (entry === SKIP) continue;
+											if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
+											// if the index has already provided the first order of sorting, we only need to sort
+											// within each grouping
+											if (dbOrderedAttribute) {
+												let groupingValue = getAttributeValue(
+													entry,
+													dbOrderedAttribute,
+													context,
+													(sort as any).dbOrderedSort
+												);
+												if (groupingValue?.then) {
+													groupingValue = await groupingValue;
+													if (stopped()) return { done: true, value: undefined };
+												}
+												if (firstEntry) {
+													firstEntry = false;
+													lastGroupingValue = groupingValue;
+												} else if (groupingValue !== lastGroupingValue) {
+													lastGroupingValue = groupingValue;
+													enqueuedEntryForNextGroup = entry;
+													break;
+												}
+											}
+											const collecting = collect(entry);
+											if (collecting) await collecting;
+										}
+									} while (true);
+									if (stopped()) return { done: true, value: undefined };
+									if ((sort as any).isGrouped) {
+										// TODO: Return grouped results
+									}
+									sortedPositions = [];
+									for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
+									sortedPositions.sort(comparePositions);
+									sortedIndex = 0;
+									iteration = nextSorted();
+									if (!iteration.done) {
 										const value = await transformToRecord.call(this, iteration.value);
-										if (closed) return { done: true, value: undefined };
+										if (stopped()) return { done: true, value: undefined };
 										if (value !== SKIP) return { value };
 										continue;
 									}
+									if (results.onDone) results.onDone();
+									return iteration;
 								}
-								ordered = [];
-								orderedKeys = [];
-								for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
-								if (enqueuedEntryForNextGroup) collect(enqueuedEntryForNextGroup);
-								// need to load all the entries into ordered
-								do {
-									iteration = await dbIterator.next();
-									if (closed) return { done: true, value: undefined };
-									if (iteration.done) {
-										dbDone = true;
-										if (!ordered.length) {
-											if (results.onDone) results.onDone();
-											return iteration;
-										} else break;
-									} else {
-										let entry = iteration.value;
-										if (entry?.then) entry = await entry;
-										if (closed) return { done: true, value: undefined };
-										if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
-										// if the index has already provided the first order of sorting, we only need to sort
-										// within each grouping
-										if (dbOrderedAttribute) {
-											const groupingValue = getAttributeValue(
-												entry,
-												dbOrderedAttribute,
-												context,
-												(sort as any).dbOrderedSort
-											);
-											if (firstEntry) {
-												firstEntry = false;
-												lastGroupingValue = groupingValue;
-											} else if (groupingValue !== lastGroupingValue) {
-												lastGroupingValue = groupingValue;
-												enqueuedEntryForNextGroup = entry;
-												break;
-											}
-										}
-										collect(entry);
-									}
-								} while (true);
-								if ((sort as any).isGrouped) {
-									// TODO: Return grouped results
+							} catch (error) {
+								// a rejected next() is never followed by return(), so close the range iterator here
+								if (!dbDone && !closed) {
+									closed = true;
+									try {
+										dbIterator.return?.()?.catch?.(() => {});
+									} catch {}
 								}
-								sortedPositions = [];
-								for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
-								sortedPositions.sort(comparePositions);
-								sortedIndex = 0;
-								iteration = nextSorted();
-								if (!iteration.done) {
-									const value = await transformToRecord.call(this, iteration.value);
-									if (closed) return { done: true, value: undefined };
-									if (value !== SKIP) return { value };
-									continue;
-								}
-								if (results.onDone) results.onDone();
-								return iteration;
+								throw error;
 							}
 						},
 						return() {
@@ -7666,8 +7727,10 @@ export function makeTable(options): TableResourceClass {
 									value = filterMap.get(key);
 									if (!value) value = [];
 								} else {
-									value = filterMap.fromRecord?.(record);
+									value = filterMap.fromRecord?.(record, this?.isSync);
 								}
+							} else if (resolver.loadEntries && !this?.isSync) {
+								value = resolver.loadEntries(record, context);
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
@@ -7789,36 +7852,42 @@ export function makeTable(options): TableResourceClass {
 						callback(value, attribute_name);
 					};
 					let selected: any;
-					if (typeof select === 'string') {
-						selectAttribute(select, (value) => {
-							selected = value;
-						});
-					} else if (Array.isArray(select)) {
-						if ((select as any).asArray) {
-							selected = [];
-							select.forEach((attribute, index) => {
-								if (attribute === '*') select[index] = record;
-								else selectAttribute(attribute, (value) => (selected[index] = value));
+					try {
+						if (typeof select === 'string') {
+							selectAttribute(select, (value) => {
+								selected = value;
 							});
-						} else {
-							selected = {};
-							const forceNulls = (select as any).forceNulls;
-							for (const attribute of select) {
-								if (attribute === '*')
-									for (const key in record) {
-										selected[key] = record[key];
-									}
-								else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
-									const value = record[attribute];
-									selected[attribute] = value === undefined && forceNulls ? null : value;
-								} else
-									selectAttribute(attribute, (value, attribute_name) => {
-										if (value === undefined && forceNulls) value = null;
-										selected[attribute_name] = value;
-									});
+						} else if (Array.isArray(select)) {
+							if ((select as any).asArray) {
+								selected = [];
+								select.forEach((attribute, index) => {
+									if (attribute === '*') select[index] = record;
+									else selectAttribute(attribute, (value) => (selected[index] = value));
+								});
+							} else {
+								selected = {};
+								const forceNulls = (select as any).forceNulls;
+								for (const attribute of select) {
+									if (attribute === '*')
+										for (const key in record) {
+											selected[key] = record[key];
+										}
+									else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
+										const value = record[attribute];
+										selected[attribute] = value === undefined && forceNulls ? null : value;
+									} else
+										selectAttribute(attribute, (value, attribute_name) => {
+											if (value === undefined && forceNulls) value = null;
+											selected[attribute_name] = value;
+										});
+								}
 							}
-						}
-					} else throw new ClientError('Invalid select' + select);
+						} else throw new ClientError('Invalid select' + select);
+					} catch (error) {
+						// related reads already started for this row would otherwise reject unobserved
+						if (promises) Promise.all(promises).catch(() => {});
+						throw error;
+					}
 					if (promises) {
 						return Promise.all(promises).then(() => selected);
 					}
@@ -9523,6 +9592,14 @@ export function makeTable(options): TableResourceClass {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
+							const searchRelated = (object, context) =>
+								searchByIndex(
+									{ attribute: relationship.to, value: object[relationship.from ? relationship.from : primaryKey] },
+									txnForContext(context).getReadTxn(),
+									false,
+									attribute.elements.definition.tableClass,
+									{ allowFullScan: false }
+								) as any;
 							propertyResolvers[attribute.name] = attribute.resolve = (
 								object,
 								context,
@@ -9532,19 +9609,9 @@ export function makeTable(options): TableResourceClass {
 								_comparing?,
 								lazy?
 							) => {
-								// TODO: Get raw record/entry?
-								const id = object[relationship.from ? relationship.from : primaryKey];
 								const relatedTable = attribute.elements.definition.tableClass;
 								if (returnEntry) {
-									const candidates = (
-										searchByIndex(
-											{ attribute: relationship.to, value: id },
-											txnForContext(context).getReadTxn(),
-											false,
-											relatedTable,
-											{ allowFullScan: false }
-										) as any
-									).map((entry) => {
+									const candidates = searchRelated(object, context).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
 										return relatedTable.primaryStore.getEntry(entry, {
 											transaction: txnForContext(context).getReadTxn(),
@@ -9552,8 +9619,18 @@ export function makeTable(options): TableResourceClass {
 									});
 									return lazy ? candidates : candidates.asArray;
 								}
+								const id = object[relationship.from ? relationship.from : primaryKey];
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
+							attribute.resolve.resolveKeys = (object, context) => searchRelated(object, context).asArray;
+							attribute.resolve.loadEntries = (object, context) => {
+								const keys = attribute.resolve.resolveKeys(object, context);
+								const relatedTable = attribute.elements.definition.tableClass;
+								return keys?.then
+									? keys.then((keys) => loadRelatedEntries(keys, relatedTable, context))
+									: loadRelatedEntries(keys, relatedTable, context);
+							};
+							attribute.resolve.toMany = true;
 							attribute.set = () => {
 								// ideally we want to throw an error here, but if the user had (accidently?) set a property into storage
 								// conflicts with this attribute, we don't want to prevent loading
@@ -9581,7 +9658,6 @@ export function makeTable(options): TableResourceClass {
 							) => {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
-								const ctx = context ?? contextStorage.getStore();
 								if (attribute.elements) {
 									// tolerate a scalar id in an array-typed FK field (legacy data written
 									// before attribute.set normalized single records to a one-element array)
@@ -9590,7 +9666,7 @@ export function makeTable(options): TableResourceClass {
 									// normalizedIds === ids is the record's own stored FK array, and returning it
 									// would let a caller's mutation (e.g. record.manyToMany.push(x)) alias into it
 									if (normalizedIds.length === 0) return [];
-									if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+									markRelatedReadUncacheable(context);
 									// getSync (not get): relationship accessors are a synchronous contract (as in v4);
 									// on RocksDB get() returns a Promise on a block-cache miss, which would leak an
 									// intermittent MaybePromise into user code
@@ -9604,7 +9680,7 @@ export function makeTable(options): TableResourceClass {
 									});
 									return relationship.filterMissing ? results.filter(exists) : results;
 								}
-								if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+								markRelatedReadUncacheable(context);
 								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'getSync'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});
@@ -9624,6 +9700,23 @@ export function makeTable(options): TableResourceClass {
 									object[relationship.from] = attribute.elements ? [targetId] : targetId;
 								}
 							};
+							attribute.resolve.resolveKeys = (object, context) => {
+								const ids = object[relationship.from];
+								if (ids == null) return ids;
+								const keys = !attribute.elements || Array.isArray(ids) ? ids : [ids];
+								if (!attribute.elements || keys.length > 0) markRelatedReadUncacheable(context);
+								return keys;
+							};
+							attribute.resolve.loadEntries = (object, context) => {
+								const keys = attribute.resolve.resolveKeys(object, context);
+								if (keys == null) return keys;
+								if (keys.length === 0 && attribute.elements) return [];
+								if (attribute.elements)
+									return loadRelatedEntries(keys, definition.tableClass, context, relationship.filterMissing);
+								return loadRelatedEntry(keys, definition.tableClass, context);
+							};
+							attribute.resolve.toMany = Boolean(attribute.elements);
+							attribute.resolve.filterMissing = Boolean(attribute.elements && relationship.filterMissing);
 							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
 							attribute.resolve.from = relationship.from;
 						} else {
@@ -10755,6 +10848,61 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
+	// must settle to what the relationship resolver returns with returnEntry
+	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
+		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
+		const entries = [];
+		for (let i = 0; i < keys.length; i++) {
+			const key = keys[i];
+			const entry = key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options);
+			entries.push(entry);
+			if (entry?.then)
+				return loadRemainingRelatedEntries(keys, i + 1, entries, relatedTable, options).then((entries) =>
+					settleRelatedEntries(entries, filterMissing)
+				);
+		}
+		return settleRelatedEntries(entries, filterMissing);
+	}
+	// Once one related read has to go to storage, the rest are read at most RELATED_READS_IN_FLIGHT at a time:
+	// a row with thousands of related ids must not queue them all ahead of every other request's background reads
+	async function loadRemainingRelatedEntries(keys: any[], start: number, entries: any[], relatedTable, options) {
+		const checkActive = getReadTransactionGuard(options.transaction);
+		try {
+			// entries[start - 1] is the read already in flight, so it counts toward the first window
+			for (let i = start; i < keys.length; i++) {
+				if ((i - start + 1) % RELATED_READS_IN_FLIGHT === 0) {
+					await Promise.all(entries.slice(i - RELATED_READS_IN_FLIGHT));
+					checkActive?.();
+				}
+				const key = keys[i];
+				entries.push(key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options));
+			}
+			return await Promise.all(entries);
+		} catch (error) {
+			// the reads still pending would otherwise reject unobserved
+			Promise.all(entries).catch(() => {});
+			throw error;
+		}
+	}
+	function settleRelatedEntries(entries: any[], filterMissing?: boolean) {
+		if (TableResource.loadAsInstance === false) for (const entry of entries) freezeRecord(entry?.value);
+		return filterMissing ? entries.filter(exists) : entries;
+	}
+	function markRelatedReadUncacheable(context: Context) {
+		const ctx = context ?? contextStorage.getStore();
+		if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+	}
+	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
+		const entry = relatedTable.primaryStore.getEntry(key, {
+			transaction: txnForContext(context).getReadTxn(),
+			async: true,
+		});
+		return entry?.then ? entry.then(freezeRelatedEntry) : freezeRelatedEntry(entry);
+	}
+	function freezeRelatedEntry(entry: any) {
+		if (TableResource.loadAsInstance === false) freezeRecord(entry?.value);
+		return entry;
+	}
 	function getAttributeValue(entry, attribute_name, context, sort?) {
 		if (!entry) {
 			return;
@@ -10762,22 +10910,39 @@ export function makeTable(options): TableResourceClass {
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
-			let resolvers = propertyResolvers;
-			let value = record;
-			for (let i = 0, l = attribute_name.length; i < l; i++) {
-				const attribute = attribute_name[i];
-				const resolver = resolvers?.[attribute];
+			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort);
+		}
+		const resolver = propertyResolvers[attribute_name];
+		if (resolver?.loadEntries)
+			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
+		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
+	}
+	function relatedValue(resolver, loaded) {
+		return resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value;
+	}
+	function getPathValue(value, path, start, resolvers, entry, context, sort) {
+		for (let i = start, l = path.length; i < l; i++) {
+			const attribute = path[i];
+			const resolver = resolvers?.[attribute];
+			resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+			if (resolver?.loadEntries && value) {
+				const loaded = resolver.loadEntries(value, context);
+				if (loaded?.then) {
+					const nextResolvers = resolvers;
+					return loaded.then((loaded) =>
+						getPathValue(relatedValue(resolver, loaded), path, i + 1, nextResolvers, null, context, sort)
+					);
+				}
+				value = relatedValue(resolver, loaded);
+			} else {
 				value =
 					resolver && value
 						? resolver(value, context, entry, false, i === l - 1 ? sort : undefined, true)
 						: value?.[attribute];
-				entry = null; // can't use this in the nested object
-				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
-			return value;
+			entry = null; // can't use this in the nested object
 		}
-		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
+		return value;
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
@@ -10791,6 +10956,9 @@ export function makeTable(options): TableResourceClass {
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
+		const matchers = filters?.some((filter) => filter.maybeAsync)
+			? filters.map((filter) => filter.maybeAsync ?? filter)
+			: undefined;
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
 			if (!record) return SKIP;
@@ -10802,11 +10970,28 @@ export function makeTable(options): TableResourceClass {
 			if (id !== undefined) entry.key = id;
 			return entry;
 		}
+		function processEntryMaybeAsync(entry: Entry, id?) {
+			const record = entry?.value;
+			if (!record) return SKIP;
+			return applyFilters(record, entry, id, idFiltersApplied, 0);
+		}
+		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
+			for (let i = start; i < filtersLength; i++) {
+				if (applied?.includes(i)) continue;
+				const matches = matchers[i](record, entry);
+				if (matches?.then)
+					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
+				if (!matches) return SKIP;
+			}
+			if (id !== undefined) entry.key = id;
+			return entry;
+		}
 		if (filtersLength > 0 || !ids.hasEntries) {
-			let results = ids.map((idOrEntry) => {
+			let results = ids.map(function (this: any, idOrEntry) {
 				idFiltersApplied = null;
+				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
-					return filtersLength > 0 ? processEntry(idOrEntry) : idOrEntry; // already an entry
+					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {
 					return SKIP;
 				}
@@ -10820,7 +11005,7 @@ export function makeTable(options): TableResourceClass {
 						idFiltersApplied.push(i);
 					}
 				}
-				return loadLocalRecord(idOrEntry, context, loadOptions, false, processEntry);
+				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
 			});
 			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);
 			results.hasEntries = true;
@@ -12440,6 +12625,7 @@ function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, versio
 	return -1;
 }
 
+const RELATED_READS_IN_FLIGHT = 16;
 // for filtering
 function exists(value) {
 	return value != null;
