@@ -996,6 +996,42 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			instance.meta.value = 2;
 			assert.deepStrictEqual(collapseChanges(instance, undefined).meta, { value: 2 });
 		});
+		it('a function class field is not written, so a sealed table accepts a patch', async () => {
+			class WithField extends SealedTable {
+				format = () => 'x';
+			}
+			await SealedTable.put('sealed-function', { title: 't' });
+			await WithField.patch('sealed-function', { title: 'patched' });
+			assert.strictEqual((await SealedTable.get('sealed-function')).title, 'patched');
+		});
+		it('an own Date is committed as a copy, so a later in-place edit is still a change', () => {
+			let record = { id: 'own-date' };
+			class Instance {
+				getRecord() {
+					return record;
+				}
+				getChanges() {
+					return undefined;
+				}
+			}
+			const instance = new Instance();
+			instance.when = new Date(1000);
+			const patch = collapseChanges(instance, undefined);
+			assert.notStrictEqual(patch.when, instance.when);
+			record = { id: 'own-date', when: patch.when }; // committed
+			assert.strictEqual(collapseChanges(instance, undefined), undefined);
+			instance.when.setTime(2000);
+			assert.strictEqual(collapseChanges(instance, undefined).when.getTime(), 2000);
+		});
+		it('an own object holding a blob keeps the blob', async () => {
+			await QA1955Table.put('own-object-blob', { title: 't' });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('own-object-blob', ctx);
+				rec.extra = { payload: createBlob(Buffer.from('blob content')) };
+			});
+			const saved = await QA1955Table.get('own-object-blob');
+			assert.strictEqual(await saved.extra.payload.text(), 'blob content');
+		});
 		it('an object class field changed in place is written', async () => {
 			class WithField extends QA1955Table {
 				meta = { value: 0 };

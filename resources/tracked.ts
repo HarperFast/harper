@@ -584,15 +584,15 @@ const IDENTITY = Symbol('identity');
 /**
  * Record the own properties a framework-constructed instance starts with (class fields such as `hits = 0`
  * on a Table subclass), so they enter a patch only once changed. A plain-data object can change in place,
- * so it is kept as a deep copy and compared by content; any other object (a helper instance, a Buffer) is
- * compared by identity.
+ * so it is kept as a deep copy and compared by content; any other value (a helper instance, a Buffer,
+ * a function) is compared by identity.
  */
 export function recordOwnBaseline(instance: any) {
 	let baseline;
 	for (const key of Object.keys(instance)) {
 		let value = instance[key];
-		if (typeof value === 'function') continue;
-		if (value !== null && typeof value === 'object') {
+		if (typeof value === 'function') value = { [IDENTITY]: value };
+		else if (value !== null && typeof value === 'object') {
 			let copy;
 			try {
 				copy = structuredClone(value);
@@ -625,18 +625,22 @@ export function hasOwnChange(target, key: string) {
 	return hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]);
 }
 // An own object value is not tracked: the record gets a copy, so a later in-place edit of the instance's
-// object is a difference in content rather than invisible
+// object is a difference in content rather than invisible. A value that does not copy to the same content
+// (one holding a Blob) is stored as it is.
 function plainCopy(value) {
-	if (value === null || typeof value !== 'object' || (value.constructor !== Object && value.constructor !== Array))
-		return value;
+	if (value === null || typeof value !== 'object') return value;
+	if (value instanceof Date) return new Date(value.getTime());
+	if (value instanceof Uint8Array) return Uint8Array.prototype.slice.call(value);
+	if (value.constructor !== Object && value.constructor !== Array) return value;
 	try {
-		return structuredClone(value);
+		const copy = structuredClone(value);
+		return isDeepStrictEqual(copy, value) ? copy : value;
 	} catch {
 		return value;
 	}
 }
 function sameOwnValue(value, recordValue) {
-	if (sameValue(value, recordValue)) return true;
+	if (sameValue(value, recordValue) || sameCopy(value, recordValue)) return true;
 	return (
 		value !== null &&
 		typeof value === 'object' &&
