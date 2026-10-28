@@ -491,17 +491,22 @@ describe('Test searchValidator module', () => {
 		}
 	});
 
-	it('allows null, Date, BigInt, Buffer, and unsafe numbers in search_by_value and rejects array or plain object value such as ["*"]', () => {
+	it('allows null, scalars, Date, BigInt, Buffer, plain objects, and non-wildcard arrays in search_by_value and rejects arrays containing "*"', () => {
 		for (const validValue of [
 			null,
 			'',
 			'abc',
+			'*',
 			0,
 			Number.MAX_SAFE_INTEGER + 100,
 			true,
 			new Date('2025-01-01T00:00:00Z'),
 			123n,
 			Buffer.from([0x2a]),
+			[],
+			['a', 'b'],
+			{},
+			{ nested: 'value' },
 		]) {
 			assert.strictEqual(
 				searchValidator(
@@ -518,7 +523,7 @@ describe('Test searchValidator module', () => {
 			);
 		}
 
-		for (const invalidValue of [['*'], {}]) {
+		for (const invalidValue of [['*'], ['a', '*']]) {
 			const err = searchValidator(
 				{
 					schema: 'searchValidatorTest',
@@ -530,7 +535,7 @@ describe('Test searchValidator module', () => {
 				'value'
 			);
 			assert.ok(err instanceof Error);
-			assert.strictEqual(err.message, "'value' must not be an array or object");
+			assert.strictEqual(err.message, "'value' must not be an array containing '*'");
 		}
 	});
 });

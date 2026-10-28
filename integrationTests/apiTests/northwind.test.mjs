@@ -7005,7 +7005,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					search_value: ['*'],
 					get_attributes: ['employeeid', 'hireDate'],
 				})
-				.expect((r) => assert.equal(r.body.error, "'value' must not be an array or object", r.text))
+				.expect((r) => assert.equal(r.body.error, "'value' must not be an array containing '*'", r.text))
 				.expect(400);
 		});
 

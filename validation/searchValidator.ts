@@ -133,17 +133,14 @@ const searchByValueSchema = Joi.object({
 	attribute: hdbSchemaTable,
 	value: Joi.any()
 		.custom((value, helpers) => {
-			if (
-				Array.isArray(value) ||
-				(value !== null && typeof value === 'object' && !(value instanceof Date) && !(value instanceof Uint8Array))
-			) {
+			if (Array.isArray(value) && value.includes('*')) {
 				return helpers.error('any.invalid');
 			}
 			return value;
 		})
 		.required()
 		.messages({
-			'any.invalid': '{{#label}} must not be an array or object',
+			'any.invalid': "{{#label}} must not be an array containing '*'",
 		}),
 	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdbSchemaTable, Joi.object())).optional(),
 	desc: Joi.bool(),

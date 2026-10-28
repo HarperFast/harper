@@ -299,25 +299,85 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 		}
 	});
 
-	it('returns a 400 ClientError when search_by_value specifies ["*"] as search_value', async () => {
-		const payload = {
-			operation: 'search_by_value',
-			database: TEST_DB,
-			table: TEST_TABLE,
-			search_attribute: 'title',
-			search_value: ['*'],
-			get_attributes: ['*'],
-			hdb_user: superUser,
-		};
+	it('returns a 400 ClientError when search_by_value specifies an array containing "*" as search_value', async () => {
+		for (const searchValue of [['*'], ['Shoe', '*']]) {
+			const payload = {
+				operation: 'search_by_value',
+				database: TEST_DB,
+				table: TEST_TABLE,
+				search_attribute: 'title',
+				search_value: searchValue,
+				get_attributes: ['*'],
+				hdb_user: superUser,
+			};
+
+			await assert.rejects(
+				() => search.searchByValue({ ...payload }),
+				(err) => assertBadRequest(err, "'value' must not be an array containing '*'")
+			);
+
+			await assert.rejects(
+				() => serverUtilities.operation({ ...payload }, { user: superUser }, true),
+				(err) => assertBadRequest(err, "'value' must not be an array containing '*'")
+			);
+		}
+	});
+
+	it('preserves search_by_value behavior for non-wildcard arrays and plain objects', async () => {
+		for (const attr of ['title', 'category']) {
+			const arrayRes = [];
+			for await (const rec of await serverUtilities.operation(
+				{
+					operation: 'search_by_value',
+					database: TEST_DB,
+					table: TEST_TABLE,
+					search_attribute: attr,
+					search_value: ['Trail Runner Shoe', 'Sun Hat'],
+					get_attributes: ['id', 'title', 'category'],
+				},
+				{ user: superUser },
+				true
+			)) {
+				arrayRes.push(rec);
+			}
+			assert.deepEqual(arrayRes, []);
+		}
+
+		const unindexedObjectRes = [];
+		for await (const rec of await serverUtilities.operation(
+			{
+				operation: 'search_by_value',
+				database: TEST_DB,
+				table: TEST_TABLE,
+				search_attribute: 'category',
+				search_value: { nested: 'value' },
+				get_attributes: ['id', 'title', 'category'],
+			},
+			{ user: superUser },
+			true
+		)) {
+			unindexedObjectRes.push(rec);
+		}
+		assert.deepEqual(unindexedObjectRes, []);
 
 		await assert.rejects(
-			() => search.searchByValue({ ...payload }),
-			(err) => assertBadRequest(err, "'value' must not be an array or object")
-		);
-
-		await assert.rejects(
-			() => serverUtilities.operation({ ...payload }, { user: superUser }, true),
-			(err) => assertBadRequest(err, "'value' must not be an array or object")
+			async () => {
+				for await (const _rec of await serverUtilities.operation(
+					{
+						operation: 'search_by_value',
+						database: TEST_DB,
+						table: TEST_TABLE,
+						search_attribute: 'title',
+						search_value: { nested: 'value' },
+						get_attributes: ['id', 'title', 'category'],
+					},
+					{ user: superUser },
+					true
+				)) {
+					// consume iterable
+				}
+			},
+			/Unable to serialize object as a key/
 		);
 	});
 });
