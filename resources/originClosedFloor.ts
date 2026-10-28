@@ -64,7 +64,14 @@ function storeMax(words: BigInt64Array, index: number, value: number): number {
 	}
 }
 
-type Reservation = { registry: ThreadRegistry; key: number; released: boolean; aroundCallerValue: boolean };
+type Reservation = {
+	registry: ThreadRegistry;
+	key: number;
+	released: boolean;
+	aroundCallerValue: boolean;
+	// The key a retry re-minted after its aborted attempt; `key` stays the published bound, which it still bounds.
+	logKey?: number;
+};
 
 /**
  * One thread's view of one root store's floor registry. Outstanding reservations sit in a binary
@@ -295,7 +302,7 @@ function assertValidTimestamp(value: number): void {
  */
 export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransaction, explicit?: number): number {
 	const existing: Reservation | undefined = (handle as any)[RESERVATION];
-	if (existing) return existing.key;
+	if (existing) return existing.logKey ?? existing.key;
 	if (explicit !== undefined) assertValidTimestamp(explicit);
 	return registryFor(rootStore).reserve(handle, explicit);
 }
@@ -308,7 +315,8 @@ export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransacti
 export function transferLocalKey(from: RocksTransaction, to: RocksTransaction): void {
 	const reservation: Reservation | undefined = (from as any)[RESERVATION];
 	if (!reservation || (to as any)[RESERVATION]) return;
-	if (to.getTimestamp() !== reservation.key) to.setTimestamp(reservation.key);
+	const key = reservation.logKey ?? reservation.key;
+	if (to.getTimestamp() !== key) to.setTimestamp(key);
 	(from as any)[RESERVATION] = undefined;
 	(to as any)[RESERVATION] = reservation;
 }
@@ -329,7 +337,26 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 }
 
 export function reservedLocalKey(handle: RocksTransaction | undefined): number | undefined {
-	return handle && (handle as any)[RESERVATION]?.key;
+	const reservation: Reservation | undefined = handle && (handle as any)[RESERVATION];
+	return reservation && (reservation.logKey ?? reservation.key);
+}
+
+/**
+ * A retry whose previous attempt's log batch was aborted logs afresh, so it takes a fresh key: the retry is then
+ * in order with the writes that beat it. The reservation's published bound stays at the original, smaller key.
+ * Returns the new key, or undefined when the handle has no plain minted reservation or still carries a durable batch.
+ */
+export function rekeyLocalRetry(handle: RocksTransaction): number | undefined {
+	const reservation: Reservation | undefined = (handle as any)[RESERVATION];
+	if (!reservation || reservation.aroundCallerValue) return undefined;
+	const key = reservation.registry.freshKey();
+	try {
+		handle.setTimestamp(key);
+	} catch {
+		return undefined;
+	}
+	reservation.logKey = key;
+	return key;
 }
 
 export function reservedAroundCallerValue(handle: RocksTransaction | undefined): boolean {

@@ -82,7 +82,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	 * @param options - Options for save
 	 */
 	put(suggestedKey: any, auditRecord: AuditRecord | Uint8Array, options: any) {
-		if (options.transaction.isRetry) {
+		if (options.transaction.isRetry && !options.transaction.relogOnRetry) {
 			// do not record transaction entries on retry
 			return;
 		}
