@@ -2397,7 +2397,8 @@ export function conditionDrivesIndex(table, condition): boolean {
 			const attribute = findAttribute(table.attributes, attributeName[0]);
 			const relatedTable = attribute?.definition?.tableClass || attribute?.elements?.definition?.tableClass;
 			if (!attribute?.relationship || !relatedTable) return false;
-			if (attribute.relationship.from && !usableIndex(table, attribute.relationship.from)) return false;
+			const from = attribute.relationship.from;
+			if (from && from !== table.primaryKey && !usableIndex(table, from)) return false;
 			return conditionDrivesIndex(relatedTable, {
 				attribute: attributeName.length > 2 ? attributeName.slice(1) : attributeName[1],
 				comparator,
@@ -2458,7 +2459,7 @@ export function estimateCondition(table) {
 					}
 				} else {
 					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition
-					// (Infinity marks a filter-only leg: it can't drive a scan and says nothing about its siblings' cardinality)
+					// (Infinity marks a leg with no usable estimate, which says nothing about its siblings' cardinality)
 					estimatedCount = Infinity;
 					for (const subCondition of condition.conditions) {
 						const subCount = estimateConditionForTable(subCondition);

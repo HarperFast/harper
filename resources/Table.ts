@@ -7532,8 +7532,7 @@ export function makeTable(options): TableResourceClass {
 				for (const condition of conditions) {
 					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
 				}
-				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering,
-				// behind every condition that can drive an index scan the ones that can't, whatever they estimate.
+				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering.
 				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
 				// order for their query.
 				if (conditions.length > 1 && operator !== 'or')

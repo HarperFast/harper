@@ -802,7 +802,8 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
   and the lazy index switch read them as counts. The predicate mirrors `searchByIndex`'s full-scan and missing-index
   decisions, and a test pins the two to agree leaf by leaf.
 - **A relationship condition that filters rather than leads registers `filtered[attribute]` on its first match**, after
-  the select transform is prepared, so select paths read `filtered` per record, never at preparation.
+  the select transform is prepared, so a relationship selection reads its filter map per record
+  (`_prepareRelationshipSelection`).
 - **Non-driving filters drop null and omitted values the way index ranges do** (`filterByType`, harper#3212). No index
   holds an omitted value and `lt`/`le` ranges start above `null`, so range filters and `ne null` reject omitted values
   and `lt`/`le` reject null. SQL `IS NULL` counts omitted as NULL, so it is pushed as filter-only `ne null, negated`.

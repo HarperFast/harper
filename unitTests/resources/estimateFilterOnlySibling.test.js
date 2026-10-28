@@ -79,6 +79,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 			primaryStore: {},
 			attributes: [
 				{ name: 'owner', relationship: { from: 'ownerId' }, definition: { tableClass: relatedTable } },
+				{ name: 'self', relationship: { from: 'id' }, definition: { tableClass: relatedTable } },
 				{ name: 'items', relationship: { to: 'ownerId' }, elements: { definition: { tableClass: relatedTable } } },
 				{ name: 'json' },
 			],
@@ -90,6 +91,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		it('drives by an indexed attribute of the related table through the local join index', () => {
 			assert.strictEqual(drives({ ownerId: {} }, ['owner', 'name']), true);
 			assert.strictEqual(drives({}, ['items', 'name']), true);
+			assert.strictEqual(drives({}, ['self', 'name']), true, 'a join from the primary key seeks the primary store');
 		});
 
 		it('does not drive by an unindexed related attribute, or without a usable local join index', () => {
@@ -298,7 +300,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 			const common = () => ({ attribute: 'c', value: 'common' });
 			const contains = () => ({ attribute: 'a', comparator: 'contains', value: 'x' });
 			const inLeg = () => ({ attribute: 'b', comparator: 'in', value: [3] });
-			// each estimates a finite count below `c = common`, yet searchByIndex answers it with a full scan
+			// searchByIndex answers each with a full scan
 			const FULL_SCAN_LEGS = [
 				['in', inLeg],
 				['an empty starts_with', () => ({ attribute: 'a', comparator: 'starts_with', value: '' })],
