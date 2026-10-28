@@ -1,10 +1,11 @@
 const assert = require('node:assert');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { collapseData, hasChanges } = require('#src/resources/tracked');
+const { collapseData, hasChanges, collapseChanges, recordOwnBaseline } = require('#src/resources/tracked');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { createBlob } = require('#src/resources/blob');
+const { createBlob, isSaving, getFilePathForBlob } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
 const { PassThrough } = require('node:stream');
 const { setTimeout: delay } = require('node:timers/promises');
 
@@ -672,6 +673,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 					{ name: 'when', type: 'Date' },
 					{ name: 'bytes', type: 'Bytes' },
 					{ name: 'dates', type: 'Array', elements: { type: 'Date' } },
+					{ name: 'chunks', type: 'Array', elements: { type: 'Bytes' } },
 				],
 			});
 		});
@@ -702,6 +704,19 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			assert.strictEqual(patch.title, 'changed');
 			assert.strictEqual(patch.when, undefined);
 			assert.strictEqual(patch.bytes, undefined);
+		});
+		it('a Bytes array element edited in place saves the array', async () => {
+			await DatedCopyTable.put('chunks', { title: 't', chunks: [Buffer.from([1, 2]), Buffer.from([3])] });
+			await transaction(async (ctx) => {
+				const rec = await DatedCopyTable.update('chunks', ctx);
+				assert.strictEqual(hasChanges(rec), false);
+				rec.chunks[0][0] = 9;
+				assert.strictEqual(rec.getRecord().chunks[0][0], 1);
+			});
+			assert.deepStrictEqual(
+				(await DatedCopyTable.get('chunks')).chunks.map((chunk) => [...chunk]),
+				[[9, 2], [3]]
+			);
 		});
 		it('an undeclared Date read through getProperty is a copy', async () => {
 			await QA1955Table.put('undeclared-date', { title: 't', dynamicWhen: new Date(1000) });
@@ -751,37 +766,72 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 	});
 
 	describe('Blobs in the committed patch', () => {
-		it('a blob assigned as an own property is saved before the commit completes', async () => {
-			await QA1955Table.put('own-blob', { title: 't' });
+		let BlobTable;
+		before(() => {
+			BlobTable = table({
+				table: 'TrackedBlobs',
+				database: 'test_qa1955',
+				sealed: false,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+					{ name: 'data', type: 'Blob' },
+				],
+			});
+		});
+		async function waitUntil(probe, label) {
+			const deadline = Date.now() + 5000;
+			while (!probe()) {
+				if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+				await delay(5);
+			}
+		}
+		const bounded = (promise) =>
+			Promise.race([promise, delay(5000).then(() => Promise.reject(new Error('transaction did not settle')))]);
+		// commits once the blob's stream ends; asserts the commit was waiting on the blob's save before that
+		async function assertCommitWaitsForBlob(id, assign) {
+			await BlobTable.put(id, { title: 't' });
 			const stream = new PassThrough();
+			const blob = createBlob(stream, { saveBeforeCommit: true });
 			let committed = false;
 			const done = transaction(async (ctx) => {
-				const rec = await QA1955Table.update('own-blob', ctx);
-				rec.extraBlob = createBlob(stream, { saveBeforeCommit: true });
+				const rec = await BlobTable.update(id, ctx);
+				assign(rec, blob);
 			}).then(() => (committed = true));
 			stream.write('first part, ');
-			await delay(100);
+			await waitUntil(() => isSaving(blob), 'the blob save to start');
+			await delay(50);
 			assert.strictEqual(committed, false, 'the commit waits for the blob');
 			stream.end('last part');
-			await done;
-			const saved = await QA1955Table.get('own-blob');
+			await bounded(done);
+			return BlobTable.get(id);
+		}
+
+		it('a blob assigned as an own property is saved before the commit completes', async () => {
+			const saved = await assertCommitWaitsForBlob('own-blob', (rec, blob) => (rec.extraBlob = blob));
 			assert.strictEqual(await saved.extraBlob.text(), 'first part, last part');
 		});
-		it('a failed own-property blob fails the commit', async () => {
-			await QA1955Table.put('own-blob-fail', { title: 't' });
+		it('a blob assigned to a declared attribute after the update is staged is saved before the commit completes', async () => {
+			const saved = await assertCommitWaitsForBlob('declared-blob', (rec, blob) => (rec.data = blob));
+			assert.strictEqual(await saved.data.text(), 'first part, last part');
+		});
+		it('a failed own-property blob fails the commit and its file is removed', async () => {
+			await BlobTable.put('own-blob-fail', { title: 't' });
 			const stream = new PassThrough();
+			const blob = createBlob(stream, { saveBeforeCommit: true });
 			const done = transaction(async (ctx) => {
-				const rec = await QA1955Table.update('own-blob-fail', ctx);
-				rec.extraBlob = createBlob(stream, { saveBeforeCommit: true });
+				const rec = await BlobTable.update('own-blob-fail', ctx);
+				rec.extraBlob = blob;
 				rec.title = 'changed';
 			});
 			stream.write('partial');
-			await delay(50);
+			await waitUntil(() => isSaving(blob), 'the blob save to start');
 			stream.destroy(new Error('stream failed'));
-			await assert.rejects(done);
-			const saved = await QA1955Table.get('own-blob-fail');
+			await assert.rejects(bounded(done), /stream failed/);
+			const saved = await BlobTable.get('own-blob-fail');
 			assert.strictEqual(saved.title, 't');
 			assert.strictEqual(saved.extraBlob, undefined);
+			await waitUntil(() => !existsSync(getFilePathForBlob(blob)), 'the blob file to be removed');
 		});
 	});
 
@@ -853,6 +903,54 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			// the full record put is built from the loaded record when there is one (not on LMDB here)
 			assert.notStrictEqual(put[0].tag, 'default');
 			assert.strictEqual((await PutSourced.get('put-only')).tag, 'important');
+		});
+		it('addTo on an unchanged class field adds to the stored value', async () => {
+			class WithField extends QA1955Table {
+				hits = 0;
+			}
+			await QA1955Table.put('field-add', { title: 't', hits: 100 });
+			await transaction(async (ctx) => {
+				const rec = await WithField.update('field-add', ctx);
+				rec.addTo('hits', 5);
+			});
+			assert.strictEqual((await QA1955Table.get('field-add')).hits, 105);
+			const audited = [...QA1955Table.auditStore.getRange({ start: 1 })]
+				.filter((entry) => entry.tableId === QA1955Table.tableId && entry.recordId === 'field-add')
+				.map((entry) => entry.getValue(QA1955Table.primaryStore))
+				.at(-1);
+			assert.strictEqual(audited.hits.__op__, 'add');
+		});
+		it('an object class field changed in place is written', async () => {
+			class WithField extends QA1955Table {
+				meta = { value: 0 };
+			}
+			await QA1955Table.put('field-object', { title: 't' });
+			await transaction(async (ctx) => {
+				const rec = await WithField.update('field-object', ctx);
+				rec.meta.value = 1;
+				rec.title = 'changed';
+			});
+			assert.strictEqual((await QA1955Table.get('field-object')).meta.value, 1);
+		});
+		it('a class field set back to its initial value after it was written is a change', () => {
+			let record = { id: 'reset' };
+			class Instance {
+				hits = 0;
+				getRecord() {
+					return record;
+				}
+				getChanges() {
+					return undefined;
+				}
+			}
+			const instance = new Instance();
+			recordOwnBaseline(instance);
+			assert.strictEqual(collapseChanges(instance, undefined), undefined);
+			instance.hits = 5;
+			assert.deepStrictEqual({ ...collapseChanges(instance, undefined) }, { hits: 5 });
+			record = { id: 'reset', hits: 5 }; // committed
+			instance.hits = 0;
+			assert.deepStrictEqual({ ...collapseChanges(instance, undefined) }, { hits: 0 });
 		});
 		it('a class field the code changes is written on a non-sealed table', async () => {
 			class WithField extends QA1955Table {

@@ -560,7 +560,7 @@ export function hasChanges(target) {
 		const changes = target.getChanges?.();
 		if (changes && !source) return true;
 		for (const key in changes) {
-			if (hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key])) continue;
+			if (hasOwnChange(target, key)) continue;
 			const value = changes[key];
 			if (value && typeof value === 'object') {
 				const sourceValue = source[key];
@@ -570,7 +570,6 @@ export function hasChanges(target) {
 				} else return true;
 			} else return true;
 		}
-		// own properties that differ from the record are part of the patch (collapseChanges)
 		for (const key of Object.keys(target)) {
 			const value = target[key];
 			if (!sameValue(value, source?.[key]) && !atOwnBaseline(target, key, value)) return true;
@@ -580,25 +579,30 @@ export function hasChanges(target) {
 }
 const ownBaselines = new WeakMap<object, any>();
 /**
- * Record the own properties a framework-constructed instance starts with (class fields such as `hits = 0`
- * on a Table subclass, or properties its constructor sets), so they enter a patch only once changed.
+ * Record the primitive own properties a framework-constructed instance starts with (class fields such as
+ * `hits = 0` on a Table subclass), so they enter a patch only once changed. An object value can change in
+ * place, so it is not recorded and stays part of the patch.
  */
 export function recordOwnBaseline(instance: any) {
-	const keys = Object.keys(instance);
-	if (keys.length === 0) return;
-	const baseline = Object.create(null);
-	for (const key of keys) baseline[key] = instance[key];
-	ownBaselines.set(instance, baseline);
+	let baseline;
+	for (const key of Object.keys(instance)) {
+		const value = instance[key];
+		if (value !== null && (typeof value === 'object' || typeof value === 'function')) continue;
+		(baseline ??= Object.create(null))[key] = value;
+	}
+	if (baseline) ownBaselines.set(instance, baseline);
 }
-// an own property still holding the value the instance was constructed with is not a change
 function atOwnBaseline(target, key: string, value) {
 	const baseline = ownBaselines.get(target);
 	return baseline !== undefined && key in baseline && sameValue(value, baseline[key]);
 }
+/** Whether an own property of the instance is data to write, rather than an untouched class field */
+export function hasOwnChange(target, key: string) {
+	return hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]);
+}
 function sameValue(a, b) {
 	return a === b || (a !== a && b !== b); // NaN
 }
-// a Date or Bytes array element is tracked as a copy of the record's value
 function sameCopy(copy, source) {
 	if (copy instanceof Date) return source instanceof Date && sameValue(copy.getTime(), source.getTime());
 	if (copy instanceof Uint8Array) return source instanceof Uint8Array && Buffer.compare(copy, source) === 0;
@@ -606,13 +610,9 @@ function sameCopy(copy, source) {
 }
 
 /**
- * The incremental update a tracked instance commits: its changes with every tracked sub-object/array
- * that was only read (unchanged since it was taken from the record) removed, the changed ones
- * collapsed to plain data, and its own properties that differ from the record added. CRDT
- * operations pass through, and an own property overrides a change to the same key. Returns undefined
- * when nothing changed on an existing record, and `changes` itself (not a copy) when it needs no
- * normalization. Does not mutate `changes`, which is the instance's live tracked state (or the
- * caller's update object).
+ * The incremental update a tracked instance commits (see resources/DESIGN.md). Returns undefined when
+ * nothing changed on an existing record, and `changes` itself when it needs no normalization; never
+ * mutates `changes`, which is the instance's live tracked state or the caller's update object.
  */
 export function collapseChanges(target, changes) {
 	// a non-object root (an array, binary data) is not a patch; leave it for the write's root validation
@@ -625,8 +625,7 @@ export function collapseChanges(target, changes) {
 	for (const key in changes) {
 		const value = changes[key];
 		let committed = value;
-		if (ownKeys.length > 0 && hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]))
-			committed = OMITTED;
+		if (ownKeys.length > 0 && hasOwnChange(target, key)) committed = OMITTED;
 		else if (value?.getRecord) {
 			if (source && value.getRecord() === source[key] && !hasChanges(value)) committed = OMITTED;
 			else committed = value.constructor === Array ? materializeArray(value) : collapseData(value);
@@ -645,6 +644,8 @@ export function collapseChanges(target, changes) {
 	for (const key of ownKeys) {
 		const value = target[key];
 		if (sameValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
+		// once written, the field is compared with the record, so setting it back to its initial value is a change
+		delete ownBaselines.get(target)?.[key];
 		if (patch === changes) patch = Object.assign(Object.create(null), changes);
 		patch[key] = value?.getRecord ? collapseData(value) : value;
 		keyCount++;
@@ -661,8 +662,7 @@ const OMITTED = {};
  * sum.
  */
 export function addToChanges(target, property: string, value: number | bigint) {
-	if (Object.hasOwn(target, property)) {
-		// an undeclared property assigned on a Table instance is an own property, which overrides its changes
+	if (hasOwnChange(target, property)) {
 		target[property] = crdtOperations.addValues(target[property], value);
 		return;
 	}

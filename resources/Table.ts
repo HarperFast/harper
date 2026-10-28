@@ -189,6 +189,7 @@ import {
 	assignTrackedAccessors,
 	collapseChanges,
 	recordOwnBaseline,
+	hasOwnChange,
 	updateAndFreeze,
 	hasChanges,
 	GenericTrackedObject,
@@ -3044,7 +3045,7 @@ export function makeTable(options): TableResourceClass {
 				if (reason) throw new DatabaseShardingHeldError(databaseName, reason);
 			}
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
-			recordOwnBaseline(resource);
+			if (this !== TableResource) recordOwnBaseline(resource); // only a subclass can declare fields
 			const condition = request?.[WRITE_CONDITION];
 			if (
 				condition &&
@@ -4407,7 +4408,7 @@ export function makeTable(options): TableResourceClass {
 			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this.#savingOperation?.fullUpdate) {
 					// a full update stores its changes, not own properties, so an own value moves into them
-					const own = Object.hasOwn(this, property);
+					const own = hasOwnChange(this, property);
 					const sum = addValues(own ? this[property] : this.getProperty(property), value);
 					(this as any).set(property, sum);
 					if (own) delete this[property];
@@ -5265,7 +5266,7 @@ export function makeTable(options): TableResourceClass {
 			if (writeKeyId(id) !== writeKeyId(this.getId())) {
 				// lock(target) where target differs from this record: return a separate instance.
 				const fresh = new (this.constructor as any)(id, this.getContext());
-				recordOwnBaseline(fresh);
+				if (this.constructor !== TableResource) recordOwnBaseline(fresh);
 				TableResource._updateResource(fresh, entryForReload);
 				if (holdHandle != null) {
 					fresh.#lockHandle = holdHandle;
@@ -8435,7 +8436,7 @@ export function makeTable(options): TableResourceClass {
 						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
 						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
 						const swrResource = new resourceClass(entry.key ?? entry, context);
-						recordOwnBaseline(swrResource);
+						if (resourceClass !== TableResource) recordOwnBaseline(swrResource);
 						resourceClass._updateResource(swrResource, entry);
 						swrResource.setRecord(record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
