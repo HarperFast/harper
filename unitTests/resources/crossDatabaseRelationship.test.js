@@ -8,7 +8,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 describe('cross-database relationship search', function () {
-	let Emp, Badge, Org, Vault, Staff, previousMainIsWorker;
+	let Emp, Badge, Org, Vault, Staff, Dept, previousMainIsWorker;
 	const GOLD_IDS = Array.from({ length: 10 }, (_, i) => `e${i * 2}`).sort();
 	const VAULTS = 10_000;
 
@@ -82,6 +82,22 @@ describe('cross-database relationship search', function () {
 		await Org.put({ id: 'oAlpha', name: 'zz-Alpha' });
 		await Vault.put({ id: 'vAlpha', name: 'zz-Alpha', orgId: 'oAlpha' });
 		await Staff.put({ id: 's1', vaultId: 'vAlpha' });
+		Dept = table({
+			database: 'xdb_rel_org',
+			table: 'Dept',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{
+					name: 'vaults',
+					elements: { type: 'Vault', definition: { tableClass: Vault } },
+					relationship: { to: 'deptId' },
+				},
+			],
+		});
+		Vault.attributes.push({ name: 'deptId', indexed: true });
+		await Dept.put({ id: 'dA' });
+		await Dept.put({ id: 'dB' });
+		await Vault.put({ id: 'vDept', name: 'dept-vault', deptId: 'dA' });
 	});
 
 	after(function () {
@@ -291,5 +307,16 @@ describe('cross-database relationship search', function () {
 		} finally {
 			setTxnExpiration(30000);
 		}
+	});
+
+	it('joins a reverse relationship on the related records it scanned, not their later state', async function () {
+		const context = {};
+		const results = await transaction(context, () =>
+			Dept.search({ conditions: [{ attribute: ['vaults', 'name'], value: 'dept-vault' }] }, context)
+		);
+		await Vault.put({ id: 'vDept', name: 'dept-vault', deptId: 'dB' });
+		const ids = [];
+		for await (const entry of results) ids.push(entry.id);
+		assert.deepStrictEqual(ids, ['dA']);
 	});
 });
