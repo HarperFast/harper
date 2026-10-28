@@ -1872,15 +1872,17 @@ export function makeTable(options): TableResourceClass {
 				: undefined);
 		if (!entry || entry.type === 'put' || entry.type === 'delete') return refs;
 		const missed: Array<{ version: number; nodeId: number }> = [];
+		const head =
+			base.version === entry.previousVersion
+				? undefined
+				: resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
 		const covered = entry.previousAdditionalAuditRefs;
 		for (const ref of base.additionalAuditRefs ?? []) {
+			if (head && ref.version === head.txnLogKey && (ref.nodeId ?? 0) === (head.nodeId ?? 0)) continue;
 			if (!covered || auditRefIndex(covered, ref.version, ref.nodeId) < 0) missed.push(ref);
 		}
-		// last, since the encoder keeps the last ref when the list is over its budget
-		if (base.version !== entry.previousVersion) {
-			const head = resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
-			missed.push({ version: head.txnLogKey, nodeId: head.nodeId });
-		}
+		// over budget the encoder drops refs from the front, after the first
+		if (head) missed.push({ version: head.txnLogKey, nodeId: head.nodeId });
 		if (missed.length === 0) return refs;
 		refs ??= [];
 		const ownIndex = auditRefIndex(refs, ownKey, options?.nodeId);
