@@ -10,6 +10,8 @@ Harper can build a BM25-ranked full-text index from one or more fields on a tabl
 
 Use full-text search when users need relevance-ranked matching across product names, descriptions, tags, articles, or other natural-language fields. It supports term, all-term, phrase, prefix, fuzzy, and fuzzy-prefix matching.
 
+<VersionBadge type="changed" version="v5.4.0" /> Starting in Harper v5.4, the native engine is **`@harperfast/fulltext` 0.7.0, embedding Tantivy 0.27.0**. Existing native indexes require rebuilding. See [Upgrading existing indexes](#upgrading-existing-indexes) before upgrading a node.
+
 ## Requirements
 
 - The table must use RocksDB and have [transaction logging enabled](../database/transaction.md#enabling-the-transaction-log-per-table). New schema tables must declare `@table(audit: true)`; omitting it or setting `audit: false` returns `400`. An existing table that already persisted audit logging can add a full-text field without restating the option, but disabling audit is rejected while an index is declared.
@@ -49,9 +51,35 @@ On restart, Harper reuses compatible local index files and replays committed cha
 
 A rebuild captures a fresh committed-log boundary, scans the current table, and replays changes committed after that boundary. An unreadable or corrupt transaction log can make an attempt fail. The same applies when [transaction-log cleanup](../database/transaction.md#delete_transaction_logs_before) or automatic retention removes the history needed to bridge that scan to current writes. A later attempt captures a new boundary, so stopping aggressive cleanup can allow the rebuild to succeed without restoring already-purged history. Harper retries with backoff; after the retry budget is exhausted, readiness becomes `unavailable`. Inspect `describe_table` and the node logs for the reason before retrying activation.
 
-Ordinary table reads and writes remain available during a rebuild. While readiness is `unknown`, `needs-rebuild`, or `rebuilding`, full-text queries return `503` with `code: "INDEX_REBUILDING"` and `retryable: true`. If rebuild attempts are exhausted and readiness becomes `unavailable`, queries return a generic, non-retryable `503` until an operator corrects the cause and retries activation. A new replica follows the same process after the full-text declaration reaches that node.
+Ordinary table reads remain available during a rebuild. Writes to indexed tables can receive retryable lag errors while replay catches up after a long rebuild; see [Write backpressure](#write-backpressure). While readiness is `unknown`, `needs-rebuild`, or `rebuilding`, full-text queries return `503` with `code: "INDEX_REBUILDING"` and `retryable: true`. If rebuild attempts are exhausted and readiness becomes `unavailable`, queries return a generic, non-retryable `503` until an operator corrects the cause and retries activation. A new replica follows the same process after the full-text declaration reaches that node.
 
 Use `describe_table` to inspect each index's declaration and readiness. See [Inspecting an index](./configuration.md#inspecting-an-index).
+
+## Upgrading existing indexes
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Harper 5.3.4 ships `@harperfast/fulltext` 0.5.0. Upgrading to the 0.7.0 engine in Harper v5.4 requires a full local rebuild of every existing 0.5.x index. Prerelease installations using fulltext 0.6 also require rebuilding. Harper initiates the rebuild automatically when the wrapper refuses the old persisted identity; no manual rebuild command or file editing is needed.
+
+### Matching and ranking changes
+
+Tantivy 0.27 changes English stemming even though the schema analyzer remains `english@2`. For example, `added` now stems to `add` instead of `ad`. Queries can match different records or rank them differently after rebuilding. Review representative searches and domain vocabulary before restoring production traffic; the upgrade does not add new Harper query modes or change the declared field options.
+
+### Upgrade checklist
+
+1. Drain the node's full-text requests and stop all old Harper processes that share its storage, including background workers. Do not run old and new engine versions against one local index.
+2. Confirm authoritative records and recovery backups are available. Reserve disk headroom and time for rebuilding every local full-text index, including temporarily retained retired files. There is no universal rebuild-duration or capacity estimate.
+3. Start the v5.4 Harper version. Use [`describe_table`](../operations-api/operations.md#describe_table) for each affected table and check every `full_text_indexes[].readiness.state`. Keep full-text traffic drained until all required indexes are `ready`.
+4. Run representative searches with `maxIndexLagMilliseconds: 0` and `waitForIndexMilliseconds: 30000` on each full-text condition. These wait for coverage of writes committed before the search; readiness alone does not establish that coverage. Check response bodies for terminal stream errors as well as HTTP status. A JSON-array response can start with HTTP 200 and end with an `error` element.
+5. Retry write responses carrying `DERIVED_INDEX_LAGGING` with bounded backoff while replay catches up. Restore full-text traffic only after readiness and current-coverage searches succeed. A node-by-node upgrade can use other ready replicas only if the application's routing supports it; the rebuilding node remains unavailable for full-text search.
+
+See [freshness controls](./querying.md#freshness-controls) for the condition fields and streaming behavior. The upgrade checks cover bounded workloads; they do not establish multi-node rollout safety, sustained-write capacity, customer relevance or performance parity. Measure those against the application's workload before rollout.
+
+### Recovering from a failed upgrade
+
+Keep full-text traffic drained, preserve authoritative data and logs, and correct the reported package, storage or coordination failure before restarting the same v5.4 Harper version. An interrupted rebuild can recover from authoritative records. Do not force readiness or edit, move or delete native index files by hand.
+
+**Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting a 0.7 index identity. If an older version has already been started, stop it and restore the 0.7.0-based Harper version before checking readiness and catch-up again. This is recovery with the current engine, not a supported operator downgrade procedure. If recovery also fails, keep traffic drained and investigate the readiness reason and node logs.
 
 ## Write backpressure
 

@@ -49,6 +49,8 @@ Writing the declaration-only field or selecting it as record data returns an err
 | `synonyms`     | `[]`          | Index-time synonym expansion rules.                                                   |
 | `highlighting` | omitted       | Enables highlight generation and sets fragment limits.                                |
 
+The `english@2` name remains unchanged in v5.4, but Tantivy 0.27 changes some English stems. Existing indexes must rebuild, and matching or ranking can change. See [upgrading existing indexes](./overview.md#upgrading-existing-indexes).
+
 Each field entry supports:
 
 | Option      | Default  | Description                                                                    |
