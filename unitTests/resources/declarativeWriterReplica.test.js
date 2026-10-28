@@ -14,6 +14,21 @@ const env = require('#src/utility/environment/environmentManager');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 (process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Declarative writer replicas', function () {
+	let priorExperimental, priorMarkers, testContext;
+	const markerBinding = require('../rocksdbBindings.mts').rocksdbBindings().Transaction;
+	before(() => {
+		priorExperimental = env.get('replication_experimentalAttributeSlots');
+		priorMarkers = env.get('storage_rocks_transactionLogAbortMarkers');
+		env.setProperty('replication_experimentalAttributeSlots', true);
+		env.setProperty('storage_rocks_transactionLogAbortMarkers', true);
+	});
+	beforeEach(function () {
+		testContext = this;
+	});
+	after(() => {
+		env.setProperty('replication_experimentalAttributeSlots', priorExperimental);
+		env.setProperty('storage_rocks_transactionLogAbortMarkers', priorMarkers);
+	});
 	this.timeout(10000);
 	let priorShards, priorList, priorShard;
 	let sequence = 0;
@@ -42,6 +57,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 		env.setProperty('replication_shard', priorShard);
 	});
 	async function declare(expiration = 3600) {
+		if (typeof markerBinding.prototype.usesAbortMarkers !== 'function') testContext.skip();
 		const name = `WriterReplica${++sequence}`;
 		await loadGQLSchema(`type ${name} @table(database: "writer_replicas", replicaExpiration: ${expiration})
 			@sharded(slots: 2, by: "region", slotFrom: "region") {

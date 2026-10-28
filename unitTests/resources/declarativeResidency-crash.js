@@ -6,6 +6,8 @@ if (require.main === module) {
 	const [root, marker, mode] = process.argv.slice(2);
 	const database = mode.endsWith('system-first') ? 'zzslotcrash' : 'slotcrash';
 	const env = require('#src/utility/environment/environmentManager');
+	env.setProperty('replication_experimentalAttributeSlots', true);
+	env.setProperty('storage_rocks_transactionLogAbortMarkers', true);
 	const terms = require('#src/utility/hdbTerms');
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, root);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(root, 'database'));

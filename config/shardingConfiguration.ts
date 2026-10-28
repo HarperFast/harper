@@ -86,7 +86,13 @@ export function watchShardingConfiguration(watcher: RootConfigWatcher): { ready:
 	watcher.on('change', changed);
 	watcher.on('error', report);
 	watcher.on('close', stop);
-	return { ready: watcher.ready.then(apply), stop };
+	return {
+		ready: watcher.ready.then(apply).catch((error) => {
+			stop();
+			throw error;
+		}),
+		stop,
+	};
 }
 
 export function ensureShardingConfiguration(): Promise<void> {

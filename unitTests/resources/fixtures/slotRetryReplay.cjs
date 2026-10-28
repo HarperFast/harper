@@ -7,6 +7,8 @@ const [mode, root, output] = process.argv.slice(2);
 process.env.ROOTPATH = root;
 process.env.STORAGE_PATH = path.join(root, 'database');
 const env = req('#src/utility/environment/environmentManager');
+env.setProperty('replication_experimentalAttributeSlots', true);
+env.setProperty('storage_rocks_transactionLogAbortMarkers', true);
 const terms = req('#src/utility/hdbTerms');
 env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, root);
 env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(root, 'database'));

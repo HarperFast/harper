@@ -3,6 +3,8 @@ const assert = require('node:assert');
 const { dirname, join } = require('node:path');
 const { mkdirSync } = require('node:fs');
 const env = require('#src/utility/environment/environmentManager');
+env.setProperty('replication_experimentalAttributeSlots', true);
+env.setProperty('storage_rocks_transactionLogAbortMarkers', true);
 const { CONFIG_PARAMS, HDB_SETTINGS_NAMES } = require('#src/utility/hdbTerms');
 const root = process.argv[2];
 mkdirSync(join(root, 'database'), { recursive: true });

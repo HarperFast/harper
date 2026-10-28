@@ -75,6 +75,13 @@ describe('Sharding configuration repair', () => {
 			if (failure === 'closed') watcher.emit('close');
 			try {
 				await assert.rejects(observer.ready, /projection failed|Sharding configuration is unavailable/);
+				for (const event of ['change', 'error', 'close']) assert.equal(watcher.listenerCount(event), 0);
+				watcher.config = { replication: {} };
+				watcher.ready = Promise.resolve();
+				const retried = watchShardingConfiguration(watcher);
+				await retried.ready;
+				for (const event of ['change', 'error', 'close']) assert.equal(watcher.listenerCount(event), 1);
+				retried.stop();
 			} finally {
 				observer.stop();
 			}

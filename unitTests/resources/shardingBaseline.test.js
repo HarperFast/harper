@@ -16,6 +16,17 @@ const { convertSQLToAST } = require('#src/sqlTranslator/index');
 const SelectValidator = require('#src/sqlTranslator/SelectValidator').default;
 
 (process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe)('Sharding baseline admission', function () {
+	let priorExperimental, priorMarkers;
+	before(() => {
+		priorExperimental = env.get('replication_experimentalAttributeSlots');
+		priorMarkers = env.get('storage_rocks_transactionLogAbortMarkers');
+		env.setProperty('replication_experimentalAttributeSlots', true);
+		env.setProperty('storage_rocks_transactionLogAbortMarkers', true);
+	});
+	after(() => {
+		env.setProperty('replication_experimentalAttributeSlots', priorExperimental);
+		env.setProperty('storage_rocks_transactionLogAbortMarkers', priorMarkers);
+	});
 	let Records, Plain, root, baseline, configuration, priorList, priorShard, priorNodes;
 	before(async () => {
 		setupTestDBPath();

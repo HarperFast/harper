@@ -10,6 +10,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as logger from '../utility/logging/harper_logger.ts';
 import {
 	assertResidencyMapChange,
+	unsupportedResidencyPolicy,
 	normalizeResidencyPolicy,
 	compileResidencyPolicy,
 	residencyMapExtends,
@@ -359,6 +360,8 @@ export async function prepareResidencyDeclaration(
 	name: string,
 	policy: Partial<ResidencyPolicy>
 ): Promise<Readonly<ResidencyPolicy>> {
+	const unsupported = unsupportedResidencyPolicy(policy, `${database}.${name}`);
+	if (unsupported) throw new ClientError(unsupported, 400);
 	if (!isMainThread) await ensureShardingConfiguration();
 	getDatabases();
 	// Keep failed first activations visible even though their user table was never published.

@@ -7,6 +7,7 @@ import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import type { Database, RootDatabase } from 'lmdb';
 import { compareKeys } from 'ordered-binary';
 import {
+	unsupportedResidencyPolicy,
 	normalizeResidencyPolicy,
 	compileResidencyPolicy,
 	sameResidencyPolicy,
@@ -486,15 +487,18 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
 	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
 	// In practice that's fine — these come from process-level config that doesn't change.
-	RocksDatabase.config(
-		resolveRocksMemoryConfig({
+	RocksDatabase.config({
+		...resolveRocksMemoryConfig({
 			configuredBlockCacheSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE),
 			configuredWriteBufferManagerSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE),
 			configuredCostToCache: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE),
 			configuredAllowStall: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL),
 			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
-		})
-	);
+		}),
+		...(envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS) === true
+			? { transactionLogAbortMarkers: true }
+			: {}),
+	});
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
 		if (isReadOnlyMode()) {
@@ -646,7 +650,11 @@ function validateResidencyRecovery(): void {
 			(size > 0 ? Buffer.from(state.subarray(4, 4 + size)).toString() : undefined);
 		if (!reason && isMainThread && residencyRootsToValidate.has(databaseName)) {
 			try {
-				for (const Table of declarations) assertResidencyEngine(databaseName, Table.primaryStore.rootStore);
+				for (const Table of declarations) {
+					const unsupported = unsupportedResidencyPolicy(Table.residency, `${databaseName}.${Table.tableName}`);
+					if (unsupported) throw new ResidencyConfigurationError(unsupported, 503);
+					assertResidencyEngine(databaseName, Table.primaryStore.rootStore);
+				}
 				for (const Table of declarations) getResidencyMap(databaseName, Table.residency.slots, true);
 			} catch (error) {
 				if (!(error instanceof ResidencyConfigurationError) || databaseName === 'system') throw error;
@@ -4019,6 +4027,13 @@ export function reloadBranchAt(path: string): Tables | undefined {
 }
 
 function declareTable<TableResourceType>(target: TableTarget, tableDefinition: TableDefinition): TableResourceType {
+	if (tableDefinition.residency) {
+		const unsupported = unsupportedResidencyPolicy(
+			tableDefinition.residency,
+			`${tableDefinition.database || 'data'}.${tableDefinition.table}`
+		);
+		if (unsupported) throw new ClientError(unsupported, 400);
+	}
 	let {
 		table: tableName,
 		residency,

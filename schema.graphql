@@ -322,11 +322,9 @@ directive @relationship(
 ) on FIELD_DEFINITION
 
 """
-Fix a table's sharding policy. The key or record maps to a slot, whose database map names a shard.
+Hash the primary key to a fixed slot, whose database map names a shard.
 slots is database-wide, optional, and 1..65536; omitted adopts the map count or defaults to 1024.
-by hashes a non-null attribute instead of the key and requires a secondary index.
-slotFrom is a synchronous integer expression in [0, slots); id is always available.
-With by, record and its attributes are also available.
+by and slotFrom are not supported yet (harper-pro#1178).
 The policy cannot be changed or removed after activation.
 """
 directive @sharded(slots: Int, by: String, slotFrom: String) on OBJECT

@@ -1,3 +1,6 @@
+import { Transaction } from '@harperfast/rocksdb-js';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { createHash } from 'node:crypto';
 import { Script } from 'node:vm';
 import { writeKey } from 'ordered-binary';
@@ -23,6 +26,18 @@ export interface ResidencyMapSnapshot {
 	digest: string;
 	slots: number;
 	ranges: ResidencyRange[];
+}
+
+export function unsupportedResidencyPolicy(policy: Partial<ResidencyPolicy>, table: string): string | undefined {
+	if (!policy.byAttribute && policy.by === undefined && policy.slotFrom === undefined) return;
+	if (envGet(CONFIG_PARAMS.REPLICATION_EXPERIMENTALATTRIBUTESLOTS) !== true)
+		return `Attribute-derived sharding is not supported yet for ${table}; see https://github.com/HarperFast/harper-pro/issues/1178`;
+	if (policy.byAttribute || policy.by !== undefined) {
+		if (typeof (Transaction.prototype as any).usesAbortMarkers !== 'function')
+			return `Attribute-derived sharding for ${table} requires a binding with txn.usesAbortMarkers()`;
+		if (envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS) !== true)
+			return `Attribute-derived sharding for ${table} requires storage.rocks.transactionLogAbortMarkers enabled`;
+	}
 }
 
 function validateSlotCount(slots: unknown): asserts slots is number {

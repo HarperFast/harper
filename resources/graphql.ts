@@ -7,7 +7,7 @@ import {
 	assertResidencyEngine,
 	ResidencyPlacementError,
 } from './residencyMaps.ts';
-import { normalizeResidencyPolicy, sameResidencyPolicy } from './residencyPolicy.ts';
+import { normalizeResidencyPolicy, sameResidencyPolicy, unsupportedResidencyPolicy } from './residencyPolicy.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 import { Resources } from './Resources.ts';
@@ -552,6 +552,10 @@ async function processGraphQLSchema(
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
 		const declaration = shardedDeclarations.get(typeDef);
+		if (declaration) {
+			const unsupported = unsupportedResidencyPolicy(declaration, `${typeDef.database || 'data'}.${typeDef.table}`);
+			if (unsupported) throw new ClientError(unsupported, 400);
+		}
 		if (declaration?.by !== undefined) {
 			const attribute = typeDef.attributes.find((attribute) => attribute.name === declaration.by);
 			if (!attribute || attribute.computed || attribute.relationship)
