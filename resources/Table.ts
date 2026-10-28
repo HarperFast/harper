@@ -5526,8 +5526,7 @@ export function makeTable(options): TableResourceClass {
 				let captured = false;
 				captureChanges = () => {
 					if (!captured) {
-						// with no changes object yet (an own-property-only save), one made later is still this write's
-						captured = this.#changes !== undefined;
+						captured = true;
 						recordUpdate = this.#changes;
 						if (tracksInstance) instanceChanges = recordUpdate;
 					}
