@@ -515,15 +515,14 @@ export function withUpdateAttributesLockNonBlocking<Callback extends () => unkno
 // concurrent worker may already have dropped it; the storage engine reports
 // that as "Column family already dropped!". The family being gone is the
 // intended outcome, so swallow that specific error and rethrow anything else.
-// An optional condition (from a class's own verb) that the table cannot apply is left to that verb, unevaluated.
-function declineCondition(condition, message: string): void {
-	if (!condition.optional) throw new ClientError(message, 501);
-	condition.declined = true;
-}
-
 export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
+}
+
+function declineCondition(condition, message: string): void {
+	if (!condition.optional) throw new ClientError(message, 501);
+	condition.declined = true;
 }
 async function settlePhysicalDrops(rootStore: RocksDatabase, label: string): Promise<boolean> {
 	const deadline = Date.now() + LOCK_TIMEOUT;
@@ -3003,16 +3002,25 @@ export function makeTable(options): TableResourceClass {
 			}
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
 			const condition = request?.[WRITE_CONDITION];
-			if (condition?.Resource === this && !condition.prepared) {
+			if (
+				condition &&
+				!condition.prepared &&
+				// an own verb may look up other records first, or delegate through a base table class
+				(condition.optional
+					? condition.target === target && condition.Resource.primaryStore === primaryStore
+					: condition.Resource === this)
+			) {
 				condition.prepared = true;
+				// the client's validator came from the HTTP class's representation
+				const { Resource: HttpClass } = condition;
 				if (
 					target.id == null ||
 					target.isCollection ||
 					target.property ||
 					target.select ||
-					this.source ||
-					this.get !== Resource.get ||
-					this.prototype.get !== TableResource.prototype.get
+					HttpClass.source ||
+					HttpClass.get !== Resource.get ||
+					HttpClass.prototype.get !== TableResource.prototype.get
 				) {
 					declineCondition(
 						condition,

@@ -5,6 +5,7 @@ const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { Resource, WRITE_CONDITION } = require('#src/resources/Resource');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { Resources } = require('#src/resources/Resources');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -748,7 +749,53 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Row.get('delegate')).n, 2);
 	});
 
+	it("binds an own verb's condition to the request target, not to other records it touches", async () => {
+		class ReadsFirst extends Row {
+			static async put(target, data, context) {
+				await super.get('other', context);
+				const collection = new RequestTarget();
+				collection.isCollection = true;
+				for await (const record of await super.get(collection, context)) void record;
+				return super.put(target, data, context);
+			}
+		}
+		class WritesCompanion extends Row {
+			static async put(target, data, context) {
+				await super.put('companion', { n: 9 }, context);
+				return super.put(target, data, context);
+			}
+		}
+		class ThroughBase extends Row {
+			static put(target, data, context) {
+				return Row.put(target, data, context);
+			}
+		}
+		for (const [name, Class] of [
+			['ReadsFirst', ReadsFirst],
+			['WritesCompanion', WritesCompanion],
+			['ThroughBase', ThroughBase],
+		]) {
+			resources.set(name, Class, { rest: true });
+			await Row.put('bound', { n: 1 });
+			await Row.delete('companion');
+			const stale = await request('PUT', `/${name}/bound`, { n: 2 }, { 'if-match': '"1"' });
+			assert.strictEqual(stale.status, 412, `${name}: ${await bodyOf(stale)}`);
+			assert.strictEqual((await Row.get('bound')).n, 1, name);
+			assert.strictEqual(await Row.get('companion'), null, name);
+			const etag = versionToEtag(Row.primaryStore.getEntry('bound').version);
+			const current = await request('PUT', `/${name}/bound`, { n: 2 }, { 'if-match': etag });
+			assert.ok(current.status < 300, `${name}: ${current.status} ${await bodyOf(current)}`);
+			assert.strictEqual((await Row.get('bound')).n, 2, name);
+			if (Class === WritesCompanion) assert.strictEqual((await Row.get('companion')).n, 9);
+		}
+	});
+
 	it('leaves the condition to a table class whose own verb the table cannot apply it to, or that opts out', async () => {
+		class DelegatingModern extends Modern {
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
 		class CustomRepresentation extends Row {
 			static get(...args) {
 				return super.get(...args);
@@ -781,6 +828,13 @@ describe('REST preconditions with real table transactions', () => {
 			'if-match': '"1"',
 		});
 		assert.ok(collection.status < 300, `${collection.status} ${await bodyOf(collection)}`);
+		assert.strictEqual((await Row.get('declined')).n, 4);
+		resources.set('DelegatingModern', DelegatingModern, { rest: true });
+		const arrayBody = await request('PUT', '/DelegatingModern/declined', [{ id: 'declined', n: 5 }], {
+			'if-match': '"1"',
+		});
+		assert.ok(arrayBody.status < 300, `${arrayBody.status} ${await bodyOf(arrayBody)}`);
+		assert.strictEqual((await Row.get('declined')).n, 5);
 	});
 
 	it('rejects table handlers that never consume the condition', async () => {

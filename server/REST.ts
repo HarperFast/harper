@@ -186,8 +186,6 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
-// A table class that defines its own verb may evaluate the headers itself: Harper applies its condition only if that
-// verb reaches the table's write, and any other handler receives the preconditions unevaluated, as on 5.3.
 function definesOwnVerb(resource, method: string): boolean {
 	return resource[method.toLowerCase()] !== Resource[method.toLowerCase()];
 }
@@ -421,6 +419,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				Resource: resource,
 				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
 				optional: definesOwnVerb(resource, method),
+				target,
 				consumed: false,
 				release: undefined,
 				check(entry) {
