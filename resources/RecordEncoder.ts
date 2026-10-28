@@ -48,11 +48,16 @@ const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
 // Drops both dictionaries, not just the unsaved entries: structon's reload keeps local typed
 // structures when the durable dictionary is empty or classic-only (see resources/DESIGN.md).
-function discardUncommittedStructures(encoder: {
+interface DiscardableStructures {
 	clearSharedData(): void;
 	structures?: { uninitialized?: boolean };
 	lastTypedStructuresLength?: number;
-}): void {
+	typedStructs?: unknown[];
+	getStructures(): unknown;
+	_mergeStructures(sharedData: unknown): void;
+}
+
+function discardUncommittedStructures(encoder: DiscardableStructures): void {
 	encoder.clearSharedData();
 	if (encoder.structures) encoder.structures.uninitialized = true;
 	encoder.lastTypedStructuresLength = 0;
@@ -61,7 +66,7 @@ function discardUncommittedStructures(encoder: {
 // No re-pack follows a throw, and harper-pro's replication sender ships this encoder's arrays without
 // checking `uninitialized`, so reload now. If that fails too, leave `typedStructs` unset: the sender
 // reloads on `!typedStructs` rather than ship empty dictionaries, and structon recreates it on load.
-function discardStructuresAfterThrow(encoder: any): void {
+function discardStructuresAfterThrow(encoder: DiscardableStructures): void {
 	discardUncommittedStructures(encoder);
 	try {
 		encoder._mergeStructures(encoder.getStructures());
