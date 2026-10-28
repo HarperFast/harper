@@ -742,7 +742,7 @@ An old owner can race with a non-ready transition and restore an earlier coverag
 gate the time on stable ready readiness; after rebuild, the rebuilt anchor still covers that earlier true
 prefix.
 Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
-time out, or abort. A waiter's target is the clock at query start, after the owner's own commit drain,
+time out, or abort; each new waiter polls at once and re-arms it. A waiter's target is the clock at query start, after the owner's own commit drain,
 so only a drain started later can answer it; leaving that to the owner's flush-cadence refresh made
 every wait after any commit in the database cost up to the flush age. The poll therefore requests
 coverage: it wakes the local runner (which acquires an ownerless index), and a non-owner notifies the
@@ -752,7 +752,8 @@ batch. It is a separate buffer because `:wake` notifications are release handoff
 exactly one as its own, and parked peers re-probe the lock on each. A request made at clock `R` is
 answered by any owner drain after it, so the poll requests again only once the shared coverage time
 reaches `R` while a waiter is still unresolved — at most one request per owner round trip per worker,
-which also covers waiters that joined the group after the first request. An unrelated-only drain then
+which also covers waiters that joined the group after the first request. A failed notify logs and
+leaves the wait to the owner's flush-cadence refresh. An unrelated-only drain then
 publishes the shared time without a barrier (below); a pending indexed mutation still holds coverage
 until its barrier, so a wait after an indexed write still lasts up to the flush age. No per-query
 persisted coverage write is needed. Closing a registration rejects its waiters. Regression coverage:
