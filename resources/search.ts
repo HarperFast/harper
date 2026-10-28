@@ -1492,13 +1492,14 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 				},
 			};
 		}
+		const readOptions = { transaction };
 		return {
 			next() {
 				if (!joinedIterator) {
 					//let i = 0;
 					// get all the ids of the related records
 					for (const entry of rightIterable) {
-						const record = entry.value ?? store.getSync(entry.key ?? entry, { transaction });
+						const record = entry.value ?? store.getSync(entry.key ?? entry, readOptions);
 						if (record != null && (joined as any).filters?.some((filter) => !filter(record))) continue;
 						addRelated(entry, record);
 						// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
@@ -1681,6 +1682,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 				return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : nextJoined()));
 			};
 		} else {
+			const readOptions = { transaction };
 			iterator.next = () => {
 				if (!idIterator) {
 					defineFromRecord();
@@ -1689,7 +1691,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					for (const id of rightIterable) {
 						if ((joined as any).filters) {
 							// if additional filters are defined, we need to check them
-							const record = store.getSync(id, { transaction });
+							const record = store.getSync(id, readOptions);
 							if ((joined as any).filters.some((filter) => !filter(record))) continue;
 						}
 						ids.add(id);
