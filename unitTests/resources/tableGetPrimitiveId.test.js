@@ -54,7 +54,7 @@ describe('Table.get by a primitive id', function () {
 		};
 	});
 
-	after(() => Records.dropTable());
+	after(() => Records?.dropTable());
 
 	function inTransaction(callback) {
 		return transaction(async (txn) => callback(txn.getContext()));
@@ -422,7 +422,7 @@ describe('Table.get by a primitive id', function () {
 				{ intermediateSource: true }
 			);
 		});
-		after(() => Resident.dropTable());
+		after(() => Resident?.dropTable());
 
 		beforeEach(async () => {
 			const context = {};
