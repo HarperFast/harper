@@ -2918,6 +2918,60 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		second.session.disconnect(true);
 	});
 
+	it('QoS 2: compacts no receipts while a resumed replay is unverified, so a late key it has not read is still delivered', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-unread-qos2-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 2, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => delivery(first.received, 'a'));
+		await first.session.received(delivery(first.received, 'a').messageId, false);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		const commitLate = await heldTransaction(T, 'late');
+		for (let i = 0; i < 300; i++) await T.put(`h${i}`, { value: `h${i}` });
+		first.session.disconnect(true);
+		await first.session.writes;
+		// committed while the client is away: the log holds it after the 300 higher keys
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		const { session } = await connect(clientId);
+		const sent = [];
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		// each message is PUBREC'd as it is sent; h50 never finishes sending, so the replay stops reading at its high
+		// water mark, long before the late key
+		session.setListener((_topic, message, messageId) => {
+			sent.push(message?.value);
+			session.received(messageId, false);
+			return message?.value === 'h50' ? stalled : true;
+		});
+		await session.resume();
+		const state = session.topics.get(topic);
+		await waitFor(() => sent.includes('h50'));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.ok(!state.verified, 'precondition: the replay has not finished');
+		assert.ok(
+			!(state.receivedThrough >= lateKey),
+			`receipts compacted through ${state.receivedThrough}, past the unread key ${lateKey}`
+		);
+		session.checkpoint();
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		const third = await connect(clientId);
+		third.session.setListener((_topic, message, messageId) => {
+			third.received.push({ message, messageId });
+			Promise.resolve(third.session.received(messageId, false)).then(() => third.session.completed(messageId));
+			return true;
+		});
+		await third.session.resume();
+		await waitFor(() => values(third.received).includes('late'), 10_000);
+		third.session.disconnect(true);
+	});
+
 	it('does not pass a late key a resumed replay reads after higher ones when the topic is subscribed again', async function () {
 		if (!isRocksDB) this.skip();
 		const { T, name } = topicTable();

@@ -1124,10 +1124,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const floor = checkpointFloor ?? state.subscription?.checkpointFloor?.();
 			if (floor === undefined) return;
 			if (floor < bound) bound = floor;
-		} else {
-			// a transaction that took a key below the delivered ones can still commit until progress passes it
-			const progress = state.subscription?.progress?.();
-			if (progress !== undefined && progress < bound) bound = progress;
+		} else if (state.subscription?.progress !== undefined) {
+			// a transaction that took a key below the delivered ones can still commit until progress passes it; a
+			// resumed replay reads the log in commit order, so before its verdict a lower key can still be unread
+			if (!state.verified) return;
+			const progress = state.subscription.progress();
+			if (progress === undefined) return;
+			if (progress < bound) bound = progress;
 		}
 		for (const { key } of state.unacked.values()) {
 			if (key < bound) bound = key;
