@@ -449,8 +449,7 @@ export class DerivedIndexRuntime {
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
 			if (!group.waiters.size) return;
-			// A drain the owner starts after `requestedAt` covers every waiter registered before it, so a
-			// new request is due only once that one is answered and a later waiter is still unresolved.
+			// Any owner drain after `requestedAt` answers every waiter registered before it.
 			if (group.requestedAt === undefined || time >= group.requestedAt) {
 				group.requestedAt = now;
 				this.#runners.get(backendId)?.requestCoverage();
@@ -786,10 +785,7 @@ class DerivedIndexRunner {
 		});
 	}
 
-	/**
-	 * Never retries a deferred batch or counts as unread writes for writer backpressure. The owner may be
-	 * another worker, which only the coverage buffer reaches.
-	 */
+	/** The owner may be another worker, which only the coverage buffer reaches. */
 	requestCoverage() {
 		this.wake(false, true);
 		if (!this.#owned) this.#coverageBuffer.notify?.();
