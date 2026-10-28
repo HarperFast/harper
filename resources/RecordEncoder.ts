@@ -48,7 +48,11 @@ const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
 // Drops both dictionaries, not just the unsaved entries: structon's reload keeps local typed
 // structures when the durable dictionary is empty or classic-only (see resources/DESIGN.md).
-function discardUncommittedStructures(encoder: any): void {
+function discardUncommittedStructures(encoder: {
+	clearSharedData(): void;
+	structures?: { uninitialized?: boolean };
+	lastTypedStructuresLength?: number;
+}): void {
 	encoder.clearSharedData();
 	if (encoder.structures) encoder.structures.uninitialized = true;
 	encoder.lastTypedStructuresLength = 0;
@@ -525,9 +529,7 @@ export class RecordEncoder extends StructonEncoder {
 				// We must report a non-commit as `false` (not the buggy `undefined`, which msgpackr
 				// reads as success and then writes a record referencing a structure that was never
 				// saved → later "Record id is not defined" on decode). Returning `false` makes msgpackr
-				// re-pack; `discardUncommittedStructures` has already marked the dictionaries for reload,
-				// so the re-pack reloads the durable structures, re-mints, and re-saves — so the record
-				// always references a persisted structure.
+				// re-pack against the durable dictionary, so the record always references a persisted structure.
 				const sharedStructuresKey = this.isRocksDB
 					? [Symbol.for('structures'), this.name]
 					: targetStore.store.sharedStructuresKey;

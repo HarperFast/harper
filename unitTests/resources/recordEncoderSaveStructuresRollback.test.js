@@ -255,6 +255,30 @@ describe('RecordEncoder discards structures from a structure save that did not c
 		});
 	}
 
+	it('records no structure update for a declined RocksDB save', () => {
+		const writer = openRocks(tmpDir);
+		const peer = openRocks(tmpDir);
+		handles.push(writer, peer);
+		writer.put('w0', { z: 1 });
+		peer.put('p0', { y: 1 });
+		writer.put('w1', { id: '1', a: 'first' });
+
+		const encoder = peer.db.encoder;
+		const originalSave = encoder.saveStructures;
+		const results = [];
+		encoder.saveStructures = function (...args) {
+			const result = originalSave.apply(this, args);
+			results.push(result);
+			return result;
+		};
+		encoder.structureUpdate = undefined;
+		peer.put('p1', { id: '2', a: 'second' });
+		encoder.saveStructures = originalSave;
+		assert.ok(results.includes(false), 'precondition: the peer saves against a stale dictionary and is declined');
+		assert.strictEqual(encoder.structureUpdate, undefined);
+		assert.deepEqual(writer.get('p1'), { id: '2', a: 'second' });
+	});
+
 	describe('LMDB (saver delegated to lmdb-js)', () => {
 		it('records a structure update for a committed or declined save, and a failure leaves a pending one', () => {
 			const writer = engines[2].open(tmpDir);
