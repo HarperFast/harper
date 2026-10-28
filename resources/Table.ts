@@ -210,6 +210,7 @@ import {
 	getAuditResumeFloor,
 	isResumablePosition,
 	getDatabaseGeneration,
+	type AuditRecord,
 } from './auditStore.ts';
 import {
 	acquireFullTextClearFence,
@@ -1847,6 +1848,45 @@ export function makeTable(options): TableResourceClass {
 				}
 			},
 		});
+	}
+	/**
+	 * A write staged without appending a log entry, a conflict retry or a crash replay, stores its record from
+	 * an entry appended earlier, which chains to the head read then. When the commit base has moved past it,
+	 * the record's `refs` gain what the out-of-order walk needs to reach the base: its head, and its refs the
+	 * entry does not carry, behind this write's own head key. A put or delete entry ends every walk.
+	 */
+	function withRefsMissedByLoggedEntry(
+		refs: Array<{ version: number; nodeId: number }> | undefined,
+		id: Id,
+		base: Partial<Entry> | undefined,
+		ownKey: number,
+		write: any,
+		transaction: any,
+		options: any
+	): Array<{ version: number; nodeId: number }> | undefined {
+		if (!isRocksDB || !base) return refs;
+		const entry: AuditRecord | undefined =
+			options?.auditEntry ??
+			(transaction?.isRetry && write.appendedAuditEntry
+				? auditStore.get(ownKey, tableId, id, options?.nodeId ?? 0)
+				: undefined);
+		if (!entry || entry.type === 'put' || entry.type === 'delete') return refs;
+		const missed: Array<{ version: number; nodeId: number }> = [];
+		if (base.version !== entry.previousVersion) {
+			const head = resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
+			missed.push({ version: head.txnLogKey, nodeId: head.nodeId });
+		}
+		const covered = entry.previousAdditionalAuditRefs;
+		for (const ref of base.additionalAuditRefs ?? []) {
+			if (!covered || auditRefIndex(covered, ref.version, ref.nodeId) < 0) missed.push(ref);
+		}
+		if (missed.length === 0) return refs;
+		refs ??= [];
+		const ownIndex = auditRefIndex(refs, ownKey, options?.nodeId);
+		if (ownIndex > 0) refs.unshift(refs.splice(ownIndex, 1)[0]);
+		else if (ownIndex < 0) refs.unshift({ version: ownKey, nodeId: options?.nodeId });
+		for (const ref of missed) if (auditRefIndex(refs, ref.version, ref.nodeId) < 0) refs.push(ref);
+		return refs;
 	}
 	function resolveAuditHead(
 		id: Id,
@@ -4546,8 +4586,16 @@ export function makeTable(options): TableResourceClass {
 							tableToTrack: isCopyApply ? null : tableName,
 							recordVersion: txnTime,
 							additionalAuditRefs:
-								!isCopyApply && isRocksDB && audit && txnLogKey !== txnTime
-									? [{ version: txnLogKey, nodeId: options?.nodeId }]
+								!isCopyApply && isRocksDB && audit
+									? withRefsMissedByLoggedEntry(
+											txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
+											id,
+											existingEntry,
+											txnLogKey,
+											write,
+											transaction,
+											options
+										)
 									: undefined,
 							localOnly: options?.localOnly,
 						},
@@ -4655,8 +4703,16 @@ export function makeTable(options): TableResourceClass {
 							write,
 							recordVersion: txnTime,
 							additionalAuditRefs:
-								isRocksDB && audit && txnLogKey !== txnTime
-									? [{ version: txnLogKey, nodeId: options?.nodeId }]
+								isRocksDB && audit
+									? withRefsMissedByLoggedEntry(
+											txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
+											id,
+											existingEntry,
+											txnLogKey,
+											write,
+											transaction,
+											options
+										)
 									: undefined,
 							localOnly: options?.localOnly,
 						},
@@ -5871,9 +5927,10 @@ export function makeTable(options): TableResourceClass {
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
 							// For a write whose identity is not its key this finds an entry keyed at its explicit value: one
 							// written before every local key was minted, or one whose minted key equals it. A hit still needs
-							// both stored clocks to match.
+							// both stored clocks to match. Committed entries only, here and in `isReDeliveredDuplicate`: another
+							// delivery's entry whose transaction has not committed is no proof the write applied.
 							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
-								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
+								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId, true);
 								if (
 									priorAudit &&
 									priorAudit.txnLogKey === receivedLogKey &&
@@ -6016,7 +6073,7 @@ export function makeTable(options): TableResourceClass {
 							const isReDeliveredDuplicate = () => {
 								if (replaying || stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
-								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
+								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId, true);
 								return (
 									duplicate &&
 									duplicate.txnLogKey === receivedLogKey &&
@@ -6655,6 +6712,16 @@ export function makeTable(options): TableResourceClass {
 						} else if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
+					if (isRocksDB && audit && !isCopyApply && !fullUpdate && precedesExisting > 0)
+						withRefsMissedByLoggedEntry(
+							additionalAuditRefs,
+							id,
+							existingEntry,
+							appendedLogKey,
+							write,
+							transaction,
+							options
+						);
 					// A write whose received identity is not its key keeps that identity on the record too, so a
 					// re-delivery matches it without a walk that may stop short.
 					if (
@@ -9487,8 +9554,15 @@ export function makeTable(options): TableResourceClass {
 							write,
 							tableToTrack: tableName,
 							auditLocalOnly: options?.localOnly,
-							additionalAuditRefs:
+							additionalAuditRefs: withRefsMissedByLoggedEntry(
 								appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
+								id,
+								existingEntry,
+								appendedLogKey,
+								write,
+								transaction,
+								options
+							),
 						},
 						'message',
 						false,
@@ -13435,7 +13509,7 @@ function isBranchRef(ref: { version: number; nodeId?: number }, head: { txnLogKe
 	return ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0);
 }
 
-function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, version: number, nodeId?: number): number {
+function auditRefIndex(refs: Array<{ version?: number; nodeId?: number }>, version: number, nodeId?: number): number {
 	for (let index = 0; index < refs.length; index++) {
 		if (refs[index].version === version && (refs[index].nodeId ?? 0) === (nodeId ?? 0)) return index;
 	}

@@ -209,26 +209,38 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
-	get(key: any, tableId: number, recordId: any, nodeId: number) {
-		return this.getSync(key, tableId, recordId, nodeId);
+	get(key: any, tableId: number, recordId: any, nodeId: number, committedOnly?: boolean) {
+		return this.getSync(key, tableId, recordId, nodeId, committedOnly);
 	}
-	getSync(key: any, tableId: number, recordId: any, nodeId: number) {
+	/**
+	 * A numeric key reads the record's entry in the transaction keyed by it. Committed state can name an
+	 * entry past the log's committed watermark, which stays at the first entry whose transaction has not
+	 * committed yet, so a miss there is retried past the watermark unless `committedOnly`: an entry there
+	 * may belong to a transaction that has not committed, which a lookup asking whether a write was
+	 * already applied must not count.
+	 */
+	getSync(key: any, tableId: number, recordId: any, nodeId: number, committedOnly?: boolean) {
 		if (typeof key === 'number') {
 			if (typeof tableId !== 'number') throw new Error('tableId must be a number');
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			// this a request for a transaction log entry by a timestamp
-			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
-			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.txnLogKey !== key) return; // no longer in this transaction
-				if (entry.recordId === recordId && entry.tableId === tableId && (!sharedLog || entry.nodeId === nodeId)) {
-					return entry;
-				}
-			}
+			return (
+				this.findEntry(key, tableId, recordId, nodeId, false) ??
+				(committedOnly ? undefined : this.findEntry(key, tableId, recordId, nodeId, true))
+			);
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead
 			return this.rootStore.getSync(key);
+		}
+	}
+	private findEntry(key: number, tableId: number, recordId: any, nodeId: number, readUncommitted: boolean) {
+		const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
+		for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId, readUncommitted })) {
+			if (entry.txnLogKey !== key) return; // no longer in this transaction
+			if (entry.recordId === recordId && entry.tableId === tableId && (!sharedLog || entry.nodeId === nodeId)) {
+				return entry;
+			}
 		}
 	}
 	getBinary(key: any) {
