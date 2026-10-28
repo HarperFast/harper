@@ -544,6 +544,8 @@ async function main(): Promise<void> {
 		throw new Error(`HARPER_RECORD_CACHE_SIZE only applies to the rocksdb engine, not ${options.engine}`);
 	}
 
+	// Harper inherits this environment: a value exported by the caller would tune the stock targets.
+	delete process.env.HARPER_RECORD_CACHE_SIZE;
 	// This process, and the generator shards it forks, run on the generator cores.
 	await pinPid(process.pid, driverCpus);
 	process.env.HARPER_RUNTIME = await writePinnedRuntime(RESULTS_DIR, serverCpus);

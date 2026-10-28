@@ -281,6 +281,8 @@ export class MemoryPeakSampler {
 	private peakTotal = 0;
 	private running?: Promise<void>;
 	private stopped = false;
+	private wake?: () => void;
+	private error: unknown;
 
 	private targets: ResourceTargets;
 	private intervalMs: number;
@@ -294,20 +296,29 @@ export class MemoryPeakSampler {
 		this.running = (async () => {
 			while (!this.stopped) {
 				const sample = await sampleMemory(this.targets);
+				if (this.stopped) break; // a reading taken after the run ended is not part of it
 				let total = 0;
 				for (const [name, bytes] of Object.entries(sample)) {
 					this.peak[name] = Math.max(this.peak[name] ?? 0, bytes);
 					total += bytes;
 				}
 				this.peakTotal = Math.max(this.peakTotal, total);
-				await new Promise((resolve) => setTimeout(resolve, this.intervalMs).unref());
+				await new Promise<void>((resolve) => {
+					this.wake = resolve;
+					setTimeout(resolve, this.intervalMs).unref();
+				});
 			}
-		})();
+		})().catch((error) => {
+			// Held for stop(): an unhandled rejection here would exit before teardown runs.
+			this.error = error;
+		});
 	}
 
 	async stop(): Promise<{ peakBytes: Record<string, number>; peakTotalBytes: number }> {
 		this.stopped = true;
+		this.wake?.();
 		await this.running;
+		if (this.error) throw this.error;
 		return { peakBytes: this.peak, peakTotalBytes: this.peakTotal };
 	}
 }
@@ -400,9 +411,11 @@ export function onlineCpus(): number[] {
 export function parseCpuList(list: string): number[] {
 	const cpus: number[] = [];
 	for (const part of list.split(',')) {
-		const [from, to] = part.split('-').map(Number);
-		if (!Number.isInteger(from) || !Number.isInteger(to ?? from)) throw new Error(`bad CPU list "${list}"`);
-		for (let cpu = from; cpu <= (to ?? from); cpu++) cpus.push(cpu);
+		const range = /^(\d+)(?:-(\d+))?$/.exec(part.trim());
+		if (!range || Number(range[2] ?? range[1]) < Number(range[1])) throw new Error(`bad CPU list "${list}"`);
+		const from = Number(range[1]);
+		const to = Number(range[2] ?? range[1]);
+		for (let cpu = from; cpu <= to; cpu++) cpus.push(cpu);
 	}
 	return [...new Set(cpus)].sort((a, b) => a - b);
 }

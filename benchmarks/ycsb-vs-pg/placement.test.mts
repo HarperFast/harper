@@ -39,3 +39,8 @@ test('alternates target order per rep', () => {
 	deepStrictEqual(targetOrder(['a', 'b', 'c'], 1), ['c', 'b', 'a']);
 	deepStrictEqual(targetOrder(['a', 'b', 'c'], 2), ['a', 'b', 'c']);
 });
+
+test('parses CPU lists strictly, sorted and deduplicated', () => {
+	deepStrictEqual(parseCpuList('6,0-2,2'), [0, 1, 2, 6]);
+	for (const bad of ['2,', '-2', '4-2', 'a']) throws(() => parseCpuList(bad), /bad CPU list/);
+});

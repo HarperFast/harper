@@ -127,5 +127,6 @@ sample starts a fresh server and reloads the dataset.
 
   It serves a fixed in-memory record from a `node:http` cluster on the target
   CPUs and drives it with the same sharded driver on the same generator CPUs,
-  for workload C (all shards) and E (one shard, since it inserts). Its result
-  is the upper bound for any target on that machine.
+  for workload C (all shards) and E (one shard, since it inserts). Every route
+  returns one ~1 KB record, so it bounds the generator's request rate, not the
+  cost of receiving E's multi-record scan bodies.
