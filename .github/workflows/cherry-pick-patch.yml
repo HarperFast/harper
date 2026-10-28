@@ -647,17 +647,11 @@ jobs:
           fi
           INTEGRATION_NODE=$(
             git show "${BRANCH}:.github/workflows/integration-tests.yml" \
-              | grep -oE 'harper-build-artifacts-node-[0-9]+' \
-              | sed 's/.*-//' \
-              | sort -u || true
+              | sed -n 's/^[[:space:]]*name:[[:space:]]*harper-build-artifacts-node-\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
+              | sort -nu \
+              | tail -n 1 || true
           )
-          case "$INTEGRATION_NODE" in
-            '') INTEGRATION_NODE="$UNIT_NODE" ;;
-            *[!0-9]*)
-              echo "::error::Multiple or invalid artifact Node versions in ${BRANCH}:.github/workflows/integration-tests.yml: ${INTEGRATION_NODE}"
-              exit 1
-              ;;
-          esac
+          : "${INTEGRATION_NODE:=$UNIT_NODE}"
           gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$INTEGRATION_NODE"
           gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$UNIT_NODE"
 
