@@ -1,7 +1,9 @@
 /**
  * A native HNSW index whose transaction log goes idle and is emptied by audit retention resumes without
- * a rebuild after a restart (harper#3631). The runner hand-off case is in derivedIndexRuntimeRocks.test.js:
- * here every retention pass commits and wakes the runner, so it never reaches its idle release.
+ * a rebuild after a restart (harper#3631). The 2 s retention lets retention empty the log within the test;
+ * at that retention every cleanup pass commits and wakes the runner, so it never reaches its idle release.
+ * The second suite runs the default cadence, where the runner does release; the hand-off over a purged
+ * anchor itself is in derivedIndexRuntimeRocks.test.js.
  *
  * "No rebuild" is read from the worker's `needs rebuild` error lines across every boot's hdb.log, anchored
  * by the first boot's own line for the fresh index (`backend has no durable cursor`). The restart is
@@ -37,7 +39,7 @@ const OPTIONS = {
 
 const vectorOf = (id: number) => Array.from({ length: 8 }, (_, i) => Math.sin(id * 7 + i * 3 + 1));
 
-suite('a derived index over an idle log that retention emptied', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+function idleIndexHelpers(ctx: ContextWithHarper) {
 	const logDirs = new Set<string>();
 	const noteLogDir = () => {
 		logDirs.add(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'));
@@ -100,6 +102,12 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 		return lines.filter((line) => line.includes("Derived index '") && line.includes('needs rebuild'));
 	};
 
+	return { noteLogDir, request, status, nearest, put, caughtUp, emptiedByRetention, rebuildLines };
+}
+
+suite('a derived index over an idle log that retention emptied', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+	const { noteLogDir, status, nearest, put, caughtUp, emptiedByRetention, rebuildLines } = idleIndexHelpers(ctx);
+
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, OPTIONS);
 		noteLogDir();
@@ -134,6 +142,16 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 		noteLogDir();
 		await waitFor(async () => (await status()).readiness.state === 'ready', { timeout: 60_000 });
 		strictEqual(await nearest(3), 3, 'a record indexed before the purge is still found');
+		// The floor-bearing cursor the resume made durable must read back unchanged from RocksDB after another
+		// restart, with no rebuild.
+		await waitFor(async () => (await status()).cursor.floors?.local !== undefined, { timeout: 60_000 });
+		const floored = (await status()).cursor;
+		strictEqual(floored.logs.local, undefined);
+		await killHarper(ctx);
+		await startHarper(ctx, OPTIONS);
+		noteLogDir();
+		await waitFor(async () => (await status()).readiness.state === 'ready', { timeout: 60_000 });
+		deepStrictEqual((await status()).cursor.floors, floored.floors, 'the floor survived the restart');
 		await put(100);
 		await waitFor(async () => (await nearest(100)) === 100, { timeout: 60_000 });
 
@@ -150,5 +168,37 @@ suite('a derived index over an idle log that retention emptied', { skip: skipSui
 			[],
 			'the install after the restart condemned nothing'
 		);
+	});
+});
+
+// No retention override: cleanup then commits only every auditRetention / 10 (7.2 h at 3d), so nothing
+// keeps waking the runner, and the hand-off path in production is the one this exercises.
+const DEFAULT_RETENTION_OPTIONS = {
+	...OPTIONS,
+	config: { ...OPTIONS.config, logging: { level: 'warn' } },
+};
+
+suite('a derived index at the default retention cadence', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+	const { status, nearest, put, caughtUp } = idleIndexHelpers(ctx);
+
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, DEFAULT_RETENTION_OPTIONS);
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('persists coverage on an idle pass and releases the runner once idle', { timeout: 300_000 }, async () => {
+		await waitFor(async () => (await status()).readiness.state === 'ready', { timeout: 60_000 });
+		for (let id = 0; id < 10; id++) await put(id);
+		await waitFor(async () => (await nearest(9)) === 9, { timeout: 60_000 });
+		await caughtUp();
+		const epoch = BigInt((await status()).readiness.ownerEpoch);
+		await new Promise((resolve) => setTimeout(resolve, 35_000));
+		await put(100);
+		await waitFor(async () => (await nearest(100)) === 100, { timeout: 60_000 });
+		ok(BigInt((await status()).readiness.ownerEpoch) > epoch, 'the idle runner released and a new owner acquired');
+		await caughtUp();
 	});
 });

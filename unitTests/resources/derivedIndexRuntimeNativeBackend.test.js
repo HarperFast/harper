@@ -1504,6 +1504,45 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('releases an idle runner whose wakes bring no log work', async () => {
+		// A commit that writes no log entry (the origin-closed floor, every 5 s) wakes every runner.
+		const store = new FakeLogStore(new Map([[7, []]]), { logEntries: new Map([['local', []]]) });
+		const backend = new AsyncBackend('idle-under-commits', { cursor: cursor(7), applyDelay: 2 });
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 150 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+		const commits = setInterval(() => store.rootStore.emit('committed'), 40);
+		try {
+			await waitFor(() => backend.shutdowns.length === 1, { timeout: 2000 });
+		} finally {
+			clearInterval(commits);
+		}
+		await runtime.stop();
+	});
+
+	it('condemns nothing when a drain fails because the database is closing', async () => {
+		const store = new FakeLogStore(new Map([[7, []]]), { logEntries: new Map([['local', []]]) });
+		store.rootStore.getMonotonicTimestamp = () => performance.now();
+		store.ensureLogExists = () => {};
+		const backend = new AsyncBackend('closing-drain', { cursor: cursor(7), applyDelay: 2 });
+		backend.publishCoverage = () => {};
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+
+		store.rootStore.status = 'closed';
+		store.rootStore.getMonotonicTimestamp = () => {
+			throw new Error('Database is closing');
+		};
+		store.rootStore.emit('committed');
+		await sleep(50);
+		assert.deepStrictEqual([...store.markers.keys()], [], 'no condemnation marker');
+		assert.strictEqual(backend.resets.length, 0);
+		assert.notStrictEqual(runtime.getReadiness(backend.id).state, 'needs-rebuild');
+		store.rootStore.status = 'open';
+		await runtime.stop();
+	});
+
 	it('does not spend rebuild attempts on reload markers behind the captured tail', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const reloads = [8, 9, 10].map((timestamp) => ({ ...audit({ timestamp, type: 'reload' }), recordId: null }));
