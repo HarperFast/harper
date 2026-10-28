@@ -195,6 +195,7 @@ suite('a derived index at the default retention cadence', { skip: skipSuite }, (
 		await waitFor(async () => (await nearest(9)) === 9, { timeout: 60_000 });
 		await caughtUp();
 		const epoch = BigInt((await status()).readiness.ownerEpoch);
+		// Past the runner's default 30 s idle grace; the release itself is only observable through the next owner.
 		await new Promise((resolve) => setTimeout(resolve, 35_000));
 		await put(100);
 		await waitFor(async () => (await nearest(100)) === 100, { timeout: 60_000 });
