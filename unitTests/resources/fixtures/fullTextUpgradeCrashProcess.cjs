@@ -85,7 +85,15 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 		}
 		fs.writeFileSync(
 			path.join(directory, 'crash.json'),
-			JSON.stringify({ checkpoint, applied, publishes, payload, inspection, condemned: true, admissionChecks })
+			JSON.stringify({
+				checkpoint,
+				applied,
+				publishes,
+				payload,
+				inspection,
+				condemned: marker() !== undefined,
+				admissionChecks,
+			})
 		);
 		process.kill(process.pid, 'SIGKILL');
 		await new Promise(() => {});

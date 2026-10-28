@@ -54,7 +54,7 @@ describe('published native full-text upgrade process crash recovery', function (
 			assert.notStrictEqual(killed.status, 0, `${root}: ${killed.stderr || killed.stdout}`);
 			assert.ok(
 				killed.signal === 'SIGKILL' || (process.platform === 'win32' && killed.status === 1),
-				`unexpected termination ${killed.status}/${killed.signal}: ${killed.stderr}`
+				`${root}: unexpected termination ${killed.status}/${killed.signal}: ${killed.stderr}`
 			);
 			const sentinel = JSON.parse(fs.readFileSync(path.join(root, 'crash.json'), 'utf8'));
 			assert.strictEqual(sentinel.checkpoint, checkpoint);

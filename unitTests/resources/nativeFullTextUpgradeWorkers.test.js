@@ -193,9 +193,11 @@ describe('published native full-text managed-worker rebuild safety', function ()
 		}
 		releaseActivation?.();
 		releaseActivation = undefined;
-		for (const peer of workers ?? []) {
-			peer.worker.wasShutdown = true;
-			await peer.worker.terminate();
+		if (workers) {
+			for (const peer of workers) {
+				peer.worker.wasShutdown = true;
+				await peer.worker.terminate();
+			}
 		}
 		if (database) await closeDatabase(database);
 		Product = undefined;
