@@ -1041,6 +1041,8 @@ Array of condition objects to filter records. Each condition:
 
 The final four properties apply to full-text conditions (v5.3.0). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints, error behavior, and permission requirements for direct server-side searches.
 
+Full-text conditions use `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, or `matches_fuzzy_prefix` against a declared full-text index. Each comparator also has a `not_` form: `not_matches`, `not_matches_all`, `not_matches_phrase`, `not_matches_prefix`, `not_matches_fuzzy`, and `not_matches_fuzzy_prefix`. A negated condition requires a positive full-text condition on the same index. See [Full-text query execution](./query-optimization.md#full-text-search-work-and-paging) for paging costs and work limits.
+
 Example with nested conditions:
 
 ```javascript

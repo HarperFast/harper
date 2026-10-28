@@ -21,7 +21,7 @@ For a complete reference of all available configuration options, see [Configurat
 
 ## The Configuration File
 
-To change a configuration value, edit `harper-config.yaml` and save. **Harper must be restarted for changes to take effect.**
+To change a configuration value, edit `harper-config.yaml` and save. **Restart Harper to apply file edits.** See [Set Configuration](./operations.md#set-configuration) for settings that require a full process restart.
 
 Configuration keys use camelCase (e.g. `operationsApi`). Nested keys use dot notation conceptually (e.g. `operationsApi.network.port`).
 

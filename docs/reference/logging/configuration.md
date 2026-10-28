@@ -102,11 +102,11 @@ Default: `true`
 
 Enables transaction logging. When enabled, Harper records every insert, update, and delete to the database's transaction log. This history is read with the [`read_audit_log`](../database/transaction.md#read_audit_log) operation — a legacy name; there is a single transaction log, not a separate audit table.
 
-See [Database / Transaction Logging](../database/transaction.md) for details on the transaction log.
+Full-text indexing requires transaction logging. New schema tables with `@fullText` must explicitly declare `@table(audit: true)`, even when this global setting is enabled. Existing audited tables can add an index without restating `audit`; disabling table auditing while an index is declared is rejected. See [Database / Transaction Logging](../database/transaction.md) for details on the transaction log.
 
 ```yaml
 logging:
-  auditLog: false
+  auditLog: true
 ```
 
 ### `logging.auditRetention`
@@ -339,7 +339,7 @@ logging:
   file: true
   stdStreams: false
   console: false
-  auditLog: false
+  auditLog: true
   auditRetention: 3d
   rotation:
     enabled: true

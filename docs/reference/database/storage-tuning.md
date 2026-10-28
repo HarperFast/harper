@@ -395,6 +395,16 @@ storage:
   compression: true
 ```
 
+### `storage.fullText`
+
+<VersionBadge version="v5.4.0" />
+
+Type: `object`
+
+Defaults: See the [storage option reference](../configuration/options.md#storage).
+
+The [storage option reference](../configuration/options.md#storage) lists the full-text request and native process defaults. Raise the fetched-hit budget to allow more filtering work; raising it does not raise the separate retained-result limit. Larger limits can increase CPU, source reads and memory use for every permitted query. Native process budgets also share capacity across indexes, so tune them with concurrent workloads rather than a single query. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs, restart requirements and failure recovery.
+
 ## Related
 
 - [Configuration Options](../configuration/options.md) — full list of `storage` options

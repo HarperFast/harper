@@ -55,6 +55,8 @@ Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompu
 | `=`, `===`           | Strict equality (no type conversion)   |
 | `!==`                | Strict inequality (no type conversion) |
 
+Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. Each has a negated form: `=not_matches=`, `=not_matches_all=`, `=not_matches_phrase=`, `=not_matches_prefix=`, `=not_matches_fuzzy=`, and `=not_matches_fuzzy_prefix=`. Combine a negated condition with a positive full-text condition on the same index; a structured filter alone does not qualify. These use the full-text index rather than ordinary string comparisons. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
+
 **Examples**:
 
 ```http
@@ -185,7 +187,7 @@ GET /Product/?brand.name=Microsoft&select(name,brand{name})
 
 ### `limit(end)` or `limit(start,end)`
 
-Limit the number of results returned, with an optional starting offset.
+Limit the number of results returned, with an optional starting offset. The start is inclusive and the end is exclusive: `limit(10,30)` skips 10 records and returns up to 20.
 
 ```http
 GET /Product/?rating=gt=3&inStock=true&select(rating,name)&limit(20)
@@ -208,6 +210,10 @@ GET /Product/?sort(+rating,-price)
 Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer` request header (`Prefer: count=exact`) so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
 Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the `limit()` must be a non-negative integer no larger than **10,000**, and the requested window (offset + limit) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
+
+Full-text and autocomplete queries use the same paging syntax. The page window counts eligible records after record filtering, rather than raw full-text hits. Harper fetches more ranked batches to fill that window when needed. A page can contain fewer records when no further matches remain; reaching a search work or time limit fails the query. A failure detected before response headers can set an error HTTP status. After streaming starts, the response can retain HTTP 200 and end with an error. For JSON-array responses, check for a terminal `error` element and treat the response as failed; do not render that element as a record. For other formats, detect stream or decoding failures as well. Neither status 200 nor count headers prove that a page completed successfully. Each page request runs a new query, so concurrent changes can cause repeats or omissions between pages. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for search work limits and recovery guidance.
+
+The count-header guardrails do not override query-specific limits such as the full-text work budget.
 
 ### Requesting a count
 
@@ -245,6 +251,8 @@ The response status is always `200` — `Content-Range` is informational (Harper
 ### Unavailable totals
 
 The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that hits its guardrail (counting the tail past the requested page is bounded by a 1,000,000-row cap and a ~1-second budget, and abandons the total rather than truncating the page), a full-text or other custom-index query, or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
+
+Full-text and autocomplete queries cannot provide an exact total. An estimated count may use the planner estimate when the query has no opaque row or vector filter. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
 ### Enabling exact counts
 
