@@ -5,6 +5,7 @@ const { waitFor } = require('../waitFor');
 const { table, databases, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { clearThisNodeName, getThisNodeName } = require('#src/server/nodeName');
@@ -57,7 +58,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const resource = await ClusterLockTest.getResource(recordId, context);
 			return resource._writeUpdate(recordId, { id: recordId, n: 10 }, true, {
 				isNotification: true,
-				nodeId: 'peer-ahead',
+				nodeId: getIdOfRemoteNode('peer-ahead', ClusterLockTest.auditStore),
 			});
 		});
 	};

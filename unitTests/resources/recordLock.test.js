@@ -5,6 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor');
 const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { localIssuanceRatchet, reservedLocalKey, seedLocalIssuance } = require('#src/resources/originClosedFloor');
@@ -52,7 +53,7 @@ describe('Record locks (harper#483)', () => {
 			const resource = await LockTest.getResource(recordId, context);
 			return resource._writeUpdate(recordId, { id: recordId, n: 0 }, true, {
 				isNotification: true,
-				nodeId: 'record-lock-test-peer',
+				nodeId: getIdOfRemoteNode('record-lock-test-peer', LockTest.auditStore),
 			});
 		});
 	};

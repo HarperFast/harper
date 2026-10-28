@@ -1,14 +1,15 @@
 /**
  * Multi-worker comparison for record-lock issuance before and after one strict ratchet claim.
- * Run `npm run bench:record-lock-admission` through the repository's bench-run wrapper.
+ * Run `npm run bench:record-lock-admission` through the environment's bench-run wrapper.
  */
 require('../testUtils');
 const { Worker } = require('node:worker_threads');
 const { performance } = require('node:perf_hooks');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { waitFor } = require('../waitFor');
 
@@ -102,7 +103,7 @@ describe('Benchmark: record-lock issuance across workers', function () {
 			const record = await LockTable.getResource(recordId, sourceContext);
 			return record._writeUpdate(recordId, { id: recordId, n: 0 }, true, {
 				isNotification: true,
-				nodeId: 'record-lock-bench-peer',
+				nodeId: getIdOfRemoteNode('record-lock-bench-peer', LockTable.auditStore),
 			});
 		});
 		await transaction(async () => LockTable.lock(recordId));
