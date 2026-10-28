@@ -825,6 +825,26 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
+	it("binds an own verb's condition through a parsePath that reads request state", async () => {
+		class Tenanted extends Row {
+			static parsePath(path, context) {
+				return `${context.user.tenant}-${path}`;
+			}
+			static put(target, data, context) {
+				return super.put(target, data, context);
+			}
+		}
+		resources.set('Tenanted', Tenanted, { rest: true });
+		const user = { tenant: 'acme', role: { permission: { super_user: true } } };
+		await Row.put('acme-x', { n: 1 });
+		const stale = await request('PUT', '/Tenanted/x', { n: 2 }, { 'if-match': '"1"' }, user);
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		const etag = versionToEtag(Row.primaryStore.getEntry('acme-x').version);
+		const current = await request('PUT', '/Tenanted/x', { n: 2 }, { 'if-match': etag }, user);
+		assert.ok(current.status < 300, `${current.status} ${await bodyOf(current)}`);
+		assert.strictEqual((await Row.get('acme-x')).n, 2);
+	});
+
 	it('leaves the condition to a table class whose own verb the table cannot apply it to, or that opts out', async () => {
 		class DelegatingModern extends Modern {
 			static put(...args) {

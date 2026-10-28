@@ -205,12 +205,16 @@ function conditionRecordId(resource, target: RequestTarget, request) {
 	if (target.isCollection || target.select || target.id == null) return;
 	if (resource.directURLMapping) return target.toString().slice(1);
 	if (typeof target.id !== 'string') return target.id;
+	// parsePath may read request state, and sets the content type from a `.json` id only for the verb's own parse
+	const { requestedContentType } = request;
 	try {
-		const parsed = resource.parsePath(target.id, { headers: request.headers });
+		const parsed = resource.parsePath(target.id, request);
 		if (parsed?.property !== undefined || !parsed) return;
 		return resource.coerceId(parsed);
 	} catch {
 		return;
+	} finally {
+		request.requestedContentType = requestedContentType;
 	}
 }
 
