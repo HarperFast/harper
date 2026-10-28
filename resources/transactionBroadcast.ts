@@ -277,7 +277,7 @@ export function deliveryCertified(subscription: any): boolean {
  * The key below which every local write the registry delivers (every thread's for the cross-thread registry,
  * this thread's for a `crossThreads: false` one) has been dispatched to every subscriber registered at the time,
  * and none can still land: the newest fully dispatched transaction, held at the ceiling the dispatching pass
- * captured (`localCeiling`). Undefined before a pass has certified one since progress tracking began.
+ * captured (`captureCeiling`). Undefined before a pass has certified one since progress tracking began.
  */
 export function certifiedThrough(subscription: any): number | undefined {
 	return subscription.subscriptions?.tables?.envs?.certifiedThrough;
@@ -289,12 +289,18 @@ export function certifiedThrough(subscription: any): number | undefined {
  * above its bound. A reservation is released a microtask after its commit settles and its entry is read only by
  * the next pass, so a scan after a drain, or on a read, would take a released key for a dispatched one.
  */
-function localCeiling(auditStore: any, sameThread: boolean): number | undefined {
+function captureCeiling(subscriptions: any, auditStore: any): void {
+	subscriptions.passCeiling = undefined;
+	subscriptions.passCeilingReserved = false;
 	const rootStore = auditStore?.rootStore;
 	if (!rootStore || rootStore.status === 'closed') return;
-	const bound = (sameThread ? threadStartBound : localStartBound)(rootStore);
+	const bound = (subscriptions.sameThread === true ? threadStartBound : localStartBound)(rootStore);
 	if (bound === undefined) return;
-	return 'above' in bound ? bound.above : positionBefore(bound.atOrAbove);
+	if ('above' in bound) subscriptions.passCeiling = bound.above;
+	else {
+		subscriptions.passCeiling = positionBefore(bound.atOrAbove);
+		subscriptions.passCeilingReserved = true;
+	}
 }
 
 function certifyProgress(subscriptions: any, readEntries: boolean): void {
@@ -304,8 +310,13 @@ function certifyProgress(subscriptions: any, readEntries: boolean): void {
 	const certified = ceiling < through ? ceiling : through;
 	if (!(subscriptions.certifiedThrough >= certified)) subscriptions.certifiedThrough = certified;
 	// a commit's own pass can capture before its reservation is released, which lands after the commit settles:
-	// a pass that dispatched entries and was held gets one follow-up pass, whose capture sees the release
-	if (ceiling < through && (readEntries || !(subscriptions.recheckedCeiling >= ceiling))) {
+	// a pass that dispatched entries and was held gets one follow-up pass, whose capture sees the release. A pass
+	// that read nothing and was held by a clock sample, not a reservation, is held by another origin's key ahead of
+	// this clock (every local key it had read is below the sample): only time certifies it, so no pass follows
+	if (
+		ceiling < through &&
+		(readEntries || (subscriptions.passCeilingReserved && !(subscriptions.recheckedCeiling >= ceiling)))
+	) {
 		subscriptions.recheckedCeiling = ceiling;
 		subscriptions.recheckPending = true;
 	}
@@ -494,10 +505,10 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	subscriptions.dispatching = true;
 	subscriptions.passYielded = false;
 	try {
-		if (freshPass)
-			subscriptions.passCeiling = trackProgress
-				? localCeiling(auditStore, subscriptions.sameThread === true)
-				: undefined;
+		if (freshPass) {
+			if (trackProgress) captureCeiling(subscriptions, auditStore);
+			else subscriptions.passCeiling = undefined;
+		}
 		while (true) {
 			let result;
 			try {

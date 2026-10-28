@@ -62,6 +62,30 @@ describe('Certified subscription progress', function () {
 		listened.end();
 	});
 
+	it('runs one follow-up pass, not a chain, while a key from another origin is ahead of this clock', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const delivered = [];
+		const subscription = await T.subscribe({
+			omitCurrent: true,
+			reportProgress: true,
+			listener: (event) => delivered.push(event.id),
+		});
+		const databaseRegistry = registry(subscription);
+		await waitFor(() => !databaseRegistry.notifyScheduled && !databaseRegistry.recheckPending);
+		// stands in for a replicated entry whose origin's clock leads this node's by a minute
+		const ahead = T.primaryStore.rootStore.getMonotonicTimestamp() + 60_000;
+		databaseRegistry.dispatchedThrough = ahead;
+		await T.put('local', { value: 'local' });
+		await waitFor(() => delivered.includes('local'));
+		await waitFor(() => !databaseRegistry.notifyScheduled && !databaseRegistry.recheckPending, {
+			timeout: 1_000,
+			message: 'notify passes kept following each other while the remote key was ahead',
+		});
+		assert.ok(!(databaseRegistry.certifiedThrough >= ahead), 'nothing certifies past this clock');
+		subscription.end();
+	});
+
 	it('follows the watermark once live, which a yield inside one transaction does not advance', async () => {
 		const T = tableInOwnDatabase();
 		await T.put('seed', { value: 0 });
