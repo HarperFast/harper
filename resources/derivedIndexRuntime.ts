@@ -54,7 +54,7 @@ export function derivedIndexTime(store: RocksDatabase): bigint {
 /** `bound`: taken on an idle pass, so the offered vector reflects every commit at or before it and none after. */
 type CoverageCapture = { time: bigint; positions: DerivedIndexPositions; bound?: true };
 type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknown) => void };
-type CoverageWaitGroup = { waiters: Set<CoverageWaiter>; timer?: NodeJS.Timeout };
+type CoverageWaitGroup = { waiters: Set<CoverageWaiter>; timer?: NodeJS.Timeout; requestedAt?: bigint };
 
 export type DerivedIndexState =
 	| { kind: 'record'; version: number; projection: unknown }
@@ -425,15 +425,7 @@ export class DerivedIndexRuntime {
 			signal?.addEventListener('abort', abort, { once: true });
 			if (signal?.aborted) abort();
 		});
-		if (first && waiting.waiters.size) {
-			// Demand must not retry a deferred batch or count as unread writes for writer backpressure.
-			try {
-				this.#runners.get(backendId)?.wake(false, true);
-				this.#pollCoverage(backendId, waiting);
-			} catch (error) {
-				for (const waiter of waiting.waiters) waiter.finish(error);
-			}
-		}
+		if (first && waiting.waiters.size) this.#pollCoverage(backendId, waiting);
 		return result;
 	}
 
@@ -456,7 +448,14 @@ export class DerivedIndexRuntime {
 					waiter.finish(new DerivedIndexLagError('Timed out waiting for derived index coverage; retry this query'));
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
-			if (group.waiters.size) group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
+			if (!group.waiters.size) return;
+			// A drain the owner starts after `requestedAt` covers every waiter registered before it, so a
+			// new request is due only once that one is answered and a later waiter is still unresolved.
+			if (group.requestedAt === undefined || time >= group.requestedAt) {
+				group.requestedAt = now;
+				this.#runners.get(backendId)?.requestCoverage();
+			}
+			group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
 		} catch (error) {
 			for (const waiter of group.waiters) waiter.finish(error);
 		}
@@ -664,6 +663,7 @@ class DerivedIndexRunner {
 	#ownerEpoch?: bigint;
 	#readinessBuffer: SharedReadinessBuffer;
 	#wakeBuffer: SharedReadinessBuffer;
+	#coverageBuffer: SharedReadinessBuffer;
 	#publicationBuffer?: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
 	#publicationRevision?: BigInt64Array;
@@ -719,6 +719,9 @@ class DerivedIndexRunner {
 			this.readinessId === this.id ? notified : undefined
 		);
 		this.#wakeBuffer = this.readinessId === this.id ? this.#readinessBuffer : wakeBuffer(logStore, this.id, notified);
+		this.#coverageBuffer = coverageBuffer(logStore, this.id, () => {
+			if (this.#owned) this.wake(false, true);
+		});
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
 		if (registration.backend.publishesQueryRevisions) {
 			this.#publicationBuffer = publicationBuffer(logStore, this.readinessId);
@@ -736,6 +739,7 @@ class DerivedIndexRunner {
 		} catch (error) {
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
+			this.#coverageBuffer.cancel?.();
 			this.#publicationBuffer?.cancel?.();
 			throw error;
 		}
@@ -783,6 +787,15 @@ class DerivedIndexRunner {
 	}
 
 	/**
+	 * Never retries a deferred batch or counts as unread writes for writer backpressure. The owner may be
+	 * another worker, which only the coverage buffer reaches.
+	 */
+	requestCoverage() {
+		this.wake(false, true);
+		if (!this.#owned) this.#coverageBuffer.notify?.();
+	}
+
+	/**
 	 * Rejects when the backend could not prove its queued work quiescent; the runner lock stays held
 	 * then. Callers await it before closing storage: it resolves only once nothing can still write.
 	 */
@@ -798,6 +811,7 @@ class DerivedIndexRunner {
 			this.#unsubscribeBackend?.();
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
+			this.#coverageBuffer.cancel?.();
 			this.#publicationBuffer?.cancel?.();
 		} catch (error) {
 			logger.warn?.(`Derived index '${this.id}' cleanup hook threw`, error);
@@ -2320,6 +2334,17 @@ function wakeBuffer(
 	callback: () => void
 ): SharedReadinessBuffer {
 	return logStore.getUserSharedBuffer(`derived-index:${backendId}:wake`, new ArrayBuffer(1), {
+		callback,
+	}) as SharedReadinessBuffer;
+}
+
+/** Notify-only, apart from `:wake`: a demand there would be taken for a release notification. */
+function coverageBuffer(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback: () => void
+): SharedReadinessBuffer {
+	return logStore.getUserSharedBuffer(`derived-index:${backendId}:coverage`, new ArrayBuffer(1), {
 		callback,
 	}) as SharedReadinessBuffer;
 }
