@@ -41,10 +41,12 @@ if (parentPort) {
 	const { Product, Other } = defineTables();
 	const index = Product.indices.vector.customIndex;
 
-	void waitFor(() => index.derivedHost?.readiness().state === 'ready', 15_000).then(
-		() => parentPort.postMessage({ type: 'ready' }),
-		(error) => parentPort.postMessage({ type: 'error', message: error.message, stack: error.stack })
-	);
+	void Promise.resolve(Product.indexingOperation)
+		.then(() => waitFor(() => index.derivedHost?.readiness().state === 'ready', 15_000))
+		.then(
+			() => parentPort.postMessage({ type: 'ready' }),
+			(error) => parentPort.postMessage({ type: 'error', message: error.message, stack: error.stack })
+		);
 	parentPort.on('message', async (message) => {
 		try {
 			const Table = message.table === 'Product' ? Product : Other;

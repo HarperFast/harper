@@ -392,7 +392,6 @@ export class DerivedIndexRuntime {
 		if (this.#stopped || !this.#runners.has(backendId))
 			return Promise.reject(new ServerError('The derived index is unavailable', 503));
 		let group = this.#coverageWaits.get(backendId);
-		const first = !group;
 		if (!group) this.#coverageWaits.set(backendId, (group = { waiters: new Set() }));
 		const waiting = group;
 		const result = new Promise<void>((resolve, reject) => {
@@ -415,7 +414,10 @@ export class DerivedIndexRuntime {
 			signal?.addEventListener('abort', abort, { once: true });
 			if (signal?.aborted) abort();
 		});
-		if (first && waiting.waiters.size) this.#pollCoverage(backendId, waiting);
+		if (waiting.waiters.size) {
+			clearTimeout(waiting.timer);
+			this.#pollCoverage(backendId, waiting);
+		}
 		return result;
 	}
 
@@ -439,7 +441,6 @@ export class DerivedIndexRuntime {
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
 			if (!group.waiters.size) return;
-			// Any owner drain after `requestedAt` answers every waiter registered before it.
 			if (group.requestedAt === undefined || time >= group.requestedAt) {
 				group.requestedAt = now;
 				this.#runners.get(backendId)?.requestCoverage();
@@ -776,7 +777,12 @@ class DerivedIndexRunner {
 	/** The owner may be another worker, which only the coverage buffer reaches. */
 	requestCoverage() {
 		this.wake(false, true);
-		if (!this.#owned) this.#coverageBuffer.notify?.();
+		if (this.#owned) return;
+		try {
+			this.#coverageBuffer.notify?.();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.id}' could not request coverage from its owner`, error);
+		}
 	}
 
 	/**

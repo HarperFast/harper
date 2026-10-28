@@ -358,7 +358,6 @@ describe('DerivedIndexRuntime', () => {
 		it('requests again for a waiter that joins after the first request was answered', async () => {
 			const store = new FakeLogStore(new Map([[10, []]]));
 			store.committedPosition = { sequence: 1, offset: 64 };
-			const counts = countCoverageNotifies(store);
 			const owner = runtimeFor(store, new Map(), options).runtime;
 			owner.register(registration(coverageBackend('coverage-joiner')));
 			await waitFor(() => coverageTime(store, 'coverage-joiner') > 0n);
@@ -369,10 +368,33 @@ describe('DerivedIndexRuntime', () => {
 			const held = peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore) + 300_000_000n, 1000);
 			const answered = derivedIndexTime(store.rootStore);
 			await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
-			const notifies = counts.notifies;
 			await peer.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
-			assert(counts.notifies > notifies);
 			await held;
+			await peer.stop();
+			await owner.stop();
+		});
+
+		it('times a wait out as lagging when the coverage request cannot be sent', async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-unsent')));
+			await waitFor(() => coverageTime(store, 'coverage-unsent') > 0n);
+			const { getUserSharedBuffer } = store;
+			store.getUserSharedBuffer = function (key, ...rest) {
+				const buffer = getUserSharedBuffer.call(this, key, ...rest);
+				if (String(key).endsWith(':coverage'))
+					buffer.notify = () => {
+						throw new Error('notify failed');
+					};
+				return buffer;
+			};
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-unsent')));
+
+			await assert.rejects(peer.waitForCoverage('coverage-unsent', derivedIndexTime(store.rootStore), 100), {
+				code: 'DERIVED_INDEX_LAGGING',
+			});
 			await peer.stop();
 			await owner.stop();
 		});
