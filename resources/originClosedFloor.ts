@@ -98,7 +98,13 @@ class ThreadRegistry {
 
 	constructor(rootStore: RocksDatabase) {
 		this.rootStore = rootStore;
-		this.words = new BigInt64Array(rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES)));
+		const buffer = rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES));
+		// the buffer lives as long as the process: a thread running another layout would misread every slot
+		if (buffer.byteLength !== BUFFER_BYTES)
+			throw new Error(
+				`The origin-closed floor buffer has another layout (${buffer.byteLength} bytes); restart the process`
+			);
+		this.words = new BigInt64Array(buffer);
 		// a reservation's pending bound is `proposed` as it starts, so it must never be 0
 		if (Atomics.load(this.words, WORD_PROPOSED) === 0n)
 			storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());

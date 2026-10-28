@@ -66,7 +66,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	// sampled before the log is opened or drained, so a commit the subscriber could miss is above it
 	let startBound: ReturnType<typeof localStartBound>;
 	let committedThrough: number | undefined;
-	// always, since the drain below can end the last progress consumer and clear the mark the start would take
+	// sampled on every registration: the drain below can end the last progress consumer and clear the certified mark
 	if (options?.reportProgress && table.auditStore?.reusableIterable) {
 		startBound = (options.crossThreads === false ? threadStartBound : localStartBound)(table.primaryStore.rootStore);
 	} else if (options?.reportProgress && table.auditStore && !startTime) {

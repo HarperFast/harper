@@ -118,6 +118,15 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	};
 	const startsAtOrBelow = (start, key) => ('atOrAbove' in start ? start.atOrAbove <= key : start.above < key);
 
+	it('refuses a shared buffer of another layout rather than misreading its slots', () => {
+		const rootStore = {
+			status: 'open',
+			getUserSharedBuffer: () => new ArrayBuffer((4 + 1024 + 1024 * 8) * 8),
+			getMonotonicTimestamp: () => 1,
+		};
+		assert.throws(() => localStartBound(rootStore), /another layout/);
+	});
+
 	it('a registration sample takes the bound a thread mid-reservation carries; certification waits (worker thread)', async () => {
 		const gate = new Int32Array(new SharedArrayBuffer(4));
 		const { next, exited } = startWorker({ mode: 'park-reserving', gate, tableName });
