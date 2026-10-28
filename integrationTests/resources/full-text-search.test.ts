@@ -568,7 +568,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			try {
 				response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
 					headers: { Authorization: authorization },
-					signal: AbortSignal.timeout(10_000),
+					signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
 				});
 				body = await response.text();
 			} catch (error) {
