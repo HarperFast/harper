@@ -1333,6 +1333,11 @@ function isDecodableAction(action: number) {
 export function isLockControlType(type: unknown): boolean {
 	return type === 'lockRelease' || type === 'lockBarrier';
 }
+
+/** Entry types that belong to no record's history: eviction, lock control and the whole-table `reload` marker. */
+export function isNonHistoryType(type: unknown): boolean {
+	return type === 'evict' || type === 'reload' || isLockControlType(type);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
