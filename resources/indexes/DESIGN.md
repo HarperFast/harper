@@ -179,10 +179,12 @@ never omit: an omission is unrecoverable and makes results depend on whether the
 records an index cannot supply: one lacking the attribute, a null one when the index holds no nulls,
 and a `0`, because a number written as `-0` is indexed under an encoding that sorts past every number
 and decodes to a wrong primary key (ordered-binary; index-led queries miss that row too). A condition
-admitting any of them stays on the predicate path. `compareKeys` ranks undefined below every scalar, so
-this declines `lt`/`le` over a number, string or boolean bound, `ge null` and any range covering 0; the
-`lt`/`le` that remain (a BigInt bound) start at `null` inclusive, where `searchByIndex` starts just above it,
-so indexed nulls are read. Normalizing `-0` in the encoder or index writer would let zero-covering ranges plan again.
+admitting any of them stays on the predicate path; that declines `ge null` and any range covering 0.
+A range plans only on a declared Int/Long/Float/BigInt/String/Date attribute: an untyped one can hold nested
+arrays, whose elements the predicate matches but no index holds, and BigInts, which share the equal Number's
+index key but not its order, so an untyped equality set gates the predicate. `lt`/`le` start just above the
+null block, as `searchByIndex` does. Normalizing `-0` in the encoder or index writer would let zero-covering
+ranges plan again.
 
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
