@@ -50,7 +50,6 @@ describe('Audit chain across a conflict retry', function () {
 	const patch = (id, record) => [id, (resource, options) => resource._writeUpdate(id, record, false, options)];
 	const put = (id, record) => [id, (resource, options) => resource._writeUpdate(id, record, true, options)];
 
-	// Runs `around` in place of the next native commit on the table's database; it gets the real commit.
 	function interceptNextCommit(around) {
 		const db = T.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;

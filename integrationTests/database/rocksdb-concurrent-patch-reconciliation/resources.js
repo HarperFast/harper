@@ -29,7 +29,6 @@ export class Updater extends Resource {
 	}
 }
 
-// The same update after a read of the record in the same transaction.
 export class ReadThenUpdater extends Resource {
 	static loadAsInstance = false;
 	async post(_query, { id, seq }) {

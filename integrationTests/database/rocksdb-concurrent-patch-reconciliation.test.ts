@@ -53,7 +53,6 @@ async function post(client: Client, path: string, auth: string, body?: unknown):
 	return JSON.parse(text);
 }
 
-/** Keep-alive connections, CONNECTIONS_PER_WORKER per worker, interleaved so consecutive requests change worker. */
 async function connectToEveryWorker(httpURL: string, auth: string, workerCount: number): Promise<Client[]> {
 	const byWorker = new Map<number, Client[]>();
 	const spare: Client[] = [];
