@@ -4,6 +4,7 @@ const { waitFor } = require('../waitFor');
 const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
+	READINESS_BYTES,
 	DerivedIndexRuntime,
 	derivedIndexTime,
 	publishDerivedIndexReadiness,
@@ -242,6 +243,156 @@ describe('DerivedIndexRuntime', () => {
 		await runtime.stop();
 	});
 
+<<<<<<< HEAD
+=======
+	it('persists only coverage captured on an idle pass', async () => {
+		// The turn that reads 20 captured the tail before 20 was appended; persisting that position with the
+		// vector anchoring 20 would let a resume skip past an entry the position never covered.
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const before = { sequence: 1, offset: 32 };
+		const after = { sequence: 1, offset: 64 };
+		let captures = 0;
+		store.rootStore.useLog = (name) => ({
+			name,
+			getStats: () => {
+				const position = ++captures === 1 ? before : after;
+				return { oldestSequenceNumber: 1, lastCommittedPosition: position, nextLogPosition: position };
+			},
+		});
+		const backend = new FakeBackend('idle-coverage', cursor(10));
+		const persisted = [];
+		backend.publishCoverage = (positions) => persisted.push({ positions, cursor: backend.cursor });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 1,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => persisted.length > 0);
+		assert.deepStrictEqual(
+			persisted.map(({ positions, cursor }) => [positions.local, cursor.logs.local]),
+			persisted.map(() => [after, 20])
+		);
+		await runtime.stop();
+	});
+
+	it('persists the idle capture on the pass that sees its vector become durable', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		store.committedPosition = { sequence: 1, offset: 64 };
+		// A wall-clock time, so a cadence reset to zero clears the throttle as it does in production.
+		store.rootStore.getMonotonicTimestamp = () => Date.now();
+		const backend = new FakeBackend('idle-durable-coverage', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const persisted = [];
+		backend.publishCoverage = (positions) => persisted.push({ positions, cursor: backend.cursor });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 60_000,
+			maxFlushAgeMilliseconds: 60_000,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getMetrics(backend.id)?.acceptedMutations === 1);
+		backend.cursor = backend.deliveries[0].through;
+		backend.stateChange();
+		await waitFor(() => persisted.some(({ cursor }) => cursor.logs.local === 20), { timeout: 5000 });
+		await runtime.stop();
+	});
+
+	describe('coverage demand', () => {
+		// A 60 s flush age keeps the owner's periodic coverage refresh out of every wait below.
+		const options = { idleGraceMilliseconds: 60_000, maxFlushAgeMilliseconds: 60_000, lockRetryMilliseconds: 60_000 };
+		const coverageBackend = (id, deliver) => {
+			const backend = new FakeBackend(id, cursor(10), deliver);
+			backend.publishCoverage = () => {};
+			return backend;
+		};
+		const countCoverageNotifies = (store) => {
+			const counts = { notifies: 0, lockAttempts: 0 };
+			const { getUserSharedBuffer, tryLock } = store;
+			store.getUserSharedBuffer = function (key, ...rest) {
+				const buffer = getUserSharedBuffer.call(this, key, ...rest);
+				if (String(key).endsWith(':coverage')) {
+					const { notify } = buffer;
+					buffer.notify = () => {
+						counts.notifies++;
+						notify();
+					};
+				}
+				return buffer;
+			};
+			store.tryLock = function (...args) {
+				counts.lockAttempts++;
+				return tryLock.apply(this, args);
+			};
+			return counts;
+		};
+		const coverageTime = (store, id) =>
+			Atomics.load(
+				new BigInt64Array(
+					store.getUserSharedBuffer(`derived-index:${id}:readiness`, new ArrayBuffer(READINESS_BYTES)),
+					READINESS_BYTES - 8,
+					1
+				),
+				0
+			);
+
+		it("answers a non-owner's wait from the owning runtime", async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const counts = countCoverageNotifies(store);
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-demand')));
+			await waitFor(() => coverageTime(store, 'coverage-demand') > 0n);
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-demand')));
+			await waitFor(() => counts.lockAttempts === 2);
+
+			const started = performance.now();
+			await peer.waitForCoverage('coverage-demand', derivedIndexTime(store.rootStore), 1000);
+			assert(performance.now() - started < 500);
+			assert.strictEqual(counts.notifies, 1);
+			assert.strictEqual(counts.lockAttempts, 2, 'a parked peer must not re-probe the runner lock on demand');
+			await peer.stop();
+			await owner.stop();
+		});
+
+		it('requests again for a waiter that joins after the first request was answered', async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const runtime = runtimeFor(store, new Map(), options).runtime;
+			runtime.register(registration(coverageBackend('coverage-joiner')));
+			await waitFor(() => coverageTime(store, 'coverage-joiner') > 0n);
+
+			const first = runtime.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
+			const answered = derivedIndexTime(store.rootStore);
+			await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
+			// Joins the first waiter's group before its next poll, with a target past the capture that answered it.
+			const second = runtime.waitForCoverage('coverage-joiner', derivedIndexTime(store.rootStore), 1000);
+			await Promise.all([first, second]);
+			await runtime.stop();
+		});
+
+		it('does not retry a deferred batch or repeat an unanswered request', async () => {
+			const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const counts = countCoverageNotifies(store);
+			const backend = coverageBackend('coverage-deferred', () => DERIVED_INDEX_DEFERRED);
+			const owner = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), options).runtime;
+			owner.register(registration(backend));
+			await waitFor(() => owner.getStatus('coverage-deferred').state === 'deferred');
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-deferred')));
+
+			await assert.rejects(peer.waitForCoverage('coverage-deferred', derivedIndexTime(store.rootStore), 200), {
+				code: 'DERIVED_INDEX_LAGGING',
+			});
+			assert.strictEqual(backend.deliveries.length, 1);
+			assert.strictEqual(counts.notifies, 1);
+			await peer.stop();
+			await owner.stop();
+		});
+	});
+
+>>>>>>> 9d766781b (Answer a derived-index coverage wait from the owning worker, so a commit to another table no longer costs up to the flush age)
 	it('does not let a local setup failure replace peer-owned readiness', () => {
 		const store = new FakeLogStore(new Map());
 		publishDerivedIndexReadiness(store, 'peer-owned', 'ready');
