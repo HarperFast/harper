@@ -9,7 +9,9 @@ const { getThisNodeName } = require('#src/server/nodeName');
 const { transaction } = require('#src/resources/transaction');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const {
+	COPY_BOUND_KEY,
 	MAX_OVERLAP_MS,
+	bumpOriginStateEpoch,
 	encodeCheckpoint,
 	membersDigest,
 	positionBefore,
@@ -502,6 +504,61 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			await assert.rejects(T.subscribe({ resume: both, omitCurrent: true }), (error) => error.statusCode === 410);
 			// an older token that never certified it is refused too: a revoked route cannot be shown whole
 			await assert.rejects(T.subscribe({ resume: checkpoint, omitCurrent: true }), (error) => error.statusCode === 410);
+			subscription.end();
+		});
+		it('refuses a route a copy bound covers, certifies nothing under it, and admits once the route starts above it', async () => {
+			const T = tableInOwnDatabase();
+			const listener = collector();
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => listener.values().includes('a'));
+			await sleep(2);
+			const floor = certify(T);
+			const route = { closedFloor: floor, originGeneration: 'copied-generation', fullCoverage: true };
+			const peerId = writeSeqRow(T, 'copied-peer', { ...route, certifiedFrom: floor - 1000 });
+			const members = membersDigest([...ownMembers(T), ['copied-peer', 'copied-generation']]);
+			let token;
+			await waitFor(() => (token = subscription.checkpoint())?.members === members);
+			const resumed = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
+			assert.strictEqual(await resumed.resumeVerified, true);
+			resumed.end();
+			T.dbisDB.putSync([COPY_BOUND_KEY, 77], { [peerId]: floor - 1000 });
+			bumpOriginStateEpoch(T.primaryStore.rootStore);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'a capture from before the bound is not used');
+			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
+			await sleep(400);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'no capture qualifies the covered route');
+			writeSeqRow(T, 'copied-peer', { ...route, certifiedFrom: floor - 999 });
+			const again = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
+			assert.strictEqual(await again.resumeVerified, true);
+			again.end();
+			await waitFor(() => subscription.checkpoint()?.members === members);
+			// a copy that restored this node's own lost rows: its own log is complete only above them
+			T.dbisDB.putSync([COPY_BOUND_KEY, 79], { 0: floor - 100_000 });
+			const belowOwn = await T.subscribe({ resume: token, omitCurrent: true, listener: collector() });
+			assert.strictEqual(await belowOwn.resumeVerified, true);
+			belowOwn.end();
+			T.dbisDB.putSync([COPY_BOUND_KEY, 79], { 0: floor });
+			await assert.rejects(T.subscribe({ resume: token, omitCurrent: true }), (error) => error.statusCode === 410);
+			bumpOriginStateEpoch(T.primaryStore.rootStore);
+			await sleep(400);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'no capture while the own floor is below its start');
+			T.dbisDB.removeSync([COPY_BOUND_KEY, 79]);
+			for (const malformed of [
+				{ [peerId]: 'not a version' },
+				{ [peerId]: -1 },
+				{ '': floor },
+				{ '-1': floor },
+				{ '01': floor },
+				[floor],
+			]) {
+				T.dbisDB.putSync([COPY_BOUND_KEY, 78], malformed);
+				await assert.rejects(
+					T.subscribe({ resume: token, omitCurrent: true }),
+					(error) => error.statusCode === 410,
+					`fails closed on ${JSON.stringify(malformed)}`
+				);
+			}
 			subscription.end();
 		});
 	});

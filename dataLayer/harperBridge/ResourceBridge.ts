@@ -459,7 +459,7 @@ export class ResourceBridge extends BridgeMethods {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 		const validationError = searchValidator(searchObject, 'hashes');
 		if (validationError) {
-			throw validationError;
+			throwSearchValidationError(validationError);
 		}
 		return getRecords(searchObject);
 	}
@@ -488,7 +488,7 @@ export class ResourceBridge extends BridgeMethods {
 
 		const validationError = searchValidator(searchObject, 'value');
 		if (validationError) {
-			throw validationError;
+			throwSearchValidationError(validationError);
 		}
 
 		const table = getTable(searchObject);
@@ -496,7 +496,7 @@ export class ResourceBridge extends BridgeMethods {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
 		let value: any = searchObject.value;
-		if (value.includes?.('*')) {
+		if (typeof value === 'string' && value.includes('*')) {
 			if (value.startsWith('*')) {
 				if (value.endsWith('*')) {
 					if (value !== '*') {
@@ -743,6 +743,10 @@ export class ResourceBridge extends BridgeMethods {
 		}
 		return lmdbGetBackup(getBackupObj);
 	}
+}
+
+function throwSearchValidationError(validationError: any): never {
+	throw typeof validationError.statusCode === 'number' ? validationError : new ClientError(validationError.message);
 }
 
 function getSelect({ get_attributes }: any, table: any) {

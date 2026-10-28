@@ -70,13 +70,13 @@ jobs:
             timeout: 8
           - shard: resources-core-a-q
             script: test:unit:resources:core:a-q
-            timeout: 8
+            timeout: 7
           - shard: resources-core-r-z
             script: test:unit:resources:core:r-z
             timeout: 6
           - shard: resources-indexes
             script: test:unit:resources:indexes
-            timeout: 6
+            timeout: 8
           - shard: lmdb
             script: test:unit:lmdb
             timeout: 9
@@ -169,13 +169,13 @@ jobs:
             timeout: 10
           - shard: resources-core-a-q
             script: test:unit:typestrip:resources:core:a-q
-            timeout: 8
+            timeout: 7
           - shard: resources-core-r-z
             script: test:unit:typestrip:resources:core:r-z
             timeout: 6
           - shard: resources-indexes
             script: test:unit:typestrip:resources:indexes
-            timeout: 6
+            timeout: 8
     steps:
       - name: Checkout code
         timeout-minutes: 3
@@ -343,9 +343,9 @@ jobs:
           npx mocha
           unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js
           unitTests/resources/nativeFullTextTableSearch.test.js
-          unitTests/resources/nativeFullTextSchemaUpgrade.test.js
-          unitTests/resources/nativeFullTextUpgradeWorkers.test.js
-          unitTests/resources/nativeFullTextUpgradeCrash.test.js
+          unitTests/resources/nativeFullTextIndexSchemaUpgrade.test.js
+          unitTests/resources/nativeFullTextIndexUpgradeWorkers.test.js
+          unitTests/resources/nativeFullTextIndexUpgradeCrash.test.js
           --forbid-pending --fail-zero
 
   # The one required check for this workflow: branch protection names this job rather than the

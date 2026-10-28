@@ -23,6 +23,7 @@ export interface SubscriptionCheckpoint {
 /** The event-origin tag a progress-reporting subscription carries on each event: the origin's local node id. */
 export const ORIGIN_ID = Symbol.for('subscription-origin');
 const SEQ_KEY = Symbol.for('seq');
+export const COPY_BOUND_KEY = Symbol.for('copyBound');
 const EPOCH_BUFFER = 'origin-state-epoch';
 const epochWords = new WeakMap<object, Int32Array>();
 
@@ -98,6 +99,34 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 	return digest.toString('hex');
 }
 
+/**
+ * The highest record version an audit-less base copy wrote here, per origin, over every copying peer's
+ * `[copyBound, peerId]` row (`{ [localOriginId]: version }`, written only by that peer's copy). This node's log of
+ * the origin lacks those rows, so no route certified from at or below the bound holds the origin complete. A
+ * malformed row throws: a bound read as absent would admit.
+ */
+export function readCopyBounds(dbisDb: any): Map<number, number> {
+	const bounds = new Map<number, number>();
+	for (const { value } of dbisDb.getRange({ start: COPY_BOUND_KEY, end: [COPY_BOUND_KEY, Buffer.from([0xff])] })) {
+		const prototype = value && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined;
+		if (prototype !== Object.prototype && prototype !== null) throw unreadableCopyBound();
+		for (const key in value) {
+			const originId = Number(key);
+			const bound = value[key];
+			if (!(Number.isInteger(originId) && originId >= 0 && String(originId) === key)) throw unreadableCopyBound();
+			if (!(typeof bound === 'number' && Number.isFinite(bound) && bound >= 0)) throw unreadableCopyBound();
+			if (!(bounds.get(originId)! >= bound)) bounds.set(originId, bound);
+		}
+	}
+	return bounds;
+}
+
+function unreadableCopyBound(): ResumeHistoryUnavailableError {
+	return new ResumeHistoryUnavailableError(
+		'A copy bound record is unreadable, so no checkpoint can be shown complete; resubscribe to resynchronize'
+	);
+}
+
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
@@ -116,6 +145,20 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 	const published = originFloorsDurable(auditStore.rootStore) ? getOriginClosedFloor(auditStore.rootStore) : undefined;
 	if (published) own.floor = published.floor;
 	states.set(0, own);
+	const copyBounds = readCopyBounds(dbisDb);
+	// a copy can restore this node's own lost rows too, which its own log then lacks
+	const ownBound = copyBounds.get(0);
+	if (ownBound !== undefined) own.certifiedFrom = positionAfter(ownBound);
+	const routeCertifies = (node: any) =>
+		isValidFloor(node.closedFloor) &&
+		typeof node.originGeneration === 'string' &&
+		node.fullCoverage === true &&
+		node.partialHistory !== true &&
+		node.hole !== true &&
+		node.floorRevoked !== true &&
+		typeof node.certifiedFrom === 'number' &&
+		!(node.certifiedFrom > node.closedFloor) &&
+		!(node.certifiedFrom <= copyBounds.get(node.id)!);
 	for (const { key, value } of dbisDb.getRange({ start: SEQ_KEY, end: [SEQ_KEY, Buffer.from([0xff])] })) {
 		const nodes = value?.nodes;
 		if (!Array.isArray(nodes) || typeof key?.[1] !== 'number') continue;
@@ -130,16 +173,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				rows.set(node.id, []);
 			}
 			rows.get(node.id)!.push({ node, seqId: rowSeqId });
-			if (
-				isValidFloor(node.closedFloor) &&
-				typeof node.originGeneration === 'string' &&
-				node.fullCoverage === true &&
-				node.partialHistory !== true &&
-				node.hole !== true &&
-				node.floorRevoked !== true &&
-				typeof node.certifiedFrom === 'number' &&
-				!(state.floor >= node.closedFloor)
-			) {
+			if (!(state.floor >= node.closedFloor) && routeCertifies(node)) {
 				// the route that certified the floor is the one whose prefix below it is complete: another whole
 				// route's start says nothing about this one, since their coverage can be disjoint
 				state.floor = node.closedFloor;
@@ -173,15 +207,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 			state.generation = current;
 			for (const { node } of nodeRows) {
 				if (node.originGeneration !== current) continue;
-				if (
-					isValidFloor(node.closedFloor) &&
-					node.fullCoverage === true &&
-					node.partialHistory !== true &&
-					node.hole !== true &&
-					node.floorRevoked !== true &&
-					typeof node.certifiedFrom === 'number' &&
-					!(state.floor >= node.closedFloor)
-				) {
+				if (!(state.floor >= node.closedFloor) && routeCertifies(node)) {
 					state.floor = node.closedFloor;
 					state.certifiedFrom = node.certifiedFrom;
 					state.fullCoverage = true;
@@ -206,7 +232,8 @@ function qualifies(state: OriginState): boolean {
 		state.partialHistory !== true &&
 		state.hole !== true &&
 		state.floorRevoked !== true &&
-		typeof state.certifiedFrom === 'number'
+		typeof state.certifiedFrom === 'number' &&
+		!(state.certifiedFrom > state.floor!)
 	);
 }
 
@@ -223,6 +250,8 @@ export interface CertifiedFloors {
 	/** By local origin node id. */
 	origins: Map<number, OriginState>;
 	capturedAt: number;
+	/** The origin-state epoch read before the capture: a qualifier or copy bound committed since may void it. */
+	epoch: number;
 }
 
 /**
@@ -230,13 +259,14 @@ export interface CertifiedFloors {
  * a qualifying floor, or nothing is captured.
  */
 export function captureCertifiedFloors(auditStore: any, dbisDb: any): CertifiedFloors | undefined {
+	const epoch = readOriginStateEpoch(auditStore.rootStore);
 	const states = readOriginStates(auditStore, dbisDb);
 	if (states.size > MAX_ORIGINS) return;
 	for (const state of states.values()) if (!qualifies(state)) return;
 	const byName = new Map<string, OriginState>();
 	for (const state of states.values()) byName.set(state.name, state);
 	for (const name of knownLogNames(auditStore)) if (!byName.has(name)) return;
-	return { origins: states, capturedAt: Date.now() };
+	return { origins: states, capturedAt: Date.now(), epoch };
 }
 
 const KEY_SCRATCH = new Float64Array(1);
@@ -247,6 +277,13 @@ export function positionBefore(key: number): number {
 	// doubles of one sign order by their bit patterns, read as signed integers
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0] += key > 0 ? -1n : 1n;
+	return KEY_SCRATCH[0];
+}
+
+function positionAfter(key: number): number {
+	if (key === 0) return Number.MIN_VALUE;
+	KEY_SCRATCH[0] = key;
+	KEY_BITS[0] += 1n;
 	return KEY_SCRATCH[0];
 }
 
@@ -453,6 +490,11 @@ export function admitCheckpoint(
 		if (state.floorRevoked && boundary > 0) {
 			throw new ResumeHistoryUnavailableError(
 				`Origin ${name} may have written below its certified floor; resubscribe to resynchronize`
+			);
+		}
+		if (state.nodeId === 0 && !(state.certifiedFrom! <= boundary)) {
+			throw new ResumeHistoryUnavailableError(
+				`A copy restored rows of this node's own origin above the checkpoint boundary; resubscribe to resynchronize`
 			);
 		}
 		if (state.nodeId !== 0 && !(qualifies(state) && state.certifiedFrom <= boundary)) {

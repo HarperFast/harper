@@ -131,7 +131,17 @@ const searchByValueSchema = Joi.object({
 	schema: hdbDatabase,
 	table: hdbTable,
 	attribute: hdbSchemaTable,
-	value: Joi.any().required(),
+	value: Joi.any()
+		.custom((value, helpers) => {
+			if (Array.isArray(value) && value.includes('*')) {
+				return helpers.error('any.invalid');
+			}
+			return value;
+		})
+		.required()
+		.messages({
+			'any.invalid': "{{#label}} must not be an array containing '*'",
+		}),
 	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdbSchemaTable, Joi.object())).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),

@@ -2432,9 +2432,9 @@ export function makeTable(options): TableResourceClass {
 							const originFloorRevocations: (number | [number, string?])[] | undefined = certifyingStream
 								? event.originFloorRevocations
 								: undefined;
-							// `[id, certifiedFrom, partialHistory, hole, generation?]`: a mark derived under one origin generation
-							// says nothing about another, so a generation it names must be the row's
-							const originRouteStates: [number, number | undefined, boolean, boolean, string?][] | undefined =
+							// `[id, certifiedFrom, partialHistory, hole, generation?, fullCoverage?]`: a mark derived under one origin
+							// generation says nothing about another, so a generation it names must be the row's
+							const originRouteStates: [number, number | undefined, boolean, boolean, string?, boolean?][] | undefined =
 								certifyingStream ? event.originRouteStates : undefined;
 							let qualifiersChanged = false;
 							// the key for tracking the sequence ids and txn times received from this node
@@ -2536,6 +2536,15 @@ export function makeTable(options): TableResourceClass {
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (nodeState.floorRevoked === true) continue;
 									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									if (generation === undefined && typeof nodeState.originGeneration !== 'string') {
+										// a level-1 floor has no generation to stay revoked within: clear it, and a later certificate floors again
+										if (nodeState.closedFloor !== undefined || nodeState.relayable) {
+											nodeState.closedFloor = undefined;
+											nodeState.relayable = false;
+											originCursorsChanged = true;
+										}
+										continue;
+									}
 									nodeState.floorRevoked = true;
 									// the floor it was revoked at still dates this generation against another's rows
 									if (isValidFloor(nodeState.closedFloor)) nodeState.revokedFloor = nodeState.closedFloor;
@@ -2544,7 +2553,14 @@ export function makeTable(options): TableResourceClass {
 									qualifiersChanged = true;
 								}
 							if (originRouteStates)
-								for (const [nodeId, certifiedFrom, partialHistory, hole, generation] of originRouteStates) {
+								for (const [
+									nodeId,
+									certifiedFrom,
+									partialHistory,
+									hole,
+									generation,
+									fullCoverage,
+								] of originRouteStates) {
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
@@ -2573,6 +2589,14 @@ export function makeTable(options): TableResourceClass {
 									}
 									if (hole === true && nodeState.hole !== true) {
 										nodeState.hole = true;
+										qualifiersChanged = true;
+									}
+									if (
+										fullCoverage === true &&
+										typeof nodeState.originGeneration === 'string' &&
+										nodeState.fullCoverage === false
+									) {
+										nodeState.fullCoverage = true;
 										qualifiersChanged = true;
 									}
 								}
@@ -2716,6 +2740,7 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									const advancesSequence = !!event.localTime && stream.lastSequenceId !== event.localTime;
+									const previousSequenceId = stream.lastSequenceId;
 									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
@@ -2779,7 +2804,15 @@ export function makeTable(options): TableResourceClass {
 											event.originRouteStates?.length > 0 ||
 											event.originFloorRevocations?.length > 0)
 									)
-										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
+										try {
+											await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
+										} catch (error) {
+											// the transaction landed but its position and route state did not: a repeat of this position
+											// must write again, and the source that attached them must learn it, or it counts them as recorded
+											stream.lastSequenceId = previousSequenceId;
+											if (event.onFailure && (await event.onFailure(error, failurePosition, true))) stream.held = true;
+											throw error;
+										}
 									continue;
 								}
 								if (txnInProgress) {
@@ -5615,7 +5648,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txnTime;
-					let incrementalUpdateToApply: boolean;
+					let incrementalUpdateToApply: any;
+					let applyAsReplacement = fullUpdate;
 
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
@@ -5697,6 +5731,7 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 						}
+						let hasOwnPendingHead = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -5761,6 +5796,26 @@ export function makeTable(options): TableResourceClass {
 							) {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
+							}
+							if (!priorStaged && isRocksDB && !replaying && refBase !== existingEntry) {
+								const precedesCommitted = refBase ? precedesExistingVersion(txnTime, refBase, options?.nodeId) : 1;
+								if (precedesCommitted <= 0) {
+									// A same-transaction publish or relocate restamped existingEntry; restore the committed head.
+									existingEntry = {
+										...existingEntry,
+										version: refBase.version,
+										nodeId: refBase.nodeId,
+										additionalAuditRefs: refBase.additionalAuditRefs,
+										receivedIdentityRefs: refBase.receivedIdentityRefs,
+									};
+									precedesExisting = precedesCommitted;
+								} else if (
+									precedesExisting === 0 &&
+									(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
+									transaction.hasStagedLog
+								) {
+									hasOwnPendingHead = true;
+								}
 							}
 							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
 							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
@@ -5845,10 +5900,21 @@ export function makeTable(options): TableResourceClass {
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
+						// A publish or relocate of this transaction saves when it is added and restamps the head, before or
+						// after this deferred write, so a tie it made says nothing about this write: order it against the
+						// committed head. LMDB commits pass no committedBy, so it keeps the predecessor exception below.
+						if (isRocksDB && !audit && precedesExisting === 0)
+							precedesExisting = precedesExistingVersion(
+								txnTime,
+								identityBase(write, existingEntry, committedBy),
+								options?.nodeId
+							);
 						if (audit && !belowAuditFloor) {
 							// incremental CRDT updates are only available with audit logging on
 							const initialAuditHead: { txnLogKey: number; nodeId: number; entry?: any } = isRocksDB
-								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
+								? hasOwnPendingHead
+									? { txnLogKey: appendedLogKey, nodeId: existingEntry.nodeId }
+									: resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
 								: { txnLogKey: existingEntry.localTime, nodeId: existingEntry.nodeId };
 							let localTime = initialAuditHead.txnLogKey;
 							let resolvedEntry = initialAuditHead.entry;
@@ -5872,7 +5938,7 @@ export function makeTable(options): TableResourceClass {
 							let nodeId = initialAuditHead.nodeId ?? 0;
 							const headNodeId = nodeId;
 							const headLogKey = localTime;
-							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
+							let succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = [];
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
@@ -5891,6 +5957,7 @@ export function makeTable(options): TableResourceClass {
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
+							let isAdditionalAuditRef = false;
 							let previousHeadOf: any;
 							let previousHead: { txnLogKey: number; nodeId: number; entry?: any };
 							const resolvePreviousHead = (auditRecord) => {
@@ -5904,11 +5971,14 @@ export function makeTable(options): TableResourceClass {
 								}
 								return previousHead;
 							};
+							let auditHistoryMissing =
+								fullUpdate && auditRefsToVisit.some((ref) => !Number.isFinite(ref.localTime) || ref.localTime < 0);
 							const queuePreviousAuditRefs = (auditRecord) => {
 								const previousRefs = auditRecord.previousAdditionalAuditRefs;
 								if (previousRefs) {
 									const head = resolvePreviousHead(auditRecord);
 									for (const ref of previousRefs) {
+										if (fullUpdate && (!Number.isFinite(ref.version) || ref.version < 0)) auditHistoryMissing = true;
 										if (!isBranchRef(ref, head)) continue;
 										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
 										logger.debug?.('Adding audit ref from audit record to visit queue', {
@@ -5923,6 +5993,8 @@ export function makeTable(options): TableResourceClass {
 								localTime = head.txnLogKey;
 								nodeId = head.nodeId;
 								resolvedEntry = head.entry;
+								if (fullUpdate && localTime != null && (!Number.isFinite(localTime) || localTime < 0))
+									auditHistoryMissing = true;
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
@@ -5965,16 +6037,60 @@ export function makeTable(options): TableResourceClass {
 									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
 									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
 									// shortcut below would not apply — keep its exact, unbounded reconciliation.
-									if (isRocksDB && ++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+									if (isRocksDB && !fullUpdate && ++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
 										auditWalkCapped = true;
 										break;
 									}
-									const auditRecord =
-										resolvedEntry?.txnLogKey === localTime
-											? resolvedEntry
-											: auditStore.get(localTime, tableId, id, nodeId);
+									let auditRecord;
+									let extraFrameEntries: any[] | undefined;
+									if (isRocksDB && fullUpdate) {
+										let frameComplete = false;
+										// A keyed lookup hides unreadable siblings before its first match, and a message or older
+										// version can precede newer mutations in the same frame.
+										for (const entry of auditStore.getRange({ start: localTime, exactStart: true, log: nodeId })) {
+											if (entry.txnLogKey !== localTime) break;
+											if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+												auditWalkCapped = true;
+												break;
+											}
+											if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+											if (entry.tableId === tableId) {
+												const entryId = entry.recordId;
+												if (entryId === undefined) auditHistoryMissing = true;
+												if (entryId === id) {
+													if (!auditRecord) auditRecord = entry;
+													else (extraFrameEntries ??= []).push(entry);
+												}
+											}
+											if (auditRecord && entry.endTxn) {
+												frameComplete = true;
+												break;
+											}
+										}
+										if (auditWalkCapped && !auditRecord) break;
+										if (auditRecord && !frameComplete) auditHistoryMissing = true;
+									} else {
+										auditRecord =
+											resolvedEntry?.txnLogKey === localTime
+												? resolvedEntry
+												: auditStore.get(localTime, tableId, id, nodeId);
+									}
 									resolvedEntry = undefined;
-									if (!auditRecord) break;
+									if (!auditRecord) {
+										// An earlier same-key write in this transaction is not in the committed log yet.
+										const ownPendingEntry =
+											localTime === appendedLogKey &&
+											((hasOwnPendingHead && !isAdditionalAuditRef) ||
+												(priorStaged &&
+													isRocksDB &&
+													!replaying &&
+													transaction.hasStagedLog &&
+													(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))));
+										if (!ownPendingEntry) auditHistoryMissing = true;
+										break;
+									}
+									isAdditionalAuditRef = false;
+									if (!auditRecord.type || !Number.isFinite(auditRecord.version)) auditHistoryMissing = true;
 									queuePreviousAuditRefs(auditRecord);
 									if (
 										isRocksDB &&
@@ -5991,9 +6107,11 @@ export function makeTable(options): TableResourceClass {
 										return;
 									}
 									auditedVersion = auditRecord.version;
+									let hasNewerEntryInFrame = false;
 									if (auditedVersion >= txnTime) {
+										let precedesAudited = -1;
 										if (auditedVersion === txnTime) {
-											let precedesAudited = precedesExistingVersion(
+											precedesAudited = precedesExistingVersion(
 												txnTime,
 												{ version: auditedVersion, localTime: localTime, key: id, nodeId: auditRecord.nodeId },
 												options?.nodeId
@@ -6021,42 +6139,88 @@ export function makeTable(options): TableResourceClass {
 												if (precedesExisting === 0 && (nodeId ?? 0) === headNodeId && localTime === headLogKey)
 													precedesExisting = precedesAudited;
 											}
-											if (precedesAudited > 0) {
-												// if the existing version is older, we can skip this update
-												advanceToPreviousAudit(auditRecord);
-												continue;
+										}
+										if (precedesAudited < 0) {
+											hasNewerEntryInFrame = true;
+											if (auditRecord.type === 'patch') {
+												logger.debug?.('out of order patch will be applied', id, auditRecord);
+												// Retaining audit records pins log buffers and decoders on deep chains (#1114).
+												// Keep only ordering metadata and the materialized patch value.
+												const newerPatch = auditRecord.getValue(primaryStore);
+												if (newerPatch == null) auditHistoryMissing = true;
+												succeedingUpdates.push({
+													version: auditedVersion,
+													nodeId: auditRecord.nodeId ?? 0,
+													logKey: auditRecord.txnLogKey ?? localTime,
+													value: newerPatch,
+												});
+												auditRecordToStore = recordUpdate; // use the original update for the audit record
+												// rebuildUpdateBefore only ever DROPS plain fields the newer patch overwrites and
+												// KEEPS commutative ops — so whether the residual
+												// empties is order-independent, and a commutative op never triggers the early-out.
+												// Supersession is monotonic, so once empty stop folding (an unscanned branch may still
+												// be deferring the early-out below). RocksDB only — see the early-out below. Guard on
+												// newerPatch: a corrupt/undecodable audit value can be undefined, and folding it would
+												// throw in rebuildUpdateBefore's `in` check; it supersedes nothing, so skip it (the
+												// pre-existing fold below already tolerates this case by returning earlier).
+												if (isRocksDB && !fullUpdate && !fullySuperseded && newerPatch) {
+													earlyOutResidual = rebuildUpdateBefore(earlyOutResidual ?? recordUpdate, newerPatch);
+													if (!earlyOutResidual) fullySuperseded = true;
+												}
+											} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
+												// There is newer full record update, so this incremental update is completely superseded
+												write.skipped = true;
+												return;
 											}
 										}
-										if (auditRecord.type === 'patch') {
-											logger.debug?.('out of order patch will be applied', id, auditRecord);
-											// Materialize the patch value now and keep only { version, value } rather than the
-											// audit record itself, so its backing transaction-log buffer and decoders can be
-											// reclaimed immediately. Only these two fields are needed for the ordered fold below;
-											// retaining the full records is what pins the heap on a deep chain (issue #1114).
-											const newerPatch = auditRecord.getValue(primaryStore);
-											succeedingUpdates.push({ version: auditedVersion, value: newerPatch });
-											auditRecordToStore = recordUpdate; // use the original update for the audit record
-											// rebuildUpdateBefore only ever DROPS plain fields the newer patch overwrites and
-											// KEEPS commutative ops (and, for a full update, every field) — so whether the residual
-											// empties is order-independent, and a commutative op never triggers the early-out.
-											// Supersession is monotonic, so once empty stop folding (an unscanned branch may still
-											// be deferring the early-out below). RocksDB only — see the early-out below. Guard on
-											// newerPatch: a corrupt/undecodable audit value can be undefined, and folding it would
-											// throw in rebuildUpdateBefore's `in` check; it supersedes nothing, so skip it (the
-											// pre-existing fold below already tolerates this case by returning earlier).
-											if (isRocksDB && !fullySuperseded && newerPatch) {
-												earlyOutResidual = rebuildUpdateBefore(
-													earlyOutResidual ?? recordUpdate,
-													newerPatch,
-													fullUpdate
-												);
-												if (!earlyOutResidual) fullySuperseded = true;
+									}
+									if (extraFrameEntries) {
+										for (const entry of extraFrameEntries) {
+											if (entry.version > auditedVersion) auditedVersion = entry.version;
+											if (entry.version < txnTime) continue;
+											let precedes =
+												entry.version > txnTime
+													? -1
+													: precedesExistingVersion(
+															txnTime,
+															{ version: entry.version, localTime, key: id, nodeId: entry.nodeId },
+															options?.nodeId
+														);
+											if (precedes === 0) {
+												if (localTime !== appendedLogKey && !identityIsNotKey) {
+													precedes = appendedLogKey > localTime ? 1 : -1;
+												} else if (replaying || stagedOwnAuditEntry) {
+													precedes = 1;
+												} else {
+													write.skipped = true;
+													return;
+												}
 											}
-										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
-											// There is newer full record update, so this incremental update is completely superseded
-											write.skipped = true;
-											return;
+											if (precedes < 0) {
+												hasNewerEntryInFrame = true;
+												if (entry.type === 'put' || entry.type === 'delete') {
+													write.skipped = true;
+													return;
+												}
+												if (entry.type === 'patch') {
+													const newerPatch = entry.getValue(primaryStore);
+													if (newerPatch == null) auditHistoryMissing = true;
+													succeedingUpdates.push({
+														version: entry.version,
+														nodeId: entry.nodeId ?? 0,
+														logKey: entry.txnLogKey ?? localTime,
+														value: newerPatch,
+													});
+													auditRecordToStore = recordUpdate;
+												}
+											}
 										}
+									}
+									if (auditedVersion >= txnTime && !hasNewerEntryInFrame) {
+										if (auditWalkCapped) break;
+										// if the existing version is older, we can skip this update
+										advanceToPreviousAudit(auditRecord);
+										continue;
 									}
 									if (!addedAuditRef && isRocksDB) {
 										addedAuditRef = true;
@@ -6072,6 +6236,7 @@ export function makeTable(options): TableResourceClass {
 											nodeId: options?.nodeId,
 										});
 									}
+									if (auditWalkCapped) break;
 									// Every field of this write is overwritten by newer writes, and there is no alternate
 									// audit branch left to scan, so it is fully superseded — the same outcome as walking to
 									// the end and taking the `writeCommit(false)` escape below, reached without paying the rest
@@ -6096,6 +6261,7 @@ export function makeTable(options): TableResourceClass {
 								if (auditWalkCapped) break;
 								nextRef = auditRefsToVisit.shift();
 								if (nextRef) {
+									isAdditionalAuditRef = true;
 									// A ref is a log key, not a version: the branch's version is unknown until its head is read,
 									// and a minted key sits below an explicit version it stores.
 									localTime = nextRef.localTime;
@@ -6114,27 +6280,77 @@ export function makeTable(options): TableResourceClass {
 									existingEntry
 								);
 							}
+							if (fullUpdate && !isRocksDB && !auditWalkCapped && !auditHistoryMissing) {
+								const frameUpdates = [];
+								const collectedKeys = new Set<number>();
+								for (const update of succeedingUpdates) {
+									if (collectedKeys.has(update.logKey)) continue;
+									let foundRecord = false;
+									let frameSteps = 0;
+									// LMDB sibling writes can share a version without linking to each other.
+									for (const entry of auditStore.getRange({ start: update.logKey, reverse: true })) {
+										if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+										if (entry.version !== update.version) break;
+										if (++frameSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+											auditHistoryMissing = true;
+											break;
+										}
+										const matchesTable = entry.tableId === tableId;
+										const entryId = matchesTable ? entry.recordId : undefined;
+										// Control entries use null; an undecodable ID is undefined.
+										if (matchesTable && entryId === undefined) auditHistoryMissing = true;
+										if (matchesTable && entryId === id) {
+											foundRecord = true;
+											if (collectedKeys.has(entry.txnLogKey)) continue;
+											collectedKeys.add(entry.txnLogKey);
+											const precedes = precedesExistingVersion(txnTime, entry, options?.nodeId);
+											if (precedes < 0 || (precedes === 0 && !identityIsNotKey && entry.txnLogKey > appendedLogKey)) {
+												if (entry.type === 'put' || entry.type === 'delete') {
+													write.skipped = true;
+													return;
+												}
+												if (entry.type === 'patch') {
+													const value = entry.getValue(primaryStore);
+													if (value == null) auditHistoryMissing = true;
+													auditRecordToStore = recordUpdate;
+													frameUpdates.push({
+														version: entry.version,
+														nodeId: entry.nodeId ?? 0,
+														logKey: entry.txnLogKey,
+														value,
+													});
+												}
+											}
+										}
+									}
+									if (!foundRecord) auditHistoryMissing = true;
+									if (auditHistoryMissing) break;
+								}
+								if (!auditHistoryMissing) succeedingUpdates = frameUpdates;
+							}
 							if (auditWalkCapped) {
 								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
 								// history, seen during a replication full-copy of a large-history database — issue #1114).
+								// For full PUTs, depth counts scanned entries, including unrelated transaction siblings.
 								// Walking and buffering the whole chain per record OOMs the worker, so we stopped at the cap
-								// and reconcile against only the most recent MAX_OUT_OF_ORDER_AUDIT_DEPTH updates (the fold
-								// below). That is an approximation for histories deeper than the cap — updates older than the
-								// retained window are not layered in — but the authoritative full-copy record restores exact
-								// convergence. Because we stopped before reaching txnTime, the inline duplicate detection in
-								// the walk never ran; full-copy audit-replay re-delivers writes, and re-applying one would
-								// double-apply its commutative ops. A re-delivered out-of-order write is already ruled out by
-								// the additionalAuditRefs check at the top of this block; this keyed lookup is the best-effort
+								// and reconcile against only the Updates collected before the cap (the fold below). That is an
+								// approximation for histories deeper than the cap — updates older than the retained window are
+								// not layered in — but the authoritative full-copy record restores exact convergence. Because we
+								// stopped before reaching txnTime, the inline duplicate detection in the walk never ran;
+								// full-copy audit-replay re-delivers writes, and re-applying one would double-apply its
+								// commutative ops. A re-delivered out-of-order write is already ruled out by the
+								// additionalAuditRefs check at the top of this block; this keyed lookup is the best-effort
 								// guard for the remaining case — a re-delivered write that was originally in-order (so it left
 								// no ref) and is now deeper than the cap. It is best-effort because the transaction-log lookup
 								// can intermittently miss an entry under load (tracked separately); the authoritative full-copy
 								// record still restores exact convergence.
 								logger.warn?.(
-									'Out-of-order audit reconciliation exceeded depth cap; reconciling against most recent updates only',
+									'Out-of-order audit reconciliation exceeded depth cap; reconciling against collected updates only',
 									{
 										table: tableName,
 										id,
 										depth: walkSteps,
+										fullUpdate,
 									}
 								);
 								if (isReDeliveredDuplicate()) {
@@ -6145,23 +6361,34 @@ export function makeTable(options): TableResourceClass {
 							// Fold the retained succeeding updates (the full chain, or — when capped — the most recent
 							// window) onto this older write so newer fields win; for a capped walk this layers in only
 							// what we collected before the cap.
-							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
+							// Replacing with incomplete history would erase newer writes we could not collect.
+							if (auditWalkCapped || auditHistoryMissing) applyAsReplacement = false;
+							succeedingUpdates.sort((a, b) => {
+								const versionOrder = a.version - b.version;
+								if (versionOrder || !applyAsReplacement) return versionOrder;
+								if (a.nodeId === b.nodeId) return a.logKey - b.logKey;
+								return precedesExistingVersion(a.version, b, a.nodeId);
+							});
 							for (const { version: patchVersion, value: newerUpdate } of succeedingUpdates) {
 								logger.debug?.('Rebuilding update with future patch:', new Date(patchVersion), newerUpdate);
-								incrementalUpdateToApply = rebuildUpdateBefore(
-									incrementalUpdateToApply ?? recordUpdate,
-									newerUpdate,
-									fullUpdate
-								);
+								incrementalUpdateToApply = applyAsReplacement
+									? updateAndFreeze(incrementalUpdateToApply ?? recordUpdate, newerUpdate)
+									: rebuildUpdateBefore(incrementalUpdateToApply ?? recordUpdate, newerUpdate, fullUpdate);
 								if (!incrementalUpdateToApply) return writeCommit(false); // if all changes are overwritten, nothing left to do
 							}
-							if (fullUpdate && !incrementalUpdateToApply && precedesExisting < 0) {
-								// Out-of-order full update whose audit walk found no succeeding updates to
-								// resequence around: the existing record is strictly newer (precedesExisting < 0),
-								// so this older full update is superseded. Falling through to the shared commit
-								// below would set recordToStore = recordUpdate and revert the newer record. Bare
-								// return (no writeCommit) matches the superseded-by-newer-put branch above so no
-								// audit record is written referencing this losing update's pre-saved blobs.
+							if (
+								fullUpdate &&
+								!incrementalUpdateToApply &&
+								precedesExisting < 0 &&
+								(!applyAsReplacement || Boolean(existingEntry.metadataFlags & INVALIDATED))
+							) {
+								// Out-of-order full update whose audit walk could not verify replacement (or whose head is
+								// invalidated) and found no succeeding patches: the existing record is strictly newer
+								// (precedesExisting < 0), so this older full update is superseded. Falling through with
+								// incomplete history would merge stale fields onto the newer record; when replacement is
+								// verified and the head is only newer because of a message, falling through replaces the
+								// record at the head's version. Bare return (no writeCommit) matches the superseded-by-newer-put
+								// branch above so no audit record is written referencing this losing update's pre-saved blobs.
 								// Gated on precedesExisting < 0 (not <= 0) so a same-transaction put-after-delete —
 								// which arrives as a tie (precedesExisting === 0) with no committed audit yet —
 								// still falls through and applies. (harperdb/harper#1170)
@@ -6195,6 +6422,8 @@ export function makeTable(options): TableResourceClass {
 							// is the backstop).
 							if (auditRefIndex(additionalAuditRefs, appendedLogKey, options?.nodeId) < 0)
 								additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+						} else if (precedesExisting > 0 || (!isRocksDB && precedesExisting === 0 && followsAppliedWrite(write))) {
+							// Newer than the committed head, or on LMDB tied after an unskipped earlier write: applies in order.
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -6202,7 +6431,19 @@ export function makeTable(options): TableResourceClass {
 							write.skipped = true;
 							return writeCommit(false);
 						} else {
-							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
+							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
+							// Without a log, a tie with the head or a listed ref is the only sign this write was already applied,
+							// and an older write must not give a deleted or publish-only head a record.
+							if (
+								precedesExisting === 0 ||
+								existingRecord == null ||
+								(existingEntry.receivedIdentityRefs &&
+									!followsAppliedWrite(write) &&
+									auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+							) {
+								write.skipped = true;
+								return writeCommit(false);
+							}
 							incrementalUpdateToApply = remainingAgainstRecord(recordUpdate, existingRecord);
 							logger.debug?.('Rebuilding update without audit:', incrementalUpdateToApply);
 							if (!incrementalUpdateToApply) {
@@ -6212,11 +6453,19 @@ export function makeTable(options): TableResourceClass {
 							// fields dropped from the update leave their pre-saved blobs unreferenced; the commit's
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
+							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
+							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
+							// only a commutative op applies again on re-delivery; the plain keys merged here are dropped then
+							if (
+								commutativeOpsOf(incrementalUpdateToApply) &&
+								!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+							)
+								(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
 					let recordToStore: any;
-					if (fullUpdate && !incrementalUpdateToApply) recordToStore = recordUpdate;
+					if (applyAsReplacement) recordToStore = incrementalUpdateToApply ?? recordUpdate;
 					else {
 						if ((this.constructor as any).loadAsInstance === false)
 							recordToStore = updateAndFreeze(existingRecord, incrementalUpdateToApply ?? recordUpdate);
@@ -6448,7 +6697,8 @@ export function makeTable(options): TableResourceClass {
 							(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
 								(isRocksDB &&
 								audit &&
-								fullUpdate &&
+								// a full update that merged (unverifiable history) did not replace the body
+								applyAsReplacement &&
 								precedesExisting >= 0 &&
 								!incrementalUpdateToApply &&
 								!isCopyApply &&

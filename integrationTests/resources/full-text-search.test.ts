@@ -563,20 +563,29 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const deadline = Date.now() + 30_000;
 		let ready = false;
 		do {
-			const response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
-				headers: { Authorization: authorization },
-				signal: AbortSignal.timeout(10_000),
-			});
-			const body = await response.text();
+			let response: Response;
+			let body: string;
+			try {
+				response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(10_000),
+				});
+				body = await response.text();
+			} catch (error) {
+				assert.ok(!response || response.status === 200, String(error));
+				assert.ok(
+					error.name === 'TypeError' && ['UND_ERR_SOCKET', 'ECONNRESET'].includes(error.cause?.code),
+					String(error.cause ?? error)
+				);
+				await delay(25);
+				continue;
+			}
 			assert.ok(response.status === 200 || response.status === 503, body);
 			if (response.status === 200) {
 				const records = JSON.parse(body);
-				if (records.length === 1 && typeof records[0].error === 'string') {
-					assert.match(records[0].error, /IndexRebuildingError|DerivedIndexLagError/);
-				} else {
-					assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
-					ready = true;
-				}
+				assert.ok(Array.isArray(records));
+				assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
+				ready = true;
 			} else assert.ok(body.length > 0);
 			if (!ready) await delay(25);
 		} while (!ready && Date.now() < deadline);
