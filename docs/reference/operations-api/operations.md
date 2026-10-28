@@ -1115,7 +1115,7 @@ Response:
 
 The wait follows the restart's own progress rather than a fixed timeout, so a wide thread pool, a slow component install, or a worker draining in-flight work does not cut it short. That also means the response can take as long as the install plus the restart — tens of seconds on a slow install with many worker threads — so a caller with a short request timeout should use `"restart": "rolling"` and poll its job instead. If it does give up — the restart stopped reporting progress, ran past the wait's absolute ceiling, or left a worker thread that could not be replaced — the restart continues in the background and the Harper log says which of those happened. A restart that fails does not fail the deploy: the component is already installed and replicated.
 
-`"restart": "rolling"` does not restart the other nodes inline: it starts a `restart_service` job and returns its `restartJobId` to poll. Both certify the release in a canary worker before rolling it out; see the next section.
+`"restart": "rolling"` does not restart the other nodes inline: it starts a `restart_service` job and returns its `restartJobId` to poll. Both certify the release in a canary worker before rolling it out, except in the cases the next section lists. When the deploy's `certification` is `unavailable`, the job only restarts the other nodes, and reports each node's outcome as a [replicated `restart_service`](#restart_service-replicated) does: it ends `ERROR` if any node did not restart.
 
 `drop_component` accepts `"restart": true` and waits for the restart the same way (v5.3.0). Dropping a running isolated application stops only that application's worker; dropping an already-absent application can restart the shared workers. On Pro and Fabric it propagates to peers by default unless `replicated` is `false`. Inspect its `replicated` results for peer failures; a successful local response does not establish successful cleanup on every node.
 
@@ -1790,6 +1790,42 @@ Restarts a specific service. `service` must be one of: `http`, `http_workers`, `
 { "operation": "restart_service", "service": "http_workers" }
 ```
 
+#### `replicated` {#restart_service-replicated}
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+With `"replicated": true`, the job that `restart_service` starts (its response carries the `job_id`) restarts the node that received the request, then each other node in the cluster, one at a time. For each node it starts that node's own restart job and waits for it to finish before going on. Harper core on its own does not replicate, so this needs Harper Pro or Fabric.
+
+```json
+{ "operation": "restart_service", "service": "http_workers", "replicated": true }
+```
+
+Poll the `job_id` with [`get_job`](#get_job) on the node that received the request. The job ends `COMPLETE` only if every other node's restart job completed. Otherwise it ends `ERROR`, and its `message` names each node that failed or was skipped. In both cases `result.replicated` has one entry per other node: `{ node, message }` for a node that restarted, `{ node, error }` for one that did not.
+
+```json
+[
+	{
+		"status": "ERROR",
+		"message": "Restart of http_workers did not complete on 2 of 3 peer node(s): node-b (...); node-c (skipped: the restart of node-b did not complete)",
+		"result": {
+			"replicated": [
+				{ "node": "node-a", "message": "..." },
+				{ "node": "node-b", "error": "..." },
+				{ "node": "node-c", "error": "skipped: the restart of node-b did not complete" }
+			]
+		}
+	}
+]
+```
+
+How the roll treats a node that does not restart:
+
+- **Its restart failed, or may still be running.** The roll stops, and every node after it is reported as skipped, not restarted. This covers a node whose restart job ended `ERROR` or did not finish in time, and a node whose connection dropped or timed out before it answered, since its restart may have started.
+- **It could not be reached, or refused the request.** The node is reported as not restarted, and the roll goes on to the next node.
+- **Its write queue was full.** The node is retried after the other nodes, up to three attempts in total.
+
+Before v5.4.0, a node that could not be reached or refused the request was listed in `result.replicated` as `{ node, message }`, the same shape as a node that restarted, and the job still ended `COMPLETE`. A node whose restart job failed or timed out did end the job `ERROR`, but without `result.replicated`.
+
 #### `scope`
 
 <VersionBadge version="v5.3.0" />
@@ -2111,7 +2147,7 @@ Detailed documentation: [Database Jobs](../database/jobs.md)
 
 ### `get_job`
 
-Returns job status (`COMPLETE`, `IN_PROGRESS`, `ERROR`), timing, and result message for the specified job ID. Bulk import/export operations return a job ID on initiation, as does a `deploy_component` with `"restart": "rolling"`, as `restartJobId`.
+Returns job status (`COMPLETE`, `IN_PROGRESS`, `ERROR`), timing, and result message for the specified job ID. Bulk import/export operations return a job ID on initiation, as does a `deploy_component` with `"restart": "rolling"`, as `restartJobId`. [`restart_service`](#restart_service) also returns one; with `"replicated": true`, its job's `status` and `result.replicated` report whether each node restarted, as [`replicated`](#restart_service-replicated) describes.
 
 ```json
 { "operation": "get_job", "id": "4a982782-929a-4507-8794-26dae1132def" }

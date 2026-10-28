@@ -173,7 +173,7 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 `harper deploy restart=rolling` exits `0` once the node you called has taken the release and started a job that restarts the nodes one at a time. What the job does depends on the release:
 
 - On v5.4.0 and later, unless the result's `certification` is `unavailable`, the other nodes only stage the release, and the job activates it on each in turn, certifying it in a [canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker). They take the release after the command has exited, and a node that rejects it fails the job, not the command. The failed job's `message` lists each node's outcome under `activated`.
-- Otherwise, every node has installed the release before the command exits, and the job only restarts them.
+- Otherwise, every node has installed the release before the command exits, and the job only restarts them. On v5.4.0 and later, a node that did not restart fails the job, and the job's `result.replicated` says which; see [how a rolling restart reports each node](../operations-api/operations.md#restart_service-replicated).
 
 Either way, the exit status does not say whether every node is serving the release. Poll the job named by the result's `restartJobId` with `harper get_job` until it ends `COMPLETE` or `ERROR`:
 
