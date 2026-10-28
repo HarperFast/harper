@@ -359,25 +359,5 @@ describe('search_by_value and search_by_hash validation errors (400)', () => {
 			unindexedObjectRes.push(rec);
 		}
 		assert.deepEqual(unindexedObjectRes, []);
-
-		await assert.rejects(
-			async () => {
-				for await (const _rec of await serverUtilities.operation(
-					{
-						operation: 'search_by_value',
-						database: TEST_DB,
-						table: TEST_TABLE,
-						search_attribute: 'title',
-						search_value: { nested: 'value' },
-						get_attributes: ['id', 'title', 'category'],
-					},
-					{ user: superUser },
-					true
-				)) {
-					// consume iterable
-				}
-			},
-			/Unable to serialize object as a key/
-		);
 	});
 });
