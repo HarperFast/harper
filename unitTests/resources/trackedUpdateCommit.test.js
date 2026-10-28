@@ -639,6 +639,34 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			});
 			assert.strictEqual((await QA1955Table.get('add-getrecord-data')).dynamicValue, 5);
 		});
+		it('a data member named getRecord is stored as data, in an object and in an array', async () => {
+			await QA1955Table.put('getrecord-data', { title: 't', tags: ['a'] });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('getrecord-data', ctx);
+				rec.title = 'changed';
+				rec.extra = { getRecord: 1, name: 'keep' };
+				rec.set('extraSet', { getRecord: true });
+				rec.dynamicList = [{ getRecord: 'x' }];
+			});
+			const saved = await QA1955Table.get('getrecord-data');
+			assert.deepStrictEqual({ ...saved.extra }, { getRecord: 1, name: 'keep' });
+			assert.deepStrictEqual({ ...saved.extraSet }, { getRecord: true });
+			assert.deepStrictEqual({ ...saved.dynamicList[0] }, { getRecord: 'x' });
+		});
+		it("folded deltas add in the stored value's numeric type", async () => {
+			await QA1955Table.put('fold-bigint', { dynamicBig: 0n });
+			await QA1955Table.put('fold-number', { dynamicNum: 10 });
+			await transaction(async (ctx) => {
+				const big = await QA1955Table.update('fold-bigint', ctx);
+				big.addTo('dynamicBig', 1);
+				big.addTo('dynamicBig', 9007199254740992n);
+				const num = await QA1955Table.update('fold-number', ctx);
+				num.addTo('dynamicNum', 1n);
+				num.addTo('dynamicNum', 0.5);
+			});
+			assert.strictEqual((await QA1955Table.get('fold-bigint')).dynamicBig, 9007199254740993n);
+			assert.strictEqual((await QA1955Table.get('fold-number')).dynamicNum, 11.5);
+		});
 	});
 
 	describe('Reading untracked object values', () => {

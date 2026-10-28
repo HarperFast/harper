@@ -412,7 +412,7 @@ export class GenericTrackedObject<T extends object = any> {
 	#writableOwner: any;
 	#writableGeneration: any;
 	constructor(sourceObject?: GenericTrackedObject<T> | T, writableOwner?: any) {
-		if ((sourceObject as GenericTrackedObject<T>)?.getRecord)
+		if (isTracked(sourceObject))
 			throw new Error('Can not track an already tracked object, check for circular references');
 		this.#record = sourceObject as any;
 		this.#writableOwner = writableOwner;
@@ -450,7 +450,7 @@ export function collapseData(target) {
 	let copiedSource;
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!copiedSource) copiedSource = target.getRecord ? { ...target.getRecord() } : {};
+		if (!copiedSource) copiedSource = isTracked(target) ? { ...target.getRecord() } : {};
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -462,24 +462,28 @@ export function collapseData(target) {
 	}
 	const keys = Object.keys(target); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 	if (keys.length > 0) {
-		if (!copiedSource) copiedSource = target.getRecord ? { ...target.getRecord() } : {};
+		if (!copiedSource) copiedSource = isTracked(target) ? { ...target.getRecord() } : {};
 		Object.assign(copiedSource, target);
 	}
-	return copiedSource || target.getRecord?.() || target;
+	return copiedSource || (isTracked(target) ? target.getRecord() : undefined) || target;
 }
 function collapseArray(target: any) {
-	if (target.getRecord && !hasChanges(target)) return target.getRecord();
+	if (isTracked(target) && !hasChanges(target)) return target.getRecord();
 	return materializeArray(target);
 }
 function materializeArray(target) {
 	const collapsed = new Array(target.length);
 	for (let i = 0, l = target.length; i < l; i++) {
 		const element = target[i];
-		collapsed[i] = element?.getRecord ? collapseData(element) : element;
+		collapsed[i] = isTracked(element) ? collapseData(element) : element;
 	}
 	return collapsed;
 }
 const hasOwnProperty = Object.prototype.hasOwnProperty;
+// a data member named getRecord (JSON can carry one) does not make a value a tracked wrapper
+function isTracked(value) {
+	return typeof value?.getRecord === 'function';
+}
 /**
  * Collapse the changed data and source/record data into single object
  * that is frozen and suitable for storage and caching
@@ -489,7 +493,7 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
 export function updateAndFreeze(target, changes = target.getChanges?.(), mergeOwnProperties = true) {
 	let mergedUpdatedObject: any;
 	if (!target) return changes;
-	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
+	if (isTracked(target) && target.constructor === Array && !Object.isFrozen(target)) {
 		if (!hasChanges(target)) return (target as any).getRecord();
 		// Materialize a plain array so the stored value retains neither the mutation proxy nor its owner.
 		mergedUpdatedObject = new Array(target.length);
@@ -505,7 +509,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.(), mergeOw
 	// copy the changes into the merged updated object
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!mergedUpdatedObject) mergedUpdatedObject = { ...(target.getRecord ? target.getRecord() : target) };
+		if (!mergedUpdatedObject) mergedUpdatedObject = { ...(isTracked(target) ? target.getRecord() : target) };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -527,7 +531,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.(), mergeOw
 		mergedUpdatedObject[key] = value;
 	}
 	// now copy any properties on the instances itself to the merged updated object
-	if (mergeOwnProperties && !Array.isArray(target) && target.getRecord) {
+	if (mergeOwnProperties && !Array.isArray(target) && isTracked(target)) {
 		for (const key in target) {
 			if (hasOwnProperty.call(target, key)) {
 				if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord() };
@@ -535,7 +539,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.(), mergeOw
 			}
 		}
 	}
-	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : target.getRecord ? target.getRecord() : target;
+	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : isTracked(target) ? target.getRecord() : target;
 }
 /**
  * Determine if any changes have been made to this tracked object
@@ -553,7 +557,7 @@ export function hasChanges(target) {
 			const sourceValue = source[i];
 			const targetValue = target[i];
 			if (sameValue(targetValue, sourceValue) || sameCopy(targetValue, sourceValue)) continue;
-			if (sourceValue && targetValue?.getRecord?.() === sourceValue) {
+			if (sourceValue && isTracked(targetValue) && targetValue.getRecord() === sourceValue) {
 				if (hasChanges(targetValue)) return true;
 			} else return true;
 		}
@@ -566,7 +570,7 @@ export function hasChanges(target) {
 			if (value && typeof value === 'object') {
 				const sourceValue = source[key];
 				// could just be a copy, need to check
-				if (sourceValue && value.getRecord?.() === sourceValue) {
+				if (sourceValue && isTracked(value) && value.getRecord() === sourceValue) {
 					if (hasChanges(value)) return true;
 				} else return true;
 			} else return true;
@@ -674,7 +678,7 @@ export function collapseChanges(target, changes) {
 		const value = changes[key];
 		let committed = value;
 		if (ownKeys.length > 0 && hasOwnChange(target, key)) committed = OMITTED;
-		else if (value?.getRecord) {
+		else if (isTracked(value)) {
 			if (source && value.getRecord() === source[key] && !hasChanges(value)) committed = OMITTED;
 			else committed = value.constructor === Array ? materializeArray(value) : collapseData(value);
 		}
@@ -693,7 +697,7 @@ export function collapseChanges(target, changes) {
 		const value = target[key];
 		if (sameOwnValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
 		if (patch === changes) patch = Object.assign(Object.create(null), changes);
-		patch[key] = value?.getRecord ? collapseData(value) : plainCopy(value);
+		patch[key] = isTracked(value) ? collapseData(value) : plainCopy(value);
 		keyCount++;
 	}
 	// with no record to compare against, any update (even an empty one) writes, as hasChanges decides
@@ -716,15 +720,20 @@ export function addToChanges(target, property: string, value: number | bigint) {
 	if (changes && Object.hasOwn(changes, property)) {
 		const prior = changes[property];
 		// a tracked wrapper that was only read is not a prior value
-		if (
-			typeof prior?.getRecord === 'function' &&
-			prior.getRecord() === target.getRecord?.()?.[property] &&
-			!hasChanges(prior)
-		)
+		if (isTracked(prior) && prior.getRecord() === target.getRecord?.()?.[property] && !hasChanges(prior))
 			target.set(property, new Addition(value));
-		else if (prior?.__op__ === 'add') target.set(property, new Addition(crdtOperations.addValues(prior.value, value)));
+		else if (prior?.__op__ === 'add')
+			target.set(property, new Addition(addDeltas(prior.value, value, target.getRecord?.()?.[property])));
 		else target.set(property, crdtOperations.addValues(prior, value));
 	} else target.set(property, new Addition(value));
+}
+
+// Sum two deltas in the stored value's numeric type, so folding them gives what applying them in turn
+// would (a bigint field keeps full precision; a number field accepts a bigint then a fractional delta)
+function addDeltas(first, second, stored) {
+	if (typeof stored === 'bigint') return BigInt(first) + BigInt(second);
+	if (stored == null || isNaN(+stored)) return crdtOperations.addValues(first, second);
+	return Number(first) + Number(second);
 }
 
 const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
