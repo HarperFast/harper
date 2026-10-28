@@ -1,9 +1,9 @@
 /**
  * A durable session saves at every acknowledgement, so a client that acknowledges a steady stream keeps the session
  * saving when a save takes longer than the gap between acknowledgements. Its SUBSCRIBE and UNSUBSCRIBE must be
- * answered by the first save that holds the change, not by the stream pausing. The saved subscription list is read at
- * the moment of the reply, so a reply sent before its save would show. The fixture adds the save latency: unslowed, a
- * save (about 0.4 ms on RocksDB, 1.7 ms on LMDB) is shorter than the 5 ms gap and the session goes idle between acks.
+ * answered by the first save that holds the change, not by the stream pausing. The fixture adds the save latency:
+ * unslowed, a save (about 0.4 ms on RocksDB, 1.7 ms on LMDB) is shorter than the 5 ms gap and the session goes idle
+ * between acks. The ordering proof is in unitTests/server/durableSessionSubscribeBoundedSave.test.js.
  *
  * Run:
  *   npm run test:integration -- "integrationTests/mqtt/durable-subscribe-under-load.test.ts"
@@ -34,7 +34,7 @@ const TICK_MS = 2;
 const SAVE_LATENCY_MS = 10;
 const REPLY_DEADLINE_MS = 5_000;
 const SUBACK_BOUND_MS = 1_000;
-// mqtt.js's WebSocket transport doesn't complete CONNACK on Bun, the same skip the sibling suites carry
+// mqtt.js's WebSocket transport doesn't complete CONNACK on Bun
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 for (const engine of ENGINES) {
@@ -205,7 +205,7 @@ for (const engine of ENGINES) {
 				t.diagnostic(
 					`${Math.round(rate)} msg/s; SUBACK ${Math.round(subscribed.elapsed)} ms, UNSUBACK ${Math.round(unsubscribed.elapsed)} ms`
 				);
-				ok(rate >= STREAM_PER_SECOND / 2, `the stream delivered ${Math.round(rate)} msg/s while both requests ran`);
+				ok(rate >= STREAM_PER_SECOND / 2, `the stream delivered ${Math.round(rate)} msg/s across both requests`);
 			});
 		}
 	);
