@@ -186,10 +186,7 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
-/**
- * Write preconditions are evaluated here only against a table's own verb. A resource that defines the verb itself,
- * or is not a table, receives the If-Match/If-None-Match headers to evaluate as it always did.
- */
+// Any other handler receives write preconditions unevaluated, in its request headers.
 function isTableVerb(resource, verb: string): boolean {
 	return Boolean(resource?.prototype?.getMetadata) && resource[verb] === Resource[verb];
 }
