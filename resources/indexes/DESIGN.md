@@ -679,11 +679,13 @@ wait or traversal. A zero-size page skips native work. The iterable library can 
 row at a page boundary; an exact boundary between branches can therefore start the next branch.
 
 Waiting queries publish no HTTP coverage header: a header sent before consumption cannot certify the
-pending work. The caller must consume results and check streamed errors. JSON array streams may include
-an error element such as `{ "error": "DerivedIndexLagError: ..." }`; error serialization may instead
-provide a separate `message` field. SSE/NDJSON use their existing terminal error records. HTTP 200 alone
-is not evidence of successful completion. Prefix rows can precede a later branch error. Count pages
-materialize before headers and can still return an error status. First-item HTTP status deferral is a
+pending work. The caller must consume results and check streamed errors. A JSON array stream that fails
+writes an error element such as `{ "error": "DerivedIndexLagError: ..." }` as a diagnostic and is then
+aborted without its closing `]` ([server/DESIGN.md](../../server/DESIGN.md#streaming-startup-errors));
+an error a `mapError` mapper recovers is instead a row with a separate `message` field. SSE/NDJSON use
+their existing terminal error records. HTTP 200 alone is not evidence of successful completion. Prefix
+rows can precede a later branch error. Count pages materialize before headers and can still return an
+error status. First-item HTTP status deferral is a
 separate follow-up (#2670), not a guarantee here. Direct custom-index arrays retain `indexCoverage`;
 ordinary native promises expose it before awaiting, while waiting promises expose it on resolved arrays
 except for the zero-size fast path, which skips certification and carries no proof.
