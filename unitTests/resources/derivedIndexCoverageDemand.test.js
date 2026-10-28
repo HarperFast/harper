@@ -59,6 +59,12 @@ describe('derived-index coverage waits on a non-owner worker', function () {
 	it('answers a wait after an unindexed-table commit without the owner flush cadence', async () => {
 		const elapsed = [];
 		const { ownerEpoch } = index.derivedHost.readiness();
+		let requests = 0;
+		const coverageRequests = Product.auditStore.getUserSharedBuffer(
+			`derived-index:hnsw:${Product.indices.vector.name}:coverage`,
+			new ArrayBuffer(1),
+			{ callback: () => requests++ }
+		);
 		// A query racing the owner's commit drain can be answered by that drain; the 50 ms pause lets it
 		// finish first, so only a demanded drain can answer in time.
 		for (const pauseMilliseconds of [50, 50, 50, 50, 50, 0, 0, 0]) {
@@ -72,6 +78,8 @@ describe('derived-index coverage waits on a non-owner worker', function () {
 			`coverage waits took ${elapsed.join(', ')} ms`
 		);
 		assert.equal(index.derivedHost.readiness().ownerEpoch, ownerEpoch, 'the main thread must stay the owner');
+		coverageRequests.cancel();
+		assert(requests > 0, 'the worker must request coverage from the owning thread');
 	});
 
 	it('still sees its own indexed write after the wait', async () => {
