@@ -8,8 +8,7 @@ export class StorageEngineInfo extends Resource {
 	}
 }
 
-// A save that takes longer than the gap between acknowledgements keeps the session saving, as a contended disk does.
-// Unslowed, a save is shorter than the gap at 200 msg/s and the session goes idle between acknowledgements.
+// Slows session saves past the gap between acknowledgements, as a contended disk does.
 const sessions = databases.system.hdb_durable_session;
 const put = sessions.put;
 let latencyMs = 0;

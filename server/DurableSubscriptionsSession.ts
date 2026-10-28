@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import {
 	ORIGIN_ID,
 	admitCheckpoint,
@@ -1627,7 +1628,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.settleSaveWaiters(saveNumber);
 	}
 	endedError() {
-		return new Error(`MQTT session ${this.sessionId} has ended`);
+		return new SessionEndedError(this.sessionId);
 	}
 	settleSaveWaiters(saveNumber: number, error?: Error) {
 		if (this.saveWaiters.length === 0) return;
@@ -1702,6 +1703,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		super.disconnect(clientTerminated);
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
 		this.seal((changed || this.dirty || this.hasInFlight()) && !this.discarded);
+	}
+}
+
+class SessionEndedError extends ClientError {
+	constructor(sessionId: string) {
+		super(`MQTT session ${sessionId} has ended`, 409);
+		this.name = 'SessionEndedError';
 	}
 }
 
