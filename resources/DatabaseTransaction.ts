@@ -763,6 +763,10 @@ export type TransactionWrite = {
 	appendedAuditEntry?: boolean;
 	// sticky: such a staging ran with abort markers off, so an aborted attempt can leave its entry readable
 	appendedUnmarkedAuditEntry?: boolean;
+	// what the audit entry a non-retry staging appended chains to: a retry appends none and restages from it
+	loggedType?: string;
+	loggedPreviousVersion?: number;
+	loggedPreviousRefs?: Array<{ version: number; nodeId: number }>;
 	// the audit entry recordUpdater appended for this write in its current staging (handlers pass the
 	// write as its `write` option): 'none' until it appends, 'local' for a LOCAL_ONLY entry, which the
 	// sender never replicates. Reset per fresh staging so an earlier staging's append does not carry onto
