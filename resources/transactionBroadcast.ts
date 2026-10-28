@@ -320,9 +320,13 @@ function certifyProgress(subscriptions: any, readEntries: boolean): void {
 		subscriptions.recheckedCeiling = ceiling;
 		subscriptions.recheckPending = true;
 	}
-	if (!(ceiling < through) && subscriptions.recaptureTimer) {
-		clearTimeout(subscriptions.recaptureTimer);
-		subscriptions.recaptureTimer = undefined;
+	if (!(ceiling < through)) {
+		// a follow-up a synchronous drain requested while this pass was pending has nothing left to certify
+		subscriptions.recheckPending = false;
+		if (subscriptions.recaptureTimer) {
+			clearTimeout(subscriptions.recaptureTimer);
+			subscriptions.recaptureTimer = undefined;
+		}
 	}
 	// a same-thread registry runs no capture tick (its pass would drain the cross-thread registry's log range), so
 	// a hold that ends in an abort is re-captured on its own timer
