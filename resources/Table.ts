@@ -6633,7 +6633,8 @@ export function makeTable(options): TableResourceClass {
 							(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
 								(isRocksDB &&
 								audit &&
-								fullUpdate &&
+								// a full update that merged (unverifiable history) did not replace the body
+								applyAsReplacement &&
 								precedesExisting >= 0 &&
 								!incrementalUpdateToApply &&
 								!isCopyApply &&
