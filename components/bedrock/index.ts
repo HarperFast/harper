@@ -363,7 +363,7 @@ interface EmbedTruncation {
 	maxChars?: number;
 }
 
-const COHERE_EMBED_V3 = /\bcohere\.embed-(?:english|multilingual)-v3\b/i;
+const COHERE_EMBED_V3 = /\bcohere\.embed-(?:english|multilingual)(?:-light)?-v3\b/i;
 const COHERE_EMBED_V4 = /\bcohere\.embed-v4\b/i;
 const COHERE_V3_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'END', maxChars: 2048 });
 const COHERE_V4_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'RIGHT' });

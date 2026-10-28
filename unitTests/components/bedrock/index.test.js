@@ -252,6 +252,7 @@ describe('BedrockBackend', () => {
 				for (const [model, truncate] of [
 					['cohere.embed-english-v3', true],
 					['cohere.embed-multilingual-v3', true],
+					['cohere.embed-english-light-v3', true],
 					['cohere.embed-v4:0', true],
 					['us.cohere.embed-v4:0', true],
 					['amazon.titan-embed-text-v2:0', undefined],
