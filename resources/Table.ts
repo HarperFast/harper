@@ -520,6 +520,17 @@ export function ignoreAlreadyDropped(error: any): void {
 	throw error;
 }
 
+function isRecordOf(id: Id | undefined, target): boolean {
+	return (
+		id !== undefined &&
+		target?.id != null &&
+		!target.isCollection &&
+		!target.property &&
+		!target.select &&
+		writeKeyId(target.id) === writeKeyId(id)
+	);
+}
+
 function declineCondition(condition, message: string): void {
 	if (!condition.optional) throw new ClientError(message, 501);
 	condition.declined = true;
@@ -3007,7 +3018,7 @@ export function makeTable(options): TableResourceClass {
 				!condition.prepared &&
 				// an own verb may look up other records first, or delegate through a base table class
 				(condition.optional
-					? condition.target === target && condition.Resource.primaryStore === primaryStore
+					? condition.Resource.primaryStore === primaryStore && isRecordOf(condition.recordId, target)
 					: condition.Resource === this)
 			) {
 				condition.prepared = true;
@@ -5281,7 +5292,10 @@ export function makeTable(options): TableResourceClass {
 						// standard path, handle arrays as multiple updates, and otherwise do a direct update
 						if (Array.isArray(record)) {
 							const condition = context?.[WRITE_CONDITION];
-							if (condition?.Resource.primaryStore === primaryStore)
+							if (
+								condition?.Resource.primaryStore === primaryStore &&
+								(!condition.optional || isRecordOf(condition.id, target))
+							)
 								declineCondition(condition, 'Conditional writes require a single record body');
 							// Capture each element's operation synchronously (before any async `@embed`
 							// hook resolves): `#savingOperation` is a single field that parallel writes

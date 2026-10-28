@@ -770,10 +770,31 @@ describe('REST preconditions with real table transactions', () => {
 				return Row.put(target, data, context);
 			}
 		}
+		class ById extends Row {
+			static put(target, data, context) {
+				return super.put(target.id, data, context);
+			}
+		}
+		class ByIdThroughBase extends Row {
+			static put(target, data, context) {
+				return Row.put(target.id, data, context);
+			}
+		}
+		class BatchFirst extends Modern {
+			static async put(target, data, context) {
+				const collection = new RequestTarget();
+				collection.isCollection = true;
+				await super.put(collection, [{ id: 'audit', n: 1 }], context);
+				return super.put(target, data, context);
+			}
+		}
 		for (const [name, Class] of [
 			['ReadsFirst', ReadsFirst],
 			['WritesCompanion', WritesCompanion],
 			['ThroughBase', ThroughBase],
+			['ById', ById],
+			['ByIdThroughBase', ByIdThroughBase],
+			['BatchFirst', BatchFirst],
 		]) {
 			resources.set(name, Class, { rest: true });
 			await Row.put('bound', { n: 1 });

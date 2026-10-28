@@ -198,6 +198,19 @@ function evaluatesWritePreconditions(resource, method: string): boolean {
 	);
 }
 
+// The record an own verb's optional condition guards, parsed as Resource parses a target: the verb may pass that record
+// on by id rather than by the target object.
+function conditionRecordId(resource, target: RequestTarget, request) {
+	if (target.isCollection || target.select || target.id == null) return;
+	let id = target.id;
+	if (typeof id === 'string' && !resource.directURLMapping) {
+		const parsed = resource.parsePath(id, request);
+		if (parsed?.property !== undefined) return;
+		id = parsed && resource.coerceId(parsed);
+	}
+	return id ?? undefined;
+}
+
 function unapplied(writeCondition): boolean {
 	return Boolean(writeCondition && !writeCondition.consumed && !writeCondition.optional);
 }
@@ -415,11 +428,12 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		) {
 			if (!['PUT', 'PATCH', 'DELETE'].includes(method))
 				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
+			const optional = definesOwnVerb(resource, method);
 			writeCondition = {
 				Resource: resource,
 				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
-				optional: definesOwnVerb(resource, method),
-				target,
+				optional,
+				recordId: optional ? conditionRecordId(resource, target, request) : undefined,
 				consumed: false,
 				release: undefined,
 				check(entry) {
