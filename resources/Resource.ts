@@ -1105,39 +1105,6 @@ export function readSelectedProperty(object: any, property: string) {
  */
 function selectFromObject(object, propertyResolvers, context, selectsPrototype: boolean) {
 	// TODO: eventually we will do aggregate functions here
-<<<<<<< HEAD
-	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
-	if (record) {
-		const ownData = object.getChanges?.();
-		return (property) => {
-			let value, resolver;
-			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
-				return value;
-			}
-			if (ownData && property in ownData) {
-				return ownData[property];
-			} else if (
-				propertyResolvers &&
-				Object.hasOwn(propertyResolvers, property) &&
-				(resolver = propertyResolvers[property])
-			) {
-				return resolver(object, context);
-			} else return record[property];
-		};
-	} else if (propertyResolvers) {
-		return (property) => {
-			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
-			if (resolver) return resolver(object, context);
-			const value = object[property];
-			return typeof value === 'function' ? undefined : value;
-		};
-	} else
-		return (property) => {
-			const value = object[property];
-			return typeof value === 'function' ? undefined : value;
-		};
-}
-=======
 	return (property) => readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype);
 }
 export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
@@ -1147,39 +1114,9 @@ function settleAll(results: any[]) {
 	}
 	return results;
 }
-export function hasNestedQueryOptions(property) {
-	return (
-		property &&
-		typeof property === 'object' &&
-		((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
-			property.operator !== undefined ||
-			property.limit !== undefined ||
-			property.offset !== undefined ||
-			(typeof property.sort === 'object' && property.sort))
-	);
-}
-
-export function assertNestedQueryOptions(select, resource) {
-	for (const property of Array.isArray(select) ? select : []) {
-		if (!property || typeof property !== 'object') continue;
-		const related = resource?.propertyResolvers?.[property.name]?.definition?.tableClass;
-		if (
-			((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
-				property.operator !== undefined) &&
-			(!resource?._prepareRelationshipSelection || !related)
-		)
-			throw new ClientError('Nested query constraints require a relationship attribute');
-		assertNestedQueryOptions(property.select || (Array.isArray(property) ? property : undefined), related);
-	}
-}
-
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
-<<<<<<< HEAD
-	let subTransforms;
-=======
 	let subTransforms: Map<any, (object: any) => any>;
 	if (
 		select === '*' ||
@@ -1188,29 +1125,13 @@ export function transformForSelect(select, resource) {
 		return function transform(object) {
 			return typeof object?.then === 'function' ? object.then(transform) : object;
 		};
-	let relationshipSelections;
-	if (resource?._prepareRelationshipSelection)
-		for (const property of Array.isArray(select) ? select : []) {
-			if (propertyResolvers?.[property.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
-				(relationshipSelections ||= Object.create(null))[property.name] = resource._prepareRelationshipSelection(
-					property,
-					context ?? contextStorage.getStore()
-				);
-			}
-		}
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
-<<<<<<< HEAD
-			if (Array.isArray(object)) return object.map(transform);
-			return selectFromObject(object, propertyResolvers, context)(select);
-=======
 			if (Array.isArray(object)) return settleAll(object.map(transform));
 			return readPropertyFromObject(object, select, propertyResolvers, context, select === '__proto__');
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 		};
 	else if (Array.isArray(select)) {
 		// if it is an array, return an array
@@ -1219,21 +1140,9 @@ export function transformForSelect(select, resource) {
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
-<<<<<<< HEAD
-				if (Array.isArray(object)) return object.map(transform);
-				const results = [];
-				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
-				for (const property of select) {
-					results.push(getProperty(property));
-				}
-				return results;
-=======
 				if (Array.isArray(object)) return settleAll(object.map(transform));
 				const results = [];
-				const getProperty = handleProperty(
-					selectFromObject(object, propertyResolvers, context, selectsPrototype),
-					object
-				);
+				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
 				let pending = false;
 				for (const property of select) {
 					const value = property === '*' ? object : getProperty(property);
@@ -1241,7 +1150,6 @@ export function transformForSelect(select, resource) {
 					results.push(value);
 				}
 				return pending ? Promise.all(results) : results;
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 			};
 		const forceNulls = (select as any).forceNulls;
 		const selectsWildcard = select.includes('*');
@@ -1249,21 +1157,6 @@ export function transformForSelect(select, resource) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
-<<<<<<< HEAD
-				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
-			// finally the case of returning objects
-			const selectedData = {};
-			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
-			if (selectsPrototype)
-				Object.defineProperty(selectedData, '__proto__', {
-					value: undefined,
-					writable: true,
-					enumerable: true,
-					configurable: true,
-				});
-			let promises;
-			for (const property of select) {
-=======
 				return settleAll(object.map((value) => (value && typeof value === 'object' ? transform(value) : value)));
 			// a tracked instance's toJSON() is its current view: record, folded pending changes and own fields
 			const wildcardSource =
@@ -1276,10 +1169,7 @@ export function transformForSelect(select, resource) {
 						: object.getRecord());
 			// finally the case of returning objects
 			const selectedData = {};
-			const getProperty = handleProperty(
-				selectFromObject(object, propertyResolvers, context, selectsPrototype),
-				object
-			);
+			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
 			if (selectsPrototype) Object.defineProperty(selectedData, '__proto__', ownDataProperty);
 			let promises;
 			for (const property of select) {
@@ -1293,7 +1183,6 @@ export function transformForSelect(select, resource) {
 						}
 					continue;
 				}
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {
@@ -1308,10 +1197,6 @@ export function transformForSelect(select, resource) {
 			if (promises) return Promise.all(promises).then(() => selectedData);
 			return selectedData;
 		};
-<<<<<<< HEAD
-	} else throw new Error('Invalid select argument type ' + typeof select);
-	function handleProperty(getProperty) {
-=======
 	} else throw new ClientError('Invalid select, expected an attribute name or a list of attributes');
 	function projectNested(property, value) {
 		if (!value || typeof value !== 'object' || value instanceof Date) return value;
@@ -1331,109 +1216,26 @@ export function transformForSelect(select, resource) {
 				: undefined;
 		return nestedSelectTransform(property, targetResource);
 	}
-	function handleProperty(getProperty, object) {
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
+	function handleProperty(getProperty) {
 		return (property) => {
 			if (typeof property === 'string') {
 				return getProperty(property);
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
-<<<<<<< HEAD
-					const value = getProperty(property.name);
-					if (!value || typeof value !== 'object' || value instanceof Date) return value;
-					if (!subTransforms) subTransforms = Object.create(null);
-					// TODO: Get the resource, cache this transform, and apply above
-					let transform = subTransforms[property.name];
-					if (!transform) {
-						const resource =
-							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
-								? propertyResolvers[property.name]?.definition?.tableClass
-								: undefined;
-						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
-					}
-					return transform(value);
-=======
-					const selection = relationshipSelections?.[property.name];
-					if (selection)
-						return selection(typeof object.getRecord === 'function' ? object.getRecord() || object : object);
 					return projectNested(property, getProperty(property.name));
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 				} else return getProperty(property);
 			} else return property;
 		};
 	}
 }
-<<<<<<< HEAD
-=======
 
-/** The transform for a `{ name, select?, sort?, offset?, limit? }` selector's value; `targetResource` supplies resolvers. */
+/** The transform for a `{ name, select? }` selector's value; `targetResource` supplies resolvers. */
 export function nestedSelectTransform(property: any, targetResource?: any): (value: any) => any {
 	const subSelect = property.select ?? (Array.isArray(property) ? property : null);
-	const innerTransform =
-		subSelect && !(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray)
-			? transformForSelect(subSelect, targetResource)
-			: (value) => value;
-	const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
-	for (let clause = typeof property.sort === 'object' ? property.sort : null; clause; clause = clause.next) {
-		sortClauses.push(clause);
-	}
-	const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
-	const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
-	if (sortClauses.length === 0 && offset === undefined && limit === undefined) return innerTransform;
-	return (value) =>
-		innerTransform(Array.isArray(value) ? sortAndSliceArray(value, sortClauses, offset, limit, targetResource) : value);
-}
-
-export function sortAndSliceArray(
-	resolvedValue: any[],
-	sortClauses: { attribute: string | string[]; descending?: boolean }[],
-	offset: number | undefined,
-	limit: number | undefined,
-	targetResource?: any,
-	context?: any
-): any[] {
-	let ordered = resolvedValue;
-	const clauseCount = sortClauses.length;
-	if (clauseCount > 0 && resolvedValue.length > 1) {
-		const resolvers = targetResource?.propertyResolvers;
-		const ctx = context ?? targetResource?.getContext?.();
-		const n = resolvedValue.length;
-		const orderedKeys: any[][] = new Array(clauseCount);
-		for (let c = 0; c < clauseCount; c++) {
-			const attr = sortClauses[c].attribute;
-			const col = new Array(n);
-			for (let i = 0; i < n; i++) {
-				col[i] = getComparableKey(resolvedValue[i], attr, resolvers, ctx);
-			}
-			orderedKeys[c] = col;
-		}
-		const positions = new Array<number>(n);
-		for (let i = 0; i < n; i++) positions[i] = i;
-		positions.sort((posA, posB) => {
-			for (let c = 0; c < clauseCount; c++) {
-				const keys = orderedKeys[c];
-				const diff = sortClauses[c].descending
-					? compareKeys(keys[posB], keys[posA])
-					: compareKeys(keys[posA], keys[posB]);
-				if (diff !== 0) return diff;
-			}
-			return 0;
-		});
-		ordered = new Array(n);
-		for (let i = 0; i < n; i++) ordered[i] = resolvedValue[positions[i]];
-	}
-	if (offset !== undefined || limit !== undefined) {
-		const start = offset ?? 0;
-		ordered = ordered.slice(start, limit !== undefined ? start + limit : undefined);
-	}
-	return ordered;
-}
-
-export function convertToComparableKeys(value) {
-	if (value instanceof Date) return value.getTime();
-	if (Array.isArray(value)) return value.map(convertToComparableKeys);
-	return value;
+	return subSelect && !(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray)
+		? transformForSelect(subSelect, targetResource)
+		: (value) => value;
 }
 
 function readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype: boolean) {
@@ -1456,23 +1258,3 @@ function readPropertyFromObject(object, property, propertyResolvers, context, se
 	value = selectsPrototype ? readSelectedProperty(source, property) : source[property];
 	return typeof value === 'function' ? undefined : value;
 }
-
-function getComparableKey(item, attribute, resolvers, ctx) {
-	if (item == null || typeof item !== 'object') return undefined;
-	if (Array.isArray(attribute)) {
-		let value = item;
-		let currentResolvers = resolvers;
-		for (const part of attribute) {
-			if (value == null || typeof value !== 'object') return undefined;
-			value = readPropertyFromObject(value, part, currentResolvers, ctx, part === '__proto__');
-			currentResolvers =
-				currentResolvers && Object.hasOwn(currentResolvers, part)
-					? (currentResolvers[part]?.definition || currentResolvers[part]?.elements?.definition)?.tableClass
-							?.propertyResolvers
-					: undefined;
-		}
-		return convertToComparableKeys(value);
-	}
-	return convertToComparableKeys(readPropertyFromObject(item, attribute, resolvers, ctx, attribute === '__proto__'));
-}
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)

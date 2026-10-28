@@ -29,23 +29,15 @@ import type { User } from '../security/user.ts';
 import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentinel } from './typeParity.ts';
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
-<<<<<<< HEAD
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
-=======
-import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.ts';
 import {
 	Resource,
 	SEARCH_AUTHORIZATION,
-	WRITE_CONDITION,
 	transformForSelect,
 	nestedSelectTransform,
-	defaultAllowReads,
-	convertToComparableKeys,
 	ownDataProperty,
 	readSelectedProperty,
 } from './Resource.ts';
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -6430,7 +6422,7 @@ export function makeTable(options): TableResourceClass {
 				ensure_loaded &&
 				hasSourceGet &&
 				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
-				!(typeof select === 'string' ? [select] : Array.isArray(select) ? select : null)?.every((attribute) => {
+				!(typeof select === 'string' ? [select] : select)?.every((attribute) => {
 					let attribute_name;
 					if (typeof attribute === 'object') {
 						attribute_name = attribute.name;
@@ -6441,29 +6433,10 @@ export function makeTable(options): TableResourceClass {
 			) {
 				checkLoaded = true;
 			}
-<<<<<<< HEAD
-<<<<<<< HEAD
-			let transformCache;
-=======
-			// keyed by selector descriptor: one name can be selected twice with different sub-selects
-=======
->>>>>>> e1d3f3395 (docs: widen the lone-wildcard exception; drop a restating comment)
 			let transformCache: Map<any, (value: any) => any>;
 			const selectsPrototype =
 				select === '__proto__' ||
 				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
-			let relationshipSelections;
-			for (const attribute of Array.isArray(select) ? select : []) {
-				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
-					(relationshipSelections ||= Object.create(null))[attribute.name] = this._prepareRelationshipSelection(
-						attribute,
-						context,
-						filtered,
-						ensure_loaded
-					);
-				}
-			}
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 			const source = this.source;
 			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
@@ -6553,23 +6526,21 @@ export function makeTable(options): TableResourceClass {
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
-							const handleResolvedValue = (value: any): Promise<void> | void => {
+							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) {
 									if (attribute_name !== attribute && value && typeof value === 'object' && !(value instanceof Date)) {
 										value = projectPlainValue((transformCache ??= new Map()), attribute, value);
-										if (typeof value?.then === 'function')
-											return value.then((value: any) => callback(value, attribute_name));
+										if (typeof value?.then === 'function') {
+											if (!promises) promises = [];
+											promises.push(value.then((value: any) => callback(value, attribute_name)));
+											return;
+										}
 									}
-									callback(value, attribute_name);
-									return;
+									return callback(value, attribute_name);
 								}
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
-<<<<<<< HEAD
-									if (!transformCache) transformCache = {};
-=======
 									if (!transformCache) transformCache = new Map();
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 									// Use the target table's own read transaction; each table's readTxn is
 									// scoped to its RocksDB column family and cannot read another table's store.
 									const targetReadTxn =
@@ -6621,51 +6592,19 @@ export function makeTable(options): TableResourceClass {
 										return;
 									} else {
 										value = transform.call(this, value);
-<<<<<<< HEAD
-										if (value?.then) {
+										if (typeof value?.then === 'function') {
 											if (!promises) promises = [];
 											promises.push(value.then((value: any) => callback(value, attribute_name)));
 											return;
 										}
-=======
-										if (typeof value?.then === 'function')
-											return value.then((value: any) => callback(value, attribute_name));
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 									}
 								}
 								callback(value, attribute_name);
 							};
-<<<<<<< HEAD
-							if (value?.then) {
+							if (typeof value?.then === 'function') {
 								if (!promises) promises = [];
 								promises.push(value.then(handleResolvedValue));
 							} else handleResolvedValue(value);
-							return;
-						} else {
-							value = record[attribute_name];
-							if (value && typeof value === 'object' && attribute_name !== attribute) {
-								const subTransform = TableResource.transformEntryForSelect(
-									attribute.select || attribute,
-									context,
-									readTxn,
-									null
-								);
-								// Plain JSON nested values: arrays project per-element so that
-								// `select: [{ name: 'addresses', select: ['city'] }]` returns
-								// `addresses: [{ city }, { city }]` rather than a single object.
-								if (Array.isArray(value)) {
-									value = value.map((item) =>
-										item && typeof item === 'object' ? subTransform({ value: item } as any) : item
-									);
-								} else if (!(value instanceof Date)) {
-									value = subTransform({ value } as any);
-=======
-							const pending =
-								typeof value?.then === 'function' ? value.then(handleResolvedValue) : handleResolvedValue(value);
-							if (pending) {
-								if (!promises) promises = [];
-								promises.push(pending);
-							}
 							return;
 						} else {
 							value = selectsPrototype ? readSelectedProperty(record, attribute_name) : record[attribute_name];
@@ -6676,7 +6615,6 @@ export function makeTable(options): TableResourceClass {
 									if (!promises) promises = [];
 									promises.push(value.then((value: any) => callback(value, attribute_name)));
 									return;
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 								}
 							}
 						}
@@ -6691,54 +6629,26 @@ export function makeTable(options): TableResourceClass {
 						if ((select as any).asArray) {
 							selected = [];
 							select.forEach((attribute, index) => {
-								if (attribute === '*') select[index] = record;
+								if (attribute === '*') selected[index] = record;
 								else selectAttribute(attribute, (value) => (selected[index] = value));
 							});
-<<<<<<< HEAD
 						} else {
 							selected = {};
+							if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
 							const forceNulls = (select as any).forceNulls;
 							for (const attribute of select) {
 								if (attribute === '*')
 									for (const key in record) {
-										selected[key] = record[key];
+										const value = record[key];
+										if (typeof value === 'function') continue;
+										if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
+										else selected[key] = value;
 									}
 								else
 									selectAttribute(attribute, (value, attribute_name) => {
 										if (value === undefined && forceNulls) value = null;
 										selected[attribute_name] = value;
 									});
-=======
-						} else if (Array.isArray(select)) {
-							if ((select as any).asArray) {
-								selected = [];
-								select.forEach((attribute, index) => {
-									if (attribute === '*') selected[index] = record;
-									else selectAttribute(attribute, (value) => (selected[index] = value));
-								});
-							} else {
-								selected = {};
-								if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
-								const forceNulls = (select as any).forceNulls;
-								for (const attribute of select) {
-									if (attribute === '*')
-										for (const key in record) {
-											const value = record[key];
-											if (typeof value === 'function') continue;
-											if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
-											else selected[key] = value;
-										}
-									else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
-										let value = record[attribute];
-										if (typeof value === 'function') value = undefined;
-										selected[attribute] = value === undefined && forceNulls ? null : value;
-									} else
-										selectAttribute(attribute, (value, attribute_name) => {
-											if (value === undefined && forceNulls) value = null;
-											selected[attribute_name] = value;
-										});
-								}
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 							}
 						}
 					} else throw new ClientError('Invalid select' + select);
@@ -6749,15 +6659,6 @@ export function makeTable(options): TableResourceClass {
 				}
 				return record;
 			};
-<<<<<<< HEAD
-=======
-			(transform as any).return = () => {
-				selectionStopped = true;
-				if (relationshipSelections)
-					for (const child of Object.values(relationshipSelections)) (child as any).return?.();
-				if (transformCache) for (const child of transformCache.values()) (child as any).return?.();
-			};
->>>>>>> 0ab28f8b6 (fix: project search select() sub-objects without the outer table's resolvers)
 			return transform;
 		}
 

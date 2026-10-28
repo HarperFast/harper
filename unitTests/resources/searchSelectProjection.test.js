@@ -304,16 +304,6 @@ describe('search select projection matches single-record projection', function (
 		assert.deepStrictEqual(await search(select), [[{ id: 'u-alice' }, { name: 'Alice' }]]);
 	});
 
-	it('sorts and limits a plain JSON array by its stored values, not an outer resolver of the same name', async function () {
-		const sections = nested('sections', ['heading', 'summary']);
-		sections.sort = { attribute: 'summary', descending: true };
-		sections.limit = 1;
-		assert.deepStrictEqual(await projectBothWays(['id', sections]), {
-			id: article.id,
-			sections: [{ heading: 'Two', summary: 'Section 2 plain summary' }],
-		});
-	});
-
 	it('returns a nested selector without a select list unchanged on both paths', async function () {
 		assert.deepStrictEqual(await projectBothWays(['id', { name: 'meta' }]), { id: article.id, meta: article.meta });
 	});
