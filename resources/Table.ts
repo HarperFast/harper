@@ -4396,7 +4396,12 @@ export function makeTable(options): TableResourceClass {
 					const priorStagedOp = priorStagedWrite(write);
 					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
 					const residencySlot = residencyPolicy?.byAttribute
-						? (options?.residencySlot ?? priorStagedOp?.stagedEntry.residencySlot ?? existingEntry?.residencySlot)
+						? retryResidencySlot(
+								write,
+								options?.residencySlot ?? priorStagedOp?.stagedEntry.residencySlot ?? existingEntry?.residencySlot,
+								transaction,
+								localShardingWrite
+							)
 						: undefined;
 					const owners =
 						residencyPolicy &&
@@ -4545,7 +4550,12 @@ export function makeTable(options): TableResourceClass {
 						return;
 					}
 					const residencySlot = residencyPolicy?.byAttribute
-						? (options?.residencySlot ?? existingEntry?.residencySlot)
+						? retryResidencySlot(
+								write,
+								options?.residencySlot ?? existingEntry?.residencySlot,
+								transaction,
+								localShardingWrite
+							)
 						: undefined;
 					const residency = residencyPolicy
 						? captureResidencyOwners(
@@ -6182,10 +6192,25 @@ export function makeTable(options): TableResourceClass {
 					if (residencyPolicy?.byAttribute && !patchesStub) write.completeResidencyRecord = recordToStore;
 					if (residencyPolicy) {
 						if (!transaction?.isRetry) write.requiresOwnerConfirmation = false;
-						const slot =
+						let slot =
 							residencyPolicy.byAttribute && patchesStub
-								? (options?.residencySlot ?? baseEntry.residencySlot)
-								: calculateResidencySlot(id, recordToStore);
+								? retryResidencySlot(
+										write,
+										options?.residencySlot ?? baseEntry.residencySlot,
+										transaction,
+										localShardingWrite
+									)
+								: calculateWriteResidencySlot(write, recordToStore, transaction, localShardingWrite);
+						if (isRetainedResidencyWrite(write, transaction, localShardingWrite)) {
+							if (write.residencyBaseSlot === write.residencyOwnerSlot && baseEntry?.residencySlot !== slot)
+								slot = retryResidencySlot(
+									write,
+									slot,
+									transaction,
+									localShardingWrite,
+									'the retry base now requires a slot move'
+								);
+						} else write.residencyBaseSlot = baseEntry?.residencySlot;
 						const owners = captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite, transaction);
 						residencyId = undefined;
 						if (residencyPolicy.byAttribute) residencySlot = slot;
@@ -6583,7 +6608,12 @@ export function makeTable(options): TableResourceClass {
 					let residencySlot: number | undefined;
 					if (residencyPolicy) {
 						residencySlot = residencyPolicy.byAttribute
-							? (options?.residencySlot ?? priorStaged?.residencySlot ?? existingEntry?.residencySlot)
+							? retryResidencySlot(
+									write,
+									options?.residencySlot ?? priorStaged?.residencySlot ?? existingEntry?.residencySlot,
+									transaction,
+									localShardingWrite
+								)
 							: undefined;
 						if (residencyPolicy.byAttribute && residencySlot === undefined)
 							throw new ClientError(
@@ -11586,7 +11616,7 @@ export function makeTable(options): TableResourceClass {
 							if (existingEntry && !residencyPolicy) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
-							slot = residencyPolicy && calculateResidencySlot(id, recordToStore);
+							slot = residencyPolicy && calculateWriteResidencySlot(sourceWrite, recordToStore, transaction, true);
 							const residency = residencyPolicy
 								? captureResidencyOwners(sourceWrite, slot, false, true, transaction)
 								: residencyFromFunction(TableResource.getResidency(recordToStore, context));
@@ -12112,6 +12142,45 @@ export function makeTable(options): TableResourceClass {
 			if (reason) throw new DatabaseShardingHeldError(databaseName, reason);
 		}
 	}
+	function isRetainedResidencyWrite(write: any, txn: any, localWrite: boolean): boolean {
+		return localWrite && txn?.isRetry && write.residencyTransaction === txn && Boolean(write.residencyOwners);
+	}
+	function retryResidencySlot(write: any, slot: number, txn: any, localWrite: boolean, reason?: string): number {
+		if (!isRetainedResidencyWrite(write, txn, localWrite) || (!reason && slot === write.residencyOwnerSlot))
+			return slot;
+		if (typeof txn.usesAbortMarkers === 'function' && txn.usesAbortMarkers() === true) {
+			const error = new ResidencyPlacementError(
+				`Slot changed during native retry for table ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)}; retry the write`,
+				409
+			);
+			(error as any).retryable = true;
+			throw error;
+		}
+		// Without abort markers the logged placement cannot be retracted.
+		if (write.warnedResidencyRetry !== txn) {
+			write.warnedResidencyRetry = txn;
+			logger.warn?.(
+				`Logged retry without abort markers for table ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)} keeps admitted slot ${write.residencyOwnerSlot}: ${reason ?? `merged slot ${slot}`}`
+			);
+		}
+		return write.residencyOwnerSlot;
+	}
+	function calculateWriteResidencySlot(write: any, record: any, txn: any, localWrite: boolean): number {
+		if (!isRetainedResidencyWrite(write, txn, localWrite)) return calculateResidencySlot(write.key, record);
+		let slot: number;
+		try {
+			slot = calculateResidencySlot(write.key, record);
+		} catch (error) {
+			return retryResidencySlot(
+				write,
+				undefined,
+				txn,
+				localWrite,
+				`invalid merged slot: ${String(error.message).slice(0, 256)}`
+			);
+		}
+		return retryResidencySlot(write, slot, txn, localWrite);
+	}
 	function captureResidencyOwners(
 		write: any,
 		slot: number,
@@ -12123,17 +12192,6 @@ export function makeTable(options): TableResourceClass {
 		if (replay) return residencyIsLocal(databaseName, slot, residencyPolicy.slots) ? [server.hostname] : [];
 		if (txn?.isRetry && write.residencyTransaction === txn && write.residencyOwners) {
 			if (write.residencyOwnerSlot === slot) return write.residencyOwners;
-			if (localWrite && typeof txn.usesAbortMarkers === 'function' && txn.usesAbortMarkers() === true) {
-				const error = new ResidencyPlacementError(
-					`Slot changed during native retry for table ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)}; retry the write`,
-					409
-				);
-				(error as any).retryable = true;
-				throw error;
-			}
-			logger.warn?.(
-				`Slot changed during a logged retry without abort markers for ${databaseName}.${tableName} record ${String(keyArrayToString(write.key)).slice(0, 256)}; the new owners may not receive the complete record`
-			);
 			return capturedResidencyIsLocal(write.residencyOwners, slot) ? [server.hostname] : [];
 		}
 		write.residencyTransaction = txn;

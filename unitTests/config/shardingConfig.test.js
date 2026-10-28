@@ -64,6 +64,22 @@ describe('Sharding configuration repair', () => {
 			}
 		}
 	);
+	for (const failure of ['rejected', 'unreadable', 'closed'])
+		it(`does not certify a failed sharding configuration observer (${failure})`, async () => {
+			const { EventEmitter } = require('node:events');
+			const { watchShardingConfiguration } = require('#src/config/shardingConfiguration');
+			const watcher = new EventEmitter();
+			watcher.config = failure === 'unreadable' ? undefined : { replication: {} };
+			watcher.ready = failure === 'rejected' ? Promise.reject(new Error('projection failed')) : Promise.resolve();
+			const observer = watchShardingConfiguration(watcher);
+			if (failure === 'closed') watcher.emit('close');
+			try {
+				await assert.rejects(observer.ready, /projection failed|Sharding configuration is unavailable/);
+			} finally {
+				observer.stop();
+			}
+		});
+
 	for (const section of [false, true])
 		it(`restores the startup shard list through set_configuration (section=${section})`, async () => {
 			const { setConfiguration, initConfig, getConfigFilePath } = require('#src/config/configUtils');

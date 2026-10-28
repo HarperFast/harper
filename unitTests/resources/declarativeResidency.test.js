@@ -271,7 +271,7 @@ const { transaction } = require('#src/resources/transaction');
 			}
 		});
 
-	it('preserves the logged transaction on an unsupported changed-slot retry (known delivery gap)', async function () {
+	it('keeps the admitted slot on an unmarked changed-slot retry', async function () {
 		if (
 			typeof require('../rocksdbBindings.mts').rocksdbBindings().Transaction.prototype.usesAbortMarkers === 'function'
 		)
@@ -337,9 +337,9 @@ const { transaction } = require('#src/resources/transaction');
 				'RETRY_ONLY_TRANSITION',
 				JSON.stringify({ slot: row.residencySlot, flags: row.metadataFlags, value: row.value, audit, confirmations })
 			);
-			assert.equal(row.residencySlot, 1);
-			assert.ok(row.metadataFlags & INVALIDATED);
-			assert.equal(row.value.body, undefined);
+			assert.equal(row.residencySlot, 0);
+			assert.equal(row.metadataFlags & INVALIDATED, 0);
+			assert.equal(row.value.body, 'concurrent');
 			assert.ok(
 				audit.every((entry) => entry.slot === 0),
 				'every durable append targets the original local slot'
@@ -1229,12 +1229,12 @@ const { transaction } = require('#src/resources/transaction');
 						'the original native handle reaches its outcome'
 					);
 					const stored = RetryRecords.primaryStore.getEntry(id);
-					assert.equal(stored.residencySlot, fullUpdate ? remoteSlot : localSlot);
+					assert.equal(stored.residencySlot, remoteSlot);
 					if (!fullUpdate) {
 						assert.equal(
 							stored.metadataFlags & (INVALIDATED | REPLICA),
-							0,
-							'retry uses destination owners after the slot changes'
+							REPLICA,
+							'unmarked retry retains its admitted non-owner replica placement'
 						);
 						assert.equal(stored.value.body, 'submitted');
 					}

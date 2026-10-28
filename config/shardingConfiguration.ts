@@ -2,6 +2,7 @@ import isEqual from 'lodash/isEqual.js';
 import { getConfigValue, updateConfigObject } from './configUtils.ts';
 import { canonicalShards, shardListDigest } from '../resources/residencyPolicy.ts';
 import * as logger from '../utility/logging/harper_logger.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import type { RootConfigWatcher } from './RootConfigWatcher.ts';
 
 const listeners = new Set<() => void>();
@@ -39,37 +40,44 @@ export function watchShardingConfiguration(watcher: RootConfigWatcher): { ready:
 	let timer: NodeJS.Timeout | undefined;
 	let stopped = false;
 	function apply() {
-		if (stopped) return;
-		try {
-			const replication = watcher.config?.replication;
-			if (!replication || typeof replication !== 'object' || Array.isArray(replication)) return;
-			if (replication.shard !== getConfigValue('replication_shard')) return;
-			const previous = getConfigValue('replication_shards');
-			const next = canonicalList(replication.shards);
-			if (isEqual(canonicalList(previous), next)) return;
-			updateConfigObject('replication_shards', next);
-			if (digest(previous) === digest(next)) return;
-			for (const listener of listeners) {
-				try {
-					Promise.resolve(listener()).catch(report);
-				} catch (error) {
-					report(error);
-				}
+		if (stopped || !watcher.config)
+			throw new ClientError(
+				'Sharding configuration is unavailable; retry after the root configuration is readable',
+				503
+			);
+		const replication = watcher.config.replication;
+		if (!replication || typeof replication !== 'object' || Array.isArray(replication)) return;
+		if (replication.shard !== getConfigValue('replication_shard')) return;
+		const previous = getConfigValue('replication_shards');
+		const next = canonicalList(replication.shards);
+		if (isEqual(canonicalList(previous), next)) return;
+		updateConfigObject('replication_shards', next);
+		if (digest(previous) === digest(next)) return;
+		for (const listener of listeners) {
+			try {
+				Promise.resolve(listener()).catch(report);
+			} catch (error) {
+				report(error);
 			}
-		} catch (error) {
-			report(error);
 		}
 	}
 	function changed() {
 		try {
 			clearTimeout(timer);
-			timer = setTimeout(apply, 150).unref();
+			timer = setTimeout(() => {
+				try {
+					apply();
+				} catch (error) {
+					report(error);
+				}
+			}, 150).unref();
 		} catch (error) {
 			report(error);
 		}
 	}
 	function stop() {
 		stopped = true;
+		ready = undefined;
 		clearTimeout(timer);
 		watcher.off('change', changed);
 		watcher.off('error', report);
@@ -78,7 +86,7 @@ export function watchShardingConfiguration(watcher: RootConfigWatcher): { ready:
 	watcher.on('change', changed);
 	watcher.on('error', report);
 	watcher.on('close', stop);
-	return { ready: watcher.ready.then(apply).catch(report), stop };
+	return { ready: watcher.ready.then(apply), stop };
 }
 
 export function ensureShardingConfiguration(): Promise<void> {
@@ -92,8 +100,10 @@ export function ensureShardingConfiguration(): Promise<void> {
 			.then(({ getSharedRootConfigWatcher }) => watchShardingConfiguration(getSharedRootConfigWatcher()).ready)
 			.catch((error) => {
 				ready = undefined;
-				report(error);
+				throw error;
 			});
+		// Optional replication startup does not await this observer; declarations still see the rejection.
+		void ready.catch(report);
 	}
 	return ready;
 }
