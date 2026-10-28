@@ -30,11 +30,9 @@ import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 const FIXTURE_PATH = resolve(import.meta.dirname, 'durable-subscribe-under-load');
 const ENGINES = ['rocksdb', 'lmdb'] as const;
 const STREAM_PER_SECOND = 200;
-// the publisher's timer period; each tick sends the messages the target rate owes by then, so the spacing stays even
 const TICK_MS = 2;
 // longer than the 5 ms between acknowledgements, so every save finds the session dirtied again
 const SAVE_LATENCY_MS = 10;
-// no reply within this is a hang, not a slow reply
 const REPLY_DEADLINE_MS = 5_000;
 const SUBACK_BOUND_MS = 1_000;
 // mqtt.js's WebSocket transport doesn't complete CONNACK on Bun, the same skip the sibling suites carry
@@ -112,7 +110,6 @@ for (const engine of ENGINES) {
 				return (record?.subscriptions ?? []).map((entry: { topic: string }) => entry.topic).sort();
 			}
 
-			/** Times a request until its reply, and reads the saved subscriptions the moment it arrives. */
 			async function timed(request: (done: (error?: Error | null) => void) => void) {
 				const started = performance.now();
 				await new Promise<void>((resolvePromise, reject) => {
@@ -144,7 +141,7 @@ for (const engine of ENGINES) {
 
 			before(async () => {
 				await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-					// takeover closes an older connection on the same thread, so every connection lands on one
+					// the latency set over HTTP must reach the thread that saves the MQTT session
 					config: { threads: { count: 1 } },
 					env: { HARPER_STORAGE_ENGINE: engine },
 				});
@@ -174,6 +171,7 @@ for (const engine of ENGINES) {
 					subscriber!.subscribe('Stream/#', { qos: 1, rh: 2 }, (error) => (error ? reject(error) : resolvePromise()))
 				);
 				await setSaveLatency(SAVE_LATENCY_MS);
+				t.after(() => setSaveLatency(0));
 				publisher = await connect({ clientId: `publisher-${randomUUID().slice(0, 6)}`, clean: true });
 				let next = 0;
 				const startedAt = performance.now();

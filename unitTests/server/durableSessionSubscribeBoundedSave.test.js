@@ -56,7 +56,6 @@ describe('DurableSubscriptionsSession replies while acknowledgements keep the se
 		try {
 			await session.addSubscription({ topic: first, qos: 1, rh: 2 }, true);
 			await session.writes;
-			/** Holds this session's writes after their record is built, so a test decides when each one lands. */
 			if (hold)
 				sessions().put = function (record, options) {
 					if (record.id !== clientId) return put.call(this, record, options);
@@ -84,7 +83,6 @@ describe('DurableSubscriptionsSession replies while acknowledgements keep the se
 		}
 	}
 
-	/** Starts a save and waits until its record is built and its write is held. */
 	async function startHeldSave(session, writes) {
 		const count = writes.length;
 		session.dirty = true;
@@ -117,7 +115,6 @@ describe('DurableSubscriptionsSession replies while acknowledgements keep the se
 				await startHeldSave(session, writes);
 				let acknowledged = false;
 				change.start(session, context).then(() => (acknowledged = true));
-				// the request has asked for its save: it dirties the session while the older write is held
 				await waitFor(() => session.dirty);
 				writes[0].release();
 				await waitFor(() => writes.length === 2);

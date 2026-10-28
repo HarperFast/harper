@@ -9,6 +9,19 @@ import { server } from '../server/Server.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
+<<<<<<< HEAD
+=======
+import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
+import { getThisNodeName } from './nodeName.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import {
+	ORIGIN_ID,
+	admitCheckpoint,
+	positionBefore,
+	validateCheckpoint,
+	type SubscriptionCheckpoint,
+} from '../resources/subscriptionCheckpoint.ts';
+>>>>>>> d6bd332a7 (Log a SUBSCRIBE refused because its session ended at info level, not as an error)
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 let _DurableSession: any;
@@ -1043,6 +1056,23 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
 		await getDurableSession().put(record, { source: true });
 		this.mayCreate = false;
+<<<<<<< HEAD
+=======
+		this.settleSaveWaiters(saveNumber);
+	}
+	endedError() {
+		return new SessionEndedError(this.sessionId);
+	}
+	settleSaveWaiters(saveNumber: number, error?: Error) {
+		if (this.saveWaiters.length === 0) return;
+		const waiting = [];
+		for (const waiter of this.saveWaiters) {
+			if (waiter.needed > saveNumber) waiting.push(waiter);
+			else if (error) waiter.reject(error);
+			else waiter.resolve();
+		}
+		this.saveWaiters = waiting;
+>>>>>>> d6bd332a7 (Log a SUBSCRIBE refused because its session ended at info level, not as an error)
 	}
 	/** Hands the session to a newer connection on this thread: its positions are saved, in `writes`, and it saves nothing after. */
 	yieldTo() {
@@ -1112,6 +1142,37 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 }
 
+<<<<<<< HEAD
+=======
+class SessionEndedError extends ClientError {
+	constructor(sessionId: string) {
+		super(`MQTT session ${sessionId} has ended`, 409);
+		this.name = 'SessionEndedError';
+	}
+}
+
+const SEAL_WAIT = 5_000;
+function sealWait() {
+	return new Promise<void>((resolve) => setTimeout(resolve, SEAL_WAIT).unref());
+}
+
+/** Lowers a kept scalar to its checkpoint's cap; true if it moved. */
+function lowerScalar(entry: DurableEntry): boolean {
+	if (entry.checkpoint === undefined || !(entry.startTime > scalarCap(entry.checkpoint))) return false;
+	entry.startTime = scalarCap(entry.checkpoint);
+	return true;
+}
+
+function sameCheckpoint(a: SubscriptionCheckpoint, b: SubscriptionCheckpoint | undefined): boolean {
+	if (!b) return false;
+	if (a.time !== b.time || a.overlap !== b.overlap || a.members !== b.members || a.scope !== b.scope) return false;
+	const names = Object.keys(a.exceptions);
+	if (names.length !== Object.keys(b.exceptions).length) return false;
+	for (const name of names) if (a.exceptions[name] !== b.exceptions[name]) return false;
+	return true;
+}
+
+>>>>>>> d6bd332a7 (Log a SUBSCRIBE refused because its session ended at info level, not as an error)
 function newTopicState(entry: DurableEntry): TopicState {
 	return { entry, verified: true, unacked: new Map(), lateUnacked: 0, consumed: 0 };
 }

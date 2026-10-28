@@ -611,7 +611,7 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		const { session } = await connect(`late-subscribe-${name}`);
 		const subscribing = session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 		session.disconnect(true);
-		await assert.rejects(subscribing, /has ended/);
+		await assert.rejects(subscribing, { name: 'SessionEndedError', statusCode: 409, message: /has ended/ });
 		assert.strictEqual(session.checkpointTimer, undefined);
 	});
 
