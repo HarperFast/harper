@@ -1162,6 +1162,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
 					{ name: 'title', type: 'String' },
+					{ name: 'note', type: 'String' },
 				],
 			});
 		});
@@ -1184,6 +1185,22 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			});
 			assert.strictEqual((await SealedTable.get('retry')).title, 'saved');
 			assert.strictEqual((await SealedTable.get('retry-at-commit')).title, 'committed');
+		});
+		it('saves the correction of a predecessor rejected while saving its successor', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			await SealedTable.put('retry-predecessor', { title: 't' });
+			await transaction(async (ctx) => {
+				const predecessor = await SealedTable.update('retry-predecessor', ctx);
+				predecessor.unknown = 1;
+				const successor = await SealedTable.update('retry-predecessor', { title: 'successor' }, ctx);
+				assert.throws(() => successor.save(), /not allowed/);
+				delete predecessor.unknown;
+				predecessor.note = 'corrected';
+				await successor.save();
+			});
+			const saved = await SealedTable.get('retry-predecessor');
+			assert.strictEqual(saved.note, 'corrected');
+			assert.strictEqual(saved.title, 'successor');
 		});
 	});
 	describe('Held lock', () => {

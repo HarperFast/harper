@@ -4357,7 +4357,6 @@ export function makeTable(options): TableResourceClass {
 					result = this.#saveOperation(operation);
 				} catch (error) {
 					if (!operation.saved && !operation.dropped) {
-						// the write goes back to this generation unstaged, so its retry reads the corrected changes
 						operation.releaseChanges?.();
 						this.#savingOperation = operation;
 					}
