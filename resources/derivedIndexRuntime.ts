@@ -54,7 +54,13 @@ export function derivedIndexTime(store: RocksDatabase): bigint {
 /** `bound`: taken on an idle pass, so the offered vector reflects every commit at or before it and none after. */
 type CoverageCapture = { time: bigint; positions: DerivedIndexPositions; bound?: true };
 type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknown) => void };
-type CoverageWaitGroup = { waiters: Set<CoverageWaiter>; timer?: NodeJS.Timeout; requestedAt?: bigint };
+type CoverageWaitGroup = {
+	waiters: Set<CoverageWaiter>;
+	timer?: NodeJS.Timeout;
+	/** `performance.now()` at which `timer` fires. */
+	due?: number;
+	requestedAt?: bigint;
+};
 
 export type DerivedIndexState =
 	| { kind: 'record'; version: number; projection: unknown }
@@ -404,8 +410,9 @@ export class DerivedIndexRuntime {
 		let group = this.#coverageWaits.get(backendId);
 		if (!group) this.#coverageWaits.set(backendId, (group = { waiters: new Set() }));
 		const waiting = group;
+		let admitted!: CoverageWaiter;
 		const result = new Promise<void>((resolve, reject) => {
-			const waiter: CoverageWaiter = {
+			const waiter: CoverageWaiter = (admitted = {
 				since,
 				deadline: since + BigInt(Math.ceil(timeout * 1e6)),
 				finish: (error) => {
@@ -418,20 +425,18 @@ export class DerivedIndexRuntime {
 					if (error !== undefined) reject(error);
 					else resolve();
 				},
-			};
+			});
 			const abort = () => waiter.finish(signal.reason ?? new Error('Index wait aborted'));
 			waiting.waiters.add(waiter);
 			signal?.addEventListener('abort', abort, { once: true });
 			if (signal?.aborted) abort();
 		});
-		if (waiting.waiters.size) {
-			clearTimeout(waiting.timer);
-			this.#pollCoverage(backendId, waiting);
-		}
+		if (waiting.waiters.has(admitted)) this.#pollCoverage(backendId, waiting, admitted);
 		return result;
 	}
 
-	#pollCoverage(backendId: string, group: CoverageWaitGroup) {
+	/** An admission checks only the new waiter; the group's timer checks them all. */
+	#pollCoverage(backendId: string, group: CoverageWaitGroup, admitted?: CoverageWaiter) {
 		try {
 			const views = getReadinessViews(this.#logStore, this.#runners.get(backendId)?.readinessId ?? backendId);
 			const before = readReadiness(views);
@@ -444,18 +449,27 @@ export class DerivedIndexRuntime {
 				);
 			const now = derivedIndexTime(this.#logStore.rootStore);
 			let delay = 25;
-			for (const waiter of group.waiters) {
+			for (const waiter of admitted ? [admitted] : group.waiters) {
 				if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since) waiter.finish();
 				else if (now >= waiter.deadline)
 					waiter.finish(new DerivedIndexLagError('Timed out waiting for derived index coverage; retry this query'));
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
-			if (!group.waiters.size) return;
+			if (admitted ? !group.waiters.has(admitted) : !group.waiters.size) return;
 			if (group.requestedAt === undefined || time >= group.requestedAt) {
 				group.requestedAt = now;
 				this.#runners.get(backendId)?.requestCoverage();
 			}
-			group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
+			const due = performance.now() + delay;
+			if (group.timer !== undefined) {
+				if (group.due! <= due) return;
+				clearTimeout(group.timer);
+			}
+			group.due = due;
+			group.timer = setTimeout(() => {
+				group.timer = undefined;
+				this.#pollCoverage(backendId, group);
+			}, delay);
 		} catch (error) {
 			for (const waiter of group.waiters) waiter.finish(error);
 		}

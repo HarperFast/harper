@@ -742,7 +742,7 @@ An old owner can race with a non-ready transition and restore an earlier coverag
 gate the time on stable ready readiness; after rebuild, the rebuilt anchor still covers that earlier true
 prefix.
 Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
-time out, or abort; each new waiter polls at once and re-arms it. A waiter's target is the clock at query start, after the owner's own commit drain,
+time out, or abort; a new waiter is checked at once and moves the timer only if its deadline is sooner. A waiter's target is the clock at query start, after the owner's own commit drain,
 so only a drain started later can answer it; leaving that to the owner's flush-cadence refresh made
 every wait after any commit in the database cost up to the flush age. The poll therefore requests
 coverage: it wakes the local runner (which acquires an ownerless index), and a non-owner notifies the
