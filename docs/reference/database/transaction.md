@@ -204,7 +204,7 @@ type Dog @table(audit: true) {
 }
 ```
 
-This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table. Keep auditing enabled for tables with full-text indexes: disabling it prevents full-text index registration.
+This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table. New schema tables with `@fullText` must explicitly declare `@table(audit: true)`, even when global audit logging is enabled. Existing audited tables can add an index without restating `audit`. Keep auditing enabled while any full-text index is declared; disabling it is rejected.
 
 ## Related Documentation
 

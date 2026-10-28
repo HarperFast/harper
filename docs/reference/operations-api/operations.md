@@ -73,7 +73,7 @@ Returns the definition of a specific table, including its schema and storage met
 
 <VersionBadge version="v5.3.0" />
 
-A table with native full-text indexes includes `full_text_indexes`; each entry reports its query-only field name, source fields, analyzer options, enabled query modes, and `readiness` (`unknown`, `ready`, `needs-rebuild`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`. Query-only `FullText` fields do not appear in the ordinary `attributes` list.
+A table with native full-text indexes includes `full_text_indexes`; each entry reports its query-only field name, source fields, analyzer options, enabled query modes, and `readiness` (`unknown`, `ready`, `needs-rebuild`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`. Query-only `FullText` fields do not appear in the ordinary `attributes` list. Metadata respects attribute permissions: unreadable source fields are omitted, and an index with no readable source fields is omitted entirely. Use an account with access to every indexed source field when checking upgrade readiness; a missing entry does not prove that no index exists.
 
 Requesting a table with full-text indexes:
 
