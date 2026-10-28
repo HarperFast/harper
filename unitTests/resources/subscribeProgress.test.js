@@ -333,7 +333,7 @@ describe('Certified subscription progress', function () {
 	it('completes scalar replay while a notify pass is yielded without certifying its partial transaction', async () => {
 		const T = tableInOwnDatabase();
 		await T.put('seed', { value: 0 });
-		const startTime = T.primaryStore.getEntry('seed').version;
+		let startTime;
 		let replay;
 		let replayTask;
 		let sawYield = false;
@@ -356,11 +356,8 @@ describe('Certified subscription progress', function () {
 									listener: () => {},
 								});
 								assert.strictEqual(await replay.resumeVerified, true);
-								if (registry(live).passYielded)
-									assert.ok(
-										!(live.progress() >= event.localTime),
-										'a yielded pass cannot certify a partial transaction'
-									);
+								assert.ok(registry(live).passYielded, 'the short replay completed before the pending drain');
+								assert.ok(!(live.progress() >= event.localTime), 'a yielded pass cannot certify a partial transaction');
 								resolve();
 							} catch (error) {
 								reject(error);
@@ -370,15 +367,22 @@ describe('Certified subscription progress', function () {
 			},
 		});
 		try {
+			await waitFor(() => !registry(live).notifyScheduled);
+			registry(live).notifyScheduled = true;
 			await transaction({}, async (context) => {
 				for (let i = 0; i < 300; i++) await T.put(`bulk${i}`, { value: i }, context);
 			});
+			startTime = [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === 'bulk0').txnLogKey;
+			await T.put('tail', { value: 'tail' });
+			registry(live).notifyScheduled = false;
+			await T.put('trigger', { value: 'trigger' });
 			await waitFor(() => Boolean(replayTask));
 			await replayTask;
-			await waitFor(() => seen.length === 300 && live.progress() >= seen[0].localTime);
+			await waitFor(() => seen.length === 302 && live.progress() >= seen[0].localTime);
 			assert.ok(sawYield);
-			assert.strictEqual(seen.length, 300, 'the replay did not start an overlapping live drain');
+			assert.strictEqual(seen.length, 302, 'the replay did not start an overlapping live drain');
 		} finally {
+			registry(live).notifyScheduled = false;
 			replay?.end();
 			live.end();
 		}

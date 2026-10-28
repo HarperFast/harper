@@ -375,6 +375,7 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	/**
 	 * Present only when subscribed with `reportProgress`: the lowest log key among the events sent after the first
 	 * `consumed`, counting only events sent below a key sent before them (a later event never is), or undefined.
+	 * Requires a sequential consumer with at most one event taken from the queue but not yet counted in `consumed`.
 	 */
 	lowestLateUnconsumed?: (consumed: number) => number | undefined;
 	/**
