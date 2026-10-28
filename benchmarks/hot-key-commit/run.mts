@@ -9,6 +9,8 @@
 import http from 'node:http';
 import { parseArgs } from 'node:util';
 import { join } from 'node:path';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { cpus } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { setTimeout } from 'node:timers/promises';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
@@ -18,7 +20,9 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_BIN = join(REPO_ROOT, 'dist', 'bin', 'harper.js');
 const APP_DIR = join(import.meta.dirname, 'app');
 
-const WORKLOADS: Record<string, { hot: boolean; recordsPerTxn: number }> = {
+const WORKLOADS: Record<string, { hot: boolean; recordsPerTxn: number; keys?: number }> = {
+	// every transaction increments all of ids 0..999 in a fresh random order, so concurrent ones cross on every key
+	cross1000: { hot: false, recordsPerTxn: 1000, keys: 1000 },
 	hot1: { hot: true, recordsPerTxn: 1 },
 	hot4: { hot: true, recordsPerTxn: 4 },
 	cold1: { hot: false, recordsPerTxn: 1 },
@@ -83,7 +87,10 @@ function parseOptions(): Options {
 	if (!Number.isFinite(warmupSeconds) || warmupSeconds < 0) {
 		throw new Error(`--warmup must be a finite number >= 0 (got "${values.warmup}")`);
 	}
-	const maxRecordsPerTxn = Math.max(...workloads.map((name) => WORKLOADS[name].recordsPerTxn));
+	const maxRecordsPerTxn = Math.max(
+		...workloads.filter((name) => !WORKLOADS[name].keys).map((name) => WORKLOADS[name].recordsPerTxn),
+		1
+	);
 	if (hotKeys < maxRecordsPerTxn || coldKeys < hotKeys) {
 		throw new Error(`need ${maxRecordsPerTxn} <= --hot-keys (${hotKeys}) <= --cold-keys (${coldKeys})`);
 	}
@@ -147,6 +154,24 @@ function post(agent: http.Agent, url: URL, path: string, payload: unknown): Prom
 	});
 }
 
+async function getJson(agent: http.Agent, url: URL, path: string): Promise<any> {
+	return new Promise((resolve, reject) => {
+		http
+			.get(new URL(path, url), { agent, headers: { accept: 'application/json' } }, (res) => {
+				let body = '';
+				res.on('data', (chunk) => (body += chunk));
+				res.on('end', () => {
+					try {
+						resolve(JSON.parse(body || '{}'));
+					} catch {
+						resolve({});
+					}
+				});
+			})
+			.on('error', reject);
+	});
+}
+
 async function postOk(agent: http.Agent, url: URL, path: string, payload: unknown): Promise<any> {
 	const res = await post(agent, url, path, payload);
 	if (res.status < 200 || res.status >= 300) {
@@ -178,6 +203,14 @@ async function readCounts(agent: http.Agent, url: URL, keyCount: number): Promis
 }
 
 function pickIds(keyCount: number, n: number): number[] {
+	if (n === keyCount) {
+		const all = Array.from({ length: n }, (_, i) => i);
+		for (let i = n - 1; i > 0; i--) {
+			const j = (Math.random() * (i + 1)) | 0;
+			[all[i], all[j]] = [all[j], all[i]];
+		}
+		return all;
+	}
 	const ids: number[] = [];
 	while (ids.length < n) {
 		const id = (Math.random() * keyCount) | 0;
@@ -240,6 +273,7 @@ function generateLoad(task: LoadTask): void {
 	let overrunMs = 0;
 	let commits = 0;
 	let errors = 0;
+	const errorsByStatus: Record<string, number> = {};
 	let firstError: string | undefined;
 	let latencies = new Float64Array(1 << 16);
 	let eluStart = performance.eventLoopUtilization();
@@ -276,7 +310,11 @@ function generateLoad(task: LoadTask): void {
 			} else {
 				for (const id of ids) uncertain[id]++;
 				firstError ??= res ? `${res.status}: ${JSON.stringify(res.body).slice(0, 300)}` : undefined;
-				if (measuring || overran) errors++;
+				if (measuring || overran) {
+					errors++;
+					const status = res ? String(res.status) : 'network';
+					errorsByStatus[status] = (errorsByStatus[status] ?? 0) + 1;
+				}
 			}
 		}
 	};
@@ -299,6 +337,7 @@ function generateLoad(task: LoadTask): void {
 			latencies: latencies.subarray(0, commits),
 			overrunMs,
 			errors,
+			errorsByStatus,
 			firstError,
 			retries,
 			retriesUnavailable,
@@ -312,8 +351,8 @@ function generateLoad(task: LoadTask): void {
 }
 
 async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: string): Promise<WorkloadResult> {
-	const { hot, recordsPerTxn } = WORKLOADS[name];
-	const keyCount = hot ? opts.hotKeys : opts.coldKeys;
+	const { hot, recordsPerTxn, keys } = WORKLOADS[name];
+	const keyCount = keys ?? (hot ? opts.hotKeys : opts.coldKeys);
 	const before = await readCounts(agent, url, keyCount);
 
 	const workers = Array.from({ length: opts.clientThreads }, (_, i) => {
@@ -390,6 +429,16 @@ async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: str
 		latencies: latencies.sort(),
 		maxMs: Math.max(latencies.at(-1) ?? 0, ...loads.map((load) => load.overrunMs)),
 		errors: loads.reduce((sum, load) => sum + load.errors, 0),
+		errorsByStatus:
+			Object.entries(
+				loads.reduce((all: Record<string, number>, load: any) => {
+					for (const [status, n] of Object.entries(load.errorsByStatus ?? {}))
+						all[status] = (all[status] ?? 0) + (n as number);
+					return all;
+				}, {})
+			)
+				.map(([status, n]) => `${status}:${n}`)
+				.join(',') || 'none',
 		firstError: loads.find((load) => load.firstError)?.firstError,
 		retries: loads.some((load) => load.retriesUnavailable) ? null : loads.reduce((sum, load) => sum + load.retries, 0),
 		maxRetries: Math.max(...loads.map((load) => load.maxRetries)),
@@ -399,6 +448,143 @@ async function runWorkload(agent: http.Agent, url: URL, opts: Options, name: str
 		countDetail:
 			mismatched === 0 ? '' : `${mismatched} keys off: ${lost} acknowledged increments lost, ${extra} extra applied`,
 	};
+}
+
+/** CPU ticks per thread class of process `pid`, from /proc/<pid>/task/<tid>/stat (Linux only). */
+function threadClassTicks(pid: number): Record<string, number> {
+	const ticks: Record<string, number> = {};
+	let tasks: string[] = [];
+	try {
+		tasks = readdirSync(`/proc/${pid}/task`);
+	} catch {
+		return ticks;
+	}
+	for (const tid of tasks) {
+		let stat: string;
+		try {
+			stat = readFileSync(`/proc/${pid}/task/${tid}/stat`, 'utf8');
+		} catch {
+			continue; // thread exited
+		}
+		const name = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+		const used = Number(fields[11]) + Number(fields[12]); // utime + stime
+		const cls = name.startsWith('rocksdb-commit')
+			? 'commit'
+			: name.startsWith('rocksdb-txnlog')
+				? 'txnlog'
+				: name.startsWith('rocksdb:')
+					? 'rocksdb_bg'
+					: name.startsWith('libuv-worker')
+						? 'libuv'
+						: name.startsWith('http')
+							? 'js_http'
+							: name.startsWith('node-V8Worker')
+								? 'v8_helpers'
+								: 'other:' + name;
+		ticks[cls] = (ticks[cls] ?? 0) + used;
+	}
+	return ticks;
+}
+
+/** Busy and total jiffies across all CPUs, from /proc/stat. */
+function machineTicks(): { busy: number; total: number } {
+	const fields = readFileSync('/proc/stat', 'utf8').split('\n')[0].trim().split(/\s+/).slice(1).map(Number);
+	const total = fields.reduce((a, b) => a + b, 0);
+	return { busy: total - fields[3] - fields[4], total };
+}
+
+/** Bytes in every transaction-log segment under `root` (aborted attempts included). */
+function transactionLogBytes(root: string): number {
+	let total = 0;
+	const walk = (dir: string, inLogs: boolean): void => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) walk(path, inLogs || entry.name === 'transaction_logs');
+			else if (inLogs && entry.name.endsWith('.txnlog')) total += statSync(path).size;
+		}
+	};
+	walk(root, false);
+	return total;
+}
+
+/** Native counters, Harper JS thread use, native CPU by thread class and machine load over one workload. */
+function describeStats(
+	before: any,
+	after: any,
+	ticksBefore: Record<string, number>,
+	ticksAfter: Record<string, number>,
+	machineBefore: { busy: number; total: number },
+	machineAfter: { busy: number; total: number }
+): string {
+	const SLOTS = 64;
+	const BASE = 16;
+	const KINDS = BASE + SLOTS * 4;
+	const d0: number[] = before.diag;
+	const d1: number[] = after.diag;
+	const commits = d1[0] - d0[0];
+	const parts: string[] = [`all_commits=${commits}`];
+	let eluSum = 0;
+	let workers = 0;
+	let jsCpuUs = 0;
+	for (let slot = 1; slot < SLOTS; slot++) {
+		const at = BASE + slot * 4;
+		if (!d1[at + 3]) continue;
+		const active = d1[at] - d0[at];
+		const idle = d1[at + 1] - d0[at + 1];
+		if (active + idle <= 0) continue;
+		eluSum += active / (active + idle);
+		workers++;
+		jsCpuUs += d1[at + 2] - d0[at + 2];
+	}
+	parts.push(`js_elu_mean=${workers ? (eluSum / workers).toFixed(3) : 'n/a'} js_workers=${workers}`);
+	parts.push(`js_cpu_us_per_commit=${commits ? (jsCpuUs / commits).toFixed(1) : 'n/a'}`);
+	const tickUs = 1e6 / 100; // USER_HZ
+	const classes: Record<string, number> = {};
+	for (const [cls, t] of Object.entries(ticksAfter)) {
+		const key = cls.startsWith('other:') ? 'other' : cls;
+		classes[key] = (classes[key] ?? 0) + (t - (ticksBefore[cls] ?? 0));
+	}
+	for (const cls of ['js_http', 'commit', 'txnlog', 'rocksdb_bg', 'libuv', 'v8_helpers', 'other']) {
+		parts.push(`cpu_us_per_commit_${cls}=${commits ? (((classes[cls] ?? 0) * tickUs) / commits).toFixed(1) : 'n/a'}`);
+	}
+	const others = Object.entries(ticksAfter)
+		.filter(([cls]) => cls.startsWith('other:'))
+		.map(([cls, t]) => [cls.slice(6), t - (ticksBefore[cls] ?? 0)] as const)
+		.sort((x, y) => y[1] - x[1])
+		.slice(0, 4);
+	parts.push(
+		`other_top=${others.map(([n, t]) => `${n.replace(/\s+/g, '_')}:${commits ? ((t * tickUs) / commits).toFixed(1) : 'n/a'}`).join(',')}`
+	);
+	const total = machineAfter.total - machineBefore.total;
+	parts.push(
+		`machine_busy_pct=${total ? ((100 * (machineAfter.busy - machineBefore.busy)) / total).toFixed(1) : 'n/a'} cores=${cpus().length}`
+	);
+	for (const [kind, label] of [
+		[0, 'unknown'],
+		[1, 'intent_before_log'],
+		[2, 'intent_after_log'],
+		[3, 'at_commit'],
+		[4, 'check_before_log'],
+	] as const) {
+		const n = d1[KINDS + kind * 2] - d0[KINDS + kind * 2];
+		const us = d1[KINDS + kind * 2 + 1] - d0[KINDS + kind * 2 + 1];
+		parts.push(`retry_${label}=${n} retry_${label}_js_us=${n ? (us / n).toFixed(1) : 'n/a'}`);
+	}
+	const n0 = before.native;
+	const n1 = after.native;
+	if (n1) {
+		const stat = (k: string) => (n1[k] ?? 0) - (n0?.[k] ?? 0);
+		const pinned = stat('pinnedTransactions');
+		parts.push(
+			`aborts_marked=${stat('abortsMarked')} mark_failures=${stat('abortMarkFailures')} ` +
+				`pinned_transactions=${pinned} watermark_pinned_ms_total=${(stat('watermarkPinnedUs') / 1000).toFixed(1)} ` +
+				`watermark_pinned_ms_per_pinned=${pinned ? (stat('watermarkPinnedUs') / pinned / 1000).toFixed(2) : 'n/a'}`
+		);
+	} else {
+		parts.push('native_stats=n/a');
+	}
+	return parts.join(' ');
 }
 
 async function main(): Promise<void> {
@@ -419,7 +605,23 @@ async function main(): Promise<void> {
 				analytics: { aggregatePeriod: -1 },
 				logging: { level: 'warn', auditLog: true },
 			},
-			env: { HARPER_STORAGE_ENGINE: opts.engine },
+			env: {
+				HARPER_STORAGE_ENGINE: opts.engine,
+				ROCKSDB_JS_PRELOG_VALIDATE: process.env.ROCKSDB_JS_PRELOG_VALIDATE ?? '',
+				ROCKSDB_JS_PARK_TIMEOUT_MS: process.env.ROCKSDB_JS_PARK_TIMEOUT_MS,
+				HARPER_ABORT_MARKER_NO_REKEY: process.env.HARPER_ABORT_MARKER_NO_REKEY,
+				HARPER_ABORT_MARKER_NO_RELOG: process.env.HARPER_ABORT_MARKER_NO_RELOG,
+				ROCKSDB_JS_ABORT_MODE: process.env.ROCKSDB_JS_ABORT_MODE ?? '',
+				ROCKSDB_JS_PRELOG_CHECK: process.env.ROCKSDB_JS_PRELOG_CHECK ?? '',
+				ROCKSDB_JS_INTENT_REFUSAL: process.env.ROCKSDB_JS_INTENT_REFUSAL ?? '',
+				HARPER_NO_CONFLICT_CAP: process.env.HARPER_NO_CONFLICT_CAP ?? '',
+				HARPER_ABORT_MARKERS: process.env.HARPER_ABORT_MARKERS ?? '',
+				HKC_ROCKSDB_JS: join(
+					realpathSync(join(REPO_ROOT, 'node_modules', '@harperfast', 'rocksdb-js')),
+					'dist',
+					'index.mjs'
+				),
+			},
 			startupTimeoutMs: opts.startupTimeoutMs,
 		});
 		const url = new URL(ctx.harper.httpURL);
@@ -433,15 +635,25 @@ async function main(): Promise<void> {
 		await Promise.all(Array.from({ length: 8 }, seeder));
 
 		for (const name of opts.workloads) {
+			const logBytesBefore = transactionLogBytes(ctx.harper.dataRootDir);
+			const statsBefore = await getJson(agent, url, '/CommitStats/');
+			const ticksBefore = threadClassTicks(statsBefore.pid);
+			const machineBefore = machineTicks();
 			const r = await runWorkload(agent, url, opts, name);
+			const statsAfter = await getJson(agent, url, '/CommitStats/');
+			const ticksAfter = threadClassTicks(statsAfter.pid);
+			const machineAfter = machineTicks();
+			const logBytes = transactionLogBytes(ctx.harper.dataRootDir) - logBytesBefore;
+			const commitStats = describeStats(statsBefore, statsAfter, ticksBefore, ticksAfter, machineBefore, machineAfter);
 			const line =
 				`HOT_KEY_COMMIT_RESULT label=${opts.label || '-'} workload=${name} mode=${opts.mode} threads=${opts.threads} ` +
 				`concurrency=${opts.concurrency} commits=${r.commits} commits_per_sec=${(r.commits / r.seconds).toFixed(0)} ` +
 				`p50_ms=${percentile(r.latencies, 0.5).toFixed(2)} p99_ms=${percentile(r.latencies, 0.99).toFixed(2)} ` +
 				`p999_ms=${percentile(r.latencies, 0.999).toFixed(2)} max_ms=${r.maxMs.toFixed(2)} ` +
 				`retries=${r.retries ?? 'n/a'} retries_per_commit=${r.retries != null && r.commits ? (r.retries / r.commits).toFixed(3) : 'n/a'} ` +
-				`max_retries=${r.retries == null ? 'n/a' : r.maxRetries} errors=${r.errors} ` +
-				`counts_ok=${r.countsOk} harper_threads_seen=${r.harperThreads} client_elu=${r.clientElu.toFixed(2)}`;
+				`max_retries=${r.retries == null ? 'n/a' : r.maxRetries} errors=${r.errors} errors_by_status=${r.errorsByStatus} ` +
+				`counts_ok=${r.countsOk} harper_threads_seen=${r.harperThreads} client_elu=${r.clientElu.toFixed(2)} ` +
+				`log_bytes=${logBytes} log_bytes_per_commit=${r.commits ? (logBytes / r.commits).toFixed(0) : 'n/a'} ${commitStats}`;
 			console.log(line);
 			if (r.countsOk === 'false') {
 				console.log(`  count check: ${r.countDetail}`);

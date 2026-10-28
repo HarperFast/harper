@@ -33,7 +33,8 @@ import {
 } from './originClosedFloor.ts';
 
 // rocksdb-js marks a failed logged attempt aborted in place, so a retry logs (and keys) afresh.
-const LOG_ABORT_MARKERS = (constants as any).TRANSACTION_LOG_ENTRY_ABORTED_FLAG !== undefined;
+const LOG_ABORT_MARKERS =
+	(constants as any).TRANSACTION_LOG_ENTRY_ABORTED_FLAG !== undefined && process.env.HARPER_ABORT_MARKERS !== '0';
 if (LOG_ABORT_MARKERS) (RocksDatabase as any).config({ transactionLogAbortMarkers: true });
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
@@ -843,6 +844,18 @@ type RocksTransactionWithRetry = RocksTransaction & {
 };
 
 // Crash-recovery replay sets `isRetry` before `save()`, so `hasStagedLog` is never set there.
+/**
+ * Benchmark-only: reports the JS CPU of a retry's synchronous replay (re-saving its writes and submitting
+ * the native commit) by retry kind, when the benchmark app installs `globalThis.__hkcRetryDiag`.
+ */
+function timedRetry<T>(transaction: RocksTransaction, retry: () => T): T {
+	const report = (globalThis as any).__hkcRetryDiag;
+	if (!report) return retry();
+	// counts only: timing every retry would perturb the CPU-per-commit measurement
+	report((transaction as any).lastConflictKind?.() ?? 0, 0);
+	return retry();
+}
+
 function hasDurableLog(transaction: RocksTransaction | null | undefined, error?: { hasLog?: boolean }): boolean {
 	// Aborting a logged transaction now hides its entry, so the retry caps and deadline apply again.
 	if (LOG_ABORT_MARKERS) return false;
@@ -1454,6 +1467,8 @@ export class DatabaseTransaction implements Transaction {
 		const logWritten = error?.hasLog || (transaction as any).logWritten?.() === true;
 		txnWithRetry.relogOnRetry = !logWritten;
 		if (logWritten) {
+			// benchmark arm D: logged retries bounded by the 503 deadline alone
+			if (process.env.HARPER_NO_CONFLICT_CAP === '1') return 0;
 			// only a conflict RocksDB found at commit counts; a park behind an older intent waited on a real holder
 			if ((transaction as any).lastConflictKind?.() === 3)
 				txnWithRetry.loggedRetries = (txnWithRetry.loggedRetries ?? 0) + 1;
@@ -1465,6 +1480,7 @@ export class DatabaseTransaction implements Transaction {
 
 	private rekeyRefusedRetry(transaction: RocksTransaction): void {
 		const txnWithRetry = transaction as RocksTransactionWithRetry;
+		if (process.env.HARPER_ABORT_MARKER_NO_REKEY) return; // benchmark-only variant
 		const oldKey = reservedLocalKey(transaction);
 		const newKey = rekeyLocalRetry(transaction);
 		if (newKey === undefined || oldKey === undefined) return;
@@ -3034,9 +3050,9 @@ export class DatabaseTransaction implements Transaction {
 								if (logged && retries > 2) {
 									const backoff = delay(Math.ceil(Math.min(retries * 2, MAX_RETRY_DELAY_MS) * Math.random()));
 									trackOutstandingCommit(backoff, this.writes[0]?.store ?? this.db, this.startedFrom, transaction);
-									return backoff.then(() => this.commit({ ...options, transaction }));
+									return backoff.then(() => timedRetry(transaction, () => this.commit({ ...options, transaction })));
 								}
-								return this.commit({ ...options, transaction });
+								return timedRetry(transaction, () => this.commit({ ...options, transaction }));
 							}
 							const committedTxnKey = reservedLocalKey(transaction);
 							const committedLogKey = this.replicatedConfirmation ? committedTxnKey : undefined;
@@ -3246,9 +3262,9 @@ export class DatabaseTransaction implements Transaction {
 										// waitForDrain() must outlast the backoff too
 										trackOutstandingCommit(backoff, this.writes[0]?.store ?? this.db, this.startedFrom, transaction);
 									}
-									return backoff.then(() => this.commit({ ...options, transaction }));
+									return backoff.then(() => timedRetry(transaction, () => this.commit({ ...options, transaction })));
 								}
-								return this.commit({ ...options, transaction }); // try again
+								return timedRetry(transaction, () => this.commit({ ...options, transaction })); // try again
 							} else {
 								// terminal (non-conflict) failure: release the native handle so it doesn't leak;
 								// usually already released by the failed commit itself, abort for the unexpected
