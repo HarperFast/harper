@@ -57,7 +57,6 @@ type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknow
 type CoverageWaitGroup = {
 	waiters: Set<CoverageWaiter>;
 	timer?: NodeJS.Timeout;
-	/** `performance.now()` at which `timer` fires. */
 	due?: number;
 	requestedAt?: bigint;
 };
@@ -435,7 +434,6 @@ export class DerivedIndexRuntime {
 		return result;
 	}
 
-	/** An admission checks only the new waiter; the group's timer checks them all. */
 	#pollCoverage(backendId: string, group: CoverageWaitGroup, admitted?: CoverageWaiter) {
 		try {
 			const views = getReadinessViews(this.#logStore, this.#runners.get(backendId)?.readinessId ?? backendId);
