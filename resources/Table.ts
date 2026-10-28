@@ -2083,9 +2083,21 @@ export function makeTable(options): TableResourceClass {
 			// Off-key writes through the same resource instance are ordinary; only guard the
 			// exact key the lock was acquired for.
 			if (handle.keyId !== writeKeyId(id)) return;
+			if (handle.writeRefused) this.#rejectRefusedLockWrite(handle);
 			if (handle.isExpired()) {
 				throw lockNotHeldError(handle);
 			}
+		}
+		#rejectRefusedLockWrite(handle: RecordLockHandle): never {
+			const owner = this.#savingOperation?.stagedIn ?? txnForContext(this.getContext());
+			for (const write of owner?.writes ?? [this.#savingOperation]) {
+				if (write?.lockHandle === handle && !write.saved) {
+					write.dropped = true;
+					write.lockWriteRefused = true;
+					write.stagedIn?.detachWrite(write);
+				}
+			}
+			throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
 		}
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
@@ -4266,12 +4278,7 @@ export function makeTable(options): TableResourceClass {
 			const operation = this.#savingOperation;
 			const lockHandle = operation ? operation.lockHandle : this.#lockHandle;
 			if (this.#lockWritable && lockHandle?.writeRefused) {
-				if (operation && !operation.saved) {
-					operation.dropped = true;
-					operation.lockWriteRefused = true;
-					operation.stagedIn?.detachWrite(operation);
-				}
-				throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
+				this.#rejectRefusedLockWrite(lockHandle);
 			}
 			if (
 				!this.#lockWritable &&
@@ -11983,13 +11990,15 @@ export function makeTable(options): TableResourceClass {
 		const existingRecord = existingEntry?.value;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
 		let sourceTimestamp = inheritedTimestamp;
+		let issuanceFailed = false;
 		if (!sourceTimestamp) {
 			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
 			else {
 				try {
 					sourceTimestamp = freshLocalKey(tableRootStore);
 				} catch {
-					// A read must not fail on the issuance ceiling's write; a raw sample only risks a tie.
+					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
+					issuanceFailed = true;
 					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
 				}
 			}
@@ -12063,7 +12072,7 @@ export function makeTable(options): TableResourceClass {
 			// Once dropTable() has started, no new source-fill write may begin; still resolve the
 			// caller's read with fresh source data, just don't cache it into a table that's going away.
 			// No write can commit on a read-only node, so a fill there is served but never staged.
-			noCacheStore: droppingTable || isReadOnlyMode(),
+			noCacheStore: issuanceFailed || droppingTable || isReadOnlyMode(),
 			source: null,
 			transaction: undefined,
 			expiresAt: undefined,
@@ -12242,7 +12251,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
+					if (!issuanceFailed && !sourceContext.noCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -12280,7 +12289,7 @@ export function makeTable(options): TableResourceClass {
 					sourceContext.transaction.abort();
 					return;
 				}
-				if (context?.noCacheStore || sourceContext.noCacheStore || droppingTable) {
+				if (issuanceFailed || context?.noCacheStore || sourceContext.noCacheStore || droppingTable) {
 					// abort before we write any change. droppingTable is re-checked live (not just
 					// the noCacheStore snapshot taken at call start) because a call admitted before
 					// dropTable() began can still be sitting here after it started - the await above

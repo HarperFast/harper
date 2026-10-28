@@ -1,5 +1,9 @@
 require('../testUtils');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { PID_DIR_PATH } = require('../perPidRoot');
+const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { Worker } = require('node:worker_threads');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
@@ -11,6 +15,8 @@ const { Transaction, RocksDatabase } = require('../rocksdbBindings.mts').rocksdb
 const {
 	certifyOriginFloor,
 	claimLocalKey,
+	freshLocalKey,
+	forgetOriginFloorRegistry,
 	localIssuanceRatchet,
 	getOriginClosedFloor,
 	localStartBound,
@@ -185,18 +191,18 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	});
 
 	it('a slot still being claimed constrains nothing', () => {
-		// buffer layout from originClosedFloor.ts: 4 header words, 1024 owner words, then one bound per 8 words
+		// buffer layout from originClosedFloor.ts: 5 header words, 1024 owner words, then one bound per 8 words
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
-		while (Atomics.load(words, 4 + slot) !== 0n || Atomics.load(words, 4 + 1024 + slot * 8) !== 0n) slot--;
-		Atomics.store(words, 4 + slot, 1n << 30n);
+		while (Atomics.load(words, 5 + slot) !== 0n || Atomics.load(words, 4 + 1025 + slot * 8) !== 0n) slot--;
+		Atomics.store(words, 5 + slot, 1n << 30n);
 		try {
 			const start = localStartBound(rootStore);
 			const bound = 'atOrAbove' in start ? start.atOrAbove : start.above;
 			assert(bound > 0 && bound < Infinity, `a claim in progress must not reach the start: ${bound}`);
 			assert.strictEqual(certifyOriginFloor(rootStore), null, 'certification still waits for the claimer');
 		} finally {
-			Atomics.store(words, 4 + slot, 0n);
+			Atomics.store(words, 5 + slot, 0n);
 		}
 	});
 
@@ -542,18 +548,21 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
 	});
 
-	it('issuance after a persisted ceiling (simulated in-process) starts above it and covers what it issues', async () => {
-		const ceiling = coverLocalIssuance(auditStore, rootStore.getMonotonicTimestamp() + 200);
-		assert.equal(readLocalIssuanceCeiling(auditStore), ceiling);
-		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
-		await transaction(() => Tbl.put({ id: 'after-ceiling', n: 1 }));
-		const [entry] = entriesFor('after-ceiling');
-		assert(entry.txnLogKey > ceiling, 'the first key after the open-time seed is above the ceiling');
-		assert(
-			readLocalIssuanceCeiling(auditStore) > entry.txnLogKey,
-			'a key issued ahead of the clock is persisted first'
-		);
-		await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
+	it('issuance on a fresh registry starts above its recovered ceiling', () => {
+		const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'issuance-seed-'));
+		const recoveredRoot = RocksDatabase.open(directory);
+		try {
+			const recoveredAudit = new RocksTransactionLogStore(recoveredRoot);
+			const ceiling = coverLocalIssuance(recoveredAudit, Date.now() + 200);
+			seedLocalIssuance(recoveredRoot, ceiling, (key) => coverLocalIssuance(recoveredAudit, key));
+			const key = freshLocalKey(recoveredRoot);
+			assert.ok(key > ceiling, 'the first key after the open-time seed is above the ceiling');
+			assert.ok(readLocalIssuanceCeiling(recoveredAudit) > key, 'a future key is covered before publication');
+		} finally {
+			forgetOriginFloorRegistry(recoveredRoot);
+			recoveredRoot.close();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {

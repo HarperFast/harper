@@ -216,7 +216,7 @@ from a correctly timed node does not resolve it because those writes still lose 
 peer's clock, rewrite from that origin, or wait. A key the
 ratchet issues ahead of the clock is covered by a ceiling flushed before use, including when another
 worker stored that ceiling. Coverage reserves one second of headroom; restart seeds above that whole
-reserve, so it can add up to a second of clock lead while preventing key reuse (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
+reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the ratchet buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
 reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
 not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry and
 coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
@@ -230,7 +230,7 @@ different explicit transaction is stamped by that transaction's clock, not the f
 `ImmediateTransaction` uses the handle's per-write stamp and reserves its log key separately. A deferred
 write takes its stamp at its own save. A holder write saved while the same context's previous commit
 is still in flight (awaiting a streamed blob) would join that commit's handle, whose log key is already
-reserved; this PR's joined-commit policy refuses it with a 409 before staging when that key is below
+reserved; the joined-commit policy refuses it with a 409 before staging when that key is below
 its stamp (harper#3238). This is a local admission policy, not a replica version clamp: applied writes
 preserve an explicit record version even when it exceeds the origin log key. The caller unlocks, then
 locks and retries once

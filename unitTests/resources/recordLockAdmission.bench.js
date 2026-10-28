@@ -1,6 +1,6 @@
 /**
  * Multi-worker comparison for record-lock issuance before and after one strict ratchet claim.
- * Run `npm run bench:record-lock-admission` through the environment's bench-run wrapper.
+ * Run `npm run bench:record-lock-admission`.
  */
 require('../testUtils');
 const { Worker } = require('node:worker_threads');

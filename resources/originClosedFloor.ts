@@ -25,7 +25,8 @@ const WORD_RATCHET = 2;
 // was behind a recovered floor or a runtime claim); native keys then pass through it for the rest of
 // the process, since any later hand-back to load-only admission races a fallback still in flight.
 const WORD_STRICT = 3;
-const HEADER_WORDS = 4;
+const WORD_INITIAL_CEILING = 4;
+const HEADER_WORDS = 5;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
 const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
@@ -407,16 +408,21 @@ export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 }
 
 /**
- * Persist issuance ahead of the clock through `cover`, which returns the ceiling it stored, and issue
- * every later local key above `ceiling`, the last one stored by an earlier process.
+ * Install per-thread coverage and seed a fresh registry above the earlier process's persisted ceiling.
+ * Later openers share that initial snapshot without consuming newly reserved headroom.
  */
 export function seedLocalIssuance(rootStore: RocksDatabase, ceiling: number, cover: (key: number) => number): void {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	(rootStore as any)[ISSUANCE_COVER] = cover;
-	if (!isValidFloor(ceiling)) return;
 	const words = registryFor(rootStore).words;
-	storeMax(words, WORD_RATCHET, ceiling);
-	if (rootStore.getMonotonicTimestamp() <= ceiling) Atomics.store(words, WORD_STRICT, 1n);
+	// Only recovery consumes the disk reserve. Later workers must not turn unused headroom into a lead.
+	const encoded = isValidFloor(ceiling) ? toBits(ceiling) : -1n;
+	const prior = Atomics.compareExchange(words, WORD_INITIAL_CEILING, 0n, encoded);
+	const initial = prior === 0n ? encoded : prior;
+	if (initial === -1n) return;
+	const recovered = fromBits(initial);
+	storeMax(words, WORD_RATCHET, recovered);
+	if (rootStore.getMonotonicTimestamp() <= recovered) Atomics.store(words, WORD_STRICT, 1n);
 }
 
 function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {

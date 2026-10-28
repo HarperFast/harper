@@ -1925,7 +1925,6 @@ describe('Record locks (harper#483)', () => {
 			const versionA = entryOf(idA).version;
 			const versionB = entryOf(idB).version;
 			assert.ok(versionB > predecessorTimestamp, 'the floored write is above its predecessor');
-			// A replica applies a write at no more than its log key, so a version above it would not survive.
 			const auditA = auditOf(idA, versionA);
 			const auditB = auditOf(idB, versionB);
 			assert.ok(auditA.txnLogKey >= versionA, 'the log key covers the unfloored lock write');
@@ -2078,58 +2077,76 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(auditOf(lockedId, stored.version).txnLogKey >= stored.version, 'its log key covers its version');
 		});
 
-		it('a caught refused deferred save does not poison unrelated writes', async function () {
-			if (isLMDB) return this.skip();
-			this.timeout(15_000);
-			const blobbedId = id();
-			const lockedId = id();
-			const otherId = id();
-			await LockTest.put([
-				{ id: blobbedId, n: 0 },
-				{ id: lockedId, n: 0 },
-				{ id: otherId, n: 0 },
-			]);
-			const context = {};
-			const stream = new PassThrough();
-			const blobbed = (await LockTest.getResource(blobbedId, context)).patch(blobbedId, {
-				n: 1,
-				blob: createBlob(stream),
-			});
-			let holder;
-			try {
-				await waitFor(
-					() => context.transaction.writes.some((write) => write && write.key === blobbedId && write.saved),
-					5000
-				);
-				holder = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
-				holder.set('n', 2);
-				let attempted;
-				try {
-					attempted = holder.save();
-				} catch (error) {
-					attempted = Promise.reject(error);
-				}
-				const refused = assert.rejects(attempted, (error) => error.statusCode === 409);
-				stream.end('payload');
-				await refused;
-				await blobbed;
-				await transaction(context, async () => {
-					await holder.update(lockedId, { n: 3 });
-					await assert.rejects(
-						async () => holder.save(),
-						(error) => error.statusCode === 409
-					);
-					await LockTest.put({ id: otherId, n: 1 });
+		for (const stagedBeforeRefusal of [false, true]) {
+			it(`a caught refusal contains ${stagedBeforeRefusal ? 'earlier staged siblings' : 'repeated deferred updates'}`, async function () {
+				if (isLMDB) return this.skip();
+				this.timeout(15_000);
+				const blobbedId = id();
+				const lockedId = id();
+				const otherId = id();
+				await LockTest.put([
+					{ id: blobbedId, n: 0 },
+					{ id: lockedId, n: 0 },
+					{ id: otherId, n: 0 },
+				]);
+				const context = {};
+				const stream = new PassThrough();
+				const blobbed = (await LockTest.getResource(blobbedId, context)).patch(blobbedId, {
+					n: 1,
+					blob: createBlob(stream),
 				});
-				assert.strictEqual(entryOf(lockedId).value.n, 0, 'neither refused write landed');
-				assert.strictEqual(entryOf(otherId).value.n, 1, 'the unrelated write committed');
-				assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier accepted write committed');
-			} finally {
-				stream.end();
-				await blobbed.catch(() => {});
-				await holder?.unlock();
-			}
-		});
+				let holder;
+				try {
+					await waitFor(
+						() => context.transaction.writes.some((write) => write && write.key === blobbedId && write.saved),
+						5000
+					);
+					holder = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
+					if (stagedBeforeRefusal) {
+						await holder.update(lockedId, { n: 2 });
+						await holder.update(lockedId, { n: 3 });
+						assert.ok(
+							context.transaction.writes.filter((write) => write?.key === lockedId && !write.saved).length >= 2
+						);
+					} else holder.set('n', 2);
+					let attempted;
+					try {
+						attempted = holder.save();
+					} catch (error) {
+						attempted = Promise.reject(error);
+					}
+					const refused = assert.rejects(attempted, (error) => error.statusCode === 409);
+					await refused;
+					if (stagedBeforeRefusal) {
+						await assert.rejects(
+							async () => holder.update(lockedId, { n: 4 }),
+							(error) => error.statusCode === 409
+						);
+						assert.ok(!context.transaction.writes.some((write) => write?.key === lockedId && !write.saved));
+					}
+					stream.end('payload');
+					await blobbed;
+					await transaction(context, async () => {
+						try {
+							await holder.update(lockedId, { n: 5 });
+							await holder.update(lockedId, { n: 6 });
+							await holder.save();
+							assert.fail('the refused handle must reject the mutation');
+						} catch (error) {
+							assert.strictEqual(error.statusCode, 409);
+						}
+						await LockTest.put({ id: otherId, n: 1 });
+					});
+					assert.strictEqual(entryOf(lockedId).value.n, 0, 'neither refused write landed');
+					assert.strictEqual(entryOf(otherId).value.n, 1, 'the unrelated write committed');
+					assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier accepted write committed');
+				} finally {
+					stream.end();
+					await blobbed.catch(() => {});
+					await holder?.unlock();
+				}
+			});
+		}
 
 		it('detaches a holder write when allocating its next stamp fails, and retries after reacquiring the lock', async function () {
 			if (isLMDB) return this.skip();

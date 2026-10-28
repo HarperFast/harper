@@ -136,13 +136,13 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 		// a slot whose claimer has not stored its first bound: the layout is originClosedFloor.ts's
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
-		while (Atomics.load(words, 4 + slot) !== 0n || Atomics.load(words, 4 + 1024 + slot * 8) !== 0n) slot--;
-		Atomics.store(words, 4 + slot, 1n << 30n);
+		while (Atomics.load(words, 5 + slot) !== 0n || Atomics.load(words, 4 + 1025 + slot * 8) !== 0n) slot--;
+		Atomics.store(words, 5 + slot, 1n << 30n);
 		let pending;
 		try {
 			pending = time();
 		} finally {
-			Atomics.store(words, 4 + slot, 0n);
+			Atomics.store(words, 5 + slot, 0n);
 		}
 		console.log('');
 		console.log(`  localStartBound, settled      ${settled} ns`);
