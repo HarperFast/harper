@@ -734,31 +734,20 @@ nanoseconds without multiplying the full epoch-sized floating-point value.
 
 The monotonic time lives only in the process-wide shared readiness buffer and is cleared on non-ready
 health transitions. An owner refreshes idle coverage at its flush cadence without extending its idle
-release deadline; a coverage request (below) does extend it, so an owner answering waits keeps
-ownership instead of rotating epochs under read traffic. A query within the certified age bound reads only shared memory and the monotonic
+release deadline. A query within the certified age bound reads only shared memory and the monotonic
 clock; strict or older queries compare the persisted vector with current physical positions. This also
 certifies an unchanged index after owner release or process restart, when no usable time proof remains.
 An old owner can race with a non-ready transition and restore an earlier coverage time, but consumers
 gate the time on stable ready readiness; after rebuild, the rebuilt anchor still covers that earlier true
 prefix.
-Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
-time out, or abort; a new waiter is checked at once and moves the timer only if its deadline is sooner. A waiter's target is the clock at query start, after the owner's own commit drain,
-so only a drain started later can answer it; leaving that to the owner's flush-cadence refresh made
-every wait after any commit in the database cost up to the flush age. The poll therefore requests
-coverage: it wakes the local runner (which acquires an ownerless index), and a non-owner notifies the
-stable-id `derived-index:<id>:coverage` buffer, whose callback acts only on the owner. Both use the
-coverage wake, which neither changes writer-lag accounting nor retries a deferred or ceiling-parked
-batch. It is a separate buffer because `:wake` notifications are release handoffs: a releaser consumes
-exactly one as its own, and parked peers re-probe the lock on each. A request made at clock `R` is
-answered by any owner drain after it, so the poll requests again only once the shared coverage time
-reaches `R` while a waiter is still unresolved — at most one request per owner round trip per worker,
-which also covers waiters that joined the group after the first request. A failed notify logs and
-leaves the wait to the owner's flush-cadence refresh. An unrelated-only drain then
-publishes the shared time without a barrier (below); a pending indexed mutation still holds coverage
-until its barrier, so a wait after an indexed write still lasts up to the flush age. No per-query
-persisted coverage write is needed. Closing a registration rejects its waiters. Regression coverage:
-`unitTests/resources/derivedIndexCoverageDemand.test.js` (a worker-thread waiter on a main-thread
-owner) and the `coverage demand` cases in `unitTests/resources/derivedIndexRuntime.test.js`.
+Concurrent waiters on one worker/index share a 25 ms poll timer; a new waiter is checked at once and
+moves it only for a sooner deadline. A waiter's target postdates the owner's commit drain, so only a
+later drain answers it: the poll requests one, waking the local runner (which takes an ownerless index)
+and, on a non-owner, notifying the stable-id `derived-index:<id>:coverage` buffer, which only the owner
+acts on, with the coverage wake (no writer-lag accounting, no deferred retry). It is not `:wake`, whose
+notifies are release handoffs a releaser consumes as its own. A request at clock `R` is answered by any
+owner drain after it, so the next goes out only once coverage reaches `R` with a waiter unresolved. A
+failed notify falls back to the flush-cadence refresh. Closing a registration rejects its waiters.
 A completed nonempty drain also attaches its capture to the accepted boundary; ongoing writes need
 not leave an empty turn between batches. The capture remains fenced behind every indexed mutation
 accepted through that boundary.
