@@ -309,7 +309,7 @@ flushed post-purge write, lagging coverage, other range failures, an unproven si
 persisted by an older build, and the window between a native flush and its cursor write, both reachable
 only with a power loss (#3673). A runner's idle grace counts from its last delivered work or acquisition,
 not from its last wake: commits with no log work (the origin-closed floor, every 5 s) wake every runner,
-and must not keep it from releasing. A failure while the root store reports `closed` condemns nothing.
+and must not keep it from releasing. A failure while the root store is closing or closed condemns nothing.
 
 ### Offered versus durable progress
 
