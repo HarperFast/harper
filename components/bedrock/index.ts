@@ -158,7 +158,6 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	adapters: false,
 	structuredOutput: false,
 });
-// For a configured Cohere embed model, the only Bedrock embedding family with a start-keeping `truncate`.
 const TRUNCATING: ModelCapabilities = Object.freeze({ ...CAPABILITIES, truncate: true });
 
 export class BedrockBackend implements ModelBackend {
@@ -358,9 +357,9 @@ function familyOf(modelId: string): Family {
 // ---------- embed body / result extraction ----------
 
 interface EmbedTruncation {
-	/** Cohere's value that discards the end of an over-long input. */
+	/** The Cohere value that discards the end of an over-long input; v3 and v4 name it differently. */
 	truncate: 'END' | 'RIGHT';
-	/** Bedrock's per-text character limit, which it enforces before any token truncation. */
+	/** Bedrock rejects a longer text before any token truncation applies. */
 	maxChars?: number;
 }
 
@@ -369,7 +368,6 @@ const COHERE_EMBED_V4 = /\bcohere\.embed-v4\b/i;
 const COHERE_V3_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'END', maxChars: 2048 });
 const COHERE_V4_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'RIGHT' });
 
-/** How `model` cuts an over-long text keeping its start, or undefined when it cannot (Titan, any other model). */
 function embedTruncation(model: string): EmbedTruncation | undefined {
 	if (familyOf(model) !== 'cohere') return undefined;
 	if (COHERE_EMBED_V4.test(model)) return COHERE_V4_TRUNCATION;

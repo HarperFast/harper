@@ -136,8 +136,7 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	structuredOutput: true,
 	maxScoredChoices: MAX_SCORED_CHOICES,
 });
-// The same shape for a model that refused `logprobs`, and both again with `truncate` for a `truncation`
-// entry; frozen once, so `capabilities()` allocates nothing.
+// Frozen once, so `capabilities()` allocates nothing.
 const { maxScoredChoices: _scoringLimit, ...UNLIMITED } = CAPABILITIES;
 const CAPABILITIES_WITHOUT_SCORING: ModelCapabilities = Object.freeze({ ...UNLIMITED, scoreChoices: false });
 const TRUNCATING: ModelCapabilities = Object.freeze({ ...CAPABILITIES, truncate: true });

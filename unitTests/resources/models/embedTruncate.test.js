@@ -142,7 +142,7 @@ describe("OpenAI entry truncation: 'vllm' through bootstrap and HTTP", () => {
 
 	before(async () => {
 		setupTestDBPath();
-		// Stands in for vLLM: rejects an input over the window unless asked to keep its first WINDOW characters.
+		// A vLLM stand-in that counts characters as tokens.
 		server = createServer(async (req, res) => {
 			const chunks = [];
 			for await (const chunk of req) chunks.push(chunk);

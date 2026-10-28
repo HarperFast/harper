@@ -26,9 +26,7 @@ import type {
  * Same input always produces the same output — no external services, no model
  * files, no network. Lets the facade, registry, accounting, and analytics
  * paths be exercised end-to-end without an Ollama / OpenAI / fabric backend.
- *
- * `contextWindow` (characters) gives `embed` a limit: a longer input fails with
- * `contextWindowExceeded`, or with `truncate: true` is cut to the window, keeping its start.
+ * `contextWindow` is in characters.
  */
 export class TestBackend implements ModelBackend {
 	readonly name = 'test';
