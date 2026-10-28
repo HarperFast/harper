@@ -26,6 +26,7 @@ import {
 	RESIDENCY_MAP_TABLE,
 	ResidencyPlacementError,
 } from './residencyMaps.ts';
+import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -247,6 +248,7 @@ import {
 	removeEntry,
 	PENDING_LOCAL_TIME,
 	VERSION_REUSED,
+	FULL_WRITE_HEAD,
 	RecordObject,
 	type Entry,
 	type StructureCounts,
@@ -669,6 +671,18 @@ export const INVALIDATED = 1;
 // entries are independent of the cached body. Exclusive with INVALIDATED; placement metadata stays.
 export const REPLICA = 4;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
+export { FULL_WRITE_HEAD };
+/**
+ * The log key of a flagged row's head write, which with the writer identifies that write on every node that
+ * applied it, or undefined when the row is not flagged. A flagged row's only log-key ref is its head's.
+ */
+export function fullWriteHeadKey(
+	metadataFlags: number,
+	entry: { version?: number; additionalAuditRefs?: Array<{ version: number }> }
+): number | undefined {
+	if (!(metadataFlags & FULL_WRITE_HEAD)) return undefined;
+	return entry.additionalAuditRefs?.[0]?.version ?? entry.version;
+}
 export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const DEFAULT_REPLICA_REFRESH_FRACTION = 0.5;
 const RETRY_NOW_VALUE = rocksConstants.RETRY_NOW_VALUE;
@@ -1073,7 +1087,7 @@ interface TableResourceClass {
 	 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`; resolves true when stored.
 	 * Optional-cache callers must handle synchronous admission errors as well as rejected commits.
 	 */
-	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean>;
+	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string; fullWriteHead?: number }): Promise<boolean>;
 	/**
 	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 	 * `observedExpiresAt` is the expiry of the entry the caller read (`null` when it had none); omitted, only the version is checked.
@@ -2297,6 +2311,8 @@ export function makeTable(options): TableResourceClass {
 						// entry or out-of-order resequencing (harper-pro#480). Only set for copy frames (between
 						// COPY_START and COPY_COMPLETE); post-copy audit-replay frames apply normally.
 						isCopyApply: event.isCopyApply,
+						// any base-copy frame carries the source row's current body, not the write logged at its version
+						copyFrame: event.copyFrame,
 						async: true,
 					};
 					const id = event.id;
@@ -4616,16 +4632,29 @@ export function makeTable(options): TableResourceClass {
 		 * untouched: the row keeps the stub's residency and canonical identity, gets no audit entry and never
 		 * replicates. Resolves true when the replica was stored; admission can throw before a commit is submitted.
 		 */
-		static _storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean> {
+		static _storeReplica(
+			existingEntry: Entry,
+			entry: Entry & { originNode?: string; fullWriteHead?: number }
+		): Promise<boolean> {
 			if (
 				(residencyPolicy ? !hasSecondaryIndices() : TableResource.getResidencyById) ||
 				!replicaExpirationMs ||
+				disposed ||
+				maintenanceClosed ||
+				droppingTable ||
 				!(residencyPolicy ? existingEntry : existingEntry?.residencyId) ||
 				entry?.value == null ||
-				entry.version == null
+				!answersStub(existingEntry, entry.value, entry.version, entry.originNode, entry.fullWriteHead)
 			)
 				return Promise.resolve(false);
-			return writeReplica(existingEntry.key, entry.value, entry.version, entry.expiresAt, entry.originNode);
+			return writeReplica(
+				existingEntry.key,
+				entry.value,
+				entry.version,
+				entry.expiresAt,
+				entry.originNode,
+				entry.fullWriteHead
+			);
 		}
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
@@ -5645,6 +5674,19 @@ export function makeTable(options): TableResourceClass {
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
 						let belowAuditFloor = false;
+						let auditFloor: number | undefined;
+						if (audit && precedesExisting < 0) {
+							// A newer full write supersedes this one, which is where the walk below stops when the head's
+							// entry is retained and this write is above the floor; otherwise that reconciliation decides.
+							const headKey = fullWriteHeadKey(existingEntry.metadataFlags, existingEntry);
+							if (headKey !== undefined) {
+								auditFloor = getAuditFloor(auditStore);
+								if (Number.isFinite(auditFloor) && txnTime >= auditFloor && headKey >= auditFloor) {
+									write.skipped = true;
+									return;
+								}
+							}
+						}
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -5789,7 +5831,7 @@ export function makeTable(options): TableResourceClass {
 							// Infinity, which fails closed for a cursor check but has to fail OPEN here — walk rather than
 							// discard. RocksDB only: LMDB keeps its exact, unbounded reconciliation.
 							if (isRocksDB && precedesExisting < 0) {
-								const auditFloor = getAuditFloor(auditStore);
+								auditFloor ??= getAuditFloor(auditStore);
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
@@ -6393,7 +6435,19 @@ export function makeTable(options): TableResourceClass {
 							isRocksDB
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
-							keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0,
+							(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
+								(isRocksDB &&
+								audit &&
+								fullUpdate &&
+								precedesExisting >= 0 &&
+								!incrementalUpdateToApply &&
+								!isCopyApply &&
+								!options?.copyFrame &&
+								// a ref this write did not add (a tie inherits the prior head's) would hide which write is the head
+								(additionalAuditRefs.length === 0 ||
+									(additionalAuditRefs.length === 1 && additionalAuditRefs[0].version === appendedLogKey))
+									? FULL_WRITE_HEAD
+									: 0),
 							// copy-apply rows are snapshots, not transactions: write the record + indices but no audit entry
 							isCopyApply ? false : audit,
 							{
@@ -6415,6 +6469,7 @@ export function makeTable(options): TableResourceClass {
 								receivedIdentityRefs,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
+								copyFrame: options?.copyFrame,
 							},
 							type,
 							false,
@@ -6647,7 +6702,7 @@ export function makeTable(options): TableResourceClass {
 							null,
 							existingEntry,
 							txnTime,
-							0,
+							isRocksDB && audit ? FULL_WRITE_HEAD : 0,
 							audit,
 							{
 								user: (context as any)?.user,
@@ -7242,20 +7297,32 @@ export function makeTable(options): TableResourceClass {
 			let selectionStopped = false;
 			const relationshipSelection = (record, entry?, isSync = false) => {
 				if (selectionStopped) return undefined;
+				const readsKeys =
+					!isSync && (filterMap ? !filterMap.hasMappings && resolver.toMany : Boolean(resolver.resolveKeys));
 				let value;
 				if (filterMap?.hasMappings) {
 					const key = resolver.from ? record[resolver.from] : flattenKey(entry?.key ?? record[primaryKey]);
 					value = filterMap.get(key) || [];
-				} else if (filterMap) value = filterMap.fromRecord?.(record);
+				} else if (filterMap) value = filterMap.fromRecord?.(record, isSync);
+				else if (readsKeys) value = resolver.resolveKeys(record, context);
 				else value = resolver(record, context, entry, true, undefined, undefined, true);
 				return when(value, (value) => {
 					if (selectionStopped) return undefined;
 					if (value == null) return value;
-					const many =
-						Array.isArray(value) ||
-						typeof value[Symbol.iterator] === 'function' ||
-						typeof value[Symbol.asyncIterator] === 'function';
-					const source = many ? value : [value];
+					const many = readsKeys
+						? resolver.toMany
+						: Array.isArray(value) ||
+							typeof value[Symbol.iterator] === 'function' ||
+							typeof value[Symbol.asyncIterator] === 'function';
+					const readTxn = targetTable._readTxnForContext(context);
+					const source = readsKeys
+						? new ExtendedIterable(many ? value : [value]).map((key) =>
+								when(targetTable.primaryStore.getEntry(key, { transaction: readTxn, async: true }), freezeRelatedEntry)
+							)
+						: many
+							? value
+							: [value];
+					const skipMissing = readsKeys && resolver.filterMissing;
 					let candidates = new ExtendedIterable();
 					candidates.iterate = (options) => {
 						const sourceIterator =
@@ -7274,11 +7341,10 @@ export function makeTable(options): TableResourceClass {
 							},
 						};
 					};
-					const readTxn = targetTable._readTxnForContext(context);
 					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
 							if (stopped) return SKIP;
-							if (candidate == null) return predicate ? SKIP : candidate;
+							if (candidate == null) return predicate || skipMissing ? SKIP : candidate;
 							const entry =
 								typeof candidate === 'object' && candidate.key !== undefined
 									? candidate
@@ -7636,16 +7702,41 @@ export function makeTable(options): TableResourceClass {
 							: entries[Symbol.iterator]();
 					let dbDone: boolean;
 					let closed = false;
+					// A released read snapshot ends the scan the way a range read over it does: RocksDB's guard
+					// throws the expired-snapshot error (teardown runs onDone() without returning this iterator),
+					// and an LMDB transaction reports isDone
+					const checkActive = getReadTransactionGuard(readTxn);
+					const stopped = () => {
+						if (closed) return true;
+						checkActive?.();
+						return readTxn?.isDone;
+					};
 					const dbOrderedAttribute = (sort as any).dbOrderedAttribute;
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
-					function collect(entry) {
+					function collect(entry): Promise<unknown> | undefined {
 						ordered.push(entry);
-						for (let i = 0; i < clauseCount; i++) {
-							const clause = clauses[i];
-							orderedKeys[i].push(convertToComparableKeys(getAttributeValue(entry, clause.attribute, context, clause)));
+						let pending: Promise<void>[];
+						try {
+							for (let i = 0; i < clauseCount; i++) {
+								const clause = clauses[i];
+								const keys = orderedKeys[i];
+								const value = getAttributeValue(entry, clause.attribute, context, clause);
+								if (value?.then) {
+									const position = keys.push(undefined) - 1;
+									(pending ??= []).push(
+										value.then((value) => {
+											keys[position] = convertToComparableKeys(value);
+										})
+									);
+								} else keys.push(convertToComparableKeys(value));
+							}
+						} catch (error) {
+							if (pending) Promise.all(pending).catch(() => {});
+							throw error;
 						}
+						if (pending) return Promise.all(pending);
 					}
 					function comparePositions(positionA: number, positionB: number): number {
 						for (let i = 0; i < clauseCount; i++) {
@@ -7664,79 +7755,103 @@ export function makeTable(options): TableResourceClass {
 					}
 					return {
 						async next() {
-							for (;;) {
-								if (closed) return { done: true, value: undefined };
-								let iteration: IteratorResult<any>;
-								if (sortedPositions) {
-									iteration = nextSorted();
-									if (iteration.done) {
-										if (dbDone) {
-											if (results.onDone) results.onDone();
-											return iteration;
+							try {
+								for (;;) {
+									if (stopped()) return { done: true, value: undefined };
+									let iteration: IteratorResult<any>;
+									if (sortedPositions) {
+										iteration = nextSorted();
+										if (iteration.done) {
+											if (dbDone) {
+												if (results.onDone) results.onDone();
+												return iteration;
+											}
+										} else {
+											const value = await transformToRecord.call(this, iteration.value);
+											if (stopped()) return { done: true, value: undefined };
+											if (value !== SKIP) return { value };
+											continue;
 										}
-									} else {
+									}
+									ordered = [];
+									orderedKeys = [];
+									for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
+									if (enqueuedEntryForNextGroup) {
+										const collecting = collect(enqueuedEntryForNextGroup);
+										if (collecting) await collecting;
+									}
+									// need to load all the entries into ordered
+									do {
+										if (stopped()) return { done: true, value: undefined };
+										iteration = await dbIterator.next();
+										if (stopped()) return { done: true, value: undefined };
+										if (iteration.done) {
+											dbDone = true;
+											if (!ordered.length) {
+												if (results.onDone) results.onDone();
+												return iteration;
+											} else break;
+										} else {
+											let entry = iteration.value;
+											if (entry?.then) {
+												entry = await entry;
+												if (stopped()) return { done: true, value: undefined };
+											}
+											if (entry === SKIP) continue;
+											if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
+											// if the index has already provided the first order of sorting, we only need to sort
+											// within each grouping
+											if (dbOrderedAttribute) {
+												let groupingValue = getAttributeValue(
+													entry,
+													dbOrderedAttribute,
+													context,
+													(sort as any).dbOrderedSort
+												);
+												if (groupingValue?.then) {
+													groupingValue = await groupingValue;
+													if (stopped()) return { done: true, value: undefined };
+												}
+												if (firstEntry) {
+													firstEntry = false;
+													lastGroupingValue = groupingValue;
+												} else if (groupingValue !== lastGroupingValue) {
+													lastGroupingValue = groupingValue;
+													enqueuedEntryForNextGroup = entry;
+													break;
+												}
+											}
+											const collecting = collect(entry);
+											if (collecting) await collecting;
+										}
+									} while (true);
+									if (stopped()) return { done: true, value: undefined };
+									if ((sort as any).isGrouped) {
+										// TODO: Return grouped results
+									}
+									sortedPositions = [];
+									for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
+									sortedPositions.sort(comparePositions);
+									sortedIndex = 0;
+									iteration = nextSorted();
+									if (!iteration.done) {
 										const value = await transformToRecord.call(this, iteration.value);
-										if (closed) return { done: true, value: undefined };
+										if (stopped()) return { done: true, value: undefined };
 										if (value !== SKIP) return { value };
 										continue;
 									}
+									if (results.onDone) results.onDone();
+									return iteration;
 								}
-								ordered = [];
-								orderedKeys = [];
-								for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
-								if (enqueuedEntryForNextGroup) collect(enqueuedEntryForNextGroup);
-								// need to load all the entries into ordered
-								do {
-									iteration = await dbIterator.next();
-									if (closed) return { done: true, value: undefined };
-									if (iteration.done) {
-										dbDone = true;
-										if (!ordered.length) {
-											if (results.onDone) results.onDone();
-											return iteration;
-										} else break;
-									} else {
-										let entry = iteration.value;
-										if (entry?.then) entry = await entry;
-										if (closed) return { done: true, value: undefined };
-										if (skipInvalidated && entry?.metadataFlags & INVALIDATED) continue;
-										// if the index has already provided the first order of sorting, we only need to sort
-										// within each grouping
-										if (dbOrderedAttribute) {
-											const groupingValue = getAttributeValue(
-												entry,
-												dbOrderedAttribute,
-												context,
-												(sort as any).dbOrderedSort
-											);
-											if (firstEntry) {
-												firstEntry = false;
-												lastGroupingValue = groupingValue;
-											} else if (groupingValue !== lastGroupingValue) {
-												lastGroupingValue = groupingValue;
-												enqueuedEntryForNextGroup = entry;
-												break;
-											}
-										}
-										collect(entry);
-									}
-								} while (true);
-								if ((sort as any).isGrouped) {
-									// TODO: Return grouped results
+							} catch (error) {
+								// a rejected next() is never followed by return(), so close the range iterator here
+								if (!dbDone && !closed) {
+									closed = true;
+									try {
+										dbIterator.return?.()?.catch?.(() => {});
+									} catch {}
 								}
-								sortedPositions = [];
-								for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
-								sortedPositions.sort(comparePositions);
-								sortedIndex = 0;
-								iteration = nextSorted();
-								if (!iteration.done) {
-									const value = await transformToRecord.call(this, iteration.value);
-									if (closed) return { done: true, value: undefined };
-									if (value !== SKIP) return { value };
-									continue;
-								}
-								if (results.onDone) results.onDone();
-								return iteration;
+								throw error;
 							}
 						},
 						return() {
@@ -7955,8 +8070,10 @@ export function makeTable(options): TableResourceClass {
 									value = filterMap.get(key);
 									if (!value) value = [];
 								} else {
-									value = filterMap.fromRecord?.(record);
+									value = filterMap.fromRecord?.(record, this?.isSync);
 								}
+							} else if (resolver.loadEntries && !this?.isSync) {
+								value = resolver.loadEntries(record, context);
 							} else {
 								value = resolver(record, context, entry, true, sort);
 							}
@@ -8078,36 +8195,42 @@ export function makeTable(options): TableResourceClass {
 						callback(value, attribute_name);
 					};
 					let selected: any;
-					if (typeof select === 'string') {
-						selectAttribute(select, (value) => {
-							selected = value;
-						});
-					} else if (Array.isArray(select)) {
-						if ((select as any).asArray) {
-							selected = [];
-							select.forEach((attribute, index) => {
-								if (attribute === '*') select[index] = record;
-								else selectAttribute(attribute, (value) => (selected[index] = value));
+					try {
+						if (typeof select === 'string') {
+							selectAttribute(select, (value) => {
+								selected = value;
 							});
-						} else {
-							selected = {};
-							const forceNulls = (select as any).forceNulls;
-							for (const attribute of select) {
-								if (attribute === '*')
-									for (const key in record) {
-										selected[key] = record[key];
-									}
-								else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
-									const value = record[attribute];
-									selected[attribute] = value === undefined && forceNulls ? null : value;
-								} else
-									selectAttribute(attribute, (value, attribute_name) => {
-										if (value === undefined && forceNulls) value = null;
-										selected[attribute_name] = value;
-									});
+						} else if (Array.isArray(select)) {
+							if ((select as any).asArray) {
+								selected = [];
+								select.forEach((attribute, index) => {
+									if (attribute === '*') select[index] = record;
+									else selectAttribute(attribute, (value) => (selected[index] = value));
+								});
+							} else {
+								selected = {};
+								const forceNulls = (select as any).forceNulls;
+								for (const attribute of select) {
+									if (attribute === '*')
+										for (const key in record) {
+											selected[key] = record[key];
+										}
+									else if (typeof attribute === 'string' && !propertyResolvers?.[attribute]) {
+										const value = record[attribute];
+										selected[attribute] = value === undefined && forceNulls ? null : value;
+									} else
+										selectAttribute(attribute, (value, attribute_name) => {
+											if (value === undefined && forceNulls) value = null;
+											selected[attribute_name] = value;
+										});
+								}
 							}
-						}
-					} else throw new ClientError('Invalid select' + select);
+						} else throw new ClientError('Invalid select' + select);
+					} catch (error) {
+						// related reads already started for this row would otherwise reject unobserved
+						if (promises) Promise.all(promises).catch(() => {});
+						throw error;
+					}
 					if (promises) {
 						return Promise.all(promises).then(() => selected);
 					}
@@ -9816,6 +9939,14 @@ export function makeTable(options): TableResourceClass {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
+							const searchRelated = (object, context) =>
+								searchByIndex(
+									{ attribute: relationship.to, value: object[relationship.from ? relationship.from : primaryKey] },
+									txnForContext(context).getReadTxn(),
+									false,
+									attribute.elements.definition.tableClass,
+									{ allowFullScan: false }
+								) as any;
 							propertyResolvers[attribute.name] = attribute.resolve = (
 								object,
 								context,
@@ -9825,19 +9956,9 @@ export function makeTable(options): TableResourceClass {
 								_comparing?,
 								lazy?
 							) => {
-								// TODO: Get raw record/entry?
-								const id = object[relationship.from ? relationship.from : primaryKey];
 								const relatedTable = attribute.elements.definition.tableClass;
 								if (returnEntry) {
-									const candidates = (
-										searchByIndex(
-											{ attribute: relationship.to, value: id },
-											txnForContext(context).getReadTxn(),
-											false,
-											relatedTable,
-											{ allowFullScan: false }
-										) as any
-									).map((entry) => {
+									const candidates = searchRelated(object, context).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
 										return relatedTable.primaryStore.getEntry(entry, {
 											transaction: txnForContext(context).getReadTxn(),
@@ -9845,8 +9966,18 @@ export function makeTable(options): TableResourceClass {
 									});
 									return lazy ? candidates : candidates.asArray;
 								}
+								const id = object[relationship.from ? relationship.from : primaryKey];
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
+							attribute.resolve.resolveKeys = (object, context) => searchRelated(object, context).asArray;
+							attribute.resolve.loadEntries = (object, context) => {
+								const keys = attribute.resolve.resolveKeys(object, context);
+								const relatedTable = attribute.elements.definition.tableClass;
+								return keys?.then
+									? keys.then((keys) => loadRelatedEntries(keys, relatedTable, context))
+									: loadRelatedEntries(keys, relatedTable, context);
+							};
+							attribute.resolve.toMany = true;
 							attribute.set = () => {
 								// ideally we want to throw an error here, but if the user had (accidently?) set a property into storage
 								// conflicts with this attribute, we don't want to prevent loading
@@ -9874,7 +10005,6 @@ export function makeTable(options): TableResourceClass {
 							) => {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
-								const ctx = context ?? contextStorage.getStore();
 								if (attribute.elements) {
 									// tolerate a scalar id in an array-typed FK field (legacy data written
 									// before attribute.set normalized single records to a one-element array)
@@ -9883,7 +10013,7 @@ export function makeTable(options): TableResourceClass {
 									// normalizedIds === ids is the record's own stored FK array, and returning it
 									// would let a caller's mutation (e.g. record.manyToMany.push(x)) alias into it
 									if (normalizedIds.length === 0) return [];
-									if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+									markRelatedReadUncacheable(context);
 									// getSync (not get): relationship accessors are a synchronous contract (as in v4);
 									// on RocksDB get() returns a Promise on a block-cache miss, which would leak an
 									// intermittent MaybePromise into user code
@@ -9897,7 +10027,7 @@ export function makeTable(options): TableResourceClass {
 									});
 									return relationship.filterMissing ? results.filter(exists) : results;
 								}
-								if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+								markRelatedReadUncacheable(context);
 								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'getSync'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});
@@ -9917,6 +10047,23 @@ export function makeTable(options): TableResourceClass {
 									object[relationship.from] = attribute.elements ? [targetId] : targetId;
 								}
 							};
+							attribute.resolve.resolveKeys = (object, context) => {
+								const ids = object[relationship.from];
+								if (ids == null) return ids;
+								const keys = !attribute.elements || Array.isArray(ids) ? ids : [ids];
+								if (!attribute.elements || keys.length > 0) markRelatedReadUncacheable(context);
+								return keys;
+							};
+							attribute.resolve.loadEntries = (object, context) => {
+								const keys = attribute.resolve.resolveKeys(object, context);
+								if (keys == null) return keys;
+								if (keys.length === 0 && attribute.elements) return [];
+								if (attribute.elements)
+									return loadRelatedEntries(keys, definition.tableClass, context, relationship.filterMissing);
+								return loadRelatedEntry(keys, definition.tableClass, context);
+							};
+							attribute.resolve.toMany = Boolean(attribute.elements);
+							attribute.resolve.filterMissing = Boolean(attribute.elements && relationship.filterMissing);
 							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
 							attribute.resolve.from = relationship.from;
 						} else {
@@ -11087,6 +11234,61 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
+	// must settle to what the relationship resolver returns with returnEntry
+	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
+		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
+		const entries = [];
+		for (let i = 0; i < keys.length; i++) {
+			const key = keys[i];
+			const entry = key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options);
+			entries.push(entry);
+			if (entry?.then)
+				return loadRemainingRelatedEntries(keys, i + 1, entries, relatedTable, options).then((entries) =>
+					settleRelatedEntries(entries, filterMissing)
+				);
+		}
+		return settleRelatedEntries(entries, filterMissing);
+	}
+	// Once one related read has to go to storage, the rest are read at most RELATED_READS_IN_FLIGHT at a time:
+	// a row with thousands of related ids must not queue them all ahead of every other request's background reads
+	async function loadRemainingRelatedEntries(keys: any[], start: number, entries: any[], relatedTable, options) {
+		const checkActive = getReadTransactionGuard(options.transaction);
+		try {
+			// entries[start - 1] is the read already in flight, so it counts toward the first window
+			for (let i = start; i < keys.length; i++) {
+				if ((i - start + 1) % RELATED_READS_IN_FLIGHT === 0) {
+					await Promise.all(entries.slice(i - RELATED_READS_IN_FLIGHT));
+					checkActive?.();
+				}
+				const key = keys[i];
+				entries.push(key && key.key !== undefined ? key : relatedTable.primaryStore.getEntry(key, options));
+			}
+			return await Promise.all(entries);
+		} catch (error) {
+			// the reads still pending would otherwise reject unobserved
+			Promise.all(entries).catch(() => {});
+			throw error;
+		}
+	}
+	function settleRelatedEntries(entries: any[], filterMissing?: boolean) {
+		if (TableResource.loadAsInstance === false) for (const entry of entries) freezeRecord(entry?.value);
+		return filterMissing ? entries.filter(exists) : entries;
+	}
+	function markRelatedReadUncacheable(context: Context) {
+		const ctx = context ?? contextStorage.getStore();
+		if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+	}
+	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
+		const entry = relatedTable.primaryStore.getEntry(key, {
+			transaction: txnForContext(context).getReadTxn(),
+			async: true,
+		});
+		return entry?.then ? entry.then(freezeRelatedEntry) : freezeRelatedEntry(entry);
+	}
+	function freezeRelatedEntry(entry: any) {
+		if (TableResource.loadAsInstance === false) freezeRecord(entry?.value);
+		return entry;
+	}
 	function getAttributeValue(entry, attribute_name, context, sort?) {
 		if (!entry) {
 			return;
@@ -11094,22 +11296,39 @@ export function makeTable(options): TableResourceClass {
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
-			let resolvers = propertyResolvers;
-			let value = record;
-			for (let i = 0, l = attribute_name.length; i < l; i++) {
-				const attribute = attribute_name[i];
-				const resolver = resolvers?.[attribute];
+			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort);
+		}
+		const resolver = propertyResolvers[attribute_name];
+		if (resolver?.loadEntries)
+			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
+		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
+	}
+	function relatedValue(resolver, loaded) {
+		return resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value;
+	}
+	function getPathValue(value, path, start, resolvers, entry, context, sort) {
+		for (let i = start, l = path.length; i < l; i++) {
+			const attribute = path[i];
+			const resolver = resolvers?.[attribute];
+			resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+			if (resolver?.loadEntries && value) {
+				const loaded = resolver.loadEntries(value, context);
+				if (loaded?.then) {
+					const nextResolvers = resolvers;
+					return loaded.then((loaded) =>
+						getPathValue(relatedValue(resolver, loaded), path, i + 1, nextResolvers, null, context, sort)
+					);
+				}
+				value = relatedValue(resolver, loaded);
+			} else {
 				value =
 					resolver && value
 						? resolver(value, context, entry, false, i === l - 1 ? sort : undefined, true)
 						: value?.[attribute];
-				entry = null; // can't use this in the nested object
-				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
-			return value;
+			entry = null; // can't use this in the nested object
 		}
-		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
+		return value;
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
@@ -11123,6 +11342,9 @@ export function makeTable(options): TableResourceClass {
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
+		const matchers = filters?.some((filter) => filter.maybeAsync)
+			? filters.map((filter) => filter.maybeAsync ?? filter)
+			: undefined;
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
 			if (!record) return SKIP;
@@ -11134,11 +11356,28 @@ export function makeTable(options): TableResourceClass {
 			if (id !== undefined) entry.key = id;
 			return entry;
 		}
+		function processEntryMaybeAsync(entry: Entry, id?) {
+			const record = entry?.value;
+			if (!record) return SKIP;
+			return applyFilters(record, entry, id, idFiltersApplied, 0);
+		}
+		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
+			for (let i = start; i < filtersLength; i++) {
+				if (applied?.includes(i)) continue;
+				const matches = matchers[i](record, entry);
+				if (matches?.then)
+					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
+				if (!matches) return SKIP;
+			}
+			if (id !== undefined) entry.key = id;
+			return entry;
+		}
 		if (filtersLength > 0 || !ids.hasEntries) {
-			let results = ids.map((idOrEntry) => {
+			let results = ids.map(function (this: any, idOrEntry) {
 				idFiltersApplied = null;
+				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
-					return filtersLength > 0 ? processEntry(idOrEntry) : idOrEntry; // already an entry
+					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {
 					return SKIP;
 				}
@@ -11152,7 +11391,7 @@ export function makeTable(options): TableResourceClass {
 						idFiltersApplied.push(i);
 					}
 				}
-				return loadLocalRecord(idOrEntry, context, loadOptions, false, processEntry);
+				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
 			});
 			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);
 			results.hasEntries = true;
@@ -12329,7 +12568,9 @@ export function makeTable(options): TableResourceClass {
 		if (typeof stored === 'number' && stored - Date.now() > replicaExpirationMs * (1 - replicaRefreshFraction))
 			return Promise.resolve(false);
 		const current: Entry = primaryStore.getEntry(id);
-		if (!(current?.metadataFlags & REPLICA)) return Promise.resolve(false);
+		// a replica kept without a full-write certificate (an earlier build's) runs out its lifetime
+		if (!(current?.metadataFlags & REPLICA) || !(current.metadataFlags & FULL_WRITE_HEAD))
+			return Promise.resolve(false);
 		const deadline = replicaDeadlineFor(current.expiresAt);
 		if (typeof stored === 'number' && deadline <= stored) return Promise.resolve(false);
 		return trackMaintenanceCommit(Promise.resolve(store.put(id, deadline)).then(() => true));
@@ -12338,19 +12579,19 @@ export function makeTable(options): TableResourceClass {
 	 * Store a resident's complete record as a REPLICA row, in its own transaction, with its deadline
 	 * entry. The row keeps the stub's canonical identity: version, origin and audit refs, so history and
 	 * conflict ordering are unchanged and a later stub for the key still wins, and the record's own
-	 * expiry exactly as the resident reported it. Refuses when the key no longer holds a stub or
-	 * replica, or holds one as new as the response.
+	 * expiry exactly as the resident reported it.
 	 */
 	function writeReplica(
 		id: Id,
 		body: any,
 		responseVersion: number,
-		residentExpiresAt?: number,
-		originNode?: string
+		residentExpiresAt: number | undefined,
+		originNode: string | undefined,
+		fullWriteHead: number
 	): Promise<boolean> {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
 		const preCommit = startPreCommitBlobsForRecord(body, primaryStore.rootStore);
-		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
+		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode, fullWriteHead);
 		// the blob transfer is not a maintenance commit: closing maintenance waits for the row, not the stream.
 		// Only files this write creates are released on a refusal; files received out of band stay with
 		// their receiver, which keeps them while another fetch may still share them
@@ -12370,7 +12611,7 @@ export function makeTable(options): TableResourceClass {
 			() => {
 				let stored: Promise<boolean>;
 				try {
-					stored = storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
+					stored = storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode, fullWriteHead);
 				} catch (error) {
 					releaseUnused();
 					throw error;
@@ -12391,8 +12632,9 @@ export function makeTable(options): TableResourceClass {
 		id: Id,
 		body: any,
 		responseVersion: number,
-		residentExpiresAt?: number,
-		originNode?: string
+		residentExpiresAt: number | undefined,
+		originNode: string | undefined,
+		fullWriteHead: number
 	): Promise<boolean> {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode() || !replicaExpirationMs)
 			return Promise.resolve(false);
@@ -12402,21 +12644,16 @@ export function makeTable(options): TableResourceClass {
 		let committed = false;
 		try {
 			const current: Entry = primaryStore.getEntry(id, options);
-			if (!(residencyPolicy ? current : current?.residencyId) || !(current.metadataFlags & (INVALIDATED | REPLICA)))
+			if (
+				!(residencyPolicy ? current : current?.residencyId) ||
+				!(current.metadataFlags & INVALIDATED) ||
+				!answersStub(current, body, responseVersion, originNode, fullWriteHead)
+			)
 				return Promise.resolve(false);
 			if (residencyPolicy && TableResource.getRecordResidency(current).includes(server.hostname))
 				return Promise.resolve(false);
 			if (residencyPolicy?.byAttribute && calculateResidencySlot(id, body) !== current.residencySlot)
 				return Promise.resolve(false);
-			if (responseVersion < current.version) return Promise.resolve(false);
-			if (current.metadataFlags & REPLICA && responseVersion === current.version) return Promise.resolve(false);
-			// Two writers can share a timestamp; the stub holds the winner. An answer at that timestamp is
-			// kept only when it names the same writer: a loser's body would never be corrected, and an
-			// answer with no writer (an older responder) or an unmapped origin cannot be told apart.
-			if (responseVersion === current.version) {
-				const stubWriter = current.nodeId ? getNodeNameForId(auditStore, current.nodeId, true) : server.hostname;
-				if (!originNode || !stubWriter || originNode !== stubWriter) return Promise.resolve(false);
-			}
 			const rowExpiresAt = rowExpiresAtFor(body, residentExpiresAt);
 			const deadline = replicaDeadlineFor(rowExpiresAt);
 			const writeOptions = {
@@ -12424,17 +12661,13 @@ export function makeTable(options): TableResourceClass {
 				residencyId: current.residencyId,
 				residencySlot: current.residencySlot,
 				recordNodeId: current.nodeId,
-				additionalAuditRefs: current.additionalAuditRefs,
 				transaction,
 			};
-			// A stub has no inputs for computed indexes, so their committed entries are kept as an
-			// invalidation keeps them. The replaced body's blobs are released only once the write is known
-			// to have committed (the encoder would otherwise unlink them before a write that may still lose).
-			const preserveComputed = Boolean(current.metadataFlags & INVALIDATED);
+			// The replaced row's blobs are released only once the write is known to have committed (the encoder
+			// would otherwise unlink them before a write that may still lose).
 			const base = withoutBlobRelease(current);
 			if (hasDerivedIndexRegistration(auditStore, tableId)) reserveLocalKey(primaryStore.rootStore, transaction);
-			updateIndices(id, current.value, body, options, preserveComputed, preserveComputed);
-			updateRecord(id, body, base, current.version, REPLICA, false, writeOptions, 'put', true);
+			updateRecord(id, body, base, current.version, REPLICA | FULL_WRITE_HEAD, false, writeOptions, 'put', true);
 			store.putSync(id, deadline, options);
 			const releaseBlobs = captureReplacedBlobs(current);
 			const completion = commitRawTransaction(transaction);
@@ -12467,6 +12700,30 @@ export function makeTable(options): TableResourceClass {
 				transaction.abort();
 			}
 		}
+	}
+	/**
+	 * Whether an answer is the stub's own write, in a state no later fold can change: the resident's full-write
+	 * head (`fullWriteHead`), logged at the stub's version by the stub's writer (by name; an answer with no
+	 * writer, or an unmapped origin, cannot be told apart), with the stored index fields the stub keeps. The stub
+	 * must carry no audit ref: a ref is a fold, or the head of another write at the same version that hides the
+	 * one logged at it.
+	 */
+	function answersStub(
+		stub: Entry,
+		body: any,
+		version: number,
+		originNode: string | undefined,
+		fullWriteHead: unknown
+	) {
+		if (version !== stub.version || fullWriteHead !== stub.version) return false;
+		if (stub.additionalAuditRefs?.length || stub.receivedIdentityRefs?.length) return false;
+		if (!originNode || originNode !== (stub.nodeId ? getNodeNameForId(auditStore, stub.nodeId, true) : server.hostname))
+			return false;
+		for (const name in indices) {
+			if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
+			if (!isDeepStrictEqual(body[name], stub.value?.[name])) return false;
+		}
+		return true;
 	}
 	/** A raw handle's commit under coordinated retry resolves RETRY_NOW on a conflict; that is a loss, not a commit. */
 	function commitRawTransaction(transaction: RocksTransaction): Promise<boolean> {
@@ -12725,7 +12982,18 @@ export function makeTable(options): TableResourceClass {
 			return Promise.resolve(false);
 		}
 		updateIndices(entry.key, entry.value, stub, { transaction }, true, false);
-		updateRecord(entry.key, stub, base, entry.version, INVALIDATED, false, writeOptions, 'invalidate', false, null);
+		updateRecord(
+			entry.key,
+			stub,
+			base,
+			entry.version,
+			INVALIDATED | (entry.metadataFlags & FULL_WRITE_HEAD),
+			false,
+			writeOptions,
+			'invalidate',
+			false,
+			null
+		);
 		return commitRawTransaction(transaction as RocksTransaction).then(releaseBlobs);
 	}
 	function warnWriterKeptResident(residency: string[]) {
@@ -12924,6 +13192,7 @@ function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, versio
 	return -1;
 }
 
+const RELATED_READS_IN_FLIGHT = 16;
 // for filtering
 function exists(value) {
 	return value != null;

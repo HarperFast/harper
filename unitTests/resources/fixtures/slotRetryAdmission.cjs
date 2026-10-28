@@ -19,16 +19,12 @@ mkdirSync(path.join(root, 'database'), { recursive: true });
 const { replicationConfirmation } = req('#src/resources/DatabaseTransaction');
 const { transaction } = req('#src/resources/transaction');
 const { Transaction, constants } = req('./unitTests/rocksdbBindings.mts').rocksdbBindings();
+if (process.env.HARPER_TEST_ABORT_MARKER_LEGACY_RED === '1') Transaction.prototype.usesAbortMarkers = () => true;
 if (marker === 'native') {
 	const native = req('@harperfast/rocksdb-js');
 	native.RocksDatabase.config({ transactionLogAbortMarkers: true });
-	if (process.env.HARPER_TEST_ABORT_MARKER_LEGACY_RED === '1') Transaction.prototype.usesAbortMarkers = () => true;
-	else assert.equal(typeof Transaction.prototype.usesAbortMarkers, 'function');
-} else
-	Object.defineProperty(Transaction.prototype, 'usesAbortMarkers', {
-		configurable: true,
-		value: marker === 'missing' ? undefined : () => marker === 'true',
-	});
+	assert.equal(typeof Transaction.prototype.usesAbortMarkers, 'function');
+}
 const { logger } = req('#src/utility/logging/logger');
 const warnings = [];
 logger.warn = (...args) => warnings.push(args.join(' '));
@@ -47,6 +43,13 @@ const id = 'retry-probe';
 		'type RetryRows @table(database: "slotprobe", replicaExpiration: 0) @sharded(slots: 2, by: "region", slotFrom: "region === 0 ? 0 : zone") { id: ID @primaryKey region: Int @indexed zone: Int @indexed body: String }'
 	);
 	const Records = getDatabases().slotprobe.RetryRows;
+	// Admission requires the real capability; override only the retained transaction signal.
+	if (marker !== 'native')
+		Object.defineProperty(Transaction.prototype, 'usesAbortMarkers', {
+			configurable: true,
+			value: marker === 'missing' ? undefined : () => marker === 'true',
+		});
+
 	assert.ok(Records.primaryStore.rootStore.path.startsWith(root + path.sep));
 	await getResidencyMapTable().primaryStore.rootStore.flush();
 	await Records.put(id, {

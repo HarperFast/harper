@@ -11,7 +11,11 @@ const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
 const { Worker } = require('node:worker_threads');
 const mqttPacket = require('mqtt-packet');
-const { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
+const {
+	DatabaseClosingError,
+	DatabaseGenerationChangedError,
+	ResumeHistoryUnavailableError,
+} = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const commonUtility = require('#src/utility/lmdb/commonUtility');
@@ -2307,6 +2311,23 @@ describe('MQTT durable record topics on resume', function () {
 		session.disconnect(true);
 	});
 
+	it('sends no write committed before the first subscriber of its database, when Date.now() trails the log keys', async () => {
+		const { T, name } = topicTable();
+		await T.put('r', { value: 0 });
+		const { session, received } = await connect(`trailing-date-${name}`);
+		const realNow = Date.now;
+		Date.now = () => realNow() - 1000;
+		try {
+			await session.addSubscription({ topic: `${name}/r`, qos: 1, omitCurrent: true }, true);
+		} finally {
+			Date.now = realNow;
+		}
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		assert.deepStrictEqual(values(received), [1]);
+		session.disconnect(true);
+	});
+
 	it('delivers only the newest version once when the record changed while away', async () => {
 		const { T, name } = topicTable();
 		const topic = `${name}/r`;
@@ -2382,23 +2403,25 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		});
 	}
 
+	async function subscribeWithClockOffset(context, session, subscription, offset) {
+		const realClock = commonUtility.getNextMonotonicTime;
+		commonUtility.getNextMonotonicTime = () => realClock() + offset;
+		// the source lane loads an ES module namespace, which ignores the assignment
+		if (commonUtility.getNextMonotonicTime === realClock) context.skip();
+		try {
+			await session.addSubscription(subscription, true);
+		} finally {
+			commonUtility.getNextMonotonicTime = realClock;
+		}
+	}
+
 	it('resumes with only the newer version when the JS clock trails the log keys', async function () {
-		// LMDB topics start at the JS clock
-		if (!isRocksDB) this.skip();
 		const { T, name } = topicTable();
 		const topic = `${name}/#`;
 		await T.put('a', { value: 'a1' });
 		const clientId = `trailing-clock-${name}`;
 		const first = await connect(clientId);
-		const realClock = commonUtility.getNextMonotonicTime;
-		commonUtility.getNextMonotonicTime = () => realClock() - 1000;
-		// the source lane loads an ES module namespace, which ignores the assignment
-		if (commonUtility.getNextMonotonicTime === realClock) this.skip();
-		try {
-			await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
-		} finally {
-			commonUtility.getNextMonotonicTime = realClock;
-		}
+		await subscribeWithClockOffset(this, first.session, { topic, qos: 1, rh: 0 }, -1000);
 		await waitFor(() => first.received.length === 1);
 		await ackAll(first.session, first.received);
 		first.session.disconnect(true);
@@ -2410,6 +2433,99 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		await T.put('marker', { value: 'marker' });
 		await waitFor(() => values(second.received).includes('marker'));
 		assert.deepStrictEqual(values(second.received), ['a2', 'marker'], `${topic} replays no older version`);
+		second.session.disconnect(true);
+	});
+
+	it('resumes without a write committed before the topic was subscribed, without retained records, when the JS clock trails the log keys', async function () {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('before', { value: 'before' });
+		const clientId = `trailing-clock-rh2-${name}`;
+		const first = await connect(clientId);
+		await subscribeWithClockOffset(this, first.session, { topic, qos: 1, rh: 2 }, -1000);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('after', { value: 'after' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['after', 'marker'], `${topic} replays no earlier write`);
+		second.session.disconnect(true);
+	});
+
+	it('resumes with a write committed after the topic was subscribed when the JS clock leads the log keys', async function () {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('before', { value: 'before' });
+		const clientId = `leading-clock-${name}`;
+		const first = await connect(clientId);
+		await subscribeWithClockOffset(this, first.session, { topic, qos: 1, rh: 2 }, 1000);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('after', { value: 'after' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['after', 'marker'], `${topic} replays the later write alone`);
+		second.session.disconnect(true);
+	});
+
+	it('refuses a new durable topic while its LMDB store is closing, before reading its log', async function () {
+		if (isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const rootStore = T.auditStore.rootStore;
+		const { session } = await connect(`closing-${name}`);
+		const status = rootStore.status;
+		const getKeys = T.auditStore.getKeys;
+		let reads = 0;
+		T.auditStore.getKeys = function (...args) {
+			reads++;
+			return getKeys.apply(this, args);
+		};
+		rootStore.status = 'closing';
+		try {
+			await assert.rejects(session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 0 }, true), DatabaseClosingError);
+		} finally {
+			rootStore.status = status;
+			T.auditStore.getKeys = getKeys;
+		}
+		assert.strictEqual(reads, 0, 'the log was read');
+		session.disconnect(true);
+	});
+
+	it('starts a new LMDB subscription that reports progress at its newest committed log key, or 1 for an empty log', async function () {
+		if (isRocksDB) this.skip();
+		const { T } = topicTable();
+		const empty = await T.subscribe({ reportProgress: true, omitCurrent: true });
+		assert.strictEqual(empty.localResumeStart, 1);
+		empty.end();
+		await T.put('a', { value: 'a1' });
+		await T.put('z', { value: 'z1' });
+		const [newest] = T.auditStore.getKeys({ reverse: true, limit: 1 });
+		const started = await T.subscribe({ reportProgress: true, omitCurrent: true });
+		assert.strictEqual(started.localResumeStart, newest);
+		started.end();
+	});
+
+	it('resumes a topic subscribed while its log was empty with only what was written after', async () => {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const clientId = `empty-log-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('first', { value: 'first' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['first', 'marker']);
 		second.session.disconnect(true);
 	});
 
@@ -2430,7 +2546,6 @@ describe('MQTT durable collection topics on retained delivery', function () {
 	});
 
 	it('resumes with a write that was in flight when the topic was subscribed', async function () {
-		if (!isRocksDB) this.skip(); // LMDB topics start at the JS clock
 		const { T, name } = topicTable();
 		const topic = `${name}/#`;
 		const commitInFlight = await heldTransaction(T, 'inflight');
@@ -2448,7 +2563,7 @@ describe('MQTT durable collection topics on retained delivery', function () {
 	});
 
 	it('resumes with a write that was in flight when the topic was subscribed while another thread was mid-reservation', async function () {
-		if (!isRocksDB) this.skip(); // LMDB topics start at the JS clock
+		if (!isRocksDB) this.skip(); // the mid-reservation state is RocksDB's
 		const name = `DurableTopic${++sequence}`;
 		const topic = `${name}/#`;
 		const gate = new Int32Array(new SharedArrayBuffer(4));

@@ -10,7 +10,11 @@ import {
 	teardownHarper,
 	type ContextWithHarper,
 } from '@harperfast/integration-testing';
-import { runtimeInfo } from '@harperfast/fulltext/native';
+import * as native from '@harperfast/fulltext/native';
+import { createHash } from 'node:crypto';
+import { previousFullTextProcess } from '../../unitTests/resources/fixtures/fullTextUpgradeHelpers.cjs';
+
+const { runtimeInfo } = native;
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'full-text-search');
 const OPTIONS = { config: { threads: { count: 2 } }, env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' } };
@@ -488,6 +492,137 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForIds(query('pagination'), [...PAGE_IDS, 'concurrent']);
 		await request('/Product/mutation', { method: 'DELETE' });
 		await waitForIds(query('asteroid'), []);
+	});
+
+	test('upgrades a real 0.5 checkpoint on two workers and recovers after an old-engine refusal', async () => {
+		const records = [
+			{ id: 'upgrade-added', title: 'added waterproof' },
+			{ id: 'upgrade-ad', title: 'ad' },
+			{ id: 'upgrade-deleted', title: 'removed migrationwitness' },
+		];
+		for (const record of records) {
+			await request(`/LifecycleProduct/${record.id}`, { method: 'PUT', body: JSON.stringify(record) }, 204);
+		}
+		await waitForReady('LifecycleProduct');
+		const searchLifecycle = (text: string) =>
+			request('/LifecycleProduct/', { method: 'QUERY', body: JSON.stringify(query(text)) });
+		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
+		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
+		const before = (await request('/FullTextState/')).LifecycleProduct;
+		const previousLogPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const previousLogLength = (await readFile(previousLogPath, 'utf8')).length;
+		await killHarper(ctx);
+		assert.ok(ctx.harper.process.exitCode !== null || ctx.harper.process.signalCode !== null);
+		const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+		const configuration = {
+			path: join(before.storePath, `${digest('LifecycleProduct/catalogSearch')}.fulltext`),
+			indexId: 'fulltext:LifecycleProduct/catalogSearch',
+			generation: digest(`${before.tableId}:${before.generations.catalogSearch}`),
+			fields: [{ name: 'title', weight: 3 }],
+			analyzer: 'english@2',
+			stopWords: true,
+			positions: true,
+			surfaceTerms: true,
+			synonyms: [],
+			limits: {
+				indexingThreads: 2,
+				searchThreads: 2,
+				writerMemoryBytes: 64 * 1024 * 1024,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64 * 1024 * 1024,
+				maxBatchBytes: 8 * 1024 * 1024,
+			},
+		};
+		const checkpoint = native.inspectNativeFullTextIndex(configuration);
+		assert.strictEqual(checkpoint.state, 'checkpointed', 'seed must replace the actual declared index');
+		const reader = await native.openNativeFullTextReader(configuration);
+		const documents = [];
+		try {
+			for (const record of records) {
+				const hits = (await reader.search({ text: record.title, mode: 'all', exactTotal: true })).hits;
+				assert.strictEqual(hits.length, 1, record.id);
+				documents.push({ id: hits[0].id, version: hits[0].version, fields: { title: record.title } });
+			}
+		} finally {
+			await reader.close();
+		}
+		await native.resetNativeFullTextIndex({ path: configuration.path, indexId: configuration.indexId });
+		const seeded = previousFullTextProcess(
+			'seed',
+			configuration,
+			[...documents, { id: 'native-only-ghost', version: '1', fields: { title: 'migrationghost' } }],
+			checkpoint.committedPayload
+		);
+		assert.deepStrictEqual(seeded.inspection, checkpoint);
+		assert.deepStrictEqual(seeded.ghostIds, ['native-only-ghost']);
+		assert.deepStrictEqual(native.inspectNativeFullTextIndex(configuration), {
+			state: 'incompatible',
+			code: 'E_IDENTITY_MISMATCH',
+		});
+		await startHarper(ctx, OPTIONS);
+		const deadline = Date.now() + 30_000;
+		let ready = false;
+		do {
+			const response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
+				headers: { Authorization: authorization },
+				signal: AbortSignal.timeout(10_000),
+			});
+			const body = await response.text();
+			assert.ok(response.status === 200 || response.status === 503, body);
+			if (response.status === 200) {
+				const records = JSON.parse(body);
+				if (records.length === 1 && typeof records[0].error === 'string') {
+					assert.match(records[0].error, /IndexRebuildingError|DerivedIndexLagError/);
+				} else {
+					assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
+					ready = true;
+				}
+			} else assert.ok(body.length > 0);
+			if (!ready) await delay(25);
+		} while (!ready && Date.now() < deadline);
+		assert.ok(ready, 'upgraded public search did not become ready');
+		await waitForReady('LifecycleProduct');
+		const mismatch = /fulltext:LifecycleProduct\/catalogSearch.*is incompatible \(E_IDENTITY_MISMATCH\); rebuilding/;
+		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const logDeadline = Date.now() + 10_000;
+		let upgradeLog: string;
+		do {
+			upgradeLog = (await readFile(previousLogPath, 'utf8')).slice(previousLogLength);
+			if (logPath !== previousLogPath) upgradeLog += await readFile(logPath, 'utf8');
+			if (mismatch.test(upgradeLog)) break;
+			await delay(25);
+		} while (Date.now() < logDeadline);
+		assert.match(upgradeLog, mismatch);
+		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
+		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
+		await request('/LifecycleProduct/upgrade-deleted', { method: 'DELETE' });
+		assert.deepStrictEqual(await searchLifecycle('migrationwitness'), []);
+		await request(
+			'/LifecycleProduct/upgrade-added',
+			{
+				method: 'PATCH',
+				body: JSON.stringify({ title: 'added waterproof recovered' }),
+			},
+			204
+		);
+		assert.deepStrictEqual(ids(await searchLifecycle('recovered')), ['upgrade-added']);
+		const after = (await request('/FullTextState/')).LifecycleProduct;
+		assert.strictEqual(after.tableId, before.tableId);
+		assert.deepStrictEqual(after.generations, before.generations);
+		await killHarper(ctx);
+		const refused = previousFullTextProcess('inspect', configuration);
+		assert.deepStrictEqual(refused.inspection, { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		assert.strictEqual(refused.openError, 'E_IDENTITY_MISMATCH');
+		assert.strictEqual(previousFullTextProcess('reset', configuration).resetError, 'E_INDEX_CORRUPT');
+		assert.strictEqual(native.inspectNativeFullTextIndex(configuration).state, 'checkpointed');
+		await startHarper(ctx, OPTIONS);
+		await waitForReady('LifecycleProduct');
+		assert.deepStrictEqual(ids(await searchLifecycle('recovered')), ['upgrade-added']);
+		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
+		assert.deepStrictEqual(await searchLifecycle('migrationwitness'), []);
+		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
+		await waitForReady('Product');
+		await waitForIds(query('waterproof'), ['one', 'two']);
 	});
 
 	test('preserves index generation and physical paths and protects declarations after restart', async () => {

@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { mkdirSync } = require('node:fs');
 const { join } = require('node:path');
 const [mode, root] = process.argv.slice(2);

@@ -1662,6 +1662,7 @@ const { transaction } = require('#src/resources/transaction');
 			assert.equal(
 				await converted._storeReplica(stub, {
 					...stub,
+					fullWriteHead: stub.version,
 					originNode: server.hostname,
 					value: { id: 'new6', tag: 'new', body: 'remote body' },
 				}),

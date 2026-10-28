@@ -1,5 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { previousFullTextProcess } = require('./fixtures/fullTextUpgradeHelpers.cjs');
+const { toBufferKey } = require('ordered-binary');
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,8 +12,18 @@ const {
 	retireNativeFullTextDerivedIndexStorage,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
-const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
+const {
+	DERIVED_INDEX_ACCEPTED,
+	DERIVED_INDEX_DEFERRED,
+	DerivedIndexRuntime,
+} = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
+const { table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const {
+	encodeFullTextCursorPayload,
+	decodeFullTextCursorPayload,
+} = require('#src/resources/indexes/fullTextDerivedIndex');
 const fullTextPackageVersion = require('../../package.json').optionalDependencies['@harperfast/fulltext'];
 const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
@@ -148,7 +160,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const binding = await loadFullTextNativeBinding();
 		const runtime = await binding.runtimeInfo();
 		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
-		assert.strictEqual(runtime.tantivyVersion, '0.26.2');
+		assert.strictEqual(runtime.tantivyVersion, '0.27.0');
 		assert.strictEqual(runtime.nativeAbiVersion, 9);
 		assert.strictEqual(runtime.lifecycleApiVersion, 1);
 		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
@@ -607,4 +619,232 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await backend.shutdown(1n);
 		assert.strictEqual(binding.opens[0].limits.maxQueuedBytes, 2048);
 	});
+});
+
+function upgradeNativeOptions(configuration, lifecycle) {
+	return {
+		path: lifecycle.path,
+		indexId: configuration.indexId,
+		generation: createHash('sha256').update(configuration.sourceGeneration).digest('hex'),
+		fields: configuration.fields,
+		analyzer: configuration.analyzer,
+		stopWords: configuration.stopWords,
+		positions: configuration.positions,
+		surfaceTerms: configuration.surfaceTerms,
+		synonyms: configuration.synonyms,
+		limits: configuration.limits,
+	};
+}
+
+describe('published full-text 0.5.0 to 0.7.0 migration', function () {
+	this.timeout(60_000);
+	let binding;
+	let rootPath;
+
+	before(async function () {
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		rootPath = setupTestDBPath();
+		binding = await loadFullTextNativeBinding();
+		assert.strictEqual((await binding.runtimeInfo()).packageVersion, fullTextPackageVersion);
+	});
+
+	it('rejects old checkpoints, retires them and refuses unsafe downgrade opens', async () => {
+		const configuration = options(path.join(rootPath, 'native-upgrade-lifecycle'), binding, { surfaceTerms: true });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+		await lifecycle.initialize({ reclaimRetired: false });
+		const native = upgradeNativeOptions(configuration, lifecycle);
+		const payload = encodeFullTextCursorPayload({ format: 1, logs: { local: 42 } });
+		const seeded = previousFullTextProcess(
+			'seed',
+			native,
+			[{ id: 'old', version: '1', fields: { title: 'added' } }],
+			payload
+		);
+		assert.deepStrictEqual(seeded.inspection, { state: 'checkpointed', committedPayload: payload });
+		assert.deepStrictEqual(lifecycle.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		await assert.rejects(lifecycle.open(), { code: 'E_IDENTITY_MISMATCH' });
+		await lifecycle.reset(1n);
+		assert.strictEqual(lifecycle.inspect().state, 'missing');
+		const retired = path.join(path.dirname(lifecycle.path), '.fulltext-retired');
+		await waitFor(() => !fs.existsSync(retired) || fs.readdirSync(retired).length === 0, 5000);
+		const index = await lifecycle.open();
+		try {
+			assert.strictEqual((await index.search({ text: 'added', exactTotal: true })).total, 0);
+			await index.publish(payload);
+		} finally {
+			await index.close({ mode: 'rollback' });
+		}
+		assert.strictEqual(lifecycle.inspect().state, 'checkpointed');
+		const reverse = previousFullTextProcess('inspect', native);
+		assert.deepStrictEqual(reverse.inspection, { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		assert.strictEqual(reverse.openError, 'E_IDENTITY_MISMATCH');
+		const refusedReset = previousFullTextProcess('reset', native);
+		assert.strictEqual(refusedReset.resetError, 'E_INDEX_CORRUPT');
+		assert.strictEqual(lifecycle.inspect().state, 'checkpointed');
+		await lifecycle.reset(2n);
+		const downgraded = previousFullTextProcess('seed', native, [], payload);
+		assert.deepStrictEqual(downgraded.inspection, { state: 'checkpointed', committedPayload: payload });
+	});
+
+	it('retires a dropped old-engine index without first rebuilding it', async () => {
+		const configuration = options(path.join(rootPath, 'native-upgrade-drop'), binding);
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+		await lifecycle.initialize({ reclaimRetired: false });
+		previousFullTextProcess('seed', upgradeNativeOptions(configuration, lifecycle), [], 'old-checkpoint');
+		await retireNativeFullTextDerivedIndexStorage(configuration);
+		assert.strictEqual(fs.existsSync(lifecycle.path), false);
+	});
+
+	for (const empty of [false, true]) {
+		it(`rebuilds a valid ${empty ? 'empty' : 'populated'} checkpoint through Harper and replays concurrent writes`, async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			setMainIsWorker(true);
+			const Product = table({
+				database: `fulltext-upgrade-${empty ? 'empty' : 'populated'}`,
+				table: 'Product',
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+			});
+			await Product.put('anchor', { title: 'anchor' });
+			await Product.delete('anchor');
+			if (!empty) {
+				await Product.put('updated', { title: 'added boots' });
+				await Product.put('deleted', { title: 'waterproof removable' });
+				await Product.put('ad', { title: 'ad' });
+			}
+			const configuration = options(path.join(rootPath, `native-upgrade-${empty}`), binding, { surfaceTerms: true });
+			const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+			await lifecycle.initialize({ reclaimRetired: false });
+			const native = upgradeNativeOptions(configuration, lifecycle);
+			const nativeId = (id) => `${Product.tableId}.${toBufferKey(id).toString('base64url')}`;
+			const records = () =>
+				[...Product.primaryStore.getRange({ versions: true })]
+					.filter(({ key, value }) => value != null && typeof key !== 'symbol')
+					.map(({ key, version, value }) => ({ recordId: key, version, value }));
+			const audit = () =>
+				[...Product.auditStore.getRange({ start: 1 })].map(({ txnLogKey, recordId, tableId, type, version }) => ({
+					txnLogKey,
+					recordId,
+					tableId,
+					type,
+					version,
+				}));
+			const sourceBefore = audit();
+			const cursor = { format: 1, logs: { local: sourceBefore.at(-1).txnLogKey } };
+			const seeded = previousFullTextProcess(
+				'seed',
+				native,
+				[
+					...records().map(({ recordId, version, value }) => ({
+						id: nativeId(recordId),
+						version: String(version),
+						fields: { title: value.title },
+					})),
+					{ id: 'native-only-ghost', version: '1', fields: { title: 'migrationghost' } },
+				],
+				encodeFullTextCursorPayload(cursor)
+			);
+			assert.strictEqual(seeded.inspection.state, 'checkpointed');
+			assert.deepStrictEqual(seeded.ghostIds, ['native-only-ghost']);
+			assert.deepStrictEqual({ ...decodeFullTextCursorPayload(seeded.inspection.committedPayload).logs }, cursor.logs);
+			assert.deepStrictEqual(lifecycle.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+			let runtime;
+			let unregister;
+			let reader;
+			let scanned = 0;
+			let resets = 0;
+			let auditAfterWrites;
+			let writeError;
+			let resetError;
+			try {
+				const backend = await createNativeFullTextDerivedIndexBackend({
+					...configuration,
+					id: configuration.indexId,
+					beforeReset: async () => {
+						resets++;
+						try {
+							assert.strictEqual(runtime.getReadiness(configuration.indexId).state, 'rebuilding');
+						} catch (error) {
+							resetError = error;
+							throw error;
+						}
+					},
+				});
+				runtime = new DerivedIndexRuntime(
+					Product.auditStore,
+					(_tableId, recordId) => {
+						const entry = Product.primaryStore.getEntry(recordId);
+						return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+					},
+					{
+						idleGraceMilliseconds: 5,
+						scanRecords: () => {
+							scanned++;
+							const snapshot = records();
+							setImmediate(async () => {
+								try {
+									await Product.put('updated', { title: 'added waterproof jacket' });
+									await Product.delete('deleted');
+									await Product.put('created', { title: 'added waterproof boots' });
+									auditAfterWrites = audit();
+								} catch (error) {
+									writeError = error;
+								}
+							});
+							return snapshot;
+						},
+					}
+				);
+				unregister = runtime.register({
+					backend,
+					projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+					options: {
+						flushAfterMutations: 1,
+						maxChunkRecords: 1,
+						maxFlushAgeMilliseconds: 10,
+						rebuildBackoffMilliseconds: 10,
+						maxRebuildAttempts: 2,
+					},
+				});
+				await waitFor(() => {
+					if (resetError) throw resetError;
+					if (writeError) throw writeError;
+					return auditAfterWrites;
+				}, 30_000);
+				const tail = auditAfterWrites.at(-1).txnLogKey;
+				await waitFor(
+					() =>
+						scanned === 1 &&
+						runtime.getReadiness(configuration.indexId).state === 'ready' &&
+						backend.getDurableCursor()?.logs.local >= tail,
+					30_000
+				);
+				assert.strictEqual(resets, 1);
+				assert.deepStrictEqual(audit(), auditAfterWrites);
+				assert.deepStrictEqual(auditAfterWrites.slice(0, sourceBefore.length), sourceBefore);
+				reader = await binding.openNativeFullTextReader(native);
+				const result = await reader.search({ text: 'added waterproof', mode: 'all', exactTotal: true, limit: 10 });
+				const expected = ['created', 'updated'].map((id) => ({
+					id: nativeId(id),
+					version: String(Product.primaryStore.getEntry(id).version),
+				}));
+				assert.deepStrictEqual(
+					result.hits.map(({ id, version }) => ({ id, version })).sort((a, b) => a.id.localeCompare(b.id)),
+					expected.sort((a, b) => a.id.localeCompare(b.id))
+				);
+				assert.strictEqual(result.total, 2);
+				assert.strictEqual(result.totalRelation, 'exact');
+				assert.strictEqual((await reader.search({ text: 'migrationghost', exactTotal: true })).total, 0);
+				assert.strictEqual((await reader.search({ text: 'removable', exactTotal: true })).total, 0);
+				assert.deepStrictEqual(
+					(await reader.search({ text: 'ad', exactTotal: true })).hits.map(({ id }) => id),
+					empty ? [] : [nativeId('ad')]
+				);
+			} finally {
+				await reader?.close();
+				await unregister?.();
+				await runtime?.stop();
+			}
+		});
+	}
 });

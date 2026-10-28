@@ -18,6 +18,7 @@ import {
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
 	LOCAL_ONLY,
+	COPIED_RECORD,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -158,6 +159,12 @@ if (
 	throw new Error(
 		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it — requires @harperfast/rocksdb-js >= 2.8.0`
 	);
+// The write at the row's version replaced the whole record (a put, or a delete's tombstone) and nothing has
+// changed the body since, so no older write can (set in Table.ts). RocksDB, audited tables; clear proves
+// nothing. Record-only: harper-pro's copy walk masks it from the audit flags it mirrors.
+export const FULL_WRITE_HEAD = 0x40000;
+if (VERSION_REUSED === FULL_WRITE_HEAD)
+	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -1099,6 +1106,7 @@ export function recordUpdater(
 			}
 			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
+			if (options?.copyFrame) extendedType |= COPIED_RECORD;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
 				// Delete the prior row's blob files — except any the new record still references.
 				// Without the retention check, updating an unrelated attribute on a row that
