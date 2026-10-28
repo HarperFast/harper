@@ -236,6 +236,7 @@ const providerEntrySchema = (kind) =>
 					kind,
 					openaiEntrySchema.keys({
 						inputPrefixes: kind === 'embedding' ? inputPrefixesSchema.optional() : Joi.forbidden(),
+						truncation: kind === 'embedding' ? string.valid('vllm').optional() : Joi.forbidden(),
 					})
 				),
 			},
