@@ -575,7 +575,9 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				assert.ok(!response || response.status === 200, String(error));
 				assert.ok(
 					error.name === 'TypeError' && ['UND_ERR_SOCKET', 'ECONNRESET'].includes(error.cause?.code),
-					String(error.cause ?? error)
+					error.name === 'TimeoutError'
+						? 'upgraded public search did not become ready before the deadline'
+						: String(error.cause ?? error)
 				);
 				await delay(25);
 				continue;
