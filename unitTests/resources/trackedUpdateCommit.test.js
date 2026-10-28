@@ -1161,5 +1161,33 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			await held.unlock();
 			assert.strictEqual((await QA1955Table.get('held-own')).extraHeld, 'kept');
 		});
+		it('a failed commit keeps the class-field baselines of a held subclass record', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			class WithField extends QA1955Table {
+				hits = 0;
+			}
+			await QA1955Table.put('held-baseline', { title: 't', hits: 100 });
+			await QA1955Table.put('held-baseline-anchor', { title: 'a' });
+			let held;
+			await transaction(async (ctx) => {
+				const anchor = await WithField.update('held-baseline-anchor', ctx);
+				held = await anchor.lock('held-baseline', { hold: true, lease: 10_000 });
+			});
+			let refuse = true;
+			QA1955Table.setResidency(() => {
+				if (refuse) throw new Error('residency refused');
+			});
+			try {
+				held.hits = 5;
+				await assert.rejects(async () => held.save(), /residency refused/);
+				refuse = false;
+				held.hits = 0; // back to its initial value, so untouched
+				await held.save();
+			} finally {
+				QA1955Table.setResidency();
+				await held.unlock();
+			}
+			assert.strictEqual((await QA1955Table.get('held-baseline')).hits, 100);
+		});
 	});
 });
