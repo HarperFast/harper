@@ -105,7 +105,7 @@ Replacement workers keep the captured budgets after a configuration change. See 
 
 ### Readiness and recovery
 
-Full-text indexes require audit logging; a table declared with `@table(audit: false)` cannot register a full-text index. A format-incompatible native upgrade rebuilds the local index from stored records, and queries return 503 while it rebuilds. The v5.4 paging implementation targets `@harperfast/fulltext` 0.6.0.
+Full-text indexes require audit logging; a table declared with `@table(audit: false)` cannot register a full-text index. A format-incompatible native upgrade rebuilds the local index from stored records, and queries return 503 while it rebuilds. Harper v5.4 uses `@harperfast/fulltext` 0.7.0 with Tantivy 0.27.0. Indexes from fulltext 0.5.0 (shipped in Harper 5.3.4), as well as prerelease 0.6 indexes, require a full local rebuild. Drain the node's search traffic and stop old processes before starting the new version; do not mix engine versions against one local index. Verify readiness and current coverage before restoring search traffic. Replay after a long rebuild can also cause retryable write-503 responses; retry with bounded backoff while it catches up. Direct downgrade to fulltext 0.5.x is unsupported.
 
 | Failure                                             | HTTP status | Code and retry guidance                                                                                                                           |
 | --------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -126,7 +126,7 @@ Concurrent requests each have their own work budget. These limits do not cap the
 
 `INDEX_REBUILDING` and `DERIVED_INDEX_LAGGING` identify retryable readiness or coverage failures. Retry with backoff while the index makes progress. Transaction history retained under [`logging.auditRetention`](../logging/configuration.md#loggingauditretention) (default `3d`) is used for catch-up. Lost history can require a rebuild; retries alone do not repair an index that cannot catch up. Use [`describe_table`](../operations-api/operations.md#describe_table) to inspect `full_text_indexes[].readiness`, including its state and reason. Correct the reported configuration or storage problem before retrying an unavailable index. Budget and native-busy failures do not carry those readiness codes. A native busy response also returns 503; reduce concurrency or retry with backoff. For an execution-budget failure, narrow the query, reduce the offset or adjust the work budget instead of repeatedly submitting the same expensive query.
 
-Native page, response-byte and highlight limits still apply. That native version also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those native limits. See the [published native limits](https://github.com/HarperFast/fulltext/blob/v0.6.0/docs/limits.md) for page, byte and highlight bounds.
+Native page, response-byte and highlight limits still apply. That native version also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those native limits. See the [published native limits](https://github.com/HarperFast/fulltext/blob/v0.7.0/docs/limits.md) for page, byte and highlight bounds.
 
 ## Relationships and Joins
 
