@@ -1051,6 +1051,46 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			instance.when.setTime(2000);
 			assert.strictEqual(collapseChanges(instance, undefined).when.getTime(), 2000);
 		});
+		it('an own object with a constructor data member or a null prototype is committed as a copy', () => {
+			const withConstructorKey = { constructor: 'metadata', value: 1 };
+			const withNullPrototype = Object.assign(Object.create(null), { value: 1 });
+			for (const meta of [withConstructorKey, withNullPrototype]) {
+				let record = { id: 'own-data' };
+				class Instance {
+					getRecord() {
+						return record;
+					}
+					getChanges() {
+						return undefined;
+					}
+				}
+				const instance = new Instance();
+				instance.meta = meta;
+				const patch = collapseChanges(instance, undefined);
+				assert.notStrictEqual(patch.meta, meta);
+				record = { id: 'own-data', meta: patch.meta }; // committed
+				assert.strictEqual(collapseChanges(instance, undefined), undefined);
+				meta.value = 2;
+				assert.strictEqual(collapseChanges(instance, undefined).meta.value, 2);
+			}
+		});
+		it('a null-prototype class field changed in place is written', () => {
+			const record = { id: 'null-prototype-field' };
+			class Instance {
+				counts = Object.create(null);
+				getRecord() {
+					return record;
+				}
+				getChanges() {
+					return undefined;
+				}
+			}
+			const instance = new Instance();
+			recordOwnBaseline(instance);
+			assert.strictEqual(collapseChanges(instance, undefined), undefined);
+			instance.counts.a = 1;
+			assert.strictEqual(collapseChanges(instance, undefined).counts.a, 1);
+		});
 		it('an own object holding a blob keeps the blob', async () => {
 			await QA1955Table.put('own-object-blob', { title: 't' });
 			await transaction(async (ctx) => {

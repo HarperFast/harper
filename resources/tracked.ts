@@ -597,11 +597,8 @@ export function recordOwnBaseline(instance: any) {
 		let value = instance[key];
 		if (typeof value === 'function') value = { [IDENTITY]: value };
 		else if (value !== null && typeof value === 'object') {
-			let copy;
-			try {
-				copy = structuredClone(value);
-			} catch {}
-			value = copy !== undefined && isDeepStrictEqual(copy, value) ? { [SNAPSHOT]: copy } : { [IDENTITY]: value };
+			const copy = contentCopy(value);
+			value = copy === undefined ? { [IDENTITY]: value } : { [SNAPSHOT]: copy };
 		}
 		(baseline ??= Object.create(null))[key] = value;
 	}
@@ -635,22 +632,27 @@ function plainCopy(value) {
 	if (value === null || typeof value !== 'object') return value;
 	if (value instanceof Date) return new Date(value.getTime());
 	if (value instanceof Uint8Array) return Uint8Array.prototype.slice.call(value);
-	if (value.constructor !== Object && value.constructor !== Array) return value;
+	if (!isPlainData(value)) return value;
+	return contentCopy(value) ?? value;
+}
+// by prototype, since `constructor` can be a data member
+function isPlainData(value) {
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === Array.prototype || prototype === null;
+}
+function contentCopy(value) {
+	let copy;
 	try {
-		const copy = structuredClone(value);
-		return isDeepStrictEqual(copy, value) ? copy : value;
+		copy = structuredClone(value);
 	} catch {
-		return value;
+		return;
 	}
+	if (Object.getPrototypeOf(value) === null) Object.setPrototypeOf(copy, null);
+	return isDeepStrictEqual(copy, value) ? copy : undefined;
 }
 function sameOwnValue(value, recordValue) {
 	if (sameValue(value, recordValue) || sameCopy(value, recordValue)) return true;
-	return (
-		value !== null &&
-		typeof value === 'object' &&
-		(value.constructor === Object || value.constructor === Array) &&
-		isDeepStrictEqual(value, recordValue)
-	);
+	return value !== null && typeof value === 'object' && isPlainData(value) && isDeepStrictEqual(value, recordValue);
 }
 function sameValue(a, b) {
 	return a === b || (a !== a && b !== b); // NaN
