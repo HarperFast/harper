@@ -794,10 +794,9 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
   convention (`contains`/`ends_with`): the negated flag always forces `needFullScan`, so `estimated_count` here is
   execution-cost ordering, not result cardinality — a narrow negated range must never become the driving condition.
 - **An AND group's estimate ignores filter-only (`Infinity`) legs and is `Infinity` only when every leg is**
-  (`estimateConditionForTable`, pinned by `estimateFilterOnlySibling.test.js`). Multiplying `Infinity` in made every
-  group holding one a non-driver, SQL `!=`/`NOT IN` (`[ne <value>, ne null]`) included, so a filter-only sibling led
-  and `allowFullScan: false` threw 403. Known gaps: `in` and an empty `starts_with` estimate a finite cardinality yet
-  full-scan, and `intersectionEstimate` still multiplies `Infinity` into the incoming-row hint.
+  (`estimateConditionForTable`, pinned by `estimateFilterOnlySibling.test.js`). Known gaps: `in`, an empty
+  `starts_with` and an unindexed range leg estimate a finite cardinality yet full-scan, and `intersectionEstimate`
+  still multiplies `Infinity` into the incoming-row hint.
 - **Non-driving filters drop null and omitted values the way index ranges do** (`filterByType`, harper#3212). No index
   holds an omitted value and `lt`/`le` ranges start above `null`, so range filters and `ne null` reject omitted values
   and `lt`/`le` reject null. SQL `IS NULL` counts omitted as NULL, so it is pushed as filter-only `ne null, negated`.

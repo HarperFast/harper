@@ -1,4 +1,3 @@
-require('../testUtils');
 const assert = require('node:assert');
 const alasql = require('alasql');
 const { setupTestDBPath } = require('../testUtils');
