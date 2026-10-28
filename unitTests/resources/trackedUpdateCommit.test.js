@@ -4,6 +4,9 @@ const { transaction } = require('#src/resources/transaction');
 const { collapseData, hasChanges } = require('#src/resources/tracked');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { createBlob } = require('#src/resources/blob');
+const { PassThrough } = require('node:stream');
+const { setTimeout: delay } = require('node:timers/promises');
 
 describe('Tracked instance update: collapseData, addTo/subtractFrom, and the committed patch (audit, source.patch, CRDT)', () => {
 	let QA1955Table;
@@ -653,6 +656,214 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 				assert.strictEqual(hasChanges(rec), false);
 			});
 			assert.strictEqual(DatedTable.primaryStore.getEntry('dated').version, versionBefore);
+		});
+	});
+
+	describe('Date and Bytes reads are copies', () => {
+		let DatedCopyTable;
+		before(() => {
+			DatedCopyTable = table({
+				table: 'TrackedDatedCopy',
+				database: 'test_qa1955',
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+					{ name: 'when', type: 'Date' },
+					{ name: 'bytes', type: 'Bytes' },
+					{ name: 'dates', type: 'Array', elements: { type: 'Date' } },
+				],
+			});
+		});
+		const auditedPatch = (id) =>
+			[...DatedCopyTable.auditStore.getRange({ start: 1 })]
+				.filter((entry) => entry.tableId === DatedCopyTable.tableId && entry.recordId === id)
+				.map((entry) => entry.getValue(DatedCopyTable.primaryStore))
+				.at(-1);
+
+		it('an in-place edit with another change reaches neither the stored record nor the patch', async () => {
+			await DatedCopyTable.put('edit', { title: 't', when: new Date(1000), bytes: Buffer.from([1, 2]) });
+			await transaction(async (ctx) => {
+				const rec = await DatedCopyTable.update('edit', ctx);
+				assert.strictEqual(rec.when, rec.when);
+				rec.when.setTime(2000);
+				rec.bytes[0] = 9;
+				assert.strictEqual(rec.when.getTime(), 2000);
+				// the loaded record can be the commit base, so it must not see the edit
+				assert.strictEqual(rec.getRecord().when.getTime(), 1000);
+				assert.strictEqual(rec.getRecord().bytes[0], 1);
+				rec.title = 'changed';
+			});
+			const saved = await DatedCopyTable.get('edit');
+			assert.strictEqual(saved.title, 'changed');
+			assert.strictEqual(saved.when.getTime(), 1000);
+			assert.deepStrictEqual([...saved.bytes], [1, 2]);
+			const patch = auditedPatch('edit');
+			assert.strictEqual(patch.title, 'changed');
+			assert.strictEqual(patch.when, undefined);
+			assert.strictEqual(patch.bytes, undefined);
+		});
+		it('an undeclared Date read through getProperty is a copy', async () => {
+			await QA1955Table.put('undeclared-date', { title: 't', dynamicWhen: new Date(1000) });
+			await transaction(async (ctx) => {
+				const rec = await QA1955Table.update('undeclared-date', ctx);
+				const when = rec.getProperty('dynamicWhen');
+				assert.strictEqual(when, rec.getProperty('dynamicWhen'));
+				when.setTime(2000);
+				assert.strictEqual(rec.getRecord().dynamicWhen.getTime(), 1000);
+			});
+			assert.strictEqual((await QA1955Table.get('undeclared-date')).dynamicWhen.getTime(), 1000);
+		});
+		it('a reassigned edited value saves', async () => {
+			await DatedCopyTable.put('reassign', { title: 't', when: new Date(1000) });
+			await transaction(async (ctx) => {
+				const rec = await DatedCopyTable.update('reassign', ctx);
+				const when = rec.when;
+				when.setTime(3000);
+				rec.when = when;
+			});
+			assert.strictEqual((await DatedCopyTable.get('reassign')).when.getTime(), 3000);
+			assert.strictEqual(auditedPatch('reassign').when.getTime(), 3000);
+		});
+		it('an array of dates writes nothing when read and is saved when an element is edited in place', async () => {
+			await DatedCopyTable.put('dates', { title: 't', dates: [new Date(1000), new Date(2000)] });
+			const versionBefore = DatedCopyTable.primaryStore.getEntry('dates').version;
+			await transaction(async (ctx) => {
+				const rec = await DatedCopyTable.update('dates', ctx);
+				assert.strictEqual(rec.dates[0].getTime(), 1000);
+				assert.strictEqual(hasChanges(rec), false);
+			});
+			assert.strictEqual(DatedCopyTable.primaryStore.getEntry('dates').version, versionBefore);
+			await transaction(async (ctx) => {
+				const rec = await DatedCopyTable.update('dates', ctx);
+				rec.dates[0].setTime(5000);
+			});
+			const saved = await DatedCopyTable.get('dates');
+			assert.deepStrictEqual(
+				saved.dates.map((date) => date.getTime()),
+				[5000, 2000]
+			);
+			assert.deepStrictEqual(
+				auditedPatch('dates').dates.map((date) => date.getTime()),
+				[5000, 2000]
+			);
+		});
+	});
+
+	describe('Blobs in the committed patch', () => {
+		it('a blob assigned as an own property is saved before the commit completes', async () => {
+			await QA1955Table.put('own-blob', { title: 't' });
+			const stream = new PassThrough();
+			let committed = false;
+			const done = transaction(async (ctx) => {
+				const rec = await QA1955Table.update('own-blob', ctx);
+				rec.extraBlob = createBlob(stream, { saveBeforeCommit: true });
+			}).then(() => (committed = true));
+			stream.write('first part, ');
+			await delay(100);
+			assert.strictEqual(committed, false, 'the commit waits for the blob');
+			stream.end('last part');
+			await done;
+			const saved = await QA1955Table.get('own-blob');
+			assert.strictEqual(await saved.extraBlob.text(), 'first part, last part');
+		});
+		it('a failed own-property blob fails the commit', async () => {
+			await QA1955Table.put('own-blob-fail', { title: 't' });
+			const stream = new PassThrough();
+			const done = transaction(async (ctx) => {
+				const rec = await QA1955Table.update('own-blob-fail', ctx);
+				rec.extraBlob = createBlob(stream, { saveBeforeCommit: true });
+				rec.title = 'changed';
+			});
+			stream.write('partial');
+			await delay(50);
+			stream.destroy(new Error('stream failed'));
+			await assert.rejects(done);
+			const saved = await QA1955Table.get('own-blob-fail');
+			assert.strictEqual(saved.title, 't');
+			assert.strictEqual(saved.extraBlob, undefined);
+		});
+	});
+
+	describe('Class fields on a Table subclass', () => {
+		let SealedTable;
+		before(() => {
+			SealedTable = table({
+				table: 'TrackedSealedFields',
+				database: 'test_qa1955',
+				audit: true,
+				sealed: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+				],
+			});
+		});
+		it('an unchanged class field is not written, so a sealed table accepts a patch', async () => {
+			class WithField extends SealedTable {
+				hits = 0;
+			}
+			await SealedTable.put('sealed', { title: 't' });
+			await WithField.patch('sealed', { title: 'patched' });
+			const saved = await SealedTable.get('sealed');
+			assert.strictEqual(saved.title, 'patched');
+			assert.strictEqual(saved.hits, undefined);
+		});
+		it('reading through a subclass with a class field writes nothing', async () => {
+			class WithField extends SealedTable {
+				hits = 0;
+			}
+			await SealedTable.put('sealed-read', { title: 't' });
+			const versionBefore = SealedTable.primaryStore.getEntry('sealed-read').version;
+			await transaction(async (ctx) => {
+				const rec = await WithField.update('sealed-read', ctx);
+				assert.strictEqual(rec.title, 't');
+			});
+			assert.strictEqual(SealedTable.primaryStore.getEntry('sealed-read').version, versionBefore);
+		});
+		it('a put-only source is not sent the default of an unchanged class field', async () => {
+			const put = [];
+			const PutSourced = table({
+				table: 'TrackedPutSourcedFields',
+				database: 'test_qa1955',
+				sealed: false,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+				],
+			});
+			PutSourced.sourcedFrom({
+				get(id) {
+					return { id, title: 'from-source', tag: 'important' };
+				},
+				put(id, data) {
+					put.push({ ...data });
+				},
+			});
+			class WithField extends PutSourced {
+				tag = 'default';
+			}
+			await PutSourced.get('put-only');
+			await transaction(async (ctx) => {
+				const rec = await WithField.update('put-only', ctx);
+				rec.title = 'changed';
+			});
+			assert.strictEqual(put.length, 1);
+			assert.strictEqual(put[0].title, 'changed');
+			// the full record put is built from the loaded record when there is one (not on LMDB here)
+			assert.notStrictEqual(put[0].tag, 'default');
+			assert.strictEqual((await PutSourced.get('put-only')).tag, 'important');
+		});
+		it('a class field the code changes is written on a non-sealed table', async () => {
+			class WithField extends QA1955Table {
+				hits = 0;
+			}
+			await QA1955Table.put('field-changed', { title: 't' });
+			await transaction(async (ctx) => {
+				const rec = await WithField.update('field-changed', ctx);
+				rec.hits = 5;
+			});
+			assert.strictEqual((await QA1955Table.get('field-changed')).hits, 5);
 		});
 	});
 

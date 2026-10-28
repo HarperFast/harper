@@ -205,6 +205,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 							}
 							return (changes[name] = updatedValue);
 						}
+						return readCopy(this, name, sourceValue);
 					}
 					return sourceValue;
 				},
@@ -230,7 +231,8 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 		}
 		const changes = this.getChanges();
 		if (changes?.[name] !== undefined) return changes[name];
-		return this.getRecord()?.[name];
+		const value = this.getRecord()?.[name];
+		return value && typeof value === 'object' ? readCopy(this, name, value) : value;
 	});
 	setMethod('set', function (name, value) {
 		const descriptor = descriptors[name];
@@ -307,6 +309,7 @@ function getProxiedProperty(target, name, receiver) {
 				changes[name] = updatedValue;
 				return updatedValue;
 			}
+			return readCopy(receiver, name, sourceValue);
 		}
 		return sourceValue;
 	}
@@ -326,6 +329,26 @@ function setProxiedProperty(target: any, name: string | symbol, value, receiver)
 	return true;
 }
 
+const readCopies = new WeakMap<object, Map<string, { source: any; copy: any }>>();
+/**
+ * A Date or Bytes value read from the record, as a copy: these mutate in place but are not tracked, so
+ * an edit must not reach the stored record (the commit base) without being in the patch. The copy is
+ * kept per instance and property while the record value is the same, so repeated reads return the
+ * same object. Reassigning the value saves it.
+ */
+function readCopy(owner: any, name: string, sourceValue: any) {
+	let copy;
+	const isDate = sourceValue instanceof Date;
+	if (!isDate && !(sourceValue instanceof Uint8Array)) return sourceValue;
+	let copies = readCopies.get(owner);
+	const cached = copies?.get(name);
+	if (cached?.source === sourceValue) return cached.copy;
+	if (isDate) copy = new Date(sourceValue.getTime());
+	else copy = Uint8Array.prototype.slice.call(sourceValue);
+	if (!copies) readCopies.set(owner, (copies = new Map()));
+	copies.set(name, { source: sourceValue, copy });
+	return copy;
+}
 function trackObject(sourceObject: any, typeDef?: any, writableOwner?: any) {
 	// lazily instantiate in case of recursive structures
 	let TrackedObject;
@@ -345,7 +368,12 @@ function trackObject(sourceObject: any, typeDef?: any, writableOwner?: any) {
 			const trackedArray = new TrackedArray(sourceObject.length, sourceObject, writableOwner);
 			for (let i = 0, l = sourceObject.length; i < l; i++) {
 				let element = sourceObject[i];
-				if (element && typeof element === 'object') element = trackObject(element, typeDef?.elements, trackedArray);
+				if (element && typeof element === 'object') {
+					element = trackObject(element, typeDef?.elements, trackedArray);
+					// an element's in-place edit must reach the patch (hasChanges compares these by value), not the record
+					if (element instanceof Date) element = new Date(element.getTime());
+					else if (element instanceof Uint8Array) element = Uint8Array.prototype.slice.call(element);
+				}
 				trackedArray[i] = element;
 			}
 			if (!writableOwner) return trackedArray;
@@ -523,7 +551,7 @@ export function hasChanges(target) {
 		for (let i = 0, l = target.length; i < l; i++) {
 			const sourceValue = source[i];
 			const targetValue = target[i];
-			if (sameValue(targetValue, sourceValue)) continue;
+			if (sameValue(targetValue, sourceValue) || sameCopy(targetValue, sourceValue)) continue;
 			if (sourceValue && targetValue?.getRecord?.() === sourceValue) {
 				if (hasChanges(targetValue)) return true;
 			} else return true;
@@ -531,9 +559,8 @@ export function hasChanges(target) {
 	} else {
 		const changes = target.getChanges?.();
 		if (changes && !source) return true;
-		const ownKeys = Object.keys(target);
 		for (const key in changes) {
-			if (ownKeys.length > 0 && hasOwnProperty.call(target, key)) continue;
+			if (hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key])) continue;
 			const value = changes[key];
 			if (value && typeof value === 'object') {
 				const sourceValue = source[key];
@@ -544,14 +571,38 @@ export function hasChanges(target) {
 			} else return true;
 		}
 		// own properties that differ from the record are part of the patch (collapseChanges)
-		for (const key of ownKeys) {
-			if (!sameValue(target[key], source?.[key])) return true;
+		for (const key of Object.keys(target)) {
+			const value = target[key];
+			if (!sameValue(value, source?.[key]) && !atOwnBaseline(target, key, value)) return true;
 		}
 	}
 	return false;
 }
+const ownBaselines = new WeakMap<object, any>();
+/**
+ * Record the own properties a framework-constructed instance starts with (class fields such as `hits = 0`
+ * on a Table subclass, or properties its constructor sets), so they enter a patch only once changed.
+ */
+export function recordOwnBaseline(instance: any) {
+	const keys = Object.keys(instance);
+	if (keys.length === 0) return;
+	const baseline = Object.create(null);
+	for (const key of keys) baseline[key] = instance[key];
+	ownBaselines.set(instance, baseline);
+}
+// an own property still holding the value the instance was constructed with is not a change
+function atOwnBaseline(target, key: string, value) {
+	const baseline = ownBaselines.get(target);
+	return baseline !== undefined && key in baseline && sameValue(value, baseline[key]);
+}
 function sameValue(a, b) {
 	return a === b || (a !== a && b !== b); // NaN
+}
+// a Date or Bytes array element is tracked as a copy of the record's value
+function sameCopy(copy, source) {
+	if (copy instanceof Date) return source instanceof Date && sameValue(copy.getTime(), source.getTime());
+	if (copy instanceof Uint8Array) return source instanceof Uint8Array && Buffer.compare(copy, source) === 0;
+	return false;
 }
 
 /**
@@ -574,7 +625,8 @@ export function collapseChanges(target, changes) {
 	for (const key in changes) {
 		const value = changes[key];
 		let committed = value;
-		if (ownKeys.length > 0 && hasOwnProperty.call(target, key)) committed = OMITTED;
+		if (ownKeys.length > 0 && hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]))
+			committed = OMITTED;
 		else if (value?.getRecord) {
 			if (source && value.getRecord() === source[key] && !hasChanges(value)) committed = OMITTED;
 			else committed = value.constructor === Array ? materializeArray(value) : collapseData(value);
@@ -592,7 +644,7 @@ export function collapseChanges(target, changes) {
 	}
 	for (const key of ownKeys) {
 		const value = target[key];
-		if (sameValue(value, source?.[key])) continue;
+		if (sameValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
 		if (patch === changes) patch = Object.assign(Object.create(null), changes);
 		patch[key] = value?.getRecord ? collapseData(value) : value;
 		keyCount++;

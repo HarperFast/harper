@@ -188,6 +188,7 @@ import {
 	addToChanges,
 	assignTrackedAccessors,
 	collapseChanges,
+	recordOwnBaseline,
 	updateAndFreeze,
 	hasChanges,
 	GenericTrackedObject,
@@ -3043,6 +3044,7 @@ export function makeTable(options): TableResourceClass {
 				if (reason) throw new DatabaseShardingHeldError(databaseName, reason);
 			}
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
+			recordOwnBaseline(resource);
 			const condition = request?.[WRITE_CONDITION];
 			if (
 				condition &&
@@ -5263,6 +5265,7 @@ export function makeTable(options): TableResourceClass {
 			if (writeKeyId(id) !== writeKeyId(this.getId())) {
 				// lock(target) where target differs from this record: return a separate instance.
 				const fresh = new (this.constructor as any)(id, this.getContext());
+				recordOwnBaseline(fresh);
 				TableResource._updateResource(fresh, entryForReload);
 				if (holdHandle != null) {
 					fresh.#lockHandle = holdHandle;
@@ -5544,7 +5547,8 @@ export function makeTable(options): TableResourceClass {
 						return () => (this.constructor as any).source.patch(id, recordUpdate, context);
 					} else if ((this.constructor as any).source.put) {
 						// if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-						return () => (this.constructor as any).source.put(id, updateAndFreeze(this), context);
+						return () =>
+							(this.constructor as any).source.put(id, updateAndFreeze(this, recordUpdate, !tracksInstance), context);
 					}
 				}
 			};
@@ -5579,7 +5583,12 @@ export function makeTable(options): TableResourceClass {
 				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
-					if (tracksInstance) recordUpdate = collapseChanges(this, instanceChanges);
+					if (tracksInstance) {
+						recordUpdate = collapseChanges(this, instanceChanges);
+						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
+						// blobs are found here; before/beforeIntermediate run after validate
+						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
+					}
 					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
 					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
 						if (!(context as any)?.source) {
@@ -6914,13 +6923,14 @@ export function makeTable(options): TableResourceClass {
 				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
-				write.beforeIntermediate = preCommitBlobsForRecordBefore(
-					write,
-					recordUpdate,
-					undefined,
-					undefined,
-					options?.isNotification
-				);
+				if (!tracksInstance)
+					write.beforeIntermediate = preCommitBlobsForRecordBefore(
+						write,
+						recordUpdate,
+						undefined,
+						undefined,
+						options?.isNotification
+					);
 				const result = transaction.addWrite(write as any);
 				if (condition) condition.consumed = true;
 				return result;
@@ -8425,6 +8435,7 @@ export function makeTable(options): TableResourceClass {
 						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
 						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
 						const swrResource = new resourceClass(entry.key ?? entry, context);
+						recordOwnBaseline(swrResource);
 						resourceClass._updateResource(swrResource, entry);
 						swrResource.setRecord(record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
@@ -13573,7 +13584,7 @@ export function makeTable(options): TableResourceClass {
 		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord, trackPersistedBlobs);
 		if (preCommit) {
 			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
-			write.savedBlobs = preCommit.blobs;
+			write.savedBlobs = write.savedBlobs ? [...new Set([...write.savedBlobs, ...preCommit.blobs])] : preCommit.blobs;
 			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
 			// them to finish and we return a new callback for the before phase of the commit
 			const callSources = before;
