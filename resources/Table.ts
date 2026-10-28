@@ -12299,7 +12299,7 @@ export function makeTable(options): TableResourceClass {
 						assertLocalShardWrite(
 							residencyOwners(databaseName, calculateResidencySlot(id, updatedRecord), residencyPolicy.slots)
 						);
-					// the attribute, not a flag: a reload can rebind createdTimeProperty before the commit below runs
+					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
 					resolved = true;

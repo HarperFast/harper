@@ -122,7 +122,7 @@ type _event_insert = Expect<Equal<(typeof Event)['$insert'], { label: string; id
 type _event_upsert = Expect<Equal<(typeof Event)['$upsert'], { id: string; label: string; when?: Date }>>;
 type _event_patch = Expect<Equal<(typeof Event)['$patch'], { label?: string; when?: Date }>>;
 type _event_query = Expect<Equal<(typeof Event)['$query'], { createdAt?: Date; when?: Date }>>;
-// A table keeps one created and one updated slot, so a field carrying both timestamps stands alone.
+// A field with both timestamp flags takes both slots and keeps its created time on update (#3584).
 const Stamp = defineTable('Stamp', { id: id.primaryKey, stamped: date.createdTime.indexed.updatedTime });
 type _stamp_record = Expect<Equal<(typeof Stamp)['$record'], { readonly id: string; readonly stamped: Date }>>;
 type _stamp_insert = Expect<Equal<(typeof Stamp)['$insert'], { id?: string }>>;
