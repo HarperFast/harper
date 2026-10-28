@@ -1,9 +1,7 @@
 /**
  * A native HNSW index whose transaction log goes idle and is emptied by audit retention resumes without
- * a rebuild after a restart (harper#3631). The 2 s retention lets retention empty the log within the test;
- * at that retention every cleanup pass commits and wakes the runner, so it never reaches its idle release.
- * The second suite runs the default cadence, where the runner does release; the hand-off over a purged
- * anchor itself is in derivedIndexRuntimeRocks.test.js.
+ * a rebuild after a restart (harper#3631). The 2 s retention only lets retention empty the log within the
+ * test. The hand-off over a purged anchor is in derivedIndexRuntimeRocks.test.js.
  *
  * "No rebuild" is read from the worker's `needs rebuild` error lines across every boot's hdb.log, anchored
  * by the first boot's own line for the fresh index (`backend has no durable cursor`). The restart is
