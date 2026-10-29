@@ -29,6 +29,7 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { randomBytes } from 'node:crypto';
 import { getFullTextRuntimeConfiguration } from '../../resources/indexes/fullTextRuntimeConfiguration.ts';
+import { getMonotonicClockBuffer } from '../../utility/lmdb/commonUtility.ts';
 import { _assignPackageExport } from '../../globals.js';
 import { PACKAGE_ROOT, PRODUCT_NAME, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import { resolvePreloadModules } from './resolvePreload.ts';
@@ -442,6 +443,7 @@ function registerWorkerDataProvider(name?: any, provider?: any) {
 // path below — which for this one would mean spawning the worker on the on-disk config.
 registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
 registerWorkerDataProvider('fullTextRuntimeConfiguration', () => getFullTextRuntimeConfiguration(false));
+registerWorkerDataProvider('monotonicClock', getMonotonicClockBuffer);
 function collectProvidedWorkerData(options?: any) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;
