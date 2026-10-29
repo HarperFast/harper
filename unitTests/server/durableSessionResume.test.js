@@ -270,6 +270,32 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	it('does not send again after a reconnect the half of a transaction that was acknowledged (QoS 1)', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `half-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('before', { value: 'before' });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		await transaction({}, async (context) => {
+			await T.put('x', { value: 'x' }, context);
+			await T.put('y', { value: 'y' }, context);
+		});
+		await waitFor(() => values(first.received).includes('y'));
+		await first.session.acknowledge(delivery(first.received, 'y').messageId);
+		first.session.disconnect(true);
+		await first.session.writes;
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('after', { value: 'after' });
+		await waitFor(() => values(second.received).includes('after'));
+		assert.deepStrictEqual(values(second.received), ['x', 'after'], 'only the unacknowledged message is sent again');
+		second.session.disconnect(true);
+	});
+
 	it('keeps a delivered transaction that committed after a higher key until it is acknowledged', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -2255,6 +2281,26 @@ describe('MQTT durable sessions on LMDB', function () {
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes(2));
 		assert.ok(!values(second.received).includes(1), 'an acknowledged transaction is not redelivered');
+		second.session.disconnect(true);
+	});
+
+	it('does not send again after a reconnect a delivery acknowledged behind an unacknowledged one (QoS 1)', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `lmdb-behind-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await T.put('b', { value: 'b' });
+		await waitFor(() => values(first.received).includes('b'));
+		await first.session.acknowledge(delivery(first.received, 'b').messageId);
+		first.session.disconnect(true);
+		await first.session.writes;
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('c', { value: 'c' });
+		await waitFor(() => values(second.received).includes('c'));
+		assert.deepStrictEqual(values(second.received), ['a', 'c'], 'only the unacknowledged delivery is sent again');
 		second.session.disconnect(true);
 	});
 

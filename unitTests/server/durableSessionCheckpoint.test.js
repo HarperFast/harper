@@ -3,9 +3,9 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
-const { getDatabaseGeneration, persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { getDatabaseGeneration, persistOriginClosedFloor, raiseAuditFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
-const { membersDigest, positionBefore } = require('#src/resources/subscriptionCheckpoint');
+const { membersDigest } = require('#src/resources/subscriptionCheckpoint');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const { transaction } = require('#src/resources/transaction');
 const { getSession } = require('#src/server/DurableSubscriptionsSession');
@@ -67,9 +67,30 @@ async function connect(clientId) {
 	return { session, received, closed };
 }
 
-/** The newest scalar a kept checkpoint allows: just below its lowest boundary. */
-function scalarCap(checkpoint) {
-	return positionBefore(Math.min(checkpoint.time - checkpoint.overlap, ...Object.values(checkpoint.exceptions)));
+/** The lowest boundary a checkpoint certifies. */
+function checkpointFloor(checkpoint) {
+	return Math.min(checkpoint.time - checkpoint.overlap, ...Object.values(checkpoint.exceptions));
+}
+
+/** The requests each resumed subscription was made with, in order. */
+function resumeRequests(session) {
+	const requests = [];
+	const resumeSubscription = session.resumeSubscription;
+	session.resumeSubscription = function (request, ...rest) {
+		requests.push(request);
+		return resumeSubscription.call(this, request, ...rest);
+	};
+	return requests;
+}
+
+/** A record saved in another database generation: another node's, or this database's before a restore. */
+const ANOTHER_GENERATION = 'another-generation';
+async function fromAnotherGeneration(clientId) {
+	const record = await stored(clientId);
+	await databases.system.hdb_durable_session.put({
+		id: clientId,
+		subscriptions: record.subscriptions.map((entry) => ({ ...entry, databaseGeneration: ANOTHER_GENERATION })),
+	});
 }
 
 const stored = (clientId) => databases.system.hdb_durable_session.get(clientId);
@@ -120,7 +141,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		setOriginCaptureIntervalForTests(100);
 	});
 
-	it('stores a checkpoint beside the scalar position and resumes from it after a reconnect', async () => {
+	it('stores a checkpoint beside the scalar position, and resumes on this node from the scalar', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const clientId = `token-${name}`;
@@ -131,28 +152,32 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await ackAll(first.session, first.received);
 		const checkpoint = await storedCheckpoint(T, first.session, clientId);
 		assert.deepStrictEqual(checkpoint.exceptions, {});
-		const entry = (await stored(clientId)).subscriptions[0];
-		assert.ok(entry.startTime !== undefined, 'the scalar shadow is kept for an older reader');
-		assert.strictEqual(entry.databaseGeneration, getDatabaseGeneration(T.auditStore).id);
 		first.session.disconnect(true);
 		await first.session.writes;
+		const entry = (await stored(clientId)).subscriptions[0];
+		assert.strictEqual(entry.databaseGeneration, getDatabaseGeneration(T.auditStore).id);
 		await T.put('b', { value: 'b' });
 		const second = await connect(clientId);
 		assert.strictEqual(second.session.sessionWasPresent, true);
+		const requests = resumeRequests(second.session);
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes('b'));
 		assert.ok(!values(second.received).includes('a'), 'the acknowledged message is not redelivered');
-		const state = second.session.topics.get(`${name}/#`);
-		assert.strictEqual(state.subscription.ungated, true, 'resumed through the checkpoint');
+		assert.strictEqual(requests[0].resume, undefined, 'resumed from the scalar its own generation bound');
+		assert.strictEqual(requests[0].startTime, entry.startTime);
 		second.session.disconnect(true);
 	});
 
-	it('redelivers after a reconnect a transaction that committed below the checkpoint', async () => {
+	it('resumes from the checkpoint a session saved in another generation, delivering a commit below its scalar', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const clientId = `late-${name}`;
 		const first = await connect(clientId);
 		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => values(first.received).includes('a'));
+		await ackAll(first.session, first.received);
+		await storedCheckpoint(T, first.session, clientId);
 		const commitLate = await heldTransaction(T, 'late');
 		await T.put('early', { value: 'early' });
 		await waitFor(() => values(first.received).includes('early'));
@@ -161,15 +186,28 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		first.session.disconnect(true);
 		await first.session.writes;
 		await commitLate();
-		const lateKey = [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === 'late').txnLogKey;
-		assert.ok(checkpoint.time - checkpoint.overlap <= lateKey, 'the checkpoint waited for the open transaction');
+		const lateKey = logKeyOf(T, 'late');
+		assert.ok(checkpointFloor(checkpoint) <= lateKey, 'the checkpoint waited for the open transaction');
+		const entry = (await stored(clientId)).subscriptions[0];
+		await fromAnotherGeneration(clientId);
 		const second = await connect(clientId);
+		assert.strictEqual(second.session.sessionWasPresent, true);
+		const requests = resumeRequests(second.session);
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes('late'));
+		await T.put('after', { value: 'after' });
+		await waitFor(() => values(second.received).includes('after'));
+		assert.deepStrictEqual(requests[0].resume, entry.checkpoint, 'resumed from the checkpoint');
+		assert.deepStrictEqual(
+			values(second.received),
+			['late', 'after'],
+			'the acknowledged deliveries are not sent again'
+		);
+		assert.ok(entry.startTime > lateKey, 'the scalar is above the late commit, so only the checkpoint delivers it');
 		second.session.disconnect(true);
 	});
 
-	it('keeps the scalar position below the checkpoint, so a scalar fallback delivers an open transaction', async () => {
+	it('keeps the scalar at what the session reached while the checkpoint holds below an open transaction', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const clientId = `scalar-${name}`;
@@ -183,20 +221,21 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		first.session.disconnect(true);
 		await first.session.writes;
 		const entry = (await stored(clientId)).subscriptions[0];
-		assert.ok(entry.startTime <= scalarCap(entry.checkpoint), 'the scalar claims nothing the checkpoint does not');
 		await commitLate();
-		// an older reader, or a checkpoint refused as another scope, resumes from the scalar
-		await databases.system.hdb_durable_session.put({
-			id: clientId,
-			subscriptions: [{ ...entry, checkpoint: { ...entry.checkpoint, scope: 'another' } }],
-		});
+		assert.ok(
+			checkpointFloor(entry.checkpoint) <= logKeyOf(T, 'late'),
+			'the checkpoint holds below the open transaction'
+		);
+		assert.ok(entry.startTime >= logKeyOf(T, 'early'), 'the scalar is not held under the checkpoint');
 		const second = await connect(clientId);
 		await second.session.resume();
-		await waitFor(() => values(second.received).includes('late'));
+		await T.put('after', { value: 'after' });
+		await waitFor(() => values(second.received).includes('after'));
+		assert.ok(!values(second.received).includes('early'), 'the acknowledged delivery is not sent again');
 		second.session.disconnect(true);
 	});
 
-	it('freezes the scalar at the kept checkpoint while none is certified', async () => {
+	it('keeps its last checkpoint while none is certified, and the scalar keeps advancing', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const topic = `${name}/#`;
@@ -214,8 +253,43 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await ackAll(first.session, first.received);
 		first.session.checkpoint();
 		await first.session.writes;
-		assert.ok(state.entry.startTime <= scalarCap(checkpoint), 'the scalar stays at the kept checkpoint');
+		const entry = (await stored(clientId)).subscriptions[0];
+		assert.deepStrictEqual(entry.checkpoint, checkpoint, 'the kept checkpoint is saved');
+		assert.ok(entry.startTime >= logKeyOf(T, 'b'), 'the scalar passes the kept checkpoint');
 		first.session.disconnect(true);
+	});
+
+	it("leaves a record topic to its own history walk on this node, not to its checkpoint's retention", async () => {
+		const { T, name } = topicTable();
+		await T.put('r', { value: 0 });
+		const topic = `${name}/r`;
+		const clientId = `record-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(first.received).includes(1));
+		await ackAll(first.session, first.received);
+		await storedCheckpoint(T, first.session, clientId);
+		const thaw = freezeFloor(T);
+		try {
+			await T.put('r', { value: 2 });
+			await waitFor(() => values(first.received).includes(2));
+			await first.session.acknowledge(delivery(first.received, 2).messageId);
+			first.session.disconnect(true);
+			await first.session.writes;
+			const entry = (await stored(clientId)).subscriptions[0];
+			// retention passes the checkpoint's boundary, below the record's newer versions
+			raiseAuditFloor(T.auditStore, checkpointFloor(entry.checkpoint) + 0.001);
+			await T.put('r', { value: 3 });
+			const second = await connect(clientId);
+			assert.strictEqual(second.session.sessionWasPresent, true, "the record's own versions show nothing was lost");
+			await second.session.resume();
+			await waitFor(() => values(second.received).includes(3));
+			assert.deepStrictEqual(values(second.received), [3]);
+			second.session.disconnect(true);
+		} finally {
+			thaw();
+		}
 	});
 
 	it('holds an origin at an unacknowledged delivery, by origin', async () => {
@@ -349,7 +423,38 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		}
 	});
 
-	it('resets the session before CONNACK when the checkpoint certifies an origin this node lacks', async () => {
+	it('resumes on this node from the start of a topic whose first delivery is still unacknowledged', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		await sleep(2);
+		certify(T);
+		const thaw = freezeFloor(T);
+		try {
+			await T.put('before', { value: 'before' });
+			const clientId = `unacked-${name}`;
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => values(first.received).includes('a'));
+			await waitFor(async () => {
+				first.session.checkpoint();
+				await first.session.writes;
+				return (await stored(clientId))?.subscriptions?.[0]?.checkpoint !== undefined;
+			}, 10_000);
+			first.session.disconnect(true);
+			await first.session.writes;
+			await T.put('b', { value: 'b' });
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => values(second.received).includes('b'));
+			assert.deepStrictEqual(values(second.received), ['a', 'b'], 'the unacknowledged delivery, and nothing before it');
+			second.session.disconnect(true);
+		} finally {
+			thaw();
+		}
+	});
+
+	it('checks before CONNACK only the checkpoint a session resumes from, resetting one this node cannot serve', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const clientId = `foreign-${name}`;
@@ -362,9 +467,18 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		first.session.disconnect(true);
 		await first.session.writes;
 		const entry = (await stored(clientId)).subscriptions[0];
+		const unservable = { ...checkpoint, members: membersDigest([['elsewhere', 'g']]) };
 		await databases.system.hdb_durable_session.put({
 			id: clientId,
-			subscriptions: [{ ...entry, checkpoint: { ...checkpoint, members: membersDigest([['elsewhere', 'g']]) } }],
+			subscriptions: [{ ...entry, checkpoint: unservable }],
+		});
+		const kept = await connect(clientId);
+		assert.strictEqual(kept.session.sessionWasPresent, true, 'this generation resumes from its scalar');
+		kept.session.disconnect(true);
+		await kept.session.writes;
+		await databases.system.hdb_durable_session.put({
+			id: clientId,
+			subscriptions: [{ ...entry, databaseGeneration: ANOTHER_GENERATION, checkpoint: unservable }],
 		});
 		const second = await connect(clientId);
 		assert.ok(!second.session.sessionWasPresent, 'a checkpoint this node cannot serve resets the session');
@@ -372,7 +486,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		second.session.disconnect(true);
 	});
 
-	it('falls back to the scalar position when the checkpoint names another scope', async () => {
+	it('falls back to the scalar position when the checkpoint it resumes from names another scope', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const clientId = `scope-${name}`;
@@ -387,13 +501,17 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		const entry = (await stored(clientId)).subscriptions[0];
 		await databases.system.hdb_durable_session.put({
 			id: clientId,
-			subscriptions: [{ ...entry, checkpoint: { ...checkpoint, scope: 'another' } }],
+			subscriptions: [
+				{ ...entry, databaseGeneration: ANOTHER_GENERATION, checkpoint: { ...checkpoint, scope: 'another' } },
+			],
 		});
 		await T.put('missed', { value: 'missed' });
 		const second = await connect(clientId);
 		assert.strictEqual(second.session.sessionWasPresent, true);
+		const requests = resumeRequests(second.session);
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes('missed'));
+		assert.ok(requests[0].resume !== undefined && requests[1].resume === undefined, 'refused, then the scalar');
 		second.session.disconnect(true);
 	});
 });

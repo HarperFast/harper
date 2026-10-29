@@ -446,7 +446,7 @@ class SubscriptionsSession {
 						if (filter && !filter(update)) continue;
 						if (needsAck) {
 							update.topic = topic;
-							const priorMessageId = subscriptionRequest.qos === 2 ? this.priorDelivery(update) : undefined;
+							const priorMessageId = this.priorDelivery(update);
 							if (priorMessageId === ALREADY_RECEIVED) {
 								update.acknowledge?.();
 								continue;
@@ -725,7 +725,7 @@ type DurableEntry = {
 	topic: string;
 	startTime?: number;
 	databaseGeneration?: string;
-	/** QoS 2 deliveries above `startTime` that the client has taken (PUBREC), which a replay skips. */
+	/** Deliveries above `startTime` that the client has taken (PUBACK, or PUBREC at QoS 2), which a replay skips. */
 	received?: DeliveryIdentity[];
 	/** `[key, count]`: the first `count` deliveries sharing `key`, taken in order, kept as one entry. */
 	receivedRuns?: [number, number][];
@@ -739,9 +739,9 @@ type DurableEntry = {
 	/** The database generation whose log keys the receipts and in-flight deliveries name. */
 	receiptsGeneration?: string;
 	/**
-	 * The per-origin checkpoint, kept beside the scalar position an older reader resumes from.
-	 * Once established it is never replaced by the scalar: it stops advancing while floors are unavailable, and a
-	 * resume it can no longer satisfy resets the session (410).
+	 * The per-origin checkpoint: what a resume from another database generation (another node's, or a restored
+	 * copy's) replays from, since the scalar names keys only within its own. It stops advancing while floors are
+	 * unavailable, and a resume it can no longer satisfy resets the session (410).
 	 */
 	checkpoint?: SubscriptionCheckpoint;
 };
@@ -792,20 +792,18 @@ function checkpointInterval(): number {
 }
 
 /**
- * Whether every collection entry can still resume from its position, checked from metadata against
- * the floor before CONNACK. A record's own history walk decides the rest after CONNACK, and a resource
- * that is not a table is left to its own subscribe.
+ * Whether every entry can still resume from what it resumes from, checked from metadata before CONNACK. A
+ * collection entry bound to the current generation is checked against the floor, and a record's own history walk
+ * decides after CONNACK; a checkpoint names origin keys, so one an entry resumes from is checked here whichever
+ * node issued it, record topics too. A resource that is not a table is left to its own subscribe.
  */
 function sessionRecordResumable(record: any): boolean {
 	for (const entry of record.subscriptions || []) {
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
-		// a checkpoint names origin keys, so it is checked here whichever node issued it, record topics too
-		const admission =
-			entry.checkpoint === undefined ? 'fallback' : checkpointAdmission(match?.Resource, entry.checkpoint);
-		if (admission === 'refused') return false;
-		// the scalar sits at or below the token's floor, so a lagging origin can hold it under retention; it is
-		// only read if the token is refused
-		if (admission === 'admitted') continue;
+		if (resumesFromCheckpoint(entry)) {
+			if (checkpointAdmission(match?.Resource, entry.checkpoint) === 'refused') return false;
+			continue;
+		}
 		if (!/[+#]/.test(match?.relativeURL ?? '')) continue;
 		if (!boundToCurrentGeneration(entry)) continue;
 		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
@@ -845,11 +843,6 @@ function checkpointFloor(checkpoint: SubscriptionCheckpoint): number {
 	return floor;
 }
 
-/** The newest scalar position a topic keeping `checkpoint` may hold: an older reader or a fallback replays from it. */
-function scalarCap(checkpoint: SubscriptionCheckpoint): number {
-	return positionBefore(checkpointFloor(checkpoint));
-}
-
 function auditStoreOf(topic: string): any {
 	return resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
 }
@@ -874,6 +867,14 @@ function boundToCurrentGeneration(entry: DurableEntry): boolean {
 	if (entry.databaseGeneration === undefined) return false;
 	const auditStore = resources.getMatch(entry.topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
 	return Boolean(auditStore) && getDatabaseGeneration(auditStore)?.id === entry.databaseGeneration;
+}
+
+/**
+ * A scalar bound to the current generation is this node's own position and covers what the session reached; a
+ * checkpoint trails it by the floor cadence, so it is resumed from only where the scalar cannot be checked.
+ */
+function resumesFromCheckpoint(entry: DurableEntry): boolean {
+	return entry.checkpoint !== undefined && !boundToCurrentGeneration(entry);
 }
 
 export class DurableSubscriptionsSession extends SubscriptionsSession {
@@ -962,7 +963,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const { qos, topic, startTime, databaseGeneration, checkpoint } = state.entry;
 			const durable = qos > 0;
 			try {
-				if (durable && checkpoint !== undefined) {
+				if (durable && resumesFromCheckpoint(state.entry)) {
 					try {
 						await this.resumeSubscription(
 							{ topic, qos, rh: 2, resume: checkpoint, filterKey: topic, reportProgress: true },
@@ -1031,6 +1032,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					);
 					this.reservedIds.add(messageId);
 				}
+			} else if (replaced.entry.qos === 1) {
+				state.received = replaced.received;
+				state.receivedRuns = replaced.receivedRuns;
+				state.receivedThrough = replaced.receivedThrough;
 			} else this.forgetTopic(replaced);
 		}
 		state.subscription = subscription;
@@ -1083,7 +1088,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	priorDelivery(update) {
 		const state = this.topics.get(update.topic);
-		if (state?.entry.qos !== 2 || update.fromScan || typeof update.localTime !== 'number') return;
+		if (!(state?.entry.qos > 0) || update.fromScan || typeof update.localTime !== 'number') return;
 		const key = update.localTime;
 		// a transaction's events arrive together and in the same order when replayed
 		if (key === state.ordinalKey) state.ordinal++;
@@ -1185,7 +1190,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state.unacked.set(messageId, {
 				key,
 				ordinal: state.ordinal,
-				id: qos === 2 ? deliveryId(update.id) : undefined,
+				id: deliveryId(update.id),
 				previousKey: state.keyBefore,
 				late,
 				origin: typeof update[ORIGIN_ID] === 'number' ? update[ORIGIN_ID] : undefined,
@@ -1199,8 +1204,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.awaitingAcks.delete(messageId);
 		update.acknowledge?.();
 		const state = this.topics.get(update.topic);
-		if (state?.unacked.get(messageId)?.late) state.lateUnacked--;
+		const sent = state?.unacked.get(messageId);
+		if (sent?.late) state.lateUnacked--;
 		state?.unacked.delete(messageId);
+		// a PUBREC'd QoS 2 delivery is kept by `received`; a PUBACK'd one is kept here, so a replay that revisits it
+		// (behind an older unacknowledged delivery, or from a checkpoint) skips it
+		if (sent && update.qos === 1) {
+			const floor = state.entry.checkpoint === undefined ? undefined : checkpointFloor(state.entry.checkpoint);
+			this.compactReceived(state, floor);
+			this.addReceived(state, [sent.key, sent.ordinal, sent.id]);
+			this.compactReceived(state, floor);
+			this.dirty = true;
+		}
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
 	}
@@ -1328,7 +1343,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (existing?.entry.qos > 0) {
 				// replacing a subscription must lose nothing, so the new one continues the topic's position
 				this.advancePositions();
-				if (existing.entry.checkpoint !== undefined) request.resume = existing.entry.checkpoint;
+				if (resumesFromCheckpoint(existing.entry)) request.resume = existing.entry.checkpoint;
 				else {
 					request.startTime = existing.entry.startTime;
 					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
@@ -1447,22 +1462,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (fresh) this.advanceCount++;
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
-			let next = this.nextPosition(state);
+			const next = this.nextPosition(state);
 			if (next === undefined) continue;
-			// the scalar never claims more than the token: it is capped by the current one, else frozen at the kept one
-			const checkpoint = this.currentCheckpoint(state) ?? state.entry.checkpoint;
-			if (checkpoint !== undefined) {
-				const cap = scalarCap(checkpoint);
-				if (cap < next) next = cap;
-			}
 			const bound = state.entry.databaseGeneration !== undefined;
 			// an unbound start came from a clock, so a certified position replaces it rather than racing it
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			// a checkpoint resume replays from its boundaries, below which a remote origin can sit under the scalar:
-			// once floors certify a boundary, nothing above it is pruned, from the very call that establishes the token
-			if (state.entry.checkpoint === undefined) this.pruneReceipts(state, next);
+			// a checkpoint resume replays from its boundaries, below the scalar: once floors certify a boundary, the
+			// receipts above it are kept, from the very call that establishes the token
+			if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) this.pruneReceipts(state, next);
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
 				state.subscription.progress?.() === undefined ? undefined : state.subscription.databaseGeneration;
@@ -1472,15 +1481,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (!(state.entry.qos > 0)) continue;
 			const checkpoint = this.currentCheckpoint(state);
 			if (checkpoint && !sameCheckpoint(checkpoint, state.entry.checkpoint)) {
-				// the scalar watermark was compacted against a position an origin can commit below; from the first
-				// checkpoint on, receipts are bounded by its floor only
-				if (state.entry.checkpoint === undefined) state.receivedThrough = undefined;
+				if (state.entry.checkpoint === undefined) {
+					// the scalar watermark was compacted against a position an origin can commit below; from the first
+					// checkpoint on, receipts are bounded by its floor only
+					state.receivedThrough = undefined;
+					// a fresh topic's start names this generation's keys, so the token beside it does not replace it here
+					state.entry.databaseGeneration ??= state.subscription.databaseGeneration;
+				}
 				state.entry.checkpoint = checkpoint;
-				this.pruneReceipts(state, scalarCap(checkpoint));
+				this.pruneReceipts(state, positionBefore(checkpointFloor(checkpoint)));
 				changed = true;
 			}
-			// the first token, or a floor a hold lowered, can sit under a scalar the monotonic advance kept
-			if (lowerScalar(state.entry)) changed = true;
 		}
 		return changed;
 	}
@@ -1743,13 +1754,6 @@ class SessionEndedError extends ClientError {
 const SEAL_WAIT = 5_000;
 function sealWait() {
 	return new Promise<void>((resolve) => setTimeout(resolve, SEAL_WAIT).unref());
-}
-
-/** Lowers a kept scalar to its checkpoint's cap; true if it moved. */
-function lowerScalar(entry: DurableEntry): boolean {
-	if (entry.checkpoint === undefined || !(entry.startTime > scalarCap(entry.checkpoint))) return false;
-	entry.startTime = scalarCap(entry.checkpoint);
-	return true;
 }
 
 function sameCheckpoint(a: SubscriptionCheckpoint, b: SubscriptionCheckpoint | undefined): boolean {
