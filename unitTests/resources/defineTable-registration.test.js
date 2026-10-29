@@ -7,13 +7,14 @@
 // front-end parity guardrail (code-first and GraphQL project identical `properties`).
 
 require('../testUtils');
-const assert = require('assert');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { databases } = require('#src/resources/databases');
+const { databases, table } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { defineTable, types } = require('#src/resources/defineTable');
+const { transaction } = require('#src/resources/transaction');
 
 const { id, string, int, date } = types;
 const DB = 'codefirst_test';
@@ -367,6 +368,110 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		setMainIsWorker(true);
 	});
 
+	it('rejects new own fields on sealed tracked updates without rejecting untouched legacy data', async () => {
+		const options = { database: EVOLVE_DB, sealed: true };
+		const shape = { id: id.primaryKey, label: string };
+		const Item = defineTable('SealedRetirement', { ...shape, legacyCode: int.nullable }, options);
+		await Item.put({ id: 'i1', label: 'original', legacyCode: 42 });
+		defineTable('SealedRetirement', shape, options);
+
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'permitted';
+		});
+		assert.strictEqual((await Item.get('i1')).legacyCode, 42);
+
+		for (const name of ['legacyCode', 'neverDeclared']) {
+			for (const changeDeclared of [false, true]) {
+				await assert.rejects(
+					async () =>
+						transaction(async () => {
+							const record = await Item.update('i1');
+							if (changeDeclared) record.label = 'rejected';
+							record[name] = 'new own value';
+						}),
+					(error) => error.name === 'ValidationError' && error.message.includes(`Property ${name} is not allowed`)
+				);
+				const stored = await Item.get('i1');
+				assert.strictEqual(stored.label, 'permitted');
+				assert.strictEqual(stored.legacyCode, 42);
+				assert.strictEqual(stored.neverDeclared, undefined);
+			}
+		}
+		await Item.patch('i1', { label: 'plain patch' });
+		assert.strictEqual((await Item.get('i1')).legacyCode, 42);
+		await assert.rejects(
+			async () => Item.patch('i1', { neverDeclared: 'no' }),
+			/Property neverDeclared is not allowed/
+		);
+	});
+
+	it('keeps retired own fields writable on unsealed tracked updates', async () => {
+		const options = { database: EVOLVE_DB, sealed: false };
+		const shape = { id: id.primaryKey, label: string };
+		const Item = defineTable('UnsealedRetirement', { ...shape, legacyCode: int.nullable }, options);
+		await Item.put({ id: 'i1', label: 'original', legacyCode: 42 });
+		defineTable('UnsealedRetirement', shape, options);
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'changed';
+			record.legacyCode = 'now untyped';
+		});
+		assert.strictEqual((await Item.get('i1')).legacyCode, 'now untyped');
+	});
+
+	it('keeps live timestamps and resolvers after a raw expression reload fails', async () => {
+		const Writer = defineTable('FailureWriter', { id: id.primaryKey, name: string }, { database: EVOLVE_DB });
+		const Item = defineTable(
+			'FailedReload',
+			{
+				id: id.primaryKey,
+				label: string,
+				writerId: id.indexed,
+				writer: types.relation(() => Writer, { from: 'writerId' }),
+				createdAt: date.createdTime,
+				touchedAt: date.updatedTime,
+			},
+			{ database: EVOLVE_DB }
+		);
+		await Writer.put({ id: 'w1', name: 'Ursula' });
+		await Item.put({ id: 'before', label: 'before', writerId: 'w1' });
+		const resolverMap = Item.propertyResolvers;
+		const recordPrototype = Item.primaryStore.encoder.structPrototype;
+		const writerGetter = Object.getOwnPropertyDescriptor(recordPrototype, 'writer').get;
+		const originalAttributes = Item.attributes.map((attribute) => ({ ...attribute }));
+		assert.throws(
+			() =>
+				table({
+					database: EVOLVE_DB,
+					table: 'FailedReload',
+					attributes: [
+						originalAttributes[0],
+						{ name: 'newComputed', computed: {}, computedFromExpression: 'label.toUpperCase()' },
+						{ name: 'broken', computed: {}, computedFromExpression: 'label +' },
+						...originalAttributes.slice(1),
+					],
+				}),
+			SyntaxError
+		);
+		await Item.put({ id: 'after', label: 'after', writerId: 'w1' });
+		const stored = await Item.get('after');
+		assert.ok(stored.createdAt instanceof Date, 'failed reload preserves created-time stamping');
+		assert.ok(stored.touchedAt instanceof Date, 'failed reload preserves updated-time stamping');
+		assert.strictEqual((await stored.writer).name, 'Ursula');
+		assert.strictEqual(Item.propertyResolvers, resolverMap);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(recordPrototype, 'writer').get, writerGetter);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(recordPrototype, 'newComputed'), undefined);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(Item.prototype, 'newComputed'), undefined);
+		assert.strictEqual(Item.userResolvers.newComputed, undefined);
+		const selected = [];
+		for await (const record of Item.search(new RequestTarget('?id=after&select(label,writer)'))) selected.push(record);
+		assert.strictEqual(selected[0].writer.name, 'Ursula');
+		table({ database: EVOLVE_DB, table: 'FailedReload', attributes: originalAttributes });
+		await Item.put({ id: 'recovered', label: 'recovered', writerId: 'w1' });
+		assert.ok((await Item.get('recovered')).createdAt instanceof Date);
+	});
+
 	it('a GraphQL reload turning a relationship into a stored field keeps the stored value (typed structs)', async () => {
 		await loadGQLSchema(`
 			type RetireBook @table {
@@ -444,14 +549,16 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 			id: id.primaryKey,
 			title: string,
 			writerId: id.indexed.nullable,
+			alternateWriterId: id.indexed.nullable,
 			pressId: id.indexed.nullable,
 			writer: types.relation(() => Writer, { from: 'writerId' }),
 		};
 		const withPress = { ...novelShape, press: types.relation(() => Press, { from: 'pressId' }) };
 		const Novel = defineTable('Novel', withPress, { database: EVOLVE_DB });
 		await Writer.put({ id: 'w1', name: 'Ursula' });
+		await Writer.put({ id: 'w2', name: 'Tove' });
 		await Press.put({ id: 'p1', name: 'Parnassus' });
-		await Novel.put({ id: 'n1', title: 'Earthsea', writerId: 'w1', pressId: 'p1' });
+		await Novel.put({ id: 'n1', title: 'Earthsea', writerId: 'w1', alternateWriterId: 'w2', pressId: 'p1' });
 		assert.strictEqual((await (await Novel.get('n1')).press).name, 'Parnassus');
 
 		defineTable('Novel', novelShape, { database: EVOLVE_DB });
@@ -460,6 +567,12 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		assert.strictEqual(withoutPress.press, undefined);
 		assert.strictEqual(Object.getOwnPropertyDescriptor(Novel.prototype, 'press'), undefined);
 		assert.ok(Object.getOwnPropertyDescriptor(Novel.prototype, 'writer')?.get?.isAttribute);
+		defineTable(
+			'Novel',
+			{ ...novelShape, writer: types.relation(() => Writer, { from: 'alternateWriterId' }) },
+			{ database: EVOLVE_DB }
+		);
+		assert.strictEqual((await (await Novel.get('n1')).writer).name, 'Tove');
 
 		defineTable('Novel', withPress, { database: EVOLVE_DB });
 		const readded = await Novel.get('n1');
