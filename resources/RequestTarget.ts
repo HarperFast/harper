@@ -9,6 +9,15 @@ export let markDispatchTarget: (target: RequestTarget) => RequestTarget;
 let isDispatchTarget: (target: any) => boolean;
 let copyRequestTarget: (source: RequestTarget) => RequestTarget;
 
+// own data properties, so the gate's writes never reach an accessor the caller's class defines
+function ownAuthorizationFields(source: any, descriptors: PropertyDescriptorMap): PropertyDescriptorMap {
+	for (const name of ['checkPermission', 'select']) {
+		if (name in source)
+			descriptors[name] = { value: source[name], writable: true, enumerable: true, configurable: true };
+	}
+	return descriptors;
+}
+
 export class RequestTarget extends URLSearchParams {
 	#target?: string;
 	#dispatchOwned?: boolean;
@@ -23,10 +32,14 @@ export class RequestTarget extends URLSearchParams {
 			for (const [name, value] of source) URLSearchParams.prototype.append.call(copy, name, value);
 			copy.#target = source.#target;
 			copy.#dispatchOwned = true;
-			// a subclass's accessors (conditions, select) must still answer on the copy
+			Object.assign(copy, source);
 			const prototype = Object.getPrototypeOf(source);
-			if (prototype !== RequestTarget.prototype) Object.setPrototypeOf(copy, prototype);
-			return Object.assign(copy, source);
+			if (prototype !== RequestTarget.prototype) {
+				Object.defineProperties(copy, ownAuthorizationFields(source, {}));
+				// a subclass's other accessors, such as computed conditions, still answer on the copy
+				Object.setPrototypeOf(copy, prototype);
+			}
+			return copy;
 		};
 	}
 	pathname: string;
@@ -211,11 +224,5 @@ export function dispatchTarget<T>(target: T): T {
 	if (Array.isArray(target)) return Object.assign([], target) as T;
 	const prototype = Object.getPrototypeOf(target);
 	if (prototype === Object.prototype) return { ...target };
-	const descriptors: PropertyDescriptorMap = Object.getOwnPropertyDescriptors(target);
-	// own data properties, so the gate's writes never reach an accessor the caller's class defines
-	for (const name of ['checkPermission', 'select']) {
-		if (name in (target as any))
-			descriptors[name] = { value: (target as any)[name], writable: true, enumerable: true, configurable: true };
-	}
-	return Object.create(prototype, descriptors);
+	return Object.create(prototype, ownAuthorizationFields(target, Object.getOwnPropertyDescriptors(target)));
 }

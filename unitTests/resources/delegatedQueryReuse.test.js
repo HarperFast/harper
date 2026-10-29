@@ -196,18 +196,30 @@ describe('delegated reads reusing one query object', function () {
 					);
 				});
 
-				it(`search with a RequestTarget subclass that computes its conditions, ${order}`, async function () {
+				it(`search with a RequestTarget subclass that computes its fields, ${order}`, async function () {
+					const shared = { checkPermission: true, select: authoredSelect() };
 					class EmployeeQuery extends RequestTarget {
 						get conditions() {
 							return [{ attribute: 'id', value: 'e1' }];
 						}
+						get checkPermission() {
+							return shared.checkPermission;
+						}
+						set checkPermission(value) {
+							shared.checkPermission = value;
+						}
+						get select() {
+							return shared.select;
+						}
+						set select(value) {
+							shared.select = value;
+						}
 					}
 					const root = new EmployeeQuery();
-					root.select = authoredSelect();
-					root.checkPermission = true;
 					for (const user of users)
 						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
-					assertAuthored(root);
+					assert.strictEqual(shared.checkPermission, true);
+					assert.deepStrictEqual(plain(shared.select), authoredSelect());
 				});
 
 				it(`search with a query object whose class defines accessors, ${order}`, async function () {
