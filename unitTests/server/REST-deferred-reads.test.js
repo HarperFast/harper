@@ -262,7 +262,7 @@ describe('REST deferred reads', () => {
 		assert.deepStrictEqual({ stepped, returned }, { stepped: 1, returned: 2 });
 	});
 
-	it('closes the source of a HEAD whose serialized body is empty', async () => {
+	it('closes the source of a HEAD whose body is empty or whose resource answered 304', async () => {
 		let closed = 0;
 		resources.set(
 			'EmptyBody',
@@ -273,9 +273,21 @@ describe('REST deferred reads', () => {
 			},
 			{ rest: true }
 		);
+		resources.set(
+			'OwnNotModified',
+			class extends Resource {
+				static get() {
+					return { status: 304, headers: new Headers(), data: { onDone: () => closed++ } };
+				}
+			},
+			{ rest: true }
+		);
 		const response = await request('HEAD', '/EmptyBody/', { accept: 'text/plain' });
 		assert.strictEqual(response.status, 200);
 		assert.strictEqual(closed, 1);
+		const notModified = await request('HEAD', '/OwnNotModified/', { accept: 'application/json' });
+		assert.strictEqual(notModified.status, 304);
+		assert.strictEqual(closed, 2, "a resource's own 304 is not one a precondition check already discarded");
 	});
 
 	it('answers a discarded read even when closing its source fails', async () => {

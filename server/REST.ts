@@ -274,6 +274,9 @@ function setReadValidators(headers, lastModification: number, httpOptions) {
 		headers.set('Last-Modified', new Date(lastModification).toUTCString());
 }
 
+// the 304s applyReadPreconditions answers after discarding the read, unlike one a resource returns itself
+const discardedByPreconditions = new WeakSet<object>();
+
 function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
 	const incoming = request.headers.asObject;
@@ -313,7 +316,9 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 		const headers =
 			response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
 		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
-		return { status: 304, headers, body: undefined };
+		const notModified = { status: 304, headers, body: undefined };
+		discardedByPreconditions.add(notModified);
+		return notModified;
 	}
 	return response;
 }
@@ -638,8 +643,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				deferred && conditionalRead
 					? applyReadPreconditions(response, request, method, lastModification, data)
 					: response;
-			// a 304, from either precondition check, has already discarded the read; a 412 threw
-			if (request.method === 'HEAD' && conditional.status !== 304) {
+			if (request.method === 'HEAD' && !discardedByPreconditions.has(conditional)) {
 				discardReadResponse(conditional, data);
 				if (!(conditional instanceof Response)) conditional.body = undefined;
 			}
@@ -716,7 +720,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		const response = deferredReadConditions
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
-		if (request.method === 'HEAD' && response === responseObject && responseData !== undefined) {
+		if (request.method === 'HEAD' && responseData !== undefined && !discardedByPreconditions.has(response)) {
 			discardReadResponse(response, responseData);
 			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
 		}
