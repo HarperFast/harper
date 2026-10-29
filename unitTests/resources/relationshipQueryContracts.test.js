@@ -433,6 +433,73 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 		});
 	});
 
+	describe('nested relationship selections', function () {
+		it('a leading join with nested conditions reads candidates asynchronously and freezes them', async function () {
+			clearValueMap(ColdChild);
+			const reads = spyPrimaryReads(ColdChild);
+			try {
+				const rows = await collect(
+					Parent.search({
+						conditions: [{ attribute: ['children', 'label'], value: 'match-beta' }],
+						select: ['id', { name: 'children', conditions: [{ attribute: 'tier', value: 'gold' }] }],
+					})
+				);
+				assert.deepEqual(
+					rows.map((row) => [row.id, row.children.map((child) => child.id)]),
+					[['parent-1', ['c2']]]
+				);
+				assert.equal(reads.sync, 0);
+				assert.ok(reads.async > 0);
+				assert.equal(Object.isFrozen(rows[0].children[0]), true);
+			} finally {
+				reads.restore();
+			}
+		});
+
+		it('a nested condition through a further relationship reads it asynchronously', async function () {
+			clearValueMap(ColdChild);
+			clearValueMap(ColdGrandchild);
+			const reads = spyPrimaryReads(ColdGrandchild);
+			try {
+				const rows = await collect(
+					Parent.search({
+						conditions: [{ attribute: 'id', value: 'parent-1' }],
+						select: [
+							'id',
+							{
+								name: 'children',
+								conditions: [{ attribute: ['grandchild', 'code'], comparator: 'starts_with', value: 'gc-' }],
+								select: ['id'],
+							},
+						],
+					})
+				);
+				assert.deepEqual(rows, [{ id: 'parent-1', children: [{ id: 'c2' }] }]);
+				assert.equal(reads.sync, 0);
+				assert.ok(reads.async > 0);
+			} finally {
+				reads.restore();
+			}
+		});
+
+		it('under synchronous iteration a nested condition through a further relationship stays synchronous', function () {
+			const rows = Array.from(
+				Parent.search({
+					conditions: [{ attribute: 'id', value: 'parent-1' }],
+					select: [
+						'id',
+						{
+							name: 'children',
+							conditions: [{ attribute: ['grandchild', 'code'], comparator: 'starts_with', value: 'gc-' }],
+							select: ['id'],
+						},
+					],
+				})
+			);
+			assert.deepEqual(rows, [{ id: 'parent-1', children: [{ id: 'c2' }] }]);
+		});
+	});
+
 	describe('sorting across a to-many relationship', function () {
 		it('sorts by the related values in relationship order, compared element by element', async function () {
 			const sortedIds = async (attribute, descending) =>

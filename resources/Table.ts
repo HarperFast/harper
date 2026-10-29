@@ -171,6 +171,7 @@ import {
 	executeConditions,
 	resolveComparator,
 	filterByType,
+	matchesFilters,
 	fullTextComparatorMode,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
@@ -7572,9 +7573,13 @@ export function makeTable(options): TableResourceClass {
 					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
 					return predicate;
 				});
-				return operator === 'or'
+				const any = operator === 'or';
+				const combined: any = any
 					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
 					: (record, entry) => predicates.every((predicate) => predicate(record, entry));
+				if (predicates.some((predicate) => predicate.maybeAsync))
+					combined.maybeAsync = (record, entry) => matchesFilters(predicates, record, entry, any);
+				return combined;
 			};
 			const predicate = conditions.length ? compile(conditions, attribute.operator) : undefined;
 			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
@@ -7634,6 +7639,8 @@ export function makeTable(options): TableResourceClass {
 							},
 						};
 					};
+					const readOptions = isSync ? { transaction: readTxn } : { transaction: readTxn, async: true };
+					const matchCandidate = predicate && (isSync ? predicate : (predicate.maybeAsync ?? predicate));
 					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
 							if (stopped) return SKIP;
@@ -7641,10 +7648,12 @@ export function makeTable(options): TableResourceClass {
 							const entry =
 								typeof candidate === 'object' && candidate.key !== undefined
 									? candidate
-									: targetTable.primaryStore.getEntry(candidate, { transaction: readTxn });
-							return when(entry, (entry) =>
-								predicate && (!entry?.value || !predicate(entry.value, entry)) ? SKIP : entry
-							);
+									: when(targetTable.primaryStore.getEntry(candidate, readOptions), freezeRelatedEntry);
+							if (!predicate) return entry;
+							return when(entry, (entry) => {
+								if (!entry?.value) return SKIP;
+								return when(matchCandidate(entry.value, entry), (matches) => (matches && !stopped ? entry : SKIP));
+							});
 						});
 					let examined = 0;
 					candidates = candidates.map((candidate) => {
@@ -8339,7 +8348,16 @@ export function makeTable(options): TableResourceClass {
 				// record — a caching table's source revalidation (above) may have replaced the local copy the
 				// query filters evaluated. The predicate sees a frozen view so application code can't
 				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
-				if (rowFilter && !rowFilter(frozenRecordView(record))) return canSkip ? SKIP : undefined;
+				// A nested relationship selection's predicate can read related records, so under asynchronous
+				// iteration its result may be pending; the projection below then waits on it before it is returned.
+				let pendingMatch;
+				if (rowFilter) {
+					const matches = (!this?.isSync && rowFilter.maybeAsync ? rowFilter.maybeAsync : rowFilter)(
+						frozenRecordView(record)
+					);
+					if (!matches) return canSkip ? SKIP : undefined;
+					if (typeof matches.then === 'function') pendingMatch = matches;
+				}
 				if (select && !(select[0] === '*' && select.length === 1 && !(select as any).asArray)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -8507,14 +8525,32 @@ export function makeTable(options): TableResourceClass {
 					} catch (error) {
 						// related reads already started for this row would otherwise reject unobserved
 						if (promises) Promise.all(promises).catch(() => {});
+						pendingMatch?.catch(() => {});
 						throw error;
 					}
 					if (promises) {
-						return Promise.all(promises).then(() => selected);
+						const projected = Promise.all(promises).then(() => selected);
+						return pendingMatch ? afterMatch(pendingMatch, projected) : projected;
 					}
-					return selected;
+					return pendingMatch ? afterMatch(pendingMatch, selected) : selected;
 				}
-				return record;
+				return pendingMatch ? afterMatch(pendingMatch, record) : record;
+			};
+			const afterMatch = (pendingMatch: Promise<boolean>, projected) => {
+				const discard = () => {
+					if (typeof projected?.then === 'function') projected.then(undefined, () => {});
+				};
+				return pendingMatch.then(
+					(matches) => {
+						if (matches) return projected;
+						discard();
+						return canSkip ? SKIP : undefined;
+					},
+					(error) => {
+						discard();
+						throw error;
+					}
+				);
 			};
 			(transform as any).return = () => {
 				selectionStopped = true;

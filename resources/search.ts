@@ -1534,7 +1534,7 @@ function someRelatedMatch(entries, match, start: number) {
 	}
 	return false;
 }
-function matchesFilters(filters, record, entry, any: boolean, start = 0) {
+export function matchesFilters(filters, record, entry, any: boolean, start = 0) {
 	for (let i = start; i < filters.length; i++) {
 		const filter = filters[i];
 		const matches = (filter.maybeAsync ?? filter)(record, entry);
