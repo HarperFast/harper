@@ -711,6 +711,7 @@ async function* readPayloadBlobChunks(
 			}
 			return;
 		} catch (error) {
+			if (cell.readable?.destroyed) return;
 			if (forwardedAnyBytes || (error as { statusCode?: number })?.statusCode !== BLOB_UNAVAILABLE_STATUS) {
 				throw error;
 			}
