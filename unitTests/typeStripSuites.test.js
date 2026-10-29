@@ -54,7 +54,7 @@ describe('unit runtime selection', function () {
 		assert(lanes.compiled.includes(require.resolve('./utility/logging/logFileIdentity.test.js')));
 		assert(lanes.compiled.includes(require.resolve('./utility/interactivePrompts.test.js')));
 		assert(partitionSuites([require.resolve('./resources/debugLongTransactionsReads.test.js')]).compiled.length);
-		assert(lanes.source.includes(require.resolve('./components/deploymentRecorder.test.js')));
+		assert(lanes.compiled.includes(require.resolve('./components/deploymentRecorder.test.js')));
 		assert(lanes.source.includes(require.resolve('./perFileDatabaseTeardown.test.js')));
 		for (const name of ['testUtils.js', 'waitFor.js', 'perPidRoot.js', 'rocksdbBindings.mts', 'packageBindings.mts']) {
 			const helper = join(__dirname, name);
