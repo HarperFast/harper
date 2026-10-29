@@ -356,14 +356,16 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			delete contextA.timestamp;
 			await transaction(contextA, async () => {
 				await StampTest.update(otherId, { n: 1 });
-				holder.set('n', 20);
+				await holder.update(lockedId, { n: 2 });
+				await holder.update(lockedId, { n: 20 });
 				await assert.rejects(
 					async () => holder.save(),
 					(err) => err && err.statusCode === 409
 				);
 			});
 			assert.strictEqual(stampedEntry(otherId).value.n, 1, 'earlier unlocked write still commits after caught 409');
-			assert.strictEqual(stampedEntry(lockedId).value.n, 10, 'refused hold write did not land');
+			assert.strictEqual(stampedEntry(lockedId).value.n, 10, 'neither refused nor sibling deferred hold write landed');
+			holder.set('n', 20);
 			await holder.save();
 			assert.strictEqual(stampedEntry(lockedId).value.n, 20, 'saving the held record in its own transaction succeeds');
 			assert.ok(stampedEntry(lockedId).version > futureTs);
@@ -445,28 +447,52 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			const holder = await StampTest.lock(lockedId, { hold: true, lease: 5000 }, holderCtx);
 			cleanups.push(() => holder.unlock());
 			const handle = [...holderCtx.transaction.recordLocks.values()][0].values().next().value;
+			holder.set('n', 1);
+			await holder.save();
+			await waitFor(() => rootStore.getMonotonicTimestamp() > handle.holderVersionFloor(), 100);
 
-			await transaction(async (outerTxn) => {
+			let beforeSave;
+			await transaction(holderCtx, async (outerTxn) => {
 				// Open the native transaction handle at tRead via an initial read.
-				await StampTest.get(otherId);
+				await StampTest.get(otherId, holderCtx);
 				const tRead = outerTxn.getReadTxn().getTimestamp();
 				await waitFor(() => rootStore.getMonotonicTimestamp() > tRead, 100);
 
-				// Commit a holder write on a separate context at v1 > tRead, then advance the clock past its floor.
-				await transaction(holderCtx, async () => {
-					holder.set('n', 10);
-					await holder.save();
-				});
+				// Commit a holder write at v1 > tRead while outerTxn's read snapshot stays open.
+				holderCtx.transaction = undefined;
+				try {
+					await transaction(holderCtx, async () => {
+						holder.set('n', 10);
+						await holder.save();
+					});
+				} finally {
+					holderCtx.transaction = outerTxn;
+				}
 				const v1 = await transaction({}, () => stampedEntry(lockedId).version);
 				assert.ok(v1 > tRead, `expected v1 (${v1}) > tRead (${tRead})`);
 				await waitFor(() => rootStore.getMonotonicTimestamp() > handle.holderVersionFloor(), 100);
+				beforeSave = rootStore.getMonotonicTimestamp();
+				await waitFor(() => rootStore.getMonotonicTimestamp() > beforeSave, 100);
 
 				// Saving in outerTxn (whose native handle still has getTimestamp() === tRead < v1)
-				// must advance past v1 rather than committing at tRead.
+				// must advance to current wall time rather than committing at tRead or clamping to the older floor.
 				holder.set('n', 20);
 				await holder.save();
+				await StampTest.put({ id: otherId, n: 2 }, holderCtx);
+				assert.strictEqual(
+					reservedAroundCallerValue(outerTxn.transaction),
+					false,
+					'advancing a stale read-snapshot handle past a normal-time holder floor reserves a current key directly'
+				);
+				assert.ok(
+					outerTxn.timestamp >= beforeSave,
+					`expected transaction clock (${outerTxn.timestamp}) at or above current wall time (${beforeSave}), not clamped to the older holder floor`
+				);
 			});
 			assert.strictEqual(stampedEntry(lockedId).value.n, 20);
+			assert.ok(stampedEntry(lockedId).version >= beforeSave);
+			assert.strictEqual(stampedEntry(otherId).value.n, 2);
+			assert.ok(stampedEntry(otherId).version >= beforeSave);
 		});
 
 		it('advances #lastHolderVersion across ImmediateTransaction saves even when transaction.recordLocks is absent', async function () {

@@ -1705,6 +1705,7 @@ export function makeTable(options): TableResourceClass {
 	let lockCoordinator: LockCoordinator | undefined;
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
+	let lastIssuanceFailureWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
@@ -11990,10 +11991,18 @@ export function makeTable(options): TableResourceClass {
 			else {
 				try {
 					sourceTimestamp = freshLocalKey(tableRootStore);
-				} catch {
+				} catch (error) {
 					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
 					issuanceFailed = true;
 					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+					const now = performance.now();
+					if (now - lastIssuanceFailureWarn >= 60_000) {
+						lastIssuanceFailureWarn = now;
+						logger.warn?.(
+							`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
+							error
+						);
+					}
 				}
 			}
 		}

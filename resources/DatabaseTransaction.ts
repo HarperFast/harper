@@ -1418,18 +1418,18 @@ export class DatabaseTransaction implements Transaction {
 		writesForStore.set(keyId, operation);
 	}
 
-	refuseLockWrites(handle: RecordLockHandle, operation?: TransactionWrite): void {
-		handle.writeRefused = true;
+	refuseLockWrites(handle: RecordLockHandle, operation?: TransactionWrite, poisonHandle = true): void {
+		if (poisonHandle) handle.writeRefused = true;
 		for (const write of this.writes) {
 			if (write?.lockHandle === handle && !write.saved && this.ownedWrites?.has(write)) {
 				write.dropped = true;
-				write.lockWriteRefused = true;
+				if (poisonHandle) write.lockWriteRefused = true;
 				this.detachWrite(write);
 			}
 		}
 		if (operation?.lockHandle === handle && !operation.saved && !operation.dropped) {
 			operation.dropped = true;
-			operation.lockWriteRefused = true;
+			if (poisonHandle) operation.lockWriteRefused = true;
 			this.detachWrite(operation);
 		}
 	}
@@ -2433,10 +2433,16 @@ export class DatabaseTransaction implements Transaction {
 								: nativeClock);
 						if (floor > effectiveClock) {
 							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {
-								txnTime = this.timestamp = lockHandle.holderVersionFloor(undefined, true);
+								const claimedFloor = lockHandle.holderVersionFloor(undefined, true);
+								if (claimedFloor < (rootStore?.getMonotonicTimestamp?.() ?? 0)) {
+									txnTime = this.timestamp = 0;
+									if (transaction.getTimestamp() < claimedFloor)
+										transaction.setTimestamp(rootStore.getMonotonicTimestamp());
+								} else {
+									txnTime = this.timestamp = claimedFloor;
+								}
 							} else {
-								operation.dropped = true;
-								this.detachWrite(operation);
+								this.refuseLockWrites(lockHandle, operation, false);
 								throw new ClientError(
 									'Record lock write cannot advance past its earlier holder version in a transaction whose clock is already fixed; save the held record first or in its own transaction',
 									409

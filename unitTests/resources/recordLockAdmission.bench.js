@@ -16,7 +16,8 @@ const { waitFor } = require('../waitFor');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const WORKERS = 3;
 const PER_WORKER = 300;
-const PLAIN_WRITES = 2000;
+const PLAIN_PER_WORKER = 500;
+const PLAIN_WRITES = PLAIN_PER_WORKER * (WORKERS + 1);
 
 function rate(operations, milliseconds) {
 	return `${((operations / milliseconds) * 1000).toFixed(0)} op/s`;
@@ -51,11 +52,17 @@ describe('Benchmark: record-lock issuance across workers', function () {
 
 	function request(worker, message, replyType) {
 		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				worker.off('message', onMessage);
+				reject(new Error(`worker timed out waiting for ${replyType}`));
+			}, 120_000).unref();
 			const onMessage = (reply) => {
 				if (reply.type === 'error') {
+					clearTimeout(timer);
 					worker.off('message', onMessage);
 					reject(Object.assign(new Error(reply.message), { statusCode: reply.statusCode }));
 				} else if (reply.type === replyType) {
+					clearTimeout(timer);
 					worker.off('message', onMessage);
 					resolve(reply);
 				}
@@ -87,17 +94,23 @@ describe('Benchmark: record-lock issuance across workers', function () {
 		return elapsed;
 	}
 
-	async function plainWrites() {
+	async function plainWrites(phase) {
+		const prefix = `${recordId}-plain-${phase}`;
 		const start = performance.now();
-		for (let index = 0; index < PLAIN_WRITES; index++)
-			await LockTable.put({ id: `${recordId}-plain-${index}`, n: index });
+		const parallel = workers.map((worker) =>
+			request(worker, { type: 'plain', prefix, count: PLAIN_PER_WORKER }, 'plained')
+		);
+		for (let index = 0; index < PLAIN_PER_WORKER; index++)
+			await LockTable.put({ id: `${prefix}-main-${index}`, n: index });
+		await Promise.all(parallel);
 		return performance.now() - start;
 	}
 
 	it('reports multi-worker lock and ordinary-save throughput before and after a strict claim', async function () {
 		const warm = await lockedWrites();
+		await plainWrites('warm');
 		const beforeLock = await lockedWrites();
-		const beforePlain = await plainWrites();
+		const beforePlain = await plainWrites('before');
 		const sourceContext = { source: {}, timestamp: Date.now() + 1000 };
 		await transaction(sourceContext, async () => {
 			const record = await LockTable.getResource(recordId, sourceContext);
@@ -106,20 +119,31 @@ describe('Benchmark: record-lock issuance across workers', function () {
 				nodeId: getIdOfRemoteNode('record-lock-bench-peer', LockTable.auditStore),
 			});
 		});
-		await transaction(async () => LockTable.lock(recordId));
+		const claimStart = performance.now();
+		await transaction(async () => {
+			const record = await LockTable.lock(recordId);
+			record.set('n', 1);
+			await record.save();
+		});
+		const firstPostClaimMs = performance.now() - claimStart;
 		const afterLock = await lockedWrites();
-		const afterPlain = await plainWrites();
+		const afterPlain = await plainWrites('after');
 		const strictCeiling = readLocalIssuanceCeiling(LockTable.auditStore);
 		console.log('');
 		console.log(`  warm-up: ${warm.toFixed(0)} ms`);
+		console.log(`  first post-claim lock+save (with durable ceiling flush): ${firstPostClaimMs.toFixed(2)} ms`);
 		console.log(
 			`  ${WORKERS + 1} workers, ${PER_WORKER * (WORKERS + 1)} lock writes before claim: ${rate(PER_WORKER * (WORKERS + 1), beforeLock)} (${beforeLock.toFixed(0)} ms)`
 		);
 		console.log(
 			`  ${WORKERS + 1} workers, ${PER_WORKER * (WORKERS + 1)} lock writes after claim:  ${rate(PER_WORKER * (WORKERS + 1), afterLock)} (${afterLock.toFixed(0)} ms)`
 		);
-		console.log(`  ordinary puts before claim: ${rate(PLAIN_WRITES, beforePlain)} (${beforePlain.toFixed(0)} ms)`);
-		console.log(`  ordinary puts after claim:  ${rate(PLAIN_WRITES, afterPlain)} (${afterPlain.toFixed(0)} ms)`);
+		console.log(
+			`  ${WORKERS + 1} workers, ${PLAIN_WRITES} ordinary puts before claim: ${rate(PLAIN_WRITES, beforePlain)} (${beforePlain.toFixed(0)} ms)`
+		);
+		console.log(
+			`  ${WORKERS + 1} workers, ${PLAIN_WRITES} ordinary puts after claim:  ${rate(PLAIN_WRITES, afterPlain)} (${afterPlain.toFixed(0)} ms)`
+		);
 		console.log(`  strict ceiling: ${strictCeiling}`);
 	});
 });
