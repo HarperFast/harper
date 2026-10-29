@@ -53,6 +53,15 @@ A handful of design points are non-obvious and easy to break:
   request flood. A fixed lifetime for anonymous sessions would bound that too, at the cost of breaking every
   long-lived anonymous client.
 
+  The bucket is **per worker thread**, like every MCP rate limit (in-memory, not shared across workers):
+  `initializePerSecond` and `initializeBurst` bound one worker. A client opening fresh connections that the OS
+  spreads over the application profile's `threads.count` workers gets up to that many times the configured
+  figure (5 per worker × 4 workers = 20 admitted at `initializeBurst: 5`); one reused connection stays on one
+  worker and gets the configured figure. Dividing the config by `threads.count` was rejected: it assumes an
+  even spread, which the exclusive operations-API listener and macOS binds (`noReusePort`, `server/http.ts`)
+  do not give, and it turns `initializeBurst: 50` into one token per worker at 32 threads, so a client reusing
+  one connection would get a 429 on its second session.
+
 - **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
   application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change
   ITC events — both of which fire while the `@table` classes register, **before** the `jsResource` plugin

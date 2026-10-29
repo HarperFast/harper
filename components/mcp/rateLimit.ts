@@ -11,7 +11,7 @@
  *     trivially cycled by an anonymous client (initialize → call → drop
  *     session → repeat); the client bucket survives that loop.
  *   - initializePerSecond / initializeBurst (default ON): session creation
- *     (`initialize`) per client identity. Each session is a persisted row held
+ *     (`initialize`) per client identity and per worker. Each session is a persisted row held
  *     for the idle timeout, so unthrottled creation is a disk-exhaustion vector
  *     on the anonymous application profile.
  *   - identityHeader (#1610): identity is the socket IP by default; proxied
