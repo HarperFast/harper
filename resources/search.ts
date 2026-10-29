@@ -450,7 +450,7 @@ export class CandidateKeySet {
 	#zero = false;
 	#negativeZero = false;
 	add(primaryKey: Id): void {
-		if (typeof primaryKey !== 'string') primaryKey = storedSpelling(primaryKey);
+		if (typeof primaryKey === 'object' || typeof primaryKey === 'bigint') primaryKey = storedSpelling(primaryKey);
 		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
 			this.#byValue.add(primaryKey);
 		else if (primaryKey === 0) {
@@ -459,11 +459,11 @@ export class CandidateKeySet {
 		} else this.#encoded.add(writeKeyId(primaryKey));
 	}
 	has(primaryKey: Id): boolean {
-		if (typeof primaryKey !== 'string') primaryKey = storedSpelling(primaryKey);
+		if (typeof primaryKey === 'object' || typeof primaryKey === 'bigint') primaryKey = storedSpelling(primaryKey);
 		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
 			return this.#byValue.has(primaryKey);
 		if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
-		return this.#encoded.has(writeKeyId(primaryKey));
+		return this.#encoded.size > 0 && this.#encoded.has(writeKeyId(primaryKey));
 	}
 	addIfAbsent(primaryKey: Id): boolean {
 		const size = this.size;
@@ -491,7 +491,6 @@ function storedSpelling(primaryKey: Id): Id {
 	return typeof element === 'string' ? element : primaryKey;
 }
 
-/** Matches a primary key by stored identity, as a primary-store lookup of `value` would. */
 function primaryKeyEquals(value: Id): (primaryKey: Id) => boolean {
 	const keys = new CandidateKeySet();
 	keys.add(value);
@@ -1920,27 +1919,30 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(attribute, (recordValue) => recordValue?.toString().endsWith(value));
 			break;
 		case 'starts_with': {
-			// a non-string primary key matches by its stored bytes: the set the primary-store prefix scan reads
 			const prefix = String(value);
+			// a composite primary key matches by its stored bytes: the set the primary-store prefix scan reads
 			const encodedPrefix = isPrimaryKey && prefix ? (writeKeyId(prefix) as string) : undefined;
 			baseFilter = attributeComparator(
 				attribute,
-				(recordValue) =>
-					typeof recordValue === 'string'
-						? recordValue.startsWith(prefix)
-						: encodedPrefix !== undefined &&
-							recordValue != null &&
-							(writeKeyId(recordValue) as string).startsWith(encodedPrefix),
+				(recordValue) => {
+					if (typeof recordValue === 'string') return recordValue.startsWith(prefix);
+					if (!isPrimaryKey || !Array.isArray(recordValue)) return false;
+					return encodedPrefix === undefined || (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
+				},
 				true
 			);
 			break;
 		}
-		case 'prefix':
+		case 'prefix': {
 			if (!Array.isArray(value)) value = [value];
 			else if (value[value.length - 1] == null) value = value.slice(0, -1);
+			// the primary-store scan reads [...value, null] up to [...value, MAXIMUM_KEY]
+			const encodedPrefix = isPrimaryKey && value.length > 0 ? (writeKeyId(value) as string) + '\x00' : undefined;
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
+					if (encodedPrefix !== undefined)
+						return recordValue != null && (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
 					if (!Array.isArray(recordValue)) return false;
 					for (let i = 0, l = value.length; i < l; i++) {
 						if (recordValue[i] !== value[i]) return false;
@@ -1950,6 +1952,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				true
 			);
 			break;
+		}
 		case 'between':
 		case 'gele':
 		case 'gtlt':
@@ -2048,7 +2051,6 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		allowObjectMatching?: boolean
 	) {
 		let thresholdRemainingMisses: number;
-		// a primary key is one value, so a composite key is never tested element by element
 		allowObjectMatching ||= isPrimaryKey;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index

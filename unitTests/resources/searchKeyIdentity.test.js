@@ -160,7 +160,16 @@ describe('search key identity and the "..." between alias', () => {
 	describe('primary-key conditions on every route a plan can take', () => {
 		let Composite;
 		let Numeric;
-		const all = [['a\x00b', 'c'], ['a', 'b\x00c'], ['solo'], ['t', 7], ['t', '7'], ['tenant', 'item'], ['x', 'tenant']];
+		const all = [
+			['a\x00b', 'c'],
+			['a', 'b\x00c'],
+			['n', 5n, 'x'],
+			['solo'],
+			['t', 7],
+			['t', '7'],
+			['tenant', 'item'],
+			['x', 'tenant'],
+		];
 		const allBut = (...excluded) => all.filter((id) => !excluded.some((other) => compareKeys(id, other) === 0));
 		// the first route is the store's own answer: a key lookup, key range or key scan
 		const routes = (keyRange) => ({
@@ -296,6 +305,11 @@ describe('search key identity and the "..." between alias', () => {
 				],
 			],
 			[{ attribute: 'id', comparator: 'starts_with', value: 'ten' }, [['tenant', 'item']]],
+			[{ attribute: 'id', comparator: 'starts_with', value: 'so' }, [['solo']]],
+			[{ attribute: 'id', comparator: 'starts_with', value: '' }, all],
+			[{ attribute: 'id', comparator: 'prefix', value: ['solo'] }, []],
+			[{ attribute: 'id', comparator: 'prefix', value: ['n', 5] }, [['n', 5n, 'x']]],
+			[{ attribute: 'id', value: ['n', 5, 'x'] }, [['n', 5n, 'x']]],
 		]) {
 			it(`${inspect(condition)} matches the same composite keys on every route`, async () => {
 				for (const [route, query] of Object.entries(compositeRoutes)) {
