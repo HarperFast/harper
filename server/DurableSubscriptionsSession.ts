@@ -1049,7 +1049,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				state.received = replaced.received;
 				state.receivedRuns = replaced.receivedRuns;
 				state.receivedThrough = replaced.receivedThrough;
-			} else this.forgetTopic(replaced);
+			} else {
+				this.forgetTopic(replaced);
+				lackReceipts(state, replaced);
+			}
+			lackReceipts(state, { prunedThrough: replaced.prunedThrough });
 		}
 		state.subscription = subscription;
 		if (subscription.progress === undefined) state.keysPerEntry = logKeysPerEntry(subscription.topic);
@@ -1518,7 +1522,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			// a checkpoint replay revisits receipts below the scalar, so once one is certified only its floor prunes them
 			if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) {
 				this.pruneReceipts(state, next);
-				state.prunedThrough = next;
+				if (!(state.prunedThrough >= next)) state.prunedThrough = next;
 			}
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
@@ -1531,6 +1535,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (checkpoint && !sameCheckpoint(checkpoint, state.entry.checkpoint)) {
 				if (state.entry.checkpoint === undefined) {
 					// a replay from it would resend what lacks a receipt, or what preceded the topic: it waits for floors above
+					lackReceipts(state, { prunedThrough: state.receivedThrough });
 					if (!(checkpointFloor(checkpoint) > state.prunedThrough)) continue;
 					// compacted against a position an origin can commit below, so a replay must not trust it
 					state.receivedThrough = undefined;
@@ -1640,10 +1645,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			// QoS 1 receipts at or below the scalar are read only by a checkpoint replay on another node, so, like in-flight
 			// QoS 2 deliveries, only the final save writes them
 			const kept = qos === 1 && !this.terminated ? startTime : undefined;
-			const received = state.received && [...state.received.values()].filter(([key]) => !(key <= kept));
-			if (received?.length > 0) saved.received = received;
-			const runs = state.receivedRuns && [...state.receivedRuns].filter(([key]) => !(key <= kept));
-			if (runs?.length > 0) saved.receivedRuns = runs;
+			for (const identity of state.received?.values() ?? []) {
+				if (!(identity[0] <= kept)) (saved.received ??= []).push(identity);
+			}
+			for (const run of state.receivedRuns ?? []) if (!(run[0] <= kept)) (saved.receivedRuns ??= []).push(run);
 			if (state.receivedThrough !== undefined) saved.receivedThrough = state.receivedThrough;
 			if (qos === 2) {
 				const inFlight: [...DeliveryIdentity, number, string?][] = [...(state.resend?.values() ?? [])];
@@ -1809,6 +1814,22 @@ class SessionEndedError extends ClientError {
 const SEAL_WAIT = 5_000;
 function sealWait() {
 	return new Promise<void>((resolve) => setTimeout(resolve, SEAL_WAIT).unref());
+}
+
+/** Raises the topic's missing-receipt bound over `from`'s bound and every receipt `from` holds. */
+function lackReceipts(
+	state: TopicState,
+	from: Pick<TopicState, 'prunedThrough'> & Partial<Pick<TopicState, 'received' | 'receivedRuns' | 'receivedThrough'>>
+) {
+	let through = state.prunedThrough;
+	const raise = (key: number | undefined) => {
+		if (key !== undefined && !(through >= key)) through = key;
+	};
+	raise(from.prunedThrough);
+	raise(from.receivedThrough);
+	for (const [key] of from.received?.values() ?? []) raise(key);
+	for (const key of from.receivedRuns?.keys() ?? []) raise(key);
+	state.prunedThrough = through;
 }
 
 function sameCheckpoint(a: SubscriptionCheckpoint, b: SubscriptionCheckpoint | undefined): boolean {
