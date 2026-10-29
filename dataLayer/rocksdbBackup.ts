@@ -91,6 +91,18 @@ export class BackupNotFoundError extends ClientError {
 	}
 }
 
+/** A restore that named no source fell back to the latest backup; when there is none, say what it could name. */
+export function restoreSourceHint(
+	error: unknown,
+	databaseName: string,
+	requestedBackupId: number | undefined
+): unknown {
+	if (requestedBackupId !== undefined || !(error instanceof BackupNotFoundError)) return error;
+	return new BackupNotFoundError(
+		`Database '${databaseName}' has no backup to restore. To restore a get_backup archive, pass file=<path> (or url= or s3=); to restore a managed backup, take one with create_backup first.`
+	);
+}
+
 export class BackupInProgressError extends ClientError {
 	constructor(message: string) {
 		super(message, 409);
@@ -617,12 +629,17 @@ export async function validateRestoreBackup(request: any) {
 	if (fromArchive) validateArchiveSource(request);
 	if (resume || cancel) return;
 	if (!fromArchive) {
-		await resolveCompleteBackup(
-			backupDirForDatabase(databaseName),
-			request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
-			databaseName,
-			acceptIncompatible
-		);
+		const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
+		try {
+			await resolveCompleteBackup(
+				backupDirForDatabase(databaseName),
+				requestedBackupId,
+				databaseName,
+				acceptIncompatible
+			);
+		} catch (error) {
+			throw restoreSourceHint(error, databaseName, requestedBackupId);
+		}
 	}
 	// Only a loaded database that actually has tables can be validated as a single-root RocksDB
 	// store here (an empty/tableless database has no table to resolve a root store from, and an

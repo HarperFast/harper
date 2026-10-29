@@ -415,14 +415,19 @@ export async function resolveRestoreSource(source: {
 		}
 		return { backupId: STAGED_TREE_BACKUP_ID, manifest: staged.manifest, waived: staged.waived };
 	}
-	const { resolveCompleteBackup } = await import('./rocksdbBackup.ts');
+	const { resolveCompleteBackup, restoreSourceHint } = await import('./rocksdbBackup.ts');
 	const { assertBlobSnapshotRestorable } = await import('./blobBackup.ts');
-	const selected = await resolveCompleteBackup(
-		source.backupDir,
-		source.requestedBackupId,
-		source.sourceDatabase,
-		source.acceptIncompatible
-	);
+	let selected: Awaited<ReturnType<typeof resolveCompleteBackup>>;
+	try {
+		selected = await resolveCompleteBackup(
+			source.backupDir,
+			source.requestedBackupId,
+			source.sourceDatabase,
+			source.acceptIncompatible
+		);
+	} catch (error) {
+		throw restoreSourceHint(error, source.sourceDatabase, source.requestedBackupId);
+	}
 	await assertBlobSnapshotRestorable(source.backupDir, selected.backupId, source.blobRoots);
 	return selected;
 }

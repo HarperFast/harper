@@ -279,6 +279,24 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 		assert.strictEqual(args[7], './dev.tar.gz');
 	});
 
+	for (const [command, message] of [
+		['restore_backup', /'blah' is not one; to restore an archive, pass file=blah/],
+		['delete_backup', /'blah' is not one$/],
+	]) {
+		it(`refuses a bare word after ${command} instead of dropping it`, async () => {
+			cliCredentialsModule.loadCredentials = () => null;
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			process.argv = ['node', 'harper', command, 'blah'];
+			await assert.rejects(runBackupCommand(command), (error) => {
+				assert.strictEqual(error.statusCode, 400);
+				assert.match(error.message, message);
+				return true;
+			});
+			assert.deepStrictEqual(calls, { offline: false, api: false });
+		});
+	}
+
 	for (const field of [
 		'url=https://example.com/a.tar.gz',
 		'cancel=true',

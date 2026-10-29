@@ -46,6 +46,18 @@ export async function runBackupCommand(command: string): Promise<void> {
 	// (cliOperations does the same on its first line).
 	dotenv.config();
 	const request = buildRequest();
+	// the parser drops a bare word after the command, which would silently turn `restore_backup x.tar.gz`
+	// into a restore of the latest backup
+	const [stray] = process.argv
+		.slice(2)
+		.filter((arg) => !arg.includes('=') && !arg.startsWith('-'))
+		.slice(1);
+	if (stray !== undefined) {
+		throw new ClientError(
+			`harper ${command} takes key=value arguments, and '${stray}' is not one` +
+				(command === OPERATIONS_ENUM.RESTORE_BACKUP ? `; to restore an archive, pass file=${stray}` : '')
+		);
+	}
 	const databaseName = request.database || 'data';
 
 	// We print results here (not by returning a string) so the CLI's top-level handler doesn't

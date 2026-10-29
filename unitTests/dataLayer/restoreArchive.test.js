@@ -1491,7 +1491,10 @@ describe('restore_backup archive validation', function () {
 			});
 			await Items.put({ id: 1 });
 			await Items.primaryStore.rootStore.flush();
-			await assert.rejects(validateRestoreBackup({ ...SU, database: name }), (error) => error.statusCode === 404);
+			await assert.rejects(
+				validateRestoreBackup({ ...SU, database: name }),
+				(error) => error.statusCode === 404 && /has no backup to restore.*pass file=<path>/.test(error.message)
+			);
 			await createBackup({ database: name });
 			await validateRestoreBackup({ ...SU, database: name });
 		}
