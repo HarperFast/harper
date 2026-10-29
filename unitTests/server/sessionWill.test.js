@@ -3,7 +3,9 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, databases } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { contextStorage } = require('#src/resources/transaction');
-const { getSession } = require('#src/server/DurableSubscriptionsSession');
+const { getSession, replayLastWill } = require('#src/server/DurableSubscriptionsSession');
+const { server } = require('#src/server/Server');
+const { localPrincipal } = require('#src/security/user');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
@@ -146,6 +148,24 @@ describe('MQTT last will authorization', function () {
 			undefined,
 			'a role that may not publish does not publish'
 		);
+	});
+
+	it('stores a local connection’s will without a stored user, and replays it after a restart as the local principal', async () => {
+		const { T, name } = topicTable();
+		await connectWithWill(name, localPrincipal(), 'local-will', 9);
+		const [row] = await willRows('local-will');
+		assert.deepStrictEqual(row.user, { username: 'local', _localPrincipal: true });
+		const getUser = server.getUser;
+		server.getUser = () => {
+			throw new Error('a local will must not be resolved by name');
+		};
+		try {
+			await replayLastWill(row);
+		} finally {
+			server.getUser = getUser;
+		}
+		assert.strictEqual((await T.get('local-will'))?.value, 9);
+		assert.deepStrictEqual(await willRows('local-will'), []);
 	});
 
 	it('settles the will row the same under an ambient context that requests authorization', async () => {

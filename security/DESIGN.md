@@ -60,7 +60,8 @@ a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`
 `registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
 `list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
 principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
-`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A
+`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`** (and
+`isLocalPrincipal`, below). A
 user _created after minting_ with a colliding name is therefore inert at every current site; the
 residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
 
@@ -242,6 +243,16 @@ A role's `component_deploy` grant (harper#3046) reaches `deploy_component`, `dro
 ## The password hash function and token lifetimes are read when used, never at module load (`security/user.ts`, `security/tokenAuthentication.ts`, `utility/password.ts`)
 
 `harper run` on an empty root evaluates these modules (and `installer.ts`) before `install()` writes the config, and `install()` creates the admin before the startup phase (`runStartup()`) runs, so no startup hook can fix the admin's hash: `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`. Validation uses the stored value. `password.hash` defaults to the configured function; `password.validate` defaults to SHA-256 whatever is configured, because the algorithm of a stored hash is not policy and the refresh-token check validates its SHA-256 hash with that default (a config-driven default returns a Promise there, and `!Promise` accepts a superseded token). Token lifetimes are read per mint, so they need no startup hook. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
+
+## Local trust is a principal, not a stored user (`security/user.ts`, `security/auth.ts`)
+
+A request trusted by its transport — `authentication.authorizeLocal` from 127.x/::1, the operations domain socket (`bypassLocalAuth`), a loopback MQTT connection, test mode's `bypassAuth()` — runs as `localPrincipal()`: a fixed super user named `local` that no stored record backs, so admitting it reads no record and works with no users at all.
+
+- **Recognized by its marker, never its name.** `isLocalPrincipal` checks `_localPrincipal: true`, which only trusted code sets: `userView` copies no such field from a record, and the token, bearer-validator, OIDC and impersonation paths build users from explicit fields. A string, not a symbol, because the Bun/uWS fallback forwards `request.user` as JSON and the MQTT will row stores it. `add_user` refuses the name; a stored `local` that predates that is an ordinary user.
+- **Never resolvable by name, so never portable.** Local trust belongs to the connection. A session row never names the principal (`session.update` drops it), and no token is minted for it: a credential-free `create_authentication_tokens` from it mints for the first active stored user whose role has the `super_user` flag (`getSuperUser`), or fails with 409. A by-name rehydration site checks `isLocalPrincipal` first: the MQTT will replay rebuilds the principal from the marker; live-subscription re-authorization and MCP list_changed skip it, since no record change can revoke it.
+- **Each call is a separate view**, as with `userView`: fresh user, `role` and `permission` objects; the shared system-table tree is frozen.
+
+Enforced by `unitTests/security/localPrincipal.test.js` and `integrationTests/security/local-principal-token-mint.test.ts`.
 
 ## Named component children are identified by lifetime (`security/jsLoader.ts`, `security/spawnPidFile.ts`)
 
