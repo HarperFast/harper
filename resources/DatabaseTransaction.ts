@@ -41,7 +41,9 @@ import {
 } from './longLivedTransactions.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-const readTransactionOwners = new WeakMap<ReadTransaction, DatabaseTransaction>();
+// Why not a WeakMap: resources/DESIGN.md, "RocksDB range activity and snapshot expiration"
+const READ_OWNER = Symbol('readOwner');
+type OwnedHandle = { [READ_OWNER]?: DatabaseTransaction };
 // Read options for a rotated generation's native transactions; shared because they never vary.
 const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
 const ONCE = Object.freeze({ once: true });
@@ -582,7 +584,7 @@ class ReadSnapshotExpiredError extends ServerError {
 }
 
 export function getReadTransactionGuard(transaction: ReadTransaction): (() => void) | undefined {
-	const owner = readTransactionOwners.get(transaction);
+	const owner = (transaction as OwnedHandle | undefined)?.[READ_OWNER];
 	if (!owner) return;
 	return function checkActive() {
 		if (owner.timedOut) throw transactionOpenTooLongError();
@@ -593,7 +595,7 @@ export function getReadTransactionGuard(transaction: ReadTransaction): (() => vo
 }
 
 export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
-	const owner = readTransactionOwners.get(transaction);
+	const owner = (transaction as OwnedHandle | undefined)?.[READ_OWNER];
 	if (!owner) return createRange();
 	const checkActive = getReadTransactionGuard(transaction)!;
 	checkActive();
@@ -1174,7 +1176,7 @@ export class DatabaseTransaction implements Transaction {
 	// Monitor state is not ownership state: it stays with `trackedTxns.add` in getReadTxn().
 	private attachOwnedTransaction(transaction: RocksTransactionWithRetry): void {
 		this.transaction = transaction;
-		readTransactionOwners.set(transaction, this);
+		(transaction as OwnedHandle)[READ_OWNER] = this;
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
 		this.readTxnGeneration++;
@@ -2925,7 +2927,7 @@ export class DatabaseTransaction implements Transaction {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.hasSavedWriteForHandle(transaction, isImmediateCommit) || hasDurableLog(transaction)) {
 							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
-							readTransactionOwners.delete(transaction);
+							(transaction as OwnedHandle)[READ_OWNER] = undefined;
 							// Re-fence before submitting: the loop above skips operations already marked saved, so
 							// save()'s own check cannot see a holder that stalled between staging and commit. The
 							// retry/replay path re-saves every operation and is fenced there instead. Lease expiry
