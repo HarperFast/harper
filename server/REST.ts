@@ -14,7 +14,7 @@ import { addAnalyticsListener, recordAction, recordActionBinary } from '../resou
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { Resources } from '../resources/Resources.ts';
-import { Resource, WRITE_CONDITION, missingMethod, allowedMethods } from '../resources/Resource.ts';
+import { Resource, WRITE_CONDITION, missingMethod, allowedMethods, cloneRequestTarget } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders, addVaryHeader } from '../server/serverHelpers/Headers.ts';
@@ -206,23 +206,20 @@ function conditionRecordId(resource, target: RequestTarget, request) {
 	if (target.isCollection || target.select || target.id == null) return;
 	if (resource.directURLMapping) return target.toString().slice(1);
 	if (typeof target.id !== 'string') return target.id;
-	// The verb's own dispatch parses this target again (applyContext), so whatever parsePath writes is undone here
+	// The verb's own dispatch parses this target again (applyContext), so parsePath only sees a copy of the target
 	const { requestedContentType } = request;
-	const { id: rawId, property: rawProperty } = target;
 	try {
-		const parsed = resource.parsePath(rawId, request, target);
+		const probe = cloneRequestTarget(target);
+		const parsed = resource.parsePath(target.id, request, probe);
 		const structured = parsed?.id !== undefined;
 		const id = structured ? parsed.id : parsed;
-		const property = structured ? parsed.property : target.property;
+		const property = structured ? parsed.property : probe.property;
 		if (property !== undefined || id == null || id === '') return;
 		return resource.coerceId(id);
 	} catch {
 		return;
 	} finally {
 		request.requestedContentType = requestedContentType;
-		target.id = rawId;
-		if (rawProperty === undefined) delete target.property;
-		else target.property = rawProperty;
 	}
 }
 
