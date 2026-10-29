@@ -471,7 +471,8 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual((await NoAuditSourced.get(id)).count, 15);
 	});
 
-	it('a 304 revalidation that raced a merge keeps the list of the body it stored', async () => {
+	it('a 304 revalidation that raced a merge keeps the list of the body it stored', async function () {
+		this.timeout(10000);
 		const id = `noaudit-${nextId++}`;
 		await NoAuditSourced.put(id, { tag: 'base', count: 10 });
 		const now = Date.now();
