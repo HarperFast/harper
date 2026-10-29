@@ -59,6 +59,14 @@ Static methods are protocol entry points (each wrapped in `transactional()`); in
 
 **A bare nullish id is never a collection target for `get` or `delete`.** `transactional()` throws `ClientError` 400 synchronously for `Class.get()` / `Class.delete()` whose first argument is a bare `null`/`undefined` (harper#1837; the delete used to remove every record). Collection delete takes an object target. Known gap, not a contract: an object whose `id` is nullish (`{ id: undefined }`) is still a collection target and deletes every record. A function-form `defineResource` object never passes through `transactional()`, so its `delete` handler receives the `undefined` target. Caller shapes are pinned in `unitTests/resources/deleteNullResourceApi.test.js`.
 
+---
+
+## A static get by a primitive id skips instance dispatch only when nothing could observe it (`Resource.ts` `registerPrimitiveIdGet`, `Table.ts`)
+
+`Table.get(id)` with a string or number id, inside an open joinable transaction, is served by the getter `makeTable()` registers for that exact class: no `RequestTarget`, no `TableResource`. It runs the same `loadRecord()` closure function `_loadRecord` runs (validation, read transaction, `loadLocalRecord`, residency/source resolution), so a change to loading reaches both routes. Equivalence rests on the gate in the registered getter: every extension point the instance dispatch would call is compared, per call, to the original captured before application code can replace it (`Resource.getResource` in its own module), and contexts that change the dispatch (`authorize`, `onlyIfCached`, `isCollection`, a write condition, a context that is itself a provider, no open transaction) decline, as does a table after `cleanup()`. **When the instance dispatch starts calling a new hook for a get, add it to that gate.** A subclass never matches the per-class registration (its constructor may have effects). A read that goes asynchronous hands a loaded instance back to the general dispatch, so authorization and the instance `get` still run after the load, as before. Pinned in `unitTests/resources/tableGetPrimitiveId.test.js`.
+
+---
+
 ## `Table.ts` — section map
 
 One giant `makeTable()` factory that returns a `TableResource extends Resource` class. The file is divided into the sections below; each is anchored by a `// #section: <name>` marker — grep for the marker (or use VS Code's go-to-symbol within the section) to land directly.

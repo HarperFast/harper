@@ -641,6 +641,33 @@ _assignPackageExport('Resource', Resource);
  */
 export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
 
+/** @internal Captured at load, before application code can replace it. */
+export const defaultGetResource = Resource.getResource;
+
+/**
+ * @internal Registered per exact class, so subclasses never match. On NOT_HANDLED the general dispatch
+ * continues with the context resolved for the getter, so a getter must not consume its arguments.
+ */
+type PrimitiveIdGet = (id: string | number, context: Context, resourceOptions: any) => any;
+const primitiveIdGets = new WeakMap<object, PrimitiveIdGet>();
+/** @internal */
+export const NOT_HANDLED = Symbol('not-handled');
+/** @internal */
+export function registerPrimitiveIdGet(resourceClass: object, get: PrimitiveIdGet): void {
+	primitiveIdGets.set(resourceClass, get);
+}
+/** @internal */
+export function primitiveIdGetFor(resourceClass: object): PrimitiveIdGet | undefined {
+	return primitiveIdGets.get(resourceClass);
+}
+/** @internal */
+export class LoadingResource {
+	loaded: Promise<ResourceInterface>;
+	constructor(loaded: Promise<ResourceInterface>) {
+		this.loaded = loaded;
+	}
+}
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -717,6 +744,8 @@ function transactional(
 	const hasContent = options.hasContent;
 	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
 	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
+	// a primitive-id getter takes the second argument as the context, as only a body-less get does
+	const isGet = options.method === 'get' && hasContent === false;
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
@@ -726,6 +755,21 @@ function transactional(
 		// An absent argument, not a context — and not this call's data either.
 		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
 		if (isReleasedTransaction(context)) context = undefined;
+		let loadingResource: Promise<ResourceInterface> | undefined;
+		if (isGet && !context && (typeof idOrQuery === 'string' || typeof idOrQuery === 'number')) {
+			const getPrimitiveId = primitiveIdGets.get(this);
+			if (getPrimitiveId) {
+				context = dataOrContext
+					? (dataOrContext as any).getContext?.() || dataOrContext
+					: (contextStorage.getStore() ?? {});
+				dataOrContext = undefined;
+				if (isJoinableScope(context.transaction)) {
+					const result = getPrimitiveId(idOrQuery, context, options);
+					if (result instanceof LoadingResource) loadingResource = result.loaded;
+					else if (result !== NOT_HANDLED) return promiseNormalize(result, options as any);
+				}
+			}
+		}
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (hasContent) {
 			// for put, post, patch, publish, query
@@ -927,7 +971,7 @@ function transactional(
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
 		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut || context?.transaction?.disconnected) {
 			// we are already in a transaction (or it was poisoned and must fail), proceed
-			const resource = this.getResource(query, context, resourceOptions);
+			const resource = loadingResource ?? this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
 				: promiseNormalize(authorizeActionOnResource(resource), resourceOptions);
