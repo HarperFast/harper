@@ -5666,7 +5666,7 @@ export function makeTable(options): TableResourceClass {
 							if (ownFieldNames) {
 								// the write stores the instance's own fields, so a converted value has to land on it
 								for (const name of ownFieldNames) {
-									if (this[name] !== recordUpdate[name] && !Reflect.set(this, name, recordUpdate[name]))
+									if (!Object.is(this[name], recordUpdate[name]) && !Reflect.set(this, name, recordUpdate[name]))
 										throw new ClientError(`Property ${name} is read-only, so its value cannot be converted`);
 								}
 							}
