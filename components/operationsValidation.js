@@ -371,8 +371,7 @@ const ENCRYPTED_OPERATION_SCHEMA = Joi.object({
 });
 
 /**
- * Validate the outer shape of an encrypted_operation request. Lengths are checked by the handler
- * before this runs, so the pattern never scans an oversized envelope.
+ * Lengths are checked by the handler before this runs, so the pattern never scans an oversized envelope.
  * @param req
  * @returns {*}
  */

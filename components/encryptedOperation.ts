@@ -104,8 +104,9 @@ class SealedRefusal extends Error {
 	}
 }
 
-// Nonce -> monotonic expiry. Per process: a restart forgets it (see components/DESIGN.md).
-const reservedNonces = new Map<string, number>();
+// Nonce -> reservation. Per process: a restart forgets it (see components/DESIGN.md).
+const reservedNonces = new Map<string, { expiry: number; principal: string }>();
+const reservationsByPrincipal = new Map<string, number>();
 let monotonicNow = () => performance.now();
 let wallNow = () => Date.now();
 
@@ -116,6 +117,7 @@ export function _setClocksForTest(clocks?: { monotonic?: () => number; wall?: ()
 
 export function _resetReservedNoncesForTest(limit = 100_000): void {
 	reservedNonces.clear();
+	reservationsByPrincipal.clear();
 	maxReservedNonces = limit;
 }
 
@@ -187,14 +189,16 @@ export async function encryptedOperation(req: any) {
 	if (Math.abs(now - header.ts) > maxAge) {
 		throw new AdmissionRefusal('The sealed request is outside the accepted time window', 400, { server_time: now });
 	}
-	reserveNonce(header.nonce, maxAge);
+	// No maxAge, even one raised later, admits the envelope once the wall clock passes ts + MAX_MAX_AGE_MS.
+	reserveNonce(header.nonce, header.ts + MAX_MAX_AGE_MS - now, req.hdb_user?.username ?? '');
 
 	const responseKey = decodeBase64(header.rk, RESPONSE_KEY_BYTES);
 	let answer: { status: number; plaintext: Buffer };
 	try {
 		answer = await runSealedOperation(req, header, mode, kid, responseKey, maxSize, bypassAuth);
-	} catch {
-		answer = sealedResult({ status: 500, body: { error: 'The sealed operation failed' } });
+	} catch (error) {
+		operationLog.error(`encrypted_operation: unexpected ${error?.constructor?.name ?? typeof error} (sealed request)`);
+		answer = sealedResult({ status: 500, body: { error: 'The sealed operation failed' } }, maxSize);
 	}
 	const sealed = sealResponse(answer.plaintext, responseKey, header.nonce);
 	return mode === 'fields' ? { status: answer.status, encrypted_response: sealed } : { encrypted_response: sealed };
@@ -244,26 +248,42 @@ function openHeader(envelope: string, custody: SecretCustody, mode: SealedMode) 
 }
 
 /** Reserve before anything runs and never release, so a duplicate is refused even if the first failed. */
-function reserveNonce(nonce: string, maxAge: number): void {
+function reserveNonce(nonce: string, admissibleFor: number, principal: string): void {
 	const now = monotonicNow();
 	pruneReservedNonces(now, false);
 	if (reservedNonces.has(nonce)) throw new ClientError('This sealed request was already received', 409);
-	if (reservedNonces.size >= maxReservedNonces) {
-		// Expiries are in insertion order only while maxAge is unchanged; a full sweep reclaims the rest.
+	if (!hasReplayCapacity(principal)) {
+		// Expiries follow each envelope's ts, not insertion order; a full sweep reclaims what the front prune skipped.
 		pruneReservedNonces(now, true);
-		if (reservedNonces.size >= maxReservedNonces) {
+		if (!hasReplayCapacity(principal)) {
 			throw new ClientError('Too many sealed requests in the replay window; retry later', 503);
 		}
 	}
-	// Admitted with ts <= now + maxAge, the envelope stays fresh until ts + (any later maxAge), which is
-	// at most now + maxAge + MAX_MAX_AGE_MS; keep the nonce one millisecond past that.
-	reservedNonces.set(nonce, now + maxAge + MAX_MAX_AGE_MS + 1);
+	reservedNonces.set(nonce, { expiry: now + admissibleFor + 1, principal });
+	reservationsByPrincipal.set(principal, (reservationsByPrincipal.get(principal) ?? 0) + 1);
+}
+
+/**
+ * Past half the store, a principal may hold only an equal share of that half, so one caller flooding
+ * envelopes (even ones it may not run) leaves the other half to everyone else.
+ */
+function hasReplayCapacity(principal: string): boolean {
+	const size = reservedNonces.size;
+	if (size >= maxReservedNonces) return false;
+	if (size < maxReservedNonces / 2) return true;
+	const held = reservationsByPrincipal.get(principal) ?? 0;
+	const holders = reservationsByPrincipal.size + (held === 0 ? 1 : 0);
+	return held < maxReservedNonces / 2 / holders;
 }
 
 function pruneReservedNonces(now: number, fullSweep: boolean): void {
-	for (const [nonce, expiry] of reservedNonces) {
-		if (expiry <= now) reservedNonces.delete(nonce);
-		else if (!fullSweep) break;
+	for (const [nonce, { expiry, principal }] of reservedNonces) {
+		if (expiry <= now) {
+			reservedNonces.delete(nonce);
+			const held = reservationsByPrincipal.get(principal) - 1;
+			if (held > 0) reservationsByPrincipal.set(principal, held);
+			else reservationsByPrincipal.delete(principal);
+		} else if (!fullSweep) break;
 	}
 }
 
@@ -292,7 +312,7 @@ async function runSealedOperation(
 		checkInnerOperation(inner);
 	} catch (error) {
 		if (!(error instanceof SealedRefusal)) throw error;
-		return sealedResult({ status: error.statusCode, body: { error: error.message } });
+		return sealedResult({ status: error.statusCode, body: { error: error.message } }, maxSize);
 	}
 
 	inner.hdb_user = req.hdb_user;
@@ -305,32 +325,43 @@ async function runSealedOperation(
 		result = await dispatch.processLocalTransaction({ body: inner }, operationFunction);
 	} catch (error) {
 		const { statusCode, body } = operationErrorResponse(error);
-		return sealedResult({ status: statusCode, body });
+		return sealedResult({ status: statusCode, body }, maxSize);
 	}
 
 	if (result instanceof Readable || typeof result?.pipe === 'function') {
 		result.on?.('error', () =>
 			operationLog.warn(`encrypted_operation: a discarded result stream of '${inner.operation}' errored`)
 		);
-		result.destroy?.();
-		return sealedResult({
-			status: 406,
-			body: { error: `'${inner.operation}' returned a byte stream; use a direct connection` },
-			executed: true,
-		});
+		try {
+			result.destroy?.();
+		} catch {}
+		return sealedResult(
+			{
+				status: 406,
+				body: { error: `'${inner.operation}' returned a byte stream; use a direct connection` },
+				executed: true,
+			},
+			maxSize
+		);
 	}
 	let chunks: Buffer[] | undefined;
 	try {
 		chunks = await collectJSON(result, maxSize);
 	} catch {
-		return sealedResult({ status: 500, body: { error: 'The result could not be serialized' }, executed: true });
+		return sealedResult(
+			{ status: 500, body: { error: 'The result could not be serialized' }, executed: true },
+			maxSize
+		);
 	}
 	if (chunks === undefined) {
-		return sealedResult({
-			status: 413,
-			body: { error: `The result exceeds ${maxSize} bytes; use a direct connection` },
-			executed: true,
-		});
+		return sealedResult(
+			{
+				status: 413,
+				body: { error: `The result exceeds ${maxSize} bytes; use a direct connection` },
+				executed: true,
+			},
+			maxSize
+		);
 	}
 	return {
 		status: 200,
@@ -342,15 +373,19 @@ const SUCCESS_PREFIX = Buffer.from('{"status":200,"body":');
 const SUCCESS_SUFFIX = Buffer.from('}');
 const NULL_JSON = Buffer.from('null');
 
-function sealedResult(result: SealedResult): { status: number; plaintext: Buffer } {
-	let json: string;
+function sealedResult(result: SealedResult, maxSize: number): { status: number; plaintext: Buffer } {
+	let json: string | undefined;
+	let fallback: string | undefined;
 	try {
 		json = JSON.stringify(result);
+		if (Buffer.byteLength(json) > maxSize) fallback = `The error exceeds ${maxSize} bytes`;
 	} catch {
-		// an error body with a BigInt or a cycle
+		fallback = 'The error could not be serialized';
+	}
+	if (fallback !== undefined) {
 		json = JSON.stringify({
 			status: result.status,
-			body: { error: 'The error could not be serialized' },
+			body: { error: fallback },
 			...(result.executed ? { executed: true } : {}),
 		});
 	}
@@ -455,15 +490,14 @@ function collectJSON(result: unknown, maxSize: number): Promise<Buffer[] | undef
 		let settled = false;
 		stream.on('data', (chunk: Buffer | string) => {
 			if (settled) return;
-			const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-			size += bytes.length;
+			size += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
 			if (size > maxSize) {
 				settled = true;
 				resolve(undefined);
 				stream.destroy();
 				return;
 			}
-			chunks.push(bytes);
+			chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
 		});
 		stream.on('end', () => {
 			if (settled) return;
@@ -475,7 +509,6 @@ function collectJSON(result: unknown, maxSize: number): Promise<Buffer[] | undef
 			settled = true;
 			reject(error);
 		});
-		// JSONStream's destroy never forwards its error, so a strict serialization failure arrives as close
 		stream.on('close', () => {
 			if (settled) return;
 			settled = true;

@@ -1,9 +1,5 @@
 'use strict';
 
-// encrypted_operation (components/encryptedOperation.ts) through the real dispatch path
-// (chooseOperation + processLocalTransaction, verifyPerms included), with a real in-memory RSA keypair
-// registered as custody and throwaway inner operations registered the way server.registerOperation does.
-
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -85,7 +81,35 @@ const TEST_OPERATIONS = {
 		error.http_resp_msg = { error: 'unserializable detail', size: 10n };
 		throw error;
 	},
+	test_eo_large_error: async () => {
+		throw new ClientError('e'.repeat(8192), 422);
+	},
+	test_eo_failing_cursor: async (body) => {
+		writes.count++;
+		return failingCursor(body.value);
+	},
+	test_eo_throwing_destroy: async () => ({
+		pipe() {},
+		destroy() {
+			throw new Error('destroy failed');
+		},
+	}),
 };
+
+// Yields two rows, then fails the way a cursor does when a read goes wrong mid-stream.
+function failingCursor(message) {
+	let index = 0;
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				next: async () => {
+					if (index++ < 2) return { done: false, value: { index } };
+					throw new Error(message);
+				},
+			};
+		},
+	};
+}
 
 // Stands in for a file/blob stream: something with pipe/destroy that emits `error` after it was dropped.
 const lateErroringStream = Object.assign(new EventEmitter(), {
@@ -481,29 +505,67 @@ describe('encrypted_operation', function () {
 			await assert.rejects(call(request), { statusCode: 409 });
 		});
 
-		it('answers 503 at capacity, after a full sweep finds nothing to reclaim', async () => {
-			encryptedOperationModule._resetReservedNoncesForTest(2);
+		it('answers 503 to a caller holding its share, after a full sweep finds nothing to reclaim', async () => {
+			encryptedOperationModule._resetReservedNoncesForTest(4);
 			await call(seal({ operation: 'test_eo_echo' }).request);
 			await call(seal({ operation: 'test_eo_echo' }).request);
 			await assert.rejects(call(seal({ operation: 'test_eo_echo' }).request), { statusCode: 503 });
 		});
 
-		it('reclaims entries that expired behind a live one after maxAge was lowered', async () => {
+		it('leaves replay capacity to other callers while one floods envelopes it may not run', async () => {
+			let monotonic = 0;
+			encryptedOperationModule._setClocksForTest({ monotonic: () => monotonic });
+			encryptedOperationModule._resetReservedNoncesForTest(4);
+			const flooder = allowlisted(['encrypted_operation']);
+			const op = { operation: 'test_eo_echo' };
+			for (let index = 0; index < 2; index++) {
+				assert.strictEqual((await roundTrip(op, {}, flooder)).result.status, 403);
+			}
+			await assert.rejects(call(seal(op).request, flooder), { statusCode: 503 });
+			assert.strictEqual((await roundTrip(op)).result.status, 200);
+			assert.strictEqual(
+				(await roundTrip(op, {}, { ...SUPER_USER, username: 'third' })).result.status,
+				200,
+				'each further caller still gets a share'
+			);
+			await assert.rejects(call(seal(op).request), { statusCode: 503 }, 'the store is full');
+			monotonic += 600_001;
+			assert.strictEqual((await roundTrip(op, {}, flooder)).result.status, 403, 'expired reservations are released');
+		});
+
+		it('reclaims entries that expired behind a longer-lived one', async () => {
 			let monotonic = 0;
 			const wall = 1_800_000_000_000;
 			encryptedOperationModule._setClocksForTest({ monotonic: () => monotonic, wall: () => wall });
-			encryptedOperationModule._resetReservedNoncesForTest(3);
-			let restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 600_000);
+			encryptedOperationModule._resetReservedNoncesForTest(6);
+			const restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 600_000);
 			try {
-				await call(seal({ operation: 'test_eo_echo' }, { now: wall }).request);
-				restore();
-				restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 1_000);
+				await call(seal({ operation: 'test_eo_echo' }, { now: wall + 600_000 }).request);
 				await call(seal({ operation: 'test_eo_echo' }, { now: wall }).request);
 				await call(seal({ operation: 'test_eo_echo' }, { now: wall }).request);
-				// past the two short reservations (maxAge + 600s), short of the first one
+				// past the two reservations stamped now (ts + 600s), short of the one stamped 600s ahead
 				monotonic += 602_000;
 				const { result } = await roundTrip({ operation: 'test_eo_echo' }, { now: wall });
 				assert.strictEqual(result.status, 200);
+			} finally {
+				restore();
+			}
+		});
+
+		it('releases a nonce the moment no maxAge could admit its envelope again', async () => {
+			let clock = 0;
+			const start = 1_800_000_000_000;
+			encryptedOperationModule._setClocksForTest({ monotonic: () => clock, wall: () => start + clock });
+			const restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 600_000);
+			try {
+				const { request } = seal({ operation: 'test_eo_echo' }, { now: start - 600_000 });
+				await call(request);
+				await assert.rejects(call(request), { statusCode: 409 });
+				clock = 1;
+				await assert.rejects(call(request), {
+					statusCode: 400,
+					message: 'The sealed request is outside the accepted time window',
+				});
 			} finally {
 				restore();
 			}
@@ -723,6 +785,33 @@ describe('encrypted_operation', function () {
 			const { reply, result } = await roundTrip({ operation: 'test_eo_bigint_error' });
 			assert.deepStrictEqual(Object.keys(reply), ['encrypted_response']);
 			assert.deepStrictEqual(result, { status: 409, body: { error: 'The error could not be serialized' } });
+		});
+
+		it('bounds an error body by maxSize', async () => {
+			const restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXSIZE, 2048);
+			try {
+				const { result } = await roundTrip({ operation: 'test_eo_large_error' });
+				assert.deepStrictEqual(result, { status: 422, body: { error: 'The error exceeds 2048 bytes' } });
+			} finally {
+				restore();
+			}
+		});
+
+		it('says a result whose cursor failed mid-stream ran, rather than sealing a truncated success', async () => {
+			const before = writes.count;
+			const { result } = await roundTrip({ operation: 'test_eo_failing_cursor', value: 'cursor-failure' });
+			assert.deepStrictEqual(result, {
+				status: 500,
+				body: { error: 'The result could not be serialized' },
+				executed: true,
+			});
+			assert.strictEqual(writes.count, before + 1);
+		});
+
+		it('answers a discarded result whose destroy throws as a stream that ran', async () => {
+			const { result } = await roundTrip({ operation: 'test_eo_throwing_destroy' });
+			assert.strictEqual(result.status, 406);
+			assert.strictEqual(result.executed, true);
 		});
 	});
 

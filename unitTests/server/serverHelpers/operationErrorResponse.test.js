@@ -1,7 +1,5 @@
 'use strict';
 
-// The mapping serverErrorHandler sends and encrypted_operation seals (server/serverHelpers/operationErrorResponse.ts).
-
 const assert = require('node:assert');
 const { operationErrorResponse } = require('#src/server/serverHelpers/operationErrorResponse');
 const { ClientError, handleHDBError, hdbErrors } = require('#src/utility/errors/hdbError');

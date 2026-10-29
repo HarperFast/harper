@@ -934,9 +934,15 @@ under the client's response key; the wire format and reference client are `utili
   `callOperationFunctionAsAwait` log the view, not the body or an error message, and a forwarding worker receives it
   beside the body, never in it. A handler that logs its own input is not covered.
 - **Replay is refused per process, not exactly-once.** The nonce is reserved before dispatch, never released, and kept
-  until no later `maxAge` could make its envelope fresh again. A restart forgets the store, and a backward wall-clock
-  step longer than that retention re-opens an aged-out envelope. A result that ran but could not be delivered (a
-  stream, over `maxSize`, unserializable, which `streamAsJSON`'s `strict` mode surfaces) answers `executed: true`; a
-  5xx keeps the unknown outcome it has on a direct request.
+  until no `maxAge`, even one raised later, could admit its envelope: `ts` plus the 600 s ceiling. A restart forgets
+  the store, and a backward wall-clock step longer than that retention re-opens an aged-out envelope
+  ([#3344](https://github.com/HarperFast/harper/issues/3344)). The store is bounded and answers 503 when full rather
+  than evict; past half full, each principal may hold only an equal share of that half, so one caller flooding
+  envelopes, even ones it may not run, cannot take every caller's capacity.
+- **What ran is said.** A result that ran but could not be delivered (a stream, over `maxSize`, or one that fails to
+  serialize or whose cursor fails mid-stream, which `streamAsJSON`'s `strict` mode surfaces without logging the error)
+  answers `executed: true`; a 5xx keeps the unknown outcome it has on a direct request
+  ([#3343](https://github.com/HarperFast/harper/issues/3343)). `maxSize` bounds what is buffered and sealed, error
+  bodies included; a single value is still serialized whole before it is measured, as on the plaintext path.
 
 Enforced by `unitTests/components/encryptedOperation.test.js` and `integrationTests/security/encrypted-operation.test.ts`.

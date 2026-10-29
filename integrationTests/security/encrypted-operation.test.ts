@@ -1,5 +1,5 @@
 /**
- * encrypted_operation (harper#3288) against a running node with a test custody key: a relay carries
+ * encrypted_operation against a running node with a test custody key: a relay carries
  * only ciphertext, the node runs the sealed operation as the caller, and neither sealed values nor the
  * result reach the node's info-level log. The unix-socket case is the Fabric relay path: the socket
  * authenticates as the super user with no credentials, and the minted token comes back sealed.

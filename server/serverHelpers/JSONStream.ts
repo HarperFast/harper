@@ -10,9 +10,9 @@ const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
 };
 const { errorToString } = harperLogger;
 /**
- * `strict`: a value that fails to serialize destroys the stream with that error, instead of appending
- * the error text to output that has already started (invalid JSON, which a client that must parse the
- * whole body cannot tell from a result).
+ * `strict`: a value that fails to serialize, a rejected element or a failing iterator destroys the stream
+ * with that error instead of writing its text into output that has already started, which a client that
+ * must parse the whole body cannot tell from a result. No error text is logged.
  */
 export function streamAsJSON(value, options?: { strict?: boolean }) {
 	return new JSONStream({ value, strict: options?.strict === true });
@@ -63,6 +63,7 @@ class JSONStream extends Readable {
 										return ''; // return nothing now and serialization will continue below
 									},
 									(error) => {
+										if (this.strict) throw error;
 										// try to properly serialize the error, but then finish the iterator
 										harperLogger.warn('Error serializing in stream', error);
 										iteratorResult = { done: false, value: { error: errorToString(error) } };
@@ -74,6 +75,7 @@ class JSONStream extends Readable {
 								);
 							}
 						} catch (error) {
+							if (this.strict) throw error;
 							iteratorResult = { done: false, value: { error: errorToString(error) } };
 							iterator = {
 								next: () => ({ done: true }),
@@ -106,6 +108,10 @@ class JSONStream extends Readable {
 				return;
 			}
 			if (object.then) {
+				if (this.strict) {
+					yield object.then((object) => this.serialize(object));
+					return;
+				}
 				try {
 					yield object.then((object) => this.serialize(object), handleError);
 				} catch (error) {
@@ -225,22 +231,29 @@ class JSONStream extends Readable {
 
 	_destroy(error, callback) {
 		// `throw` and `return` are optional on an iterator (a Set's has neither), and one iterator's
-		// failing cleanup must not skip the others or the callback.
+		// failing cleanup must not skip the others or the callback. A strict failure is the serializer's, not
+		// the producer's, so its iterators are closed rather than thrown into.
+		const onCleanupFailure = this.strict ? warnCleanupFailureClass : warnCleanupFailure;
 		for (const iterator of this.activeIterators) {
 			try {
-				const close = error && iterator.throw ? iterator.throw : iterator.return;
+				const close = error && !this.strict && iterator.throw ? iterator.throw : iterator.return;
 				const closing: any = close?.call(iterator, error);
-				if (typeof closing?.then === 'function') closing.then(undefined, warnCleanupFailure);
+				if (typeof closing?.then === 'function') closing.then(undefined, onCleanupFailure);
 			} catch (cleanupError) {
-				warnCleanupFailure(cleanupError);
+				onCleanupFailure(cleanupError);
 			}
 		}
-		callback();
+		callback(this.strict ? error : undefined);
 	}
 }
 
 function warnCleanupFailure(error) {
 	harperLogger.warn('Error closing a serialized iterator', error);
+}
+
+// A strict stream's error text may echo the data it was serializing.
+function warnCleanupFailureClass(error) {
+	harperLogger.warn(`Error closing a serialized iterator: ${error?.constructor?.name ?? typeof error}`);
 }
 
 function handleError(error) {

@@ -235,6 +235,116 @@ describe('Test JSONStream module ', () => {
 	});
 });
 
+describe('Strict JSONStream', () => {
+	const sinon = require('sinon');
+	const harperLogger = require('#src/utility/logging/harper_logger');
+	let logged;
+
+	beforeEach(() => {
+		logged = [];
+		const capture = (...args) => logged.push(args.map((arg) => (arg instanceof Error ? arg.stack : String(arg))));
+		sinon.stub(console, 'error').callsFake(capture);
+		for (const level of ['warn', 'error', 'info']) sinon.stub(harperLogger, level).callsFake(capture);
+	});
+
+	afterEach(() => sinon.restore());
+
+	function failureOf(stream) {
+		return new Promise((resolve, reject) => {
+			stream.on('data', () => {});
+			stream.on('end', () => reject(new Error('the stream ended as if it succeeded')));
+			stream.on('error', resolve);
+			stream.on('close', () => reject(new Error('the stream closed without an error')));
+		});
+	}
+
+	function assertNotLogged(marker) {
+		assert.ok(!JSON.stringify(logged).includes(marker), `${marker} reached the log`);
+	}
+
+	function circular() {
+		const value = {};
+		value.self = value;
+		return value;
+	}
+
+	it('fails on a cursor that rejects mid-stream, without logging its error', async () => {
+		let index = 0;
+		const cursor = {
+			[Symbol.asyncIterator]: () => ({
+				next: async () => {
+					if (index++ < 2) return { done: false, value: { index } };
+					throw new Error('SECRET-ASYNC');
+				},
+			}),
+		};
+		const error = await failureOf(streamAsJSON(cursor, { strict: true }));
+		assert.strictEqual(error.message, 'SECRET-ASYNC');
+		assertNotLogged('SECRET-ASYNC');
+	});
+
+	it('fails on an iterator whose next throws, without logging its error', async () => {
+		let index = 0;
+		const iterable = {
+			[Symbol.iterator]: () => ({
+				next: () => {
+					if (index++ < 2) return { done: false, value: index };
+					throw new Error('SECRET-SYNC');
+				},
+			}),
+		};
+		const error = await failureOf(streamAsJSON(iterable, { strict: true }));
+		assert.strictEqual(error.message, 'SECRET-SYNC');
+		assertNotLogged('SECRET-SYNC');
+	});
+
+	it('fails on a rejected element, without logging its error', async () => {
+		// rejects only once read, so nothing reports it as unhandled before the stream attaches
+		const rejectedLater = {
+			then: (resolve, reject) => Promise.reject(new Error('SECRET-ELEMENT')).then(resolve, reject),
+		};
+		const error = await failureOf(streamAsJSON([1, rejectedLater], { strict: true }));
+		assert.strictEqual(error.message, 'SECRET-ELEMENT');
+		assertNotLogged('SECRET-ELEMENT');
+	});
+
+	it('closes the producing iterator with return, not by throwing the serialization error into it', async () => {
+		const calls = [];
+		let index = 0;
+		const iterable = {
+			[Symbol.iterator]: () => ({
+				next: () => ({ done: false, value: index++ === 0 ? circular() : index }),
+				return: () => {
+					calls.push('return');
+					return { done: true };
+				},
+				throw: () => {
+					calls.push('throw');
+					return { done: true };
+				},
+			}),
+		};
+		await failureOf(streamAsJSON(iterable, { strict: true }));
+		assert.deepStrictEqual(calls, ['return']);
+	});
+
+	it('logs only the class of a failing cleanup', async () => {
+		let index = 0;
+		const cursor = {
+			[Symbol.asyncIterator]: () => ({
+				next: async () => ({ done: false, value: index++ === 0 ? 1 : circular() }),
+				return: async () => {
+					throw new TypeError('SECRET-CLEANUP');
+				},
+			}),
+		};
+		await failureOf(streamAsJSON(cursor, { strict: true }));
+		await delay(10);
+		assert.ok(JSON.stringify(logged).includes('TypeError'), 'the cleanup failure was not logged');
+		assertNotLogged('SECRET-CLEANUP');
+	});
+});
+
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
