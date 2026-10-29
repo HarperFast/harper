@@ -1090,9 +1090,13 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('reports the leader’s failure reason rather than inventing contention for the follower', async function () {
 			if (isLMDB) return this.skip();
-			// No agreed map fails the leader's round with a 503 that names why the guarantee could not be
-			// established. Nobody held the key, so the follower must end on that reason and not on a 423.
-			useSoloTransport({ mapless: true });
+			// A home that refuses this node fails the leader's round at once with a 503 that names why the
+			// guarantee could not be established. Nobody held the key, so the follower must end on that
+			// reason and not on a 423. (A withheld map is no longer immediate: it is ridden through.)
+			useSoloTransport({
+				homes: ['elsewhere'],
+				requestDelegation: async () => ({ granted: false, reason: 'unknown-node' }),
+			});
 			const recordId = id();
 			await transaction(async () => {
 				const leader = ClusterLockTest.lock(recordId, { lease: 5000, timeout: 5000 }).then(
