@@ -366,7 +366,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 				);
 			});
 
-			it('seeks a singleton primary-key path the estimator cannot size ahead of an `in` leg', async () => {
+			it('seeks a singleton primary-key path ahead of an `in` leg', async () => {
 				const conditions = () => [inLeg(), { attribute: ['id'], value: 'r03' }];
 				assert.deepStrictEqual((await plan(conditions()))[0].attribute, ['id']);
 				assert.deepStrictEqual(await run(conditions()), ['r03']);
