@@ -1,7 +1,6 @@
 /**
- * An `.optional` request-contract body over the live MCP application profile: the tool's advertised
- * input schema must not require the body's own keys, and a call without body arguments must reach the
- * handler as an omitted body (`undefined`) while a partial supplied body is still rejected.
+ * An `.optional` contract body over the live MCP application profile: no body keys on the tool's
+ * required list, and a call without body arguments reaches the handler as an omitted body.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/mcp/contract-optional-body.test.ts"

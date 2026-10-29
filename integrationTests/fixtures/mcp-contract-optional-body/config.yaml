@@ -1,4 +1,3 @@
-# Contract resources with an .optional and a required request body, for the MCP application profile.
 jsResource:
   files: resources.js
 rest: true
