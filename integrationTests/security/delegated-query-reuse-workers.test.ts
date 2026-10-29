@@ -28,7 +28,6 @@ function basic(user: string, password = PASSWORD) {
 	return `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`;
 }
 
-/** GET on a fresh connection (no agent), so the server's accept distribution picks the worker. */
 function getOnNewConnection(url: string, auth: string): Promise<{ status: number; worker: string; body: any }> {
 	return new Promise((resolvePromise, reject) => {
 		const req = request(

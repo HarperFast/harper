@@ -1,5 +1,3 @@
-// A delegated read authorizes a copy of the caller's query object, so one module-level query can serve every
-// request and principal (resources/DESIGN.md, "Authorization writes only on a dispatch-owned target").
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { cloneDeep } = require('lodash');

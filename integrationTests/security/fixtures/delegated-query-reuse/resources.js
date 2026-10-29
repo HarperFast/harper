@@ -38,7 +38,6 @@ function sharedGetRoot(key) {
 export class GetBroadFirst extends sharedGetRoot('GetBroadFirst') {}
 export class GetRestrictedFirst extends sharedGetRoot('GetRestrictedFirst') {}
 
-// Control: the same delegate building a fresh query object per request.
 export class SearchFreshRoot extends Resource {
 	static loadAsInstance = false;
 	get() {
@@ -68,7 +67,6 @@ export class TrustedRead extends Resource {
 	}
 }
 
-// What each shared query object looks like after the requests (super user only).
 export class RootState extends Resource {
 	static loadAsInstance = false;
 	get() {

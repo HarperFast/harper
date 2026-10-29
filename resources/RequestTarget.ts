@@ -3,10 +3,8 @@ import type { Conditions, Context, DirectCondition, Id, Select, Sort } from './R
 import { parseQuery } from './search.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 
-/** Set by `Table.allowRead` on a target whose `select` it narrowed to the requesting principal's permissions. */
 export const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 
-/** Marks a target minted for one dispatch, which authorization may therefore write on in place. */
 export let markDispatchTarget: (target: RequestTarget) => RequestTarget;
 let isDispatchTarget: (target: any) => boolean;
 let copyRequestTarget: (source: RequestTarget) => RequestTarget;
@@ -198,11 +196,7 @@ export class RequestTarget extends URLSearchParams {
 }
 export type RequestTargetOrId = RequestTarget | Id;
 
-/**
- * The target an authorization gate records its state on (the consumed `checkPermission`, the narrowed `select`,
- * `AUTHORIZATION_SELECT`): the target itself when it was minted for this dispatch (by a transport, or as an earlier
- * gate's copy), otherwise a shallow copy, so one query object can serve any number of requests and principals.
- */
+/** Authorization writes only on a target this dispatch owns, so a caller's query object stays reusable. */
 export function dispatchTarget<T>(target: T): T {
 	if (isDispatchTarget(target)) return target;
 	if ((target as any)[AUTHORIZATION_SELECT])
