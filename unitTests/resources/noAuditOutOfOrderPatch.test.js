@@ -19,6 +19,8 @@ const itUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it
 describe('out-of-order patch on an audit:false table', () => {
 	let NoAudit;
 	let NoAuditTrackDeletes;
+	let NoAuditSourced;
+	let revalidatedExpiresAt;
 	let nextId = 1;
 
 	before(async () => {
@@ -39,6 +41,13 @@ describe('out-of-order patch on an audit:false table', () => {
 			attributes,
 			audit: false,
 			trackDeletes: true,
+		});
+		NoAuditSourced = table({ table: 'NoAuditOutOfOrderPatchSourced', database: 'test', attributes, audit: false });
+		NoAuditSourced.sourcedFrom({
+			get(id, context) {
+				context.expiresAt = revalidatedExpiresAt;
+				return { status: 304, headers: {} };
+			},
 		});
 		if (NoAudit.indexingOperation) await NoAudit.indexingOperation;
 		if (NoAuditTrackDeletes.indexingOperation) await NoAuditTrackDeletes.indexingOperation;
@@ -439,6 +448,23 @@ describe('out-of-order patch on an audit:false table', () => {
 		);
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		assert.strictEqual((await NoAudit.get(id)).count, 15);
+	});
+
+	it('a merged increment re-delivered after a 304 revalidation applies once', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAuditSourced.put(id, { tag: 'base', count: 10 });
+		const now = Date.now();
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 100 });
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 2 } }, { timestamp: now + 50 });
+		await NoAuditSourced.patch(id, { tag: 'expired' }, { timestamp: now + 150, expiresAt: 0 });
+		revalidatedExpiresAt = Date.now() + 60000;
+		assert.strictEqual((await NoAuditSourced.get(id)).count, 15);
+		await waitFor(() => NoAuditSourced.primaryStore.getEntry(id)?.expiresAt === revalidatedExpiresAt, {
+			timeout: 5000,
+			message: 'the revalidation never stored the record',
+		});
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 2 } }, { timestamp: now + 50 });
+		assert.strictEqual((await NoAuditSourced.get(id)).count, 15);
 	});
 
 	it('a merged increment re-delivered after a newer publish applies once', async () => {
