@@ -4,7 +4,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { RequestTarget } = require('#src/resources/RequestTarget');
+const { RequestTarget, markDispatchTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 async function fromAsync(iterable) {
@@ -125,7 +125,8 @@ describe('operation-scoped write authorization', () => {
 			const readTargets = [];
 			let internalScanTarget;
 			let concurrentReadError;
-			const target = new RequestTarget('?kind=false-delete');
+			// minted and armed the way a transport does, so authorization runs on this very target
+			const target = markDispatchTarget(new RequestTarget('?kind=false-delete'));
 			target.select = ['owner'];
 			class CollectionDelete extends Docs {
 				static loadAsInstance = false;
@@ -219,6 +220,8 @@ describe('operation-scoped write authorization', () => {
 				}
 			}
 			const target = new RequestTarget('?kind=false-delete-reused');
+			// context.authorize arms only the dispatch's copy, so a reused target asks for authorization itself
+			target.checkPermission = true;
 			const context = { user: alice, authorize: true };
 			await ReusedTargetDelete.delete(target, context);
 			await seed('false-delete-reused', [{ id: 'false-delete-reused-b' }]);
@@ -498,7 +501,7 @@ describe('operation-scoped write authorization', () => {
 					return true;
 				}
 			}
-			const target = new RequestTarget('?kind=instance-delete');
+			const target = markDispatchTarget(new RequestTarget('?kind=instance-delete'));
 			await InstanceDelete.delete(target, { user: alice, authorize: true });
 			assert.strictEqual(calls.length, 1);
 			assert.strictEqual(calls[0].target, target);
