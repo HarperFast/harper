@@ -5664,9 +5664,10 @@ export function makeTable(options): TableResourceClass {
 							// (harper#1316, facet b).
 							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
 							if (ownFieldNames) {
-								// Reflect.set: a non-writable own field keeps its own value; the stored record is coerced
+								// the write stores the instance's own fields, so a converted value has to land on it
 								for (const name of ownFieldNames) {
-									if (this[name] !== recordUpdate[name]) Reflect.set(this, name, recordUpdate[name]);
+									if (this[name] !== recordUpdate[name] && !Reflect.set(this, name, recordUpdate[name]))
+										throw new ClientError(`Property ${name} is read-only, so its value cannot be converted`);
 								}
 							}
 							if (updatedTimeProperty) {

@@ -461,7 +461,7 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 	it('stamps the change set itself when own fields join a tracked update', async () => {
 		const Item = defineTable(
 			'OwnFieldChangeSet',
-			{ id: id.primaryKey, label: string.nullable, stamped: date.updatedTime },
+			{ id: id.primaryKey, label: string.nullable, when: date.nullable, stamped: date.updatedTime },
 			{ database: EVOLVE_DB, sealed: false }
 		);
 		let sourcePut;
@@ -488,6 +488,15 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 			Object.defineProperty(record, 'extra', { value: '2', enumerable: true });
 		});
 		assert.strictEqual((await Item.get('i1')).extra, '2', 'a non-writable own field is stored, not a 500');
+		await assert.rejects(
+			async () =>
+				transaction(async () => {
+					const record = await Item.update('i1');
+					Object.defineProperty(record, 'when', { value: '2026-01-01T00:00:00.000Z', enumerable: true });
+				}),
+			(error) => error.statusCode === 400 && /when is read-only/.test(error.message)
+		);
+		assert.strictEqual((await Item.get('i1')).when, undefined);
 	});
 
 	it('rejects invalid update roots before combining own instance fields', async () => {
