@@ -1920,14 +1920,17 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			break;
 		case 'starts_with': {
 			const prefix = String(value);
-			// a composite primary key matches by its stored bytes: the set the primary-store prefix scan reads
 			const encodedPrefix = isPrimaryKey && prefix ? (writeKeyId(prefix) as string) : undefined;
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
 					if (typeof recordValue === 'string') return recordValue.startsWith(prefix);
 					if (!isPrimaryKey || !Array.isArray(recordValue)) return false;
-					return encodedPrefix === undefined || (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
+					if (encodedPrefix !== undefined) return (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
+					// a one-element tuple decodes as its element, so this is the test that element would get
+					let leading = recordValue[0];
+					while (Array.isArray(leading)) leading = leading[0];
+					return typeof leading === 'string';
 				},
 				true
 			);
@@ -1937,7 +1940,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			if (!Array.isArray(value)) value = [value];
 			else if (value[value.length - 1] == null) value = value.slice(0, -1);
 			// the primary-store scan reads [...value, null] up to [...value, MAXIMUM_KEY]
-			const encodedPrefix = isPrimaryKey && value.length > 0 ? (writeKeyId(value) as string) + '\x00' : undefined;
+			const encodedPrefix = isPrimaryKey ? (value.length > 0 ? (writeKeyId(value) as string) + '\x00' : '') : undefined;
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {

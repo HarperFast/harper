@@ -190,8 +190,7 @@ describe('search key identity and the "..." between alias', () => {
 				enforceExecutionOrder: true,
 			}),
 		});
-		const compositeRoutes = routes({ attribute: 'id', comparator: 'gt', value: 'a' });
-		const numericRoutes = routes({ attribute: 'id', comparator: 'ge', value: 0 });
+		const keyRoutes = routes({ attribute: 'id', comparator: 'ge', value: 0 });
 		// a record reports its id as written or as decoded depending on the route: 5n or 5, ['solo'] or 'solo'
 		const asStored = (keys) => keys.map((key) => fromBufferKey(toBufferKey(key))).sort(compareKeys);
 		async function ids(table, query) {
@@ -312,14 +311,46 @@ describe('search key identity and the "..." between alias', () => {
 			[{ attribute: 'id', value: ['n', 5, 'x'] }, [['n', 5n, 'x']]],
 		]) {
 			it(`${inspect(condition)} matches the same composite keys on every route`, async () => {
-				for (const [route, query] of Object.entries(compositeRoutes)) {
+				for (const [route, query] of Object.entries(keyRoutes)) {
 					assert.deepStrictEqual(await ids(Composite, query(condition)), asStored(expected), route);
 				}
 			});
 		}
 
+		it('gives a key spelled as a tuple the result its decoded spelling gets', () => {
+			const prefixConditions = [
+				{ attribute: 'id', comparator: 'starts_with', value: '' },
+				{ attribute: 'id', comparator: 'starts_with', value: 'so' },
+				{ attribute: 'id', comparator: 'prefix', value: [null] },
+				{ attribute: 'id', comparator: 'prefix', value: ['solo'] },
+				{ attribute: 'id', comparator: 'prefix', value: ['t', 5] },
+			];
+			const identityConditions = [
+				{ attribute: 'id', value: 'solo' },
+				{ attribute: 'id', comparator: 'in', value: [5, 'solo'] },
+				{ attribute: 'id', comparator: 'ne', value: 'solo' },
+			];
+			// [5] decodes as 5 but stores other bytes than 5 does, so only the prefix comparators can agree on it
+			for (const [conditions, keys] of [
+				[prefixConditions, [[5], [5n], ['solo'], [['solo']], ['t', 5n, 'x']]],
+				[identityConditions, [['solo'], [['solo']], ['t', 5n, 'x']]],
+			]) {
+				for (const condition of conditions) {
+					const filter = filterByType(condition, Composite, null, null, true);
+					for (const key of keys) {
+						const decoded = fromBufferKey(toBufferKey(key));
+						assert.strictEqual(
+							filter({ id: key }),
+							filter.idFilter(decoded),
+							`${inspect(condition)} on ${inspect(key)}`
+						);
+					}
+				}
+			}
+		});
+
 		it('still matches an array attribute that is not the key element by element', async () => {
-			for (const [route, query] of Object.entries(compositeRoutes)) {
+			for (const [route, query] of Object.entries(keyRoutes)) {
 				assert.deepStrictEqual(
 					await ids(Composite, query({ attribute: 'tags', value: 't' })),
 					[
@@ -338,7 +369,7 @@ describe('search key identity and the "..." between alias', () => {
 			[{ attribute: 'id', comparator: 'ne', value: 5 }, [0n, 9]],
 		]) {
 			it(`${inspect(condition)} treats a BigInt key and its number as one key`, async () => {
-				for (const [route, query] of Object.entries(numericRoutes)) {
+				for (const [route, query] of Object.entries(keyRoutes)) {
 					assert.deepStrictEqual(await ids(Numeric, query(condition)), asStored(expected), route);
 				}
 			});
