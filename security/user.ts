@@ -543,9 +543,10 @@ function userView(username: string, entries: UserEntries): User {
 }
 
 const LOCAL_USERNAME = 'local';
+// a default install's super_user role, which applications authorize on by `role.id`
 const LOCAL_ROLE_RECORD = deepFreeze({
 	role: 'super_user',
-	id: '_local',
+	id: 'super_user',
 	permission: { super_user: true },
 	__createdtime__: 0,
 	__updatedtime__: 0,

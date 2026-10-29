@@ -104,6 +104,8 @@ describe('the local principal of a request trusted by its transport', function (
 			assert.strictEqual(principal.username, 'local');
 			assert.strictEqual(principal.active, true);
 			assert.strictEqual(principal.role.role, 'super_user');
+			// published templates authorize on the default install's role id
+			assert.strictEqual(principal.role.id, 'super_user');
 			assert.strictEqual(principal.role.permission.super_user, true);
 			assert.strictEqual(principal.role.permission.system.tables.hdb_user.read, true);
 			assert.strictEqual(principal.role.permission.system.tables.hdb_user.insert, false);
@@ -149,7 +151,7 @@ describe('the local principal of a request trusted by its transport', function (
 				active: true,
 				role: {
 					role: 'super_user',
-					id: '_local',
+					id: 'super_user',
 					permission: { super_user: true },
 					__createdtime__: 0,
 					__updatedtime__: 0,
