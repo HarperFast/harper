@@ -88,7 +88,6 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			resources.set('Tenanted2Arg', Tenanted2Arg, { rest: true });
 			resources.set('Ignored', Ignored, { rest: true });
 
-			// 1a. Standard Table
 			await BaseTable.put('std', { n: 1 });
 			const stdEtag = versionToEtag(BaseTable.primaryStore.getEntry('std').version);
 			assert.strictEqual((await request('PUT', '/BaseTable/std', { n: 2 }, { 'if-match': '"999"' })).status, 412);
@@ -97,7 +96,6 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			assert.strictEqual((await request('PUT', '/BaseTable/std', { n: 2 }, { 'if-match': stdEtag })).status, 204);
 			assert.strictEqual((await BaseTable.get('std')).n, 2);
 
-			// 1b. Delegating.put
 			await BaseTable.put('del', { n: 1 });
 			const delEtag = versionToEtag(BaseTable.primaryStore.getEntry('del').version);
 			assert.strictEqual((await request('PUT', '/Delegating/del', { n: 2 }, { 'if-match': '"999"' })).status, 412);
@@ -106,7 +104,6 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			assert.strictEqual((await request('PUT', '/Delegating/del', { n: 2 }, { 'if-match': delEtag })).status, 204);
 			assert.strictEqual((await BaseTable.get('del')).n, 2);
 
-			// 1c. Tenanted2Arg.put (2-arg parsePath(path, context))
 			await BaseTable.put('t1:item', { n: 1 });
 			const tenEtag = versionToEtag(BaseTable.primaryStore.getEntry('t1:item').version);
 			assert.strictEqual((await request('PUT', '/Tenanted2Arg/item', { n: 2 }, { 'if-match': '"999"' })).status, 412);
@@ -115,7 +112,6 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			assert.strictEqual((await request('PUT', '/Tenanted2Arg/item', { n: 2 }, { 'if-match': tenEtag })).status, 204);
 			assert.strictEqual((await BaseTable.get('t1:item')).n, 2);
 
-			// 1d. Ignored.put (own static verb that returns without writing)
 			await BaseTable.put('ign', { n: 1 });
 			assert.strictEqual((await request('PUT', '/Ignored/ign', { n: 2 }, { 'if-match': '"999"' })).status, 204);
 			assert.strictEqual((await BaseTable.get('ign')).n, 1);
@@ -263,13 +259,11 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			await IntTable.put(1, { n: 101 });
 			await IntTable.delete('root');
 
-			// Control: /ZeroAlias/1 resolves to id=1
 			const get1 = await request('GET', '/ZeroAlias/1');
 			assert.strictEqual(get1.status, 200);
 			assert.strictEqual(JSON.parse(await bodyOf(get1)).n, 101);
 			assert.strictEqual((await request('PUT', '/ZeroAlias/1', { n: 201 }, { 'if-match': '"999"' })).status, 412);
 
-			// parsePath('root') is 0: the id must still be coerced and bound, not left as the raw path
 			const getRoot = await request('GET', '/ZeroAlias/root');
 			const putRootNoMatch = await request('PUT', '/ZeroAlias/root', { n: 200 }, { 'if-none-match': '*' });
 			const rec0After = await IntTable.get(0);
@@ -313,14 +307,12 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			await IntTable.put(0, { n: 10 });
 			await IntTable.put(1, { n: 20 });
 
-			// Control: record 1 enforces preconditions (412)
 			assert.strictEqual((await request('PUT', '/ZeroVerb/1', { n: 21 }, { 'if-match': '"999"' })).status, 412);
 			assert.strictEqual((await request('PUT', '/ZeroVerb/1', { n: 21 }, { 'if-none-match': '*' })).status, 412);
 			assert.strictEqual((await request('PATCH', '/ZeroVerb/1', { n: 21 }, { 'if-match': '"999"' })).status, 412);
 			assert.strictEqual((await request('DELETE', '/ZeroVerb/1', undefined, { 'if-match': '"999"' })).status, 412);
 			assert.strictEqual((await IntTable.get(1)).n, 20);
 
-			// Record 0 must be bound to the condition like any other key
 			await IntTable.put(0, { n: 10 });
 			const put0Stale = await request('PUT', '/ZeroVerb/0', { n: 99 }, { 'if-match': '"999"' });
 			const afterPut0Stale = (await IntTable.get(0))?.n;
@@ -440,6 +432,33 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			assert.strictEqual((await BaseTable.get('t:t:assigned')) ?? null, null);
 		});
 
+		it('leaves the verb the query parameters a parsePath consumes', async () => {
+			class ConsumesTenant extends BaseTable {
+				static parsePath(path, _context, query) {
+					const tenant = query.get('tenant') ?? 'default';
+					query.delete('tenant');
+					return `${tenant}:${path}`;
+				}
+				static put(target, data, context) {
+					return super.put(target, data, context);
+				}
+			}
+			resources.set('ConsumesTenant', ConsumesTenant, { rest: true });
+
+			await BaseTable.put('t1:consumed', { n: 1 });
+			assert.strictEqual((await request('PUT', '/ConsumesTenant/consumed?tenant=t1', { n: 2 }, stale)).status, 412);
+			assert.strictEqual((await BaseTable.get('t1:consumed')).n, 1);
+			assert.strictEqual((await BaseTable.get('default:consumed')) ?? null, null);
+
+			const etag = versionToEtag(BaseTable.primaryStore.getEntry('t1:consumed').version);
+			assert.strictEqual(
+				(await request('PUT', '/ConsumesTenant/consumed?tenant=t1', { n: 3 }, { 'if-match': etag })).status,
+				204
+			);
+			assert.strictEqual((await BaseTable.get('t1:consumed')).n, 3);
+			assert.strictEqual((await BaseTable.get('default:consumed')) ?? null, null);
+		});
+
 		it('leaves the verb a target with its raw id when the first parse mutates the target and throws', async () => {
 			let calls = 0;
 			class MutatesThenThrows extends BaseTable {
@@ -505,7 +524,8 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 	});
 
 	describe('chained super.get(target) then super.put(target)', () => {
-		it.skip('keeps the parsed id when a verb reads then writes the same target (open design question: parse-once marker, see the PR)', async () => {
+		// Skipped until harper#3746 decides how a second dispatch on an already-parsed target should behave.
+		it.skip('keeps the parsed id when a verb reads then writes the same target', async () => {
 			class ChainedTenanted extends BaseTable {
 				static parsePath(path, context) {
 					return `${context.user.tenant}:${path}`;
@@ -525,28 +545,24 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			}
 			resources.set('ChainedTenanted', ChainedTenanted, { rest: true });
 
-			// 1. Stale If-Match: "999" on PUT /ChainedTenanted/scoped
 			await BaseTable.put('t1:scoped', { n: 1, prev: null });
 			await BaseTable.delete('t1:t1:scoped');
 			const stalePut = await request('PUT', '/ChainedTenanted/scoped', { n: 2 }, { 'if-match': '"999"' });
 			const afterStalePutOrig = await BaseTable.get('t1:scoped');
 			const afterStalePutDouble = (await BaseTable.get('t1:t1:scoped')) ?? null;
 
-			// 2. If-None-Match: "*" on PUT /ChainedTenanted/scoped when t1:scoped exists
 			await BaseTable.put('t1:scoped', { n: 1, prev: null });
 			await BaseTable.delete('t1:t1:scoped');
 			const noMatchPut = await request('PUT', '/ChainedTenanted/scoped', { n: 3 }, { 'if-none-match': '*' });
 			const afterNoMatchOrig = await BaseTable.get('t1:scoped');
 			const afterNoMatchDouble = (await BaseTable.get('t1:t1:scoped')) ?? null;
 
-			// 3. Stale If-Match: "999" on PATCH /ChainedTenanted/scoped
 			await BaseTable.put('t1:scoped', { n: 1, prev: null });
 			await BaseTable.delete('t1:t1:scoped');
 			const stalePatch = await request('PATCH', '/ChainedTenanted/scoped', { n: 4 }, { 'if-match': '"999"' });
 			const afterStalePatchOrig = await BaseTable.get('t1:scoped');
 			const afterStalePatchDouble = (await BaseTable.get('t1:t1:scoped')) ?? null;
 
-			// 4. Stale If-Match: "999" on DELETE /ChainedTenanted/scoped
 			await BaseTable.put('t1:scoped', { n: 1, prev: null });
 			await BaseTable.put('t1:t1:scoped', { n: 99, prev: null });
 			const staleDel = await request('DELETE', '/ChainedTenanted/scoped', undefined, { 'if-match': '"999"' });
@@ -554,7 +570,6 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			const afterStaleDelDouble = (await BaseTable.get('t1:t1:scoped')) ?? null;
 			await BaseTable.delete('t1:t1:scoped');
 
-			// 5. Matching ETag on PUT /ChainedTenanted/scoped should update t1:scoped (not t1:t1:scoped)
 			await BaseTable.put('t1:scoped', { n: 1, prev: null });
 			await BaseTable.delete('t1:t1:scoped');
 			const etag = versionToEtag(BaseTable.primaryStore.getEntry('t1:scoped').version);
