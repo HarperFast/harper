@@ -625,9 +625,9 @@ export function releaseOwnBaseline(target, patch) {
 export function hasOwnChange(target, key: string) {
 	return hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]);
 }
-// An own object value is not tracked: the record gets a copy, so a later in-place edit of the instance's
-// object is a difference in content rather than invisible. A value that does not copy to the same content
-// (one holding a Blob) is stored as it is.
+// An own object value is not tracked: the record gets a copy of a Date, Bytes or exactly copyable plain data,
+// so a later in-place edit of the instance's object is a difference in content rather than invisible.
+// Anything else (a Map, data holding a Blob) is stored as it is.
 function plainCopy(value) {
 	if (value === null || typeof value !== 'object') return value;
 	if (value instanceof Date) return new Date(value.getTime());
