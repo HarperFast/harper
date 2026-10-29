@@ -5104,7 +5104,13 @@ export function makeTable(options): TableResourceClass {
 						// the whole timeout, and `acquire` with no wait left still admits from a live delegation
 						// or a local grant without sending anything. Only if it cannot does the caller learn the
 						// guarantee was unavailable — which is not the same as the key being held.
-						const remaining = Math.max(0, resolved.timeout - (performance.now() - clusterStart));
+						// Capped by the native lease too: it started before this step, and a round that lands after
+						// it lapsed cannot join the handle, so waiting longer could only end in the same 503
+						// (record-locks.md §4.5).
+						const remaining = Math.max(
+							0,
+							Math.min(resolved.timeout - (performance.now() - clusterStart), handle.leaseRemainingMs?.() ?? Infinity)
+						);
 						const round = await coordinator.acquire(id, resolved.lease, remaining);
 						// Resolved through the getter rather than captured, so a transport swap between
 						// acquisition and release reaches the coordinator that now owns the delegation.
