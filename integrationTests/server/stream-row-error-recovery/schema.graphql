@@ -1,0 +1,22 @@
+type Child @table @export {
+	id: ID @primaryKey
+	parentId: ID @indexed
+	val: String
+}
+
+# The computed attributes are expressions, not setComputedAttribute() functions, so the operations
+# API (which runs on the main thread, where resources.js is not loaded) evaluates them too.
+type Parent @table @export {
+	id: ID @primaryKey
+	group: String @indexed
+	seq: Int @indexed
+	children: [Child] @relationship(to: parentId)
+	# a row-local failure: an application error for one row
+	flaky: String @computed(from: "seq === 2 ? (() => { throw new Error('flaky failed at seq=2'); })() : 'ok-' + seq")
+	# a nested read that outlives its snapshot: the range opened for the row is released by the idle
+	# monitor while the row waits, so resuming it throws ReadSnapshotExpiredError inside the row's transform
+	gated: String
+		@computed(
+			from: "seq === 2 ? (async () => { const rows = tables.Child.search({ conditions: [{ attribute: 'parentId', value: id }] }, {})[Symbol.asyncIterator](); await rows.next(); await new Promise((resolve) => setTimeout(resolve, 1200)); try { while (!(await rows.next()).done); } catch (error) { (globalThis.rowErrorsObserved ??= []).push(error.name); throw error; } return 'ok-' + seq; })() : 'ok-' + seq"
+		)
+}

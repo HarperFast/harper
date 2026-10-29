@@ -11,6 +11,7 @@ import {
 	ReplicationConfirmationError,
 	withoutReplicationUnconfirmed,
 	ServerError,
+	ReadSnapshotExpiredError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
 import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
@@ -574,13 +575,6 @@ export function transactionOpenTooLongError(): ServerError {
 		'Transaction was aborted after exceeding the maximum open-transaction time; split long-running work into smaller transactions',
 		422
 	);
-}
-
-class ReadSnapshotExpiredError extends ServerError {
-	constructor() {
-		super('Read scan snapshot expired; retry the read without replaying previously committed writes', 503);
-		this.name = 'ReadSnapshotExpiredError';
-	}
 }
 
 export function getReadTransactionGuard(transaction: ReadTransaction): (() => void) | undefined {

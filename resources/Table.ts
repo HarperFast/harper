@@ -8197,12 +8197,12 @@ export function makeTable(options): TableResourceClass {
 						// if it is a catchable thenable (promise)
 						if (typeof result?.catch === 'function')
 							return result.catch((error) => {
-								error.partialObject = { [primaryKey]: entry.key };
+								error.partialObject = { [primaryKey]: entry?.key ?? entry };
 								throw error;
 							});
 						return result;
 					} catch (error) {
-						error.partialObject = { [primaryKey]: entry.key };
+						error.partialObject = { [primaryKey]: entry?.key ?? entry };
 						throw error;
 					}
 				});
