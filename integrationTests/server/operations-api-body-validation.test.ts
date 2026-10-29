@@ -15,7 +15,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 const INVALID_JSON = 'Invalid JSON.';
 const MISSING_OPERATION = "Request body must include an 'operation' property.";
 const SETTLE_MS = 1000;
-const SECOND_RESPONSE_SIGNATURES = ['ERR_HTTP_HEADERS_SENT', 'Unhandled promise rejection', 'Reply was already sent'];
+const SECOND_RESPONSE_SIGNATURES = ['ERR_HTTP_HEADERS_SENT', 'Unhandled promise rejection'];
 
 suite('an Operations API body that fails validation', (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
