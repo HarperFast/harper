@@ -24,7 +24,6 @@ const writes = {
 		T.patch(id, { indexedTag: 'tag-200', counter: { __op__: 'add', value: 5 } }, { timestamp: base + 200 }),
 };
 
-// Every arm ends with the same older full PUT arriving last, after the head was invalidated.
 const arms = [
 	{ name: 'no patch (control)', before: ['put50', 'invalidate150'], headVersion: 150, headTag: 'tag-50' },
 	{

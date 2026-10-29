@@ -6206,8 +6206,7 @@ export function makeTable(options): TableResourceClass {
 												(fullUpdate && auditRecord.type === 'invalidate')
 											) {
 												// There is newer full record update, so this incremental update is completely superseded.
-												// A newer invalidation replaced the record with a stub, which also supersedes an older full
-												// PUT; an older patch still folds into the stub's carried-forward indexed fields.
+												// An older patch is not superseded by an invalidation: it folds into the stub's indexed fields.
 												write.skipped = true;
 												return;
 											}
@@ -6348,7 +6347,11 @@ export function makeTable(options): TableResourceClass {
 											collectedKeys.add(entry.txnLogKey);
 											const precedes = precedesExistingVersion(txnTime, entry, options?.nodeId);
 											if (precedes < 0 || (precedes === 0 && !identityIsNotKey && entry.txnLogKey > appendedLogKey)) {
-												if (entry.type === 'put' || entry.type === 'delete' || entry.type === 'invalidate') {
+												if (
+													entry.type === 'put' ||
+													entry.type === 'delete' ||
+													(fullUpdate && entry.type === 'invalidate')
+												) {
 													write.skipped = true;
 													return;
 												}
