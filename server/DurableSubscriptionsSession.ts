@@ -1538,11 +1538,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					// a replay from it would resend what lacks a receipt, or what preceded the topic: it waits for floors above
 					lackReceipts(state, { prunedThrough: state.receivedThrough });
 					if (!(checkpointFloor(checkpoint) > state.prunedThrough)) continue;
-					// compacted against a position an origin can commit below, so a replay must not trust it
-					state.receivedThrough = undefined;
 				}
 				state.entry.checkpoint = checkpoint;
-				this.pruneReceipts(state, positionBefore(checkpointFloor(checkpoint)));
+				// a checkpoint replay starts at its floor, but a resume here starts at the scalar, which an
+				// unacknowledged delivery can hold below a late one acknowledged under the floor
+				let through = positionBefore(checkpointFloor(checkpoint));
+				if (state.entry.startTime < through) through = state.entry.startTime;
+				this.pruneReceipts(state, through);
 				changed = true;
 			}
 		}

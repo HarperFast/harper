@@ -431,6 +431,50 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		session.disconnect(true);
 	});
 
+	for (const established of [true, false]) {
+		it(`QoS 2: keeps a late delivery PUBRECed above the scalar for a resume here, once ${established ? 'the' : 'a first'} checkpoint floor passes it`, async () => {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const topic = `${name}/#`;
+			const clientId = `qos2-late-${name}`;
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic, qos: 2, rh: 2 }, true);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => values(first.received).includes('a'));
+			await first.session.received(delivery(first.received, 'a').messageId, false);
+			if (established) await storedCheckpoint(T, first.session, clientId);
+			const commitLate = await heldTransaction(T, 'late');
+			await T.put('early', { value: 'early' });
+			await waitFor(() => values(first.received).includes('early'));
+			await commitLate();
+			await waitFor(() => values(first.received).includes('late'));
+			await first.session.received(delivery(first.received, 'late').messageId, false);
+			const state = first.session.topics.get(topic);
+			const lateKey = logKeyOf(T, 'late');
+			await waitFor(async () => {
+				await sleep(2);
+				certify(T);
+				first.session.checkpoint();
+				await first.session.writes;
+				return state.entry.checkpoint !== undefined && checkpointFloor(state.entry.checkpoint) > lateKey;
+			}, 10_000);
+			assert.ok(state.entry.startTime < lateKey, 'the unacknowledged delivery holds the scalar below the late one');
+			first.session.disconnect(true);
+			await first.session.writes;
+			await T.put('after', { value: 'after' });
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => values(second.received).includes('after'));
+			second.session.disconnect(true);
+			assert.ok(!values(second.received).includes('late'), 'the PUBRECed late delivery is not sent again');
+			assert.strictEqual(
+				delivery(second.received, 'early')?.messageId,
+				delivery(first.received, 'early').messageId,
+				'the unacknowledged delivery is sent again under its packet id'
+			);
+		});
+	}
+
 	it('does not re-send an acknowledged delivery that the checkpoint has not caught up with', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
