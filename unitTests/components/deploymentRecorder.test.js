@@ -11,12 +11,9 @@
 // need to control the `.get()` return value or assert side effects.
 
 const assert = require('node:assert');
-<<<<<<< HEAD
-=======
 const crypto = require('node:crypto');
-const { PassThrough, Readable } = require('node:stream');
+const { Readable } = require('node:stream');
 const { closeSync, ftruncateSync, openSync, writeSync } = require('node:fs');
->>>>>>> b18a29e50 (Retry a peer's deploy payload read that stalls before any content arrives)
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -27,13 +24,11 @@ const {
 	ingestTransactionTimeoutMs,
 	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
 } = require('#src/components/deploymentRecorder');
-<<<<<<< HEAD
-const { databases } = require('#src/resources/databases');
-=======
 const { databases, table } = require('#src/resources/databases');
 const { createBlob, saveBlob, decodeFromDatabase, getFilePathForBlob, getFileId } = require('#src/resources/blob');
->>>>>>> b18a29e50 (Retry a peer's deploy payload read that stalls before any content arrives)
 const { contextStorage } = require('#src/resources/transaction');
+const envMngr = require('#src/utility/environment/environmentManager');
+const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
 const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const terms = require('#src/utility/hdbTerms');
 const { waitFor } = require('../waitFor.js');
