@@ -21,14 +21,19 @@ import { isContextWindowExceeded } from '../resources/models/backendHelpers.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import {
 	addPendingApproval,
+	answerInterruptedCalls,
+	answerToolCall,
 	appendMessage,
+	cancelledObservation,
+	claimApproval,
+	endRun,
 	getSession,
-	markApprovalConsumed,
 	setStatus,
 	shrinkNewestToolResults,
 } from './session.ts';
-import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext } from './types.ts';
+import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext, ApprovalRequest } from './types.ts';
 import { toolMapByName } from './toolset.ts';
+import { budgetViolation, callUsage, hasBudget, summarizeSessionUsage } from './budget.ts';
 
 const log = harperLogger.loggerWithTag('agent');
 
@@ -57,6 +62,11 @@ export interface RunAgentOpts {
 	tools: AgentTool[];
 	scopes: AgentScopes;
 	maxTurns: number;
+	/** Per-session caps, measured from the transcript, so an approval resume or a new prompt cannot reset them. */
+	maxSessionTokens?: number;
+	maxCostUsd?: number;
+	/** From `admitRun` when the request that starts this run was admitted; a cancel since then fences it out. */
+	admitted?: number;
 	/** When false, destructive tools pause the loop with a pending approval instead of executing. */
 	autoApprove?: boolean;
 	signal?: AbortSignal;
@@ -68,8 +78,23 @@ export interface RunAgentOpts {
 }
 
 const inFlight = new Map<string, Promise<void>>();
+const cancels = new Map<string, number>();
+
+/** A token for a run admitted now. Take it before the request's first await. */
+export function admitRun(sessionId: string): number {
+	return cancels.get(sessionId) ?? 0;
+}
+
+/**
+ * Called on every cancel, including one that finds no live run to abort: a request admitted before it,
+ * still writing when the cancel arrived, must not start a run that writes `running` over `aborted`.
+ */
+export function fenceRuns(sessionId: string): void {
+	cancels.set(sessionId, admitRun(sessionId) + 1);
+}
 
 export function runAgent(opts: RunAgentOpts): Promise<void> {
+	if (opts.admitted !== undefined && opts.admitted !== admitRun(opts.sessionId)) return Promise.resolve();
 	const existing = inFlight.get(opts.sessionId);
 	if (existing) return existing;
 	const run = doRun(opts).finally(() => {
@@ -79,9 +104,17 @@ export function runAgent(opts: RunAgentOpts): Promise<void> {
 	return run;
 }
 
+/** Includes a cancelled run still finishing a model call or a handler. */
+export function isRunInFlight(sessionId: string): boolean {
+	return inFlight.has(sessionId);
+}
+
 async function doRun(opts: RunAgentOpts): Promise<void> {
 	const toolMap = toolMapByName(opts.tools);
 	const toolDefs: ToolDef[] = opts.tools.map((t) => t.def);
+	// The cancel path already wrote `aborted`; `running` must not replace it. Every later status write
+	// goes through `endRun`, which keeps `aborted` under the session lock.
+	if (opts.signal?.aborted) return;
 	await setStatus(opts.sessionId, 'running');
 	const ctx: AgentToolContext = {
 		sessionId: opts.sessionId,
@@ -91,26 +124,25 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 	};
 
 	try {
-		// First, drain any resolved-but-unconsumed approvals from a prior pause. Either execute
-		// or refuse each saved call, recording an observation, so the next model turn sees the
-		// result of the operator decision.
-		await consumeResolvedApprovals(opts.sessionId, toolMap, ctx);
-
-		// If a turn produced multiple gated tool calls and the operator has only resolved some of
-		// them, the remaining approvals are still pending — meaning the assistant's tool_calls do
-		// not yet all have tool responses. Re-entering the generate loop now would send an
-		// incomplete tool-response set and the provider would 400. Stay paused until every gated
-		// call for this turn is resolved (each `approve_agent_action` re-runs this path).
-		const afterConsume = await getSession(opts.sessionId);
-		if (afterConsume?.pendingApprovals.some((a) => !a.resolved)) {
-			await setStatus(opts.sessionId, 'awaiting_approval');
-			return;
-		}
+		// Calls a dead run left unanswered are repaired first, so no later path sends them unanswered.
+		await answerInterruptedCalls(opts.sessionId);
+		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
+		// approval must stop the approved action, not just the next model call.
+		if (await stopIfOverBudget(opts)) return;
+		if (!(await drainApprovals(opts, toolMap, ctx))) return;
 
 		for (let turn = 0; turn < opts.maxTurns; turn++) {
 			if (opts.signal?.aborted) return; // status was already set to `aborted` by cancelRun
 			const result = await generateTurn(opts, toolDefs);
-			if (opts.signal?.aborted) return;
+			if (opts.signal?.aborted) {
+				// The call returned after the cancel; its reply is discarded but it was billed, so it is counted.
+				await endRun(opts.sessionId, {
+					status: 'aborted',
+					lastError: 'Cancelled by operator',
+					rejectedCall: callUsage(result.usage, result.costUsd) ?? {},
+				});
+				return;
+			}
 			log.debug?.(
 				`Session ${opts.sessionId} turn ${turn}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} contentChars=${result.content?.length ?? 0} completionTokens=${result.usage?.completionTokens ?? 'unknown'}`
 			);
@@ -118,33 +150,64 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 			// Must run before appendMessage: nothing from a rejected turn may reach the transcript (agent/DESIGN.md).
 			const rejection = rejectTurn(result, opts.generateOpts?.maxTokens);
 			if (rejection) {
-				await setStatus(opts.sessionId, 'error', rejection);
+				// The rejected call was still billed, so its usage is kept on the session, outside the transcript.
+				await endRun(opts.sessionId, {
+					status: 'error',
+					lastError: rejection,
+					rejectedCall: callUsage(result.usage, result.costUsd) ?? {},
+				});
 				return;
 			}
 
-			await appendMessage(opts.sessionId, {
+			const assistantMessage: AgentMessage = {
 				role: 'assistant',
 				content: result.content ?? '',
 				toolCalls: result.toolCalls,
 				createdAt: Date.now(),
-			});
+			};
+			const usage = callUsage(result.usage, result.costUsd);
+			if (usage) assistantMessage.usage = usage;
+
+			const session = hasBudget(opts) ? await getSession(opts.sessionId) : undefined;
+			const violation = session
+				? budgetViolation(summarizeSessionUsage([...session.messages, assistantMessage], session.rejectedCalls), opts)
+				: undefined;
+			if (violation) {
+				const refusals = (result.toolCalls ?? []).map((call) => budgetRefusal(call.id, violation));
+				await endRun(opts.sessionId, {
+					append: [assistantMessage, ...refusals],
+					status: refusals.length > 0 ? 'error' : 'completed',
+					lastError: violation,
+				});
+				return;
+			}
+
+			await appendMessage(opts.sessionId, assistantMessage);
 
 			if (!result.toolCalls || result.toolCalls.length === 0) {
-				if (opts.signal?.aborted) return;
-				await setStatus(opts.sessionId, 'completed');
+				await endRun(opts.sessionId, { status: 'completed' });
 				return;
 			}
 
 			const paused = await dispatchToolCalls(result.toolCalls, toolMap, ctx, opts);
-			if (paused || opts.signal?.aborted) return;
+			if (opts.signal?.aborted) return;
+			if (paused && !(await drainApprovals(opts, toolMap, ctx))) return;
 		}
-		await setStatus(opts.sessionId, 'completed', `Reached maxTurns=${opts.maxTurns} without a final answer.`);
+		await endRun(opts.sessionId, {
+			status: 'completed',
+			lastError: `Reached maxTurns=${opts.maxTurns} without a final answer.`,
+		});
 	} catch (err) {
 		// If the abort signal fired, the cancel path already set the session to `aborted` —
 		// don't clobber that with `error`. The rejection here is just the awaited generate/tool
 		// honoring the signal, not a real failure.
 		if (opts.signal?.aborted) return;
-		await setStatus(opts.sessionId, 'error', err instanceof Error ? err.message : String(err));
+		await endRun(opts.sessionId, {
+			status: 'error',
+			lastError: err instanceof Error ? err.message : String(err),
+			answerOpenApprovals: (approval) => JSON.stringify({ ok: false, error: 'run_failed', tool: approval.toolName }),
+			answerUnansweredCalls: (toolName) => JSON.stringify({ ok: false, error: 'run_failed', tool: toolName }),
+		});
 		throw err;
 	}
 }
@@ -218,6 +281,68 @@ function contextWindowError(cause: unknown, detail: string): Error {
 }
 
 /**
+ * Drain resolved approvals until none is left; false when the run must stop here (cancelled, or paused on
+ * an unresolved approval). An approval resolved while this run is live, during the drain or during the
+ * turn's later inline calls, joins this run (`startRun`), so it is drained here, not left unanswered for
+ * the next model call. Generating while any approval is unresolved would send tool calls without their
+ * responses, which the provider rejects, so the run pauses; the pause is decided under the lock.
+ */
+async function drainApprovals(
+	opts: RunAgentOpts,
+	toolMap: Map<string, AgentTool>,
+	ctx: AgentToolContext
+): Promise<boolean> {
+	for (;;) {
+		if (opts.signal?.aborted) return false;
+		await consumeResolvedApprovals(opts.sessionId, toolMap, ctx);
+		const session = await getSession(opts.sessionId);
+		const approvals = session?.pendingApprovals ?? [];
+		if (approvals.some((a) => a.resolved && !a.consumed)) continue;
+		if (!approvals.some((a) => !a.resolved)) {
+			// `resolveApproval` writes `idle` when it resolves the last approval, even into a live run.
+			if (session && session.status !== 'running') await endRun(opts.sessionId, { status: 'running' });
+			return true;
+		}
+		const paused = await endRun(opts.sessionId, { status: 'awaiting_approval', pauseWhileApprovalsOpen: true });
+		if (paused.status === 'aborted' || paused.pendingApprovals.some((a) => !a.resolved)) return false;
+	}
+}
+
+/**
+ * Every open approval, resolved or not, is answered without executing it, so no tool call is left
+ * without a response once the session leaves `awaiting_approval`.
+ */
+async function stopIfOverBudget(opts: RunAgentOpts): Promise<boolean> {
+	if (!hasBudget(opts)) return false;
+	const session = await getSession(opts.sessionId);
+	if (!session) return false;
+	const violation = budgetViolation(summarizeSessionUsage(session.messages, session.rejectedCalls), opts);
+	if (!violation) return false;
+	await endRun(opts.sessionId, {
+		answerOpenApprovals: (approval) => approvalRefusal(approval, violation),
+		status: 'error',
+		lastError: violation,
+	});
+	return true;
+}
+
+function budgetRefusal(toolCallId: string, reason: string): AgentMessage {
+	return { role: 'tool', content: budgetExceeded(reason), toolCallId, createdAt: Date.now() };
+}
+
+function budgetExceeded(reason: string): string {
+	return JSON.stringify({ ok: false, error: 'budget_exceeded', reason });
+}
+
+function approvalRefusal(approval: ApprovalRequest, reason: string): string {
+	return !approval.resolved || approval.approved ? budgetExceeded(reason) : deniedObservation(approval);
+}
+
+function deniedObservation(approval: ApprovalRequest): string {
+	return JSON.stringify({ ok: false, error: 'denied_by_operator', tool: approval.toolName });
+}
+
+/**
  * Returns `true` when the loop should pause (any destructive tool call required approval).
  * Non-destructive calls execute inline and their observations are appended. Destructive calls
  * register pending approvals but do NOT append a tool message — `consumeResolvedApprovals`
@@ -232,8 +357,21 @@ async function dispatchToolCalls(
 	opts: RunAgentOpts
 ): Promise<boolean> {
 	let needsApproval = false;
-	for (const call of calls) {
-		if (opts.signal?.aborted) return true;
+	for (const [index, call] of calls.entries()) {
+		if (opts.signal?.aborted) {
+			// Answer the rest of the turn in one write, so the transcript stays sendable after the cancel.
+			await endRun(opts.sessionId, {
+				append: calls.slice(index).map((unanswered) => ({
+					role: 'tool',
+					content: cancelledObservation(unanswered.name),
+					toolCallId: unanswered.id,
+					createdAt: Date.now(),
+				})),
+				status: 'aborted',
+				lastError: 'Cancelled by operator',
+			});
+			return true;
+		}
 		const tool = toolMap.get(call.name);
 		const destructiveAndGated = tool?.destructive && !opts.autoApprove;
 		if (destructiveAndGated) {
@@ -269,20 +407,22 @@ async function consumeResolvedApprovals(
 	if (!session) return;
 	const toConsume = session.pendingApprovals.filter((a) => a.resolved && !a.consumed);
 	for (const approval of toConsume) {
+		if (ctx.signal?.aborted) return;
+		if (!(await claimApproval(sessionId, approval.id))) continue;
+		// The claim makes this run the only writer that can answer the call; a cancel that landed during
+		// the claim gets that answer instead of the action.
+		if (ctx.signal?.aborted) {
+			await answerToolCall(sessionId, approval.toolCallId, cancelledObservation(approval.toolName));
+			return;
+		}
 		const observation = approval.approved
 			? await invokeTool(
 					{ id: approval.toolCallId, name: approval.toolName, arguments: approval.arguments },
 					toolMap,
 					ctx
 				)
-			: JSON.stringify({ ok: false, error: 'denied_by_operator', tool: approval.toolName });
-		await appendMessage(sessionId, {
-			role: 'tool',
-			content: observation,
-			toolCallId: approval.toolCallId,
-			createdAt: Date.now(),
-		});
-		await markApprovalConsumed(sessionId, approval.id);
+			: deniedObservation(approval);
+		await answerToolCall(sessionId, approval.toolCallId, observation);
 	}
 }
 
@@ -313,4 +453,5 @@ function toModelMessages(items: AgentMessage[]): Message[] {
 /** Test-only: clear the in-flight tracking map. */
 export function _resetInFlightForTests(): void {
 	inFlight.clear();
+	cancels.clear();
 }

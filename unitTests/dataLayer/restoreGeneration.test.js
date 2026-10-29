@@ -6,7 +6,7 @@ const { createBackupOffline, restoreBackupOffline, backupDirForDatabase } = requ
 const { getAuditFloor, getDatabaseGeneration, isResumablePosition } = require('#src/resources/auditStore');
 const { DatabaseGenerationChangedError } = require('#src/utility/errors/hdbError');
 const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 

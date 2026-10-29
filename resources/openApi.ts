@@ -336,10 +336,13 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		const outputSchemas = entry.Resource.outputSchemas ?? {};
 		// query params declared on the verb's contract, appended to the path params
 		const paramsFor = (verb: string) => [...pathParams, ...queryParametersFromFragment(inputSchemas[verb]?.query)];
-		const bodyFor = (verb: string) =>
-			inputSchemas[verb]?.body
-				? { content: { 'application/json': { schema: fragmentToOpenApiSchema(inputSchemas[verb].body) } } }
-				: genericRequestBody;
+		const bodyFor = (verb: string) => {
+			const input = inputSchemas[verb];
+			if (!input?.body) return genericRequestBody;
+			const requestBody: any = { content: { 'application/json': { schema: fragmentToOpenApiSchema(input.body) } } };
+			if (input.bodyRequired) requestBody.required = true;
+			return requestBody;
+		};
 		const responseFor = (verb: string) =>
 			outputSchemas[verb] ? fragmentToOpenApiSchema(outputSchemas[verb]) : genericResponseSchema;
 

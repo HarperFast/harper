@@ -9,10 +9,18 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
-const password_function = require('#src/utility/password');
-let token_auth = rewire('#src/security/tokenAuthentication');
+const password_function = require('#js/utility/password');
+let token_auth = rewire('#js/security/tokenAuthentication');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
 
 // a resolved user also carries the record versions it was built from, under a symbol key
 const recordFields = (resolved) => Object.fromEntries(Object.entries(resolved));
@@ -529,7 +537,7 @@ describe('test validateOperationToken function', () => {
 			])
 		);
 
-		token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 
@@ -1056,7 +1064,7 @@ describe('test validateRefreshToken function', () => {
 
 		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
-		token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 

@@ -1,8 +1,8 @@
-import { resolveBaseURLPath } from './resolveBaseURLPath';
-import { deriveCommonPatternBase } from './deriveCommonPatternBase';
-import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions';
-import { scan } from 'micromatch';
-
+import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
+import { deriveCommonPatternBase } from './deriveCommonPatternBase.ts';
+import { deriveGlobOptions, type FastGlobOptions, type FilesOption } from './deriveGlobOptions.ts';
+import _micromatch from 'micromatch';
+const { scan } = _micromatch;
 interface ComponentConfig {
 	files: FilesOption;
 	urlPath?: string;

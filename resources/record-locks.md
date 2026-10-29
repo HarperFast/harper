@@ -143,6 +143,8 @@ Consequences that shape the code:
   not a `transactional()` verb on `Resource`, and no protocol reaches it: REST answers 501,
   `KNOWN_METHODS` does not include it,
   and neither OpenAPI nor MCP enumerate it. Exposing lock/unlock over a protocol is a Phase 1 decision.
+  REST conditional writes do take a default-scope hold lock internally, after authorization, when
+  `rest.preconditionLocks` is on; see [HTTP request preconditions](../server/DESIGN.md#http-request-preconditions-restts-tablets).
   Acquisition itself has no authorization hook — lock() is not protocol-dispatched, so no
   allowUpdate/allowCreate check runs when a caller acquires a lock.
 - **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table
@@ -166,7 +168,12 @@ the lock's acquisition time, which LWW then silently drops against a newer recor
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
 clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
 were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
-thrown for the mixed-write case). After a lock-backed record change commits, its transaction timestamp
+thrown for the mixed-write case). Either way the holder's writes commit at the transaction's version:
+`save()` stamps from the handle only a save that commits on its own handle (`saveCommits`, or
+`concurrentClosedWrite` — a write that reaches the transaction after it closed), so the conflict-retry
+and open-iterator-replay re-saves that `performCommit()` runs after closing the transaction keep each
+write's first-save version ([harper#3487](https://github.com/HarperFast/harper/issues/3487); pinned by
+`recordLock.test.js`). After a lock-backed record change commits, its transaction timestamp
 advances `handle.noteHolderVersion()`, so a surviving hold's later saves advance past that version
 rather than going backwards and being dropped by LWW. A skipped or rolled-back change never advances
 the floor. Consequently, a mixed transaction can
@@ -1160,10 +1167,9 @@ feature that has not yet been measured.
 > delegation lease expires on a peer) is limitation (2)'s third route.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
-> is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is meant to be super-user only —
-> `checkContextPermissions` (`resources/Table.ts`) raises 403 otherwise, though its truthiness
-> gate lets `X-Replicate-To: 0` through, which is harper#2546 and not a mitigation anyone should
-> build on. And where it is legitimately available it is a **residency** directive before it is a
+> is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is super-user only — `server/REST.ts`
+> answers 403 to anyone else ([replication directives](DESIGN.md#x-replicate-to-and-the-replicatetoreplicatedconfirmation-operation-fields-are-super-user-only-gated-where-they-enter-serverrestts-verifyperms)). And where it is
+> legitimately available it is a **residency** directive before it is a
 > confirmation knob: absent a `getResidencyById` function, which short-circuits ahead of it
 > (`getResidency` in `resources/Table.ts`), a numeric value sets residency to `[self, ...N nodes]` and truncates
 > existing residency on update, while `*` leaves `replicateTo` undefined and falls back to

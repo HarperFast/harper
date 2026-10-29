@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 
 // Covers the additive-only invariant documented in DESIGN.md: a definition carrying origin 'cluster'

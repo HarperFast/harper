@@ -24,7 +24,7 @@ const {
 	componentPreparationLockPaths,
 	COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
 } = require('#src/components/componentPreparationLock');
-const envModule = require('#src/utility/environment/environmentManager');
+const envModule = require('#js/utility/environment/environmentManager');
 const { waitFor } = require('../waitFor.js');
 const { preserveRootConfig, readRootConfig, setRootConfigEntry: writeEntry } = require('../rootConfigFixture.js');
 
@@ -142,6 +142,62 @@ describe('root config publication', () => {
 
 			assert.deepStrictEqual(readRootConfig().web, { isolated: true });
 			assert.strictEqual(Object.hasOwn(readRootConfig(), 'never-configured'), false);
+		});
+
+		describe('the routing a payload deploy owns (harper#3043)', () => {
+			const routing = { host: 'pr-12.app.example.com', urlPath: null, isolated: true, branchedDatabases: true };
+
+			it('sets the keys it names, removes the ones it names null, and keeps every other key', async () => {
+				writeEntry('web', { package: 'npm:web@1', urlPath: '/web', host: 'old.example.com', loadComponent: false });
+
+				assert.strictEqual(await applyRootConfigEffect('web', { kind: 'unset-package', routing }), true);
+
+				assert.deepStrictEqual(readRootConfig().web, {
+					host: 'pr-12.app.example.com',
+					loadComponent: false,
+					isolated: true,
+					branchedDatabases: true,
+				});
+			});
+
+			it('creates the entry of a component that had none', async () => {
+				assert.strictEqual(await applyRootConfigEffect('preview', { kind: 'unset-package', routing }), true);
+
+				assert.deepStrictEqual(readRootConfig().preview, {
+					host: 'pr-12.app.example.com',
+					isolated: true,
+					branchedDatabases: true,
+				});
+			});
+
+			it('removes an entry left with nothing, and writes nothing when the entry already says it', async () => {
+				writeEntry('web', { package: 'npm:web@1', host: 'old.example.com' });
+				const cleared = { host: null, urlPath: null, isolated: null, branchedDatabases: null };
+				assert.strictEqual(await applyRootConfigEffect('web', { kind: 'unset-package', routing: cleared }), true);
+				assert.strictEqual(Object.hasOwn(readRootConfig(), 'web'), false);
+
+				await applyRootConfigEffect('web', { kind: 'unset-package', routing });
+				assert.strictEqual(await applyRootConfigEffect('web', { kind: 'unset-package', routing }), false);
+			});
+
+			it('is refused when a variable reasserts a key it changes', async () => {
+				writeEntry('env-web', { host: 'old.example.com' });
+
+				await withConfigEnv({ HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { host: 'old.example.com' } }) }, () =>
+					assert.rejects(
+						assertRootConfigEffectPublishable('env-web', { kind: 'unset-package', routing }),
+						/HARPER_SET_CONFIG sets env-web\.host\b.*would not last/
+					)
+				);
+			});
+
+			it('round-trips through a declaration, and is a valid journal effect only with routing keys', () => {
+				assert.deepStrictEqual(rootConfigEffectFromDeclaration(null, routing), { kind: 'unset-package', routing });
+				assert.deepStrictEqual(rootConfigEffectFromDeclaration(null), { kind: 'unset-package' });
+				assert.ok(isRootConfigEffect({ kind: 'unset-package', routing }));
+				assert.ok(!isRootConfigEffect({ kind: 'unset-package', routing: { package: 'npm:web@2' } }));
+				assert.ok(!isRootConfigEffect({ kind: 'unset-package', routing: ['host'] }));
+			});
 		});
 
 		it('removes the whole entry for a dropped component, and is a no-op when there is none', async () => {

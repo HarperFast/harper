@@ -3,10 +3,14 @@ const assert = require('node:assert');
 const { hostname } = require('node:os');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { INVALIDATED } = require('#src/resources/Table');
 const { logger } = require('#src/utility/logging/logger');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { waitFor } = require('../waitFor.js');
 
 const SELF = global.server.hostname || hostname();
 const PEER = 'writer-residency-peer';
@@ -139,6 +143,49 @@ describe('Writer residency (harper#2257)', () => {
 		assert.deepEqual(residencyOf(entry), [PEER]);
 	});
 
+	it('keeps the primary key on a received stub, so an index-only select returns it', async () => {
+		Records.setResidency(() => [PEER]);
+		await applyFrame([{ id: 'keyed-stub', record: { id: 'keyed-stub', name: 'keyed', body: 'complete' } }]);
+		assert.ok(Records.primaryStore.getEntry('keyed-stub').metadataFlags & INVALIDATED, 'premise: a stub');
+		const found = [];
+		for await (const record of Records.search({
+			conditions: [{ attribute: 'name', value: 'keyed' }],
+			select: ['id', 'name'],
+		}))
+			found.push(record);
+		assert.deepEqual(found, [{ id: 'keyed-stub', name: 'keyed' }]);
+	});
+
+	it('stores a key-only stub, never a null value, on a table with no secondary index', async () => {
+		const Unindexed = table({
+			table: 'WriterResidencyUnindexed',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'body' }],
+			audit: true,
+		});
+		Unindexed.setResidency(() => [PEER]);
+		try {
+			const context = { source: {}, sourceApply: true, timestamp: originClock() };
+			await transaction(context, async () => {
+				const resource = await Unindexed.getResource('unindexed', context);
+				resource._writeUpdate('unindexed', { id: 'unindexed', body: 'complete' }, true, {
+					isNotification: true,
+					nodeId: 1,
+					version: context.timestamp,
+				});
+			});
+			for (const step of ['received', 'patched']) {
+				if (step === 'patched') await Unindexed.patch('unindexed', { body: 'patched' });
+				const entry = Unindexed.primaryStore.getEntry('unindexed');
+				assert.ok(entry.metadataFlags & INVALIDATED, `${step}: premise: a stub`);
+				assert.equal(entry.value?.id, 'unindexed', `${step}: the stub must be stored as its key, not null`);
+				assert.equal(entry.value.body, undefined);
+			}
+		} finally {
+			Unindexed.setResidency(undefined);
+		}
+	});
+
 	it('stores a stub for a source write that carries no node id', async () => {
 		Records.setResidency(() => [PEER]);
 		await applyFrame([
@@ -244,11 +291,188 @@ describe('Writer residency (harper#2257)', () => {
 		assert.ok(!entry.residencyId);
 	});
 
+	it('leaves a stored row and its index entries together when setResidencyById omits a write to it', async () => {
+		await Records.put('by-id-kept', { id: 'by-id-kept', name: 'before', body: 'complete' });
+		Records.setResidencyById(() => [PEER]);
+		await Records.put('by-id-kept', { id: 'by-id-kept', name: 'after', body: 'complete' });
+		// the omission writes no row (harper#3566), so the stored row and its index entry must still agree
+		const stored = Records.primaryStore.getEntry('by-id-kept').value;
+		const indexed = Array.from(Records.indices.name.getRange({}))
+			.filter(({ value }) => value === 'by-id-kept')
+			.map(({ key }) => key);
+		assert.deepEqual(indexed, [stored.name]);
+	});
+
+	it('removes the index entries of a row deleted after an id-based omission in the same transaction', async () => {
+		await Records.put('by-id-deleted', { id: 'by-id-deleted', name: 'before', body: 'complete' });
+		Records.setResidencyById(() => [PEER]);
+		const context = {};
+		await transaction(context, async () => {
+			await Records.put('by-id-deleted', { id: 'by-id-deleted', name: 'after', body: 'complete' }, context);
+			await Records.delete('by-id-deleted', context);
+		});
+		assert.equal(Records.primaryStore.getEntry('by-id-deleted')?.value ?? null, null);
+		const indexed = Array.from(Records.indices.name.getRange({}))
+			.filter(({ value }) => value === 'by-id-deleted')
+			.map(({ key }) => key);
+		assert.deepEqual(indexed, [], 'the deleted row left index entries behind');
+	});
+
+	it('keeps the blob files of a stored row an id-based omission leaves in place', async () => {
+		const Files = table({
+			table: 'WriterResidencyFiles',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'file', type: 'Any' },
+			],
+			audit: true,
+		});
+		const fileOf = (id) => getFilePathForBlob(Files.primaryStore.getEntry(id).value.file);
+		// above the inline size, so each row owns a file
+		await Files.put('kept', { id: 'kept', file: createBlob(randomBytes(25000)) });
+		await Files.put('control', { id: 'control', file: createBlob(randomBytes(25000)) });
+		const keptFile = fileOf('kept');
+		const controlFile = fileOf('control');
+		setDeletionDelay(0);
+		Files.setResidencyById((id) => (id === 'kept' ? [PEER] : undefined));
+		try {
+			await Files.put('kept', { id: 'kept', file: createBlob(randomBytes(25000)) });
+			await Files.delete('control');
+			await waitFor(() => !existsSync(controlFile), { message: 'premise: a deleted row releases its blob file' });
+			assert.ok(existsSync(keptFile), 'the omission released the blob file of the row it left in place');
+		} finally {
+			setDeletionDelay(undefined);
+			Files.setResidencyById(undefined);
+		}
+	});
+
 	it('leaves setResidencyById omission unchanged', async () => {
 		Records.setResidencyById(() => [PEER]);
 		await Records.put('by-id', { id: 'by-id', name: 'n', body: 'complete' });
 		assert.equal(Records.primaryStore.getEntry('by-id')?.value, undefined, 'the writer keeps no copy');
 		await Records.patch('by-id', { note: 'added' });
 		assert.equal(Records.primaryStore.getEntry('by-id')?.value, undefined, 'nor after a patch');
+	});
+
+	describe('when replication worker pool is active', () => {
+		const { setActiveWorkerPools } = require('#src/server/threads/workerPools');
+		const harperLogger = require('#js/utility/logging/harper_logger');
+
+		function capturingErrors(run) {
+			const errors = [];
+			const originalError = harperLogger.error;
+			harperLogger.error = (...args) => {
+				errors.push(args.map(String).join(' '));
+			};
+			try {
+				run();
+			} finally {
+				harperLogger.error = originalError;
+			}
+			return errors;
+		}
+
+		afterEach(() => {
+			setActiveWorkerPools([]);
+		});
+
+		it('does not log when the replication pool is not active', () => {
+			setActiveWorkerPools([]);
+			const FreshTable = table({
+				table: 'WriterResidencyNoPool',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const errors = capturingErrors(() => {
+				FreshTable.setResidency(() => [PEER]);
+			});
+			FreshTable.setResidency(undefined);
+			assert.strictEqual(errors.length, 0);
+		});
+
+		it('logs an error once per table on setResidency / setResidencyById and ignores clearing', () => {
+			setActiveWorkerPools(['replication']);
+			const PoolTable = table({
+				table: 'WriterResidencyPoolActive',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const fn = () => [PEER];
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					PoolTable.setResidency(undefined);
+					PoolTable.setResidencyById(undefined);
+				}),
+				[]
+			);
+			const firstErrors = capturingErrors(() => {
+				PoolTable.setResidency(fn);
+			});
+			assert.strictEqual(firstErrors.length, 1);
+			assert.match(firstErrors[0], /WriterResidencyPoolActive/);
+			assert.match(firstErrors[0], /setResidency/);
+			assert.match(firstErrors[0], /default residency placement/);
+			assert.match(firstErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
+
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					PoolTable.setResidency(fn);
+					PoolTable.setResidencyById(fn);
+				}),
+				[]
+			);
+			PoolTable.setResidency(undefined);
+			PoolTable.setResidencyById(undefined);
+
+			const SecondPoolTable = table({
+				table: 'WriterResidencyPoolActiveById',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const byIdErrors = capturingErrors(() => {
+				SecondPoolTable.setResidencyById(fn);
+			});
+			assert.strictEqual(byIdErrors.length, 1);
+			assert.match(byIdErrors[0], /WriterResidencyPoolActiveById/);
+			assert.match(byIdErrors[0], /setResidencyById/);
+			assert.match(byIdErrors[0], /invalidation entries \(residency partials\)/);
+			assert.match(byIdErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
+			SecondPoolTable.setResidencyById(undefined);
+		});
+
+		it('logs an error once per table when setComputedAttribute registers an indexed JS resolver', () => {
+			setActiveWorkerPools(['replication']);
+			const ComputedPoolTable = table({
+				table: 'ComputedIndexPoolActive',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'unindexedScore', computed: true },
+					{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
+					{ name: 'indexedScore', computed: true, indexed: { type: 'value' } },
+				],
+			});
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					ComputedPoolTable.setComputedAttribute('unindexedScore', (rec) => rec.id);
+				}),
+				[]
+			);
+			const errors = capturingErrors(() => {
+				ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+			});
+			assert.strictEqual(errors.length, 1);
+			assert.match(errors[0], /ComputedIndexPoolActive/);
+			assert.match(errors[0], /setComputedAttribute \(e\.g\. 'indexedScore'\)/);
+			assert.match(errors[0], /unresolvedComputedIndexes\(\)/);
+			assert.match(errors[0], /replication\.threads: 0 in harper-config\.yaml/);
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+				}),
+				[]
+			);
+		});
 	});
 });

@@ -10,7 +10,7 @@ const {
 	trackOutstandingCommit,
 } = require('#src/resources/DatabaseTransaction');
 const { publishDerivedIndexReadiness, readDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const { fullTextRetirementInProgress, hasDerivedIndexRegistration } = require('#src/resources/derivedIndexRegistry');
 const {

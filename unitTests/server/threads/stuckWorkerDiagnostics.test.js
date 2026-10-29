@@ -10,10 +10,10 @@ const {
 	broadcastWithStrictAcknowledgement,
 	onMessageFromWorkers,
 	workers,
-} = require('#js/server/threads/manageThreads');
+} = require('#src/server/threads/manageThreads');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
-const { sendItcEvent } = require('#js/server/threads/itc');
+const { sendItcEvent } = require('#src/server/threads/itc');
 const {
 	claimDatabaseDropPreparation,
 	databaseDropPrepared,

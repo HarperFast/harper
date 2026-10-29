@@ -1,0 +1,5 @@
+type StallRow @table @export {
+	id: ID @primaryKey
+	group: String @indexed
+	pad: String
+}

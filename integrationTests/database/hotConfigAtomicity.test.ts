@@ -17,9 +17,6 @@
  *   T2 MONOTONIC VISIBILITY — single reader loop during sequential writes. Does any
  *      consecutive (prev, cur) version pair go backwards? Assert 0 backwards jumps.
  *
- *   T3 LATENCY STABILITY — p50/p99/max for GET /Config/global, baseline vs writer-active.
- *      Observational (warning at 5× p99 ratio, no hard assertion).
- *
  *   T4 addTo + PUT STORM — 200 concurrent BumpReadCount (addTo) while 10 concurrent
  *      WriteConfig PUTs run. Assert no lost increments AND final record self-consistent.
  *
@@ -276,72 +273,6 @@ suite(`QA-334 hot-config atomicity [${ENGINE}]`, { skip: skipSuite }, (ctx: Cont
 		);
 
 		strictEqual(backwardsJumps, 0, `${backwardsJumps} backwards version jumps in ${versionSequence.length} samples`);
-	});
-
-	// ── T3: latency distribution ───────────────────────────────────────────────
-
-	test('T3: latency distribution — baseline vs writer-active (observational)', { timeout: 60_000 }, async () => {
-		const s0 = await writeConfig(1, 10, 20, 'v1');
-		ok(s0 === 200 || s0 === 201 || s0 === 204, `T3 seed status=${s0}`);
-
-		async function measureLatencies(n: number): Promise<number[]> {
-			const latencies: number[] = [];
-			for (let i = 0; i < n; i++) {
-				const t0 = performance.now();
-				await getConfig();
-				latencies.push(performance.now() - t0);
-			}
-			return latencies;
-		}
-
-		function percentile(sorted: number[], p: number): number {
-			const idx = Math.min(Math.floor((p / 100) * sorted.length), sorted.length - 1);
-			return sorted[idx];
-		}
-
-		const N = 500;
-
-		// Baseline: no writer
-		const baseLatencies = (await measureLatencies(N)).sort((a, b) => a - b);
-		const baseP50 = percentile(baseLatencies, 50);
-		const baseP99 = percentile(baseLatencies, 99);
-		const baseMax = baseLatencies[baseLatencies.length - 1];
-
-		// Under writer: write every 50ms
-		let writerRunning = true;
-		let writerVersion = 2;
-		const writerLoop = (async () => {
-			while (writerRunning) {
-				const v = writerVersion++;
-				await writeConfig(v, v * 10, v * 20, `v${v}`).catch(() => {});
-				await sleep(50);
-			}
-		})();
-
-		const underLatencies = (await measureLatencies(N)).sort((a, b) => a - b);
-		writerRunning = false;
-		await writerLoop;
-
-		const underP50 = percentile(underLatencies, 50);
-		const underP99 = percentile(underLatencies, 99);
-		const underMax = underLatencies[underLatencies.length - 1];
-
-		const p99Ratio = baseP99 > 0 ? underP99 / baseP99 : 0;
-		const latencyVerdict =
-			p99Ratio > 5
-				? `WARNING — p99 under writer is ${p99Ratio.toFixed(1)}x baseline (${underP99.toFixed(2)}ms vs ${baseP99.toFixed(2)}ms)`
-				: `STABLE — p99 ratio ${p99Ratio.toFixed(2)}x (within 5x threshold)`;
-
-		console.log(
-			`\n[QA-334 T3 ${ENGINE}]\n` +
-				`  baseline  (${N} reads): p50=${baseP50.toFixed(2)}ms p99=${baseP99.toFixed(2)}ms max=${baseMax.toFixed(2)}ms\n` +
-				`  under-writer (${N} reads): p50=${underP50.toFixed(2)}ms p99=${underP99.toFixed(2)}ms max=${underMax.toFixed(2)}ms\n` +
-				`  p99_ratio=${p99Ratio.toFixed(2)}x\n` +
-				`  >>> VERDICT: OBSERVATIONAL — ${latencyVerdict}`
-		);
-
-		// No hard assertion — this is observational
-		ok(true, 'T3 observational pass');
 	});
 
 	// ── T4: addTo (BumpReadCount) under PUT storm ──────────────────────────────

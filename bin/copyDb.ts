@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../utility/packageUtils.js';
 import {
 	getDatabases,
 	getDefaultCompression,
@@ -8,7 +9,8 @@ import {
 } from '../resources/databases.ts';
 import { asBinary } from '../resources/asBinary.ts';
 import { isAbsolute, join, relative, sep } from 'node:path';
-import { move, remove } from 'fs-extra';
+import _typestrip_fs_extra from 'fs-extra';
+const { move, remove } = _typestrip_fs_extra;
 import { existsSync, mkdirSync } from 'node:fs';
 import { rename, writeFile } from 'node:fs/promises';
 import { get } from '../utility/environment/environmentManager.ts';
@@ -345,7 +347,9 @@ async function copyDbEnvironment(
 	// this contains the list of all the dbis
 	const sourceDbisDb = rootStore.dbisDb;
 	const sourceAuditStore = rootStore.auditStore;
-	const targetEnv = (require('lmdb') as typeof import('lmdb')).open(new OpenEnvironmentObject(targetDatabasePath));
+	const targetEnv = (loadNativePackage('lmdb') as typeof import('lmdb')).open(
+		new OpenEnvironmentObject(targetDatabasePath)
+	);
 	const targetDbisDb = targetEnv.openDB({ name: INTERNAL_DBIS_NAME });
 	let written;
 	let outstandingWrites = 0;
@@ -1028,6 +1032,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						expiresAt: entryExpiresAt,
 						nodeId: entryNodeId,
 						residencyId: entryResidencyId,
+						residencySlot: entryResidencySlot,
 						metadataFlags: entryMetadataFlags,
 					} of sourceDbi.getRange({ start, transaction, versions: true })) {
 						try {
@@ -1049,7 +1054,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 									entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
 									entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
 									entryNodeId ?? sourceMeta?.nodeId ?? -1,
-									entryResidencyId ?? sourceMeta?.residencyId ?? 0
+									entryResidencyId ?? sourceMeta?.residencyId ?? 0,
+									entryResidencySlot ?? sourceMeta?.residencySlot
 								);
 							} else {
 								// A flags-word-only prefix (no leading timestamp) is misparsed by the RocksDB

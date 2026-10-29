@@ -9,8 +9,8 @@ const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { CandidateKeySet } = require('#src/resources/search');
 const { DERIVED_INDEX_CURSOR_KEY, derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { pack } = require('msgpackr');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 
 /** Shared readiness the owning worker publishes for a table's vector index, readable on any worker. */
 function indexReady(Table) {

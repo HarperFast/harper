@@ -6,6 +6,7 @@ import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	readDerivedIndexReadiness,
+	sameDerivedIndexCursorVector,
 	sameDerivedIndexPositions,
 	type DerivedIndexBackend,
 	type DerivedIndexBackendHost,
@@ -73,6 +74,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	#scheduled = false;
 	#appliedCursor?: DerivedIndexCursor;
 	#appliedEpoch?: bigint;
+	#appliedPastCoverage = false;
 	#flushRequested = false;
 	#flushing?: Promise<void>;
 	#interruptBarrierAfter = 0;
@@ -106,6 +108,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		if (!cursor) throw new Error('Cannot publish native index coverage without a durable cursor');
 		if (cursor.coverage && sameDerivedIndexPositions(cursor.coverage, positions)) return;
 		this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, { ...cursor, coverage: positions });
+		this.#appliedPastCoverage = false;
 	}
 
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult {
@@ -137,6 +140,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	reset(_epoch: bigint): Promise<void> {
 		this.#dropQueue();
 		this.#appliedCursor = undefined;
+		this.#appliedPastCoverage = false;
 		this.#resetting = (async () => {
 			await this.#flushing;
 			this.#index.indexStore.removeSync(DERIVED_INDEX_CURSOR_KEY);
@@ -180,6 +184,9 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			const records = batch.records;
 			while (this.#position < records.length && performance.now() < until) {
 				try {
+					// Fences the coverage-stripping write in #runFlush before this batch completes.
+					this.#appliedEpoch = batch.ownerEpoch;
+					this.#appliedPastCoverage = true;
 					this.#apply(records[this.#position++]);
 				} catch (error) {
 					this.#queue.length = 0;
@@ -244,9 +251,15 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		this.#flushing = (async () => {
 			await this.#index.flushDerived();
 			if (epoch !== undefined && !host.isOwnerEpoch(epoch)) return;
-			if (cursor) {
-				const coverage = this.getDurableCursor()?.coverage;
-				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...cursor, coverage } : cursor);
+			const durable = this.getDurableCursor();
+			// Records past the coverage are durable now, so no cursor written from here may keep it.
+			const written = cursor ?? (this.#appliedPastCoverage && durable?.coverage ? durable : undefined);
+			if (written) {
+				const { coverage: own, ...vector } = written;
+				const coverage = this.#appliedPastCoverage
+					? undefined
+					: (own ?? (durable && sameDerivedIndexCursorVector(durable, written) ? durable.coverage : undefined));
+				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...vector, coverage } : vector);
 			}
 		})();
 		this.#flushing.then(

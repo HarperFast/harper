@@ -71,6 +71,40 @@ describe('sqlEngine whereToConditions: index-aware residualization', () => {
 		assert.ok(pred); // (documents the equivalent condition shape)
 	});
 
+	it('pushes IS NULL as a filter-only condition, since no index holds an omitted attribute', () => {
+		const attrs = [
+			{ name: 'status', indexed: true },
+			{ name: 'b', indexed: true, indexNulls: true },
+			{ name: 'sparse', indexed: true, indexNulls: false },
+		];
+		const isNull = (name) => ({ kind: 'isNull', expr: col(name), negated: false });
+		const isNullCondition = { attribute: 'b', comparator: 'ne', value: null, negated: true };
+		const pushed = whereToConditions(
+			{ kind: 'logical', op: 'and', args: [binop('=', 'status', 'x'), isNull('b')] },
+			attrs
+		);
+		assert.deepStrictEqual(pushed.conditions, [
+			{ attribute: 'status', comparator: 'equals', value: 'x' },
+			isNullCondition,
+		]);
+		assert.strictEqual(pushed.residual, undefined);
+		assert.strictEqual(conditionUsesIndex(isNullCondition, attrs), false, 'IS NULL can never drive the scan');
+
+		const alone = whereToConditions(isNull('b'), attrs);
+		assert.strictEqual(
+			alone.conditions.some((condition) => conditionUsesIndex(condition, attrs)),
+			false
+		);
+
+		const notNull = whereToConditions({ kind: 'isNull', expr: col('b'), negated: true }, attrs);
+		assert.deepStrictEqual(notNull.conditions, [{ attribute: 'b', comparator: 'ne', value: null }]);
+		assert.strictEqual(conditionUsesIndex(notNull.conditions[0], attrs), true);
+
+		const residual = whereToConditions(isNull('sparse'), attrs);
+		assert.deepStrictEqual(residual.conditions, []);
+		assert.deepStrictEqual(residual.residual, isNull('sparse'));
+	});
+
 	it('conditionUsesIndex (driver): indexed+seekable yes; unindexed or full-scan comparator no', () => {
 		assert.strictEqual(conditionUsesIndex({ attribute: 'status', comparator: 'equals', value: 'x' }, ATTRS), true);
 		assert.strictEqual(conditionUsesIndex({ attribute: 'createdAt', comparator: 'lt', value: 1 }, ATTRS), false);

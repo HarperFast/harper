@@ -24,7 +24,7 @@ const {
 } = require('#src/resources/databases');
 const { REPLICATED_FROM } = require('#src/utility/hdbTerms');
 const { server } = require('#src/server/Server');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 
 const TEST_DB = 'test';

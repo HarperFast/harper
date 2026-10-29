@@ -23,7 +23,7 @@ const {
 	writeCertificationRecord,
 	certificationRecordPath,
 } = require('#src/components/releaseCertification');
-const { processIncarnation } = require('#js/server/threads/manageThreads');
+const { processIncarnation } = require('#src/server/threads/manageThreads');
 const {
 	recordCertificationDecision,
 	closeCertification,
@@ -267,6 +267,45 @@ describe('activating a release for certification', () => {
 		);
 		assert.equal(certification.calls[0].wasAbsent, true, 'the record keeps saying what it would restore');
 		assert.equal((await readCertificationRecord(root, 'd1')).state, 'pending');
+	});
+
+	it('admits the isolation of a rejected live release before arming it again, and arms nothing when refused', async function () {
+		this.timeout(30000);
+		await deploy(root, 'd1', 'V1\n');
+		await writeCertificationRecord(root, {
+			component: 'web',
+			deploymentId: 'd1',
+			previous: null,
+			wasAbsent: true,
+			state: 'rejected',
+			incarnation: 'a-previous-process',
+			reason: 'threw at load',
+		});
+		const admissions = [];
+		const activate = (certification, admitIsolation) =>
+			prepareApplication(applicationAt(root), { mode: 'activate', artifactId: 'd1', certification, admitIsolation });
+
+		let certification = recordingCertification(root);
+		await assert.rejects(
+			activate(certification, async (descriptor) => {
+				admissions.push(descriptor);
+				throw new Error('no dedicated worker to spare');
+			}),
+			/no dedicated worker to spare/
+		);
+		assert.deepStrictEqual(admissions, [undefined], 'the live release is admitted, with no artifact to read');
+		assert.deepStrictEqual(certification.calls, [], 'a refused activation arms nothing');
+		assert.equal((await readCertificationRecord(root, 'd1')).state, 'rejected', 'and the release stays refused');
+
+		certification = recordingCertification(root);
+		await activate(certification, async (descriptor) => admissions.push(descriptor));
+		assert.deepStrictEqual(
+			certification.calls.map(({ call }) => call),
+			['arm', 'commit']
+		);
+
+		await activate(recordingCertification(root), async (descriptor) => admissions.push(descriptor));
+		assert.equal(admissions.length, 2);
 	});
 
 	it('reads a decision that closed before its activation joined it from the record it left', async function () {
@@ -601,6 +640,21 @@ describe('deciding a release', () => {
 			assert.equal(await certification.arm(), false);
 			assert.equal(certification.armed, false);
 			assert.equal(certification.unavailableReason, 'ineligible');
+		});
+
+		it('asks its eligibility whether the component had a tree before this release', async () => {
+			const asked = [];
+			const certification = deployCertification(
+				spec({
+					eligible: (wasAbsent) => {
+						asked.push(wasAbsent);
+						return false;
+					},
+				})
+			);
+			assert.equal(await certification.arm(null, true), false);
+			assert.equal(await certification.arm('d1', false), false);
+			assert.deepStrictEqual(asked, [true, false]);
 		});
 
 		it('is not armed when no worker places the release', async () => {

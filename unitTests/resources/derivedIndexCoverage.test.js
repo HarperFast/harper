@@ -4,7 +4,7 @@ const { existsSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { table, closeDatabase, resetDatabases } = require('#src/resources/databases');
 const { suspendDerivedIndexActivation } = require('#src/resources/derivedIndexes');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { DatabaseTransaction, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
 const { DERIVED_INDEX_CURSOR_KEY, HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
@@ -14,7 +14,7 @@ const {
 	derivedIndexTime,
 	readDerivedIndexCoverage,
 } = require('#src/resources/derivedIndexRuntime');
-const { RocksDatabase, Transaction } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { createAuditEntry, ENTRY_DATAVIEW } = require('#src/resources/auditStore');
 const { waitFor } = require('../waitFor');

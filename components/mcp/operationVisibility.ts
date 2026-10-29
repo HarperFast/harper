@@ -4,6 +4,7 @@
  * ways it has been broken, are in components/mcp/DESIGN.md.
  */
 import { expandOperationsPerms } from '../../utility/operationPermissions.ts';
+import { COMPONENT_GRANT_OPERATIONS, componentGrantOf } from '../../security/componentGrant.ts';
 
 /** The slice of Harper's authenticated user both MCP profiles' `AuthedUser` satisfies. */
 export interface RoleScopedUser {
@@ -78,5 +79,6 @@ export function canRoleInvokeOperation(user: RoleScopedUser | undefined, operati
 		// An empty array names no database, so `structureUser.indexOf(schema)` never matches.
 		if (STRUCTURE_TABLE_OPERATIONS.has(operation)) return true;
 	}
+	if (COMPONENT_GRANT_OPERATIONS.has(operation) && componentGrantOf(user)) return true;
 	return allowlisted === true;
 }

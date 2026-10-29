@@ -5,7 +5,7 @@
 //testUtils.preTestPrep();
 const assert = require('assert');
 const op_func_caller = require('#src/utility/OperationFunctionCaller');
-const hdb_logger = require('#src/utility/logging/harper_logger');
+const hdb_logger = require('#js/utility/logging/harper_logger');
 const { promisify } = require('util');
 
 class TestInputObject {

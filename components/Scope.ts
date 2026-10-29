@@ -4,11 +4,11 @@ import { EventEmitter, once } from 'node:events';
 import { databaseEventsEmitter, scopedTableFactory } from '../resources/databases.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
-import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
+import { OptionsWatcher, type OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { resources, type Resources } from '../resources/Resources.ts';
 import { Models, models as modelsSingleton } from '../resources/models/Models.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
-import { FilesOption } from './deriveGlobOptions.ts';
+import { type FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { composeMountedUrlPath, type ScopeMount } from './scopeMount.ts';
@@ -72,6 +72,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#deployInFlight: boolean = false;
 	#restartRequestedDuringDeploy: boolean = false;
 	#optionsReady: boolean = false;
+	#closed: boolean = false;
+	#bearerValidatorsDisposed: boolean = false;
+	#bearerValidatorDisposers: Array<() => void> = [];
 	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
@@ -136,6 +139,19 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 								...options,
 								...scopeRef.routeFor(options),
 							});
+						};
+					}
+				}
+				if (prop === 'registerBearerValidator') {
+					const method = Reflect.get(target, prop, receiver);
+					if (typeof method === 'function') {
+						return (validator: any, options?: any) => {
+							if (scopeRef.#closed || scopeRef.#bearerValidatorsDisposed) {
+								throw new Error(`Cannot register a Bearer validator on closed scope ${pluginName}`);
+							}
+							const dispose = method.call(target, validator, options);
+							if (typeof dispose === 'function') scopeRef.#bearerValidatorDisposers.push(dispose);
+							return dispose;
 						};
 					}
 				}
@@ -276,6 +292,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	async close(): Promise<this> {
+		this.#closed = true;
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
 
@@ -621,6 +638,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				resolve();
 			}
 		});
+	}
+
+	disposeBearerValidators(): void {
+		this.#bearerValidatorsDisposed = true;
+		while (this.#bearerValidatorDisposers.length > 0) {
+			this.#bearerValidatorDisposers.pop()!();
+		}
 	}
 
 	/**

@@ -57,7 +57,9 @@ export interface OllamaBackendConfig {
  *
  * Capabilities advertise `tools: false` and `adapters: false`. Ollama tool-call
  * support exists on some models but is uneven across the model catalog; we keep
- * the v1 portability guarantee honest and skip them here.
+ * the v1 portability guarantee honest and skip them here. `truncate: true` maps to
+ * `/api/embed`'s `truncate`, which cuts the end of each input to the loaded context;
+ * Ollama also does that when the field is absent, so an unset option changes nothing.
  */
 const CAPABILITIES: ModelCapabilities = Object.freeze({
 	embed: true,
@@ -66,6 +68,7 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	tools: false,
 	adapters: false,
 	structuredOutput: true,
+	truncate: true,
 });
 
 export class OllamaBackend implements ModelBackend {
@@ -91,7 +94,9 @@ export class OllamaBackend implements ModelBackend {
 		requireModel(model, 'embed', OllamaBackendError);
 		const texts = Array.isArray(input) ? input : [input];
 		const prepared = texts.map((t) => applyEmbedPrefix(model, t, opts.inputType));
-		const res = await this.#post('/api/embed', { model, input: prepared }, opts.signal);
+		const body: Record<string, unknown> = { model, input: prepared };
+		if (opts.truncate === true) body.truncate = true;
+		const res = await this.#post('/api/embed', body, opts.signal);
 		const data = await parseJsonResponse<OllamaEmbedResponse>(res, 'Ollama /api/embed', OllamaBackendError);
 		if (!Array.isArray(data.embeddings)) {
 			throw new OllamaBackendError("Ollama /api/embed response missing 'embeddings' array");

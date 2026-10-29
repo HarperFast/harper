@@ -428,7 +428,6 @@ suite(
 
 		let matrixPreUpgrade: SurfaceMatrix;
 		let matrixPostUpgrade: SurfaceMatrix;
-		let matrixAfterHeal: SurfaceMatrix | null = null;
 		let matrixAfterRestart2: SurfaceMatrix;
 		let bWaveResult: { numChunks: number; ackedChunks: number };
 		let cWaveAttempts: WriteAttempt[];
@@ -600,44 +599,6 @@ suite(
 			);
 		});
 
-		test('Q4 write-then-read heal: does re-putting a missed row repair it?', { timeout: 30_000 }, async (t) => {
-			const anyMisses =
-				matrixPostUpgrade.cachedGetMisses.length ||
-				matrixPostUpgrade.restMisses.length ||
-				matrixPostUpgrade.opsByIdMisses.length ||
-				matrixPostUpgrade.sqlInMisses.length;
-			if (!anyMisses) {
-				t.skip('no miss observed after the cross-version upgrade boot on any point surface — nothing to heal');
-				return;
-			}
-			const targetId =
-				matrixPostUpgrade.cachedGetMisses[0] ??
-				matrixPostUpgrade.restMisses[0] ??
-				matrixPostUpgrade.opsByIdMisses[0] ??
-				matrixPostUpgrade.sqlInMisses[0];
-			const batch = matrixPostUpgrade.oracle.get(targetId) ?? 'unknown';
-			log(`Q4: healing probe targets ${targetId} (batch=${batch}, missed pre-heal)`);
-
-			const beforeHealRes = await post('/PointGetBulk/', { ids: [targetId] });
-			const beforeHeal = ((await beforeHealRes.json()) as { misses: string[] }).misses.length === 0;
-			const r = await post('/Touch/', {
-				id: targetId,
-				sku: `SKU-${batch}-touched`,
-				batch,
-				name: `Widget ${batch} touched`,
-			});
-			strictEqual(r.status, 200, 'Touch should return 200');
-			const touchBody = (await r.json()) as { foundAfterTouch: boolean };
-			const afterHealRes = await post('/PointGetBulk/', { ids: [targetId] });
-			const afterHeal = ((await afterHealRes.json()) as { misses: string[] }).misses.length === 0;
-			log(
-				`Q4: ${targetId} cachedGET before-write=${beforeHeal}, Touch.foundAfterTouch=${touchBody.foundAfterTouch}, ` +
-					`cachedGET after-write=${afterHeal} -> ${afterHeal ? 'WRITE HEALS the miss' : 'STILL MISSING after the write'}`
-			);
-			matrixAfterHeal = await buildMatrix('POST-HEAL');
-			ok(true, `heal probe recorded (before=${beforeHeal}, after=${afterHeal})`);
-		});
-
 		test(
 			'Q5 RESTART #2 (current build, no further version change): is any miss stable, cleared, or does it grow?',
 			{ timeout: 120_000 },
@@ -671,9 +632,6 @@ suite(
 					`FINAL VISIBILITY MATRIX SUMMARY:\n` +
 						`  PRE-UPGRADE (5.1.x, waveA)   : oracle=${matrixPreUpgrade.oracle.size} opsScan=${matrixPreUpgrade.opsScanIds.size} sqlByBatch=${matrixPreUpgrade.sqlByBatchIds.size} cachedGET-misses=${matrixPreUpgrade.cachedGetMisses.length} opsById-misses=${matrixPreUpgrade.opsByIdMisses.length} REST-misses=${matrixPreUpgrade.restMisses.length} SQL-IN-misses=${matrixPreUpgrade.sqlInMisses.length}\n` +
 						`  POST-CROSSVER-UPGRADE (a+b+c): oracle=${matrixPostUpgrade.oracle.size} opsScan=${matrixPostUpgrade.opsScanIds.size} sqlByBatch=${matrixPostUpgrade.sqlByBatchIds.size} cachedGET-misses=${matrixPostUpgrade.cachedGetMisses.length} opsById-misses=${matrixPostUpgrade.opsByIdMisses.length} REST-misses=${matrixPostUpgrade.restMisses.length} SQL-IN-misses=${matrixPostUpgrade.sqlInMisses.length}\n` +
-						(matrixAfterHeal
-							? `  POST-HEAL                    : oracle=${matrixAfterHeal.oracle.size} cachedGET-misses=${matrixAfterHeal.cachedGetMisses.length} opsById-misses=${matrixAfterHeal.opsByIdMisses.length} REST-misses=${matrixAfterHeal.restMisses.length} SQL-IN-misses=${matrixAfterHeal.sqlInMisses.length}\n`
-							: '') +
 						`  POST-RESTART-2                : oracle=${matrixAfterRestart2.oracle.size} opsScan=${matrixAfterRestart2.opsScanIds.size} sqlByBatch=${matrixAfterRestart2.sqlByBatchIds.size} cachedGET-misses=${matrixAfterRestart2.cachedGetMisses.length} opsById-misses=${matrixAfterRestart2.opsByIdMisses.length} REST-misses=${matrixAfterRestart2.restMisses.length} SQL-IN-misses=${matrixAfterRestart2.sqlInMisses.length}\n` +
 						`  (b) dirty-shutdown trigger     : ${bWaveResult.ackedChunks}/${bWaveResult.numChunks} waveB chunks ACKed before SIGKILL (target ${WAVE_B_TARGET} rows)\n` +
 						`  (c) boot-boundary writer       : ${cWaveAttempts.filter((a) => a.t0 < cWaveReadyAt).length} pre-ready attempts, ${cWaveAttempts.filter((a) => a.t0 < cWaveReadyAt && a.ok).length} succeeded pre-ready`

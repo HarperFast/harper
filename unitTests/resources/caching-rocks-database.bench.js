@@ -5,10 +5,10 @@
  */
 require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 const { RecordEncoder, recordUpdater } = require('#src/resources/RecordEncoder');
-const { Transaction } = require('@harperfast/rocksdb-js');
+const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 const path = require('path');
 const { mkdirSync } = require('fs');
 

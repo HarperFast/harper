@@ -14,10 +14,10 @@
 
 require('../testUtils');
 const assert = require('node:assert');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const manageThreads = require('#js/server/threads/manageThreads');
+const manageThreads = require('#src/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 
 // resources/Table.ts keys the exclusive schema lock on these bytes

@@ -170,7 +170,7 @@ export function parseMultipartRequest(
  * as consuming it, so the rest of an upload the route did not read is discarded here instead. A route
  * keeps the part by reading it before its response finishes: piping it, iterating it, or listening for
  * `data` or `readable`. A part it took but had not started reading is discarded, and so is one it
- * destroys before its end, whenever that happens.
+ * destroys before its end, or stops reading, whenever that happens.
  */
 export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyReply, done: () => void): void {
 	const upload = uploads.get(request);
@@ -178,8 +178,47 @@ export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyRepl
 		uploads.delete(request);
 		upload.responded = true;
 		if (upload.discarding || isAbandoned(upload)) discardUnreadUpload(upload);
+		else watchForAbandonment(upload);
 	}
 	done();
+}
+
+/**
+ * A pipe that loses its destination after the response, by `unpipe()` or a destination error, leaves the part
+ * paused but not destroyed, so its `close` never comes. Every lost pipe ends in the part's own `unpipe()`, the
+ * route's or the pipe cleanup's, and a consumer that drops its `data` listener removes one; either is when to look
+ * again. `pause` is no signal, since a part already paused by backpressure emits none, and Node 24.0 and 22.18
+ * remove a pipe's `data` listener without emitting `removeListener`.
+ */
+function watchForAbandonment(upload: Upload): void {
+	const { file } = upload;
+	if (!file || file.readableEnded || file.destroyed) return;
+	// The cleanup removes several listeners and settles `readableFlowing` as it goes; look once it is done.
+	const look = () =>
+		setImmediate(() => {
+			if (upload.discarding || !isAbandoned(upload)) return;
+			stop();
+			discardUnreadUpload(upload);
+		});
+	const onRemoved = (event: string | symbol) => {
+		// Only `data`: a consumer reading with `once(part, 'readable')` holds no listener between reads.
+		if (event === 'data') look();
+	};
+	const unpipe = file.unpipe;
+	file.unpipe = function (this: Readable, destination?: NodeJS.WritableStream) {
+		const result = unpipe.call(this, destination);
+		look();
+		return result;
+	};
+	const stop = () => {
+		file.unpipe = unpipe;
+		file.off('removeListener', onRemoved);
+		file.off('end', stop);
+		file.off('close', stop);
+	};
+	file.on('removeListener', onRemoved);
+	file.once('end', stop);
+	file.once('close', stop);
 }
 
 function isAbandoned({ httpRequest, file, handedOut }: Upload): boolean {

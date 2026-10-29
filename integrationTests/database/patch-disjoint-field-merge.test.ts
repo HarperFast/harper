@@ -10,15 +10,14 @@
  *   (b) Same-field concurrency: N clients PATCH the SAME field → exactly one value
  *       survives (LWW), other fields are untouched (no side-effect clobber).
  *   (c) PATCH merges vs PUT replaces: serial baseline confirming semantics.
- *   (c2) Concurrent PATCH vs PUT race — observational; no hard invariant on winner.
- *   (e) ifVersion / optimistic concurrency — observational probe; skipped if the
- *       server does not expose a version header on PUT response.
+ *   (c2) Concurrent PATCH vs PUT race: either may win, but the record must be one of the
+ *       two serial outcomes.
  *
  * Both RocksDB (default) and LMDB engines are tested via HARPER_STORAGE_ENGINE=lmdb.
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -147,7 +146,7 @@ suite(`concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWithHarpe
 		}
 
 		ok(patchMerges, `PATCH should merge fields; got: ${JSON.stringify(afterPatch)}`);
-		ok(true, 'PUT replace check is characterization');
+		ok(putReplaces, `PUT should replace the record, dropping unspecified fields; got: ${JSON.stringify(afterPut)}`);
 	});
 
 	// ── (a) Disjoint-field concurrency: N clients each PATCH a DIFFERENT field ──
@@ -317,12 +316,10 @@ suite(`concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWithHarpe
 		ok(bodyPreserved, `Same-field PATCH clobbered unrelated body field: got "${doc?.body}"`);
 	});
 
-	// ── (c2) Concurrent PATCH vs PUT race — observational ─────────────────────
-	// Characterisation only: the winner depends on arrival order; no hard invariant.
-	test('(c2) Concurrent PATCH vs PUT race — observational', async () => {
+	// ── (c2) Concurrent PATCH vs PUT race: either may win, but serially ──────────
+	test('(c2) Concurrent PATCH vs PUT race ends in one of the two serial outcomes', async () => {
 		const id = `patch-merge-c2-${ENGINE}-${Date.now()}`;
 		const ROUNDS = 5;
-		const results: Array<{ round: number; bodyPreserved: boolean; titleFinal: string | null }> = [];
 
 		for (let round = 0; round < ROUNDS; round++) {
 			const runId = `${id}-r${round}`;
@@ -336,76 +333,17 @@ suite(`concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWithHarpe
 			await sleep(30);
 			const doc = await getDoc(runId);
 
-			const bodyPresent = doc?.body != null && (doc.body as string).length > 0;
 			log(
 				`[c2:r${round}] PUT.status=${putRes.status} PATCH.status=${patchRes.status} title="${doc?.title}" body="${doc?.body}"`
 			);
-			results.push({ round, bodyPreserved: bodyPresent, titleFinal: (doc?.title as string) ?? null });
+			strictEqual(patchRes.status, 204, `[c2:r${round}] PATCH`);
+			strictEqual(putRes.status, 204, `[c2:r${round}] PUT`);
+			strictEqual(doc?.body, `put-body-r${round}`, `[c2:r${round}] body must be the PUT's: ${JSON.stringify(doc)}`);
+			ok(
+				doc?.title == null || doc.title === `patch-title-r${round}`,
+				`[c2:r${round}] title must be absent (PATCH first) or the PATCH's (PUT first): ${JSON.stringify(doc)}`
+			);
 		}
-
-		log(`[c2] PATCH+PUT race across ${ROUNDS} rounds:`);
-		for (const r of results) {
-			log(`  round ${r.round}: body=${r.bodyPreserved} title="${r.titleFinal}"`);
-		}
-		ok(true, 'characterization probe — PUT+PATCH race, see findings');
-	});
-
-	// ── (e) ifVersion / optimistic concurrency ────────────────────────────────────
-	// Observational: skipped when PUT response does not carry a version header.
-	test('(e) ifVersion optimistic concurrency on PATCH — skipped when version header absent', async () => {
-		const id = `patch-merge-e-${ENGINE}-${Date.now()}`;
-
-		const seedRes = await putDoc(id, {
-			id,
-			title: 'original',
-			body: 'original-body',
-			status: 'initial',
-		});
-		const version = seedRes.headers.get('x-harper-version') ?? seedRes.headers.get('etag');
-		log(`[e] seed version="${version}" (status=${seedRes.status})`);
-
-		if (!version) {
-			log(`[e] No version header from PUT — ifVersion probe skipped`);
-			ok(true, 'ifVersion: version header not available, probe skipped');
-			return;
-		}
-
-		const patchGood = await fetch(
-			`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(version)}`,
-			{
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-				body: JSON.stringify({ title: 'conditional-update' }),
-				signal: AbortSignal.timeout(10_000),
-			}
-		);
-		log(`[e] PATCH with correct ifVersion: status=${patchGood.status}`);
-
-		const staleVersion = '1';
-		const patchStale = await fetch(
-			`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(staleVersion)}`,
-			{
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-				body: JSON.stringify({ title: 'stale-update-should-reject' }),
-				signal: AbortSignal.timeout(10_000),
-			}
-		);
-		log(`[e] PATCH with stale ifVersion="${staleVersion}": status=${patchStale.status}`);
-
-		const doc = await getDoc(id);
-		log(`[e] final doc: title="${doc?.title}" body="${doc?.body}"`);
-
-		const goodAccepted = patchGood.status === 200 || patchGood.status === 204;
-		const staleRejected = patchStale.status === 409 || patchStale.status === 412 || patchStale.status === 428;
-
-		if (goodAccepted) log(`[e] Correct ifVersion accepted`);
-		else log(`[e] ifVersion-correct PATCH rejected (status=${patchGood.status}) — unexpected`);
-
-		if (staleRejected) log(`[e] Stale ifVersion rejected with ${patchStale.status} (correct)`);
-		else log(`[e] Stale ifVersion NOT rejected (status=${patchStale.status}) — ifVersion may not be enforced on PATCH`);
-
-		ok(true, 'ifVersion characterization — see findings');
 	});
 
 	// ── (a3) Stress: repeated rapid concurrent disjoint PATCH ─────────────────

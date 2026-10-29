@@ -32,7 +32,7 @@ const {
 	setRootComponentsReload,
 	startWorker,
 	workers,
-} = require('#js/server/threads/manageThreads');
+} = require('#src/server/threads/manageThreads');
 
 const FIXTURE = join(__dirname, '..', 'certificationGate-fixture.cjs');
 const RELEASE = { component: 'web', deploymentId: '11111111-1111-1111-1111-111111111111' };

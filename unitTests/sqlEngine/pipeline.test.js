@@ -307,6 +307,33 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		});
 	});
 
+	it('answers IS NOT NULL itself, the same as NOT (… IS NULL), instead of falling back', async () => {
+		const nullableTable = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'b', indexed: true, indexNulls: true },
+			],
+			rows: [
+				{ id: 1, b: 1 },
+				{ id: 2, b: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: nullableTable } }));
+		for (const where of ['b IS NOT NULL', 'NOT (b IS NULL)']) {
+			const data = await runSql(`SELECT id FROM dev.user WHERE id > 0 AND ${where}`);
+			assert.deepStrictEqual(
+				data.map((r) => r.id),
+				[1]
+			);
+			assert.deepStrictEqual(
+				nullableTable._lastTarget.conditions.find((c) => c.attribute === 'b'),
+				{ attribute: 'b', comparator: 'ne', value: null },
+				where
+			);
+		}
+	});
+
 	it('= with a quoted number stays strict (no numeric coercion, unlike IN)', async () => {
 		// Legacy returns nothing for `age = '30'` (numeric column, quoted literal);
 		// the new engine must too — the boolean expansion must not loosen numeric `=`.

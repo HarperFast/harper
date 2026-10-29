@@ -9,13 +9,19 @@ const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
 	throw BIGINT_SERIALIZATION;
 };
 const { errorToString } = harperLogger;
-/**
- * `strict`: a value that fails to serialize, a rejected element or a failing iterator destroys the stream
- * with that error instead of writing its text into output that has already started, which a client that
- * must parse the whole body cannot tell from a result. No error text is logged.
- */
-export function streamAsJSON(value, options?: { strict?: boolean }) {
-	return new JSONStream({ value, strict: options?.strict === true });
+function streamError(error) {
+	const record: { error: string; replicationUnconfirmed?: true; retryable?: false } = { error: errorToString(error) };
+	try {
+		if (error?.replicationUnconfirmed === true) {
+			record.replicationUnconfirmed = true;
+			record.retryable = false;
+		} else if (error?.retryable === false) record.retryable = false;
+	} catch {}
+	return record;
+}
+
+export function streamAsJSON(value) {
+	return new JSONStream({ value });
 }
 // a readable stream for serializing a set of variables to a JSON stream
 class JSONStream extends Readable {
@@ -25,14 +31,14 @@ class JSONStream extends Readable {
 	activeIterators: (Iterator<any> | AsyncIterator<any>)[];
 	_amReading?: boolean;
 	done?: boolean;
-	strict: boolean;
+	failed?: boolean;
+	failure?: Error;
 
 	constructor(options) {
 		// Calls the stream.Readable(options) constructor
 		super(options);
 		this.buffer = [];
 		this.bufferSize = 0;
-		this.strict = options.strict === true;
 		this.jsonIterator = this.serialize(options.value, true);
 		this.activeIterators = [];
 	}
@@ -47,10 +53,11 @@ class JSONStream extends Readable {
 				yield '[';
 				let first = true;
 				if ((hasAsyncIterator || hasIterator) && !(object instanceof Array)) {
-					let iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
-					const originalIterator = iterator;
+					const iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
 					this.activeIterators.push(iterator);
 					let iteratorResult;
+					let failed = false;
+					let failure;
 					while (true) {
 						try {
 							iteratorResult = iterator.next();
@@ -63,28 +70,23 @@ class JSONStream extends Readable {
 										return ''; // return nothing now and serialization will continue below
 									},
 									(error) => {
-										if (this.strict) throw error;
-										// try to properly serialize the error, but then finish the iterator
-										harperLogger.warn('Error serializing in stream', error);
-										iteratorResult = { done: false, value: { error: errorToString(error) } };
-										iterator = {
-											next: () => ({ done: true }),
-										};
+										failed = true;
+										failure = error;
 										return '';
 									}
 								);
 							}
 						} catch (error) {
-							if (this.strict) throw error;
-							iteratorResult = { done: false, value: { error: errorToString(error) } };
-							iterator = {
-								next: () => ({ done: true }),
-							};
+							failed = true;
+							failure = error;
+						}
+						if (failed) {
+							this.untrackIterator(iterator);
+							// thrown rather than yielded, so backpressure cannot stall between the element and the failure
+							throw new StreamFailure(failure, (first ? '' : ',') + stringify(streamError(failure)));
 						}
 						if (iteratorResult.done) {
-							// `iterator` may now be the error stub above, not what was pushed
-							const activeIndex = this.activeIterators.indexOf(originalIterator);
-							if (activeIndex >= 0) this.activeIterators.splice(activeIndex, 1);
+							this.untrackIterator(iterator);
 							yield ']';
 							return;
 						} else {
@@ -107,18 +109,22 @@ class JSONStream extends Readable {
 				yield ']';
 				return;
 			}
-			if (object.then) {
-				if (this.strict) {
-					yield object.then((object) => this.serialize(object));
-					return;
-				}
+			if (typeof object.then === 'function') {
+				let promise;
 				try {
-					yield object.then((object) => this.serialize(object), handleError);
+					promise = object.then((object) => this.serialize(object));
 				} catch (error) {
-					yield handleError(error);
+					throw elementFailure(error);
 				}
+				yield promise;
 			} else {
-				yield stringify(object);
+				let json;
+				try {
+					json = stringify(object);
+				} catch (error) {
+					throw elementFailure(error);
+				}
+				yield json;
 			}
 		} else {
 			yield stringify(object);
@@ -126,6 +132,7 @@ class JSONStream extends Readable {
 	}
 
 	_read() {
+		if (this.failed) return;
 		if (this._amReading) {
 			// I don't know why _read is called from within a push call, but if we are already reading, ignore the call
 			return;
@@ -144,14 +151,27 @@ class JSONStream extends Readable {
 					this._amReading = false;
 				}
 			},
-			(error) => {
-				if (this.strict) return this.destroy(error);
-				console.error(harperLogger.errorForLog(error));
-				this.done = true;
-				this.push(errorToString(error));
-				this.push(null);
-			}
+			(error) => this.fail(error)
 		);
+	}
+
+	fail(error: unknown) {
+		if (this.failed || this.destroyed) return;
+		this.failed = true;
+		if (error instanceof StreamFailure) {
+			this.buffer.push(error.diagnostic);
+			this.bufferSize += error.diagnostic.length;
+			error = error.error;
+		}
+		this.failure = (error || new Error('JSON stream failed')) as Error;
+		if (this.bufferSize > 0) this.flush();
+		// destroy() discards unread data; a consumer that is not applying backpressure takes the diagnostic first
+		setImmediate(() => this.destroy(this.failure));
+	}
+
+	untrackIterator(iterator: Iterator<any> | AsyncIterator<any>) {
+		const activeIndex = this.activeIterators.indexOf(iterator);
+		if (activeIndex >= 0) this.activeIterators.splice(activeIndex, 1);
 	}
 
 	push(content) {
@@ -202,6 +222,7 @@ class JSONStream extends Readable {
 				} else {
 					if (nextString.then) {
 						this.flush();
+						// an iterator step never rejects, so a rejection here is an element's: a promise row or a deferred stringify
 						return Promise.resolve(nextString).then((resolved) => {
 							if (resolved && typeof resolved.return === 'function') {
 								iterator.childIterator = resolved;
@@ -209,7 +230,7 @@ class JSONStream extends Readable {
 							} else if (this.push(resolved + '')) {
 								return this.readIterator(iterator);
 							} // else return false
-						});
+						}, rethrowElementFailure);
 					}
 					if (typeof nextString.return === 'function') {
 						iterator.childIterator = nextString;
@@ -218,47 +239,46 @@ class JSONStream extends Readable {
 				}
 			} while (this.push(nextString));
 		} catch (error) {
-			if (this.strict) {
-				this.destroy(error);
-				return true;
-			}
-			console.error(harperLogger.errorForLog(error));
-			this.push(errorToString(error));
-			this.push(null);
-			return true;
+			this.fail(error);
+			return false;
 		}
 	}
 
 	_destroy(error, callback) {
-		// `throw` and `return` are optional on an iterator (a Set's has neither), and one iterator's
-		// failing cleanup must not skip the others or the callback. A strict failure is the serializer's, not
-		// the producer's, so its iterators are closed rather than thrown into.
-		const onCleanupFailure = this.strict ? warnCleanupFailureClass : warnCleanupFailure;
-		for (const iterator of this.activeIterators) {
-			try {
-				const close = error && !this.strict && iterator.throw ? iterator.throw : iterator.return;
-				const closing: any = close?.call(iterator, error);
-				if (typeof closing?.then === 'function') closing.then(undefined, onCleanupFailure);
-			} catch (cleanupError) {
-				onCleanupFailure(cleanupError);
+		if (this.activeIterators.length > 0) {
+			// throw(error) hands the error back when the iterator does not handle it; that is not a cleanup failure
+			const onCleanupError = (cleanupError) => {
+				if (cleanupError !== error) harperLogger.warn('Error closing a streamed iterator', cleanupError);
+			};
+			for (const iterator of this.activeIterators) {
+				try {
+					const result = error && !this.failed && iterator.throw ? iterator.throw(error) : iterator.return?.();
+					(result as any)?.then?.(null, onCleanupError);
+				} catch (cleanupError) {
+					onCleanupError(cleanupError);
+				}
 			}
 		}
-		callback(this.strict ? error : undefined);
+		callback(this.failure ?? error);
 	}
 }
 
-function warnCleanupFailure(error) {
-	harperLogger.warn('Error closing a serialized iterator', error);
+class StreamFailure {
+	error: unknown;
+	diagnostic: string;
+	constructor(error: unknown, diagnostic: string) {
+		this.error = error;
+		this.diagnostic = diagnostic;
+	}
 }
 
-// A strict stream's error text may echo the data it was serializing.
-function warnCleanupFailureClass(error) {
-	harperLogger.warn(`Error closing a serialized iterator: ${error?.constructor?.name ?? typeof error}`);
+// the element's comma is already written, so its diagnostic takes the element's place
+function elementFailure(error: unknown) {
+	return new StreamFailure(error, stringify(streamError(error)));
 }
 
-function handleError(error) {
-	console.error(harperLogger.errorForLog(error));
-	return JSON.stringify(errorToString(error));
+function rethrowElementFailure(error: unknown): never {
+	throw elementFailure(error);
 }
 
 export function stringify(value) {

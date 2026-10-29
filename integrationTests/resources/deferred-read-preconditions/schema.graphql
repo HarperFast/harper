@@ -1,0 +1,4 @@
+type RestrictedRow @table {
+	id: ID @primaryKey
+	name: String
+}

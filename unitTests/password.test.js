@@ -1,7 +1,9 @@
 const crypto = require('crypto');
 
 const assert = require('assert');
-const { hash, validate, HASH_FUNCTION } = require('#src/utility/password');
+const { hash, validate, configuredHashFunction, HASH_FUNCTION } = require('#src/utility/password');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 const TEST_PASSWORD = 'dogs-rule-cats-drool';
 
@@ -30,6 +32,34 @@ function createLegacyHash(password) {
 }
 
 describe('Test password module', function () {
+	describe('configured hash function', function () {
+		const original = env.get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION);
+		afterEach(() => env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, original));
+
+		it('is read from the config on every call', function () {
+			for (const configured of ['md5', 'sha256', 'argon2id']) {
+				env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, configured);
+				assert.strictEqual(configuredHashFunction(), configured);
+			}
+			env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, undefined);
+			assert.strictEqual(configuredHashFunction(), HASH_FUNCTION.SHA256);
+		});
+
+		it('hash defaults to the configured function, so a new password follows the policy', async function () {
+			env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, 'argon2id');
+			assert((await hash(TEST_PASSWORD)).includes('$argon2id$'));
+			env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, 'sha256');
+			assert.strictEqual(typeof hash(TEST_PASSWORD), 'string');
+		});
+
+		it('validate defaults to synchronous SHA-256 whatever is configured', function () {
+			const hashedPass = hash(TEST_PASSWORD, HASH_FUNCTION.SHA256);
+			env.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, 'argon2id');
+			assert.strictEqual(validate(hashedPass, TEST_PASSWORD), true);
+			assert.strictEqual(validate(hashedPass, 'wrong-password'), false);
+		});
+	});
+
 	describe('Hashing SHA256', function () {
 		it('should generate a valid hash', async function () {
 			const hashedPass = hash(TEST_PASSWORD);

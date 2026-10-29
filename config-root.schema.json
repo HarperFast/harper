@@ -13,6 +13,91 @@
 			"type": "string",
 			"description": "Path to the folder containing local component files. Default: <ROOTPATH>/components"
 		},
+		"status": {
+			"type": "object",
+			"description": "Runtime status monitoring. Health-check changes take effect on restart.",
+			"properties": {
+				"healthChecks": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"enabled": {
+							"type": "boolean",
+							"default": true
+						},
+						"intervalSeconds": {
+							"type": "number",
+							"minimum": 1,
+							"maximum": 2147483,
+							"default": 60
+						},
+						"thresholds": {
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"disk": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 80
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								},
+								"memory": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 80
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								},
+								"cpu": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 85
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"http": {
 			"type": "object",
 			"description": "HTTP server configuration for the main component server.",
@@ -237,6 +322,11 @@
 								"additionalProperties": false,
 								"properties": {
 									"hostname": { "type": "string" },
+									"url": {
+										"type": "string",
+										"format": "uri",
+										"description": "Connection URL; its host may be an alias of the canonical hostname."
+									},
 									"port": { "type": "integer" },
 									"startTime": {
 										"type": "string",
@@ -244,7 +334,8 @@
 										"description": "ISO 8601 UTC start time to begin replication."
 									}
 								},
-								"required": ["hostname", "port"]
+								"required": ["hostname"],
+								"anyOf": [{ "required": ["port"] }, { "required": ["url"] }]
 							}
 						]
 					}
@@ -308,6 +399,18 @@
 						}
 					}
 				},
+				"confirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for explicit replicatedConfirmation. Default: 900000, or blobTimeout if greater. An explicit value overrides that default."
+				},
+				"shardingConfirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for automatic new-owner confirmation after an attribute-slot change. Default: 30000. Timeout reports an uncertain committed outcome."
+				},
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
 				"blobGapReconnectMs": {
 					"type": "number",
@@ -358,7 +461,15 @@
 					"type": "boolean",
 					"description": "Attempt fail-over to different node when unreachable. Default: true"
 				},
-				"shard": { "type": "integer", "description": "Shard id for this instance." },
+				"shard": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "Shard id for this instance." },
+				"shards": {
+					"type": "array",
+					"minItems": 1,
+					"maxItems": 65536,
+					"uniqueItems": true,
+					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a sharding map automatically; installed maps remain authoritative. Different lists block declarative writes."
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		},
@@ -495,6 +606,75 @@
 			"description": "Storage engine configuration.",
 			"additionalProperties": true,
 			"properties": {
+				"fullText": {
+					"type": "object",
+					"description": "Full-text request work limits and native process budgets. Native process budgets require a Harper process restart to change; they do not cap total process memory or disk usage.",
+					"additionalProperties": false,
+					"properties": {
+						"requestBudgetMilliseconds": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 5000
+						},
+						"maxRawHitsPerRequest": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 10000,
+							"description": "Maximum fetched native hits per full-text request, including bounded prefix replay."
+						},
+						"maxResultsPerRequest": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 10000,
+							"description": "Maximum offset plus limit retained by a full-text request, independent of fetched-hit work."
+						},
+						"runtime": {
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"maxResidentIndexes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 128
+								},
+								"maxIndexingThreads": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 128
+								},
+								"maxSearchThreads": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 256
+								},
+								"maxWriterMemoryBytes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 9007199254740991,
+									"default": 4294967296
+								},
+								"maxQueuedBytes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 9007199254740991,
+									"default": 8589934592
+								},
+								"maxExpensiveSearches": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 8
+								}
+							}
+						}
+					}
+				},
 				"writeAsync": {
 					"type": "boolean",
 					"description": "When true, sets LMDB noSync to disable LMDB's commit disk sync for faster writes (risk of losing recent commits on OS crash or power loss); when false, LMDB keeps commit disk sync enabled (overlapped on Linux and macOS by default). Applies only to the LMDB storage engine; this setting has no effect on RocksDB, where Harper does not fsync individual commits to disk (transaction logs are synced on memtable flush rather than per commit). Default: false"
@@ -734,10 +914,15 @@
 					"maximum": 1048576,
 					"description": "Largest tool result, in bytes of JSON, the agent adds to its conversation. A larger result is cut to this size with a note telling the model how to ask for less, and the filesystem read tools return pages of at most half this size. Tunable at runtime via set_agent_config. Default: 65536"
 				},
+				"maxSessionTokens": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Per-session cap on prompt plus completion tokens, checked after each model call; a session at the cap makes no further calls. A model that reports no token usage stops the session instead of running uncapped. A call that fails is not counted. Default: none"
+				},
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
-					"description": "Per-session cost budget. NOT YET ENFORCED — surfacing operator intent until #612 ships per-call cost telemetry. Default: 5.00"
+					"description": "Per-session cost cap in USD, checked after each model call and priced from the `pricing` on the models.generative entry that served it. A call with no pricing stops the session instead of running uncapped. A call that fails is not counted. Default: none"
 				},
 				"autoApprove": {
 					"type": "boolean",

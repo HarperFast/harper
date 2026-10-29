@@ -90,6 +90,12 @@ export interface ModelCapabilities {
 	 * capability: it cannot be required, and a call above it is declined without a request.
 	 */
 	maxScoredChoices?: number;
+	/**
+	 * `embed` honors `truncate: true`: each input is cut to what the model accepts, keeping its start,
+	 * instead of failing. Like `structuredOutput`, says what Harper asks the provider for (for an
+	 * OpenAI-compatible entry, what its `truncation` setting declares the endpoint does). Absent reads as false.
+	 */
+	truncate?: boolean;
 }
 
 /** A capability a call can require of its backend (a boolean key of `ModelCapabilities`). */
@@ -147,6 +153,8 @@ export interface DefineBackendSpec {
 	structuredOutput?: boolean;
 	/** The most choices one `scoreChoices` call accepts, a positive integer. Default: no limit. */
 	maxScoredChoices?: number;
+	/** `embed` honors `truncate: true`, cutting each input to the model's limit and keeping its start. Default `false`. */
+	truncate?: boolean;
 }
 
 export type EmbedOpts = {
@@ -155,6 +163,15 @@ export type EmbedOpts = {
 	requires?: Capability[];
 	/** For models that distinguish document-vs-query embeddings (e.g. nomic-embed-text); ignored otherwise. */
 	inputType?: 'document' | 'query';
+	/**
+	 * `true` cuts each input to what the model accepts, keeping its start (and any task prefix the
+	 * backend adds), instead of failing on an input longer than the context window. It requires the
+	 * `truncate` capability: backends that cannot truncate are skipped, and when none can, the call
+	 * fails with `ModelCapabilityError` before any request. Absent or `false` sends nothing extra, so
+	 * the provider's own handling applies: OpenAI, vLLM and Bedrock Titan reject an over-long input,
+	 * while Ollama and Bedrock Cohere embed v3 cut it by default.
+	 */
+	truncate?: boolean;
 	signal?: AbortSignal;
 };
 
@@ -344,22 +361,19 @@ export type GenerateOpts = {
 	maxToolIterations?: number;
 	/**
 	 * `toolMode: 'auto'` only. Cumulative prompt+completion token cap across all
-	 * iterations. Trips `BudgetExceededError({kind: 'tokens'})` when exceeded.
-	 *
-	 * Best-effort: enforcement depends on the backend reporting `usage`. Against a
-	 * backend that returns no usage the cap is unmeasurable — the loop warns once and
-	 * continues (it does NOT silently pretend the cap is in force); `maxToolIterations`
-	 * remains the hard bound. Not yet supported on `generateStream` (throws 501).
+	 * iterations. Throws `BudgetExceededError({kind: 'tokens'})` once the total reaches
+	 * it, so `0` allows no call. A round whose backend reports no token counts makes the
+	 * cap unmeasurable and throws the same error. Not yet supported on `generateStream`
+	 * (throws 501).
 	 */
 	maxToolTokens?: number;
 	/**
-	 * `toolMode: 'auto'` only. Cumulative cost cap across all iterations. The v1
-	 * cost-per-call function returns 0 (no rate card yet) so this trips only when
-	 * a test or follow-up wires a non-zero function — the seam is in place.
-	 *
-	 * Same best-effort caveat as `maxToolTokens`: cost is derived from backend usage,
-	 * so a backend reporting no usage makes the cap unmeasurable (warn-once, continue).
-	 * Not yet supported on `generateStream` (throws 501).
+	 * `toolMode: 'auto'` only. Cumulative USD cap across all iterations, each priced
+	 * from the `pricing` of the entry that served it (`GenerateResult.costUsd`). Throws
+	 * `BudgetExceededError({kind: 'cost'})` once the total reaches it, so `0` allows no
+	 * call. An unpriced round, or one without both token counts, makes the cap
+	 * unmeasurable and throws the same error. Not yet supported on `generateStream`
+	 * (throws 501).
 	 */
 	maxCostUsd?: number;
 	/**
@@ -448,6 +462,12 @@ export type ModelCallResult<T> =
 	| { status: 'completed'; output: T; usage?: TokenUsage }
 	| { status: 'pending'; operationId: string; resumeAfter?: number };
 
+/** What an operator pays for a generative model, in USD per million tokens (`models.generative.<name>.pricing`). */
+export interface ModelPricing {
+	inputPerMtok: number;
+	outputPerMtok: number;
+}
+
 export interface TokenUsage {
 	promptTokens?: number;
 	completionTokens?: number;
@@ -485,16 +505,22 @@ export interface GenerateResult {
 	/** Why generation stopped. Backend-agnostic; backends map their native reasons. */
 	finishReason: 'stop' | 'length' | 'tool_calls' | 'content_filter';
 	/**
-	 * Token / cost usage for this call. Pass-through from the backend's
+	 * Token usage for this call. Pass-through from the backend's
 	 * `ModelCallResult.usage` so callers (and the `toolMode: 'auto'` loop) can
 	 * cap cumulative budgets without re-querying analytics.
 	 *
-	 * Backends MUST NOT set this field on the `output` they return — the framework
-	 * (`Models.generate`) injects it from `ModelCallResult.usage`, which is the
-	 * authoritative source. A backend that sets both gets the framework's value;
-	 * easy to miss but unambiguous: usage lives at the call-result layer.
+	 * Set only by the framework (`Models.generate`) from `ModelCallResult.usage`,
+	 * the authoritative source. A value a backend puts on its `output` is dropped,
+	 * as is `costUsd`.
 	 */
 	usage?: TokenUsage;
+	/**
+	 * USD cost of this call, from the `pricing` declared on the model entry that
+	 * served it (a fallback is priced at its own rate). Absent when that entry
+	 * declares no pricing or the backend did not report both token counts. With
+	 * `toolMode: 'auto'` it covers the final round only, like `usage`.
+	 */
+	costUsd?: number;
 	/**
 	 * `toolMode: 'auto'` only, and only when `includeToolTrace: true` (or when an
 	 * error path attaches `partialTrace` via `BudgetExceededError`). One entry per

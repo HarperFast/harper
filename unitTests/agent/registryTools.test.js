@@ -253,3 +253,138 @@ describe('agent/toolset composeToolset — registry merge', () => {
 		assert.ok(names.includes('search'));
 	});
 });
+
+describe('agent/registryTools read_log masking (harper#3097)', () => {
+	const {
+		registerOperationsTools,
+		_setOperationFunctionMapForTest,
+		_setChooseOperationForTest,
+		_setProcessLocalTransactionForTest,
+	} = require('#src/components/mcp/tools/operations');
+	const PEM = '-----BEGIN PRIVATE KEY-----\nMIIfake\n-----END PRIVATE KEY-----';
+	let operations;
+	let dispatched;
+
+	// The real operations profile and its result wrapping, with only the operation functions stubbed.
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_resetRegistryToolsForTests();
+		dispatched = 0;
+		operations = new Map([
+			['read_log', async () => []],
+			['search_by_value', async () => [{ id: 1, apiKey: 'sk-row' }]],
+		]);
+		_setOperationFunctionMapForTest(
+			new Map(
+				[...operations.keys()].map((name) => [name, { operation_function: (body) => operations.get(name)(body) }])
+			)
+		);
+		_setChooseOperationForTest((body) => (request) => operations.get(body.operation)(request));
+		_setProcessLocalTransactionForTest(async (request, operation) => {
+			dispatched++;
+			return operation(request.body);
+		});
+		registerOperationsTools();
+	});
+	afterEach(() => {
+		_setOperationFunctionMapForTest(undefined);
+		_setChooseOperationForTest(undefined);
+		_setProcessLocalTransactionForTest(undefined);
+		_resetRegistryForTest();
+		_resetRegistryToolsForTests();
+	});
+
+	const tool = (name) => composeRegistryTools(SUPER_USER, identity(SUPER_USER)).find((t) => t.def.name === name);
+
+	it('masks credentials in every text field of every entry and keeps ordinary text', async () => {
+		operations.set('read_log', async () => [
+			{
+				timestamp: '2026-10-20T00:00:00.000Z',
+				thread: 'http/1',
+				level: 'error',
+				tags: ['custom', 'apiKey=sk-tag'],
+				message: 'request failed {"apiKey":"sk-message"} body="{\\"token\\":\\"sk-nested\\"}" for user bob',
+				node: 'node-a',
+			},
+		]);
+		assert.deepEqual(await tool('read_log').handler({ limit: 5 }, { sessionId: 's1' }), {
+			results: [
+				{
+					timestamp: '2026-10-20T00:00:00.000Z',
+					thread: 'http/1',
+					level: 'error',
+					tags: ['custom', 'apiKey=******'],
+					message: 'request failed {"apiKey":"**********"} body="{\\"token\\":\\"*********\\"}" for user bob',
+					node: 'node-a',
+				},
+			],
+		});
+	});
+
+	it('refuses an entry that holds a PEM private key and keeps the others', async () => {
+		operations.set('read_log', async () => [
+			{ timestamp: 't1', level: 'info', tags: [], message: `loaded ${PEM}` },
+			{ timestamp: 't2', level: 'info', tags: [], message: 'started' },
+		]);
+		const { results } = await tool('read_log').handler({}, { sessionId: 's1' });
+		assert.deepEqual(results, [
+			{ timestamp: 't1', message: 'Refused: this log entry holds a PEM private key' },
+			{ timestamp: 't2', level: 'info', tags: [], message: 'started' },
+		]);
+	});
+
+	it('masks a block value whose key follows prose in the message', async () => {
+		operations.set('read_log', async () => [
+			{ timestamp: 't1', message: 'upstream config: apiKey: |-\n  sk-SENTINEL' },
+		]);
+		const { results } = await tool('read_log').handler({}, { sessionId: 's1' });
+		assert.deepEqual(results, [{ timestamp: 't1', message: 'upstream config: apiKey: **\n  ***********' }]);
+	});
+
+	it('masks a quoted credential that an entry continues on a line of its own', async () => {
+		operations.set('read_log', async () => [{ timestamp: 't1', message: 'request {"apiKey":"sk-a\nsk-b"}' }]);
+		const { results } = await tool('read_log').handler({}, { sessionId: 's1' });
+		assert.deepEqual(results, [{ timestamp: 't1', message: 'request {"apiKey":"****\n****"}' }]);
+	});
+
+	it('refuses a filter before dispatch, since it matches unmasked text', async () => {
+		await assert.rejects(tool('read_log').handler({ filter: 'sk-' }, { sessionId: 's1' }), /filter is not available/);
+		assert.equal(dispatched, 0);
+	});
+
+	it('masks a failed read_log error and withholds one holding a PEM private key', async () => {
+		operations.set('read_log', async () => {
+			throw new Error('cannot read apiKey: sk-error');
+		});
+		await assert.rejects(tool('read_log').handler({}, { sessionId: 's1' }), (err) => {
+			assert.match(err.message, /cannot read apiKey: \*{8}/);
+			assert.doesNotMatch(err.message, /sk-error/);
+			return true;
+		});
+		operations.set('read_log', async () => {
+			throw new Error(`cannot parse ${PEM}`);
+		});
+		await assert.rejects(tool('read_log').handler({}, { sessionId: 's1' }), /PEM private key, so it is withheld/);
+	});
+
+	it('withholds a result it cannot mask, without echoing it', async () => {
+		for (const unexpected of [
+			{ text: 'apiKey: sk-shape' },
+			[{ message: { apiKey: 'sk-shape' } }],
+			'apiKey: sk-shape',
+		]) {
+			operations.set('read_log', async () => unexpected);
+			await assert.rejects(tool('read_log').handler({}, { sessionId: 's1' }), (err) => {
+				assert.match(err.message, /cannot mask, so it is withheld/);
+				assert.doesNotMatch(err.message, /sk-shape/);
+				return true;
+			});
+		}
+	});
+
+	it('leaves other operations unchanged', async () => {
+		assert.deepEqual(await tool('search_by_value').handler({}, { sessionId: 's1' }), {
+			results: [{ id: 1, apiKey: 'sk-row' }],
+		});
+	});
+});

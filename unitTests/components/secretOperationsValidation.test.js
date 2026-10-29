@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const validator = require('#js/components/operationsValidation');
+const validator = require('#src/components/operationsValidation');
 
 // validateBySchema returns undefined when valid and an Error when invalid.
 const valid = (res) => res === undefined;
@@ -102,6 +102,14 @@ describe('secret operation validators', () => {
 
 		it('rejects a bad name', () => {
 			assert.ok(!valid(validator.grantSecretValidator({ name: 'A B', component: 'my-app' })));
+		});
+
+		it('accepts a component-name pattern, and refuses one that would match nothing (harper#3090)', () => {
+			assert.ok(valid(validator.grantSecretValidator({ name: 'API_KEY', component: 'my-app-pr-*' })));
+			for (const component of ['*', 'my-*-app', 'my-app-**']) {
+				const error = validator.grantSecretValidator({ name: 'API_KEY', component });
+				assert.match(error?.message ?? '', /may only end in one '\*'/, component);
+			}
 		});
 	});
 

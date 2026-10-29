@@ -41,7 +41,8 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
-import { unpack } from 'msgpackr';
+import { unpack, unpackMultiple } from 'msgpackr';
+import { decode as decodeCbor } from 'cbor-x';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -133,6 +134,39 @@ suite(
 
 		after(async () => {
 			await teardownHarper(ctx);
+		});
+
+		test('nested relationship predicates and pagination use the native authenticated REST path', async () => {
+			await clearAll();
+			for (const [table, records] of [
+				['Order', [{ id: 'nested-p1' }, { id: 'nested-p2' }]],
+				[
+					'OrderItem',
+					[
+						{ id: 'nested-c1', orderId: 'nested-p1', price: 10 },
+						{ id: 'nested-c2', orderId: 'nested-p1', price: 30 },
+						{ id: 'nested-c3', orderId: 'nested-p1', price: 40 },
+						{ id: 'nested-c4', orderId: 'nested-p2', price: 50 },
+					],
+				],
+			] as const) {
+				const seeded = await op({ operation: 'insert', schema: 'data', table, records });
+				strictEqual(seeded.status, 200, JSON.stringify(seeded.body));
+			}
+			try {
+				const selection = 'select(id,items[price=ge=number:30&sort(price)&limit(1)&select(id,price)])';
+				const collection = await restGet('/Order/?' + selection);
+				strictEqual(collection.status, 200);
+				deepStrictEqual(
+					collection.body.map((row: any) => row.items.map((item: any) => item.id)),
+					[['nested-c2'], ['nested-c4']]
+				);
+				const single = await restGet('/Order/nested-p1?' + selection);
+				strictEqual(single.status, 200);
+				deepStrictEqual(single.body.items, [{ id: 'nested-c2', price: 30 }]);
+			} finally {
+				await clearAll();
+			}
 		});
 
 		// =========================================================================================
@@ -395,14 +429,13 @@ suite(
 									: unpack(Buffer.from(await response.arrayBuffer()));
 							const storedPrototype =
 								path.startsWith('/OrderItem/') && selection === 'metadata{constructor{city},__proto__{city}}';
-							const jsonExpected = storedPrototype
-								? { metadata: { constructor: { city: 'Denver' }, ['__proto__']: {} } }
-								: expected;
+							// a stored record's `__proto__` key decodes renamed (`__proto_`), so selecting `__proto__` finds no data
+							const jsonExpected = storedPrototype ? { metadata: { constructor: { city: 'Denver' } } } : expected;
 							const binaryExpectations = {
 								'metadata{constructor{city},__proto__{city}}': {
 									metadata: {
 										constructor: { city: 'Denver' },
-										__proto_: { city: storedPrototype ? undefined : 'Denver' },
+										__proto_: storedPrototype ? undefined : { city: 'Denver' },
 									},
 								},
 								'notes{city}': { notes: [{ city: 'Denver' }, null, 'literal', { city: undefined }] },
@@ -416,6 +449,55 @@ suite(
 							);
 						}
 					}
+				}
+			});
+
+			test('filtered REST select projects plain JSON like the single-record URL', async () => {
+				await clearAll();
+				strictEqual((await restPut('/Order/ord-collide', { id: 'ord-collide', total: 5 })).status, 204);
+				const metadata = {
+					label: 'kept',
+					orderId: 'ord-collide',
+					order: { id: 'json-order', name: 'Plain JSON Order', hidden: 'omit' },
+					$updatedtime: 'nested-updated',
+					hasOwnProperty: 'ordinary data',
+				};
+				strictEqual((await restPut('/OrderItem/json-collide', { id: 'json-collide', metadata })).status, 204);
+				const selection =
+					'id,metadata{label,order{id,name},$updatedtime,hasOwnProperty,valueOf,toString,constructor,__proto__{x}}';
+				for (const accept of ['application/json', 'application/cbor', 'application/x-msgpack']) {
+					// a streamed msgpack collection is a sequence of values, not one array
+					const decode = async (response: Response, collection = false) =>
+						accept === 'application/json'
+							? response.json()
+							: accept === 'application/cbor'
+								? decodeCbor(Buffer.from(await response.arrayBuffer()))
+								: (collection ? unpackMultiple : unpack)(Buffer.from(await response.arrayBuffer()));
+					const single = await fetch(`${httpURL}/OrderItem/json-collide?select(${selection})`, {
+						headers: { Accept: accept, Authorization: auth },
+					});
+					const collection = await fetch(`${httpURL}/OrderItem/?id=json-collide&select(${selection})`, {
+						headers: { Accept: accept, Authorization: auth },
+					});
+					strictEqual(single.status, 200, accept);
+					strictEqual(collection.status, 200, accept);
+					const singleBody = await decode(single);
+					const rows = await decode(collection, true);
+					strictEqual(rows.length, 1, accept);
+					const row = rows[0];
+					deepStrictEqual(row, singleBody, `collection row equals single-record projection (${accept})`);
+					strictEqual(row.error, undefined, accept);
+					strictEqual(row.id, 'json-collide');
+					strictEqual(row.metadata.label, 'kept');
+					deepStrictEqual(row.metadata.order, { id: 'json-order', name: 'Plain JSON Order' }, accept);
+					strictEqual(row.metadata.$updatedtime, 'nested-updated');
+					strictEqual(row.metadata.hasOwnProperty, 'ordinary data');
+					for (const inherited of ['valueOf', 'toString', 'constructor', '__proto__', '__proto_'])
+						strictEqual(
+							Object.hasOwn(row.metadata, inherited) ? row.metadata[inherited] : undefined,
+							undefined,
+							`${inherited} (${accept})`
+						);
 				}
 			});
 
@@ -1160,8 +1242,10 @@ suite(
 					{ case: 'null-throw', wantStatus: 500, desc: 'throw null' },
 				];
 
+				const statuses: Record<string, number> = {};
 				for (const c of cases) {
 					const r = await rawGet(`/ThrowMatrix/?case=${c.case}`);
+					statuses[c.case] = r.status;
 					const parsed = tryParse(r.text);
 					const problemType = parsed?.type ?? '';
 					const problemTitle = parsed?.title ?? '';
@@ -1218,8 +1302,7 @@ suite(
 					}
 				}
 
-				// No hard assertion on throw-response since it's a discovery probe
-				ok(true, 'throw matrix recorded');
+				deepStrictEqual(statuses, Object.fromEntries(cases.map((c) => [c.case, c.wantStatus])));
 			});
 
 			// -------------------------------------------------------------------------
@@ -1228,10 +1311,10 @@ suite(
 			test('POST throw shapes: plain-error, statusCode-400, ClientError, obj-statusCode, obj-status', async () => {
 				const postCases = [
 					{ case: 'plain-error', wantStatus: 500, desc: 'POST throw Error' },
-					{ case: 'statuscode-400', wantStatus: 400, desc: 'POST Error{.statusCode=400}', isDefectIf500: true },
-					{ case: 'client-error-def', wantStatus: 400, desc: 'POST ClientError', isDefectIf500: true },
-					{ case: 'obj-statusCode', wantStatus: 409, desc: 'POST throw {statusCode:409}', isDefectIf500: true },
-					{ case: 'obj-status', wantStatus: 400, desc: 'POST throw {status:400}', isDefectIf500: true },
+					{ case: 'statuscode-400', wantStatus: 400, desc: 'POST Error{.statusCode=400}' },
+					{ case: 'client-error-def', wantStatus: 400, desc: 'POST ClientError' },
+					{ case: 'obj-statusCode', wantStatus: 409, desc: 'POST throw {statusCode:409}' },
+					{ case: 'obj-status', wantStatus: 400, desc: 'POST throw {status:400}' },
 				];
 
 				for (const c of postCases) {
@@ -1239,18 +1322,15 @@ suite(
 					const parsed = tryParse(r.text);
 					const row = `${c.desc.padEnd(30)} -> ${r.status} [want ${c.wantStatus}]  title=${pfx(parsed?.title ?? r.text, 50)}`;
 					postPutMatrix.push(row);
-
-					if ((c as any).isDefectIf500) {
-						strictEqual(r.status, c.wantStatus, `POST ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
-					}
+					strictEqual(r.status, c.wantStatus, `POST ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
 				}
 
 				const putCases = [
 					{ case: 'plain-error', wantStatus: 500, desc: 'PUT throw Error' },
-					{ case: 'statuscode-400', wantStatus: 400, desc: 'PUT Error{.statusCode=400}', isDefectIf500: true },
-					{ case: 'client-error-def', wantStatus: 400, desc: 'PUT ClientError', isDefectIf500: true },
-					{ case: 'obj-statusCode', wantStatus: 422, desc: 'PUT throw {statusCode:422}', isDefectIf500: true },
-					{ case: 'obj-status', wantStatus: 400, desc: 'PUT throw {status:400}', isDefectIf500: true },
+					{ case: 'statuscode-400', wantStatus: 400, desc: 'PUT Error{.statusCode=400}' },
+					{ case: 'client-error-def', wantStatus: 400, desc: 'PUT ClientError' },
+					{ case: 'obj-statusCode', wantStatus: 422, desc: 'PUT throw {statusCode:422}' },
+					{ case: 'obj-status', wantStatus: 400, desc: 'PUT throw {status:400}' },
 				];
 
 				for (const c of putCases) {
@@ -1258,13 +1338,8 @@ suite(
 					const parsed = tryParse(r.text);
 					const row = `${c.desc.padEnd(30)} -> ${r.status} [want ${c.wantStatus}]  title=${pfx(parsed?.title ?? r.text, 50)}`;
 					postPutMatrix.push(row);
-
-					if ((c as any).isDefectIf500) {
-						strictEqual(r.status, c.wantStatus, `PUT ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
-					}
+					strictEqual(r.status, c.wantStatus, `PUT ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
 				}
-
-				ok(true, 'POST/PUT throw matrix recorded');
 			});
 
 			// -------------------------------------------------------------------------
@@ -1276,9 +1351,7 @@ suite(
 					const r = await rawGet(`/StatusViaContext/?code=${code}`);
 					const xqa = r.headers['x-qa195'] || '';
 					statusMatrix.push(`context code=${code} -> ${r.status} [want ${code}]  X-QA195=${xqa}`);
-					if (r.status !== code) {
-						defectList.push(`[STATUS] context code=${code} ignored -> got ${r.status}`);
-					}
+					strictEqual(r.status, code, `status set via context: code=${code}`);
 				}
 
 				// 4b. Status via returned Response
@@ -1286,25 +1359,17 @@ suite(
 					const r = await rawGet(`/StatusViaResponse/?code=${code}`);
 					const xqa = r.headers['x-qa195'] || '';
 					statusMatrix.push(`returned-Response code=${code} -> ${r.status} [want ${code}]  X-QA195=${xqa}`);
-					if (r.status !== code) {
-						defectList.push(`[STATUS] returned Response code=${code} ignored -> got ${r.status}`);
-					}
+					strictEqual(r.status, code, `status set via a returned Response: code=${code}`);
 				}
 
-				// 4c. Status via {status, data} object (no headers field)
+				// 4c. A returned {status, data} object has no `headers` field, so REST serializes it as data
+				// (only a response-like envelope with headers sets the status): 200 with the object as body.
 				for (const code of [202, 404]) {
 					const r = await rawGet(`/StatusViaObjStatus/?code=${code}`);
-					statusMatrix.push(`obj-{status,data} code=${code} -> ${r.status} [want ${code}]  body=${pfx(r.text, 40)}`);
-					if (r.status !== code) {
-						statusMatrix.push(`  ^ NOTE: {status,data} (no headers field) code=${code} not honored -> ${r.status}`);
-						// This is a discovery finding, not necessarily a defect — document it
-						defectList.push(
-							`[STATUS NOTE] obj-{status,data} without headers: code=${code} not honored (got ${r.status}). REST.ts requires headers field for status branch.`
-						);
-					}
+					statusMatrix.push(`obj-{status,data} code=${code} -> ${r.status}  body=${pfx(r.text, 40)}`);
+					strictEqual(r.status, 200, `{status:${code}, data} without headers is data, not a status`);
+					strictEqual(tryParse(r.text)?.status, code, `{status:${code}, data} should be the response body`);
 				}
-
-				ok(true, 'status pattern matrix recorded');
 			});
 
 			// -------------------------------------------------------------------------
@@ -1364,7 +1429,12 @@ suite(
 					defectList.push(`[LEAK] 400 body "title" field leaks internal error message: "${p400.title}"`);
 				}
 
-				ok(true, 'problem detail structure recorded');
+				strictEqual(r500.status, 500, 'plain-error status');
+				ok(hasType && hasTitle && hasInstance, `500 problem detail needs type/title/instance: ${r500.text}`);
+				strictEqual(p500.status, 500, `500 problem detail status: ${r500.text}`);
+				strictEqual(r400.status, 400, 'statuscode-400 status');
+				ok(typeof p400?.type === 'string' && typeof p400?.title === 'string', `400 problem detail: ${r400.text}`);
+				strictEqual(p400.status, 400, `400 problem detail status: ${r400.text}`);
 			});
 
 			// -------------------------------------------------------------------------

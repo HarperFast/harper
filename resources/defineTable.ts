@@ -276,6 +276,10 @@ export interface DefineTableOptions {
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
+	/** RocksDB-only replica lifetime in seconds; 0 disables admission. LMDB always proxies. */
+	replicaExpiration?: number;
+	/** RocksDB-only renewal fraction in (0, 1]; 1 never renews. */
+	replicaRefreshFraction?: number;
 	splitSegments?: boolean;
 	trackDeletes?: boolean;
 	randomAccessFields?: boolean;

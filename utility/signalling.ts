@@ -1,10 +1,11 @@
-'use strict';
+import * as serverItcHandlersModule from '../server/itc/serverHandlers.ts';
+('use strict');
 
 import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 let serverItcHandlers;
-import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
+import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.ts';
 
 // Await BOTH the local handler and the cross-worker broadcast. The local handler is what
 // rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
@@ -23,7 +24,7 @@ export async function signalSchemaChange(
 ) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		serverItcHandlers = serverItcHandlers || serverItcHandlersModule.default;
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		if (peersFirst) {
 			await sendItcEvent(itcEventSchema, includeJobWorkers);
@@ -63,8 +64,7 @@ export async function signalSchemaChangeToPeers(message: any): Promise<void> {
  */
 export function signalResourcesRegistered() {
 	try {
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
-		serverItcHandlers.resourceHandler();
+		serverItcHandlersModule.resourceHandler();
 	} catch (err) {
 		hdbLogger.error(err);
 	}

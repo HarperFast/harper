@@ -19,6 +19,12 @@ Resources/tables. Profile gating runs throughout (`completeResourceArgument`, pr
 
 A handful of design points are non-obvious and easy to break:
 
+- **The application profile reads its own request body, so it enforces `http.maxRequestBodySize` itself.**
+  `readBody` in `adapters/harperHttp.ts` shares `getMaxRequestBodySize()` with the REST reader, answers 413
+  for a declared `Content-Length` over the limit or once the streamed bytes pass it, and keeps a discarding
+  `'data'` listener on the body afterwards: a uWS body is a paused `Readable` that buffers the whole upload
+  unless something reads it. Like REST, it does not close the connection or bound the discard. The
+  operations profile is capped by Fastify's `bodyLimit` instead.
 - **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
   (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
   API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on

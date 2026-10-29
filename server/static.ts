@@ -1,9 +1,10 @@
 import { realpathSync, existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { Scope } from '../components/Scope';
+import { Scope } from '../components/Scope.ts';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-import { isMatch } from 'micromatch';
+import _typestrip_micromatch from 'micromatch';
+const { isMatch } = _typestrip_micromatch;
 import send from 'send';
 import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
@@ -196,6 +197,7 @@ export function handleApplication(scope: Scope) {
 	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
 	let urlPathRestartPending = false;
 	let fileSelectionChangePending = false;
+	const missingNotFoundWarned = new Set<string>();
 	let entryHandler: ReturnType<Scope['handleEntry']>;
 
 	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
@@ -386,14 +388,25 @@ export function handleApplication(scope: Scope) {
 				}
 			}
 
-			// If an entry matched, serve it
+			// Entries are watcher snapshots that can lag the disk, so a missing file is a miss, not an error.
+			let resolvedFile: string | undefined;
 			if (staticFile) {
+				try {
+					resolvedFile = resolveExisting(staticFile);
+				} catch (error) {
+					// Failed credentials answered 401 before the file was resolved; keep that over a path-bearing 500.
+					const settledCredentialRejection = settleDeferredCredentialRejection(req);
+					if (settledCredentialRejection) return settledCredentialRejection;
+					throw error;
+				}
+			}
+			if (resolvedFile) {
 				const settledCredentialRejection = settleDeferredCredentialRejection(req);
 				if (settledCredentialRejection) return settledCredentialRejection;
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
 				return {
 					handlesHeaders: true,
-					body: serveFile(req, realpathSync(staticFile), scope),
+					body: serveFile(req, resolvedFile, scope),
 				};
 			}
 
@@ -419,11 +432,19 @@ export function handleApplication(scope: Scope) {
 			const notFoundPath = join(scope.directory, typeof notFound === 'string' ? notFound : notFound.file);
 			const statusCode = typeof notFound === 'object' ? notFound.statusCode : 404;
 
-			if (!existsSync(notFoundPath)) {
-				throw new Error(`Not found file does not exist: ${notFoundPath}`);
+			const resolvedNotFound = resolveExisting(notFoundPath);
+			if (!resolvedNotFound) {
+				if (!missingNotFoundWarned.has(notFoundPath)) {
+					scope.logger.warn(`The static \`notFound\` file does not exist: ${notFoundPath}`);
+					missingNotFoundWarned.add(notFoundPath);
+				}
+				return {
+					status: 404,
+					body: 'File not found',
+				};
 			}
 
-			const resolvedNotFound = realpathSync(notFoundPath);
+			missingNotFoundWarned.delete(notFoundPath);
 			return {
 				status: statusCode,
 				handlesHeaders: true,
@@ -437,6 +458,15 @@ export function handleApplication(scope: Scope) {
 			after: after as string | undefined,
 		}
 	);
+}
+
+function resolveExisting(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch (error) {
+		if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined;
+		throw error;
+	}
 }
 
 function validateOrderingOption(

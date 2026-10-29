@@ -12,7 +12,7 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 
-const SQLSearch = require('#src/dataLayer/SQLSearch').default;
+const SQLSearch = require('#js/dataLayer/SQLSearch').default;
 console.log('SQLSearch IS', SQLSearch);
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const log = require('#src/utility/logging/harper_logger');

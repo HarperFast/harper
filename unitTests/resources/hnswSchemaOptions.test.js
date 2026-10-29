@@ -8,7 +8,7 @@ const { derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedInd
 const { READINESS_BYTES } = require('#src/resources/derivedIndexRuntime');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { ClientError } = require('#src/utility/errors/hdbError');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const createdTables = [];
 

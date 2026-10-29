@@ -534,6 +534,36 @@ describe('static plugin deferred credential rejection', () => {
 	});
 });
 
+describe('static plugin deferred credential rejection when the matched file vanished', () => {
+	function vanishedEntry(options) {
+		const { scope, state } = fakeScope(options);
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/asset.js', absolutePath: '/fake/app/web/gone-asset.js' });
+		return state;
+	}
+
+	function deferredRequest() {
+		const request = staticRequest('/asset.js', { authorization: 'Basic d29yZHByZXNzOmFwcC1wYXNzd29yZA==' });
+		deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+		return request;
+	}
+
+	it('leaves the rejection for the next handler when falling through', () => {
+		const state = vanishedEntry({ after: 'rest' });
+		const request = deferredRequest();
+
+		assert.strictEqual(state.listener(request, next), NEXT_HANDLER);
+		assert.ok(getDeferredCredentialRejection(request), 'the downstream owner must still see the rejection');
+	});
+
+	it('settles the rejection when static answers the miss itself', () => {
+		const state = vanishedEntry({ after: 'rest', fallthrough: false });
+		const request = deferredRequest();
+
+		assertSettledUnauthorized(state.listener(request, next), request, 'Basic d29yZHByZXNzOmFwcC1wYXNzd29yZA==');
+	});
+});
+
 describe('static plugin responses without a deferred rejection', () => {
 	it('still redirects the mount root, preserving the query string', () => {
 		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });
@@ -611,6 +641,8 @@ describe('static plugin responses without a deferred rejection', () => {
 });
 
 const REQUEST_TIMEOUT_MS = 5000;
+// A port key another unit test file already passed to server.http/httpServer returns that file's server, TLS included,
+// for the rest of the process (serverGlobalCallerImpact.test.js starts at 19670).
 let nextTestPort = 19470;
 
 function listenWith(dispatch) {
@@ -1147,5 +1179,185 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		assert.equal(res.status, 201);
 		assert.equal(res.body, 'ab');
 		assert.deepEqual(outcomesFor('outcome-streamed'), [{ metric: 'response_201', path: 'outcome-streamed', count: 1 }]);
+	});
+});
+
+describe('static plugin entries whose file vanished before the watcher noticed', () => {
+	let tempRoot;
+	let server;
+	let baseUrl;
+	const dispatch = { current: null };
+
+	before(async () => {
+		({ server, baseUrl } = await listenWith(dispatch));
+	});
+
+	after(() => {
+		server?.closeAllConnections();
+		server?.close();
+	});
+
+	beforeEach(() => {
+		tempRoot = mkdtempSync(join(tmpdir(), 'harper-static-vanished-'));
+	});
+
+	afterEach(() => {
+		if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
+	});
+
+	function serveApp(options = {}) {
+		const appDir = join(tempRoot, 'app');
+		mkdirSync(join(appDir, 'web'), { recursive: true });
+		const { scope, state } = fakeScope(options);
+		scope.directory = appDir;
+		handleApplication(scope);
+		dispatch.current = (req) => state.listener(req, () => ({ status: 200, body: 'next' }));
+		return { appDir, state };
+	}
+
+	function indexFile(state, appDir, name, { target = join(appDir, 'web', name), content = 'content' } = {}) {
+		const absolutePath = join(appDir, 'web', name);
+		mkdirSync(join(target, '..'), { recursive: true });
+		writeFileSync(target, content);
+		if (target !== absolutePath) symlinkSync(target, absolutePath);
+		state.entryCallback({ eventType: 'add', urlPath: `/${name}`, absolutePath });
+		return { absolutePath, target };
+	}
+
+	const missingNotFoundWarnings = (state) => state.warnings.filter((message) => message.includes('`notFound`'));
+
+	function assertPlain404(res) {
+		assert.equal(res.status, 404);
+		assert.equal(res.body, 'File not found');
+		assert.ok(!res.body.includes(tempRoot), 'the response must not reveal the filesystem path');
+	}
+
+	it('answers 404 for a file removed without an unlink event', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false });
+		const { absolutePath } = indexFile(state, appDir, 'vanishing.js');
+		rmSync(absolutePath);
+
+		assertPlain404(await fetchHttp(baseUrl, '/vanishing.js'));
+	});
+
+	it('falls through for a removed file when fallthrough is true', async () => {
+		const { appDir, state } = serveApp({ fallthrough: true });
+		const { absolutePath } = indexFile(state, appDir, 'vanishing.js');
+		rmSync(absolutePath);
+
+		const res = await fetchHttp(baseUrl, '/vanishing.js');
+		assert.equal(res.status, 200);
+		assert.equal(res.body, 'next');
+	});
+
+	it('answers 404 for a symlink whose target was removed', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false });
+		const { target } = indexFile(state, appDir, 'linked.js', { target: join(tempRoot, '.store', 'pkg', 'linked.js') });
+		rmSync(target);
+
+		assertPlain404(await fetchHttp(baseUrl, '/linked.js'));
+	});
+
+	it('answers 404 when a parent directory was replaced by a file', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false });
+		indexFile(state, appDir, 'dir/inner.js');
+		rmSync(join(appDir, 'web', 'dir'), { recursive: true });
+		writeFileSync(join(appDir, 'web', 'dir'), 'now a file');
+
+		assertPlain404(await fetchHttp(baseUrl, '/dir/inner.js'));
+	});
+
+	it('answers 404 for a removed directory index', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false });
+		const { absolutePath } = indexFile(state, appDir, 'docs/index.html');
+		rmSync(absolutePath);
+
+		assertPlain404(await fetchHttp(baseUrl, '/docs/'));
+	});
+
+	it('serves the file again once a missing symlink target is restored', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false });
+		const { target } = indexFile(state, appDir, 'linked.js', {
+			target: join(tempRoot, '.store', 'linked.js'),
+			content: 'restored',
+		});
+		rmSync(target);
+		assertPlain404(await fetchHttp(baseUrl, '/linked.js'));
+
+		writeFileSync(target, 'restored');
+		const res = await fetchHttp(baseUrl, '/linked.js');
+		assert.equal(res.status, 200);
+		assert.equal(res.body, 'restored');
+	});
+
+	it('serves the configured notFound page when a matched file vanished', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false, notFound: { file: 'web/spa.html', statusCode: 200 } });
+		writeFileSync(join(appDir, 'web', 'spa.html'), 'spa shell');
+		const { absolutePath } = indexFile(state, appDir, 'vanishing.js');
+		rmSync(absolutePath);
+
+		const res = await fetchHttp(baseUrl, '/vanishing.js');
+		assert.equal(res.status, 200);
+		assert.equal(res.body, 'spa shell');
+	});
+
+	it('warns again when a restored notFound file goes missing a second time', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false, notFound: 'web/404.html' });
+		const notFoundFile = join(appDir, 'web', '404.html');
+
+		await fetchHttp(baseUrl, '/nothing-here');
+		writeFileSync(notFoundFile, 'back');
+		assert.equal((await fetchHttp(baseUrl, '/nothing-here')).body, 'back');
+		rmSync(notFoundFile);
+		await fetchHttp(baseUrl, '/nothing-here');
+
+		assert.equal(missingNotFoundWarnings(state).length, 2);
+	});
+
+	it('answers 404 rather than the configured status when the notFound file is missing', async () => {
+		serveApp({ fallthrough: false, notFound: { file: 'web/spa.html', statusCode: 200 } });
+
+		assertPlain404(await fetchHttp(baseUrl, '/nothing-here'));
+	});
+
+	it('settles failed credentials with 401 when resolving the file fails for another reason', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+		const loop = join(tempRoot, 'loop.js');
+		symlinkSync(loop, loop);
+		state.entryCallback({ eventType: 'add', urlPath: '/loop.js', absolutePath: loop });
+		const request = staticRequest('/loop.js', { authorization: 'Basic d29yZHByZXNzOmFwcC1wYXNzd29yZA==' });
+		deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+
+		assert.equal(state.listener(request, next).status, 401);
+	});
+
+	it('still reports a filesystem error that is not a missing file', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false });
+		const loop = join(appDir, 'web', 'loop.js');
+		symlinkSync(loop, loop);
+		state.entryCallback({ eventType: 'add', urlPath: '/loop.js', absolutePath: loop });
+
+		const res = await fetchHttp(baseUrl, '/loop.js');
+		assert.equal(res.status, 500);
+	});
+
+	it('answers 404 without the path when the configured notFound file was removed, logging it once', async () => {
+		const { state } = serveApp({ fallthrough: false, notFound: { file: 'web/404.html', statusCode: 404 } });
+
+		assertPlain404(await fetchHttp(baseUrl, '/nothing-here'));
+		assertPlain404(await fetchHttp(baseUrl, '/still-nothing'));
+		assert.equal(missingNotFoundWarnings(state).length, 1);
+		assert.match(missingNotFoundWarnings(state)[0], /404\.html/);
+	});
+
+	it('answers 404 without the path when a symlinked notFound file lost its target', async () => {
+		const { appDir, state } = serveApp({ fallthrough: false, notFound: 'web/404.html' });
+		const target = join(tempRoot, '.store', '404.html');
+		mkdirSync(join(target, '..'), { recursive: true });
+		symlinkSync(target, join(appDir, 'web', '404.html'));
+
+		assertPlain404(await fetchHttp(baseUrl, '/nothing-here'));
+		assert.equal(missingNotFoundWarnings(state).length, 1);
 	});
 });

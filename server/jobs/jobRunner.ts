@@ -1,7 +1,5 @@
 'use strict';
 
-import { join } from 'node:path';
-
 import * as hdbUtil from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
@@ -10,11 +8,13 @@ import * as jobs from './jobs.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
-import * as threadsStart from '../threads/manageThreads.js';
+import * as threadsStart from '../threads/manageThreads.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as restart from '../../bin/restart.ts';
-import { parentPort, isMainThread } from 'worker_threads';
-import { onMessageByType } from '../threads/manageThreads.js';
+import { parentPort, isMainThread } from 'node:worker_threads';
+import { onMessageByType } from '../threads/manageThreads.ts';
+import { join } from 'node:path';
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 
 class RunnerMessage {
 	job: any;
@@ -142,7 +142,7 @@ async function runJob(runnerMessage: any, operation: any) {
 async function launchJobThread(job_id: any) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
-		threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+		threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
 			autoRestart: false,
 			name: 'job',
 			env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
@@ -157,7 +157,7 @@ async function launchJobThread(job_id: any) {
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.START_JOB, async (message) => {
 		try {
-			threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+			threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
 				autoRestart: false,
 				name: 'job',
 				env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },

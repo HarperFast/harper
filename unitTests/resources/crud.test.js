@@ -3,9 +3,9 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const analytics = require('#src/resources/analytics/write');
+const analytics = require('#js/resources/analytics/write');
 const { waitFor } = require('../waitFor.js');
 
 // might want to enable an iteration with NATS being assigned as a source

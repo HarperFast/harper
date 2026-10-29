@@ -1,4 +1,4 @@
-'use strict';
+import { loadRuntimeModule, loadNativePackage } from './packageUtils.js';
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
  * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
@@ -31,22 +31,30 @@ import {
 	registerGrantableOperation,
 	unregisterGrantableOperation,
 } from './operationPermissions.ts';
-import * as permsTranslator from '../security/permissionsTranslator.js';
+import * as permsTranslator from '../security/permissionsTranslator.ts';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
 import * as configUtils from '../config/configUtils.ts';
-import * as functionsOperations from '../components/operations.js';
+import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
 import * as status from '../server/status/index.ts';
 import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
+import {
+	COMPONENT_GRANT_OPERATIONS,
+	componentGrantOf,
+	grantCoversComponent,
+	type ComponentGrant,
+} from '../security/componentGrant.ts';
+import { canonicalProjectName, projectNameFromPackage } from './componentNames.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
+import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as encryptedOperation from '../components/encryptedOperation.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
@@ -361,6 +369,10 @@ requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
 );
+requiredPermissions.set(
+	releaseOperations.handleListReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_RELEASES)
+);
 // get_deployment_payload streams the full tarball (which can embed secrets), unlike
 // get_deployment/list_deployments (metadata only), so it ALSO enforces super_user directly in
 // the handler — it cannot be delegated through a role's `operations` allowlist (gate-2 bypass
@@ -470,15 +482,6 @@ requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new permission(false, [
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new permission(false, [INSERT_PERM], null));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, [UPDATE_PERM], null));
 
-module.exports = {
-	verifyPerms,
-	verifyPermsAST,
-	verifyOperationsAllowlist,
-	verifyBulkLoadAttributePerms,
-	registerOperationPermission,
-	unregisterOperationPermission,
-};
-
 /**
  * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.
  * @param ast - The SQL statement in Syntax Tree form.
@@ -555,6 +558,8 @@ function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
 	return tokenScopeDenial(userObject, sqlVariant);
 }
 
+let StatementBucket;
+let alasql;
 export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
@@ -579,12 +584,11 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	if (scopeDenial) return scopeDenial;
 
 	try {
-		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
-		const bucket = bucketModule.default || bucketModule;
-		const alasql = require('alasql');
+		StatementBucket ??= loadRuntimeModule('sqlTranslator/sql_statement_bucket').default;
+		alasql ??= loadNativePackage('alasql');
 
 		const permsResponse = new PermissionResponseObject();
-		let parsedAst = new bucket(ast);
+		let parsedAst = new StatementBucket(ast);
 		let schemas = parsedAst.getSchemas();
 		let schemaTableMap = new Map();
 
@@ -627,7 +631,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
-		if (!isSuperUser && ast instanceof alasql.yy.Select) {
+		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
 		}
 
@@ -664,6 +668,50 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	} catch (e) {
 		throw handleHDBError(e);
 	}
+}
+
+/**
+ * Checked ahead of gate 2, so an `operations` listing of one of the grant's operations, which would otherwise admit
+ * it for every component, still answers to the grant's names. A deploy or drop is checked here against the component it names, resolved as the handler resolves it. The reads
+ * name no component up front, so their handlers answer only for the components the grant covers.
+ */
+function componentGrantDenial(
+	grant: ComponentGrant,
+	apiName: string,
+	requestJson: any,
+	permsResponse: PermissionResponseObject
+) {
+	let component: unknown;
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT && requestJson._deploymentId !== undefined) {
+		return permsResponse.handleUnauthorizedItem(
+			`'_deploymentId' is set by replication; a deploy under a component grant cannot carry it`
+		);
+	}
+	if (
+		apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT &&
+		Array.isArray(requestJson.credentials) &&
+		requestJson.credentials.some((entry: any) => entry?.token !== undefined)
+	) {
+		return permsResponse.handleUnauthorizedItem(
+			'A deploy under a component grant can only reference stored credentials; sealing a literal token needs super_user'
+		);
+	}
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT) {
+		component =
+			typeof requestJson.project === 'string' && requestJson.project
+				? canonicalProjectName(requestJson.project)
+				: typeof requestJson.package === 'string'
+					? projectNameFromPackage(requestJson.package)
+					: undefined;
+	} else if (apiName === terms.OPERATIONS_ENUM.DROP_COMPONENT) {
+		component = requestJson.project;
+	} else {
+		return null;
+	}
+	if (grantCoversComponent(grant, component)) return null;
+	return permsResponse.handleUnauthorizedItem(
+		`Component '${String(component)}' is not covered by this role's component grant`
+	);
 }
 
 /**
@@ -808,6 +856,13 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		return null;
 	}
 
+	// Ahead of the structure-user and allowlist grants below, which would otherwise admit them.
+	if (!isSuperUser && (requestJson.replicateTo != undefined || requestJson.replicatedConfirmation != undefined)) {
+		return permsResponse.handleUnauthorizedItem(
+			'Can not specify replicateTo or replicatedConfirmation without super user permissions'
+		);
+	}
+
 	//structureUsers can create/drop schemas if they are not locked down to specific schemas.
 	if (structureUser === true && (op === schema.createSchema.name || op === schema.dropSchema.name)) {
 		return null;
@@ -841,6 +896,12 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
 	// regardless; get_backup is kept out of reach by registering it without an api_name, which gate 1
 	// can never match.
+	const apiName = requiredPermissions.get(op)?.api_name;
+	if (COMPONENT_GRANT_OPERATIONS.has(apiName)) {
+		const componentGrant = componentGrantOf(requestJson.hdb_user);
+		if (componentGrant) return componentGrantDenial(componentGrant, apiName, requestJson, permsResponse);
+	}
+
 	if (allowedOperationsList !== undefined && requiredPermissions.get(op)?.requires_su) {
 		return null;
 	}

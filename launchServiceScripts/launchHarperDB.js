@@ -1,4 +1,5 @@
 'use strict';
 
-require('../server/threads/nativeAddonGuard.ts');
-require('../server/operationsServer.ts').hdbServer();
+const { loadRuntimeModule } = require('../utility/packageUtils.js');
+loadRuntimeModule('server/threads/nativeAddonGuard');
+loadRuntimeModule('launchServiceScripts/startHarperDB');

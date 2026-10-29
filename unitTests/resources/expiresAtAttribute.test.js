@@ -3,7 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { makeTable: makeTableResource } = require('#src/resources/Table');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // A schema @expiresAt attribute must be authoritative over the table-level expiration default, in both
 // directions. Previously the field only armed a separate index-pruning sweep (which can only remove

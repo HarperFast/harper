@@ -17,7 +17,7 @@ const { RequestTarget } = require('#src/resources/RequestTarget');
 const Resources = require('#src/resources/Resources');
 const { transaction } = require('#src/resources/transaction');
 const { handleApplication: handleRest } = require('#src/server/REST');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 require('#src/server/serverHelpers/serverUtilities');
 
 const superUser = { role: { permission: { super_user: true } } };

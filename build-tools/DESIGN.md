@@ -1,8 +1,8 @@
 # build-tools/ — Design notes
 
-Packaging and the published artifacts (npm dependency bundle, Docker image).
+Packaging and the published artifacts (npm dependency bundle, Docker image), plus Harper's local lint rules.
 
-**Read this when:** touching dependency bundling, `build.sh` or the `Dockerfile`.
+**Read this when:** touching dependency bundling, `build.sh`, the `Dockerfile` or `oxlint-plugin-harper.mjs`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -70,3 +70,7 @@ read `.raw`, so that is the case that would trip it.
 `npm run build:watch` is plain `tsc --watch`: comments and non-Latin-1 text stay, which only costs
 memory on a development box. harper-pro compiles core into its own `dist/core`, so it runs this
 script with `--project tsconfig.json` rather than core's build.
+
+## Integration tests never assert the literal `true` (`build-tools/oxlint-plugin-harper.mjs`)
+
+`harper/no-literal-true-assertion` (an oxlint JS plugin, enabled for `integrationTests/**` in `.oxlintrc.json`) rejects `ok(true, …)` and every other `node:assert` truthiness call whose argument is the literal `true`, resolving import aliases, destructuring and `t.assert` through scope. A probe asserts what it observed, or it is not a test: a print-only step goes in `after()`. oxlint ships JS plugins as alpha, so `unitTests/build-tools/oxlintPluginHarper.test.mjs` runs the pinned oxlint with the real config against fixtures: a bump that breaks loading fails `lint:required`, and one that loads but stops reporting fails that test.

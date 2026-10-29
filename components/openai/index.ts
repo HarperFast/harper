@@ -30,6 +30,7 @@ import {
 	requireModel,
 } from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
+import { isUnresolvedEnvVarPlaceholder } from '../../utility/expandEnvVar.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import type {
 	BackendOpts,
@@ -99,6 +100,14 @@ export interface OpenAIBackendConfig {
 	requestTimeoutMs?: number;
 	/** Forwarded as `OpenAI-Organization` header when set. */
 	organization?: string;
+	/** Exact text prepended for an explicit embedding inputType; omitted keys leave inputs unchanged. */
+	inputPrefixes?: { document?: string; query?: string };
+	/**
+	 * How the endpoint truncates embedding inputs. `'vllm'` (vLLM 0.18 or later) declares that it
+	 * accepts `truncate_prompt_tokens` and `truncation_side`, so `embed` can honor `truncate: true`.
+	 * Absent: neither field is ever sent (api.openai.com rejects unknown fields) and `truncate` is not advertised.
+	 */
+	truncation?: 'vllm';
 }
 
 /**
@@ -127,9 +136,14 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	structuredOutput: true,
 	maxScoredChoices: MAX_SCORED_CHOICES,
 });
-// The same shape for a model that refused `logprobs`; two frozen objects, so `capabilities()` allocates nothing.
+// Frozen once, so `capabilities()` allocates nothing.
 const { maxScoredChoices: _scoringLimit, ...UNLIMITED } = CAPABILITIES;
 const CAPABILITIES_WITHOUT_SCORING: ModelCapabilities = Object.freeze({ ...UNLIMITED, scoreChoices: false });
+const TRUNCATING: ModelCapabilities = Object.freeze({ ...CAPABILITIES, truncate: true });
+const TRUNCATING_WITHOUT_SCORING: ModelCapabilities = Object.freeze({
+	...CAPABILITIES_WITHOUT_SCORING,
+	truncate: true,
+});
 
 export class OpenAIBackend implements ModelBackend {
 	readonly name = 'openai';
@@ -139,6 +153,9 @@ export class OpenAIBackend implements ModelBackend {
 	readonly #organization?: string;
 	readonly #requestTimeoutMs?: number;
 	readonly #fetch: typeof fetch;
+	readonly #documentPrefix?: string;
+	readonly #queryPrefix?: string;
+	readonly #truncation?: 'vllm';
 	// True only when talking to api.openai.com itself. OpenAI's reasoning models
 	// (o-series, gpt-5 family) reject `max_tokens` in favour of `max_completion_tokens`;
 	// OpenAI-compatible shims (vLLM, Ollama-compat, older gateways) only know `max_tokens`.
@@ -162,21 +179,44 @@ export class OpenAIBackend implements ModelBackend {
 		this.#organization = config.organization;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
 		this.#fetch = fetchImpl;
+		const prefixes = config.inputPrefixes;
+		if (prefixes !== undefined) {
+			if (!prefixes || typeof prefixes !== 'object' || Array.isArray(prefixes))
+				throw new OpenAIBackendError('OpenAI inputPrefixes must be an object');
+			for (const [key, value] of Object.entries(prefixes)) {
+				if (key !== 'document' && key !== 'query')
+					throw new OpenAIBackendError('OpenAI inputPrefixes accepts only document and query');
+				if (value !== undefined && (typeof value !== 'string' || isUnresolvedEnvVarPlaceholder(value)))
+					throw new OpenAIBackendError(`OpenAI inputPrefixes.${key} must be a resolved string`);
+			}
+			this.#documentPrefix = prefixes.document;
+			this.#queryPrefix = prefixes.query;
+		}
+		if (config.truncation !== undefined && config.truncation !== 'vllm')
+			throw new OpenAIBackendError("OpenAI truncation accepts only 'vllm'");
+		this.#truncation = config.truncation;
 	}
 
 	capabilities(): ModelCapabilities {
-		return this.#defaultModel === undefined || !this.#logprobsRejected.has(this.#defaultModel)
-			? CAPABILITIES
-			: CAPABILITIES_WITHOUT_SCORING;
+		const scoring = this.#defaultModel === undefined || !this.#logprobsRejected.has(this.#defaultModel);
+		if (this.#truncation) return scoring ? TRUNCATING : TRUNCATING_WITHOUT_SCORING;
+		return scoring ? CAPABILITIES : CAPABILITIES_WITHOUT_SCORING;
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'embed', OpenAIBackendError);
-		// inputType is honored as a hint but OpenAI's embedding models don't
-		// currently differentiate by it on the wire — pass through unchanged.
 		const texts = Array.isArray(input) ? input : [input];
-		const body: Record<string, unknown> = { model, input: texts };
+		const prefix =
+			opts.inputType === 'document' ? this.#documentPrefix : opts.inputType === 'query' ? this.#queryPrefix : undefined;
+		const body: Record<string, unknown> = { model, input: prefix ? texts.map((text) => prefix + text) : texts };
+		if (opts.truncate === true) {
+			if (!this.#truncation)
+				throw new OpenAIBackendError("OpenAI embed cannot truncate unless the entry sets truncation: 'vllm'");
+			// `-1` is the model's own input limit; 'right' keeps the start, and with it any inputPrefixes text.
+			body.truncate_prompt_tokens = -1;
+			body.truncation_side = 'right';
+		}
 		const res = await this.#post('/embeddings', body, opts.signal);
 		const data = await parseJsonResponse<OpenAIEmbedResponse>(res, 'OpenAI /embeddings', OpenAIBackendError);
 		if (!Array.isArray(data.data)) {

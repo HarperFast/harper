@@ -35,7 +35,9 @@ Four constraints that look like choices but are not:
 
 `hdb_oidc_token_use` (declared on every node at every start by `tokenUseTable.ts`, so a node that never exchanges still removes the rows replicated to it — see dataLayer/DESIGN.md, "System table bootstrap") records spent tokens keyed on a SHA-256 of the token itself, each expiring (record metadata, replicated with the row) past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
 
-`harper deploy setup=true provider=github-actions` (`bin/deploySetupGithubActions.ts`) is the client-side composition of these operations for one repository's workflow: role and user `<component>-ci-deploy` (`deploy_component`, `get_job`, `registration_info`) and policy `github-actions-<component>`, names Studio's setup must match. It only creates: a record that already matches is left alone, and one that differs or was deactivated stops it before it writes, so it does not repurpose a role or undo a revocation. `add_oidc_trust` replaces, so setup lists the policy again just before writing it; a policy another super user creates (enabled or not) in that last round trip would still be overwritten. A server-side create-only write would narrow that further but not close it, since `hdb_oidc_trust` replicates and the check would be per node. It reads the policy back and compares it claim for claim, because a mismatch otherwise surfaces only as the exchange's opaque 401.
+**The minted token carries where the run came from.** Beside `workload_identity`, the exchange signs a `deploy_source` claim: `{ via: 'oidc', policy, … }` with the run's verified `repository`, `sha`, `ref`, `workflow_ref`, `run_id`, `run_attempt`, `actor` and `environment`, whichever the identity token holds (`attestedSource`, `components/deploymentSource.ts`). `validateToken` lifts it onto the principal as `deploySource` and impersonation carries it, like the provenance marker, and `deploy_component` records it on the deployment row as attested, where it wins over anything the request declares (#3061). Signed, so a caller cannot edit it; claims, not the token, so the record holds no credential.
+
+`harper deploy setup=true provider=github-actions` (`bin/deploySetupGithubActions.ts`) is the client-side composition of these operations for one repository's workflow: role and user `<component>-ci-deploy` (`deploy_component`, `get_deployment`, `get_job`, `registration_info`) and policy `github-actions-<component>`, names Studio's setup must match. It only creates: a record that already matches is left alone, and one that differs or was deactivated stops it before it writes, so it does not repurpose a role or undo a revocation. `add_oidc_trust` replaces, so setup lists the policy again just before writing it; a policy another super user creates (enabled or not) in that last round trip would still be overwritten. A server-side create-only write would narrow that further but not close it, since `hdb_oidc_trust` replicates and the check would be per node. It reads the policy back and compares it claim for claim, because a mismatch otherwise surfaces only as the exchange's opaque 401.
 
 ## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
 
@@ -105,6 +107,8 @@ allowlist, and the gate ordering is what keeps unlisted schema ops unreachable.
 
 `loadCertificates` publishes a configured leaf only after `X509Certificate.checkPrivateKey` validates the exact PEM being stored. Only the main thread watches the certificate and key directories; its filename-filtered, shallow watches and five-minute safety poll share a cert/key fingerprint. An incomplete pair returns `false` so it is retried, with a pending-pair warning and an error after 30 seconds (immediate when the new certificate name has no non-self-signed record, then hourly). Restoring the last applied files after an aborted renewal re-enters the loader to clear the pending alarm. Every raw watcher event also arms one trailing check, at most once a second and never postponed, that loads a fingerprint not yet attempted (only the optional poll retries an unchanged unapplied pair): chokidar stops emitting add/change for a name removed twice within its 100 ms removal throttle (it keeps tracking the deleted inode), so its derived events cannot be the only trigger; events the OS never delivers are still left to the optional poll. CA-only records remain independent of the leaf key. Workers use the `hdb_certificate` subscription as their reload trigger and read configured key files when building contexts; no worker key watcher or poll races that notification. Configured keys remain in `getPrivateKeys()` for key retrieval, but entries populated from files are refreshed for retrieval and rebuilds, retaining their cached value while the file is temporarily unreadable; explicit values that differ from the last file-derived key still take precedence. A directory that cannot be watched because it is not readable falls back to Node file polling, which remains armed while configured files are absent, independently of the optional five-minute safety poll. Enforced by the rename-order, per-worker, poll-disabled cases in `integrationTests/security/cert-key-reload.test.ts` and loader tests in `unitTests/security/keys.test.js` and `unitTests/security/tlsFileWatch.test.js`.
 
+The older-file guard does not freeze a record's `ciphers`/`uses`: listeners read them from the record, so the loader marks every record it writes `from_config: true` and, at load, patches a config edit to either field onto a marked record whose PEM equals the file's (a removed `ciphers` is stored as `null`). `file_timestamp` cannot be the ownership signal: `setCertTable` patches, so an API write keeps it. `setCertTable` nulls the marker when a write sets `ciphers` or `uses`, so those set through the API (for example a lowered `@SECLEVEL` for legacy client chains) survive restarts. A record from before the marker is adopted only when it already matches config, because an operator edit is indistinguishable from stale state. When config entries share a certificate file, the first entry to reach a record owns its reconciliation at load, but a full write (first load, or a renewal whose watcher fires first) is made by whichever entry runs last or first, so the record's `uses` and `ciphers` can differ from the load-time owner's until the next restart, and a listener that reads that record uses them. A record the loader declines to change, because it differs but was not written from config, is logged. Changes apply at process start or file change, not on `restart_service`. `hostnames` and `private_key_name` stay frozen by the guard. Enforced by the `ciphers and uses follow config` cases in `unitTests/security/keys.test.js`.
+
 An unrelated table notification during a key-first installation gap, or a second rotation between publication and a worker's key read, can still produce a transient mismatch; the trust-aware last-good retention below protects serving while the next complete pair propagates. The older-file guard still prevents disk from replacing a newer replicated certificate.
 
 **Publication is transactional (#2382).** `updateTLS` builds the entire replacement state —
@@ -130,6 +134,10 @@ debounce. `loadAndWatch` latches its cert/key fingerprint before the callback fo
 the latch back on a false result, synchronous throw, or rejected callback promise (equality-guarded so a stale
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
+## Self-signed renewal replaces the pair in one transaction (`security/keys.ts`)
+
+`prepareSelfSignedCerts` builds the self-signed CA and replication-certificate records in memory; `publishSelfSignedCerts` writes them in one `transaction()`, and for `renewSelfSigned` also deletes the old self-signed rows there. Writing new rows first is not enough on its own: `setCertTable` patches by name, and the CA name repeats when `node.hostname` is set, so a non-atomic renewal can replace the CA and then fail before the leaf. Renewal looks for a reusable CA and replication certificate with self-signed rows excluded (`getCertAuthority(true)`, `getReplicationCert(true)`), since a self-signed `replication` leaf would otherwise outscore an external generic one. Publication re-reads each row in the transaction and does not replace or delete one that is not self-signed: renewal fails instead, and boot review warns and skips it (and the leaf, when it is the CA). When an external row already holds the node name, the self-signed leaf is stored as `<node>-self-signed`; selection is by hostname, not row name. A same-key write landing inside the commit window itself is not covered. A configured key path names the CA key only when that key parsed; a generated key is created exclusively (`wx`, `0o600`) in `keys/` after the records are built, never overwrites a configured or existing file, and is removed if publication fails. Enforced by the self-signed review and renewal cases in `unitTests/security/keys.test.js` and `integrationTests/security/renew-certs-missing-privatekey.test.ts`.
 
 ## Client-certificate revocation checking keeps three tables (`security/certificateVerification/`)
 
@@ -170,10 +178,15 @@ this: its tag is a module-private `Symbol` that `isCredentialRejection` checks b
 The VM loader and the compartment `resolveHook` call the same module-scope `resolveModule`, so a
 dependency that resolves in one `applications.moduleLoader` mode resolves in the other. It resolves
 CommonJS-first (a dual package keeps its `require` target) and falls back to the package's `exports`
-map only for a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`, or
-`MODULE_NOT_FOUND` on Bun. A fallback resolution records the `package.json` and entry-file digests, not
-a resolution edge, because `RuntimeModuleTracker` re-resolves edges with `createRequire` and would read
-the import-only package as changed on every deploy.
+map only for an import of a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`,
+or `MODULE_NOT_FOUND` on Bun. A `require()` never falls back — the CommonJS resolver's verdict is the
+runtime's own `require` resolution. The fallback is a port of Node's `PACKAGE_EXPORTS_RESOLVE` with only
+the `node` and `import` conditions (plus `bun` on Bun) — Node's `module-sync`, `node-addons` and
+`--conditions` are not modeled — and the `resolves package exports as native Node import does` cases check
+each rule against native Node. A
+fallback resolution records the `package.json` and entry-file digests, not a resolution edge, because
+`RuntimeModuleTracker` re-resolves edges with `createRequire` and would read the import-only package as
+changed on every deploy.
 
 SES loads from the ESM shims `ses/index.js` composes, through `loadSES`, never `require('ses')`: that
 bundle is CommonJS, Bun drops function-level `'use strict'` in CommonJS, and SES's sloppy-mode self-check
@@ -216,6 +229,20 @@ There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads t
 
 LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.
 
+### A component grant answers to its names ahead of every operations listing (`security/componentGrant.ts`)
+
+A role's `component_deploy` grant (harper#3046) reaches `deploy_component`, `drop_component`, `get_deployment`, `list_deployments` and `get_components`, for the components its `names` patterns cover (`componentNameMatches` in `utility/componentNames.ts`, which deploy credentials share, harper#3090).
+
+1. **The names are checked ahead of gate 2.** `verifyPerms` admits an SU-only operation the role's `operations` allowlist lists, for every component. A grant-holding role that also listed `deploy_component` would deploy anything, so the grant's check runs first and its answer is final for those five operations. Gate 1 still applies: a role with an allowlist has to list them too.
+2. **The deploy and drop name is resolved as the handler resolves it** — `canonicalProjectName`, else `projectNameFromPackage` — or the check would be on a different name from the deploy. The reads name no component up front, so their handlers filter (`get_components`, `list_deployments`) or refuse (`get_deployment`, 403) by the grant themselves.
+3. **The constraints hold for the entry the deploy would publish, so `deployComponent` enforces them, on the origin only.** `isolated`, `hostSuffix` and `branchedDatabases: required` are read from what the release would leave in force: a package's declared entry, a payload's owned routing, or the entry as it stands for a payload that owns none. It checks before anything is written, again under the preparation lock, and for an activation against the staged descriptor. A peer applies what the origin allowed, as it does isolation admission.
+4. **A deploy credential's grant uses the same patterns, and only there.** `grant_secret component=my-app-pr-*` lets every preview's deploy resolve one dedicated credential (harper#3090, `resolveCredentials`). A component's runtime view of its secrets (`components/componentSecrets.ts`) stays exact, so preview code never reads a pattern-granted row; `harper deploy setup=true` accepts a pattern only for the github and npm providers.
+5. **The key is `component_deploy`, not `components`.** Role permission keys share a namespace with database names (`RESERVED_DATABASE_NAMES`), and `components` is a plausible database name.
+
+## The password hash function and token lifetimes are read when used, never at module load (`security/user.ts`, `security/tokenAuthentication.ts`, `utility/password.ts`)
+
+`harper run` on an empty root evaluates these modules (and `installer.ts`) before `install()` writes the config, and `install()` creates the admin before the startup phase (`runStartup()`) runs, so no startup hook can fix the admin's hash: `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`. Validation uses the stored value. `password.hash` defaults to the configured function; `password.validate` defaults to SHA-256 whatever is configured, because the algorithm of a stored hash is not policy and the refresh-token check validates its SHA-256 hash with that default (a config-driven default returns a Promise there, and `!Promise` accepts a superseded token). Token lifetimes are read per mint, so they need no startup hook. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
+
 ## Named component children are identified by lifetime (`security/jsLoader.ts`, `security/spawnPidFile.ts`)
 
 To prevent adopting or signaling recycled PIDs or reusing zombies ([#2968](https://github.com/HarperFast/harper/issues/2968)), a `pids/<name>.pid` record contains the positive PID, version (zero when omitted), and OS birth identity. Linux uses boot ID/PID/start ticks and excludes zombies and thread IDs; macOS uses PID/`ps lstart` in UTC/C locale (one-second resolution); Windows uses PID/`Win32_Process.CreationDate` ticks. Adoption, version replacement, wrapper kill and exit observation compare the recorded identity. A Linux record from a different boot is retired before probing its potentially inaccessible recycled PID. PID records publish through write-then-rename so readers only see a complete record; a crash before publication can still leave an unrecorded surviving child. Probe failure is unknown, never permission to retire a record or emit exit. Same-boot hidden PIDs under hidepid/ProtectProc and permission-denied probes can require operator verification/record repair or process departure; permission denial does not prove identity change. macOS/Windows wrapper probes are asynchronous and never overlap. Synchronous spawn/adoption probes run under the lock, adding serialized startup time per worker to keep the identity check fresh after lock waits. Polling is once per second on Linux/macOS and once per five seconds on Windows to bound recurring PowerShell cost; exit notification can lag by that interval plus probe time. A signal-zero fast path with infrequent birth checks was rejected because a reused live PID would keep an exited wrapper open until that longer check interval. Legacy records are retired without signaling their unverified PID, with a warning: a surviving legacy child may coexist with the replacement once during upgrade. Older builds ignore the third line, so mixed-version access does not gain this safety guarantee.
@@ -225,3 +252,32 @@ Synchronous spawning uses a filesystem bakery lock: contenders atomically publis
 Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
 
 Named-process probe and lock failures use `NamedProcessError`, a `ServerError` subtype with the original cause; native child-process argument errors retain their original class and code.
+
+## Application lockdown seals the intrinsics by default (`security/intrinsicsLockdown.ts`)
+
+`applications.lockdown` makes prototype-pollution exploits against apps harder; it is not a sandbox. The default
+`seal-after-load` (and eager `seal`) seals 21 intrinsic globals (constructors plus `Math`, `JSON`, `Reflect` and
+`Atomics`) and their prototypes, plus `Function` and `Function.prototype`, once components have loaded. After that point no property can be added to or deleted
+from them, which is what a polluting key (`__proto__.isAdmin`, `constructor.prototype.isAdmin`) needs.
+Overwriting an existing property is still allowed: it is mostly a denial of service, not an escalation.
+
+Never make prototype properties read-only in a seal mode, whether by `Object.freeze`, `writable: false` or
+getter/setter accessors. A read-only elements kind on `Object.prototype` or `Array.prototype` moves every store
+into an array hole off V8's fast path, process-wide (about 45× for `new Array(n)` fills, about 3× for msgpackr
+decode). Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
+shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
+accessors.
+
+The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible. When a component
+replaces one of these globals while it loads, sealing locks both the replacement and the realm's original, which
+literals and async functions keep using. Freezing locks only the current global, because freezing the original
+would skip its overridable accessors.
+
+`lockDownIntrinsics` matches mode names exactly: any other truthy value, including a typo or a non-string, freezes
+eagerly (fails closed). A falsy value skips lockdown, like `none` (`security/jsLoader.ts`). Only fresh installs get
+the default: the installer writes the whole default config into each instance's `harper-config.yaml`, so an
+upgraded instance keeps the `freeze-after-load` it was installed with.
+
+Enforced by `unitTests/security/intrinsicsLockdown.test.js`, which runs each mode in a fresh `Worker` because
+lockdown cannot be undone in a realm, and by `integrationTests/components/intrinsics-lockdown.test.ts`. The cost of
+each mode is measured by `benchmarks/lockdown/run.mts`.

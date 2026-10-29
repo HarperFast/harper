@@ -18,8 +18,8 @@ process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS = String(24 * 60 * 60 * 1000)
 const testUtils = require('../testUtils');
 const assert = require('node:assert');
 const { table, databases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const userModule = require('#src/security/user');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const userModule = require('#js/security/user');
 const { _sweepNow, _liveSubscriptionCount } = require('#src/server/liveSubscriptionAuth');
 
 const USERS = Number(process.env.REAUTH_BENCH_USERS) || 5_000;

@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('Table.getRecordCount', () => {
 	// Used instead of the ambient 500ms default in the within-budget cases below, so a contended

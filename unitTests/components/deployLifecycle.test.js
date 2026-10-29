@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { deployLifecycle, _resetForTests } = require('#src/components/deployLifecycle');
+const { deployLifecycle, _resetForTests } = require('#js/components/deployLifecycle');
 
 describe('deployLifecycle', () => {
 	afterEach(() => {

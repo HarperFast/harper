@@ -13,7 +13,7 @@
 const assert = require('assert');
 const sinon = require('sinon');
 
-const router = require('#src/sqlEngine/router');
+const router = require('#js/sqlEngine/router');
 const config = require('#src/sqlEngine/config');
 const configUtils = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');

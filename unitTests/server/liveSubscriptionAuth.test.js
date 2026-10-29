@@ -17,10 +17,10 @@ const {
 	_notifyUserChange,
 	_tickNow,
 } = require('#src/server/liveSubscriptionAuth');
-const hdbLogger = require('#src/utility/logging/harper_logger');
+const hdbLogger = require('#js/utility/logging/harper_logger');
 const userModule = require('#src/security/user');
 const { databases, table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { waitFor } = require('../waitFor');
 

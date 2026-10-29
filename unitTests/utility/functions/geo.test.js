@@ -5,7 +5,7 @@
  */
 
 const assert = require('assert');
-const geo = require('#js/utility/functions/geo');
+const geo = require('#src/utility/functions/geo');
 const testUtils = require('../../testUtils.js');
 // try to move to /bin directory so our properties reader doesn't explode.
 testUtils.changeProcessToBinDir();

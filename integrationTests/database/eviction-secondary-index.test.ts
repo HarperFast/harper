@@ -406,8 +406,6 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 				0,
 				`permanent phantom index entries (index->no base): ${JSON.stringify(rP.phantom)}`
 			);
-			// Soft signal: did the force-commit actually fire on this engine?
-			ok(true, `over-time fired=${fired} count=${otCount}`);
 		}
 	);
 });

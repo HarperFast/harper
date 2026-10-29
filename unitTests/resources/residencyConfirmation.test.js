@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { hostname } = require('node:os');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const {
@@ -21,7 +21,7 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 	let Records, Unplaced, calls;
 
 	before(function () {
-		// LMDBTransaction keeps its own confirmation registry, which the replication layer never registers
+		// LMDB commits compute no resident lists and run no feasibility check
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		setupTestDBPath();
 		setMainIsWorker(true);

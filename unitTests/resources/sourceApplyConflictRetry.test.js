@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
@@ -14,7 +14,7 @@ const {
 } = require('#src/resources/DatabaseTransaction');
 // A coordinatedRetry transaction (the source-apply path) signals an optimistic write conflict by
 // resolving commit() with this sentinel instead of rejecting with ERR_BUSY.
-const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
+const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 
 // A source-apply commit that fails its optimistic-conflict check must converge on retry. ERR_BUSY
 // always could: recommitting re-writes each key, re-tracking it at the current sequence, so
@@ -56,7 +56,7 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 	// Spy on commits so the test can see which attempt failed validation and confirm the retry
 	// recommitted the same transaction (same id) after the native in-place snapshot reset.
 	function spyOnCommits() {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const attempts = [];
 		Transaction.prototype.commit = function (...args) {

@@ -103,6 +103,49 @@ function assertNoNaN(row) {
 	for (const name in row) assert.ok(!Number.isNaN(row[name]), `${row.metric} ${name} is not NaN`);
 }
 
+function aggregatedMetrics(metric, time) {
+	const rows = [];
+	for (const { value } of databases.system.hdb_analytics.primaryStore.getRange({ start: false, end: Infinity })) {
+		if (value?.metric === metric && value.time === time) rows.push(value);
+	}
+	return rows;
+}
+
+function pick(row, fields) {
+	return Object.fromEntries(fields.map((field) => [field, row[field]]));
+}
+
+function delayReport(id, threadId, sample) {
+	return {
+		id,
+		time: id,
+		period: PERIOD,
+		threadId,
+		metrics: [{ metric: 'event-loop-delay', threadId, perThread: true, ...sample }],
+	};
+}
+
+function durationReport(id, threadId, path, count, mean) {
+	return {
+		id,
+		time: id,
+		period: PERIOD,
+		threadId,
+		metrics: [
+			{
+				metric: 'duration',
+				path,
+				method: 'GET',
+				type: 'cache-hit',
+				count,
+				mean,
+				distribution: [{ value: mean, count }],
+			},
+			{ metric: 'db-write', path, count, mean: 10 },
+		],
+	};
+}
+
 describe('analytics aggregation cycle', () => {
 	// Rollups of this path, taken from the cycle itself: no wait on storage can establish that a
 	// second one will never arrive, and the listener runs synchronously inside the cycle. Held by
@@ -217,6 +260,9 @@ describe('analytics aggregation cycle', () => {
 				const row = aggregatedMetric(metric, period.time);
 				assert.strictEqual(row.depth, period.depth, `${metric} depth is the mean of samples per thread, summed`);
 				assert.strictEqual(row.maxDepth, period.maxDepth, `${metric} maxDepth is the sum of per-thread peaks`);
+				assert.strictEqual(row.period, PERIOD, `${metric} keeps the aggregation window`);
+				assert.strictEqual(row.threadId, undefined, `${metric} carries no summed thread id`);
+				assert.strictEqual(row.count, 2);
 			}
 			const probe = aggregatedMetric('contract-probe', period.time);
 			assert.strictEqual(probe.maximum, period.maximum);
@@ -288,5 +334,223 @@ describe('analytics aggregation cycle', () => {
 		const row = await waitForAggregatedMetric('threads-field-probe', first + 1);
 		assert.strictEqual(row.mean, 3);
 		assert.strictEqual(row.count, 2);
+	});
+
+	it('stores a per-thread gauge as one row per thread', async function () {
+		this.timeout(30000);
+		await nextPeriod();
+		await runCycle();
+		const first = lastRawKey() + 1;
+		await seedRawReports([
+			delayReport(first, 0, { mean: 1, maxDelay: 4, count: 50 }),
+			delayReport(first + 1, 0, { mean: 3, maxDelay: 12, count: 50 }),
+			delayReport(first + 2, 7, { mean: 0.5, maxDelay: 2, count: 25 }),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const rows = await waitFor(
+			() => {
+				const found = aggregatedMetrics('event-loop-delay', first + 2);
+				return found.length === 2 ? found : undefined;
+			},
+			{ timeout: 10000, message: 'one event-loop-delay row per thread was aggregated' }
+		);
+		const byThread = Object.fromEntries(rows.map((row) => [row.thread, row]));
+		assert.deepStrictEqual(pick(byThread[0], ['metric', 'thread', 'mean', 'maxDelay', 'count', 'period']), {
+			metric: 'event-loop-delay',
+			thread: 0,
+			mean: 2,
+			maxDelay: 12,
+			count: 100,
+			period: PERIOD,
+		});
+		assert.deepStrictEqual(pick(byThread[7], ['metric', 'thread', 'mean', 'maxDelay', 'count', 'period']), {
+			metric: 'event-loop-delay',
+			thread: 7,
+			mean: 0.5,
+			maxDelay: 2,
+			count: 25,
+			period: PERIOD,
+		});
+		assert.strictEqual(byThread[0].threadId, undefined);
+		assert.strictEqual(byThread[0].perThread, undefined);
+	});
+
+	it('rolls duration up once per thread, across its paths, without changing its aggregate rows', async function () {
+		this.timeout(30000);
+		await nextPeriod();
+		await runCycle();
+		const first = lastRawKey() + 1;
+		const threadSeven = durationReport(first + 1, 7, 'ThreadPath', 30, 6);
+		threadSeven.metrics.push({
+			metric: 'duration',
+			path: 'OtherPath',
+			method: 'POST',
+			count: 10,
+			mean: 2,
+			distribution: [{ value: 2, count: 10 }],
+		});
+		await seedRawReports([
+			durationReport(first, 0, 'ThreadPath', 10, 2),
+			threadSeven,
+			durationReport(first + 2, 0, 'ThreadPath', 10, 4),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const aggregate = await waitFor(
+			() => aggregatedMetrics('duration', first + 2).find((row) => row.path === 'ThreadPath'),
+			{ timeout: 10000, message: 'the duration row was aggregated' }
+		);
+		assert.strictEqual(aggregate.count, 50);
+		assert.strictEqual(aggregate.mean, 4.8);
+		assert.strictEqual(typeof aggregate.p95, 'number');
+		assert.strictEqual(aggregate.thread, undefined);
+
+		// The cycle writes its rows one by one, so each read waits for the rows it checks.
+		const perThread = await waitFor(
+			() => {
+				const rows = aggregatedMetrics('duration-by-thread', first + 2);
+				return rows.length === 2 && rows;
+			},
+			{ timeout: 10000, message: 'both per-thread rows were aggregated' }
+		);
+		const byThread = Object.fromEntries(perThread.map((row) => [row.thread, row]));
+		const fields = ['metric', 'path', 'method', 'type', 'thread', 'count', 'mean', 'period'];
+		assert.deepStrictEqual(pick(byThread[0], fields), {
+			metric: 'duration-by-thread',
+			path: undefined,
+			method: undefined,
+			type: undefined,
+			thread: 0,
+			count: 20,
+			mean: 3,
+			period: PERIOD,
+		});
+		assert.deepStrictEqual(pick(byThread[7], fields), {
+			metric: 'duration-by-thread',
+			path: undefined,
+			method: undefined,
+			type: undefined,
+			thread: 7,
+			count: 40,
+			mean: 5,
+			period: PERIOD,
+		});
+		assert.strictEqual(byThread[0].p95, undefined);
+		const writes = await waitFor(
+			() => {
+				const rows = aggregatedMetrics('db-write', first + 2).filter((row) => row.path === 'ThreadPath');
+				return rows.length > 0 && rows;
+			},
+			{ timeout: 10000, message: 'the db-write row was aggregated' }
+		);
+		assert.strictEqual(writes.length, 1, 'a metric outside the per-thread set keeps its single aggregate row');
+		assert.strictEqual(writes[0].count, 50);
+		assert.strictEqual(writes[0].thread, undefined);
+		assert.strictEqual(aggregatedMetrics('db-write-by-thread', first + 2).length, 0);
+	});
+
+	it('keeps a per-thread row apart from an ordinary entry whose method spells its old key', async function () {
+		this.timeout(30000);
+		await drainLiveReports();
+		const first = lastRawKey() + 1;
+		await seedRawReports([
+			sampleReport(first, 1, {
+				metric: 'duration',
+				path: 'ThreadPath',
+				method: 'GET',
+				type: 'cache-hit',
+				count: 10,
+				mean: 2,
+				distribution: [{ value: 2, count: 10 }],
+			}),
+			sampleReport(first + 1, 1, {
+				metric: 'duration',
+				method: 'by-thread-ThreadPath-GET-cache-hit-thread-1',
+				count: 7,
+				mean: 1,
+				distribution: [{ value: 1, count: 7 }],
+			}),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const perThread = await waitFor(
+			() => aggregatedMetrics('duration-by-thread', first + 1).find((row) => row.thread === 1),
+			{ timeout: 10000, message: 'the per-thread row was aggregated' }
+		);
+		assert.strictEqual(perThread.count, 17);
+		assert.strictEqual(perThread.mean, 27 / 17);
+		const ordinary = await waitFor(
+			() =>
+				aggregatedMetrics('duration', first + 1).find(
+					(row) => row.method === 'by-thread-ThreadPath-GET-cache-hit-thread-1'
+				),
+			{ timeout: 10000, message: 'the ordinary duration row was aggregated' }
+		);
+		assert.strictEqual(ordinary.count, 7);
+		assert.strictEqual(ordinary.mean, 1);
+	});
+
+	it('reports the event loop delay of the reporting thread with every flush', async function () {
+		this.timeout(30000);
+		const seen = [];
+		analytics.addAnalyticsListener((metrics) => {
+			for (const entry of metrics) if (entry.metric === 'event-loop-delay') seen.push(entry);
+		});
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'DelayProbe');
+		await waitFor(() => seen.length > 0, { timeout: 10000, message: 'the flush carried an event-loop-delay entry' });
+		const [entry] = seen;
+		assert.strictEqual(entry.perThread, true);
+		assert.strictEqual(typeof entry.threadId, 'number');
+		assert.ok(entry.count >= 1, JSON.stringify(entry));
+		assert.ok(entry.mean >= 0 && entry.maxDelay >= entry.mean, JSON.stringify(entry));
+	});
+
+	it('keeps a stall that comes right after a flush, before the next window opens', async function () {
+		this.timeout(30000);
+		const flushes = [];
+		analytics.addAnalyticsListener((metrics) => {
+			if (metrics.some((entry) => entry.metric === 'db-write' && entry.path === 'GapFirst')) {
+				// Past the sampler's first firings after the flush's own reset, well inside one interval.
+				setTimeout(() => {
+					const end = performance.now() + 300;
+					while (performance.now() < end);
+					analytics.recordAction(1, 'db-write', 'GapProbe');
+				}, 60);
+			}
+			if (metrics.some((entry) => entry.metric === 'db-write' && entry.path === 'GapProbe')) flushes.push(metrics);
+		});
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'GapFirst');
+		await waitFor(() => flushes.length > 0, { timeout: 10000, message: 'the probe after the stall was flushed' });
+		const delay = flushes[0].find((entry) => entry.metric === 'event-loop-delay');
+		assert.ok(delay && delay.maxDelay >= 200, JSON.stringify(delay));
+	});
+
+	it('reports a stall that ran past the flush deadline in that flush', async function () {
+		this.timeout(30000);
+		const flushes = [];
+		analytics.addAnalyticsListener((metrics) => {
+			if (metrics.some((entry) => entry.metric === 'db-write' && entry.path === 'StallProbe')) flushes.push(metrics);
+		});
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'StallProbe');
+		setTimeout(
+			() =>
+				setImmediate(() => {
+					const start = performance.now();
+					while (performance.now() - start < 300) {}
+				}),
+			analytics.analyticsDelay - 5
+		);
+		await waitFor(() => flushes.length > 0, { timeout: 10000, message: 'the flush carried the probe' });
+		const delay = flushes[0].find((entry) => entry.metric === 'event-loop-delay');
+		assert.ok(delay?.maxDelay >= 200, `the 300 ms stall is in the flush: ${JSON.stringify(delay)}`);
 	});
 });

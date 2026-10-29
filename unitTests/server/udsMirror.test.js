@@ -8,7 +8,7 @@ const sinon = require('sinon');
 const path = require('path');
 const fs = require('fs');
 
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const EventEmitter = require('events');
 const {

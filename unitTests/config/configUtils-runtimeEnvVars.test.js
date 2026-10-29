@@ -8,11 +8,11 @@ const YAML = require('yaml');
 // configUtils now imports these as ES modules; stub them on the shared module
 // objects (configUtils reads the same cached instances) instead of swapping the
 // bindings via rewire, which the TS-compiled output no longer exposes by name.
-const harperConfigEnvVars = require('#src/config/harperConfigEnvVars');
+const harperConfigEnvVars = require('#js/config/harperConfigEnvVars');
 const loggerModule = require('#src/utility/logging/harper_logger');
 const loggerObj = loggerModule.default || loggerModule;
 
-const configUtils = rewire('#src/config/configUtils');
+const configUtils = rewire('#js/config/configUtils');
 const applyRuntimeEnvVarConfig = configUtils.__get__('applyRuntimeEnvVarConfig');
 
 describe('configUtils - applyRuntimeEnvVarConfig', function () {

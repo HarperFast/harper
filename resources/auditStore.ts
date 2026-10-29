@@ -1,11 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { readKey, writeKey } from 'ordered-binary';
-import { initSync, get as envGet } from '../utility/environment/environmentManager.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.js';
+import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
+import {
+	LAST_TIMESTAMP_PLACEHOLDER,
+	HAS_STRUCTURE_UPDATE,
+	PENDING_LOCAL_TIME,
+	RECEIVED_IDENTITY_REF,
+} from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
@@ -20,6 +25,7 @@ import {
 	forgetOriginFloorRegistry,
 	isValidFloor,
 	publishOriginFloor,
+	originFloorsDurable,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
 
@@ -40,7 +46,6 @@ import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
  * username
  * remaining bytes (optional, not included for deletes/invalidation): the record itself, using the same encoding as its primary store
  */
-initSync();
 
 export type AuditRecord = {
 	version: number; // the record's own version: LWW ordering, @updatedTime, ETag
@@ -51,6 +56,8 @@ export type AuditRecord = {
 	encodedRecord?: Buffer;
 	extendedType?: number;
 	residencyId?: number;
+	residencySlot?: number;
+	previousResidencySlot?: number;
 	previousResidencyId?: number;
 	expiresAt: number | null;
 	originatingOperation: string;
@@ -456,8 +463,9 @@ export function openAuditStore(rootStore) {
 		scheduleAuditCleanup();
 		if (isRocksAuditStore && !isReadOnlyMode()) {
 			let floorErrorLoggedAt = 0;
+			let floorSyncing = false;
 			const certify = () => {
-				if (storeClosing()) return;
+				if (storeClosing() || floorSyncing) return;
 				try {
 					const floor = certifyOriginFloor(rootStore);
 					if (floor === null) {
@@ -467,7 +475,27 @@ export function openAuditStore(rootStore) {
 					}
 					if (floor === undefined) return;
 					persistOriginClosedFloor(auditStore, floor);
-					publishOriginFloor(rootStore, floor);
+					// Readers consume only the published value, so a floor is advertised only once its record is
+					// on disk: a restart after power loss then still seeds the ratchet above it.
+					const sync = originFloorsDurable(rootStore) ? rootStore.syncWal() : undefined;
+					if (!sync) {
+						publishOriginFloor(rootStore, floor);
+						return;
+					}
+					floorSyncing = true;
+					sync.then(
+						() => {
+							floorSyncing = false;
+							if (!storeClosing()) publishOriginFloor(rootStore, floor);
+						},
+						(error: unknown) => {
+							floorSyncing = false;
+							if (Date.now() - floorErrorLoggedAt > 60_000) {
+								floorErrorLoggedAt = Date.now();
+								warnContained('Error syncing the origin-closed floor', error);
+							}
+						}
+					);
 				} catch (error) {
 					// The last persisted floor stays advertised; a stuck floor is reported through its lag.
 					if (Date.now() - floorErrorLoggedAt > 60_000) {
@@ -484,9 +512,11 @@ export function openAuditStore(rootStore) {
 		for (const time of auditStore.getKeys({ reverse: true, limit: 1 })) {
 			if (time > Date.now()) {
 				timestampErrored = true;
-				harperLogger.error(
-					'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
-				);
+				harperLogger
+					.status({ problem: 'system.time-reversal' })
+					.error(
+						'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
+					);
 			}
 		}
 	}
@@ -1195,6 +1225,8 @@ export const REMOTE_SEQUENCE_UPDATE = 11;
  */
 export const LOCK_RELEASE = 12;
 export const LOCK_BARRIER = 13;
+export const HAS_CURRENT_RESIDENCY_SLOT = 0x10000;
+export const HAS_PREVIOUS_RESIDENCY_SLOT = 0x20000;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
@@ -1211,6 +1243,13 @@ export const HAS_ADDITIONAL_AUDIT_REFS = 0x4000;
  * lower-byte action region (which extendedType forbids) and within the always-32-bit metadata form.
  */
 export const LOCAL_ONLY = 0x8000;
+/**
+ * Marks a put that applied a base-copy frame (`copyFrame`): its record is the source row's body, not the
+ * write logged at its version. Relays forward the entry's bytes unchanged, and receivers and crash replay
+ * map the flag back to `copyFrame`, so no node certifies the row as a full-write head. Clear of the record
+ * bits the copy walk mirrors into this word; an older reader ignores it.
+ */
+export const COPIED_RECORD = 0x100000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -1271,13 +1310,16 @@ function isDecodableAction(action: number) {
 		HAS_RECORD |
 		HAS_PARTIAL_RECORD |
 		HAS_STRUCTURE_UPDATE |
+		HAS_CURRENT_RESIDENCY_SLOT |
+		HAS_PREVIOUS_RESIDENCY_SLOT |
 		HAS_CURRENT_RESIDENCY_ID |
 		HAS_PREVIOUS_RESIDENCY_ID |
 		HAS_ORIGINATING_OPERATION |
 		HAS_EXPIRATION_EXTENDED_TYPE |
 		HAS_BLOBS |
 		HAS_ADDITIONAL_AUDIT_REFS |
-		LOCAL_ONLY;
+		LOCAL_ONLY |
+		COPIED_RECORD;
 	return (action & 0xf) !== 0 && !(action & ~knownActionFlags);
 }
 
@@ -1334,6 +1376,8 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		extendedType,
 		residencyId,
 		previousResidencyId,
+		residencySlot,
+		previousResidencySlot,
 		expiresAt,
 		originatingOperation,
 		previousAdditionalAuditRefs,
@@ -1409,6 +1453,8 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	position += 8;
 	if (extendedType & HAS_CURRENT_RESIDENCY_ID) writeInt(residencyId);
 	if (extendedType & HAS_PREVIOUS_RESIDENCY_ID) writeInt(previousResidencyId);
+	if (extendedType & HAS_CURRENT_RESIDENCY_SLOT) writeInt(residencySlot);
+	if (extendedType & HAS_PREVIOUS_RESIDENCY_SLOT) writeInt(previousResidencySlot);
 	if (extendedType & HAS_EXPIRATION_EXTENDED_TYPE) {
 		ENTRY_DATAVIEW.setFloat64(position, expiresAt);
 		position += 8;
@@ -1539,13 +1585,22 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const recordIdEnd = (decoder.position += length);
 		// TODO: Once we support multiple format versions, we can conditionally read the version (and the previousResidencyId)
 		const version = decoder.readFloat64();
-		let residencyId, previousResidencyId, expiresAt, originatingOperation, previousAdditionalAuditRefs;
+		let residencyId,
+			previousResidencyId,
+			residencySlot,
+			previousResidencySlot,
+			expiresAt,
+			originatingOperation,
+			previousAdditionalAuditRefs;
 		if (action & HAS_CURRENT_RESIDENCY_ID) {
 			residencyId = decoder.readInt();
 		}
 		if (action & HAS_PREVIOUS_RESIDENCY_ID) {
 			previousResidencyId = decoder.readInt();
 		}
+		if (action & HAS_CURRENT_RESIDENCY_SLOT) residencySlot = decoder.readInt();
+		if (action & HAS_PREVIOUS_RESIDENCY_SLOT) previousResidencySlot = decoder.readInt();
+		if (residencySlot > 65535 || previousResidencySlot > 65535) throw new RangeError('Invalid audit sharding slot');
 		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
 			expiresAt = decoder.readFloat64();
 		}
@@ -1560,7 +1615,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				for (let i = 0; i < count; i++) {
 					const refVersion = decoder.readFloat64();
 					const refNodeId = decoder.readInt();
-					previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
+					// a build that predates the kind bit copies a record's identity refs here as they read
+					if (refNodeId < RECEIVED_IDENTITY_REF)
+						previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
 				}
 			}
 		}
@@ -1573,7 +1630,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const usernameStart = decoder.position;
 		const usernameEnd = (decoder.position += length);
 		let value: any;
-		return {
+		const entry = {
 			// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9 eviction, 10–15
 			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
 			// identical to the historical `& 7` for every pre-reload entry (bit 3 was always clear).
@@ -1660,6 +1717,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			originatingOperation,
 			previousAdditionalAuditRefs,
 		} as any;
+		if (residencySlot !== undefined) entry.residencySlot = residencySlot;
+		if (previousResidencySlot !== undefined) entry.previousResidencySlot = previousResidencySlot;
+		return entry;
 	} catch (error) {
 		harperLogger.error('Reading audit entry error', error, buffer);
 		return createCorruptAuditSentinel(buffer, start, end);

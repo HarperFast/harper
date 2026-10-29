@@ -6,6 +6,7 @@
  * - `get_configuration` shape (key sections present)
  * - `read_log` shape
  * - `set_configuration` round-trip and bad-data rejection
+ * - Whole model configuration replacement, validation, and live backend use (#2267)
  * - `set_configuration` rejects a `threads.maxHeapMemory` no worker thread could start on
  * - Non-superuser role cannot call `get_configuration` (403)
  *
@@ -17,10 +18,13 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { readdirSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import request from 'supertest';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 import { MIN_THREAD_HEAP_MEMORY_MB } from '../../utility/hdbTerms.ts';
+import { waitFor } from '../../unitTests/waitFor.js';
 
 const SCHEMA = 'dev';
 const ATTR_TEST_TABLE = 'create_attr_test';
@@ -39,7 +43,10 @@ suite('Configuration', (ctx) => {
 	let client;
 
 	before(async () => {
-		await startHarper(ctx, { config: {}, env: {} });
+		await startHarper(ctx, {
+			config: { modelsGateway: { enabled: true }, rest: { webSocket: true } },
+			env: { MODELS: 'unrelated-container-setting' },
+		});
 		client = createApiClient(ctx.harper);
 
 		// Seed schema and the AttributeDropTest table with a pre-existing attribute
@@ -250,6 +257,61 @@ suite('Configuration', (ctx) => {
 	});
 
 	// ── set_configuration ───────────────────────────────────────────────────
+
+	test('set_configuration replaces models and makes a built-in backend usable live', async () => {
+		const provider = createServer(async (req, res) => {
+			let body = '';
+			for await (const chunk of req) body += chunk;
+			const { model } = JSON.parse(body);
+			res.setHeader('Content-Type', 'application/json');
+			res.end(JSON.stringify({ message: { content: `configured:${model}` }, done: true }));
+		});
+		provider.listen(0, '127.0.0.1');
+		await once(provider, 'listening');
+		const host = `http://127.0.0.1:${provider.address().port}`;
+		try {
+			for (const name of ['named_model.v1', 'hasOwnProperty', 'replacement', 'named_model.v1']) {
+				const models = { generative: { [name]: { backend: 'ollama', host, model: `fixture-${name}` } } };
+				await client.req().send({ operation: 'set_configuration', models }).expect(200);
+				const config = await client.req().send({ operation: 'get_configuration' }).expect(200);
+				assert.deepStrictEqual(config.body.models, models);
+				let observed;
+				await waitFor(
+					async () => {
+						const list = await client.reqRest('/v1/models').expect(200);
+						observed = list.body;
+						return list.body.data.length === 1 && list.body.data[0].id === name;
+					},
+					{ timeout: 10_000, message: () => `Expected ${name}, observed ${JSON.stringify(observed)}` }
+				);
+				await request(ctx.harper.httpURL)
+					.post('/v1/chat/completions')
+					.set(client.headers)
+					.send({ model: name, messages: [{ role: 'user', content: 'hello' }] })
+					.expect(200)
+					.expect((r) => assert.strictEqual(r.body.choices[0].message.content, `configured:fixture-${name}`));
+			}
+			const before = await client.req().send({ operation: 'get_configuration' }).expect(200);
+			await client.req().send({ operation: 'set_configuration', logging_level: 'fatal', models: null }).expect(400);
+			await client
+				.req()
+				.send({ operation: 'set_configuration', models: { generative: { ['__proto__']: { backend: 'ollama' } } } })
+				.expect(400)
+				.expect((r) => assert.match(r.body.error, /not valid JSON/));
+			const after = await client.req().send({ operation: 'get_configuration' }).expect(200);
+			assert.deepStrictEqual(after.body, before.body);
+			await client.req().send({ operation: 'set_configuration', models: {} }).expect(200);
+			await waitFor(async () => {
+				const list = await client.reqRest('/v1/models').expect(200);
+				return list.body.data.length === 0;
+			}, 10_000);
+		} finally {
+			const closed = once(provider, 'close', { signal: AbortSignal.timeout(5000) });
+			provider.close();
+			provider.closeAllConnections();
+			await closed;
+		}
+	});
 
 	test('set_configuration accepts valid value', async () => {
 		await client

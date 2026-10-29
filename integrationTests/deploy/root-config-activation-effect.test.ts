@@ -3,7 +3,7 @@
  * boot recovery finishes — before `installApplications()` reads the config it installs from.
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -119,23 +119,43 @@ suite('deploy_component publishes root config as an effect of the activation', (
 		);
 	});
 
-	test('a payload deploy refuses branchedDatabases, which only a package entry can carry', async () => {
-		const project = `${PREFIX}-payload-branched`;
-		const response = await rawOperation(ctx, {
+	test('a payload deploy publishes the routing it sets, and a redeploy that omits it keeps it (harper#3043)', async () => {
+		const project = `${PREFIX}-payload-routing`;
+		await operation(ctx, {
 			operation: 'deploy_component',
 			project,
 			payload: await buildPayload(project, 1),
+			host: 'pr-12.app.example.com',
+			urlPath: '/preview',
 			branchedDatabases: ['data'],
 			restart: false,
 		});
+		const published = { host: 'pr-12.app.example.com', urlPath: '/preview', branchedDatabases: ['data'] };
+		deepStrictEqual(await rootConfigEntry(ctx, project), published);
 
-		strictEqual(response.status, 400, JSON.stringify(response.body));
-		ok(
-			JSON.stringify(response.body).includes(`'branchedDatabases' is only supported for package deployments`),
-			JSON.stringify(response.body)
-		);
-		await rejects(liveVersion(ctx, project), { code: 'ENOENT' }, 'the release never went live');
-		strictEqual(await rootConfigEntry(ctx, project), undefined);
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project,
+			payload: await buildPayload(project, 2),
+			restart: false,
+		});
+		strictEqual(await liveVersion(ctx, project), '2');
+		deepStrictEqual(await rootConfigEntry(ctx, project), published);
+	});
+
+	test('a payload deploy whose build fails leaves the routing it set unpublished', async () => {
+		const project = `${PREFIX}-payload-routing`;
+		const response = await rawOperation(ctx, {
+			operation: 'deploy_component',
+			project,
+			payload: Buffer.from('not a tarball').toString('base64'),
+			host: 'other.app.example.com',
+			restart: false,
+		});
+
+		ok(response.status >= 400, `the build fails: ${JSON.stringify(response.body)}`);
+		strictEqual(await liveVersion(ctx, project), '2');
+		strictEqual((await rootConfigEntry(ctx, project)).host, 'pr-12.app.example.com');
 	});
 
 	test('a stage publishes nothing, and its activation publishes the entry the build recorded', async () => {

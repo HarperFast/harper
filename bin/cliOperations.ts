@@ -3,11 +3,11 @@
 import { loadCredentials, saveCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
-envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
+import dotenv from 'dotenv';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
@@ -16,14 +16,21 @@ import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
+import { awaitRollout, summarizeRollout, type RolloutOutcome } from './deployRollout.ts';
+import { declaredDeploySource } from './deploySource.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 // The `deploy setup` seal and this by-reference flag both name the same hdb_secret row, and the
 // server re-derives it from its own request — so the derivation lives in one dependency-free module
 // rather than being restated per caller (it also keeps `components/` off the CLI's import graph).
 import { deriveGitSecretName, directoryProjectName, normalizeGitHost } from '../utility/componentNames.ts';
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
 // Shown for any local-instance connection failure (missing pid, missing/stale domain
@@ -574,6 +581,15 @@ export function prepareDeployByRef(req: any): void {
 
 const PREPARE_OPERATION: any = {
 	deploy_component: async (req) => {
+		// Consumed here: they say how long this command follows a rolling deploy, which is no business of the server's.
+		req._wait = req.wait;
+		req._waitTimeout = req.wait_timeout;
+		delete req.wait;
+		delete req.wait_timeout;
+		// Checked before anything is sent: a deploy that went live and then refused its own wait would read as failed.
+		if (req._waitTimeout !== undefined && !(typeof req._waitTimeout === 'number' && req._waitTimeout >= 0)) {
+			throw new Error(`wait_timeout must be a number of milliseconds, got ${JSON.stringify(req._waitTimeout)}`);
+		}
 		if (req.deployment_id) {
 			// `by_ref`/`ref` are consumed here and never transmitted, so the server's validator cannot see
 			// this conflict.
@@ -587,6 +603,7 @@ const PREPARE_OPERATION: any = {
 			return;
 		}
 		if (req.package) {
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
@@ -594,10 +611,12 @@ const PREPARE_OPERATION: any = {
 		// Templates scaffold `by_ref=true`; without the flag the payload path below is unchanged.
 		if (req.by_ref || req.ref) {
 			prepareDeployByRef(req);
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
 		const projectPath = process.cwd();
+		req.source ??= declaredDeploySource({ directory: projectPath });
 		if (!req.project) req.project = directoryProjectName(projectPath);
 		const packageOptions = {
 			skip_node_modules: req.skip_node_modules !== false,
@@ -610,11 +629,11 @@ const PREPARE_OPERATION: any = {
 		// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
 		// total) and the dangling-symlink list — a dangling symlink would otherwise silently
 		// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
-		// them; the list is reused below (no second walk) and warns the user which links were
+		// them; the scan is reused below (no second walk) and warns the user which links were
 		// skipped so the omission is visible.
 		const scan = await scanPackageDirectory(projectPath, packageOptions);
 		req._uploadSizeEstimate = scan.totalSize;
-		req._danglingSymlinks = scan.danglingSymlinks;
+		req._packageScan = scan;
 		if (scan.danglingSymlinks.length) {
 			process.stderr.write(
 				`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
@@ -888,8 +907,45 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	return { options, target };
 }
 
+/**
+ * Wait for a rolling deploy's other nodes on the same connection and credential the deploy used: a fresh `harper`
+ * command per poll would trade a new identity token each time under OIDC.
+ */
+async function followRollout(options: any, response: any, waitTimeout: unknown): Promise<RolloutOutcome | undefined> {
+	if (response?.status !== 'rolling_out' || typeof response.deployment_id !== 'string') return undefined;
+	const timeoutMs = waitTimeout as number | undefined;
+	const pollOptions = {
+		...options,
+		timeout: CLI_OPERATION_TIMEOUT_MS,
+		headers: { ...options.headers, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+	};
+	delete pollOptions.streamResponse;
+	delete pollOptions.headers['Transfer-Encoding'];
+	return awaitRollout(
+		response.deployment_id,
+		async (deploymentId, remainingMs) => {
+			const reply = await httpRequest(
+				// The idle timeout restarts on every byte, so a reply that trickles in would outlive the wait without the signal.
+				{
+					...pollOptions,
+					timeout: Math.min(CLI_OPERATION_TIMEOUT_MS, remainingMs),
+					signal: AbortSignal.timeout(remainingMs),
+				},
+				{ operation: 'get_deployment', deployment_id: deploymentId }
+			);
+			if (reply.statusCode !== 200) {
+				const error: any = new Error(`get_deployment answered ${reply.statusCode}: ${reply.body}`);
+				error.statusCode = reply.statusCode;
+				throw error;
+			}
+			return JSON.parse(reply.body);
+		},
+		{ timeoutMs }
+	);
+}
+
 async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
+	dotenv.config();
 
 	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
 	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the
@@ -943,7 +999,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				req._projectPath,
 				req._packageOptions,
 				renderer ? (n) => renderer.countUploadBytes(n) : undefined,
-				req._danglingSymlinks
+				req._packageScan
 			);
 			const fields = operationFields(req);
 			const multipart = buildMultipartBody(fields, {
@@ -1059,6 +1115,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			}
 		}
 
+		const rollout =
+			!failedStatus && req.operation === 'deploy_component' && req._wait !== false
+				? await followRollout(options, responseData, req._waitTimeout)
+				: undefined;
+		if (rollout) responseData.rollout = summarizeRollout(rollout);
+
 		let responseLog;
 		if (req.json) {
 			responseLog = JSON.stringify(responseData, null, 2);
@@ -1074,6 +1136,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		if (!skipResponseLog) {
 			console.log(responseLog);
+		}
+		if (rollout?.failure) {
+			console.error(`error: ${rollout.failure}`);
+			process.exit(1);
 		}
 
 		if (target) {

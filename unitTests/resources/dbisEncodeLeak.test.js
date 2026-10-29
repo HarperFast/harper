@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { RecordEncoder, setNextEncoding, clearNextEncoding } = require('#src/resources/RecordEncoder');
-const { Encoder } = require('msgpackr');
+const { Encoder } = require('../packageBindings.mts').packageBindings('msgpackr');
 
 // Shared structures persisted as an encoded buffer (mirrors how a DBI stores them under
 // Symbol.for('structures')), so structures cross between encoder instances.

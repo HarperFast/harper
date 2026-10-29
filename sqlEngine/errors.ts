@@ -12,7 +12,7 @@
  * The router does not fall back on it — it surfaces to the caller.
  */
 
-import { ClientError } from '../utility/errors/hdbError.js';
+import { ClientError } from '../utility/errors/hdbError.ts';
 
 export class EngineUnsupportedError extends ClientError {
 	reason: string;

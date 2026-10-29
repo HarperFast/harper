@@ -19,7 +19,7 @@ const modules = [
 	'#src/utility/environment/systemInformation',
 	'#src/utility/lmdb/environmentUtility',
 	'#src/dataLayer/delete',
-	'#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup',
+	'#src/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup',
 	'#src/server/jobs/jobs',
 	'#src/validation/readLogValidator',
 	'#src/validation/searchValidator',

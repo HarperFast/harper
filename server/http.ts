@@ -13,7 +13,7 @@ import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { atomicWriteFile, getConfigPath } from '../config/configUtils.ts';
-import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
+import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.ts';
 import {
 	applicationSocketName,
 	isolatedApplicationRoute,
@@ -40,23 +40,23 @@ import {
 	withProxyProtocol,
 } from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
-import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { checkAnalyticsEnabled, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { METRIC } from '../resources/analytics/metadata.ts';
 import { Readable, Writable, finished, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
+import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
+import { isolatedApplicationUnavailable } from './isolatedHostGuard.ts';
 import { WebSocketServer } from 'ws';
+import { loadNativePackage } from '../utility/packageUtils.js';
 
 const { errorToString, errorForLog } = harperLogger;
-server.http = httpServer;
-server.request = onRequest;
-server.ws = onWebSocket;
-server.upgrade = onUpgrade;
 const websocketServers = {};
+let bunWebSocketServer;
 const httpServers = {},
 	httpChain = {},
 	httpResponders: {
@@ -411,7 +411,9 @@ export function deliverSocket(fdOrSocket, port, data) {
 					if (data) socket.emit('data', data);
 				} else if (retries < 5) retry(retries + 1);
 				else {
-					harperLogger.error(`Server on port ${port} was not registered`);
+					harperLogger
+						.status({ problem: 'server.port-registration', expires: 120 })
+						.error(`Server on port ${port} was not registered`);
 					socket.destroy();
 				}
 			}, 1000);
@@ -827,13 +829,14 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			const startTime = performance.now();
+			const receivedAt = (nodeRequest as any).receivedAt;
 			let requestId = 0;
 			try {
 				const request = new Request(nodeRequest, nodeResponse);
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
 				// assign a more WHATWG compliant headers object, this is our real standard interface
-				let response = await httpChain[port](request);
+				let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 				if (!response) {
 					// this means that the request was completely handled, presumably through the
 					// nodeResponse and we are actually just done
@@ -928,13 +931,11 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
+				if (receivedAt !== undefined)
+					recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
 					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
@@ -1000,15 +1001,19 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			env.get(serverPrefix + '_requestQueueLimit'),
 			`HTTP request queue on port ${port}`
 		);
-		const server = (httpServers[port] = (
-			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
+		const dispatchRequest = (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
 			// want to block or slow down other activity
 			const method = nodeRequest.method;
 			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-			else throttledRequestHandler(nodeRequest, nodeResponse);
-		}));
+			else {
+				if (checkAnalyticsEnabled()) (nodeRequest as any).receivedAt = performance.now();
+				throttledRequestHandler(nodeRequest, nodeResponse);
+			}
+		};
+		const server = (httpServers[port] = (
+			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
+		)(options, dispatchRequest));
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
 		// number or it will actually crash the server
@@ -1079,12 +1084,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						...socketOptionDefaults,
 						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 					},
-					(nodeRequest: IncomingMessage, nodeResponse: any) => {
-						const method = nodeRequest.method;
-						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD')
-							requestHandler(nodeRequest, nodeResponse);
-						else throttledRequestHandler(nodeRequest, nodeResponse);
-					}
+					dispatchRequest
 				);
 
 				udsServer.isPerThreadSocket = true;
@@ -1121,11 +1121,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
 				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
 				if (threadType) claimListener(udsPathH2, threadType);
-				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
-					const method = nodeRequest.method;
-					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-					else throttledRequestHandler(nodeRequest, nodeResponse);
-				});
+				const h2Server = createH2CServer({}, dispatchRequest);
 				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
 				h2Server.on('sessionError', (error: Error) => {
 					harperLogger.debug('h2c UDS session error:', error);
@@ -1172,10 +1168,11 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 	// mutates. `headers` is normalized in place the same way the Bun path does.
 	const handle = async (request: any) => {
 		const startTime = performance.now();
+		const receivedAt = request.receivedAt;
 		let requestId = 0;
 		if (isOperationsServer) request.isOperationsServer = true;
 		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
-		let response = await httpChain[port](request);
+		let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 		if (!response) response = unhandled(request);
 		let headers = response.headers;
 		if (!headers?.set) headers = new Headers(headers);
@@ -1232,19 +1229,18 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		}
 		if (universalHeaders.length > 0) applyUniversalHeaders(headers);
 		const status = response.status || 200;
-		const executionTime = performance.now() - startTime;
+		const endTime = performance.now();
+		const executionTime = endTime - startTime;
 		if (!response.handlesHeaders) {
 			let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
 			if (response.wasCacheMiss) serverTiming += ', miss';
 			appendHeader(headers, 'Server-Timing', serverTiming, true);
 		}
-		recordAction(
-			executionTime,
-			'duration',
-			request.handlerPath,
-			request.method,
-			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-		);
+		const cacheType =
+			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+		recordAction(executionTime, 'duration', request.handlerPath, request.method, cacheType);
+		if (receivedAt !== undefined)
+			recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logHttpRequest(request, status, requestId, executionTime);
@@ -1279,6 +1275,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 	return (request: any) => {
 		const method = request.method;
 		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
+		if (checkAnalyticsEnabled()) request.receivedAt = performance.now();
 		return throttledHandle(request);
 	};
 }
@@ -1389,7 +1386,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				const request = new BunRequest(webRequest, bunServer, secure) as any;
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
-				let response = await httpChain[port](request);
+				let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 				if (!response) {
 					response = unhandled(request);
 				}
@@ -1460,13 +1457,9 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logHttpRequest(request, status, requestId, executionTime);
@@ -1933,6 +1926,9 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 						signal: ac.signal,
 					});
 					request.isWebSocket = true;
+					if (isolatedApplicationUnavailable(request, options.usageType === 'operations-api')) {
+						return ws.close(1013, 'Try again later');
+					}
 					const chainCompletion = httpChain[port](request);
 					websocketChains[port](ws, request, chainCompletion);
 				} catch (error) {
@@ -1952,7 +1948,10 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
 			installUwsWsHandler(uwsServeConfigs[port]);
 		} else if (!websocketServers[port]) {
-			websocketServers[port] = new WebSocketServer({
+			const WebSocketServerForPort = isBun
+				? (bunWebSocketServer ??= loadNativePackage('ws', 'index.js').WebSocketServer)
+				: WebSocketServer;
+			websocketServers[port] = new WebSocketServerForPort({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
@@ -1962,6 +1961,9 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 				try {
 					const request = new Request(incomingMessage);
 					request.isWebSocket = true;
+					if (isolatedApplicationUnavailable(request, options.usageType === 'operations-api')) {
+						return ws.close(1013, 'Try again later');
+					}
 					const chainCompletion = httpChain[port](request);
 					harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
 					websocketChains[port](ws, request, chainCompletion);
@@ -2214,3 +2216,8 @@ export function getRequestId() {
 	}
 	return Number(Atomics.add(nextRequestId, 0, 1n));
 }
+
+server.http = httpServer;
+server.request = onRequest;
+server.ws = onWebSocket;
+server.upgrade = onUpgrade;

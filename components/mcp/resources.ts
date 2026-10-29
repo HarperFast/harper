@@ -1,3 +1,8 @@
+import * as ResourcesRuntimeModule from '../../resources/Resources.ts';
+import * as openApiRuntimeModule from '../../resources/openApi.ts';
+import * as transactionRuntimeModule from '../../resources/transaction.ts';
+import * as RequestTargetRuntimeModule from '../../resources/RequestTarget.ts';
+import * as ServerRuntimeModule from '../../server/Server.ts';
 /**
  * MCP resources capability — implements `resources/list`, `resources/read`,
  * and `resources/templates/list` per MCP §server/resources (rev 2025-06-18).
@@ -47,10 +52,6 @@ import {
 import type { McpProfile } from './transport.ts';
 import { canRoleInvokeOperation } from './operationVisibility.ts';
 
-// Harper's resource graph (Resources, generateJsonApi, Server) initializes
-// eagerly when imported at module-load. Unit tests that don't boot Harper
-// would fail to load this module. Lazy-resolve via require() inside the
-// getters below; test seams below let unit tests bypass the real bindings.
 interface ParamRouteEntry {
 	pattern: string;
 	entry: { Resource?: unknown; path?: string; exportTypes?: unknown };
@@ -170,15 +171,14 @@ export function _setSubscribeImplForTest(
 
 function getResources(): ResourcesType {
 	if (_resourcesOverride) return _resourcesOverride;
-	// Lazy import — see file-top comment on Harper graph initialization.
-	const { resources } = require('../../resources/Resources');
-	return resources as ResourcesType;
+	const { resources } = ResourcesRuntimeModule;
+	return resources as unknown as ResourcesType;
 }
 
 function getOpenApiGenerator(): OpenApiGenerator {
 	if (_openApiOverride) return _openApiOverride;
-	const { generateJsonApi } = require('../../resources/openApi');
-	return generateJsonApi as OpenApiGenerator;
+	const { generateJsonApi } = openApiRuntimeModule;
+	return generateJsonApi as unknown as OpenApiGenerator;
 }
 
 // ─── Public entry points ────────────────────────────────────────────────
@@ -406,9 +406,8 @@ export async function subscribeToResource(
 		// so we must override both cases (else a collection URI watches a phantom
 		// record named after the resource and receives nothing).
 		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
-		const { transaction } = require('../../resources/transaction');
-		const { RequestTarget } = require('../../resources/RequestTarget');
+		const { transaction } = transactionRuntimeModule;
+		const { RequestTarget } = RequestTargetRuntimeModule;
 		const request = new RequestTarget(path);
 		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
 		// the MCP notification just says "this resource changed; re-read it".
@@ -418,7 +417,7 @@ export async function subscribeToResource(
 			omitCurrent: true,
 			checkPermission: user?.role?.permission ?? {},
 		});
-		const context = { user, authorize: true, request };
+		const context = { user: user as any, authorize: true, request };
 		const result = await transaction(context, async () => ResourceClass.subscribe!(request, context));
 		stream =
 			result && typeof (result as ResourceChangeStream)[Symbol.asyncIterator] === 'function'
@@ -562,9 +561,10 @@ async function readCustomResource(
 		// Merge onto any ambient store (usually none on the MCP HTTP path) so an
 		// inherited transaction/cache is preserved rather than clobbered; `user`
 		// binds last. Same idiom as processLocalTransaction's `{ ...currentStore, user }`.
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
-		const { transaction, contextStorage } = require('../../resources/transaction');
-		const result = await transaction({ ...contextStorage.getStore(), user }, () => def.read(params, { user, profile }));
+		const { transaction, contextStorage } = transactionRuntimeModule;
+		const result = await transaction({ ...contextStorage.getStore(), user: user as any }, () =>
+			def.read(params, { user, profile })
+		);
 		if (typeof result === 'string') {
 			return { ok: true, contents: [{ uri, mimeType: def.mimeType ?? 'text/plain', text: result }] };
 		}
@@ -937,7 +937,7 @@ function guessAppHttpUrlPrefix(): string | undefined {
 	if (_httpUrlPrefixOverride !== undefined) return _httpUrlPrefixOverride || undefined;
 	let hostname: string | undefined;
 	try {
-		const { server } = require('../../server/Server');
+		const { server } = ServerRuntimeModule;
 		hostname = (server as { hostname?: string })?.hostname;
 	} catch {
 		return undefined;

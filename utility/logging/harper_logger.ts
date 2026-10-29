@@ -1,17 +1,19 @@
-'use strict';
+const segfaultHandlerPackage = 'segfault-handler';
+('use strict');
 
 // Note - do not import/use commonUtils.js in this module, it will cause circular dependencies.
-import * as fs from 'fs-extra';
-import { workerData, threadId, isMainThread } from 'worker_threads';
-import * as pathModule from 'path';
+import fs from 'fs-extra';
+import { workerData, threadId, isMainThread } from 'node:worker_threads';
+import * as pathModule from 'node:path';
 import * as YAML from 'yaml';
-const PropertiesReader = require('properties-reader');
+import _PropertiesReader from 'properties-reader';
+const PropertiesReader = _PropertiesReader;
 import * as hdbTerms from '../hdbTerms.ts';
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
-import * as os from 'os';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import * as os from 'node:os';
+import { PACKAGE_ROOT, loadRuntimeModule } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
-import { Console } from 'console';
+import { Console } from 'node:console';
 import { inspect, types } from 'node:util';
 import { createRotationGuard, INVALID_MAX_SIZE_MSG, parseMaxSize, resolveRotatedLogDir } from './logRotation.ts';
 import { type FileIdentity, registerLogSink } from './logGenerationCoordinator.ts';
@@ -27,7 +29,6 @@ let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
 	: (process.stdout as any).nativeWrite || ((process.stdout as any).nativeWrite = process.stdout.write);
 let fileLoggers = new Map();
 const { join } = pathModule;
-
 const MAX_LOG_BUFFER = 10000;
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -104,6 +105,9 @@ export let externalLogger: any = {
 	},
 	forComponent(name: string) {
 		return externalLogger.forComponent(name);
+	},
+	status(options) {
+		return externalLogger.status(options);
 	},
 };
 _assignPackageExport('logger', externalLogger);
@@ -193,6 +197,11 @@ function updateConditional(logger: any) {
 	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
+	Object.defineProperty(conditional, 'status', {
+		value: logger.status.bind(logger),
+		writable: true,
+		configurable: true,
+	});
 }
 /**
  * Resolve a config path value against rootPath if it is relative.
@@ -204,6 +213,9 @@ function resolveLogPath(configPath: string, rootPath: string) {
 }
 async function updateLogSettings() {
 	if (!rootConfig) {
+		// Lazy-load to avoid a circular dependency at module evaluation time
+		// (RootConfigWatcher imports configUtils which imports this logger).
+		const { getSharedRootConfigWatcher } = await import('../../config/RootConfigWatcher.ts');
 		// set up the initial watcher
 		rootConfig = getSharedRootConfigWatcher();
 		// wait for it to be ready
@@ -420,6 +432,9 @@ class HarperLogger extends Console {
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
 	}
+	status(options) {
+		return statusLogger(options, this);
+	}
 	forComponent(_name) {
 		// to be replaced
 		return this;
@@ -432,45 +447,49 @@ class HarperLogger extends Console {
 
 if (hdbProperties === undefined) initLogSettings();
 
-module.exports = {
-	notify,
-	fatal,
-	error,
-	warn,
-	info,
-	debug,
-	trace,
-	logLevel,
-	loggerWithTag,
-	suppressLogging,
-	initLogSettings,
-	logCustomLevel,
-	closeLogFile,
-	createLogger,
-	logsAtLevel,
-	getLogFilePath: () => logFilePath,
-	forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
-	setMainLogger,
-	setLogLevel,
-	OUTPUTS,
-	CREDENTIAL_KEY_PATTERN,
-	AuthAuditLog,
-	// for now these functions at least notify us of when the component system is ready so
-	// we can start using the RootConfigWatcher
-	start: updateLogSettings,
-	startOnMainThread: updateLogSettings,
-	// Test-only: applies a config without the process-wide watcher `updateLogSettings` builds.
-	_applyLogSettingsForTests: applyLogSettings,
-	errorToString,
-	errorForLog,
-	inspectForLog,
-	isErrorLike,
-	disableStdio,
-	isStdioBrokenError,
-	externalLogger,
-	conditional: mainLogger.conditional,
-	updateLogger,
-};
+if (typeof module !== 'undefined') {
+	module.exports = {
+		notify,
+		fatal,
+		error,
+		warn,
+		info,
+		debug,
+		trace,
+		logLevel,
+		loggerWithTag,
+		suppressLogging,
+		initLogSettings,
+		logCustomLevel,
+		closeLogFile,
+		createLogger,
+		logsAtLevel,
+		getLogFilePath: () => logFilePath,
+		forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
+		setMainLogger,
+		setLogLevel,
+		OUTPUTS,
+		CREDENTIAL_KEY_PATTERN,
+		AuthAuditLog,
+		// for now these functions at least notify us of when the component system is ready so
+		// we can start using the RootConfigWatcher
+		start: updateLogSettings,
+		startOnMainThread: updateLogSettings,
+		// Test-only: applies a config without the process-wide watcher `updateLogSettings` builds.
+		_applyLogSettingsForTests: applyLogSettings,
+		errorToString,
+		errorForLog,
+		inspectForLog,
+		isErrorLike,
+		disableStdio,
+		isStdioBrokenError,
+		externalLogger,
+		conditional: mainLogger.conditional,
+		updateLogger,
+		setStatusHandler,
+		status,
+	};
+}
 
 // Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
 // text back into the file logger this is the fallback for, and swallows a broken pipe - there is
@@ -507,6 +526,11 @@ const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED'
  */
 export function isStdioBrokenError(error: any): boolean {
 	return STDIO_BROKEN_ERROR_CODES.has(error?.code);
+}
+
+export function status(options: any) {
+	// Use the public facade so status calls also observe replaced log methods.
+	return statusLogger(options, typeof module !== 'undefined' ? module.exports : loggerExports);
 }
 
 /**
@@ -600,13 +624,16 @@ export function initLogSettings(forceInit = false) {
 			}
 			if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
-				// Bun will crash with the segfault handler, ironically
-				try {
-					const SegfaultHandler = require('segfault-handler');
-					SegfaultHandler.registerHandler(join(logRoot, 'crash.log'));
-				} catch {
-					// optional dependency, ok if we can't run it
-				}
+				// Bun will crash with the segfault handler, ironically.
+				// Dynamic import works in both CJS and ESM (type-strip); require() is not
+				// available as a global in ESM so we can't use it here.
+				import(segfaultHandlerPackage)
+					.then((mod) => {
+						(mod.default ?? mod).registerHandler(join(logRoot, 'crash.log'));
+					})
+					.catch(() => {
+						// optional dependency, ok if unavailable
+					});
 			}
 		}
 	} catch (err) {
@@ -708,6 +735,45 @@ function stdioLogging() {
 	installStdioGuard(process.stderr);
 }
 
+let statusHandler: any;
+export function setStatusHandler(handler: any) {
+	statusHandler = handler;
+}
+function dispatchStatus(options: any, level: string | null, tag: string, args: any[]) {
+	try {
+		statusHandler?.(options, level, tag, args);
+	} catch {
+		// Status instrumentation must not interrupt the caller's recovery or cleanup.
+	}
+}
+function statusLogger(options: any, logger: any, tag?: string) {
+	// A chained log method (.error(), .warn(), etc.) fires synchronously if the caller chains
+	// one, before this microtask runs. Deferring the options-only dispatch lets us skip it when
+	// a chained call already reported the same logical event, avoiding a double dispatch.
+	let chained = false;
+	if (statusHandler) {
+		queueMicrotask(() => {
+			if (!chained && statusHandler) {
+				dispatchStatus(options, null, tag || logger.tag || currentTag, []);
+			}
+		});
+	}
+	const wrapper: any = {};
+	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
+		wrapper[level] = function (...args: any[]) {
+			chained = true;
+			try {
+				logger[level]?.(...args);
+			} finally {
+				if (statusHandler) {
+					dispatchStatus(options, level, tag || logger.tag || currentTag, args);
+				}
+			}
+		};
+	}
+	return wrapper;
+}
+
 export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) {
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
 	const methods = {
@@ -719,32 +785,37 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) 
 		debug: logWithTag('debug'),
 		trace: logWithTag('trace'),
 	};
-	if (!conditional) {
-		return methods;
-	}
-	return {
-		get notify() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+	const taggedLogger = !conditional
+		? methods
+		: {
+				get notify() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+				},
+				get fatal() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
+				},
+				get error() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
+				},
+				get warn() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
+				},
+				get info() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
+				},
+				get debug() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
+				},
+				get trace() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
+				},
+			};
+	Object.defineProperty(taggedLogger, 'status', {
+		value(options) {
+			return statusLogger(options, taggedLogger, tag);
 		},
-		get fatal() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
-		},
-		get error() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
-		},
-		get warn() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
-		},
-		get info() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
-		},
-		get debug() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
-		},
-		get trace() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
-		},
-	};
+	});
+	return taggedLogger;
 	function logWithTag(level) {
 		return function (...args) {
 			const targetLogger = logger ?? mainLogger;
@@ -993,14 +1064,14 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 	if (isMainThread && reconfigured) {
 		setTimeout(() => {
 			// Everything inside the try: a throw from a timer callback is unhandled, and neither
-			// require('./logRotator') (which reaches environmentManager's synchronous init) nor a
+			// loading logRotator.ts (which reaches environmentManager's synchronous init) nor a
 			// rotator teardown may take the process down over log rotation (#847).
 			try {
 				const previousRotator = logger.rotator;
 				logger.rotator = undefined;
 				previousRotator?.end();
 				if (!rotation) return;
-				const { logRotator } = require('./logRotator');
+				const { logRotator } = loadRuntimeModule('utility/logging/logRotator');
 				logger.rotator = logRotator({
 					logger,
 					...rotation,
@@ -1277,7 +1348,7 @@ function getLogConfig(hdbConfigPath) {
 			const oldHdbSettings = PropertiesReader(hdbConfigPath);
 			return {
 				level: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY),
-				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
+				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) as string),
 				toFile: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_FILE),
 				toStream: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS),
 			};
@@ -2392,12 +2463,11 @@ export function AuthAuditLog(
 	this.path = path;
 }
 // we have to load this at the end to avoid circular dependencies problems
-import { getSharedRootConfigWatcher } from '../../config/RootConfigWatcher.ts';
 
 export const getLogFilePath = () => logFilePath;
 export const forComponent = (name: string, isExternal?: boolean) => mainLogger.forComponent(name, isExternal);
 export const conditional = mainLogger.conditional;
-export default {
+const loggerExports = {
 	notify,
 	fatal,
 	error,
@@ -2431,4 +2501,10 @@ export default {
 	inspectForLog,
 	isErrorLike,
 	updateLogger,
+	start: updateLogSettings,
+	startOnMainThread: updateLogSettings,
+	setStatusHandler,
+	status,
 };
+
+export default loggerExports;

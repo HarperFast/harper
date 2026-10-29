@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
 	DatabaseTransaction,
@@ -266,7 +266,7 @@ describe('Outstanding commit tracking', () => {
 		this.timeout(20000);
 		let chained = false;
 		const context = {};
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = TrackB.primaryStore.store.db;
 		let releaseHold;

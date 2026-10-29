@@ -8,6 +8,12 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Core runtime and product paths (`packageUtils.js`)
+
+Core-owned files resolve from their runtime module tree, including lazy plugin URLs and the shared compiler-emitted `systemSchema.js` JSON asset. Package metadata, public relative-worker paths and compiled product startup keep their package owner. `packageUtils.test.js` and `typestrip-runtime.test.mjs` enforce these boundaries with standalone/embedded builds, real workers and one product CLI invocation.
+
+`loadNativePackage(name)` retains ordinary `require(name)` resolution, including its missing-module error. A trusted entry filename as its second argument loads that file beside the installed package's exported manifest. HTTP uses this boundary lazily on Bun to bypass the builtin `ws` substitution; a missing installed package fails startup instead of falling back to that substitution.
+
 ## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
 
 libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with
@@ -85,3 +91,7 @@ Tests: the `inspectForLog` block in `unitTests/utility/logging/harper_logger.tes
 ## Local messages name the product through `PRODUCT_NAME` (`utility/packageUtils.js`)
 
 Startup, install, restart, stop, upgrade and status messages about the local instance interpolate `PRODUCT_NAME`, the `productName` of the package.json `findPackageJson()` resolves — Harper's own, or Harper Pro's root manifest when core runs compiled under its `dist/core` (Harper Pro ships no other package.json on that path; its `unitTests/bin/productName.test.mjs` asserts both). Distributions brand these messages by declaring `productName`, never by rewriting core sources: Harper Pro's former build-time `s/Harper/Harper Pro/` stopped matching when `bin/` moved to TypeScript, and over the `.ts` sources it would also have put a space into the unquoted deploy multipart boundary. Messages about a remote target or Fabric, and identifiers such as that boundary, keep the literal "Harper".
+
+## Logger status dispatch uses the active runtime facade
+
+`logging/harper_logger.ts` routes `status()` through the runtime's existing public object: CommonJS `module.exports` or the native ESM default facade. Read the CJS object inside each call, after export assignment, so replaced log methods remain observable; source execution must not evaluate an unguarded `module`. Keep new status methods and the existing startup aliases on both facades. The logger completes initialization before status dispatch; `initLogSettings()` does not call `status()`. Enforced by the fresh-process source/compiled checks in `typestrip-runtime.test.mjs`.

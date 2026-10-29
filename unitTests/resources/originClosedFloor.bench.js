@@ -10,9 +10,9 @@
 require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { Transaction } = require('@harperfast/rocksdb-js');
-const floor = require('#src/resources/originClosedFloor');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+const floor = require('#js/resources/originClosedFloor');
 const { persistOriginClosedFloor } = require('#src/resources/auditStore');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -123,5 +123,29 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 		console.log('');
 		console.log(`  reserve+release pair          ${((pairMs / pairs) * 1e6).toFixed(0).padStart(6)} ns`);
 		console.log(`  certify + persist + publish   ${((roundMs / rounds) * 1e3).toFixed(0).padStart(6)} µs per round`);
+	});
+
+	it('registration sample, settled and with a slot pending through every retry', () => {
+		const samples = 20_000;
+		const time = () => {
+			const start = performance.now();
+			for (let n = 0; n < samples; n++) floor.localStartBound(rootStore);
+			return (((performance.now() - start) / samples) * 1e6).toFixed(0).padStart(6);
+		};
+		const settled = time();
+		// a slot whose claimer has not stored its first bound: the layout is originClosedFloor.ts's
+		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
+		let slot = 1023;
+		while (Atomics.load(words, 4 + slot) !== 0n || Atomics.load(words, 4 + 1024 + slot * 8) !== 0n) slot--;
+		Atomics.store(words, 4 + slot, 1n << 30n);
+		let pending;
+		try {
+			pending = time();
+		} finally {
+			Atomics.store(words, 4 + slot, 0n);
+		}
+		console.log('');
+		console.log(`  localStartBound, settled      ${settled} ns`);
+		console.log(`  localStartBound, pending      ${pending} ns`);
 	});
 });

@@ -20,7 +20,7 @@ const {
 	setAuditRetention,
 	auditRetention,
 } = require('#src/resources/auditStore');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 // the floor is read off a table's (database-scoped) audit store; there is no Table-level accessor
 const floorOf = (tbl) => getAuditFloor(tbl.auditStore);
 const os = require('node:os');

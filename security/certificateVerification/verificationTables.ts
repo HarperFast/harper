@@ -116,7 +116,7 @@ async function evictVerdictsWithoutExpiry(CertificateCache: any): Promise<void> 
 		if (value == null || expiresAt != undefined) continue;
 		const slot = evictions++ % MAX_OUTSTANDING_EVICTIONS;
 		await outstanding[slot];
-		outstanding[slot] = CertificateCache.evict(key, value, version);
+		outstanding[slot] = CertificateCache.evict(key, value, version, undefined, null);
 		// yields between evictions, as the table's own cleanup scan does, so LMDB can renew its read transaction
 		await new Promise(setImmediate);
 	}

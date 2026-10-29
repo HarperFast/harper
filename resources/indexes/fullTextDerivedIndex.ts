@@ -3,6 +3,7 @@ import {
 	DERIVED_INDEX_DEFERRED,
 	DERIVED_INDEX_FAILED,
 	MAX_LOG_SEQUENCE,
+	sameDerivedIndexCursorVector,
 	sameDerivedIndexPositions,
 } from '../derivedIndexRuntime.ts';
 import type {
@@ -687,7 +688,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(command.epoch);
 		if (this.#lastAppliedSequence < command.horizon)
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
-		const cursor = withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
+		const published = command.cursor ?? this.#durableCursor;
+		const cursor = this.#hasStagedMutations
+			? withoutCoverage(published)
+			: withDurableCoverage(published, this.#durableCursor);
 		try {
 			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 			await this.#engine!.publish(payload);
@@ -1239,11 +1243,17 @@ function cloneCursor(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor
 	return Object.freeze({ format: 1, logs, ...(floors ? { floors } : null), ...(coverage ? { coverage } : null) });
 }
 
+function withoutCoverage(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor | undefined {
+	if (!cursor?.coverage) return cursor;
+	const { coverage: _coverage, ...vector } = cursor;
+	return vector;
+}
+
 function withDurableCoverage(
 	cursor: DerivedIndexCursor | undefined,
 	durable: DerivedIndexCursor | undefined
 ): DerivedIndexCursor | undefined {
-	if (!cursor || cursor.coverage || !durable?.coverage) return cursor;
+	if (!cursor || cursor.coverage || !durable?.coverage || !sameDerivedIndexCursorVector(cursor, durable)) return cursor;
 	return { ...cursor, coverage: durable.coverage };
 }
 

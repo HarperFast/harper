@@ -4,6 +4,7 @@ import { contextStorage, transaction } from '../transaction.ts';
 import type { Context } from '../ResourceInterface.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { CREDENTIAL_KEY } from '../../utility/credentials.ts';
 import { canonicalJson, isAllowedValue, isObjectSchema } from './decision.ts';
 import type {
 	DecisionLeaf,
@@ -421,7 +422,7 @@ export function sourceFingerprint(kind: string, logicalName: string | undefined,
 			canonicalJson({
 				kind,
 				logicalName: logicalName ?? null,
-				config: withoutNamedCredentials(withoutFallback(config)),
+				config: withoutNamedCredentials(withoutRoutingAndPricing(config)),
 			})
 		)
 		.digest('hex');
@@ -444,14 +445,12 @@ function withoutNamedCredentials(value: unknown): unknown {
 	return kept;
 }
 
-/** Which backend serves after this one is routing, not what produces this one's scores. */
-function withoutFallback(config: unknown): unknown {
+/** Which backend serves after this one, and what a call costs, do not change what this one scores. */
+function withoutRoutingAndPricing(config: unknown): unknown {
 	if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
-	const { fallback: _fallback, ...rest } = config as Record<string, unknown>;
+	const { fallback: _fallback, pricing: _pricing, ...rest } = config as Record<string, unknown>;
 	return rest;
 }
-
-const CREDENTIAL_KEY = /^(apiKey|accessKeyId|authorization|.*secret.*|.*password.*|.*credential.*|.*key|.*token)$/i;
 
 function withoutCredentials(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(withoutCredentials);

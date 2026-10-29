@@ -6,7 +6,7 @@ const fs = require('fs-extra');
 const path = require('node:path');
 const os = require('node:os');
 
-const harperConfigEnvVars = rewire('#src/config/harperConfigEnvVars');
+const harperConfigEnvVars = rewire('#js/config/harperConfigEnvVars');
 const applyRuntimeEnvConfig = harperConfigEnvVars.__get__('applyRuntimeEnvConfig');
 const composeConfigFromEnv = harperConfigEnvVars.__get__('composeConfigFromEnv');
 const filterArgsAgainstRuntimeConfig = harperConfigEnvVars.__get__('filterArgsAgainstRuntimeConfig');

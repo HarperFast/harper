@@ -22,7 +22,7 @@ const {
 	setIndexingCheckpointPeriod,
 	CHECKPOINT_ALGORITHM,
 } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const DB = 'test';
 const LMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';

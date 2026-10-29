@@ -18,6 +18,8 @@ import { findAndValidateUser, type User } from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import {
 	WORKLOAD_IDENTITY_CLAIM,
+	DEPLOY_SOURCE_CLAIM,
+	attachDeploySourceToUser,
 	attachWorkloadIdentityToUser,
 	isWorkloadIdentityPrincipal,
 	markTokenAsWorkloadIdentity,
@@ -30,11 +32,14 @@ import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 type StringValue = SignOptions['expiresIn'];
-const OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
-const REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
+const operationTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
+const refreshTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 // Default lifetime of a login-purpose token (see TOKEN_TYPE.LOGIN below). It only exists to be
 // exchanged for a session cookie, so it defaults far shorter than an operation token; callers can
 // still override via expires_in.
@@ -186,10 +191,10 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		// without a password (see operationAuthorizationState.ts).
 		let validatePassword: boolean = !isOperationAuthorizationBypassed();
 		if (!authObj.username && !authObj.password) {
-			// A scoped-token bearer must not self-mint: its username is an unverified attribution
-			// label, and resolving it here without a password would hand out standing operation/
-			// refresh tokens for whatever real user later takes that name (privilege escalation).
-			if (authObj.hdb_user?._scopedToken) {
+			// No passwordless self-mint: a scoped token's username is an unverified attribution label (a
+			// real user created later with that name would get the standing tokens), and a bearer-validator
+			// principal would trade a component's token for longer-lived Harper tokens.
+			if (authObj.hdb_user?._scopedToken || (authObj.hdb_user as any)?._bearerValidator) {
 				throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 			}
 			// if the username and password are not provided, use the hdb_user making the request.
@@ -237,7 +242,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
+			expiresIn: (authObj.expires_in ?? operationTokenTimeout()) as StringValue,
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.OPERATION,
 		} satisfies SignOptions
@@ -247,7 +252,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: REFRESH_TOKEN_TIMEOUT,
+			expiresIn: refreshTokenTimeout(),
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.REFRESH,
 		} satisfies SignOptions
@@ -282,6 +287,9 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 const MAX_SCOPED_TOKEN_LENGTH = 12288;
 
 async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
+	if ((authObj.hdb_user as any)?._bearerValidator && !isOperationAuthorizationBypassed()) {
+		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+	}
 	if (authObj.password) {
 		throw new ClientError("'password' cannot be combined with an inline 'role' object");
 	}
@@ -303,7 +311,7 @@ async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
 		},
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
+			expiresIn: (authObj.expires_in ?? operationTokenTimeout()) as StringValue,
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.SCOPED,
 		} satisfies SignOptions
@@ -343,7 +351,7 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 		refreshedPayload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: OPERATION_TOKEN_TIMEOUT as StringValue,
+			expiresIn: operationTokenTimeout(),
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.OPERATION,
 		} satisfies SignOptions
@@ -364,13 +372,15 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
  */
 export async function createOperationToken(
 	user: { username: string; super_user: boolean; operations?: string[] },
-	expiresIn: StringValue
+	expiresIn: StringValue,
+	deploySource?: Record<string, unknown>
 ): Promise<string> {
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const payload: { username: string; super_user: boolean; operations?: string[] } = {
 		username: user.username,
 		super_user: user.super_user,
 	};
+	if (deploySource) payload[DEPLOY_SOURCE_CLAIM] = deploySource;
 	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
 	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
 	// what keeps this from failing open.
@@ -391,12 +401,21 @@ export async function createOperationToken(
 	);
 }
 
-export async function validateOperationToken(token: string): Promise<any> {
-	return validateToken(token, TOKEN_TYPE.OPERATION);
+const DEFERRED_WARN_CAUSE = Symbol('deferredWarnCause');
+
+export function warnDeferredTokenRejection(error: any): void {
+	const cause = error?.[DEFERRED_WARN_CAUSE];
+	if (cause !== undefined) {
+		logger.warn(cause);
+	}
 }
 
-export async function validateRefreshToken(token: string): Promise<any> {
-	return validateToken(token, TOKEN_TYPE.REFRESH);
+export async function validateOperationToken(token: string, deferInvalidTokenWarn = false): Promise<any> {
+	return validateToken(token, TOKEN_TYPE.OPERATION, deferInvalidTokenWarn);
+}
+
+export async function validateRefreshToken(token: string, deferInvalidTokenWarn = false): Promise<any> {
+	return validateToken(token, TOKEN_TYPE.REFRESH, deferInvalidTokenWarn);
 }
 
 /**
@@ -408,7 +427,7 @@ export async function validateLoginToken(token: string): Promise<any> {
 	return validateToken(token, TOKEN_TYPE.LOGIN);
 }
 
-async function validateToken(token: string, tokenType: string): Promise<any> {
+async function validateToken(token: string, tokenType: string, deferInvalidTokenWarn = false): Promise<any> {
 	try {
 		const keys: JWTRSAKeys = await getJWTRSAKeys();
 		assertUsableVerificationKey(keys.publicKey);
@@ -448,17 +467,27 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		// Provenance rides the same lift: the claim is signed, so a caller cannot strip it to look
 		// like a password-minted principal at createTokens.
 		attachWorkloadIdentityToUser(user, tokenVerified[WORKLOAD_IDENTITY_CLAIM]);
+		attachDeploySourceToUser(user, tokenVerified[DEPLOY_SOURCE_CLAIM]);
 
 		return user;
 	} catch (err) {
-		logger.warn(err);
 		if (err?.name === 'TokenExpiredError') {
+			logger.warn(err);
 			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
 		}
 		// Only positively classified token failures may cross the route-ownership boundary as rejections.
-		if (!isTokenRejection(err)) throw err;
+		if (!isTokenRejection(err)) {
+			logger.warn(err);
+			throw err;
+		}
 
-		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+		const rejection = credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+		if (deferInvalidTokenWarn) {
+			(rejection as any)[DEFERRED_WARN_CAUSE] = err;
+		} else {
+			logger.warn(err);
+		}
+		throw rejection;
 	}
 }
 

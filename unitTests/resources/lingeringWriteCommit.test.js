@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { TRANSACTION_STATE, RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -113,7 +113,7 @@ describe('commit with open read iterators commits writes immediately on a replay
 
 	it('a terminally failing replay commit rejects the awaited commit chain; the iterator survives', async function () {
 		this.timeout(15000);
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = LingerTable.primaryStore.store.db;
 		let forcedFailures = 0;
@@ -163,7 +163,7 @@ describe('commit with open read iterators commits writes immediately on a replay
 
 	it('a terminally failing commit with no open iterator rejects and releases the context', async function () {
 		this.timeout(15000);
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = LingerTable.primaryStore.store.db;
 		let forcedFailures = 0;

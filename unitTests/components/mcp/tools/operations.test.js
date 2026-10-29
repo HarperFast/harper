@@ -9,7 +9,7 @@ const {
 	_setProcessLocalTransactionForTest,
 } = require('#src/components/mcp/tools/operations');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 const { existsSync, readFileSync } = require('node:fs');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
@@ -265,6 +265,12 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(tool.inputSchema.type, 'object');
 		assert.ok(Array.isArray(tool.inputSchema.required));
 		assert.ok(tool.inputSchema.required.includes('table'));
+	});
+
+	it('advertises the get_status components opt-in', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['get_status', null]]));
+		registerOperationsTools();
+		assert.equal(getTool('get_status').inputSchema.properties.components.type, 'boolean');
 	});
 
 	it('visibleTo predicate uses canRoleInvokeOperation (super_user sees everything)', () => {

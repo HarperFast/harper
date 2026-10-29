@@ -1,7 +1,7 @@
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { Resource } from './Resource.ts';
 import type { Context } from './ResourceInterface.ts';
-import * as logger from '../utility/logging/harper_logger.js';
+import * as logger from '../utility/logging/harper_logger.ts';
 import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';
@@ -13,7 +13,7 @@ import {
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
-import { LOCAL_ONLY, purgeAgedLogs } from './auditStore.ts';
+import { LOCAL_ONLY, COPIED_RECORD, purgeAgedLogs } from './auditStore.ts';
 import { asBinary } from './asBinary.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -186,6 +186,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				version,
 				txnLogKey,
 				residencyId,
+				residencySlot,
 				expiresAt,
 				originatingOperation,
 				username,
@@ -259,16 +260,18 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				}
 				// Entry is replayable: build the context and instantiate the resource only now, so
 				// the skip paths above never pay those per-entry allocations (harper#1266).
+				// `timestamp` is the key the entry was appended under, which the replay handle carries; the write
+				// handlers take it from here, as for an apply, since replay holds no reservation of a minted key.
 				const context: Context = {
 					nodeId,
 					alreadyLogged: true,
 					version,
 					expiresAt,
+					timestamp: txnLogKey,
 					user: { username },
 				} as any;
 				const target = new RequestTarget();
 				target.id = null;
-				const tableInstance: any = Table.getResource(target, context, {});
 				// TODO: If this throws an error due to being unable to access structures, we need to iterate through
 				// other transaction logs to get the latest structure. Ultimately we may have to skip records
 				if (!warnedReplayHappening) {
@@ -293,13 +296,17 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
+				const tableInstance: any = Table.getResource(target, context, {});
 				const options = {
 					context,
+					isReplay: true,
 					residencyId,
+					residencySlot,
 					nodeId,
 					originatingOperation,
 					version,
 					localOnly: (extendedType & LOCAL_ONLY) !== 0,
+					copyFrame: (extendedType & COPIED_RECORD) !== 0,
 				};
 				writes++;
 				stagedWrites++;

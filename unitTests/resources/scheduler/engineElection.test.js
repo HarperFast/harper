@@ -20,7 +20,7 @@ require('../../testUtils');
 const assert = require('node:assert');
 const { hostname } = require('node:os');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	registerComponentJobs,
 	unregisterComponentJobs,

@@ -32,7 +32,7 @@ import { streamAsJSON } from '../server/serverHelpers/JSONStream.ts';
 import { operationErrorResponse } from '../server/serverHelpers/operationErrorResponse.ts';
 import { setOperationLogView, type OperationLogView } from '../server/serverHelpers/operationLogView.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
-import * as validator from './operationsValidation.js';
+import * as validator from './operationsValidation.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
 const { OPERATIONS_ENUM, CONFIG_PARAMS } = terms;
@@ -483,7 +483,7 @@ function maskSealedLeaves(value: any): any {
 
 /** The JSON the plaintext path would send, as chunks, or undefined past `maxSize` bytes. */
 function collectJSON(result: unknown, maxSize: number): Promise<Buffer[] | undefined> {
-	const stream = streamAsJSON(result, { strict: true });
+	const stream = streamAsJSON(result);
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
 		let size = 0;

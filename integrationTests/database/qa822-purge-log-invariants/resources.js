@@ -27,9 +27,9 @@ function engineOf(table) {
 	return 'unknown';
 }
 
-// `delete_transaction_logs_before` only deletes log files entirely before the last-flushed-to-
-// RocksDB position, so without this the purge has nothing eligible to delete and the suite arms
-// vacuously.
+// `delete_transaction_logs_before` only deletes log files lying entirely at or before the
+// last-flushed-to-RocksDB position, so without this the purge has nothing eligible to delete and the
+// suite arms vacuously.
 export class Flush extends Resource {
 	static loadAsInstance = false;
 	async post() {

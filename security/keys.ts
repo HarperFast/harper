@@ -1,28 +1,33 @@
-'use strict';
+import { loadNativePackage } from '../utility/packageUtils.js';
+('use strict');
 
-import * as path from 'path';
-import * as fs from 'fs-extra';
+import * as path from 'node:path';
+import fs from 'fs-extra';
 import type * as Forge from 'node-forge';
-import * as net from 'net';
+import * as net from 'node:net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
 
-import * as util from 'util';
+import * as util from 'node:util';
 const generateKeyPair = util.promisify(generateKeyPairOrig);
 
-const loadForge = () => require('node-forge') as typeof Forge;
+const loadForge = () => loadNativePackage('node-forge') as typeof Forge;
 import { v4 as uuidv4 } from 'uuid';
 import { forComponent } from '../utility/logging/harper_logger.ts';
 import * as envManager from '../utility/environment/environmentManager.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 import * as certificatesTerms from '../utility/terms/certificates.js';
-const tls = require('node:tls');
+import tls from 'node:tls';
 import { relative, join, dirname, resolve } from 'node:path';
+import { open } from 'node:fs/promises';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
 import * as configUtils from '../config/configUtils.ts';
+import { filterArgsAgainstRuntimeConfig } from '../config/harperConfigEnvVars.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
-const logger = forComponent('tls').conditional;
+import { transaction } from '../resources/transaction.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+let logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
 const { CERTIFICATE_VALUES } = certificatesTerms;
 import { getThisNodeName, getThisNodeUrl, urlToNodeName, clearThisNodeName } from '../server/nodeName.ts';
@@ -39,8 +44,8 @@ export const getPrivateKeys = () => {
 };
 
 import { readFileSync, statSync, watchFile } from 'node:fs';
-import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
-import { isMainThread } from 'worker_threads';
+import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.ts';
+import { isMainThread } from 'node:worker_threads';
 import {
 	POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,
@@ -135,8 +140,8 @@ export function getCertTable() {
 	return certificateTable;
 }
 
-export async function getReplicationCert() {
-	const SNICallback = createTLSSelector('replication', undefined, false);
+export async function getReplicationCert(excludeSelfSigned = false) {
+	const SNICallback = createTLSSelector('replication', undefined, false, excludeSelfSigned);
 	const secureTarget = {
 		secureContexts: null,
 		setSecureContext: (_ctx) => {},
@@ -157,6 +162,38 @@ export async function getReplicationCertAuth() {
 	const repCert = new X509Certificate(certPem);
 	const caName = repCert.issuer.match(/CN=(.*)/)?.[1];
 	return certificateTable.get(caName);
+}
+
+const sameConfigValue = (recordValue, configValue) =>
+	JSON.stringify(recordValue ?? null) === JSON.stringify(configValue ?? null);
+
+/** Applies a config edit to ciphers/uses on a record whose file is unchanged; ownership rules are in security/DESIGN.md. */
+function reconcileConfiguredFields(certRecord, name, certificatePem, ciphers, uses, syncedNames: Set<string>) {
+	if (certRecord.certificate !== certificatePem || syncedNames.has(name)) return;
+	const owned = certRecord.from_config === true;
+	const adoptable = certRecord.from_config === undefined && certRecord.file_timestamp != null;
+	const matches = sameConfigValue(certRecord.ciphers, ciphers) && sameConfigValue(certRecord.uses, uses);
+	if (!owned && !(adoptable && matches)) {
+		if (adoptable)
+			logger.warn?.(
+				`TLS config for certificate ${name} differs from its record, which predates config tracking; leaving the record unchanged — touch the certificate file to apply the config`
+			);
+		else if (!matches)
+			logger.info?.(
+				`TLS config for certificate ${name} differs from its record, whose ciphers/uses were set outside the config; leaving the record unchanged`
+			);
+		return;
+	}
+	syncedNames.add(name);
+	if (owned && matches) return;
+	if (owned)
+		logger.info?.(
+			`TLS config for certificate ${name} changed (ciphers: ${certRecord.ciphers ?? 'unset'} -> ${ciphers ?? 'unset'}, uses: ${JSON.stringify(certRecord.uses)} -> ${JSON.stringify(uses)}); updating the certificate record`
+		);
+	const write = certificateTable.patch(owned ? { name, uses, ciphers: ciphers ?? null } : { name, from_config: true });
+	// a failed write must not stop the poll's retry from reconciling
+	Promise.resolve(write).catch(() => syncedNames.delete(name));
+	return write;
 }
 
 let configuredCertsLoaded;
@@ -188,6 +225,7 @@ export function loadCertificates() {
 
 	const rootPath = path.dirname(configUtils.getConfigFilePath());
 	let promise;
+	const syncedNames = new Set<string>();
 	for (let { configKey } of CERTIFICATE_CONFIGS) {
 		let configs = configUtils.getConfigFromFile(configKey);
 		if (configs) {
@@ -268,6 +306,7 @@ export function loadCertificates() {
 									!certRecord || certRecord.is_self_signed
 										? 1
 										: (certRecord.file_timestamp ?? certRecord.__updatedtime__);
+								const uses = config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []);
 								if (certRecord && fileTimestamp <= recordTimestamp) {
 									if (fileTimestamp < recordTimestamp)
 										logger.info?.(
@@ -277,6 +316,15 @@ export function loadCertificates() {
 												recordTimestamp > 1 ? new Date(recordTimestamp) : 'only self signed certificate available'
 											})`
 										);
+									const reconciled = reconcileConfiguredFields(
+										certRecord,
+										certCn,
+										certificatePem,
+										config.ciphers,
+										uses,
+										syncedNames
+									);
+									if (reconciled) return (promise = reconciled);
 									return;
 								}
 
@@ -284,13 +332,14 @@ export function loadCertificates() {
 								// assigned as well to preserve loadCertificates()'s awaited-return contract.
 								return (promise = certificateTable.put({
 									name: certCn,
-									uses: config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []),
+									uses,
 									ciphers: config.ciphers,
 									certificate: certificatePem,
 									private_key_name,
 									is_authority: ca,
 									hostnames,
 									file_timestamp: fileTimestamp,
+									from_config: true,
 									details: {
 										issuer: x509Cert.issuer.replace(/\n/g, ' '),
 										subject: x509Cert.subject?.replace(/\n/g, ' '),
@@ -608,7 +657,8 @@ export async function setCertTable(certRecord) {
 	};
 
 	getCertTable();
-	await certificateTable.patch(certRecord);
+	const setsConfigurableFields = certRecord.ciphers !== undefined || certRecord.uses !== undefined;
+	await certificateTable.patch(setsConfigurableFields ? { ...certRecord, from_config: null } : certRecord);
 }
 
 export async function generateKeys() {
@@ -664,11 +714,11 @@ async function generateCertificates(caPrivateKey, publicKey, caCert) {
 	return loadForge().pki.certificateToPem(publicCert);
 }
 
-export async function getCertAuthority() {
+export async function getCertAuthority(excludeSelfSigned = false) {
 	const allCerts = await listCertificates();
 	let match;
 	for (let cert of allCerts) {
-		if (!cert.is_authority) continue;
+		if (!cert.is_authority || (excludeSelfSigned && cert.is_self_signed)) continue;
 		let matchingPrivateKey;
 		try {
 			matchingPrivateKey = getPrivateKeyByName(cert.private_key_name);
@@ -737,16 +787,17 @@ export async function generateCertsKeys() {
 }
 
 /**
- * Delete any existing self-signed certs (including CA) and create new ones
- * @returns {Promise<void>}
+ * Replace the self-signed CA and replication certificate. A failed renewal leaves the previous pair in place.
  */
 export async function renewSelfSigned() {
+	clearThisNodeName();
+	await loadCertificates();
 	getCertTable();
+	const retiring = [];
 	for await (const cert of certificateTable.search([{ attribute: 'is_self_signed', value: true }])) {
-		await certificateTable.delete(cert.name);
+		retiring.push(cert.name);
 	}
-
-	await reviewSelfSignedCert();
+	await publishSelfSignedCerts(await prepareSelfSignedCerts(true), { retiring });
 }
 
 export async function reviewSelfSignedCert() {
@@ -754,8 +805,58 @@ export async function reviewSelfSignedCert() {
 	clearThisNodeName();
 	await loadCertificates();
 	getCertTable();
+	await publishSelfSignedCerts(await prepareSelfSignedCerts(false));
+}
 
-	let caAndKey = await getCertAuthority();
+/**
+ * Write the prepared records and, when renewing, delete the retiring names they do not reuse. Rows are
+ * re-read in the transaction because an external certificate may have been installed since they were
+ * selected; one that is not self-signed is not replaced. Renewal then fails, and boot review only warns.
+ */
+async function publishSelfSignedCerts(
+	{ records, generatedKeyPath }: { records: any[]; generatedKeyPath?: string },
+	{ retiring }: { retiring?: string[] } = {}
+) {
+	const replaced = new Set(records.map((record) => record.name));
+	let keyUnused = false;
+	try {
+		await transaction({}, async () => {
+			for (const name of retiring ?? []) {
+				if (!replaced.has(name) && (await certificateTable.get(name))?.is_self_signed)
+					await certificateTable.delete(name);
+			}
+			for (const record of records) {
+				const current = await certificateTable.get(record.name);
+				if (current && !current.is_self_signed) {
+					const message = `Certificate ${record.name} is not self-signed, so it is not replaced with a self-signed certificate`;
+					if (retiring) throw new ClientError(message, 409);
+					logger.warn?.(message);
+					// the leaf is signed by this CA, and would have no issuer in the table
+					if (record.is_authority) {
+						keyUnused = true;
+						break;
+					}
+					continue;
+				}
+				await setCertTable(record);
+			}
+		});
+	} catch (error) {
+		keyUnused = true;
+		throw error;
+	} finally {
+		if (keyUnused && generatedKeyPath) await fs.remove(generatedKeyPath);
+	}
+}
+
+/**
+ * @param replacing ignore existing self-signed rows, as renewal is about to retire them
+ */
+async function prepareSelfSignedCerts(replacing: boolean) {
+	const records = [];
+	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
+	let generatedKeyPem: string;
+	let caAndKey = await getCertAuthority(replacing);
 	if (!caAndKey) {
 		logger.notify?.(
 			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
@@ -763,53 +864,35 @@ export async function reviewSelfSignedCert() {
 
 		const tryToParseKey = (keyPath) => {
 			try {
-				const key = loadForge().pki.privateKeyFromPem(fs.readFileSync(keyPath));
-				return { key, keyPath };
+				return loadForge().pki.privateKeyFromPem(fs.readFileSync(keyPath));
 			} catch (err) {
 				logger.warn?.(`Failed to parse private key from ${keyPath}:`, err.message);
-				return { key: null, keyPath };
 			}
 		};
 
 		// TLS config can be an array of cert, so we need to check each one
 		const tlsConfig = envManager.get(CONFIG_PARAMS.TLS);
+		const configuredKeyPaths = Array.isArray(tlsConfig)
+			? tlsConfig.map((config) => config.privateKey)
+			: [envManager.get(CONFIG_PARAMS.TLS_PRIVATEKEY)];
 		let privateKey;
-		let tlsPrivateKeyPath;
-		if (Array.isArray(tlsConfig)) {
-			for (const config of tlsConfig) {
-				if (config.privateKey) {
-					const result = tryToParseKey(config.privateKey);
-					privateKey = result.key;
-					tlsPrivateKeyPath = result.keyPath;
-					if (result.key) {
-						break; // Found a working key
-					}
-				}
+		let keyName;
+		for (const keyPath of configuredKeyPaths) {
+			if (!keyPath) continue;
+			privateKey = tryToParseKey(keyPath);
+			if (privateKey) {
+				keyName = relative(keysPath, keyPath);
+				break;
 			}
-		} else {
-			const keyPath = envManager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
-			const result = tryToParseKey(keyPath);
-			privateKey = result.key;
-			tlsPrivateKeyPath = result.keyPath;
 		}
-
-		const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
-		let keyName = relative(keysPath, tlsPrivateKeyPath);
 		if (!privateKey) {
 			logger.warn?.(
-				'Unable to parse the TLS key',
-				tlsPrivateKeyPath,
-				'A new key will be generated and used to create Certificate Authority'
+				'No usable TLS private key is configured; a new key will be generated for the Certificate Authority'
 			);
 			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
 			// There is a ticket to add support for other key types CORE-2457
 			({ privateKey } = await generateKeys());
-
-			// If there is an existing private key, we will save the new one with a unique name
-			if (fs.existsSync(path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME)))
-				keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
-
-			await fs.writeFile(path.join(keysPath, keyName), loadForge().pki.privateKeyToPem(privateKey));
+			generatedKeyPem = loadForge().pki.privateKeyToPem(privateKey);
 		}
 
 		const hdbCa = await generateCertAuthority(
@@ -817,33 +900,34 @@ export async function reviewSelfSignedCert() {
 			loadForge().pki.setRsaPublicKey(privateKey.n, privateKey.e),
 			false
 		);
-
-		await setCertTable({
+		const caRecord = {
 			name: hdbCa.subject.getField('CN').value,
 			uses: [],
 			certificate: loadForge().pki.certificateToPem(hdbCa),
 			private_key_name: keyName,
 			is_authority: true,
 			is_self_signed: true,
-		});
+		};
+		records.push(caRecord);
+		caAndKey = { ca: caRecord, private_key: generatedKeyPem ?? loadForge().pki.privateKeyToPem(privateKey) };
 	}
 
-	const existingCert = await getReplicationCert();
-	if (!existingCert) {
-		const certName = getThisNodeName();
+	if (!(await getReplicationCert(replacing))) {
+		let certName = getThisNodeName();
+		const existing = await certificateTable.get(certName);
+		// an external certificate that cannot serve this node already holds its name
+		if (existing && !existing.is_self_signed) certName += '-self-signed';
 		logger.notify?.(
-			`A suitable replication certificate was not found, creating new self singed cert named: ${certName}`
+			`A suitable replication certificate was not found, creating new self signed cert named: ${certName}`
 		);
 
-		caAndKey = caAndKey ?? (await getCertAuthority());
 		const hdbCa = loadForge().pki.certificateFromPem(caAndKey.ca.certificate);
-		const publicKey = hdbCa.publicKey;
 		const newPublicCert = await generateCertificates(
 			loadForge().pki.privateKeyFromPem(caAndKey.private_key),
-			publicKey,
+			hdbCa.publicKey,
 			hdbCa
 		);
-		await setCertTable({
+		records.push({
 			name: certName,
 			uses: ['replication'],
 			certificate: newPublicCert,
@@ -852,10 +936,39 @@ export async function reviewSelfSignedCert() {
 			is_self_signed: true,
 		});
 	}
+	if (!generatedKeyPem) return { records };
+	// written last, so a failure in building the records leaves no key file behind
+	const keyName = await writeGeneratedKey(keysPath, generatedKeyPem);
+	for (const record of records) record.private_key_name = keyName;
+	return { records, generatedKeyPath: path.join(keysPath, keyName) };
 }
 
-// Update the cert config in harperdb-config.yaml
-// If CLI or Env values are present it will use those values, else it will use default private key.
+async function writeGeneratedKey(keysPath: string, pem: string): Promise<string> {
+	let keyName = certificatesTerms.PRIVATEKEY_PEM_NAME;
+	let file;
+	for (;;) {
+		try {
+			file = await open(path.join(keysPath, keyName), 'wx', 0o600);
+			break;
+		} catch (error) {
+			if (error.code !== 'EEXIST') throw error;
+			keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
+		}
+	}
+	try {
+		await file.writeFile(pem);
+	} catch (error) {
+		await file.close();
+		await fs.remove(path.join(keysPath, keyName));
+		throw error;
+	}
+	await file.close();
+	return keyName;
+}
+
+// Update the cert config in harperdb-config.yaml.
+// Uses CLI or Env values when present (or the default private key for tls),
+// except when the target section (`tls` or `operationsApi.tls`) is configured as an array.
 export function updateConfigCert() {
 	const cliEnvArgs = assignCmdenvVars(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
@@ -864,35 +977,55 @@ export function updateConfigCert() {
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
 	const conf = hdbTerms.CONFIG_PARAMS;
-	const newCerts = {
-		[conf.TLS_PRIVATEKEY]: cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
-			? cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
-			: private_key,
+	const newCerts: Record<string, any> = {};
+	const isArraySection = (key: string) => Array.isArray(configUtils.getConfigFromFile(key));
+	const warnIgnoredFlatArgs = (section: string, paramNames: string[]) => {
+		const ignored = paramNames.filter((name) => Boolean(cliEnvArgs[name.toLowerCase()]));
+		if (ignored.length > 0) {
+			logger.warn?.(
+				`Ignoring flat ${section} CLI/env parameter(s) (${ignored.join(', ')}) because ${section} is configured as an array.`
+			);
+		}
 	};
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
+	if (!isArraySection(conf.TLS)) {
+		newCerts[conf.TLS_PRIVATEKEY] = cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
+			? cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
+			: private_key;
+
+		if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
+		}
+
+		if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		}
+	} else {
+		warnIgnoredFlatArgs(conf.TLS, [conf.TLS_PRIVATEKEY, conf.TLS_CERTIFICATE, conf.TLS_CERTIFICATEAUTHORITY]);
 	}
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
-	}
-
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATE] = cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
-	}
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_PRIVATEKEY] = cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
-	}
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
-			cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+	if (!isArraySection(conf.OPERATIONSAPI_TLS)) {
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATE] = cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
+		}
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_PRIVATEKEY] = cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
+		}
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
+				cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		}
+	} else {
+		warnIgnoredFlatArgs(conf.OPERATIONSAPI_TLS, [
+			conf.OPERATIONSAPI_TLS_CERTIFICATE,
+			conf.OPERATIONSAPI_TLS_PRIVATEKEY,
+			conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
+		]);
 	}
 
 	// Filter out any cert config keys already set by HARPER_SET_CONFIG so we don't overwrite them
 	// with defaults. On first boot, HARPER_SET_CONFIG values are written to the config file during
 	// createConfigFile(), but updateConfigCert() runs afterward without re-applying HARPER_SET_CONFIG.
-	const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
 	const filteredCerts = filterArgsAgainstRuntimeConfig(newCerts);
 
 	configUtils.updateConfigValue(undefined, undefined, filteredCerts, false, true);
@@ -1100,7 +1233,7 @@ export function getEffectiveTlsCiphers(type, mtlsOptions?): string | undefined {
  *   Pass false for transient, single-use selectors (e.g. getReplicationCert) so they don't accumulate.
  * @return {(function(*, *): (*|undefined))|*}
  */
-export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
+export function createTLSSelector(type, mtlsOptions?, liveReload = true, excludeSelfSigned = false): any {
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;
@@ -1280,7 +1413,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 
 					for (const cert of certRecords) {
 						try {
-							if (cert.is_authority) {
+							if (cert.is_authority || (excludeSelfSigned && cert.is_self_signed)) {
 								continue;
 							}
 							let quality = cert.is_self_signed ? 1 : 3;

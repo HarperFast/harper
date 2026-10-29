@@ -42,7 +42,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const { isMainThread } = require('worker_threads');
 const { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
-const { installPerFileDatabaseTeardown } = require('./perFileDatabaseTeardown.js');
+const { installPerFileDatabaseTeardown, assertNativeCoreTree } = require('./perFileDatabaseTeardown.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -53,29 +53,72 @@ const { installPerFileDatabaseTeardown } = require('./perFileDatabaseTeardown.js
  * and the process exits 0 having printed no epilogue and no failure. Every runner reads that as
  * success. harper_logger.test.js did exactly this to any `dot`/`tap` run before it was fixed.
  *
- * Root hooks bracket the run, so "started but never finished" is the signal. Report it on fd 2
- * with writeSync, since an unwritable stdout is one of the ways to get here.
+ * Plugin loading and Mocha's final callback bracket the run. Report "started but never finished"
+ * on fd 2 with writeSync, since an unwritable stdout is one of the ways to get here.
  */
 let runStarted = false;
 let runFinished = false;
 
-module.exports.mochaHooks = {
-	beforeAll() {
-		runStarted = true;
-		installPerFileDatabaseTeardown(this.test.parent);
-	},
-	afterAll() {
-		runFinished = true;
-		// Register the root removal here, not in the preload below: 'exit' listeners fire in
-		// registration order, and the one that flushes and closes every open database
-		// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
-		// after the preload, before this hook. Removing the root any earlier deletes the
-		// database files out from under that flush, which rocksdb-js reports as
-		// "Failed to flush database during close: IO error ... 000NNN.log" — a throw out of an
-		// exit listener, so the run exits 7 with every test passing.
-		if (isMainThread) process.on('exit', removePerPidRoot);
-	},
+let observedTotal = 0;
+const resultsPath = process.env.HARPER_UNIT_RESULTS;
+let pendingResults;
+let activeRuns = 0;
+let resultFiles;
+delete process.env.HARPER_UNIT_RESULTS;
+
+function registerRootRemoval() {
+	if (isMainThread) {
+		process.off('exit', removePerPidRoot);
+		process.on('exit', removePerPidRoot);
+	}
+}
+
+module.exports.mochaHooks = () => {
+	runStarted = true;
+	runFinished = false;
+	return {
+		beforeAll() {
+			const root = this.test.parent;
+			observedTotal = root.total();
+			installPerFileDatabaseTeardown(root);
+		},
+	};
 };
+
+module.exports.mochaGlobalTeardown = function () {
+	// Register after storage shutdown listeners, including for runs with no matching tests.
+	registerRootRemoval();
+	if (resultsPath) {
+		pendingResults = { total: this.stats?.tests ?? observedTotal };
+	}
+};
+
+{
+	const mocha = require('node:module').createRequire(__filename)('mocha');
+	const Mocha = mocha.default ?? mocha;
+	const run = Mocha.prototype.run;
+	Mocha.prototype.run = function (callback) {
+		activeRuns++;
+		runFinished = false;
+		if (resultsPath && !resultFiles) resultFiles = [...this.files];
+		return run.call(this, (failures) => {
+			runFinished = --activeRuns === 0;
+			if (runFinished) {
+				registerRootRemoval();
+				try {
+					assertNativeCoreTree();
+				} catch (error) {
+					fs.writeSync(2, `${error.stack ?? error}\n`);
+					if (failures && typeof failures === 'object') failures.failureCount++;
+					else failures = (failures || 0) + 1;
+				}
+			}
+			if (runFinished && pendingResults)
+				fs.writeFileSync(resultsPath, JSON.stringify({ ...pendingResults, files: resultFiles }));
+			callback?.(failures);
+		});
+	};
+}
 
 process.on('exit', (code) => {
 	if (!runStarted || runFinished || code !== 0) return;
@@ -124,9 +167,6 @@ if (isMainThread) {
 			}
 		}
 	}
-	// The removal itself is registered from the afterAll root hook above, which every suite
-	// gets, so that it runs after the database shutdown listener rather than before it. A run
-	// that dies before afterAll leaves its root behind for the sweep above to reclaim.
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;

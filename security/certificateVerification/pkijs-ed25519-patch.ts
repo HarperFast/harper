@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../../utility/packageUtils.js';
 /**
  * PKI.js Ed25519/Ed448 Support Patch
  *
@@ -42,7 +43,7 @@ function getEdDSAAlgorithmName(oid: string): EdDSAAlgorithmName {
 }
 
 export function loadPkijs(): typeof Pkijs {
-	const pkijs = require('pkijs') as typeof Pkijs;
+	const pkijs = loadNativePackage('pkijs') as typeof Pkijs;
 	if (!patchesApplied) {
 		applyEd25519Patch(pkijs);
 		patchesApplied = true;

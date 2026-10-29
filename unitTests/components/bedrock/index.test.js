@@ -247,6 +247,104 @@ describe('BedrockBackend', () => {
 			assert.strictEqual(body.input_type, 'search_document');
 		});
 
+		describe('truncation', () => {
+			it('advertises truncate only for a configured Cohere embed v3 or v4 model', () => {
+				for (const [model, truncate] of [
+					['cohere.embed-english-v3', true],
+					['cohere.embed-multilingual-v3', true],
+					['cohere.embed-english-light-v3', true],
+					['cohere.embed-v4:0', true],
+					['us.cohere.embed-v4:0', true],
+					['amazon.titan-embed-text-v2:0', undefined],
+					['amazon.titan-embed-text-v1', undefined],
+					['cohere.command-r-v1:0', undefined],
+					['anthropic.claude-opus-4-v1:0', undefined],
+					[undefined, undefined],
+				]) {
+					const b = new BedrockBackend({ region: 'us-east-1', model });
+					assert.strictEqual(b.capabilities().truncate, truncate, model);
+					assert.ok(Object.isFrozen(b.capabilities()), model);
+				}
+			});
+
+			it("sends Cohere v4 truncate: 'RIGHT' with the text whole, only when asked", async () => {
+				const long = 'x'.repeat(5000);
+				for (const [truncate, expected] of [
+					[true, 'RIGHT'],
+					[false, undefined],
+					[undefined, undefined],
+				]) {
+					const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+					_injectSdkForTests(sdk);
+					const b = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-v4:0' });
+					await b.embed(long, { accounting: ACCOUNTING, truncate });
+					const body = JSON.parse(sent[0].command.body);
+					assert.strictEqual(body.truncate, expected, `truncate: ${truncate}`);
+					assert.strictEqual('truncate' in body, expected !== undefined, `truncate: ${truncate}`);
+					assert.strictEqual(body.texts[0], long, `truncate: ${truncate}`);
+				}
+			});
+
+			it("sends Cohere v3 truncate: 'END' with each text cut to Bedrock's 2,048-character limit, never splitting a surrogate pair", async () => {
+				const emoji = '\u{1F600}';
+				const cases = [
+					['short', 'hello', 'hello'],
+					['exactly the limit', 'a'.repeat(2048), 'a'.repeat(2048)],
+					['ASCII over the limit', 'b'.repeat(2047) + 'cd', 'b'.repeat(2047) + 'c'],
+					['pair straddling the limit', 'e'.repeat(2047) + emoji + 'f', 'e'.repeat(2047)],
+					['pair ending at the limit', 'g'.repeat(2046) + emoji + 'h', 'g'.repeat(2046) + emoji],
+					['all astral', emoji.repeat(1500), emoji.repeat(1024)],
+				];
+				const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-english-v3' });
+				const input = Object.freeze(cases.map(([, text]) => text));
+				const result = await b.embed(input, { accounting: ACCOUNTING, inputType: 'query', truncate: true });
+				assert.strictEqual(result.output.length, cases.length);
+				cases.forEach(([label, , expected], i) => {
+					const body = JSON.parse(sent[i].command.body);
+					assert.deepStrictEqual(body, { texts: [expected], input_type: 'search_query', truncate: 'END' }, label);
+					assert.ok(body.texts[0].length <= 2048, label);
+				});
+				assert.deepStrictEqual(
+					input,
+					cases.map(([, text]) => text)
+				);
+			});
+
+			it('leaves a Cohere v3 body unchanged without truncate: true', async () => {
+				const long = 'z'.repeat(3000);
+				const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-english-v3' });
+				await b.embed(long, { accounting: ACCOUNTING, truncate: false });
+				assert.deepStrictEqual(JSON.parse(sent[0].command.body), { texts: [long], input_type: 'search_document' });
+			});
+
+			it('refuses truncate: true for a model that cannot truncate before loading the SDK', async () => {
+				// No SDK injected: reaching the loader would fail with the install message instead.
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' });
+				await assert.rejects(
+					() => b.embed('hi', { accounting: ACCOUNTING, truncate: true }),
+					(err) => err instanceof BedrockBackendError && /cannot truncate/.test(err.message)
+				);
+			});
+
+			it('decides from the model the call uses, not the configured one', async () => {
+				const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+				_injectSdkForTests(sdk);
+				const titan = new BedrockBackend({ region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' });
+				await titan.embed('hi', { accounting: ACCOUNTING, truncate: true, model: 'cohere.embed-v4:0' });
+				assert.strictEqual(JSON.parse(sent[0].command.body).truncate, 'RIGHT');
+				const cohere = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-v4:0' });
+				await assert.rejects(
+					() => cohere.embed('hi', { accounting: ACCOUNTING, truncate: true, model: 'amazon.titan-embed-text-v2:0' }),
+					/cannot truncate/
+				);
+				assert.strictEqual(sent.length, 1);
+			});
+		});
+
 		it('throws on a generative-only family asked to embed', async () => {
 			const { sdk } = fakeSdk(() => jsonBodyResponse({}));
 			_injectSdkForTests(sdk);

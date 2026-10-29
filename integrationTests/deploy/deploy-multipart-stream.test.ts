@@ -263,17 +263,17 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 	const refusals: Array<[string, Record<string, unknown>, boolean, string, string]> = [
 		[
 			'a payload deploy it refuses',
-			{ operation: 'deploy_component', project: 'refused-multipart', isolated: true },
+			{ operation: 'deploy_component', project: 'refused.multipart' },
 			false,
 			'HTTP/1.1 400',
-			"'isolated' is only supported for package deployments",
+			'Project name can only contain alphanumeric, dash and underscores characters',
 		],
 		[
 			'a payload deploy it refuses in its event stream',
-			{ operation: 'deploy_component', project: 'refused-multipart-sse', isolated: true },
+			{ operation: 'deploy_component', project: 'refused.multipart-sse' },
 			true,
 			'HTTP/1.1 200',
-			"'isolated' is only supported for package deployments",
+			'Project name can only contain alphanumeric, dash and underscores characters',
 		],
 		[
 			'a request with no operation',

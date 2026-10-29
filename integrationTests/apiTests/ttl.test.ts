@@ -4,10 +4,8 @@
  * Covers expiration edge cases NOT already tested in blob.test.mjs:
  *   1. Expiry-reset-on-update: updating a record resets its TTL countdown
  *   2. No cross-table bleed: TTL table expiry does not affect a co-located non-TTL table
- *   3. Cache-control max-age override: `cache-control: max-age=N` header extends TTL
- *      beyond the schema default (only valid on @cached resources; regular @table with
- *      expiration does not expose isCaching, so this uses a caching-style table approach
- *      via the blob test component pattern)
+ *   3. Cache-control max-age override: a todo — `cache-control: max-age=N` applies only to
+ *      caching resources (isCaching), so it cannot extend an @table(expiration) TTL yet
  *   4. High-volume expiry: 200 records inserted with short TTL are all gone after expiry
  *
  * Audit retention is covered by blob.test.mjs — see that file for those assertions.
@@ -53,10 +51,9 @@ async function pollUntil(fn: () => Promise<void>, maxWaitMs = MAX_WAIT_MS): Prom
  * - LongLived: no TTL — used to verify cross-table isolation
  * - BulkExpiry: 5s TTL — used for high-volume expiry test
  *
- * Note: max-age query-param override (`?max-age=<seconds>`) is NOT yet implemented
+ * Note: max-age query-param override (`?max-age=<seconds>`) is NOT implemented
  * in Harper's REST layer. The `cache-control: max-age` header is supported but only
- * on resources that set `isCaching = true`. The query-param form is tracked as a
- * future enhancement; see server/REST.ts for the existing header-based path.
+ * on resources that set `isCaching = true`; see server/REST.ts for that header path.
  */
 const SCHEMA_GRAPHQL = `
 type ShortLived @table(expiration: 5) @export {
@@ -198,21 +195,14 @@ suite('TTL edge cases', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	/**
 	 * Test 3: max-age override (cache-control header)
 	 *
-	 * NOTE: `?max-age=<seconds>` query-param override is not yet implemented.
 	 * The `cache-control: max-age` header is parsed in server/REST.ts but only
 	 * applies when `resource.isCaching === true` (i.e. caching tables).
 	 * Regular @table(expiration:) resources do not set isCaching, so the header
-	 * path is a no-op for these schema types.
-	 *
-	 * TODO: Implement `?max-age=<seconds>` query-param override on @table resources.
-	 *       When implemented, add a test here that PUTs /ShortLived/max-age-item
-	 *       with `?max-age=30` and verifies the record survives past the 5s schema TTL.
+	 * path is a no-op for these schema types, and there is no `?max-age=` query param.
 	 */
-	test('max-age override via query param is not yet implemented (placeholder)', () => {
-		// This test intentionally passes as a documented placeholder.
-		// See the comment above for what needs to be implemented.
-		ok(true, 'placeholder — max-age query-param override not yet implemented; see issue #1191');
-	});
+	test.todo(
+		'max-age override on an @table(expiration) resource: PUT /ShortLived/<id> with max-age=30 outlives the 5s schema TTL (not implemented)'
+	);
 
 	/**
 	 * Test 4: High-volume expiry — 200 records × 5s TTL

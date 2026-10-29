@@ -39,6 +39,7 @@ import {
 	GIT_HOST_PATTERN,
 	isReservedComponentName,
 	PROJECT_NAME_PATTERN,
+	isComponentNamePattern,
 } from '../utility/componentNames.ts';
 
 // `formatCliError` (bin/harper.ts) prints message-only for an error carrying a numeric `statusCode`
@@ -153,13 +154,15 @@ export async function storeSealedSecret(
  * The component a setup is for: an explicit `project` or `package`, else asked (defaulting to the
  * directory name a `harper deploy` from here would send), else that default when nothing can be asked.
  */
-async function resolveSetupComponent(req: any, message: string): Promise<string> {
+export async function resolveSetupComponent(req: any, message: string, allowPattern = false): Promise<string> {
 	const component =
 		resolveComponentName(req) ??
 		(process.stdin.isTTY
 			? canonicalProjectName((await prompts.input({ message, default: directoryProjectName() })) ?? '')
 			: directoryProjectName());
-	assertUsableComponentName(component);
+	if (!(allowPattern && component.endsWith('*') && isComponentNamePattern(component))) {
+		assertUsableComponentName(component);
+	}
 	return component;
 }
 
@@ -207,7 +210,11 @@ export async function deploySetup(req: any): Promise<void> {
 	}
 
 	// 2. Which component is the credential for? (the grant is scoped to it)
-	const component = await resolveSetupComponent(req, 'Component (project) name this credential is for:');
+	const component = await resolveSetupComponent(
+		req,
+		'Component (project) name, or a name prefix ending in *, this credential is for:',
+		true
+	);
 
 	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
 	let credentialEntry: Record<string, string>;
@@ -298,7 +305,7 @@ export async function deploySetup(req: any): Promise<void> {
 	if (provider === 'github') {
 		console.log(
 			chalk.gray(
-				`  e.g. harper deploy_component project=${component} package=github:<owner>/<repo>#<sha> \\\n` +
+				`  e.g. harper deploy_component project=${component.endsWith('*') ? `${component.slice(0, -1)}<n>` : component} package=github:<owner>/<repo>#<sha> \\\n` +
 					`         credentials='${JSON.stringify([credentialEntry])}' restart=true replicated=true`
 			)
 		);

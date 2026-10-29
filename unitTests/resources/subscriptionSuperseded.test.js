@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -241,6 +241,25 @@ describe('Subscription superseded versions', () => {
 		assert.deepStrictEqual(
 			events.map((event) => [event.type, event.value?.value]),
 			[['put', 4]]
+		);
+	});
+
+	it('replays a patch without the fields a later patch first wrote', async () => {
+		await T.put('A', { value: 2 });
+		await T.patch('A', { value: 3 });
+		await T.patch('A', { extra: 'later', count: { __op__: 'add', value: 5 } });
+		const { events } = await subscribe({ startTime: 1, id: 'A', includeSuperseded: true });
+		assert.deepStrictEqual(
+			events.map((event) => [
+				event.value.value,
+				Object.hasOwn(event.value, 'extra'),
+				Object.hasOwn(event.value, 'count'),
+			]),
+			[
+				[2, false, false],
+				[3, false, false],
+				[3, true, true],
+			]
 		);
 	});
 

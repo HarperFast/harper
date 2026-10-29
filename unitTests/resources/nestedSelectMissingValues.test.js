@@ -3,7 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { Resource, transformForSelect } = require('#src/resources/Resource');
-const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('nested select over missing relationship values', function () {
 	let Parent, Child, previousMainIsWorker;

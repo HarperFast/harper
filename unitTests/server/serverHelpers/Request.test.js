@@ -12,7 +12,7 @@ describe('Request class', function () {
 		// Clear the module from cache to ensure fresh load
 		const modulePath = require.resolve('../../../server/serverHelpers/Request.ts');
 		delete require.cache[modulePath];
-		({ Request, UwsRequest } = require('#src/server/serverHelpers/Request'));
+		({ Request, UwsRequest } = require('#js/server/serverHelpers/Request'));
 		ResponseHeaders = require('#src/server/serverHelpers/Headers').Headers;
 	});
 

@@ -158,22 +158,25 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	adapters: false,
 	structuredOutput: false,
 });
+const TRUNCATING: ModelCapabilities = Object.freeze({ ...CAPABILITIES, truncate: true });
 
 export class BedrockBackend implements ModelBackend {
 	readonly name = 'bedrock';
 	readonly #region?: string;
 	readonly #defaultModel?: string;
 	readonly #requestTimeoutMs?: number;
+	readonly #capabilities: ModelCapabilities;
 	#client?: { send: (cmd: object) => Promise<unknown> };
 
 	constructor(config: BedrockBackendConfig = {}) {
 		this.#region = config.region;
 		this.#defaultModel = config.model;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
+		this.#capabilities = config.model && embedTruncation(config.model) ? TRUNCATING : CAPABILITIES;
 	}
 
 	capabilities(): ModelCapabilities {
-		return CAPABILITIES;
+		return this.#capabilities;
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
@@ -181,6 +184,11 @@ export class BedrockBackend implements ModelBackend {
 		requireModel(model, 'embed', BedrockBackendError);
 		const family = familyOf(model);
 		const texts = Array.isArray(input) ? input : [input];
+		const truncation = opts.truncate === true ? embedTruncation(model) : undefined;
+		if (opts.truncate === true && !truncation)
+			throw new BedrockBackendError(
+				`Bedrock embed cannot truncate for model '${model}'; only Cohere embed v3 and v4 can`
+			);
 
 		const client = await this.#getClient();
 		const sdk = await loadSdk();
@@ -193,7 +201,7 @@ export class BedrockBackend implements ModelBackend {
 		// trip the SDK's request budget on larger batches without bounded
 		// concurrency, which is overkill for v1.
 		for (const text of texts) {
-			const body = buildEmbedBody(family, text, opts.inputType);
+			const body = buildEmbedBody(family, text, opts.inputType, truncation);
 			const command = new sdk.InvokeModelCommand({
 				modelId: model,
 				body: JSON.stringify(body),
@@ -348,7 +356,41 @@ function familyOf(modelId: string): Family {
 
 // ---------- embed body / result extraction ----------
 
-function buildEmbedBody(family: Family, text: string, inputType?: 'document' | 'query'): object {
+interface EmbedTruncation {
+	/** The Cohere value that discards the end of an over-long input; v3 and v4 name it differently. */
+	truncate: 'END' | 'RIGHT';
+	/** Bedrock rejects a longer text before any token truncation applies. */
+	maxChars?: number;
+}
+
+const COHERE_EMBED_V3 = /\bcohere\.embed-(?:english|multilingual)(?:-light)?-v3\b/i;
+const COHERE_EMBED_V4 = /\bcohere\.embed-v4\b/i;
+const COHERE_V3_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'END', maxChars: 2048 });
+const COHERE_V4_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'RIGHT' });
+
+function embedTruncation(model: string): EmbedTruncation | undefined {
+	if (familyOf(model) !== 'cohere') return undefined;
+	if (COHERE_EMBED_V4.test(model)) return COHERE_V4_TRUNCATION;
+	if (COHERE_EMBED_V3.test(model)) return COHERE_V3_TRUNCATION;
+	return undefined;
+}
+
+/**
+ * The first `maxChars` UTF-16 units of `text`, never ending inside a surrogate pair. At most that many
+ * code points too, so the cut fits the limit whichever unit Bedrock counts.
+ */
+function cutToChars(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	const lastUnit = text.charCodeAt(maxChars - 1);
+	return text.slice(0, lastUnit >= 0xd800 && lastUnit <= 0xdbff ? maxChars - 1 : maxChars);
+}
+
+function buildEmbedBody(
+	family: Family,
+	text: string,
+	inputType?: 'document' | 'query',
+	truncation?: EmbedTruncation
+): object {
 	if (family === 'amazon') {
 		// Titan embed v2: { inputText, dimensions?, normalize? }. Titan does
 		// not currently differentiate document vs query at the wire level.
@@ -361,7 +403,9 @@ function buildEmbedBody(family: Family, text: string, inputType?: 'document' | '
 		// `search_document` when unset (matches Cohere's recommended default
 		// for indexing).
 		const cohereInputType = inputType === 'query' ? 'search_query' : 'search_document';
-		return { texts: [text], input_type: cohereInputType };
+		if (!truncation) return { texts: [text], input_type: cohereInputType };
+		const cut = truncation.maxChars === undefined ? text : cutToChars(text, truncation.maxChars);
+		return { texts: [cut], input_type: cohereInputType, truncate: truncation.truncate };
 	}
 	throw new BedrockBackendError(`Bedrock embed not supported for model family '${family}'`);
 }

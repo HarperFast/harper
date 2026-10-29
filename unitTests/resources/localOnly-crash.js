@@ -32,7 +32,7 @@ if (require.main === module) {
 	const { table } = require('#src/resources/databases');
 	const { transaction } = require('#src/resources/transaction');
 	const { LOCAL_ONLY } = require('#src/resources/auditStore');
-	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	setMainIsWorker(true);
 	const Rows = table({
 		table: tableName,

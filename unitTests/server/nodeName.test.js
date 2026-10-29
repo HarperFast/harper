@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const sinon = require('sinon');
 
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 const { logger } = require('#src/utility/logging/logger');
 const {
 	hostnameToUrl,

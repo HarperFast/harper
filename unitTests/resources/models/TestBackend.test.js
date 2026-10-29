@@ -20,6 +20,7 @@ describe('TestBackend', () => {
 				decide: true,
 				calibrated: false,
 				scoreChoices: true,
+				truncate: true,
 			});
 		});
 

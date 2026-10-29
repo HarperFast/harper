@@ -1,0 +1,5 @@
+# Audited, so every increment writes a transaction-log entry.
+type Counter @table(audit: true) {
+	id: Int @primaryKey
+	count: Int
+}
