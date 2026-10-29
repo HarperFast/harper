@@ -151,7 +151,8 @@ suite('Delegated query object reuse across worker threads', (ctx: ContextWithHar
 			broadWorkers.add(worker);
 		}
 		// Bun and Windows route these connections to one worker; reuse on that worker is still exercised
-		console.log(`broad requests reached workers ${[...broadWorkers]}`);
+		if (process.env.HARPER_RUNTIME !== 'bun' && process.platform !== 'win32')
+			assert.ok(broadWorkers.size > 1, `broad requests all reached worker ${[...broadWorkers]}`);
 		const unvisited = new Set(broadWorkers);
 		let sent = 0;
 		while (unvisited.size > 0 && sent < RESTRICTED_BUDGET) {
