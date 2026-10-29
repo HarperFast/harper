@@ -380,6 +380,9 @@ describe('search key identity and the "..." between alias', () => {
 		}
 
 		it('holds one entry per stored key, whichever spelling and method adds it', () => {
+			const [quietNaN, payloadNaN] = new Float64Array(
+				new BigUint64Array([0x7ff8000000000000n, 0x7ff8000000000001n]).buffer
+			);
 			const spellings = [
 				[5, 5n],
 				[0, 0n],
@@ -391,6 +394,7 @@ describe('search key identity and the "..." between alias', () => {
 				[5, [5]],
 				[-1, [-1]],
 				[NaN, [NaN]],
+				[[quietNaN], [payloadNaN]],
 				[-1n, [[-1]]],
 				[0.1, [0.1]],
 				['a\x00b', ['a', 'b']],

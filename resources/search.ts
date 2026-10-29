@@ -488,7 +488,8 @@ function storedSpelling(primaryKey: Id): Id {
 	let element: unknown = primaryKey;
 	while (Array.isArray(element) && element.length === 1) element = element[0];
 	if (typeof element === 'string') return element;
-	if (typeof element !== 'number' && typeof element !== 'bigint') return primaryKey;
+	// NaN's payload bits stay in its encoding, which Set membership would not keep apart
+	if ((typeof element !== 'number' && typeof element !== 'bigint') || element !== element) return primaryKey;
 	const number = element as Id;
 	if (writeKeyId(number) !== writeKeyId(primaryKey)) return primaryKey;
 	return typeof element === 'bigint' ? storedSpelling(number) : number;
@@ -2188,6 +2189,10 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 		case 'prefix': {
 			let start = Array.isArray(value) ? value : [value, null];
 			if (start[start.length - 1] != null) start = start.concat(null);
+			if (isPrimaryKey && start.length <= 1) {
+				range = { start: true };
+				break;
+			}
 			const end = start.slice(0);
 			end[end.length - 1] = MAXIMUM_KEY;
 			range = { start, end };
