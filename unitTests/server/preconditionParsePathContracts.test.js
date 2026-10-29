@@ -521,6 +521,18 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			);
 			assert.strictEqual((await BaseTable.get('suffixed')).n, 3);
 		});
+
+		it('leaves a verb that names the id of a route-addressed property unbound', async () => {
+			class PropertyRoute extends BaseTable {
+				static put(target, data, context) {
+					return super.put(target.id, data, context);
+				}
+			}
+			resources.set('PropertyRoute/:id/:property', PropertyRoute, { rest: true });
+
+			await BaseTable.put('routed', { n: 1 });
+			assert.strictEqual((await request('PUT', '/PropertyRoute/routed/n', { n: 2 }, stale)).status, 204);
+		});
 	});
 
 	describe('chained super.get(target) then super.put(target)', () => {
