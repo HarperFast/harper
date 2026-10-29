@@ -397,6 +397,33 @@ describe('Queries read related records asynchronously', () => {
 				assert.equal(childReads.sync, 0);
 				assert.equal(childReads.async, 1);
 			});
+
+			it('a joined filter that switches to an id filter mid-scan rejects the later children by key', async function () {
+				for (const sync of [false, true]) {
+					childReads.sync = childReads.async = 0;
+					let calls = 0;
+					const switching = (record) => {
+						calls++;
+						switching.idFilter = (id) => id === 'child-10';
+						return record.name === 'child 1';
+					};
+					const filtered = {};
+					const results = searchByIndex(
+						{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
+						ColdParent._readTxnForContext({}),
+						false,
+						ColdParent,
+						{ filtered }
+					);
+					filtered.children.filters = [switching];
+					const ids = [];
+					if (sync) for (const id of results) ids.push(id);
+					else for await (const id of results) ids.push(id);
+					assert.deepEqual(ids.sort(), ['parent-2', 'parent-wide']);
+					assert.equal(calls, 1);
+					assert.equal(sync ? childReads.sync : childReads.async, 1);
+				}
+			});
 		});
 
 		it('select of a filtered many-to-many relationship with a nested sort is complete when the row is yielded', async function () {

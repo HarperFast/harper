@@ -1542,10 +1542,6 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 	// a custom index search can return a plain array
 	const iterator = (rightIterable[Symbol.asyncIterator] ?? rightIterable[Symbol.iterator]).call(rightIterable);
 	const filters = (joined as any).filters;
-	// split once per scan: an idFilter a filter adopts mid-scan matches the same rows as its record test
-	const keyFilters = joinsByKey ? filters?.filter((filter) => filter.idFilter) : undefined;
-	const recordFilters = keyFilters ? filters.filter((filter) => !filter.idFilter) : filters;
-	const readsRecord = !joinsByKey || recordFilters?.length > 0;
 	let done = false;
 	try {
 		while (!scanStopped(scan)) {
@@ -1559,14 +1555,14 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 				return;
 			}
 			const entry = iteration.value;
-			if (keyFilters && !matchesKey(keyFilters, entry.key ?? entry)) continue;
-			let record = readsRecord ? readRecord(entry) : undefined;
+			if (joinsByKey && filters && rejectsKey(filters, entry.key ?? entry)) continue;
+			let record = !joinsByKey || (filters && needsRecord(filters)) ? readRecord(entry) : undefined;
 			if (record?.then) {
 				record = await record;
 				if (scanStopped(scan)) return;
 			}
-			if (recordFilters) {
-				let matches = matchesRelatedRecord(recordFilters, record, scan);
+			if (filters) {
+				let matches = matchesRelatedRecord(filters, record, joinsByKey, scan);
 				if (matches?.then) {
 					matches = await matches;
 					if (scanStopped(scan)) return;
@@ -1621,18 +1617,27 @@ export function matchesFilters(filters, record, entry, any: boolean, start = 0) 
 	}
 	return !any;
 }
-function matchesKey(keyFilters, key) {
-	for (let i = 0; i < keyFilters.length; i++) if (!keyFilters[i].idFilter(key)) return false;
-	return true;
+// read per candidate, since a content filter can switch to an index-backed idFilter mid-scan
+function rejectsKey(filters, key) {
+	for (let i = 0; i < filters.length; i++) {
+		const idFilter = filters[i].idFilter;
+		if (idFilter && !idFilter(key)) return true;
+	}
+	return false;
 }
-function matchesRelatedRecord(filters, record, scan: JoinScan, start = 0) {
+function needsRecord(filters) {
+	for (let i = 0; i < filters.length; i++) if (!filters[i].idFilter) return true;
+	return false;
+}
+function matchesRelatedRecord(filters, record, skipIdFilters: boolean, scan: JoinScan, start = 0) {
 	for (let i = start; i < filters.length; i++) {
-		if (record == null) return false;
 		const filter = filters[i];
+		if (skipIdFilters && filter.idFilter) continue;
+		if (record == null) return false;
 		const matches = (filter.maybeAsync ?? filter)(record);
 		if (matches?.then)
 			return matches.then(
-				(matches) => matches && !scanStopped(scan) && matchesRelatedRecord(filters, record, scan, i + 1)
+				(matches) => matches && !scanStopped(scan) && matchesRelatedRecord(filters, record, skipIdFilters, scan, i + 1)
 			);
 		if (!matches) return false;
 	}
@@ -1727,16 +1732,17 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					//let i = 0;
 					// get all the ids of the related records
 					const filters = (joined as any).filters;
-					const keyFilters = filters?.filter((filter) => filter.idFilter);
-					const recordFilters = filters?.filter((filter) => !filter.idFilter);
 					for (const entry of rightIterable) {
 						const id = entry.key ?? entry;
-						if (keyFilters && !matchesKey(keyFilters, id)) continue;
-						if (recordFilters?.length > 0) {
-							const record = entry.value !== undefined ? entry.value : store.getSync(id, readOptions);
-							let matches = record != null;
-							for (let i = 0; matches && i < recordFilters.length; i++) matches = recordFilters[i](record);
-							if (!matches) continue;
+						if (filters) {
+							if (rejectsKey(filters, id)) continue;
+							if (needsRecord(filters)) {
+								const record = entry.value !== undefined ? entry.value : store.getSync(id, readOptions);
+								let matches = record != null;
+								for (let i = 0; matches && i < filters.length; i++)
+									if (!filters[i].idFilter) matches = filters[i](record);
+								if (!matches) continue;
+							}
 						}
 						ids.add(id);
 						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
