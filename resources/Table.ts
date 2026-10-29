@@ -5781,10 +5781,13 @@ export function makeTable(options): TableResourceClass {
 					// write's audit refs, which the re-delivery check below reads past (identityBase).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
-					// The head an out-of-order write keeps the expiry of: the entry before this transaction, or the record an
-					// in-order write in it stored (set at staging). Not existingEntry for a later write: RocksDB reloads it
-					// through the transaction, so it would hold an earlier older write's staged state there but not on LMDB.
-					write.expiryBase = priorStagedOp?.expiryBase ?? existingEntry;
+					// The head an out-of-order write keeps the expiry of: what an earlier write to the key at another version
+					// staged, else the entry before this transaction, so writes sharing a version decide as one. Never
+					// existingEntry for a later write: RocksDB reloads it through the transaction and LMDB does not.
+					write.expiryBase =
+						priorStagedOp && priorStagedOp.recordVersion !== write.recordVersion
+							? priorStaged
+							: (priorStagedOp?.expiryBase ?? existingEntry);
 					let existingRecord =
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
@@ -6983,7 +6986,6 @@ export function makeTable(options): TableResourceClass {
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
 								// anything older was already superseded by its own staged successor earlier in this round
 								if (priorStagedOp) priorStagedOp.superseded = true;
-								if (precedesExisting >= 0) write.expiryBase = { value: recordToStore, expiresAt };
 							}
 						}
 					}
