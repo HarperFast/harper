@@ -154,7 +154,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		fs.mkdirSync(storePath, { recursive: true });
 	});
 
-	it('loads the published registry package and persists a searchable checkpoint', async function () {
+	it('loads the published registry package without unused candidate limits and persists a searchable checkpoint', async function () {
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 
 		const binding = await loadFullTextNativeBinding();
@@ -166,7 +166,18 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
 		assert.strictEqual(runtime.queryApiVersion, 4);
 		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { surfaceTerms: true }));
+		const compatibleBinding = {
+			...binding,
+			async runtimeInfo() {
+				const runtimeLimits = { ...runtime.limits };
+				delete runtimeLimits.maxCandidateIds;
+				delete runtimeLimits.maxCandidateBytes;
+				return { ...runtime, limits: runtimeLimits };
+			},
+		};
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+			options(storePath, compatibleBinding, { surfaceTerms: true })
+		);
 		await lifecycle.initialize();
 		const index = await lifecycle.open();
 		await index.applyMutationBatch(
