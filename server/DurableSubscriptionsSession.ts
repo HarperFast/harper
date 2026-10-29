@@ -1259,7 +1259,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 	}
 	receiveExactlyOnce(messageId: number, publish: () => Promise<any>) {
-		if (this.terminated) return Promise.reject(this.endedError());
+		if (this.hasEnded()) return Promise.reject(this.endedError());
 		return super.receiveExactlyOnce(messageId, publish);
 	}
 	/** Settles once a save that read the session after this call has landed: later saves are not waited for. */
@@ -1294,6 +1294,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			return saved;
 		});
 	}
+	/** True once any session-ending path (disconnect, yield, supersede, reset, or seal) has begun. */
+	hasEnded() {
+		return this.terminated || this.sealing || this.sealed || this.discarded;
+	}
 	hasInFlight() {
 		for (const state of this.topics.values()) if (state.entry.qos === 2 && state.unacked.size > 0) return true;
 		return false;
@@ -1306,6 +1310,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.inOrder(() => this.subscribeTopic(subscription, needsAck));
 	}
 	async subscribeTopic(subscription, needsAck) {
+		if (this.hasEnded()) throw this.endedError();
 		const { topic } = subscription;
 		const durable = subscription.qos > 0;
 		const existing = this.topics.get(topic);
@@ -1330,14 +1335,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					started = await this.resumeSubscription(request, needsAck);
 				} catch (error) {
 					if (error?.statusCode !== 409 && error?.statusCode !== 400) throw error;
+					if (this.hasEnded()) throw this.endedError();
 					// another scope, or LMDB: continue from the scalar the topic kept, as a resume does
 					warn(
 						`Durable session ${this.sessionId} continues ${topic} from its position; its checkpoint was refused: ${error.message}`
 					);
 					delete existing.entry.checkpoint;
 					this.dropForeignReceipts(existing);
-					// nothing to continue for a session that ended meanwhile, and no topic to drop
-					if (this.terminated) return subscription;
 					delete request.resume;
 					request.startTime = existing.entry.startTime;
 					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
@@ -1346,11 +1350,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			} else started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
 			if (durable || started) await this.saveExchanges();
+			if (this.hasEnded() && !started) throw this.endedError();
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
 			// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
-			else this.dropFailedSubscription(topic, started, replaced);
+			else if (!existing || (!this.hasEnded() && !(error instanceof SessionEndedError)))
+				this.dropFailedSubscription(topic, started, replaced);
 			throw error;
 		}
 		return subscription;
@@ -1371,6 +1377,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	removeSubscription(topic) {
 		return this.inOrder(async () => {
+			if (this.hasEnded()) throw this.endedError();
 			const result = await super.removeSubscription(topic);
 			const state = this.topics.get(topic);
 			if (state) this.forgetTopic(state);
