@@ -87,13 +87,13 @@ export class RootState extends Resource {
 	}
 }
 
-// A default-mode resource that forwards the REST target it was dispatched with to a caching table: REST reads the
-// cache disposition back off that same target to set `Age`.
+// A default-mode resource that forwards the REST target it was dispatched with to a caching table, asking for that
+// table's authorization too: REST reads the cache disposition back off that same target to set `Age`.
 let sourceReads = 0;
 tables.ReuseCachedLabel.sourcedFrom({
 	get(id) {
 		sourceReads++;
-		return { id, label: `label ${id}` };
+		return { id, label: `label ${id}`, secret: `secret ${id}` };
 	},
 });
 export class CachedLabelView extends Resource {
@@ -101,6 +101,7 @@ export class CachedLabelView extends Resource {
 		return true;
 	}
 	get(target) {
+		target.checkPermission = true;
 		return tables.ReuseCachedLabel.get(target, this.getContext());
 	}
 }

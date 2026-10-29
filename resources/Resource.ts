@@ -980,9 +980,10 @@ function transactional(
 			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
 				if (checkPermission) {
-					// false mode leaves an unarmed target to the instance method's own gate
-					if (armTarget || loadAsInstance !== false) query = dispatchTarget(query);
-					if (armTarget) query.checkPermission = true;
+					const arming = armTarget && query.checkPermission !== true;
+					// a false-mode instance method authorizes, and copies, for itself
+					if (arming || loadAsInstance !== false) query = dispatchTarget(query);
+					if (arming) query.checkPermission = true;
 					if (loadAsInstance !== false) {
 						// do permission checks, with allow methods
 						let allowed;

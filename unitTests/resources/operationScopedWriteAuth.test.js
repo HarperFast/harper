@@ -125,7 +125,7 @@ describe('operation-scoped write authorization', () => {
 			const readTargets = [];
 			let internalScanTarget;
 			let concurrentReadError;
-			// minted and armed the way a transport does, so authorization runs on this very target
+			// minted and armed as a transport does: authorization runs on this target itself
 			const target = markDispatchTarget(new RequestTarget('?kind=false-delete'));
 			target.select = ['owner'];
 			class CollectionDelete extends Docs {
@@ -220,7 +220,7 @@ describe('operation-scoped write authorization', () => {
 				}
 			}
 			const target = new RequestTarget('?kind=false-delete-reused');
-			// context.authorize arms only the dispatch's copy, so a reused target asks for authorization itself
+			// context.authorize arms only a dispatch copy; a target reused across dispatches arms itself
 			target.checkPermission = true;
 			const context = { user: alice, authorize: true };
 			await ReusedTargetDelete.delete(target, context);

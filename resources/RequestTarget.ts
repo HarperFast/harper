@@ -6,14 +6,13 @@ import { ServerError } from '../utility/errors/hdbError.ts';
 /** Set by `Table.allowRead` on a target whose `select` it narrowed to the requesting principal's permissions. */
 export const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 
-/** Marks a target a transport minted for one dispatch, which authorization may therefore write on in place. */
+/** Marks a target minted for one dispatch, which authorization may therefore write on in place. */
 export let markDispatchTarget: (target: RequestTarget) => RequestTarget;
 let isDispatchTarget: (target: any) => boolean;
 let copyRequestTarget: (source: RequestTarget) => RequestTarget;
 
 export class RequestTarget extends URLSearchParams {
 	#target?: string;
-	// a private field, so no spread, Object.assign or deep clone of a transport's target inherits its ownership
 	#dispatchOwned?: boolean;
 	static {
 		markDispatchTarget = (target) => {
@@ -25,6 +24,7 @@ export class RequestTarget extends URLSearchParams {
 			const copy = new RequestTarget();
 			for (const [name, value] of source) URLSearchParams.prototype.append.call(copy, name, value);
 			copy.#target = source.#target;
+			copy.#dispatchOwned = true;
 			return Object.assign(copy, source);
 		};
 	}
@@ -200,12 +200,11 @@ export type RequestTargetOrId = RequestTarget | Id;
 
 /**
  * The target an authorization gate records its state on (the consumed `checkPermission`, the narrowed `select`,
- * `AUTHORIZATION_SELECT`): the target itself when a transport minted it for this dispatch, otherwise a shallow
- * copy, so one query object can serve any number of requests and principals.
+ * `AUTHORIZATION_SELECT`): the target itself when it was minted for this dispatch (by a transport, or as an earlier
+ * gate's copy), otherwise a shallow copy, so one query object can serve any number of requests and principals.
  */
 export function dispatchTarget<T>(target: T): T {
 	if (isDispatchTarget(target)) return target;
-	// its select already reflects an earlier principal's permissions, and the original selection is gone
 	if ((target as any)[AUTHORIZATION_SELECT])
 		throw new ServerError(
 			'Can not authorize a query object that an earlier authorization already narrowed; pass a query object that has not been authorized'
@@ -214,5 +213,10 @@ export function dispatchTarget<T>(target: T): T {
 	if (target instanceof URLSearchParams) return Object.assign(new URLSearchParams(target), target);
 	if (Array.isArray(target)) return Object.assign([], target) as T;
 	const prototype = Object.getPrototypeOf(target);
-	return prototype === Object.prototype ? { ...target } : Object.assign(Object.create(prototype), target);
+	if (prototype === Object.prototype) return { ...target };
+	const copy = Object.create(prototype, Object.getOwnPropertyDescriptors(target));
+	// own data properties, so the gate's writes never reach an accessor the caller's class defines
+	for (const name of ['checkPermission', 'select'])
+		Object.defineProperty(copy, name, { value: target[name], writable: true, enumerable: true, configurable: true });
+	return copy;
 }

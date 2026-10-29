@@ -14,4 +14,5 @@ type ReuseEmployee @table @export {
 type ReuseCachedLabel @table(expiration: 3600) {
 	id: ID @primaryKey
 	label: String
+	secret: String
 }

@@ -129,6 +129,7 @@ describe('delegated reads reusing one query object', function () {
 		};
 		await Department.put('d1', { id: 'd1', label: 'Engineering', secret: 'payroll' });
 		await Employee.put('e1', { id: 'e1', name: 'Ada', departmentId: 'd1' });
+		await Employee.put('50% off', { id: '50% off', name: 'Ada', departmentId: 'd1' });
 	});
 	after(function () {
 		setMainIsWorker(previousMainIsWorker);
@@ -162,6 +163,70 @@ describe('delegated reads reusing one query object', function () {
 					assertAuthored(root);
 					assert.strictEqual(root.toString(), '?id=e1&id=e1');
 					assert.deepStrictEqual(root.getAll('id'), ['e1', 'e1']);
+				});
+
+				it(`search with one array of conditions, ${order}`, async function () {
+					const root = Object.assign([{ attribute: 'id', value: 'e1' }], {
+						select: authoredSelect(),
+						checkPermission: true,
+					});
+					for (const user of users)
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+					assertAuthored(root);
+					assert.deepStrictEqual(plain([...root]), [{ attribute: 'id', value: 'e1' }]);
+				});
+
+				it(`get with one programmatic RequestTarget, ${order}`, async function () {
+					const root = new RequestTarget();
+					root.id = '50% off';
+					root.append('tag', 'a');
+					root.append('tag', 'b');
+					root.set('note', '100%');
+					root.select = authoredSelect();
+					root.checkPermission = true;
+					for (const user of users)
+						assert.deepStrictEqual(plain(await getTable().get(root, { user })), { ...expected(user), id: '50% off' });
+					assertAuthored(root);
+					assert.strictEqual(root.id, '50% off');
+					assert.deepStrictEqual(
+						[...root],
+						[
+							['tag', 'a'],
+							['tag', 'b'],
+							['note', '100%'],
+						]
+					);
+				});
+
+				it(`search with a query object whose class defines accessors, ${order}`, async function () {
+					const shared = { checkPermission: true, select: authoredSelect() };
+					class AccessorQuery {
+						conditions = [{ attribute: 'id', value: 'e1' }];
+						get checkPermission() {
+							return shared.checkPermission;
+						}
+						set checkPermission(value) {
+							shared.checkPermission = value;
+						}
+						get select() {
+							return shared.select;
+						}
+						set select(value) {
+							shared.select = value;
+						}
+					}
+					const root = new AccessorQuery();
+					for (const user of users)
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+					assert.strictEqual(shared.checkPermission, true);
+					assert.deepStrictEqual(plain(shared.select), authoredSelect());
+				});
+
+				it(`search armed on the query and through the context, ${order}`, async function () {
+					const root = searchRoot();
+					for (const user of users)
+						assert.deepStrictEqual(await one(getTable().search(root, { user, authorize: true })), expected(user));
+					assertAuthored(root);
 				});
 
 				it(`search requested through the context alone, ${order}`, async function () {
@@ -364,16 +429,27 @@ describe('delegated reads reusing one query object', function () {
 	});
 
 	describe('cache disposition', function () {
-		it("a false-mode get records it on the caller's query object", async function () {
-			const loadsBefore = sourceLoads;
-			const root = { id: 'k1', checkPermission: true };
-			assert.deepStrictEqual(plain(await FalseModeLabel.get(root, { user: restrictedUser })), {
-				id: 'k1',
-				text: 'label k1',
+		for (const [name, getTable, authorize] of [
+			['a false-mode get', () => FalseModeLabel, undefined],
+			['a false-mode get armed through the context as well', () => FalseModeLabel, true],
+			['a default-mode get', () => Label, undefined],
+		]) {
+			it(`${name} records it on the caller's query object`, async function () {
+				const id = `k-${name.replaceAll(' ', '-')}`;
+				const loadsBefore = sourceLoads;
+				const miss = { id, checkPermission: true };
+				assert.deepStrictEqual(plain(await getTable().get(miss, { user: restrictedUser, authorize })), {
+					id,
+					text: `label ${id}`,
+				});
+				assert.strictEqual(miss.loadedFromSource, true);
+				assert.strictEqual(sourceLoads, loadsBefore + 1);
+				const hit = { id, checkPermission: true };
+				await getTable().get(hit, { user: restrictedUser, authorize });
+				assert.strictEqual(hit.loadedFromSource, false);
+				assert.strictEqual(hit.checkPermission, true);
+				assert.deepStrictEqual(Object.getOwnPropertySymbols(hit), []);
 			});
-			assert.strictEqual(root.loadedFromSource, true);
-			assert.strictEqual(sourceLoads, loadsBefore + 1);
-			assert.strictEqual(root.checkPermission, true);
-		});
+		}
 	});
 });

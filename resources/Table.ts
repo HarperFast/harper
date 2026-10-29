@@ -3973,7 +3973,7 @@ export function makeTable(options): TableResourceClass {
 				const id = requestTargetToId(target);
 				checkValidId(id);
 				let allowed = true;
-				// the cache disposition still goes on the caller's target; only authorization works on a copy
+				// loadedFromSource is reported on the caller's target, which authorization must not write
 				let authorizedTarget = target;
 				if ((target as any)?.checkPermission) {
 					authorizedTarget = dispatchTarget(target);

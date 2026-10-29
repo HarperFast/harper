@@ -129,7 +129,10 @@ suite('Delegated query object reuse across worker threads', (ctx: ContextWithHar
 		await addUser(RESTRICTED, ['id', 'label']);
 		const deadline = Date.now() + 120_000;
 		for (;;) {
-			const probe = await fetch(`${ctx.harper.httpURL}/SearchFreshRoot/`, { headers: { Authorization: admin } });
+			const probe = await fetch(`${ctx.harper.httpURL}/SearchFreshRoot/`, {
+				headers: { Authorization: admin },
+				signal: AbortSignal.timeout(10_000),
+			});
 			await probe.text();
 			if (probe.status !== 404) break;
 			if (Date.now() > deadline) throw new Error('SearchFreshRoot route never became ready');

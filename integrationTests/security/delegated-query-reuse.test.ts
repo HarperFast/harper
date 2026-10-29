@@ -65,16 +65,21 @@ suite('Delegated reads reusing one query object', (ctx: ContextWithHarper) => {
 		assert.ok(Array.isArray(body) && body.length === 1, `one row: ${JSON.stringify(body)}`);
 		return body[0];
 	}
-	async function addUser(role: string, departmentAttributes: string[] | undefined) {
-		const department: Record<string, unknown> = { read: true, insert: false, update: false, delete: false };
-		department.attribute_permissions = departmentAttributes
-			? ['id', 'label', 'secret'].map((attribute_name) => ({
-					attribute_name,
-					read: departmentAttributes.includes(attribute_name),
-					insert: false,
-					update: false,
-				}))
-			: [];
+	async function addUser(role: string, readableAttributes: string[] | undefined) {
+		const withoutSecret = () => ({
+			read: true,
+			insert: false,
+			update: false,
+			delete: false,
+			attribute_permissions: readableAttributes
+				? ['id', 'label', 'secret'].map((attribute_name) => ({
+						attribute_name,
+						read: readableAttributes.includes(attribute_name),
+						insert: false,
+						update: false,
+					}))
+				: [],
+		});
 		await operation({
 			operation: 'add_role',
 			role,
@@ -83,8 +88,8 @@ suite('Delegated reads reusing one query object', (ctx: ContextWithHarper) => {
 				data: {
 					tables: {
 						ReuseEmployee: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
-						ReuseDepartment: department,
-						ReuseCachedLabel: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						ReuseDepartment: withoutSecret(),
+						ReuseCachedLabel: withoutSecret(),
 					},
 				},
 			},
@@ -109,7 +114,10 @@ suite('Delegated reads reusing one query object', (ctx: ContextWithHarper) => {
 		await addUser(RESTRICTED, ['id', 'label']);
 		const deadline = Date.now() + 120_000;
 		for (;;) {
-			const probe = await fetch(`${ctx.harper.httpURL}/SearchFreshRoot/`, { headers: { Authorization: admin } });
+			const probe = await fetch(`${ctx.harper.httpURL}/SearchFreshRoot/`, {
+				headers: { Authorization: admin },
+				signal: AbortSignal.timeout(10_000),
+			});
 			await probe.text();
 			if (probe.status !== 404) break;
 			if (Date.now() > deadline) throw new Error('SearchFreshRoot route never became ready');
@@ -167,9 +175,9 @@ suite('Delegated reads reusing one query object', (ctx: ContextWithHarper) => {
 		assert.deepStrictEqual(state.INTERNAL_SELECT.select, AUTHORED_SELECT, 'shared nested selector');
 	});
 
-	test('a delegate forwarding its REST target to a caching table still reports cache hits', async () => {
+	test('a delegate forwarding its REST target to an authorized caching-table read still reports cache hits', async () => {
 		const miss = await rest('/CachedLabelView/k1', basic(RESTRICTED));
-		assert.deepStrictEqual(miss.body, { id: 'k1', label: 'label k1' });
+		assert.deepStrictEqual(miss.body, { id: 'k1', label: 'label k1' }, 'the forwarded read is authorized');
 		assert.strictEqual(miss.headers.get('age'), null, 'a source load is not aged');
 		const hit = await rest('/CachedLabelView/k1', basic(RESTRICTED));
 		assert.deepStrictEqual(hit.body, { id: 'k1', label: 'label k1' });

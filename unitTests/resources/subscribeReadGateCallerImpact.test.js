@@ -140,8 +140,7 @@ describe('Subscribe read gate: caller impact', () => {
 			const request = { omitCurrent: true };
 			await admitted(Allowing.subscribe(request, undefined, armed(nonReader)));
 			assert.strictEqual(allowReadCalls, 1);
-			// v5.1.x armed and left armed the caller's own request; harper#1915 cleared it after the gate. The gate
-			// now arms and consumes a dispatch copy, so the caller's object is reusable by another principal.
+			// the gate arms and consumes a dispatch copy, leaving the caller's object reusable by another principal
 			assert.strictEqual(request.checkPermission, undefined);
 		});
 
