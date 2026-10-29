@@ -42,6 +42,19 @@ function certify(T) {
 	return getOriginClosedFloor(rootStore)?.floor ?? 0;
 }
 
+/** The floor stays checkpoint-grade but stops advancing: the tick's sync never lands, so it publishes nothing newer. */
+function freezeFloor(T) {
+	const rootStore = T.primaryStore.rootStore;
+	const own = Object.hasOwn(rootStore, 'syncWal') ? rootStore.syncWal : undefined;
+	rootStore.syncWal = () => new Promise(() => {});
+	return () => {
+		if (own) rootStore.syncWal = own;
+		else delete rootStore.syncWal;
+	};
+}
+
+const logKeyOf = (T, id) => [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === id).txnLogKey;
+
 async function connect(clientId) {
 	const session = await getSession({ clientId, user, clean: false });
 	const received = [];
@@ -264,6 +277,76 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await waitFor(() => values(received).includes('late'));
 		assert.ok(!delivery(received, 'late').dup, 'the late lower-key delivery is not suppressed');
 		session.disconnect(true);
+	});
+
+	it('does not re-send an acknowledged delivery that the checkpoint has not caught up with', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `lagging-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a0', { value: 'a0' });
+		await waitFor(() => values(first.received).includes('a0'));
+		await ackAll(first.session, first.received);
+		await storedCheckpoint(T, first.session, clientId);
+		const thaw = freezeFloor(T);
+		try {
+			await T.put('a', { value: 'a' });
+			await waitFor(() => values(first.received).includes('a'));
+			await first.session.acknowledge(delivery(first.received, 'a').messageId);
+			await first.session.writes;
+			const acked = logKeyOf(T, 'a');
+			const lagging = (await stored(clientId)).subscriptions[0];
+			assert.ok(
+				lagging.checkpoint.time - lagging.checkpoint.overlap < acked,
+				'the saved checkpoint is below the acknowledged delivery'
+			);
+			first.session.disconnect(true);
+			await first.session.writes;
+			const saved = (await stored(clientId)).subscriptions[0];
+			await T.put('b', { value: 'b' });
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => values(second.received).includes('b'));
+			second.session.disconnect(true);
+			assert.deepStrictEqual(values(second.received), ['b'], 'only the update made while away is delivered');
+			assert.ok(saved.startTime >= acked, 'the saved position covers the acknowledged delivery');
+		} finally {
+			thaw();
+		}
+	});
+
+	it('does not replay history from before the SUBSCRIBE when the first checkpoint is older than the topic', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		await sleep(2);
+		certify(T);
+		const thaw = freezeFloor(T);
+		try {
+			await T.put('before', { value: 'before' });
+			const clientId = `fresh-${name}`;
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => values(first.received).includes('a'));
+			await ackAll(first.session, first.received);
+			await waitFor(async () => {
+				first.session.checkpoint();
+				await first.session.writes;
+				return (await stored(clientId))?.subscriptions?.[0]?.checkpoint !== undefined;
+			}, 10_000);
+			assert.deepStrictEqual(values(first.received), ['a']);
+			first.session.disconnect(true);
+			await first.session.writes;
+			await T.put('b', { value: 'b' });
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => values(second.received).includes('b'));
+			assert.deepStrictEqual(values(second.received), ['b'], 'nothing from before the SUBSCRIBE is delivered');
+			second.session.disconnect(true);
+		} finally {
+			thaw();
+		}
 	});
 
 	it('resets the session before CONNACK when the checkpoint certifies an origin this node lacks', async () => {
