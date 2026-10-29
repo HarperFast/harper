@@ -1079,6 +1079,15 @@ function authorizeSearchResult(result: any, user: any) {
 				if (state && typeof state === 'object') {
 					if (state.error) throw state.error;
 					if (!state.allowed) throw new AccessViolation(user);
+					// only the gate itself is replaced: a transform derived from it must still run
+					const { gate } = state;
+					if (gate) {
+						if (result === gate) return state.results;
+						if (result.headers && result.data === gate) {
+							if (Object.isFrozen(result)) return { ...result, data: state.results };
+							result.data = state.results;
+						}
+					}
 				} else if (!state) throw new AccessViolation(user);
 				return result;
 			})

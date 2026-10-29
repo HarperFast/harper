@@ -8,6 +8,7 @@ import {
 	isHttpPassThroughEnvelope,
 	waitForStreamStartup,
 	discardSerializedStream,
+	closesSourceOnDiscard,
 } from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
@@ -234,8 +235,29 @@ function isDeferredRead(data): boolean {
 }
 
 function discardReadResponse(response, sourceData) {
-	if (typeof sourceData?.onDone === 'function') sourceData.onDone();
-	discardSerializedStream(response.body);
+	try {
+		if (typeof sourceData?.onDone === 'function') ownDiscard(sourceData.onDone());
+		else if (!closesSourceOnDiscard(response.body) && isDeferredRead(sourceData)) {
+			// A serializer that never started never opened the source; return() on a fresh iterator is how one
+			// without onDone (a transform of search results) releases what it holds.
+			const iterator = sourceData[Symbol.asyncIterator]
+				? sourceData[Symbol.asyncIterator]()
+				: sourceData[Symbol.iterator]();
+			ownDiscard(iterator?.return?.());
+		}
+	} catch (error) {
+		logDiscardError(error);
+	} finally {
+		discardSerializedStream(response.body);
+	}
+}
+
+function ownDiscard(result) {
+	if (typeof result?.then === 'function') result.then(null, logDiscardError);
+}
+
+function logDiscardError(error) {
+	harperLogger.warn('Error closing a discarded read source', error);
 }
 
 const VALIDATOR_HEADERS = ['ETag', 'Last-Modified'];
@@ -251,6 +273,9 @@ function setReadValidators(headers, lastModification: number, httpOptions) {
 	if (httpOptions.lastModified && !headers.has('Last-Modified'))
 		headers.set('Last-Modified', new Date(lastModification).toUTCString());
 }
+
+// the 304s applyReadPreconditions answers after discarding the read, unlike one a resource returns itself
+const discardedByPreconditions = new WeakSet<object>();
 
 function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
@@ -291,7 +316,9 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 		const headers =
 			response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
 		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
-		return { status: 304, headers, body: undefined };
+		const notModified = { status: 304, headers, body: undefined };
+		discardedByPreconditions.add(notModified);
+		return notModified;
 	}
 	return response;
 }
@@ -612,13 +639,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				lastModification = request.lastModified;
 				setReadValidators(response.headers, lastModification, httpOptions);
 			}
-			if (request.method === 'HEAD') {
-				discardSerializedStream(response.body);
-				if (!(response instanceof Response)) response.body = undefined;
+			const conditional =
+				deferred && conditionalRead
+					? applyReadPreconditions(response, request, method, lastModification, data)
+					: response;
+			if (request.method === 'HEAD' && !discardedByPreconditions.has(conditional)) {
+				discardReadResponse(conditional, data);
+				if (!(conditional instanceof Response)) conditional.body = undefined;
 			}
-			return deferred && conditionalRead
-				? applyReadPreconditions(response, request, method, lastModification, data)
-				: response;
+			return conditional;
 		} else {
 			deferredRead = (method === 'GET' || method === 'HEAD') && isDeferredRead(responseData);
 			if (!deferredRead) setReadValidators(headers, lastModification, httpOptions);
@@ -683,18 +712,19 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				lastModification = request.lastModified;
 				setReadValidators(headers, lastModification, httpOptions);
 			}
-			if (request.method === 'HEAD') {
-				discardSerializedStream(responseObject.body);
-				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
-			}
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
 		// headers to a request that didn't ask, or a cached non-count response to one that did.
 		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
-		return deferredReadConditions
+		const response = deferredReadConditions
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
+		if (request.method === 'HEAD' && responseData !== undefined && !discardedByPreconditions.has(response)) {
+			discardReadResponse(response, responseData);
+			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
+		}
+		return response;
 	} catch (error) {
 		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');

@@ -7044,7 +7044,7 @@ export function makeTable(options): TableResourceClass {
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
-								return { allowed: true, results: await self.search(target) };
+								return { allowed: true, results: await self.search(target), gate: gatedResults };
 							} catch (error) {
 								return { allowed: true, error };
 							}
@@ -7071,7 +7071,9 @@ export function makeTable(options): TableResourceClass {
 								const results = state.results;
 								return results.iterate
 									? results.iterate(iterationOptions)
-									: results[Symbol.asyncIterator](iterationOptions);
+									: results[Symbol.asyncIterator]
+										? results[Symbol.asyncIterator](iterationOptions)
+										: results[Symbol.iterator]();
 							}));
 						return {
 							next(value?: any) {
@@ -7081,16 +7083,18 @@ export function makeTable(options): TableResourceClass {
 								if (returned) return Promise.resolve({ value: undefined, done: true });
 								return getIterator().then(
 									(iterator) =>
-										Promise.resolve(iterator.next(value)).then(
-											(result) => {
-												if (result.done) finish();
-												return result;
-											},
-											(error) => {
-												finish();
-												throw error;
-											}
-										),
+										returned
+											? { value: undefined, done: true }
+											: Promise.resolve(iterator.next(value)).then(
+													(result) => {
+														if (result.done) finish();
+														return result;
+													},
+													(error) => {
+														finish();
+														throw error;
+													}
+												),
 									(error) => {
 										finish();
 										throw error;
