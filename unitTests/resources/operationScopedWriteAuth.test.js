@@ -125,8 +125,7 @@ describe('operation-scoped write authorization', () => {
 			const readTargets = [];
 			let internalScanTarget;
 			let concurrentReadError;
-			// minted and armed as a transport does: authorization runs on this target itself
-			const target = markDispatchTarget(new RequestTarget('?kind=false-delete'));
+			const target = new RequestTarget('?kind=false-delete');
 			target.select = ['owner'];
 			class CollectionDelete extends Docs {
 				static loadAsInstance = false;
@@ -220,8 +219,6 @@ describe('operation-scoped write authorization', () => {
 				}
 			}
 			const target = new RequestTarget('?kind=false-delete-reused');
-			// context.authorize arms only a dispatch copy; a target reused across dispatches arms itself
-			target.checkPermission = true;
 			const context = { user: alice, authorize: true };
 			await ReusedTargetDelete.delete(target, context);
 			await seed('false-delete-reused', [{ id: 'false-delete-reused-b' }]);
@@ -507,6 +504,24 @@ describe('operation-scoped write authorization', () => {
 			assert.strictEqual(calls[0].target, target);
 			assert.strictEqual(calls[0].owner, undefined);
 			assert.deepStrictEqual(await idsOf('instance-delete'), []);
+		});
+
+		it("gives the one query-delete verdict on a copy of the caller's own target", async function () {
+			await seed('instance-delete-own', [{ id: 'instance-delete-own-a' }]);
+			const calls = [];
+			class InstanceDelete extends Docs {
+				allowDelete(_user, target) {
+					calls.push(target);
+					return true;
+				}
+			}
+			const target = new RequestTarget('?kind=instance-delete-own');
+			await InstanceDelete.delete(target, { user: alice, authorize: true });
+			assert.strictEqual(calls.length, 1);
+			assert.notStrictEqual(calls[0], target);
+			assert.strictEqual(calls[0].toString(), target.toString());
+			assert.strictEqual(target.checkPermission, true, 'the caller target stays armed, never consumed');
+			assert.deepStrictEqual(await idsOf('instance-delete-own'), []);
 		});
 
 		it('keeps a RequestTarget publish body as the message in default mode', async function () {

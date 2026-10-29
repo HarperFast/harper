@@ -65,8 +65,8 @@ async function one(results) {
 	assert.strictEqual(collected.length, 1, JSON.stringify(collected));
 	return collected[0];
 }
-function assertAuthored(root, { armed = true } = {}) {
-	assert.strictEqual(root.checkPermission, armed ? true : undefined, 'checkPermission');
+function assertAuthored(root) {
+	assert.strictEqual(root.checkPermission, true, 'checkPermission');
 	assert.deepStrictEqual(plain(root.select), authoredSelect(), 'select');
 	assert.deepStrictEqual(Object.getOwnPropertySymbols(root), [], 'authorization symbols');
 }
@@ -229,11 +229,21 @@ describe('delegated reads reusing one query object', function () {
 					assertAuthored(root);
 				});
 
-				it(`search requested through the context alone, ${order}`, async function () {
+				it(`search armed only through the context, ${order}`, async function () {
 					const root = searchRoot({ checkPermission: undefined });
 					for (const user of users)
 						assert.deepStrictEqual(await one(getTable().search(root, { user, authorize: true })), expected(user));
-					assertAuthored(root, { armed: false });
+					// arming may stay on the caller's object: it only adds a check
+					assertAuthored(root);
+				});
+
+				it(`search with an explicit permission, armed through the context, ${order}`, async function () {
+					const root = searchRoot({ checkPermission: restrictedUser.role.permission });
+					for (const user of users)
+						assert.deepStrictEqual(await one(getTable().search(root, { user, authorize: true })), expected(user));
+					assert.strictEqual(root.checkPermission, restrictedUser.role.permission);
+					assert.deepStrictEqual(plain(root.select), authoredSelect());
+					assert.deepStrictEqual(Object.getOwnPropertySymbols(root), []);
 				});
 
 				it(`direct instance search, ${order}`, async function () {
@@ -245,6 +255,37 @@ describe('delegated reads reusing one query object', function () {
 					assertAuthored(root);
 				});
 			}
+
+			it('a target armed through a context is gated again on its next dispatch with that context', async function () {
+				let gates = 0;
+				class Counting extends getTable() {
+					allowRead(user, target, context) {
+						gates++;
+						return super.allowRead(user, target, context);
+					}
+				}
+				const root = { id: 'e1', select: authoredSelect() };
+				const context = { user: restrictedUser, authorize: true };
+				for (let dispatch = 0; dispatch < 2; dispatch++)
+					assert.deepStrictEqual(plain(await Counting.get(root, context)), expected(restrictedUser));
+				assert.strictEqual(gates, 2);
+				assertAuthored(root);
+			});
+
+			it('copies a frozen query object of a class', async function () {
+				class FrozenQuery {
+					constructor() {
+						this.id = 'e1';
+						this.select = authoredSelect();
+						this.checkPermission = true;
+						Object.freeze(this);
+					}
+				}
+				const root = new FrozenQuery();
+				for (const user of [broadUser, restrictedUser])
+					assert.deepStrictEqual(plain(await getTable().get(root, { user })), expected(user));
+				assertAuthored(root);
+			});
 
 			it('a denied principal stays denied on the same query object', async function () {
 				class DenyRestricted extends getTable() {
@@ -429,22 +470,25 @@ describe('delegated reads reusing one query object', function () {
 	});
 
 	describe('cache disposition', function () {
-		for (const [name, getTable, authorize] of [
-			['a false-mode get', () => FalseModeLabel, undefined],
-			['a false-mode get armed through the context as well', () => FalseModeLabel, true],
-			['a default-mode get', () => Label, undefined],
+		for (const [name, getTable, authorize, armedOnQuery] of [
+			['a false-mode get', () => FalseModeLabel, undefined, true],
+			['a false-mode get armed through the context as well', () => FalseModeLabel, true, true],
+			['a false-mode get armed only through the context', () => FalseModeLabel, true, false],
+			['a default-mode get', () => Label, undefined, true],
+			['a default-mode get armed only through the context', () => Label, true, false],
 		]) {
 			it(`${name} records it on the caller's query object`, async function () {
 				const id = `k-${name.replaceAll(' ', '-')}`;
+				const query = () => (armedOnQuery ? { id, checkPermission: true } : { id });
 				const loadsBefore = sourceLoads;
-				const miss = { id, checkPermission: true };
+				const miss = query();
 				assert.deepStrictEqual(plain(await getTable().get(miss, { user: restrictedUser, authorize })), {
 					id,
 					text: `label ${id}`,
 				});
 				assert.strictEqual(miss.loadedFromSource, true);
 				assert.strictEqual(sourceLoads, loadsBefore + 1);
-				const hit = { id, checkPermission: true };
+				const hit = query();
 				await getTable().get(hit, { user: restrictedUser, authorize });
 				assert.strictEqual(hit.loadedFromSource, false);
 				assert.strictEqual(hit.checkPermission, true);

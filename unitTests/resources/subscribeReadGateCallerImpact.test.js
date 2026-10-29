@@ -129,7 +129,7 @@ describe('Subscribe read gate: caller impact', () => {
 			assert.strictEqual(listenerCalled, false);
 		});
 
-		it('sync override returning true: one allowRead call, and the caller request is never armed', async function () {
+		it('sync override returning true: one allowRead call, and the caller request stays armed', async function () {
 			let allowReadCalls = 0;
 			class Allowing extends FalseModeRecords {
 				allowRead() {
@@ -140,8 +140,8 @@ describe('Subscribe read gate: caller impact', () => {
 			const request = { omitCurrent: true };
 			await admitted(Allowing.subscribe(request, undefined, armed(nonReader)));
 			assert.strictEqual(allowReadCalls, 1);
-			// the gate arms and consumes a dispatch copy, leaving the caller's object reusable by another principal
-			assert.strictEqual(request.checkPermission, undefined);
+			// armed by the context, but consumed only on the gate's copy, so the next dispatch is gated again
+			assert.strictEqual(request.checkPermission, true);
 		});
 
 		it('async override: the verdict is awaited', async function () {

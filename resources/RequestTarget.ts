@@ -214,9 +214,9 @@ export function dispatchTarget<T>(target: T): T {
 	if (Array.isArray(target)) return Object.assign([], target) as T;
 	const prototype = Object.getPrototypeOf(target);
 	if (prototype === Object.prototype) return { ...target };
-	const copy = Object.create(prototype, Object.getOwnPropertyDescriptors(target));
+	const descriptors: PropertyDescriptorMap = Object.getOwnPropertyDescriptors(target);
 	// own data properties, so the gate's writes never reach an accessor the caller's class defines
 	for (const name of ['checkPermission', 'select'])
-		Object.defineProperty(copy, name, { value: target[name], writable: true, enumerable: true, configurable: true });
-	return copy;
+		descriptors[name] = { value: (target as any)[name], writable: true, enumerable: true, configurable: true };
+	return Object.create(prototype, descriptors);
 }

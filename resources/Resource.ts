@@ -719,6 +719,8 @@ function transactional(
 		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
 			return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
 		let id, query, isCollection;
+		// a target this call built from an id is already this dispatch's own
+		let mintedQuery = false;
 		let data;
 		// An absent argument, not a context — and not this call's data either.
 		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
@@ -830,6 +832,7 @@ function transactional(
 						if (id.length === 1) id = id[0];
 						if (query.slice) {
 							query = query.slice(id.length, query.length);
+							mintedQuery = true;
 							if (query.length === 0) {
 								query = new RequestTarget();
 								query.id = id;
@@ -843,6 +846,7 @@ function transactional(
 			} else {
 				id = idOrQuery;
 				query = new RequestTarget();
+				mintedQuery = true;
 				query.id = id;
 				if (id == null) {
 					if (options.method === 'get' || options.method === 'delete') {
@@ -857,6 +861,7 @@ function transactional(
 		}
 		if (!query) {
 			query = new RequestTarget();
+			mintedQuery = true;
 			query.id = id;
 			// The collection inferred from the batch's null id has to survive onto the synthesized target,
 			// or the array is dispatched as one record update against a null primary key. Array-only:
@@ -971,19 +976,21 @@ function transactional(
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 			}
-			const armTarget = Boolean(context.authorize);
-			if (armTarget) {
+			let replacePermission = false;
+			if (context.authorize) {
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 				context.authorize = false;
+				// arming only adds a check, so it may stay on the caller's target; replacing its explicit permission must not
+				if (!query.checkPermission) query.checkPermission = true;
+				else replacePermission = query.checkPermission !== true;
 			}
 			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
 				if (checkPermission) {
-					const arming = armTarget && query.checkPermission !== true;
 					// a false-mode instance method authorizes, and copies, for itself
-					if (arming || loadAsInstance !== false) query = dispatchTarget(query);
-					if (arming) query.checkPermission = true;
+					if ((replacePermission || loadAsInstance !== false) && !mintedQuery) query = dispatchTarget(query);
+					if (replacePermission) query.checkPermission = true;
 					if (loadAsInstance !== false) {
 						// do permission checks, with allow methods
 						let allowed;
