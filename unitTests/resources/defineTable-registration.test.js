@@ -458,6 +458,38 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		assert.strictEqual((await Item.get('i1')).legacyCode, 43);
 	});
 
+	it('stamps the change set itself when own fields join a tracked update', async () => {
+		const Item = defineTable(
+			'OwnFieldChangeSet',
+			{ id: id.primaryKey, label: string.nullable, stamped: date.updatedTime },
+			{ database: EVOLVE_DB, sealed: false }
+		);
+		let sourcePut;
+		Item.sourcedFrom({
+			get: (key) => ({ id: key }),
+			put: (key, data) => {
+				sourcePut = data;
+			},
+		});
+		await Item.put({ id: 'i1' });
+		const firstStamp = (await Item.get('i1')).stamped.getTime();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'changed';
+			record.extra = 1;
+		});
+		assert.ok(sourcePut.stamped.getTime() > firstStamp, 'a put-only source receives this write’s updated time');
+		assert.strictEqual(sourcePut.label, 'changed');
+		assert.strictEqual(sourcePut.extra, 1);
+
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			Object.defineProperty(record, 'extra', { value: '2', enumerable: true });
+		});
+		assert.strictEqual((await Item.get('i1')).extra, '2', 'a non-writable own field is stored, not a 500');
+	});
+
 	it('rejects invalid update roots before combining own instance fields', async () => {
 		for (const sealed of [false, true]) {
 			const Item = defineTable(

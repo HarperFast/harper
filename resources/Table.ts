@@ -5638,7 +5638,13 @@ export function makeTable(options): TableResourceClass {
 						const names = Object.keys(this);
 						if (names.length) {
 							ownFieldNames = names;
-							recordUpdate = Object.assign(Object.create(null), recordUpdate);
+							// merge into the change set itself, so validation coercion and the timestamp stamps
+							// below reach the instance and a source put, not a detached copy
+							if (recordUpdate === undefined || isFrozenRecordObject(recordUpdate)) {
+								const merged = Object.assign(Object.create(null), recordUpdate);
+								if (this.#changes === recordUpdate) this.#changes = merged;
+								recordUpdate = merged;
+							}
 							for (const name of names) recordUpdate[name] = this[name];
 						}
 					}
@@ -5658,7 +5664,10 @@ export function makeTable(options): TableResourceClass {
 							// (harper#1316, facet b).
 							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
 							if (ownFieldNames) {
-								for (const name of ownFieldNames) this[name] = recordUpdate[name];
+								// Reflect.set: a non-writable own field keeps its own value; the stored record is coerced
+								for (const name of ownFieldNames) {
+									if (this[name] !== recordUpdate[name]) Reflect.set(this, name, recordUpdate[name]);
+								}
 							}
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
