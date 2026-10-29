@@ -1046,7 +1046,6 @@ export function recordUpdater(
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
-		// a write merged under a newer head logs its own expiry while the record keeps the head's (Table._writeUpdate)
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
 		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
 		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).

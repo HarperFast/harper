@@ -6816,10 +6816,8 @@ export function makeTable(options): TableResourceClass {
 						const fieldDeadline = fieldExpiresAtMs(recordToStore);
 						expiresAt = Number.isFinite(fieldDeadline) ? fieldDeadline : expirationMs ? expirationMs + Date.now() : -1;
 					}
-					// Merged under a newer head, this write's expiry is not the record's unless it changed the @expiresAt
-					// field. Its audit entry still logs it: that is what replicas and replay apply. The head is what the
-					// write merged onto; not existingEntry once the transaction wrote the key, since RocksDB reloads that
-					// through the transaction and LMDB does not.
+					// The head is what the write merged onto; not existingEntry once the transaction wrote the key, since
+					// RocksDB reloads that through the transaction and LMDB does not.
 					if (precedesExisting < 0 && Object.is(fieldExpiresAtMs(recordToStore), fieldExpiresAtMs(existingRecord))) {
 						auditExpiresAt = expiresAt;
 						expiresAt = (priorStaged ?? existingEntry).expiresAt ?? -1;
