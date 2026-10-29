@@ -169,10 +169,10 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const compatibleBinding = {
 			...binding,
 			async runtimeInfo() {
-				const limits = { ...runtime.limits };
-				delete limits.maxCandidateIds;
-				delete limits.maxCandidateBytes;
-				return { ...runtime, limits };
+				const runtimeLimits = { ...runtime.limits };
+				delete runtimeLimits.maxCandidateIds;
+				delete runtimeLimits.maxCandidateBytes;
+				return { ...runtime, limits: runtimeLimits };
 			},
 		};
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(
