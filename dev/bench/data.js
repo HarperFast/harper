@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793181991019,
+  "lastUpdate": 1793258655549,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8432,6 +8432,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 971.4,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b5577d3046b86968bd87099d68b8fd514d4b3965",
+          "message": "Answer a durable MQTT SUBSCRIBE and UNSUBSCRIBE from their own save while acknowledgements keep the session saving (#3721)\n\n* Answer a durable MQTT SUBSCRIBE and UNSUBSCRIBE from their own save, not from the end of the save loop\n\nA durable session saves at every acknowledgement. SUBSCRIBE and UNSUBSCRIBE\nawaited persist(), which returns the whole save-while-dirty loop, so when a\nsave took longer than the gap between acknowledgements the reply waited until\nthe stream paused. They now await saveExchanges(), which settles on the first\nsave that read the session after the change.\n\nA SUBSCRIBE or UNSUBSCRIBE that reaches a session already ended by a\ndisconnect or takeover is refused instead of reported as saved.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-durable-subscribe-bounded-save\n\n* Log a SUBSCRIBE refused because its session ended at info level, not as an error\n\nThe ended-session rejection a SUBSCRIBE or UNSUBSCRIBE now gets carries a\n409 status, so mqtt.ts logs the routine disconnect and takeover race at info.\nTidies comments in the new tests and resets the injected save latency.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-durable-subscribe-bounded-save\n\n* Log an UNSUBSCRIBE refused with a client status at info, as SUBSCRIBE does\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-durable-subscribe-bounded-save\n\n* State only what the load test proves\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-durable-subscribe-bounded-save\n\n* Read an UNSUBSCRIBE error's status through optional chaining\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-durable-subscribe-bounded-save\n\n---------\n\nCo-authored-by: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-28T23:29:55Z",
+          "url": "https://github.com/HarperFast/harper/commit/b5577d3046b86968bd87099d68b8fd514d4b3965"
+        },
+        "date": 1793258653396,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5754.77,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 7953.16,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7995.75,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6109.32,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4262.18,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7662.8,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 928.39,
             "unit": "ops/sec"
           }
         ]
