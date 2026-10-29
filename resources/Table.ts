@@ -11586,9 +11586,6 @@ export function makeTable(options): TableResourceClass {
 			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
 		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
 	}
-	function relatedValue(resolver, loaded) {
-		return resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value;
-	}
 	function getPathValue(value, path, start, resolvers, entry, context, sort) {
 		for (let i = start, l = path.length; i < l; i++) {
 			const attribute = path[i];
@@ -11598,11 +11595,10 @@ export function makeTable(options): TableResourceClass {
 				const loaded = resolver.loadEntries(value, context);
 				if (loaded?.then) {
 					const nextResolvers = resolvers;
-					return loaded.then((loaded) =>
-						getPathValue(relatedValue(resolver, loaded), path, i + 1, nextResolvers, null, context, sort)
-					);
+					return loaded.then((loaded) => relatedPathValue(resolver, loaded, path, i + 1, nextResolvers, context, sort));
 				}
-				value = relatedValue(resolver, loaded);
+				if (resolver.toMany) return relatedPathValue(resolver, loaded, path, i + 1, resolvers, context, sort);
+				value = loaded?.value;
 			} else {
 				value =
 					resolver && value
@@ -11612,6 +11608,35 @@ export function makeTable(options): TableResourceClass {
 			entry = null; // can't use this in the nested object
 		}
 		return value;
+	}
+	// after a to-many hop, the rest of the path resolves per related record, giving an array of values
+	function relatedPathValue(resolver, loaded, path, start, resolvers, context, sort) {
+		if (!resolver.toMany) return getPathValue(loaded?.value, path, start, resolvers, null, context, sort);
+		if (!loaded) return undefined;
+		const values = [];
+		for (let i = 0; i < loaded.length; i++) {
+			const value = getPathValue(loaded[i]?.value, path, start, resolvers, null, context, sort);
+			values.push(value);
+			if (value?.then) return remainingRelatedPathValues(loaded, i + 1, values, path, start, resolvers, context, sort);
+		}
+		return values;
+	}
+	// bounded like loadRemainingRelatedEntries: each related record's path can read further related records
+	async function remainingRelatedPathValues(loaded, start, values, path, pathStart, resolvers, context, sort) {
+		const checkActive = getReadTransactionGuard(txnForContext(context).getReadTxn());
+		try {
+			for (let i = start; i < loaded.length; i++) {
+				if ((i - start + 1) % RELATED_READS_IN_FLIGHT === 0) {
+					await Promise.all(values.slice(i - RELATED_READS_IN_FLIGHT));
+					checkActive?.();
+				}
+				values.push(getPathValue(loaded[i]?.value, path, pathStart, resolvers, null, context, sort));
+			}
+			return await Promise.all(values);
+		} catch (error) {
+			Promise.all(values).catch(() => {});
+			throw error;
+		}
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
