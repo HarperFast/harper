@@ -224,9 +224,10 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		});
 	});
 
-	it('leaves no directory behind for a marker write that a crash cut short', async () => {
+	it('removes the forks and their directory when a crash cut the marker write short', async () => {
 		const release = await heldFork('debris-app');
 		await assert.rejects(drop({ project: 'debris-app' }), /open reference\(s\) to its store remain/);
+		rmSync(path.join(forksOf('debris-app'), '`removal-pending`'));
 		writeFileSync(path.join(forksOf('debris-app'), '`removal-pending`.partial'), '');
 		await release();
 		await operations.retryPendingBranchRemovals();
