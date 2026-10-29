@@ -248,7 +248,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					const supersededPinId = superseded.source_pin_id ?? restorePinId(databaseDir);
 					try {
 						if (supersededPinId !== sourcePinId) unpinBackup(superseded.backup_dir, supersededPinId);
-						releaseArchiveStaging(superseded.backup_dir);
+						releaseArchiveStaging(superseded);
 					} catch (error) {
 						// once no receipt or marker names the database the pin lapses on its own
 						logger.warn(`Could not release the pin of superseded restore ${superseded.operation_id}`, error);
@@ -333,7 +333,7 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 	} finally {
 		releaseRestoreLock(lock);
 	}
-	if (cancelled) releaseArchiveStaging(cancelled.backup_dir);
+	if (cancelled) releaseArchiveStaging(cancelled);
 	if (cancelled?.job_id && cancelled.state !== 'terminal') {
 		await settleRestoreJob(cancelled, hdbTerms.JOB_STATUS_ENUM.ERROR, 'Cancelled').catch((error) =>
 			logger.error(`Could not settle cancelled restore job ${cancelled!.job_id}`, error)
@@ -393,7 +393,7 @@ function dropAbandonedClaim(receipt: RestoreReceipt): boolean {
 			return false;
 		removeRestoreReceipt(lock, receipt.operation_id);
 		releaseReceiptPins(receipt);
-		releaseArchiveStaging(receipt.backup_dir);
+		releaseArchiveStaging(receipt);
 		logger.warn(
 			`Dropped the claim of a restore of '${receipt.database}' that stopped before replacing anything; the database loads as it was`
 		);
@@ -419,21 +419,24 @@ async function finishWithLock(receipt: RestoreReceipt): Promise<void> {
 	}
 }
 
-let startupOwnedJobs: Set<string> | undefined;
+let startupRecovery: Promise<Set<string>> | undefined;
 
 export function resetStartupRecoveryForTesting(): void {
-	startupOwnedJobs = undefined;
+	startupRecovery = undefined;
 }
 
 /**
  * Startup only, once per process: `loadRootComponents` also runs on every worker-replacing reload,
  * while the old workers still hold the databases. Returns the job ids still owned by a receipt, for
- * the interrupted-job sweep to leave alone — the same set on every later call, so a retried sweep
- * keeps it.
+ * the interrupted-job sweep to leave alone. Later calls get the same outcome — the same set, or the same
+ * failure, so a retried sweep never sees an empty set in place of one that could not be read.
  */
-export async function recoverRestoresAtStartup(): Promise<Set<string>> {
-	if (startupOwnedJobs) return startupOwnedJobs;
-	const owned = (startupOwnedJobs = new Set<string>());
+export function recoverRestoresAtStartup(): Promise<Set<string>> {
+	return (startupRecovery ??= recoverRestoresOnce());
+}
+
+async function recoverRestoresOnce(): Promise<Set<string>> {
+	const owned = new Set<string>();
 	let published = false;
 	for (const { file, read } of scanRestoreReceipts()) {
 		if (read.kind === 'absent') continue;

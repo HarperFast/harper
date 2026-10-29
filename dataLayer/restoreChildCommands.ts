@@ -142,22 +142,15 @@ export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvi
 async function applyStagedTreeAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 	const { verifyStagedTree, assertInstallFits, installStagedTree } = await import('./stagedTreeInstall.ts');
 	const installBlobs = args.manifest.blobs;
-	const files = await inPhase('verify', async () => {
-		const verified = await verifyStagedTree(args.backupDir);
-		await assertInstallFits(args.backupDir, verified, args.databasePath, args.blobRoots, installBlobs);
-		return verified;
+	const operationTag = args.operationId ?? String(process.pid);
+	await inPhase('verify', async () => {
+		const plan = await verifyStagedTree(args.backupDir);
+		await assertInstallFits(args.backupDir, plan, args.databasePath, args.blobRoots, installBlobs, operationTag);
 	});
 	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));
 	await inPhase('apply', async () => {
 		await announceDestruction();
-		await installStagedTree(
-			args.backupDir,
-			files,
-			args.databasePath,
-			args.blobRoots,
-			installBlobs,
-			args.operationId ?? String(process.pid)
-		);
+		await installStagedTree(args.backupDir, args.databasePath, args.blobRoots, installBlobs, operationTag);
 		await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
 	});
 	return inPhase('prove', () => prove(args));

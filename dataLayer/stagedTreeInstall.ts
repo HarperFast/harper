@@ -14,13 +14,13 @@ import {
 	mkdirSync,
 	openSync,
 	readdirSync,
-	readFileSync,
 	renameSync,
 	rmSync,
 	statSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { createInterface } from 'node:readline';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { fsyncDirectory } from '../utility/durableFile.ts';
 import { fsyncTolerantSync } from '../utility/fsync.ts';
@@ -44,36 +44,59 @@ async function sha256File(path: string): Promise<string> {
 	return hash.digest('hex');
 }
 
-function readInventory(stagingDir: string): InventoryFile[] {
-	const { files } = JSON.parse(readFileSync(join(stagingDir, STAGED_INVENTORY_FILE), 'utf8'));
-	const seen = new Set<string>();
-	for (const file of files as InventoryFile[]) {
-		const path = file?.path;
-		if (
-			typeof path !== 'string' ||
-			path === '' ||
-			isAbsolute(path) ||
-			normalize(path) !== path.split('/').join(sep) ||
-			path.split('/').includes('..') ||
-			seen.has(path) ||
-			!Number.isSafeInteger(file.size) ||
-			typeof file.sha256 !== 'string'
-		) {
-			throw new Error(`The staged inventory in ${stagingDir} has an invalid entry: ${JSON.stringify(file)}`);
+function validInventoryEntry(file: any): file is InventoryFile {
+	const path = file?.path;
+	return (
+		typeof path === 'string' &&
+		path !== '' &&
+		!isAbsolute(path) &&
+		normalize(path) === path.split('/').join(sep) &&
+		!path.split('/').includes('..') &&
+		Number.isSafeInteger(file.size) &&
+		typeof file.sha256 === 'string'
+	);
+}
+
+/** One entry per line, so a tree of millions of files never sits in the child's heap whole. */
+async function* inventoryEntries(stagingDir: string): AsyncGenerator<InventoryFile> {
+	const lines = createInterface({
+		input: createReadStream(join(stagingDir, STAGED_INVENTORY_FILE)),
+		crlfDelay: Infinity,
+	});
+	for await (const line of lines) {
+		if (line === '') continue;
+		let file: any;
+		try {
+			file = JSON.parse(line);
+		} catch {
+			file = line;
 		}
-		seen.add(path);
+		if (!validInventoryEntry(file)) {
+			throw new Error(`The staged inventory in ${stagingDir} has an invalid entry: ${line.slice(0, 200)}`);
+		}
+		yield file;
 	}
-	return files;
+}
+
+/** What the install will write where, in bytes and files, gathered while verifying. */
+export interface InstallPlan {
+	immutableEngine: { bytes: number; files: number; sample?: string };
+	otherEngine: { bytes: number; files: number };
+	blobRoots: Map<number, { bytes: number; files: number; sample?: string }>;
 }
 
 /**
  * Before anything is destroyed: every staged file must still be byte-for-byte what was verified when
  * the archive was staged — a restart restore can wait on its staging for a long time.
  */
-export async function verifyStagedTree(stagingDir: string): Promise<InventoryFile[]> {
-	const files = readInventory(stagingDir);
+export async function verifyStagedTree(stagingDir: string): Promise<InstallPlan> {
 	const treeDir = stagedTreeDir(stagingDir);
-	for (const file of files) {
+	const plan: InstallPlan = {
+		immutableEngine: { bytes: 0, files: 0 },
+		otherEngine: { bytes: 0, files: 0 },
+		blobRoots: new Map(),
+	};
+	for await (const file of inventoryEntries(stagingDir)) {
 		const path = join(treeDir, file.path);
 		let size: number;
 		try {
@@ -87,14 +110,38 @@ export async function verifyStagedTree(stagingDir: string): Promise<InventoryFil
 				409
 			);
 		}
+		if (file.path.startsWith(BLOBS_PREFIX)) {
+			const index = blobRootIndex(file.path);
+			if (index === undefined) continue;
+			const root = plan.blobRoots.get(index) ?? { bytes: 0, files: 0, sample: file.path };
+			root.bytes += file.size;
+			root.files++;
+			plan.blobRoots.set(index, root);
+		} else if (IMMUTABLE_ENGINE_FILE.test(file.path)) {
+			plan.immutableEngine.bytes += file.size;
+			plan.immutableEngine.files++;
+			plan.immutableEngine.sample ??= file.path;
+		} else {
+			plan.otherEngine.bytes += file.size;
+			plan.otherEngine.files++;
+		}
 	}
-	return files;
+	return plan;
 }
 
-function deviceOf(path: string): number {
+function nearestExisting(path: string): string {
 	let existing = path;
 	while (!existsSync(existing)) existing = dirname(existing);
-	return statSync(existing).dev;
+	return existing;
+}
+
+/** Whether a staged file can be hard-linked beside `destination`: tried, not inferred from the device. */
+function canLink(source: string, destination: string, operationTag: string): boolean {
+	const probe = join(nearestExisting(destination), `.harper-link-probe-${operationTag}`);
+	rmSync(probe, { force: true });
+	if (!linkInPlace(source, probe)) return false;
+	rmSync(probe, { force: true });
+	return true;
 }
 
 /** Bytes an existing tree gives back when it is purged: only files no other link keeps alive. */
@@ -116,44 +163,52 @@ function reclaimableBytes(root: string): number {
 }
 
 /**
- * Refuses, before destruction, an install a destination device cannot hold: the bytes that must be
- * copied there (linking is free on the staging device) against what it has, crediting only what the
- * purge actually frees.
+ * Refuses, before destruction, an install its destinations cannot hold. Every reservation is held until
+ * all are made, so destinations sharing a device are admitted together; a file counts as free only where
+ * a link was actually made to work, and a purge is credited only for files no other link keeps alive.
  */
 export async function assertInstallFits(
 	stagingDir: string,
-	files: InventoryFile[],
+	plan: InstallPlan,
 	databasePath: string,
 	blobRoots: string[],
-	installBlobs: boolean
+	installBlobs: boolean,
+	operationTag: string
 ): Promise<void> {
-	const stagingDevice = deviceOf(stagedTreeDir(stagingDir));
-	const needed = new Map<string, { bytes: number; inodes: number; credit: number }>();
-	const charge = (destination: string, bytes: number, credit: number) => {
-		const entry = needed.get(destination) ?? { bytes: 0, inodes: 0, credit };
-		entry.bytes += bytes;
-		entry.inodes += 1;
-		needed.set(destination, entry);
-	};
-	const databaseCredit = reclaimableBytes(databasePath);
-	const databaseLinkable = deviceOf(databasePath) === stagingDevice;
-	for (const file of files) {
-		if (file.path.startsWith(BLOBS_PREFIX)) {
-			const index = blobRootIndex(file.path);
-			if (!installBlobs || index === undefined) continue;
-			const root = blobRoots[index];
-			if (root === undefined) {
+	const treeDir = stagedTreeDir(stagingDir);
+	const needs: { destination: string; bytes: number; files: number; credit: number }[] = [];
+	const engineLinks =
+		plan.immutableEngine.sample !== undefined &&
+		canLink(join(treeDir, plan.immutableEngine.sample), databasePath, operationTag);
+	needs.push({
+		destination: databasePath,
+		bytes: plan.otherEngine.bytes + (engineLinks ? 0 : plan.immutableEngine.bytes),
+		files: plan.otherEngine.files + plan.immutableEngine.files,
+		credit: reclaimableBytes(databasePath),
+	});
+	if (installBlobs) {
+		for (const [index, root] of plan.blobRoots) {
+			const destination = blobRoots[index];
+			if (destination === undefined) {
 				throw new ClientError(`The archive's blob root ${index} has no matching blob path in this instance`);
 			}
-			charge(root, deviceOf(root) === stagingDevice ? 0 : file.size, installBlobs ? reclaimableBytes(root) : 0);
-		} else {
-			charge(databasePath, databaseLinkable && IMMUTABLE_ENGINE_FILE.test(file.path) ? 0 : file.size, databaseCredit);
+			const links = root.sample !== undefined && canLink(join(treeDir, root.sample), destination, operationTag);
+			needs.push({
+				destination,
+				bytes: links ? 0 : root.bytes,
+				files: root.files,
+				credit: reclaimableBytes(destination),
+			});
 		}
 	}
 	const ledger = new DiskLedger();
-	for (const [destination, { bytes, inodes, credit }] of needed) {
-		const hold = await ledger.reserve(destination, Math.max(0, bytes - credit), inodes);
-		hold.release(0);
+	const holds: { release(bytes: number): void }[] = [];
+	try {
+		for (const { destination, bytes, files, credit } of needs) {
+			holds.push(await ledger.reserve(nearestExisting(destination), Math.max(0, bytes - credit), files));
+		}
+	} finally {
+		for (const hold of holds) hold.release(0);
 	}
 }
 
@@ -206,7 +261,6 @@ function linkInPlace(source: string, destination: string): boolean {
  */
 export async function installStagedTree(
 	stagingDir: string,
-	files: InventoryFile[],
 	databasePath: string,
 	blobRoots: string[],
 	installBlobs: boolean,
@@ -219,10 +273,9 @@ export async function installStagedTree(
 	// a name no archive entry can take: it carries this restore's operation id
 	const temporaryDir = join(databasePath, `.harper-restore-${operationTag}`);
 	mkdirDurably(temporaryDir);
-	const engineFiles = files.filter((file) => !file.path.startsWith(BLOBS_PREFIX));
-	engineFiles.sort((a, b) => Number(a.path === 'CURRENT') - Number(b.path === 'CURRENT'));
 	let sequence = 0;
-	for (const file of engineFiles) {
+	let current: InventoryFile | undefined;
+	const install = async (file: InventoryFile) => {
 		const source = join(treeDir, file.path);
 		const destination = join(databasePath, file.path);
 		mkdirDurably(dirname(destination));
@@ -230,14 +283,21 @@ export async function installStagedTree(
 			await copyVerified(source, destination, join(temporaryDir, String(sequence++)), file.sha256);
 		}
 		fsyncDirectory(dirname(destination));
+	};
+	const indices = new Set<number>();
+	for await (const file of inventoryEntries(stagingDir)) {
+		if (file.path.startsWith(BLOBS_PREFIX)) {
+			const index = blobRootIndex(file.path);
+			if (index !== undefined) indices.add(index);
+		} else if (file.path === 'CURRENT') current = file;
+		else await install(file);
 	}
+	if (!current) throw new Error(`The staged archive in ${stagingDir} has no CURRENT`);
+	await install(current);
 	rmSync(temporaryDir, { recursive: true, force: true });
 	await fsyncTree(databasePath);
 	if (!installBlobs) return;
 	for (const root of blobRoots) rmSync(root, { recursive: true, force: true });
-	const indices = new Set(
-		files.map((file) => blobRootIndex(file.path)).filter((index): index is number => index !== undefined)
-	);
 	for (const index of indices) {
 		const root = blobRoots[index];
 		mkdirDurably(dirname(root));

@@ -1865,3 +1865,34 @@ describe('restore_backup CLI', function () {
 		});
 	});
 });
+
+describe('releaseArchiveStaging', function () {
+	let root;
+
+	beforeEach(function () {
+		root = mkdtempSync(join(tmpdir(), 'harper.unit-test.release-staging-'));
+	});
+
+	afterEach(function () {
+		if (root) rmSync(root, { recursive: true, force: true });
+	});
+
+	function stagingUnder() {
+		const dir = join(root, 'x', '.staging', randomUUID());
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, 'marker'), 'x');
+		return dir;
+	}
+
+	it('keeps a managed repository that sits under a .staging parent', function () {
+		const dir = stagingUnder();
+		restoreArchive.releaseArchiveStaging({ backup_dir: dir });
+		assert.ok(existsSync(join(dir, 'marker')));
+	});
+
+	it('removes an unpinned staged tree', function () {
+		const dir = stagingUnder();
+		restoreArchive.releaseArchiveStaging({ backup_dir: dir, source_kind: 'staged_tree' });
+		assert.ok(!existsSync(dir));
+	});
+});

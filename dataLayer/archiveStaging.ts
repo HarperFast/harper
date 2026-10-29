@@ -1,11 +1,13 @@
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { createHash } from 'node:crypto';
 import {
+	closeSync,
 	createReadStream,
 	createWriteStream,
 	existsSync,
 	mkdirSync,
 	readdirSync,
+	openSync,
 	readFileSync,
 	rmSync,
 	statfsSync,
@@ -16,6 +18,7 @@ import { pipeline } from 'node:stream/promises';
 import { validateTransactionLogStore } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
+import { fsyncTolerantSync } from '../utility/fsync.ts';
 import { safeFetchToFile } from '../utility/safeFetch.ts';
 import { openRestoredGeneration, closeRestoredGeneration } from '../resources/databases.ts';
 import { DiskLedger, ledgerMeter } from './diskLedger.ts';
@@ -139,7 +142,7 @@ function provenTables(treeDir: string, databaseName: string): string[] {
 /** A staged archive is one source, so it always presents as backup 1 of its staging area. */
 export const STAGED_TREE_BACKUP_ID = 1;
 const STAGED_SOURCE_FILE = 'staged.json';
-export const STAGED_INVENTORY_FILE = 'inventory.json';
+export const STAGED_INVENTORY_FILE = 'inventory.ndjson';
 
 export function stagedTreeDir(stagingDir: string): string {
 	return join(stagingDir, 'tree');
@@ -174,8 +177,11 @@ export interface InventoryFile {
 	sha256: string;
 }
 
-async function inventoryTree(treeDir: string): Promise<InventoryFile[]> {
-	const files: InventoryFile[] = [];
+/** One JSON entry per line, written and read as a stream, so no heap ever holds the whole tree's list. */
+async function writeInventory(treeDir: string, inventoryPath: string): Promise<void> {
+	const out = createWriteStream(inventoryPath, { flags: 'w' });
+	const write = (line: string) =>
+		new Promise<void>((resolve, reject) => out.write(line, (error) => (error ? reject(error) : resolve())));
 	const visit = async (directory: string, prefix: string) => {
 		for (const entry of readdirSync(directory, { withFileTypes: true })) {
 			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -186,12 +192,22 @@ async function inventoryTree(treeDir: string): Promise<InventoryFile[]> {
 					rmSync(path, { force: true });
 					continue;
 				}
-				files.push({ path: relativePath, size: statSync(path).size, sha256: await sha256File(path) });
+				const file: InventoryFile = { path: relativePath, size: statSync(path).size, sha256: await sha256File(path) };
+				await write(JSON.stringify(file) + '\n');
 			}
 		}
 	};
-	await visit(treeDir, '');
-	return files;
+	try {
+		await visit(treeDir, '');
+	} finally {
+		await new Promise<void>((resolve, reject) => out.end((error?: Error) => (error ? reject(error) : resolve())));
+	}
+	const fd = openSync(inventoryPath, 'r');
+	try {
+		fsyncTolerantSync(fd);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /**
@@ -252,13 +268,12 @@ export async function stageArchive(args: StageArchiveArgs) {
 
 	const treeDir = join(stagingDir, 'tree');
 	const tally = await tallyArchive(archivePath, { bsize: statfsSync(stagingDir).bsize });
-	// Before the first byte is written: extraction debits the staging device as it goes, and the engine
-	// copy and blob snapshot need as much again beside the tree.
-	const conversionHold = await ledger.reserve(stagingDir, tally.bytes, tally.inodes);
-	let extracted: Awaited<ReturnType<typeof extractArchive>>;
-	try {
-		mkdirSync(treeDir);
-		extracted = await extractArchive(archivePath, treeDir, {
+	// refuse an archive the staging device cannot hold before writing any of it; extraction then debits
+	// the same bytes as it lands
+	(await ledger.reserve(stagingDir, tally.bytes, tally.inodes)).release(0);
+	mkdirSync(treeDir);
+	{
+		const extracted = await extractArchive(archivePath, treeDir, {
 			ledger,
 			allowMissingManifest: args.acceptIncompatible,
 			acceptIncompatible: args.acceptIncompatible,
@@ -269,7 +284,7 @@ export async function stageArchive(args: StageArchiveArgs) {
 		const blobIndices = archiveBlobRootIndices(treeDir);
 		const hasBlobs = extracted.manifest ? extracted.manifest.blobs : blobIndices.length > 0;
 		// read after the scan: opening the tree rewrites its MANIFEST and OPTIONS
-		const files = await inventoryTree(treeDir);
+		await writeInventory(treeDir, join(stagingDir, STAGED_INVENTORY_FILE));
 		await fsyncTree(treeDir);
 		const manifest: BackupManifest = {
 			backupId: STAGED_TREE_BACKUP_ID,
@@ -277,11 +292,6 @@ export async function stageArchive(args: StageArchiveArgs) {
 			completedAt: Date.now(),
 			tables,
 		};
-		writeFileDurably(
-			join(stagingDir, STAGED_INVENTORY_FILE),
-			JSON.stringify({ files }),
-			`${STAGED_INVENTORY_FILE}.tmp`
-		);
 		const staged: StagedSource = { manifest, waived: extracted.waived, blobIndices };
 		// written last: its presence is what makes the staging area a restorable source
 		writeFileDurably(join(stagingDir, STAGED_SOURCE_FILE), JSON.stringify(staged), `${STAGED_SOURCE_FILE}.tmp`);
@@ -298,7 +308,5 @@ export async function stageArchive(args: StageArchiveArgs) {
 			bytes: extracted.bytes,
 			roles: extracted.manifest?.roles ?? [],
 		};
-	} finally {
-		conversionHold.release(0);
 	}
 }

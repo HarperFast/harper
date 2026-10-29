@@ -24,7 +24,7 @@ const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { createBackupStream } = require('#src/dataLayer/rocksdbBackup');
 const { stageArchive, stagedTreeDir, STAGED_INVENTORY_FILE } = require('#src/dataLayer/archiveStaging');
-const { verifyStagedTree, installStagedTree } = require('#src/dataLayer/stagedTreeInstall');
+const { verifyStagedTree, installStagedTree, assertInstallFits } = require('#src/dataLayer/stagedTreeInstall');
 const { fileIdentity } = require('#src/utility/fileIdentity');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
@@ -167,13 +167,13 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('on one device', function () {
 		it('hard-links table and blob files, copies the rest, and leaves the tree whole', async function () {
 			const { stagingDir, treeDir } = await stage(fullArchive);
-			const files = await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir);
 			const target = fresh('target');
 			const blobRoot = fresh('blobroot');
 
-			await installStagedTree(stagingDir, files, target, [blobRoot], true, 'op1');
+			await installStagedTree(stagingDir, target, [blobRoot], true, 'op1');
 
-			const engineFiles = files.filter((file) => !file.path.startsWith('blobs/')).map((file) => file.path);
+			const engineFiles = walk(treeDir).filter((file) => !file.startsWith('blobs/'));
 			const linked = engineFiles.filter((file) => ENGINE_FILE.test(file));
 			assert.ok(
 				linked.some((file) => file.endsWith('.sst')),
@@ -203,7 +203,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('when the filesystem will not link', function () {
 		it('copies every file, verified, and succeeds', async function () {
 			const { stagingDir, treeDir } = await stage(engineArchive);
-			const files = await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir);
 			const target = fresh('target');
 			const restore = (() => {
 				const original = fs.linkSync;
@@ -215,16 +215,65 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 				};
 			})();
 			try {
-				await installStagedTree(stagingDir, files, target, [], false, 'op2');
+				await installStagedTree(stagingDir, target, [], false, 'op2');
 			} finally {
 				restore();
 			}
 
-			const engineFiles = files.map((file) => file.path);
+			const engineFiles = walk(treeDir);
 			for (const file of engineFiles) assert.strictEqual(statSync(join(target, file)).nlink, 1, `${file} is a copy`);
 			assertSameBytes(treeDir, target, engineFiles);
 			assertRecords(target);
 		});
+	});
+
+	describe('the install plan', function () {
+		it('counts top-level table and blob files, and per-root blobs, without the blobs README', async function () {
+			const { stagingDir, treeDir } = await stage(fullArchive);
+			const plan = await verifyStagedTree(stagingDir);
+
+			const top = walk(treeDir).filter((file) => ENGINE_FILE.test(file));
+			assert.ok(top.length > 0);
+			assert.strictEqual(plan.immutableEngine.files, top.length);
+			const blobFiles = walk(treeDir).filter((file) => /^blobs\/\d+\//.test(file));
+			assert.ok(blobFiles.length > 0, 'precondition: the archive carries blobs');
+			const roots = [...plan.blobRoots.entries()];
+			assert.ok(roots.length > 0);
+			assert.ok(roots.every(([index, root]) => Number.isInteger(index) && root.files > 0));
+			assert.strictEqual(
+				roots.reduce((sum, [, root]) => sum + root.files, 0),
+				blobFiles.length,
+				'a blobs README is not counted'
+			);
+		});
+	});
+
+	describe('assertInstallFits', function () {
+		const probes = (directory) => readdirSync(directory).filter((entry) => entry.startsWith('.harper-link-probe-'));
+
+		for (const linking of [true, false]) {
+			it(`leaves no link probe behind when linking ${linking ? 'works' : 'fails with EXDEV'}`, async function () {
+				const { stagingDir } = await stage(fullArchive);
+				const plan = await verifyStagedTree(stagingDir);
+				const parent = fresh('parent');
+				const blobParent = fresh('blobparent');
+				mkdirSync(parent, { recursive: true });
+				mkdirSync(blobParent, { recursive: true });
+				const original = fs.linkSync;
+				if (!linking) {
+					fs.linkSync = () => {
+						throw errorWithCode('EXDEV');
+					};
+				}
+				try {
+					await assertInstallFits(stagingDir, plan, join(parent, 'db'), [join(blobParent, 'blobs')], true, 'probe1');
+				} finally {
+					fs.linkSync = original;
+				}
+				assert.deepStrictEqual(probes(parent), []);
+				assert.deepStrictEqual(probes(blobParent), []);
+			});
+		}
 	});
 
 	describe('a corrupted tree', function () {
@@ -255,12 +304,12 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('an interrupted install', function () {
 		it('leaves the tree whole and installs on the rerun', async function () {
 			const { stagingDir, treeDir } = await stage(engineArchive);
-			const files = await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir);
 			const target = fresh('target');
 			const failure = new Error('simulated rename failure');
 			const restore = failingOnCall('renameSync', 2, failure);
 			try {
-				await assert.rejects(installStagedTree(stagingDir, files, target, [], false, 'op3'), failure);
+				await assert.rejects(installStagedTree(stagingDir, target, [], false, 'op3'), failure);
 			} finally {
 				restore();
 			}
@@ -269,13 +318,9 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			assert.ok(readdirSync(target).length > 0, 'the target is partial');
 			await verifyStagedTree(stagingDir);
 
-			await installStagedTree(stagingDir, files, target, [], false, 'op3');
+			await installStagedTree(stagingDir, target, [], false, 'op3');
 
-			assertSameBytes(
-				treeDir,
-				target,
-				files.map((file) => file.path)
-			);
+			assertSameBytes(treeDir, target, walk(treeDir));
 			assert.ok(!readdirSync(target).some((entry) => entry.startsWith('.harper-restore-')));
 			assertRecords(target);
 		});
@@ -295,24 +340,20 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 		});
 
 		const cases = {
-			'a parent traversal': (first) => ({ ...first, path: '../escape' }),
-			'an absolute path': (first) => ({ ...first, path: join(tmpdir(), 'escape') }),
-			'a nested traversal': (first) => ({ ...first, path: 'a/../../escape' }),
+			'a parent traversal': '../escape',
+			'an absolute path': join(tmpdir(), 'escape'),
+			'a nested traversal': 'a/../../escape',
 		};
-		for (const [label, mutate] of Object.entries(cases)) {
+		for (const [label, path] of Object.entries(cases)) {
 			it(`refuses ${label} before reading any file`, async function () {
-				const { files } = JSON.parse(original);
-				writeFileSync(
-					join(stagingDir, STAGED_INVENTORY_FILE),
-					JSON.stringify({ files: [mutate(files[0]), ...files.slice(1)] })
-				);
+				const line = JSON.stringify({ path, size: 1, sha256: 'x' });
+				writeFileSync(join(stagingDir, STAGED_INVENTORY_FILE), `${line}\n${original}`);
 				await assert.rejects(verifyStagedTree(stagingDir), /invalid entry/);
 			});
 		}
 
-		it('refuses a duplicate path', async function () {
-			const { files } = JSON.parse(original);
-			writeFileSync(join(stagingDir, STAGED_INVENTORY_FILE), JSON.stringify({ files: [...files, files[0]] }));
+		it('refuses a line that is not JSON', async function () {
+			writeFileSync(join(stagingDir, STAGED_INVENTORY_FILE), `not json\n${original}`);
 			await assert.rejects(verifyStagedTree(stagingDir), /invalid entry/);
 		});
 	});
@@ -320,14 +361,14 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('an engine-only archive', function () {
 		it('leaves existing blob roots untouched', async function () {
 			const { stagingDir } = await stage(engineArchive);
-			const files = await verifyStagedTree(stagingDir);
-			assert.ok(!files.some((file) => file.path.startsWith('blobs/')), 'precondition: no blobs staged');
+			const plan = await verifyStagedTree(stagingDir);
+			assert.strictEqual(plan.blobRoots.size, 0, 'precondition: no blobs staged');
 			const blobRoot = fresh('blobroot');
 			mkdirSync(join(blobRoot, 'ab'), { recursive: true });
 			writeFileSync(join(blobRoot, 'ab', 'keep'), 'kept');
 			const target = fresh('target');
 
-			await installStagedTree(stagingDir, files, target, [blobRoot], false, 'op6');
+			await installStagedTree(stagingDir, target, [blobRoot], false, 'op6');
 
 			assert.strictEqual(readFileSync(join(blobRoot, 'ab', 'keep'), 'utf8'), 'kept');
 			assert.deepStrictEqual(walk(blobRoot), ['ab/keep']);

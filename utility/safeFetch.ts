@@ -458,6 +458,7 @@ export async function safeFetchToFile(
 			}
 			logger.trace?.(`Fetch of ${redacted}: resuming at ${state.bytes} bytes`);
 		}
+		transfer.throwIfFailed();
 		const sha256 = state.hash.digest('hex');
 		if (options.sha256 !== undefined && options.sha256.toLowerCase() !== sha256) {
 			throw upstreamFailure(`Fetch of ${redacted} does not match the expected sha256 (got ${sha256})`);

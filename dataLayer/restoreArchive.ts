@@ -432,11 +432,6 @@ export async function resolveRestoreSource(source: {
 	return selected;
 }
 
-/** The staging area a staged archive restores from, or undefined for a managed backup's repository. */
-export function stagingDirOfRepository(backupDir: string): string | undefined {
-	return basename(join(backupDir, '..')) === IMPORT_STAGING_DIR ? backupDir : undefined;
-}
-
 /**
  * Removes a staging area once nothing depends on it: no pin in its repository is live. A failed restore
  * that began replacing its target keeps its pin live through the marker, so its source survives for the
@@ -454,9 +449,11 @@ export function releaseStagingIfUnowned(stagingDir: string): boolean {
 }
 
 /** Once a restore stops depending on a staged archive: removes its area when no pin keeps it. */
-export function releaseArchiveStaging(backupDir: string): void {
-	const stagingDir = stagingDirOfRepository(backupDir);
-	if (stagingDir) releaseStagingIfUnowned(stagingDir);
+export function releaseArchiveStaging(source: { backup_dir: string; source_kind?: RestoreSourceKind }): void {
+	// only the kind decides: a backups root that happens to end in `.staging` is still a real repository
+	if (source.source_kind === 'staged_tree' && basename(join(source.backup_dir, '..')) === IMPORT_STAGING_DIR) {
+		releaseStagingIfUnowned(source.backup_dir);
+	}
 }
 
 /**

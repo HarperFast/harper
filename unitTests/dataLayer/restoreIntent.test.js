@@ -1304,3 +1304,33 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		});
 	});
 });
+
+describe('recoverRestoresAtStartup latch', function () {
+	const databasesModule = require('#src/resources/databases');
+
+	afterEach(function () {
+		resetStartupRecoveryForTesting();
+	});
+
+	it('returns the identical set on a second call', async function () {
+		resetStartupRecoveryForTesting();
+		const first = await recoverRestoresAtStartup();
+		assert.strictEqual(await recoverRestoresAtStartup(), first);
+	});
+
+	it('rejects again, rather than resolving an empty set, when the first scan failed', async function () {
+		const original = databasesModule.databaseRoots;
+		const failure = new Error('simulated scan failure');
+		databasesModule.databaseRoots = () => {
+			throw failure;
+		};
+		try {
+			resetStartupRecoveryForTesting();
+			await assert.rejects(recoverRestoresAtStartup(), failure);
+			databasesModule.databaseRoots = original;
+			await assert.rejects(recoverRestoresAtStartup(), failure);
+		} finally {
+			databasesModule.databaseRoots = original;
+		}
+	});
+});

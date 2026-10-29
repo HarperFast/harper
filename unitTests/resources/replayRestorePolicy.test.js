@@ -190,7 +190,7 @@ describeUnlessLmdb('replayLogs restore policy over a restored database', functio
 		});
 
 		after(function () {
-			auditStore.setAuditRetention(originalRetention);
+			if (originalRetention !== undefined) auditStore.setAuditRetention(originalRetention);
 		});
 
 		function logFiles(root) {
