@@ -4785,6 +4785,7 @@ export function makeTable(options): TableResourceClass {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							receivedIdentityRefs: audit ? undefined : existingEntry?.receivedIdentityRefs,
 							localOnly: options?.localOnly,
 						},
 						'relocate',
@@ -5942,6 +5943,19 @@ export function makeTable(options): TableResourceClass {
 					// (risking a missed dedup), so LMDB falls back to the normal audited apply. Replication targets
 					// RocksDB anyway. (harper-pro#480)
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
+					// Without a log, a listed identity is the only sign a patch was already applied, whatever the version
+					// order says: an LMDB merge stores the older version (#3388), so an applied write can compare as newer.
+					// Not after an earlier write of this transaction, which shares the identity.
+					if (
+						!audit &&
+						!fullUpdate &&
+						existingEntry?.receivedIdentityRefs &&
+						!followsAppliedWrite(write) &&
+						auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0
+					) {
+						write.skipped = true;
+						return writeCommit(false);
+					}
 
 					if (
 						precedesExisting <= 0 &&
@@ -6685,15 +6699,9 @@ export function makeTable(options): TableResourceClass {
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
-							// Without a log, a tie with the head or a listed ref is the only sign this write was already applied,
-							// and an older write must not give a deleted or publish-only head a record.
-							if (
-								precedesExisting === 0 ||
-								existingRecord == null ||
-								(existingEntry.receivedIdentityRefs &&
-									!followsAppliedWrite(write) &&
-									auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
-							) {
+							// Without a log, a tie with the head (or a listed identity, checked above) is the only sign this
+							// write was already applied, and an older write must not give a deleted or publish-only head a record.
+							if (precedesExisting === 0 || existingRecord == null) {
 								write.skipped = true;
 								return writeCommit(false);
 							}
@@ -6707,15 +6715,22 @@ export function makeTable(options): TableResourceClass {
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
 							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
-							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
-							// only a commutative op applies again on re-delivery; the plain keys merged here are dropped then
-							if (
-								commutativeOpsOf(incrementalUpdateToApply) &&
-								!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
-							)
-								(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
+					}
+					// An audit:false patch, in order or merged, keeps the identities of the record it applies to and lists
+					// its own when it applied a commutative op, the only part that would apply again on re-delivery. A
+					// full write starts over. Copied only to append: the base may be committed or an earlier staged list.
+					if (!audit && !applyAsReplacement) {
+						receivedIdentityRefs = (priorStaged ?? existingEntry)?.receivedIdentityRefs;
+						if (
+							commutativeOpsOf(incrementalUpdateToApply ?? recordUpdate) &&
+							!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+						)
+							receivedIdentityRefs = [
+								...(receivedIdentityRefs ?? []),
+								{ version: receivedLogKey, nodeId: options?.nodeId },
+							];
 					}
 					let recordToStore: any;
 					if (applyAsReplacement) recordToStore = incrementalUpdateToApply ?? recordUpdate;
@@ -9858,6 +9873,7 @@ export function makeTable(options): TableResourceClass {
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
 								appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
+							receivedIdentityRefs: audit ? undefined : existingEntry?.receivedIdentityRefs,
 						},
 						'message',
 						false,
