@@ -748,7 +748,7 @@ type DurableEntry = {
 	checkpoint?: SubscriptionCheckpoint;
 	/**
 	 * In memory only: the other generation a restored scalar is bound to, so it names nothing here. It is saved back
-	 * as `databaseGeneration` until this node moves the scalar, so a reconnect still knows the scalar is foreign.
+	 * as `databaseGeneration` until this node certifies a position of its own, so a reconnect still knows it is foreign.
 	 */
 	foreignGeneration?: string;
 };
@@ -1234,7 +1234,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				this.positionMayStayBelow(state, sent.key);
 			if (replayed && this.receivedCount < QOS1_RECEIVED_LIMIT) {
 				this.addReceived(state, [sent.key, sent.ordinal, deliveryId(sent.id)]);
-				this.qos1ReceiptsUnsaved = true;
+				if (!(sent.key <= state.entry.startTime) || state.entry.foreignGeneration !== undefined)
+					this.qos1ReceiptsUnsaved = true;
 			} else if (!(state.prunedThrough >= sent.key)) state.prunedThrough = sent.key;
 		}
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
@@ -1518,15 +1519,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			state.entry.foreignGeneration = undefined;
 			// a checkpoint replay revisits receipts below the scalar, so once one is certified only its floor prunes them
 			if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) {
 				this.pruneReceipts(state, next);
 				if (!(state.prunedThrough >= next)) state.prunedThrough = next;
 			}
-			// only a certified position may be checked on resume
+			// only a certified position may be checked on resume, and only that one replaces a foreign scalar
 			state.entry.databaseGeneration =
 				state.subscription.progress?.() === undefined ? undefined : state.subscription.databaseGeneration;
+			if (state.entry.databaseGeneration !== undefined) state.entry.foreignGeneration = undefined;
 			changed = true;
 		}
 		for (const state of this.topics.values()) {
@@ -1642,9 +1643,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (startTime !== undefined) saved.startTime = startTime;
 			if ((databaseGeneration ?? foreignGeneration) !== undefined)
 				saved.databaseGeneration = databaseGeneration ?? foreignGeneration;
-			// QoS 1 receipts at or below the scalar are read only by a checkpoint replay on another node, so, like in-flight
-			// QoS 2 deliveries, only the final save writes them
-			const kept = qos === 1 && !this.terminated ? startTime : undefined;
+			// QoS 1 receipts at or below a scalar of this generation are read only by a checkpoint replay on another node,
+			// so only the final save writes them
+			const kept = qos === 1 && !this.terminated && foreignGeneration === undefined ? startTime : undefined;
 			for (const identity of state.received?.values() ?? []) {
 				if (!(identity[0] <= kept)) (saved.received ??= []).push(identity);
 			}
