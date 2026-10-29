@@ -46,7 +46,6 @@ import { buildMultipartBody } from '../../dist/bin/multipartBuilder.js';
 
 const PEER_PROJECT = 'peer-branch-replay-application';
 const STALL_FIXTURE_PATH = resolve(import.meta.dirname, 'peer-payload-stall-fixture');
-// storage.blobReadTimeout below: the no-progress window after which one Blob.stream() read gives up with a 503
 const BLOB_READ_TIMEOUT_MS = 2000;
 
 function filesUnder(directory: string): string[] {
@@ -266,8 +265,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 				readFileSync(join(ctx.harper.dataRootDir, 'components', project, 'web', 'index.html'), 'utf8'),
 				'<h1>Hello, Peer Branch!</h1>'
 			);
-			// The deploy succeeding proves only that the content was read. The retry's log line proves a read gave up on
-			// its no-progress window first, so the content could not have arrived inside the first window.
+			// Success alone would also follow from content landing inside the first window; the retry line rules that out.
 			const loggedStallRetry = () =>
 				readHarperLog()
 					.split('\n')

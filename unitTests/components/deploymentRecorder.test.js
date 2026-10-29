@@ -780,7 +780,6 @@ describe('readPayloadBlobWithRetry', () => {
 		});
 	}
 
-	// One step per pull: a chunk to enqueue, or an Error to fail the stream with.
 	function pullSequenceStream(steps) {
 		let step = 0;
 		return new ReadableStream({
@@ -931,8 +930,7 @@ describe('readPayloadBlobWithRetry', () => {
 			await decodeFromDatabase(() => saveBlob(blob).saving, store);
 			const filePath = getFilePathForBlob(blob);
 			const lockKey = getFileId(blob) + ':blob';
-			// The state a peer's replication receive leaves while the content is in flight: header with the final
-			// size on disk, no content bytes, and the writer lock held.
+			// A replication receive in flight: header on disk, no content, writer lock held.
 			assert.ok(store.tryLock(lockKey), 'the test must hold the blob write lock');
 			const fd = openSync(filePath, 'r+');
 			let landed = false;
@@ -952,8 +950,7 @@ describe('readPayloadBlobWithRetry', () => {
 				let attempts = 0;
 				const streamFactory = () => {
 					attempts++;
-					// Only once the first read has given up on its no-progress window, so the read below can only
-					// succeed through a retry.
+					// Only after the first read has stalled out, so success requires a retry.
 					if (attempts === 2) landContent();
 					return blob.stream();
 				};
