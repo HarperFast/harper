@@ -372,6 +372,12 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 				assert.deepStrictEqual(await run(conditions()), ['r03']);
 			});
 
+			it('sizes a singleton primary-key path like the primary key, and never leads with a valueless prefix', () => {
+				assert.strictEqual(estimateCondition(Table)({ attribute: ['id'], value: 'r03' }), 1);
+				for (const value of [null, undefined, ''])
+					assert.strictEqual(conditionDrivesIndex(Table, { attribute: 'a', comparator: 'starts_with', value }), false);
+			});
+
 			it('seeks c = common ahead of a union with a branch that cannot drive', async () => {
 				const conditions = () => [
 					common(),

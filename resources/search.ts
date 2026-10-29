@@ -2380,12 +2380,12 @@ function usableIndex(table, attributeName): any {
  * full scan it filters or an error; it must follow searchByIndex's `needFullScan` and missing-index decisions.
  */
 export function conditionDrivesIndex(table, condition): boolean {
+	if (condition.negated) return false;
 	if (condition.conditions) {
 		return condition.operator === 'or'
 			? condition.conditions.length > 0 && condition.conditions.every((branch) => conditionDrivesIndex(table, branch))
 			: condition.conditions.some((leg) => conditionDrivesIndex(table, leg));
 	}
-	if (condition.negated) return false;
 	let attributeName = condition[0] ?? condition.attribute;
 	const value = condition[1] ?? condition.value;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
@@ -2420,7 +2420,7 @@ export function conditionDrivesIndex(table, condition): boolean {
 			if (value !== null) return false;
 			break;
 		case 'starts_with':
-			if (value?.toString().length === 0) return false;
+			if (!value?.toString().length) return false;
 	}
 	const index =
 		attributeName == null || attributeName === table.primaryKey
@@ -2489,7 +2489,8 @@ export function estimateCondition(table) {
 				// estimate that would cross the native FFI boundary for nothing.
 				condition.estimated_count = Infinity;
 			} else if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
-				const attribute_name = condition[0] ?? condition.attribute;
+				let attribute_name = condition[0] ?? condition.attribute;
+				if (Array.isArray(attribute_name) && attribute_name.length === 1) attribute_name = attribute_name[0];
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
 					const attribute = findAttribute(table.attributes, attribute_name[0]);
