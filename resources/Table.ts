@@ -6757,7 +6757,8 @@ export function makeTable(options): TableResourceClass {
 								write.stagedEntry = {
 									value: recordToStore,
 									metadataFlags:
-										(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) | (options?.localOnly ? LOCAL_ONLY : 0),
+										(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
+										(options?.localOnly ? LOCAL_ONLY : 0),
 									residencyId: keepWriterReplica ? undefined : residencyId,
 									expiresAt,
 									residencySlot,
@@ -9498,7 +9499,9 @@ export function makeTable(options): TableResourceClass {
 							// the message's residency routes it; the record keeps its own
 							residencyId: residencyPolicy ? undefined : options?.residencyId,
 							recordResidencyId: base?.residencyId ?? 0,
-							residencySlot: residencyPolicy?.byAttribute ? (base?.residencySlot ?? existingEntry?.residencySlot) : undefined,
+							residencySlot: residencyPolicy?.byAttribute
+								? (base?.residencySlot ?? existingEntry?.residencySlot)
+								: undefined,
 							expiresAt: base?.expiresAt,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
@@ -9521,7 +9524,9 @@ export function makeTable(options): TableResourceClass {
 							metadataFlags,
 							residencyId: base?.residencyId,
 							expiresAt: base?.expiresAt,
-							residencySlot: residencyPolicy?.byAttribute ? (base?.residencySlot ?? existingEntry?.residencySlot) : undefined,
+							residencySlot: residencyPolicy?.byAttribute
+								? (base?.residencySlot ?? existingEntry?.residencySlot)
+								: undefined,
 							localTime: removal?.localTime,
 							nodeId: removal?.nodeId,
 							additionalAuditRefs: removal?.additionalAuditRefs,
