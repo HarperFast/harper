@@ -862,7 +862,7 @@ function transactional(
 						} else {
 							id = parsedId;
 						}
-						if (id) {
+						if (id != null && id !== '') {
 							query.id = id = this.coerceId(id);
 						}
 					}
