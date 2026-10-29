@@ -10,8 +10,10 @@
  * `restartRequired` is only attributable to an extension for a component with no JS modules of its
  * own. Where there are any, `Scope.#onDeployEnd` also consults `RuntimeModuleTracker.finishDeploy()`
  * and requests a restart whenever a tracked module changed or any module loaded during the deploy.
- * So the jsResource leg pins the operator-visible flag, and the graphqlSchema leg pins that
- * extension's own request.
+ * So the jsResource leg checks only the aggregate flag: it stays green with jsResource's own
+ * `'change'` request removed, and goes red only once the tracker's is removed too. The handler's
+ * request is covered by unitTests/resources/jsResource.test.js. The graphqlSchema fixture has no JS
+ * modules, so its legs pin that extension's own request.
  *
  * fastifyRoutes has no leg here: a route folder new to a running process is still lost until a
  * restart (F-230), so any assertion about it would pin the defect rather than a contract.
@@ -38,7 +40,10 @@ const RESTART_POLL_TIMEOUT_MS = 60_000;
 const RESTART_TEST_TIMEOUT_MS = 2 * RESTART_POLL_TIMEOUT_MS + REDEPLOY_SETTLE_TIMEOUT_MS + 10_000;
 const BOOT_TIMEOUT_MS = 60_000;
 // A negative sampled once is only true at that instant, so every "still stale", "still absent" and
-// "no restart requested" claim holds across this window instead.
+// "no restart requested" claim holds across this window instead. EntryHandler has no debounce: the
+// resumed scan emits every 'add' and 'change' before its 'ready', so the window bounds a handler's
+// own reaction to those events. A reload that lands later passes the hold and is caught only by the
+// stale-state re-check just before each restart.
 const QUIET_WINDOW_MS = 3_000;
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -154,7 +159,7 @@ suite(
 			strictEqual(await getRestartRequired(client), false, 'a freshly booted instance must not already need a restart');
 		});
 
-		test('redeploy without restart: new file loads immediately, changed file stays frozen and flags restartRequired', async () => {
+		test('redeploy without restart: new file loads immediately, changed file stays frozen, aggregate restartRequired flips', async () => {
 			await redeployWithoutRestart(client, PROJECT, {
 				'config.yaml': "rest: true\njsResource:\n  files: '*.js'\n",
 				'resources.js': `export class Existing extends Resource {\n\tstatic path = '${EXISTING_ROUTE}';\n\tstatic loadAsInstance = false;\n\tasync get() {\n\t\treturn { version: 2 };\n\t}\n}\n`,
@@ -162,7 +167,7 @@ suite(
 			});
 
 			const flagged = await pollUntil(() => getRestartRequired(client), REDEPLOY_SETTLE_TIMEOUT_MS);
-			ok(flagged, 'a redeploy that leaves a stale loaded module behind must flip restartRequired');
+			ok(flagged, 'a redeploy that leaves a stale loaded module behind must flip the operator-visible restartRequired');
 
 			let lastNew: unknown;
 			const served = await pollUntil(async () => {
@@ -356,6 +361,11 @@ suite(
 					RESTART_POLL_TIMEOUT_MS
 				);
 				ok(converged, 'a real restart must expose the changed field');
+				strictEqual(
+					(await describeTable('QA786Widget2')).status,
+					200,
+					'the restart must keep the table schema2.graphql declares'
+				);
 				const cleared = await pollUntil(async () => !(await getRestartRequired(client)), REDEPLOY_SETTLE_TIMEOUT_MS);
 				ok(cleared, 'restartRequired must clear once the restart has landed');
 			}
