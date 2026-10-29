@@ -5,7 +5,8 @@ import { closeSync, ftruncateSync, openSync, readFileSync, writeSync } from 'nod
 const HEADER_SIZE = 8;
 
 // Components see only the `harper` package exports, so the blob's file id is recovered from its path: the inverse of
-// resources/blob.ts getFilePath, `<root>/<id[-9:-6] || '0'>/<id[-6:-3] || '0'>/<id[-3:]>`.
+// resources/blob.ts getFilePath, `<root>/<id[-9:-6] || '0'>/<id[-6:-3] || '0'>/<id[-3:]>`. A wrong id locks an
+// unrelated key, so the read sees no writer and fails the deploy as an incomplete blob (500) instead of stalling.
 function fileIdFromPath(path) {
 	const outer = basename(dirname(dirname(path)));
 	const inner = basename(dirname(path));
