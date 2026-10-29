@@ -1239,9 +1239,12 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 	let hasWildcards = false;
 	// `.ready` keeps a rejected attempt for holders that read it directly; only initialize() retries
 	let lastAttemptRejected = false;
+	let retireRejectedAttempt: (() => void) | undefined;
 	(SNICallback as any).initialize = (server: any) => {
 		if ((SNICallback as any).ready && !lastAttemptRejected) return (SNICallback as any).ready;
 		lastAttemptRejected = false;
+		retireRejectedAttempt?.();
+		retireRejectedAttempt = undefined;
 		if (server) {
 			server.secureContexts = secureContexts;
 			server.secureContextsListeners ??= [];
@@ -1252,8 +1255,15 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 			// Pass-level failure before `.ready` settles still rejects (boot surfaces it); after,
 			// the only safe response is to keep serving live state and retry.
 			let readySettled = false;
+			let rejectedReady = false;
 			const settle = (value?) => {
 				readySettled = true;
+				if (rejectedReady) {
+					// a live attempt that rejected and then recovered on its own: later initialize() calls see the recovery
+					rejectedReady = lastAttemptRejected = false;
+					retireRejectedAttempt = undefined;
+					(SNICallback as any).ready = Promise.resolve(value);
+				}
 				resolve(value);
 			};
 			// Self-retry state for passes with per-record failures: the signature identifies the
@@ -1319,11 +1329,15 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 				}
 			};
 			let retired = false;
+			const retire = () => {
+				retired = true;
+				clearTimeout(rebuildTimer);
+				clearTimeout(failureRetryTimer);
+				activeSubscription?.then((subscription: any) => subscription?.end?.()).catch(() => {});
+			};
 			function updateTLS() {
 				if (retired) return;
-				// The pass is the selector's own work: inside a request's context its table reads would run that
-				// request's authorization (and consume its one-shot `authorize`), and its timers and
-				// subscription would adopt that context for the selector's lifetime.
+				// the pass is the selector's own work, never the triggering request's (security/DESIGN.md)
 				if (contextStorage.getStore() !== undefined) return contextStorage.exit(updateTLS);
 				try {
 					if (databases === undefined) {
@@ -1665,17 +1679,20 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 					server?.secureContextsListeners.forEach((listener) => listener());
 					settle(defaultContext);
 				} catch (error) {
-					if (readySettled) {
+					if (readySettled || rejectedReady) {
 						// Live state is untouched (candidates are pass-local): keep serving it and retry.
 						reportFailures([{ cert: { name: `(${type} rebuild pass)` }, error }]);
 						scheduleFailureRetry();
 						return;
 					}
-					retired = lastAttemptRejected = true;
-					clearTimeout(rebuildTimer);
-					clearTimeout(failureRetryTimer);
-					activeSubscription?.then((subscription: any) => subscription?.end?.()).catch(() => {});
+					rejectedReady = lastAttemptRejected = true;
 					reject(error);
+					// A listener calls initialize() once, so a live attempt keeps retrying until a later initialize()
+					// replaces it; a one-shot attempt has nothing to keep.
+					if (liveReload) {
+						retireRejectedAttempt = retire;
+						scheduleFailureRetry();
+					} else retire();
 				}
 			}
 			let rebuildTimer;

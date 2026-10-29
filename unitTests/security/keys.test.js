@@ -699,21 +699,37 @@ describe('Test keys module', () => {
 		let databases;
 		let contextStorage;
 		let systemDescriptor;
+		let certificates;
+		const restores = [];
+		// replaces a method of the real certificate table for one test
+		const replace = (name, implementation) => {
+			const own = Object.getOwnPropertyDescriptor(certificates, name);
+			const original = certificates[name];
+			certificates[name] = implementation(original);
+			restores.push(() => (own ? Object.defineProperty(certificates, name, own) : delete certificates[name]));
+		};
+		const restore = () => {
+			while (restores.length) restores.pop()();
+		};
+		const failingSearch = () => () => {
+			throw new Error('transient read');
+		};
 
 		beforeEach(() => {
 			databases = require('#src/resources/databases').databases;
 			contextStorage = require('#src/resources/transaction').contextStorage;
 			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
+			certificates = databases.system.hdb_certificate;
 		});
 
 		afterEach(() => {
+			restore();
 			delete databases.system;
 			Object.defineProperty(databases, 'system', systemDescriptor);
 		});
 
 		it('builds from the certificate table even when an anonymous request triggered it', async function () {
 			this.timeout(5000);
-			// what REST hands a resource for a request with no credentials
 			const anonymousRequest = { authorize: true, user: undefined };
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
 			const selector = keys.createTLSSelector('replication', undefined, true);
@@ -721,51 +737,69 @@ describe('Test keys module', () => {
 			assert.ok(pseudoServer.secureContexts.size > 0, 'the selector must see the certificate table');
 			assert.strictEqual(anonymousRequest.authorize, true, "the request's authorization gate is left for the request");
 			assert.throws(
-				() => contextStorage.run(anonymousRequest, () => Array.from(databases.system.hdb_certificate.search([]))),
+				() => contextStorage.run(anonymousRequest, () => Array.from(certificates.search([]))),
 				/Must login/,
 				'the request itself still cannot read the certificate table'
 			);
 		});
 
-		it('retries an initialization that rejected', async function () {
+		it('retries a one-shot initialization that rejected', async function () {
 			this.timeout(5000);
-			const searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').throws(new Error('transient read'));
+			replace('search', failingSearch);
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
 			const selector = keys.createTLSSelector('replication', undefined, false);
 			const failed = selector.initialize(pseudoServer);
 			await assert.rejects(failed, /transient read/);
 			assert.strictEqual(selector.ready, failed, 'holders reading `.ready` directly still see the failure');
-			searchStub.restore();
+			restore();
 			await selector.initialize(pseudoServer);
 			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
 		});
 
-		it('retires an attempt that rejected after waiting for the system database', async function () {
+		it('keeps a rejected listener selector retrying until it recovers on its own', async function () {
 			this.timeout(10000);
-			const certificates = databases.system.hdb_certificate;
-			let ended = false;
-			const subscribe = certificates.subscribe;
-			sandbox.stub(certificates, 'subscribe').callsFake(function (...args) {
-				return subscribe.apply(this, args).then((subscription) => {
-					const end = subscription.end;
-					subscription.end = function () {
-						ended = true;
-						return end.apply(this, arguments);
-					};
-					return subscription;
-				});
-			});
-			const searchStub = sandbox.stub(certificates, 'search').throws(new Error('transient read'));
+			replace('search', failingSearch);
 			delete databases.system;
-			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			let notified = 0;
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [() => notified++] };
 			const selector = keys.createTLSSelector('mqtt', undefined, true);
 			const failed = selector.initialize(pseudoServer);
 			Object.defineProperty(databases, 'system', systemDescriptor);
 			await assert.rejects(failed, /transient read/);
-			await waitFor(() => ended, { timeout: 2000, message: "the failed attempt's subscription was not ended" });
-			searchStub.restore();
+			restore();
+			await waitFor(() => pseudoServer.secureContexts.size > 0, {
+				timeout: 5000,
+				message: 'a listener that never calls initialize() again must still recover',
+			});
+			assert.ok(notified > 0, 'listeners registered before the failure are told about the recovery');
+			assert.ok(await selector.ready, '`.ready` now reports the recovery');
+		});
+
+		it('replaces a rejected listener attempt when initialize() is called again', async function () {
+			this.timeout(10000);
+			let ended = false;
+			replace(
+				'subscribe',
+				(subscribe) =>
+					function (...args) {
+						return subscribe.apply(this, args).then((subscription) => {
+							const end = subscription.end;
+							subscription.end = function () {
+								ended = true;
+								return end.apply(this, arguments);
+							};
+							return subscription;
+						});
+					}
+			);
+			replace('search', failingSearch);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await assert.rejects(selector.initialize(pseudoServer), /transient read/);
+			restore();
 			await selector.initialize(pseudoServer);
 			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
+			await waitFor(() => ended, { timeout: 2000, message: "the replaced attempt's subscription was not ended" });
 		});
 	});
 
