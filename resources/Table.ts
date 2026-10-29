@@ -5903,7 +5903,7 @@ export function makeTable(options): TableResourceClass {
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
-						// A publish or relocate of this transaction saves when it is added and restamps the head, before or
+						// A relocate, or a publish with nothing pending before it, saves when it is added and restamps the head, before or
 						// after this deferred write, so a tie it made says nothing about this write: order it against the
 						// committed head. LMDB commits pass no committedBy, so it keeps the predecessor exception below.
 						if (isRocksDB && !audit && precedesExisting === 0)
@@ -6753,7 +6753,6 @@ export function makeTable(options): TableResourceClass {
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
 							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
 							if (recordToStore !== undefined) {
-								// only what a following publish must carry; defaults stay off the common-case entry
 								const staged: Partial<Entry> = { value: recordToStore };
 								const stagedFlags =
 									(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
@@ -9532,9 +9531,7 @@ export function makeTable(options): TableResourceClass {
 							additionalAuditRefs: removal?.additionalAuditRefs,
 							unchanged: !priorStagedOp || priorStagedOp.stagedEntry.unchanged === true,
 						};
-						// an attribute patch after this publish still needs the complete record an earlier write staged
 						write.completeResidencyRecord = priorStagedOp?.completeResidencyRecord;
-						// its saved blobs are the message's, which its audit entry keeps
 						write.blobsAuditReferenced = true;
 						if (priorStagedOp) priorStagedOp.superseded = true;
 					}

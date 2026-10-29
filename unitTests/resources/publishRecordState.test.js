@@ -41,7 +41,6 @@ describe('publish leaves the record unchanged', function () {
 			audit: false,
 		});
 		if (Unaudited.indexingOperation) await Unaudited.indexingOperation;
-		// no indexed attributes, so an invalidation stores a null stub
 		Unindexed = table({
 			table: 'PublishRecordStateUnindexed',
 			database: 'publishRecordState',
