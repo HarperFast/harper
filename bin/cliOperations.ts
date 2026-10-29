@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
-import { fileIdentity } from '../utility/fileIdentity.ts';
+import { fileIdentity, statArchiveFile } from '../utility/fileIdentity.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
@@ -611,7 +611,7 @@ const PREPARE_OPERATION: any = {
 	restore_backup: async (req, target) => {
 		if (req.file === undefined) return;
 		const archivePath = path.resolve(String(req.file));
-		const stats = await fs.promises.stat(archivePath);
+		const stats = statArchiveFile(archivePath);
 		delete req.file;
 		// a local server reads the file where it is; it refuses with 412 when it does not see this very
 		// file (a tunnel, a container), and the CLI then uploads it

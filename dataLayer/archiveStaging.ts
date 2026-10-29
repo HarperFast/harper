@@ -86,6 +86,12 @@ async function fetchFromS3(
 	);
 }
 
+/** A tar or gzip decoding failure means the file is not an archive at all; disk and policy errors pass through. */
+function notAnArchive(error: any, restoredFrom: string): unknown {
+	if (error instanceof ClientError || (error?.code && !String(error.code).startsWith('Z_'))) return error;
+	return new ClientError(`${restoredFrom} is not a get_backup archive (a .tar or .tar.gz): ${error?.message ?? error}`);
+}
+
 /** Archive blob roots by their recorded index; a gap must stay a gap, or blobs would be mis-addressed. */
 function archiveBlobRootIndices(treeDir: string): number[] {
 	const blobsDir = join(treeDir, 'blobs');
@@ -267,7 +273,9 @@ export async function stageArchive(args: StageArchiveArgs) {
 	}
 
 	const treeDir = join(stagingDir, 'tree');
-	const tally = await tallyArchive(archivePath, { bsize: statfsSync(stagingDir).bsize });
+	const tally = await tallyArchive(archivePath, { bsize: statfsSync(stagingDir).bsize }).catch((error) => {
+		throw notAnArchive(error, args.restoredFrom);
+	});
 	// refuse an archive the staging device cannot hold before writing any of it; extraction then debits
 	// the same bytes as it lands
 	(await ledger.reserve(stagingDir, tally.bytes, tally.inodes)).release(0);
@@ -277,9 +285,16 @@ export async function stageArchive(args: StageArchiveArgs) {
 			ledger,
 			allowMissingManifest: args.acceptIncompatible,
 			acceptIncompatible: args.acceptIncompatible,
+		}).catch((error) => {
+			throw notAnArchive(error, args.restoredFrom);
 		});
 		if (args.serverPath === undefined) rmSync(archivePath, { force: true });
 		await validateTransactionLogs(treeDir);
+		if (!existsSync(join(treeDir, 'CURRENT'))) {
+			throw new ClientError(
+				`${args.restoredFrom} is an archive but holds no Harper database backup (it has no RocksDB CURRENT file)`
+			);
+		}
 		const tables = provenTables(treeDir, databaseName);
 		const blobIndices = archiveBlobRootIndices(treeDir);
 		const hasBlobs = extracted.manifest ? extracted.manifest.blobs : blobIndices.length > 0;

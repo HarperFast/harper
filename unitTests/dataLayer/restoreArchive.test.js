@@ -2,7 +2,7 @@
 
 const testUtils = require('../testUtils.js');
 const assert = require('node:assert');
-const { createHash, randomUUID } = require('node:crypto');
+const { createHash, randomBytes, randomUUID } = require('node:crypto');
 const {
 	appendFileSync,
 	createWriteStream,
@@ -404,6 +404,63 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 			assert.deepStrictEqual(stagingEntries(name), []);
 		});
 
+		describe('input errors', function () {
+			const zlib = require('node:zlib');
+
+			async function assertRefused(archive, fields, status, pattern) {
+				const name = freshName();
+				await seedTarget(name);
+				const repositoryBefore = await repositoryState(name);
+				await assert.rejects(
+					restoreBackup({ ...SU, database: name, ...serverFile(archive), ...fields }),
+					(error) => error.statusCode === status && pattern.test(error.message),
+					`${archive} should be refused with ${status} ${pattern}`
+				);
+				await assertTargetUntouched(name, repositoryBefore);
+			}
+
+			const notArchives = {
+				'a text file named .tar.gz': () => Buffer.from('this is just some text, not an archive\n'.repeat(20)),
+				'random bytes named .tar.gz': () => randomBytes(4096),
+				'a gzip of a non-tar payload': () =>
+					zlib.gzipSync(Buffer.from('plain text, gzipped but not a tar\n'.repeat(50))),
+			};
+			for (const [label, content] of Object.entries(notArchives)) {
+				it(`refuses ${label} as not a get_backup archive`, async function () {
+					const file = join(tempDir, `notarchive-${++sequence}.tar.gz`);
+					writeFileSync(file, content());
+					await assertRefused(file, {}, 400, /is not a get_backup archive/);
+				});
+			}
+
+			it('refuses an empty file with a 400 that says it has no entries', async function () {
+				const file = join(tempDir, `empty-${++sequence}.tar.gz`);
+				writeFileSync(file, '');
+				await assertRefused(file, {}, 400, /no entries/i);
+			});
+
+			it('refuses a tar.gz that is not a backup, then says it holds no database on accept_incompatible_backup', async function () {
+				const file = join(tempDir, `unrelated-${++sequence}.tar`);
+				await packArchive(file, [
+					{ header: { name: 'notes.txt' }, body: 'hello' },
+					{ header: { name: 'data/other.bin' }, body: Buffer.alloc(64, 1) },
+				]);
+				const gz = `${file}.gz`;
+				writeFileSync(gz, zlib.gzipSync(readFileSync(file)));
+				await assertRefused(gz, {}, 400, /first entry must be harper-backup\.json.*restore it anyway/);
+				await assertRefused(gz, { accept_incompatible_backup: true }, 400, /holds no Harper database backup/);
+			});
+
+			it('refuses a manifest-first archive that has no database files', async function () {
+				const file = join(tempDir, `nodb-${++sequence}.tar`);
+				await packArchive(file, [
+					{ header: { name: ARCHIVE_MANIFEST_ENTRY }, body: JSON.stringify(tarManifest) },
+					{ header: { name: 'readme.txt' }, body: 'no database here' },
+				]);
+				await assertRefused(file, {}, 400, /holds no Harper database backup/);
+			});
+		});
+
 		it('refuses an archive with a symlink entry, leaving the target untouched', async function () {
 			const linked = join(tempDir, 'symlink.tar');
 			await packArchive(linked, [
@@ -701,6 +758,55 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 				await assertRestored(name, { reload: true });
 				assert.deepStrictEqual(stagingEntries(name), []);
 				assert.ok(readFileSync(gzArchive).equals(archiveBefore));
+			});
+
+			it('refuses a missing file with a 404 that says it does not exist', async function () {
+				const name = freshName();
+				await assert.rejects(
+					restoreBackupOffline(
+						name,
+						undefined,
+						undefined,
+						undefined,
+						undefined,
+						undefined,
+						undefined,
+						'/nonexistent/x.tar.gz'
+					),
+					(error) => error.statusCode === 404 && /file=\/nonexistent\/x\.tar\.gz does not exist/.test(error.message)
+				);
+				assert.deepStrictEqual(stagingEntries(name), []);
+			});
+
+			it('refuses a restore with no backups and no file with a 404 naming file=', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				await closeDatabase(name);
+				await assert.rejects(
+					restoreBackupOffline(name),
+					(error) => error.statusCode === 404 && /has no backup to restore.*file=<path>/.test(error.message)
+				);
+				assert.strictEqual(restoreMarkerPresent(resolveDatabasePath(name)), false, 'no marker');
+				assert.strictEqual(readRestoreReceipt(resolveDatabasePath(name)).kind, 'absent', 'no receipt');
+				assert.deepStrictEqual(stagingEntries(name), []);
+			});
+
+			it('refuses a non-archive file with a 400 and leaves the database unchanged', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				await closeDatabase(name);
+				const file = join(tempDir, `offline-notarchive-${++sequence}.tar.gz`);
+				writeFileSync(file, randomBytes(4096));
+				await assert.rejects(
+					restoreBackupOffline(name, undefined, undefined, undefined, undefined, undefined, undefined, file),
+					(error) => error.statusCode === 400 && /is not a get_backup archive/.test(error.message)
+				);
+				assert.strictEqual(restoreMarkerPresent(resolveDatabasePath(name)), false, 'no marker');
+				assert.strictEqual(readRestoreReceipt(resolveDatabasePath(name)).kind, 'absent', 'no receipt');
+				assert.deepStrictEqual(stagingEntries(name), []);
+				resetDatabases();
+				const Items = await waitFor(() => getDatabases()[name]?.Items, { timeout: 10000 });
+				assert.strictEqual((await Items.get('junk')).label, 'junk', 'the records are unchanged');
 			});
 		});
 	});
@@ -1786,6 +1892,33 @@ describe('restore_backup CLI', function () {
 			const [file] = upload.parts.filter((part) => part.kind === 'file');
 			assert.strictEqual(file.name, 'payload');
 			assert.ok(file.bytes.equals(readFileSync(archive)));
+		});
+	});
+
+	describe('a file that cannot be sent', function () {
+		const errors = [];
+		beforeEach(function () {
+			console.error = (...args) => errors.push(args.join(' '));
+		});
+		afterEach(function () {
+			errors.length = 0;
+		});
+
+		it('names a missing file and sends no request', async function () {
+			const missing = join(tempDir, 'does-not-exist.tar.gz');
+			await assert.rejects(send(missing), /process\.exit\(1\)/);
+			assert.strictEqual(requests.length, 0, 'nothing reached the server');
+			const output = errors.join('\n');
+			assert.ok(output.includes(`file=${missing} does not exist`), output);
+			assert.doesNotMatch(output, /not running|Failed to connect/i);
+		});
+
+		it('names a directory as not a file and sends no request', async function () {
+			await assert.rejects(send(tempDir), /process\.exit\(1\)/);
+			assert.strictEqual(requests.length, 0, 'nothing reached the server');
+			const output = errors.join('\n');
+			assert.ok(output.includes(`file=${tempDir} is not a file`), output);
+			assert.doesNotMatch(output, /not running|Failed to connect/i);
 		});
 	});
 

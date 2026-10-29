@@ -1,7 +1,7 @@
 'use strict';
 
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { open, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join, relative, resolve, sep } from 'node:path';
@@ -12,7 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, getRegistryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
-import { fileIdentity } from '../utility/fileIdentity.ts';
+import { fileIdentity, statArchiveFile } from '../utility/fileIdentity.ts';
 import { publishRestore } from './restorePublication.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import { cancelRestartRestore, requestRestartRestore, resumeRestartRestore } from './restoreIntent.ts';
@@ -1412,7 +1412,7 @@ export async function restoreBackupOffline(
 		const serverPath = resolve(archiveFile!);
 		const request = {
 			server_path: serverPath,
-			server_path_identity: fileIdentity(statSync(serverPath)),
+			server_path_identity: fileIdentity(statArchiveFile(serverPath)),
 			accept_incompatible_backup: acceptIncompatible,
 			...(requestedBackupId !== undefined ? { backup_id: requestedBackupId } : {}),
 			...(immutableSource ? { immutable_source: true } : {}),

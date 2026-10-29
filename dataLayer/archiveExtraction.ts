@@ -173,7 +173,7 @@ export async function extractArchive(
 				if (header.type === 'file' && relativePath === ARCHIVE_MANIFEST_ENTRY) return;
 				throw new ClientError(
 					`The archive's first entry must be ${ARCHIVE_MANIFEST_ENTRY}, but it is ${quote(relativePath || header.name)}; ` +
-						`it was not produced by a get_backup that records one. Set accept_incompatible_backup to import it anyway.`
+						`it was not produced by a get_backup that records one. Set accept_incompatible_backup to restore it anyway.`
 				);
 			},
 			async onDirectory(relativePath, segments) {
