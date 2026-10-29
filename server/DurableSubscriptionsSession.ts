@@ -1217,15 +1217,31 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const sent = state?.unacked.get(messageId);
 		if (sent?.late) state.lateUnacked--;
 		state?.unacked.delete(messageId);
-		// a replay behind an older unacknowledged delivery revisits it
-		if (sent && update.qos === 1 && this.receivedCount < QOS1_RECEIVED_LIMIT) {
+		// a replay revisits it only while the position stays below it
+		if (
+			sent &&
+			update.qos === 1 &&
+			this.receivedCount < QOS1_RECEIVED_LIMIT &&
+			this.positionMayStayBelow(state, sent.key)
+		) {
 			this.addReceived(state, [sent.key, sent.ordinal, deliveryId(sent.id)]);
 			this.qos1ReceiptsUnsaved = true;
 		}
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
 	}
-	/** A QoS 1 receipt the position did not pass needs a save of its own. */
+	/** Mirrors `nextPosition`: whether the next position can stop below `key`. */
+	positionMayStayBelow(state: TopicState, key: number): boolean {
+		const subscription = state.subscription;
+		if (subscription?.progress === undefined) {
+			if (!state.keysPerEntry) return true;
+		} else if (subscription.sentCount !== state.consumed || !(subscription.progress() >= key)) return true;
+		for (const unacked of state.unacked.values()) {
+			if (unacked.key <= key) return true;
+			if (state.lateUnacked === 0) break;
+		}
+		return false;
+	}
 	keepsUnsavedReceipts() {
 		return this.qos1ReceiptsUnsaved && this.receivedCount > 0;
 	}
