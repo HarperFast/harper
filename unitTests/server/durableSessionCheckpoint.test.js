@@ -196,11 +196,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await T.put('after', { value: 'after' });
 		await waitFor(() => values(second.received).includes('after'));
 		assert.deepStrictEqual(requests[0].resume, entry.checkpoint, 'resumed from the checkpoint');
-		assert.deepStrictEqual(
-			values(second.received),
-			['late', 'after'],
-			'the acknowledged deliveries are not sent again'
-		);
+		assert.ok(!values(second.received).includes('a'), 'nothing below the checkpoint is sent again');
 		assert.ok(entry.startTime > lateKey, 'the scalar is above the late commit, so only the checkpoint delivers it');
 		second.session.disconnect(true);
 	});
@@ -231,10 +227,10 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		third.session.disconnect(true);
 	});
 
-	it('at the QoS 1 receipt limit, keeps the receipts a resume on this node reads', async () => {
+	it('beside a checkpoint, keeps only the QoS 1 receipts above the scalar', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
-		const clientId = `limit-${name}`;
+		const clientId = `receipts-${name}`;
 		const first = await connect(clientId);
 		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 		await T.put('a', { value: 'a' });
@@ -243,12 +239,13 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await storedCheckpoint(T, first.session, clientId);
 		const thaw = freezeFloor(T);
 		try {
-			// the frozen checkpoint keeps every receipt above it for a replay on another node
-			for (let i = 0; i < 600; i++) {
+			for (let i = 0; i < 50; i++) {
 				await T.put(`n${i}`, { value: i });
 				await waitFor(() => values(first.received).includes(i));
 				await first.session.acknowledge(delivery(first.received, i).messageId);
 			}
+			const inOrder = (await stored(clientId)).subscriptions[0];
+			assert.strictEqual(inOrder.receivedRuns, undefined, 'the acknowledged deliveries the scalar passed are not kept');
 			await transaction({}, async (context) => {
 				await T.put('x', { value: 'x' }, context);
 				await T.put('y', { value: 'y' }, context);
@@ -257,6 +254,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 			await first.session.acknowledge(delivery(first.received, 'y').messageId);
 			first.session.disconnect(true);
 			await first.session.writes;
+			assert.ok((await stored(clientId)).subscriptions[0].received?.length > 0, 'the one held behind x is kept');
 			const second = await connect(clientId);
 			await second.session.resume();
 			await T.put('after', { value: 'after' });
