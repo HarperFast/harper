@@ -38,7 +38,6 @@ function loadUpload() {
 // Promisified function
 const pSearchByHash = search.searchByHash;
 const pSearchByValue = search.searchByValue;
-const streamFinished = promisify(stream.finished);
 
 /**
  * Allows for exporting and saving to a file system the receiving system has access to
@@ -186,10 +185,8 @@ export async function saveToLocal(filePath: string, sourceDataFormat: string, da
 		// Create a write stream to the local export file.
 		let writeStream = fs.createWriteStream(filePath);
 		const columns = data.getColumns?.();
-		// Use the toCsvStream helper to convert data to CSV
-		toCsvStream(data, columns).pipe(writeStream);
-		// Wait until done. Throws if there are errors.
-		await streamFinished(writeStream);
+		// Use the toCsvStream helper to convert data to CSV; rejects if the source or the file fails
+		await pipeline(toCsvStream(data, columns), writeStream);
 
 		return {
 			message: LOCAL_CSV_EXPORT_MSG,

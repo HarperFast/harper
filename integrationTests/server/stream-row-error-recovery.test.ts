@@ -1,12 +1,6 @@
 /**
- * A collection read recovers a failing row as an in-band item, but a read-snapshot expiry ends the
- * whole read: the response is cut off rather than finishing as a complete array with an error item.
- *
- * The expiry is raised inside a row's own transform (a nested read that outlives its snapshot), so it
- * reaches the `mapError` recovery callbacks that REST (`serialize`) and the operations API
- * (`preSerialization`) install, not just the outer scan that #3664 already aborts on.
- *
- * The expiry arms need RocksDB (an LMDB read transaction cannot expire); the row-local arms run on both.
+ * A read-snapshot expiry raised inside a row's own transform (a nested read that outlives its snapshot)
+ * cuts the response off; a row's own failure stays an in-band item. The expiry arms need RocksDB.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
@@ -250,6 +244,16 @@ suite('a failing row in a streamed collection read', (ctx: ContextWithHarper) =>
 				const after = await probe();
 				strictEqual(after.threadId, before.threadId);
 				strictEqual(after.observed[after.observed.length - 1], 'ReadSnapshotExpiredError');
+			});
+
+			test('operations API application/x-ndjson: ends with its terminal record', async () => {
+				const capture = await operation(
+					'application/x-ndjson',
+					searchOperation('group', 'h', ['id', 'seq', 'gated'], 2)
+				);
+				const records = lines(capture.body);
+				strictEqual(records.length, 2, capture.body);
+				strictEqual(records[1].$harperStreamError.error, 'ReadSnapshotExpiredError');
 			});
 
 			test('REST application/x-ndjson: ends with its terminal record', async () => {

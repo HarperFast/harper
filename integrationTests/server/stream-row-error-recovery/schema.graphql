@@ -11,7 +11,6 @@ type Parent @table @export {
 	group: String @indexed
 	seq: Int @indexed
 	children: [Child] @relationship(to: parentId)
-	# a row-local failure: an application error for one row
 	flaky: String @computed(from: "seq === 2 ? (() => { throw new Error('flaky failed at seq=2'); })() : 'ok-' + seq")
 	# a nested read that outlives its snapshot: the range opened for the row is released by the idle
 	# monitor while the row waits, so resuming it throws ReadSnapshotExpiredError inside the row's transform

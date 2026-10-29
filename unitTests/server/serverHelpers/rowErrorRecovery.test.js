@@ -10,7 +10,6 @@ const { serialize, registerContentHandlers } = require('#src/server/serverHelper
 const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
 const { ReadSnapshotExpiredError, ServerError } = require('#src/utility/errors/hdbError');
 
-// Rows 1..3; the per-row map throws (or rejects) at row 2, the way a nested read inside a row transform does.
 function rowsFailingAt2(error, { asynchronous = false } = {}) {
 	const perRow = (id) => {
 		if (id === 2) {
@@ -28,12 +27,19 @@ function respond(iterable, accept) {
 }
 
 function drain(readable) {
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		const chunks = [];
 		let failure;
+		const deadline = setTimeout(() => {
+			readable.destroy();
+			reject(new Error('the stream neither ended nor failed within 5s'));
+		}, 5000);
 		readable.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
 		readable.on('error', (error) => (failure = error));
-		readable.on('close', () => resolve({ body: Buffer.concat(chunks).toString(), failure }));
+		readable.on('close', () => {
+			clearTimeout(deadline);
+			resolve({ body: Buffer.concat(chunks).toString(), failure });
+		});
 	});
 }
 
@@ -71,7 +77,6 @@ for (const asynchronous of [false, true]) {
 		});
 
 		it('fails a CSV response when the read snapshot has expired', async function () {
-			this.timeout(5000);
 			const expired = new ReadSnapshotExpiredError();
 			const { failure } = await drain(respond(rowsFailingAt2(expired, { asynchronous }), 'text/csv'));
 			assert.strictEqual(failure, expired);

@@ -1017,7 +1017,7 @@ export function toCsvStream(data, columns?) {
 		},
 	});
 
-	// pipeline, not pipe: a source error must fail the returned stream rather than be emitted with no listener
+	// a source error must fail the returned stream, which the HTTP layer reports; pipe() forwards none
 	return stream.pipeline(readStream, csvTransform, () => {});
 }
 
