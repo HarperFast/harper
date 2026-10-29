@@ -73,11 +73,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	getReadTxn(): any {
-		// used optimistically
-		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.renewIdleTimeout();
 		if (this.stale) this.stale = false;
 		if (this.readTxn) {
+			this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 			if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 			return this.readTxn;
 		}
@@ -87,6 +86,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
+		this.readTxnRefCount = 1;
 		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
@@ -119,12 +119,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// nativeCommitAttemptEnded() removes this enrollment once the outcome is known.
 			if (!this.nativeCommitSubmitted) trackedTxns.delete(this as any);
 			this.readTxn = null;
+			this.readTxnRefCount = 0;
+			this.baseReadRefConsumed = true;
 			this.completeDeferredContextRelease();
 		}
 	}
 
 	disregardReadTxn(): void {
-		if (--this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
 			this.doneReadTxn();
 		}
 	}

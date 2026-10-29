@@ -1139,9 +1139,9 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
-		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.renewReadTimeout();
 		if (this.transaction) {
+			this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
 		}
@@ -1158,6 +1158,7 @@ export class DatabaseTransaction implements Transaction {
 				disableSnapshot: disableSnapshot || this.snapshotFree,
 			})
 		);
+		this.readTxnRefCount = 1;
 		if (disableSnapshot || this.snapshotFree) (this.transaction as any).snapshotDisabled = true;
 
 		if (this.timestamp) {
@@ -1224,6 +1225,7 @@ export class DatabaseTransaction implements Transaction {
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
+		this.baseReadRefConsumed = true;
 		this.handleOpenedAt = 0;
 		return transaction;
 	}
@@ -1348,9 +1350,9 @@ export class DatabaseTransaction implements Transaction {
 
 	disregardReadTxn(): void {
 		// Never release a handle carrying staged writes: commit() skips re-staging a write it has marked
-		// saved, so aborting the handle here drops it. The count is clamped because every getReadTxn()
-		// increments it but only this releases, so an unpaired call would drive it negative and cancel
-		// out a later handle's references.
+		// saved, so aborting the handle here drops it. The count is clamped because a getReadTxn() on a
+		// transaction that is not OPEN and holds no handle takes no reference while its caller still
+		// disregards on a miss, so an unpaired call would otherwise drive it negative and cancel a reader's reference.
 		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
 			if (this.writes.length > 0) return;
 			this.doneReadTxn();
@@ -2823,7 +2825,7 @@ export class DatabaseTransaction implements Transaction {
 				// recursions, immediate-commit re-entries, and a second top-level commit() (wrapper
 				// commit after an explicit in-handler commit) must not steal a reference owned by an
 				// outstanding iterator (doneReadTxn() would then never release the native handle).
-				if (!isImmediateCommit && !this.baseReadRefConsumed) {
+				if (!isImmediateCommit && this.transaction && !this.baseReadRefConsumed) {
 					this.baseReadRefConsumed = true;
 					this.readTxnsUsed--;
 				}
