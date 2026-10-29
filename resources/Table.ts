@@ -5781,9 +5781,9 @@ export function makeTable(options): TableResourceClass {
 					// write's audit refs, which the re-delivery check below reads past (identityBase).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
-					// The head an out-of-order write keeps the expiry of. Every write to the key in this transaction uses the
-					// first one's: RocksDB reloads existingEntry through the transaction, so a later write would otherwise
-					// compare against an earlier one's staged state there but not on LMDB.
+					// The head an out-of-order write keeps the expiry of: the entry before this transaction, or the record an
+					// in-order write in it stored (set at staging). Not existingEntry for a later write: RocksDB reloads it
+					// through the transaction, so it would hold an earlier older write's staged state there but not on LMDB.
 					write.expiryBase = priorStagedOp?.expiryBase ?? existingEntry;
 					let existingRecord =
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
@@ -6825,7 +6825,7 @@ export function makeTable(options): TableResourceClass {
 						Object.is(fieldExpiresAtMs(recordToStore), fieldExpiresAtMs(write.expiryBase.value))
 					) {
 						// Merged under a newer head, this write's expiry is not the record's unless it changed the @expiresAt
-						// field. Its audit entry still carries it: that is what replicas and replay apply.
+						// field. Its audit entry still logs it: that is what replicas and replay apply.
 						auditExpiresAt = expiresAt;
 						expiresAt = write.expiryBase.expiresAt ?? -1;
 					}
@@ -6983,6 +6983,7 @@ export function makeTable(options): TableResourceClass {
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
 								// anything older was already superseded by its own staged successor earlier in this round
 								if (priorStagedOp) priorStagedOp.superseded = true;
+								if (precedesExisting >= 0) write.expiryBase = { value: recordToStore, expiresAt };
 							}
 						}
 					}
@@ -13160,7 +13161,7 @@ export function makeTable(options): TableResourceClass {
 								const backpressure = trackInFlight(repair);
 								if (backpressure) await backpressure;
 							} else if (
-								// the stored deadline is what reads honor; a row stored without one falls back to the field
+								// reads honor the stored deadline; the field decides only for a row stored without one
 								recordEntry.expiresAt != undefined
 									? hasExpired(recordEntry)
 									: recordEntry.value[expiresAtName] < Date.now()

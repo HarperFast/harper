@@ -18,6 +18,7 @@ const {
 	setDeletionDelay,
 } = require('#src/resources/blob');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 
 const ENGINE = process.env.HARPER_STORAGE_ENGINE ?? 'rocksdb';
 const SWEEP_INTERVAL_MS = 60_000;
@@ -159,6 +160,35 @@ describe(`An out-of-order write keeps the newer head's expiry (${ENGINE})`, func
 		// the transaction changed the field the head left alone, so the later write's explicit expiry applies;
 		// on RocksDB the second write would otherwise compare against the first one's staged field
 		assert.strictEqual(merged.expiresAt, explicitExpiresAt);
+	});
+
+	it('an older write in a replicated frame keeps the expiry of the newer write staged before it', async function () {
+		// only a RocksDB apply frame carries a version per write; LMDB applies a frame at one version
+		if (ENGINE === 'lmdb') return this.skip();
+		const Table = newTable([{ name: 'a' }, { name: 'b' }]);
+		const origin = getIdOfRemoteNode('out-of-order-expiry-origin', Table.auditStore);
+		await Table.put('rec', { id: 'rec', a: 'init', b: 'init' });
+		const v0 = Table.primaryStore.getEntry('rec').version;
+		const liveExpiresAt = Date.now() + 60_000;
+
+		const context = { source: {}, sourceApply: true, timestamp: v0 + 200 };
+		await transaction(context, async () => {
+			const options = { isNotification: true, nodeId: origin };
+			(await Table.getResource('rec', context))._writeUpdate('rec', { a: 'from-t2' }, false, {
+				...options,
+				version: v0 + 100,
+				expiresAt: liveExpiresAt,
+			});
+			(await Table.getResource('rec', context))._writeUpdate('rec', { b: 'from-t1' }, false, {
+				...options,
+				version: v0 + 10,
+				expiresAt: Date.now() - 5_000,
+			});
+		});
+
+		const merged = Table.primaryStore.getEntry('rec');
+		assert.deepEqual([merged.value.a, merged.value.b], ['from-t2', 'from-t1'], 'precondition: both merged');
+		assert.strictEqual(merged.expiresAt, liveExpiresAt);
 	});
 
 	it('eviction skips a record an older write renewed through the @expiresAt field', async function () {
