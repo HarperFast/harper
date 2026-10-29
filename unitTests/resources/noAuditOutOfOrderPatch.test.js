@@ -478,16 +478,18 @@ describe('out-of-order patch on an audit:false table', () => {
 		await NoAuditSourced.patch(id, { tag: 'expired' }, { timestamp: now + 100, expiresAt: 0 });
 		revalidatedExpiresAt = Date.now() + 60000;
 		let release;
+		let called = false;
 		sourceGate = new Promise((resolve) => (release = resolve));
-		const called = new Promise((resolve) => (sourceCalled = resolve));
+		sourceCalled = () => (called = true);
 		try {
 			const read = NoAuditSourced.get(id);
-			await called;
+			await waitFor(() => called, { timeout: 5000, message: 'the expired read never called the source' });
 			await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 			release();
 			await read;
 			await waitFor(() => !NoAuditSourced.primaryStore.hasLock(id), { message: 'the revalidation never settled' });
 		} finally {
+			release();
 			sourceGate = sourceCalled = undefined;
 		}
 		// whichever wins (RocksDB's merge keeps the version, so the 304's stale body can replace it), the stored
