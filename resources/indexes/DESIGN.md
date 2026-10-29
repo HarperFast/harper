@@ -10,9 +10,11 @@ Index of every design note: [DESIGN.md](../../DESIGN.md).
 
 ## Graph size on the HNSW query path must come from node ids (`resources/indexes/HierarchicalNavigableSmallWorld.ts`)
 
-The ef auto-scale needs to know how big the graph is, on every query. Two sources that look right are not.
+The ef auto-scale needs to know how big the graph is, on every query. Two sources that look right
+are not.
 
-`getKeysCount()` on a RocksDB store is an exact key scan, so it is O(N); calling it per query puts a linear-in-corpus-size term in front of every vector search (measured in #2125).
+`getKeysCount()` on a RocksDB store is an exact key scan, so it is O(N); calling it per query puts a
+linear-in-corpus-size term in front of every vector search (measured in #2125).
 
 RocksDB's `rocksdb.estimate-num-keys` property is O(1) and looks like the obvious replacement, but it
 counts entries across memtable and SST files without reconciling overwrites. Building an HNSW graph
@@ -27,7 +29,9 @@ makes ef slightly generous. A file-primary (`nativePlane`) index keeps no node-i
 at all — the plane slot carries the primary key — so its count is the plane's id high-water, which
 reads the same way (allocation high-water, generous after deletes until a rebuild).
 
-Note the unit: the JS index store holds two keys per record — the graph node and the primary-key mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that reason, and any change between the two units has to move it to keep the resolved ef the same.
+Note the unit: the JS index store holds two keys per record — the graph node and the primary-key
+mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that
+reason, and any change between the two units has to move it to keep the resolved ef the same.
 
 ## HNSW layers above 0 are for routing only, and must be searched greedily
 

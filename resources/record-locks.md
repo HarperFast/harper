@@ -207,13 +207,13 @@ state one transaction left would share it as their record version, so separate w
 could read as a re-delivery — a shared counter loses an increment. Each write's log key is reserved
 separately at save. A floor the clock has already passed takes the
 clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
-value falls back to it with a warning; read once per thread) is claimed as a unique local key
+value falls back to it with a warning) is claimed as a unique local key
 (`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
 log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, admission
-fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. A far-future replicated
-version can therefore leave the record unavailable until wall time catches up. Rewriting or deleting
-from a correctly timed node does not resolve it because those writes still lose LWW; repair the source
-peer's clock, rewrite from that origin, or wait. A key the
+fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
+version and a local write stamped with a future `context.timestamp` can therefore leave the record unavailable until wall time catches up (callers that stamp future versions on records they also `lock()` must keep the lead within `storage.maxLockClockSkew`). Rewriting or deleting
+at normal clock time does not resolve it because those writes still lose LWW; repair the source
+peer's clock, rewrite at or above that version, or wait. A key the
 ratchet issues ahead of the clock is covered by a ceiling flushed before use, including when another
 worker stored that ceiling. Coverage reserves one second of headroom; restart seeds above that whole
 reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the ratchet buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). For the same

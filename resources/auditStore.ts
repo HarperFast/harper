@@ -1010,22 +1010,27 @@ export function readLocalIssuanceCeiling(auditStore: any): number {
 export function coverLocalIssuance(auditStore: any, key: number): number {
 	const ceiling = isValidFloor(key + ISSUANCE_CEILING_HEADROOM_MS) ? key + ISSUANCE_CEILING_HEADROOM_MS : key;
 	let stored = ceiling;
-	commitAuditMetadata(
-		auditStore,
-		(read) => {
-			const existing = decodeAuditFloor(read(LOCAL_ISSUANCE_CEILING_KEY));
-			if (Number.isFinite(existing) && existing >= ceiling) {
-				stored = existing;
-				return undefined;
-			}
-			return [[LOCAL_ISSUANCE_CEILING_KEY, encodeAuditFloor(ceiling)]];
-		},
-		'local issuance ceiling'
-	);
-	// A WAL append alone can be lost after another node observes an issued key. An existing ceiling
-	// also needs this barrier: its writer may not have completed its flush yet.
-	(auditStore.rootStore ?? auditStore).flushSync({ allowWriteStall: true });
-	return stored;
+	try {
+		commitAuditMetadata(
+			auditStore,
+			(read) => {
+				const existing = decodeAuditFloor(read(LOCAL_ISSUANCE_CEILING_KEY));
+				if (Number.isFinite(existing) && existing >= ceiling) {
+					stored = existing;
+					return undefined;
+				}
+				return [[LOCAL_ISSUANCE_CEILING_KEY, encodeAuditFloor(ceiling)]];
+			},
+			'local issuance ceiling'
+		);
+		// A WAL append alone can be lost after another node observes an issued key. An existing ceiling
+		// also needs this barrier: its writer may not have completed its flush yet.
+		(auditStore.rootStore ?? auditStore).flushSync({ allowWriteStall: true });
+		return stored;
+	} catch (error) {
+		warnContained('Error recording the local issuance ceiling', error);
+		throw error;
+	}
 }
 
 export interface DatabaseGeneration {

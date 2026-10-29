@@ -18,8 +18,10 @@ const {
 	makeKeyLockHandle,
 	lockAttemptKey,
 	resolveLockOptions,
-	parseMaxLockClockSkewMs,
 } = require('#src/resources/recordLock');
+const { parseDurationMs } = require('#src/utility/common_utils');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -1685,12 +1687,33 @@ describe('Record locks (harper#483)', () => {
 		});
 		const handleOf = (txn) => [...txn.recordLocks.values()][0].values().next().value;
 		it('parses maxLockClockSkew units without widening milliseconds', function () {
-			assert.strictEqual(parseMaxLockClockSkewMs('500ms'), 500);
-			assert.strictEqual(parseMaxLockClockSkewMs('5m'), 300_000);
-			assert.strictEqual(parseMaxLockClockSkewMs('5s'), 5000);
-			assert.strictEqual(parseMaxLockClockSkewMs(5), 5000);
+			assert.strictEqual(parseDurationMs('500ms'), 500);
+			assert.strictEqual(parseDurationMs('5m'), 300_000);
+			assert.strictEqual(parseDurationMs('5s'), 5000);
+			assert.strictEqual(parseDurationMs(5), 5000);
 			for (const invalid of ['5 ms', '-1s', '1e400', 'Infinity', '1M', '1y'])
-				assert.ok(Number.isNaN(parseMaxLockClockSkewMs(invalid)), `${invalid} is rejected`);
+				assert.ok(Number.isNaN(parseDurationMs(invalid)), `${invalid} is rejected`);
+		});
+
+		it('rejects a local future context.timestamp above a configured storage.maxLockClockSkew', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '200ms');
+			try {
+				const futureVersion = Date.now() + 800;
+				await transaction({ timestamp: futureVersion }, () => LockTest.put({ id: recordId, n: 0 }));
+				await assert.rejects(
+					LockTest.lock(recordId),
+					(error) =>
+						error.name === 'LockUnavailableError' &&
+						error.statusCode === 503 &&
+						error.message.includes("ahead of this node's clock") &&
+						error.message.includes('context.timestamp')
+				);
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
 		});
 
 		const auditOf = (recordId, version) => {

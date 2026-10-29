@@ -198,11 +198,13 @@ function stampAbove(bound: unknown): number | undefined {
 }
 
 const DEFAULT_MAX_LOCK_CLOCK_SKEW_MS = 5000;
-let maxLockClockSkew: number | undefined;
+let cachedMaxLockClockSkewConfig: unknown = Symbol('uninitialized');
+let maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS;
 
 function maxLockClockSkewMs(): number {
-	if (maxLockClockSkew !== undefined) return maxLockClockSkew;
 	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+	if (configured === cachedMaxLockClockSkewConfig) return maxLockClockSkew;
+	cachedMaxLockClockSkewConfig = configured;
 	if (configured == null) return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
 	const skew = parseDurationMs(configured);
 	if (Number.isFinite(skew) && skew >= 0) return (maxLockClockSkew = skew);
@@ -211,8 +213,6 @@ function maxLockClockSkewMs(): number {
 	);
 	return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
 }
-
-export { parseDurationMs as parseMaxLockClockSkewMs };
 
 /**
  * The stamp a new holder's writes start from, given its admission floor. Holders admitted on one
@@ -232,7 +232,7 @@ export function admissionStamp(
 	const skew = floor - rootStore.getMonotonicTimestamp();
 	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor, claimed: claim };
 	throw new LockUnavailableError(
-		`A record lock cannot be admitted on state ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; fix the source peer clock or wait.`
+		`A record lock cannot be admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait.`
 	);
 }
 

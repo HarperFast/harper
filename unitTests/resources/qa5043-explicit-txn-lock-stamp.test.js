@@ -245,7 +245,6 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			assert.strictEqual(stampedEntry(lockedId).value.n, 10);
 			assert.strictEqual(stampedEntry(lockedId).version, timestamp);
 
-			// Clear caller timestamp on shared context and run a subsequent explicit transaction() while holder is still held
 			delete context.timestamp;
 			await transaction(context, async () => {
 				holder.set('n', 20);
@@ -352,7 +351,6 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			});
 			assert.strictEqual(stampedEntry(lockedId).version, futureTs);
 
-			// Case A: an earlier unlocked write fixed the transaction clock before holder.save()
 			delete contextA.timestamp;
 			await transaction(contextA, async () => {
 				await StampTest.update(otherId, { n: 1 });
@@ -370,7 +368,6 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			assert.strictEqual(stampedEntry(lockedId).value.n, 20, 'saving the held record in its own transaction succeeds');
 			assert.ok(stampedEntry(lockedId).version > futureTs);
 
-			// Case B: an earlier lower-floor hold write already reserved the transaction log key below holderHigh's floor
 			const contextB = { timestamp: futureTs + 1000 };
 			let holderHigh;
 			await transaction(contextB, async () => {
@@ -452,13 +449,12 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			await waitFor(() => rootStore.getMonotonicTimestamp() > handle.holderVersionFloor(), 100);
 
 			let beforeSave;
+			let floorBeforeSave;
 			await transaction(holderCtx, async (outerTxn) => {
-				// Open the native transaction handle at tRead via an initial read.
 				await StampTest.get(otherId, holderCtx);
 				const tRead = outerTxn.getReadTxn().getTimestamp();
 				await waitFor(() => rootStore.getMonotonicTimestamp() > tRead, 100);
 
-				// Commit a holder write at v1 > tRead while outerTxn's read snapshot stays open.
 				holderCtx.transaction = undefined;
 				try {
 					await transaction(holderCtx, async () => {
@@ -470,12 +466,12 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 				}
 				const v1 = await transaction({}, () => stampedEntry(lockedId).version);
 				assert.ok(v1 > tRead, `expected v1 (${v1}) > tRead (${tRead})`);
-				await waitFor(() => rootStore.getMonotonicTimestamp() > handle.holderVersionFloor(), 100);
+				floorBeforeSave = handle.holderVersionFloor();
+				assert.ok(floorBeforeSave > v1, `expected holder floor (${floorBeforeSave}) > v1 (${v1})`);
+				await waitFor(() => rootStore.getMonotonicTimestamp() > floorBeforeSave, 100);
 				beforeSave = rootStore.getMonotonicTimestamp();
 				await waitFor(() => rootStore.getMonotonicTimestamp() > beforeSave, 100);
 
-				// Saving in outerTxn (whose native handle still has getTimestamp() === tRead < v1)
-				// must advance to current wall time rather than committing at tRead or clamping to the older floor.
 				holder.set('n', 20);
 				await holder.save();
 				await StampTest.put({ id: otherId, n: 2 }, holderCtx);
@@ -489,8 +485,14 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 					`expected transaction clock (${outerTxn.timestamp}) at or above current wall time (${beforeSave}), not clamped to the older holder floor`
 				);
 			});
-			assert.strictEqual(stampedEntry(lockedId).value.n, 20);
-			assert.ok(stampedEntry(lockedId).version >= beforeSave);
+			const committed = stampedEntry(lockedId);
+			assert.strictEqual(committed.value.n, 20);
+			assert.ok(committed.version >= floorBeforeSave, 'committed version is at or above the holder floor');
+			assert.ok(committed.version >= beforeSave);
+			const auditEntry = [...StampTest.auditStore.getRange({ start: 1 })].find(
+				(entry) => entry.tableId === StampTest.tableId && entry.recordId === lockedId && entry.version === committed.version
+			);
+			assert.ok(auditEntry && auditEntry.txnLogKey >= floorBeforeSave, 'audit log key covers the holder floor');
 			assert.strictEqual(stampedEntry(otherId).value.n, 2);
 			assert.ok(stampedEntry(otherId).version >= beforeSave);
 		});
@@ -503,7 +505,6 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			const context = {};
 			const holder = await StampTest.lock(lockedId, { hold: true, lease: 5000 }, context);
 			cleanups.push(() => holder.unlock());
-			// Simulate a transaction link that did not itself call registerRecordLock
 			context.transaction.recordLocks = undefined;
 
 			holder.set('n', 1);
