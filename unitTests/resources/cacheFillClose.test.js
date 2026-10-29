@@ -9,6 +9,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor.js');
 const { table, getDatabases, closeDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { getRegistryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
@@ -39,8 +40,8 @@ describe('Cache fill across database close', function () {
 	afterEach(function () {
 		process.removeListener('unhandledRejection', captureRejection);
 		process.removeListener('uncaughtException', captureException);
-		for (const listener of savedRejectionListeners) process.on('unhandledRejection', listener);
-		for (const listener of savedExceptionListeners) process.on('uncaughtException', listener);
+		for (const listener of savedRejectionListeners ?? []) process.on('unhandledRejection', listener);
+		for (const listener of savedExceptionListeners ?? []) process.on('uncaughtException', listener);
 	});
 
 	// On RocksDB a second handle on the same path stands in for another thread: it keeps the shared
@@ -88,7 +89,6 @@ describe('Cache fill across database close', function () {
 		return captured.map((error) => error?.message ?? String(error));
 	}
 
-	// RocksDB only: LMDB locks live in its environment, which this thread's close tears down.
 	function assertRocksState(fixture, id, held) {
 		if (isLmdb) return;
 		assert.equal(fixture.lockHeld(id), held);
@@ -101,7 +101,7 @@ describe('Cache fill across database close', function () {
 			const { SlowTable, databaseName, releaseSource, failSource, sourceCalls } = fixture;
 			try {
 				const fill = SlowTable.get('k1');
-				while (sourceCalls() === 0) await delay(1);
+				await waitFor(() => sourceCalls() > 0, { timeout: 5000, message: 'the source call did not start' });
 				if (!isLmdb) assert.equal(fixture.lockHeld('k1'), true, 'the fill holds its lock while the source is pending');
 
 				await closeDatabase(databaseName);
@@ -129,13 +129,12 @@ describe('Cache fill across database close', function () {
 		const { SlowTable, databaseName, releaseSource, sourceCalls } = fixture;
 		try {
 			const fill = SlowTable.get('k2');
-			while (sourceCalls() === 0) await delay(1);
+			await waitFor(() => sourceCalls() > 0, { timeout: 5000, message: 'the source call did not start' });
 			const waiter = SlowTable.get('k2');
 			await delay(5);
 			assert.equal(sourceCalls(), 1);
 
 			await closeDatabase(databaseName);
-			// RocksDB: 'Database not open'; LMDB: 'Can not operate on a closed database'
 			await assert.rejects(waiter, /Database not open|closed database/);
 			releaseSource();
 			assert.equal((await fill)?.name, 'from source');
