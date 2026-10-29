@@ -233,7 +233,6 @@ describe('delegated reads reusing one query object', function () {
 					const root = searchRoot({ checkPermission: undefined });
 					for (const user of users)
 						assert.deepStrictEqual(await one(getTable().search(root, { user, authorize: true })), expected(user));
-					// arming may stay on the caller's object: it only adds a check
 					assertAuthored(root);
 				});
 

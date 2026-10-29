@@ -151,7 +151,7 @@ suite('Delegated query object reuse across worker threads', (ctx: ContextWithHar
 			assert.strictEqual(row.department?.secret, 'payroll-code-7731', `broad on worker ${worker}`);
 			broadWorkers.add(worker);
 		}
-		console.log(`broad requests reached workers ${[...broadWorkers]}`);
+		assert.ok(broadWorkers.size > 1, `broad requests all reached worker ${[...broadWorkers]}`);
 		const unvisited = new Set(broadWorkers);
 		let sent = 0;
 		while (unvisited.size > 0 && sent < RESTRICTED_BUDGET) {

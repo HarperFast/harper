@@ -23,7 +23,7 @@ import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
-import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget } from './RequestTarget.ts';
+import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget, markDispatchTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
@@ -719,7 +719,6 @@ function transactional(
 		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
 			return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
 		let id, query, isCollection;
-		// a target this call built from an id is already this dispatch's own
 		let mintedQuery = false;
 		let data;
 		// An absent argument, not a context — and not this call's data either.
@@ -832,7 +831,7 @@ function transactional(
 						if (id.length === 1) id = id[0];
 						if (query.slice) {
 							query = query.slice(id.length, query.length);
-							mintedQuery = true;
+							mintedQuery = Array.isArray(query);
 							if (query.length === 0) {
 								query = new RequestTarget();
 								query.id = id;
@@ -976,20 +975,22 @@ function transactional(
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 			}
-			let replacePermission = false;
-			if (context.authorize) {
+			const armTarget = Boolean(context.authorize);
+			if (armTarget) {
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 				context.authorize = false;
-				// arming only adds a check, so it may stay on the caller's target; replacing its explicit permission must not
-				if (!query.checkPermission) query.checkPermission = true;
-				else replacePermission = query.checkPermission !== true;
 			}
 			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
 				if (checkPermission) {
-					// a false-mode instance method authorizes, and copies, for itself
-					if ((replacePermission || loadAsInstance !== false) && !mintedQuery) query = dispatchTarget(query);
+					// Arming only adds a check, so it stays on a caller's unarmed target and keeps it gated on reuse;
+					// replacing an explicit permission must not outlive this dispatch.
+					const replacePermission = armTarget && query.checkPermission && query.checkPermission !== true;
+					if (armTarget && !query.checkPermission) query.checkPermission = true;
+					if (mintedQuery) {
+						if (query instanceof RequestTarget) markDispatchTarget(query);
+					} else if (replacePermission || loadAsInstance !== false) query = dispatchTarget(query);
 					if (replacePermission) query.checkPermission = true;
 					if (loadAsInstance !== false) {
 						// do permission checks, with allow methods
