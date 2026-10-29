@@ -15,6 +15,8 @@ const { waitFor } = require('../waitFor');
 const itUnlessVersionRewinds = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it;
 // On LMDB a patch before a same-transaction publish ties the publish's restamp and is dropped, as on main.
 const itUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it;
+// RocksDB reloads a write's commit base; LMDB commits against the entry the resource holds.
+const itOnLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it : it.skip;
 
 describe('out-of-order patch on an audit:false table', () => {
 	let NoAudit;
@@ -482,21 +484,41 @@ describe('out-of-order patch on an audit:false table', () => {
 		let called = false;
 		sourceGate = new Promise((resolve) => (release = resolve));
 		sourceCalled = () => (called = true);
+		const read = NoAuditSourced.get(id);
 		try {
-			const read = NoAuditSourced.get(id);
 			await waitFor(() => called, { timeout: 5000, message: 'the expired read never called the source' });
 			await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
-			release();
-			await read;
-			await waitFor(() => !NoAuditSourced.primaryStore.hasLock(id), { message: 'the revalidation never settled' });
 		} finally {
 			release();
 			sourceGate = sourceCalled = undefined;
+			await read.catch(() => {});
 		}
+		await read;
+		await waitFor(() => !NoAuditSourced.primaryStore.hasLock(id), { message: 'the revalidation never settled' });
 		// whichever wins (RocksDB's merge keeps the version, so the 304's stale body can replace it), the stored
 		// list must describe the stored body, or this re-delivery is skipped against a body that lacks it
 		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		assert.strictEqual((await NoAuditSourced.get(id)).count, 13);
+	});
+
+	itOnLmdb('a patch through a resource a 304 revalidation loaded keeps the identity list', async function () {
+		this.timeout(10000);
+		const id = `noaudit-${nextId++}`;
+		await NoAuditSourced.put(id, { tag: 'base', count: 10 });
+		const now = Date.now();
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		await NoAuditSourced.patch(id, { tag: 'expired' }, { timestamp: now + 100, expiresAt: 0 });
+		revalidatedExpiresAt = Date.now() + 60000;
+		const context = { timestamp: now + 150 };
+		await transaction(context, async () => {
+			const resource = await NoAuditSourced.getResource(id, context);
+			await resource.ensureLoaded();
+			await resource._writeUpdate(id, { tag: 'latest' }, false, {});
+		});
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		const record = await NoAuditSourced.get(id);
+		assert.strictEqual(record.tag, 'latest');
+		assert.strictEqual(record.count, 13);
 	});
 
 	it('a merged increment re-delivered after a newer publish applies once', async () => {
