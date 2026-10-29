@@ -5951,10 +5951,17 @@ export function makeTable(options): TableResourceClass {
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 					// Without a log, a listed identity is the only sign a patch was already applied, whatever the version
 					// order says: an LMDB merge stores the older version (#3388), so an applied write can compare as newer.
-					// Only a committed list counts; an earlier write of this transaction shares the identity.
+					// The committed list must name it, since an earlier write of this transaction shares the identity, and
+					// so must the body this patch applies to, since an earlier full write of it started a new list.
 					if (!audit && !fullUpdate) {
 						const committedRefs = identityBase(write, existingEntry, committedBy)?.receivedIdentityRefs;
-						if (committedRefs && auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0) {
+						const baseRefs = priorStaged ? priorStaged.receivedIdentityRefs : committedRefs;
+						if (
+							committedRefs &&
+							baseRefs &&
+							auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0 &&
+							auditRefIndex(baseRefs, receivedLogKey, options?.nodeId) >= 0
+						) {
 							write.skipped = true;
 							return writeCommit(false);
 						}
