@@ -1,6 +1,10 @@
 /**
- * Run:
- *   npm run build && npm run test:integration -- "integrationTests/server/operations-api-body-validation.test.ts"
+ * A real Harper answers each Operations API body that fails validation with one 400, and the
+ * validator completes the `preValidation` chain once (https://github.com/HarperFast/harper/pull/3720).
+ * A second completion fails after the 400 is on its way, as an unhandled `ERR_HTTP_HEADERS_SENT`
+ * in hdb.log, so each case scans the log written during a fixed window after its response.
+ * `{"x":1}` cannot fail this way: its late completion meets an already-sent reply silently, and
+ * unitTests/server/serverHelpers/reqBodyValidationHandler.test.js counts it at the next hook instead.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -58,7 +62,6 @@ suite('an Operations API body that fails validation', (ctx: ContextWithHarper) =
 			const offset = readLog().length;
 
 			const response = await client.req().send(payload);
-			// A duplicate completion fails after the response is on its way, so wait out a bounded window.
 			await sleep(SETTLE_MS);
 			const written = readLog().slice(offset);
 

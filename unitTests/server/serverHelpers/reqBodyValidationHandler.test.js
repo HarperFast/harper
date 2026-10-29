@@ -157,7 +157,7 @@ describe('reqBodyValidationHandler() in the operations API Fastify wiring', () =
 
 	after(async () => {
 		process.off('unhandledRejection', onRejection);
-		for (const listener of inheritedRejectionListeners) process.on('unhandledRejection', listener);
+		for (const listener of inheritedRejectionListeners ?? []) process.on('unhandledRejection', listener);
 		await app?.close();
 	});
 
