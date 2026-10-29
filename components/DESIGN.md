@@ -997,36 +997,3 @@ back to the base.
 A first fork runs inside the serial root load, so later root entries wait for its checkpoint. Canary startup deadlines
 also apply to this first fork. A fork prepared before a later load failure remains durable and is adopted on retry, as
 for directory applications; only an explicit drop removes it.
-
-## A sealed operation runs exactly as its plaintext would, and dispatch never relays or logs its content
-
-`encrypted_operation` (`components/encryptedOperation.ts`, [#3288](https://github.com/HarperFast/harper/issues/3288))
-unseals an `enc:v1` envelope through the registered custody, runs the inner operation through the same
-`chooseOperation` → `processLocalTransaction` dispatch under the outer request's principal, and seals the result
-under the client's response key; the wire format and reference client are `utility/sealedOperation.ts`.
-
-- **No widening.** The inner body may not carry `hdb_user`, `impersonate`, `bypass_auth`/`bypassAuth` or dispatcher
-  fields; its principal is assigned, and trusted bypass is the async-context state, never a body field. Both the
-  wrapper and the inner operation pass `verifyPerms`, so a role allowlist or scoped token must list both.
-- **Plaintext only before the nonce is reserved.** Admission failures answer with constant messages; everything
-  after is sealed, and an unexpected failure there is still answered sealed. Fields mode verifies the visible text's
-  hash before parsing it, and each sealed value is bound to its JSON Pointer by its AAD, so a relay can neither edit
-  visible fields nor move a sealed value.
-- **Dispatch logs no sealed content.** The inner body's log view (`server/serverHelpers/operationLogView.ts`) is
-  metadata in sealed mode and a masked copy in fields mode; `processLocalTransaction` and
-  `callOperationFunctionAsAwait` log the view, not the body or an error message, and a forwarding worker receives it
-  beside the body, never in it. A handler that logs its own input, or a result iterator whose cleanup error echoes
-  its data, is not covered ([#3338](https://github.com/HarperFast/harper/issues/3338)).
-- **Replay is refused per process, not exactly-once.** The nonce is reserved before dispatch, never released, and kept
-  until no `maxAge`, even one raised later, could admit its envelope: `ts` plus the 600 s ceiling. A restart forgets
-  the store, and a backward wall-clock step longer than that retention re-opens an aged-out envelope
-  ([#3344](https://github.com/HarperFast/harper/issues/3344)). The store is bounded and answers 503 when full rather
-  than evict; past half full, each principal may hold only an equal share of that half, so one caller flooding
-  envelopes, even ones it may not run, cannot take every caller's capacity.
-- **What ran is said.** A result that ran but could not be delivered (a stream, over `maxSize`, or one whose
-  serialization or cursor fails mid-stream, which `streamAsJSON` ends with an error rather than a complete array)
-  answers `executed: true`; a 5xx keeps the unknown outcome it has on a direct request
-  ([#3343](https://github.com/HarperFast/harper/issues/3343)). `maxSize` bounds what is buffered and sealed, error
-  bodies included; a single value is still serialized whole before it is measured, as on the plaintext path.
-
-Enforced by `unitTests/components/encryptedOperation.test.js` and `integrationTests/security/encrypted-operation.test.ts`.
