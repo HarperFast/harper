@@ -223,8 +223,7 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		});
 	}
 
-	// An older write that adds a key the record lacks merges under the record's version. It changes the
-	// record's expiry only through the @expiresAt field, which the record lacks too.
+	// An older write that adds a key the record lacks merges under the record's version.
 	async function resequence(Table, id, patch, deadline) {
 		const read = Table.primaryStore.getEntry(id);
 		await Table.patch(id, deadline === undefined ? patch : { ...patch, deadline }, { timestamp: read.version - 50 });
