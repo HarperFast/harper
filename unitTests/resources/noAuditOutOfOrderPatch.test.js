@@ -11,7 +11,7 @@ const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resou
 const { waitFor } = require('../waitFor');
 
 // LMDB stores a merged record at the merging write's older version (harper#3388), so a later write older than the
-// original head can compare as in-order there and replace the refs; these arms hold on RocksDB only until that is fixed.
+// original head compares as in-order there.
 const itUnlessVersionRewinds = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it;
 // On LMDB a patch before a same-transaction publish ties the publish's restamp and is dropped, as on main.
 const itUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it;
@@ -316,7 +316,7 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual((await NoAudit.get(id)).count, 15);
 	});
 
-	itUnlessVersionRewinds('every out-of-order patch merged into the head is recognized when re-delivered', async () => {
+	it('every out-of-order patch merged into the head is recognized when re-delivered', async () => {
 		const { id, now } = await seedNewerRecord();
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 40 });
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 4 } }, { timestamp: now + 60 });
@@ -325,7 +325,7 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual((await NoAudit.get(id)).count, 19);
 	});
 
-	itUnlessVersionRewinds('distinct out-of-order patches at one timestamp from different nodes both merge', async () => {
+	it('distinct out-of-order patches at one timestamp from different nodes both merge', async () => {
 		const { id, now } = await seedNewerRecord();
 		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 3 } }, now + 50);
 		await applyFrom('origin-b', id, { count: { __op__: 'add', value: 4 } }, now + 50);
@@ -368,24 +368,158 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual((await NoAudit.get(id)).count, 19);
 	});
 
-	itUnlessVersionRewinds('the merged write identity is stored with the record', async () => {
+	it('the merged write identity is stored with the record', async () => {
 		const { id, now } = await seedNewerRecord();
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		await NoAudit.patch(id, { extra: 'added' }, { timestamp: now + 55 });
 		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 4 } }, now + 60, now + 70);
 		const refs = NoAudit.primaryStore.getEntry(id).receivedIdentityRefs.map(({ version, nodeId }) => [version, nodeId]);
 		assert.deepStrictEqual(refs, [
+			[now + 100, 0],
 			[now + 50, 0],
 			[now + 70, getIdOfRemoteNode('origin-a', NoAudit.auditStore)],
 		]);
 	});
 
-	itUnlessVersionRewinds('applied writes are identified by the log key a re-delivery carries', async () => {
+	it('applied writes are identified by the log key a re-delivery carries', async () => {
 		const { id, now } = await seedNewerRecord();
 		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 3 } }, now + 50, now + 70);
 		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 4 } }, now + 50, now + 80);
 		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 3 } }, now + 50, now + 70);
 		assert.strictEqual((await NoAudit.get(id)).count, 19);
+	});
+
+	it('a merged increment re-delivered after a newer in-order patch applies once', async () => {
+		const { id, now } = await seedNewerRecord();
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		await NoAudit.patch(id, { tag: 'latest' }, { timestamp: now + 150 });
+		const refs = NoAudit.primaryStore.getEntry(id).receivedIdentityRefs?.map(({ version }) => version);
+		assert.deepStrictEqual(refs, [now + 100, now + 50], 'a patch without commutative ops is not listed');
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.tag, 'latest');
+		assert.strictEqual(record.count, 15);
+	});
+
+	it('a replicated merged increment re-delivered after a newer in-order patch applies once', async () => {
+		const { id, now } = await seedNewerRecord();
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 3 } }, now + 50, now + 70);
+		await NoAudit.patch(id, { tag: 'latest' }, { timestamp: now + 150 });
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 3 } }, now + 50, now + 70);
+		assert.strictEqual((await NoAudit.get(id)).count, 15);
+	});
+
+	it('a merged increment re-delivered after a newer relocate applies once', async () => {
+		const { id, now } = await seedNewerRecord();
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		const context = { timestamp: now + 150 };
+		await transaction(context, async () => {
+			const resource = await NoAudit.getResource(id, context);
+			resource._writeRelocate(id, {});
+		});
+		assert.strictEqual(
+			NoAudit.primaryStore.getEntry(id).version,
+			now + 150,
+			'premise: the relocate restamped the head'
+		);
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		assert.strictEqual((await NoAudit.get(id)).count, 15);
+	});
+
+	it('a merged increment re-delivered after a newer publish applies once', async () => {
+		const { id, now } = await seedNewerRecord();
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		await NoAudit.publish(id, { message: 'hello' }, { timestamp: now + 150 });
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		assert.strictEqual((await NoAudit.get(id)).count, 15);
+	});
+
+	it('an in-order increment re-delivered after a newer patch applies once', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const now = Date.now();
+		await NoAudit.patch(id, { tag: 'newer', count: { __op__: 'add', value: 5 } }, { timestamp: now + 100 });
+		await NoAudit.patch(id, { tag: 'latest', extra: 'v2' }, { timestamp: now + 150 });
+		await NoAudit.patch(id, { tag: 'newer', count: { __op__: 'add', value: 5 } }, { timestamp: now + 100 });
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.tag, 'latest');
+		assert.strictEqual(record.count, 15);
+	});
+
+	it('a replicated in-order increment re-delivered after a newer patch applies once', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const now = Date.now();
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 5 } }, now + 100);
+		await NoAudit.patch(id, { tag: 'latest' }, { timestamp: now + 150 });
+		await applyFrom('origin-a', id, { count: { __op__: 'add', value: 5 } }, now + 100);
+		assert.strictEqual((await NoAudit.get(id)).count, 15);
+	});
+
+	// LMDB stores the merge at its older version (harper#3388), so there the re-delivery compares as newer
+	it('an in-order increment re-delivered after an older merge applies once', async () => {
+		const { id, now } = await seedNewerRecord();
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 2 } }, { timestamp: now + 100 });
+		assert.strictEqual((await NoAudit.get(id)).count, 15);
+	});
+
+	it('a re-delivered in-order transaction of two increments to one record applies neither', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 10 });
+		const now = Date.now();
+		const deliver = () => {
+			const context = { timestamp: now + 100 };
+			return transaction(context, async () => {
+				await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, context);
+				await NoAudit.patch(id, { count: { __op__: 'add', value: 4 } }, context);
+			});
+		};
+		await deliver();
+		assert.strictEqual((await NoAudit.get(id)).count, 17);
+		await NoAudit.patch(id, { tag: 'latest' }, { timestamp: now + 150 });
+		await deliver();
+		assert.strictEqual((await NoAudit.get(id)).count, 17);
+	});
+
+	it('a full write starts a new identity list', async () => {
+		const { id, now } = await seedNewerRecord();
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		await NoAudit.put(id, { tag: 'replaced', count: 1 }, { timestamp: now + 150 });
+		assert.strictEqual(NoAudit.primaryStore.getEntry(id).receivedIdentityRefs, undefined);
+	});
+
+	it('over the encoder budget, the newest listed increment is still recognized', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 0 });
+		const now = Date.now();
+		for (let i = 1; i <= 30; i++)
+			await NoAudit.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: now + i });
+		await NoAudit.patch(id, { tag: 'latest' }, { timestamp: now + 100 });
+		const refs = NoAudit.primaryStore.getEntry(id).receivedIdentityRefs.map(({ version }) => version);
+		assert.ok(refs.length < 30, `the list is bounded, got ${refs.length}`);
+		assert.strictEqual(refs.at(-1), now + 30);
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 30 });
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.tag, 'latest');
+		assert.strictEqual(record.count, 30);
+	});
+
+	it('a later write in the transaction keeps the identity an earlier merge listed', async () => {
+		const { id, now } = await seedNewerRecord();
+		const context = { timestamp: now + 50 };
+		await transaction(context, async () => {
+			await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, context);
+			await NoAudit.patch(id, { extra: 'added' }, context);
+		});
+		const refs = NoAudit.primaryStore.getEntry(id).receivedIdentityRefs?.map(({ version }) => version);
+		assert.deepStrictEqual(refs, [now + 100, now + 50]);
+		// above the version LMDB's merge stored (harper#3388), below the head RocksDB kept
+		await NoAudit.patch(id, { tag: 'intervening' }, { timestamp: now + 80 });
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		const record = await NoAudit.get(id);
+		assert.strictEqual(record.extra, 'added');
+		assert.strictEqual(record.count, 15);
 	});
 
 	it('a write staged against the head before an out-of-order merge commits does not overwrite the merge', async () => {
@@ -404,5 +538,7 @@ describe('out-of-order patch on an audit:false table', () => {
 		const record = await NoAudit.get(id);
 		assert.strictEqual(record.tag, 'latest');
 		assert.strictEqual(record.count, 15, 'the newer write overwrote the merged increment');
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		assert.strictEqual((await NoAudit.get(id)).count, 15, 'the retried write dropped the merged identity');
 	});
 });
