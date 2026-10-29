@@ -5592,6 +5592,35 @@ export function makeTable(options): TableResourceClass {
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
+					if (!(context as any)?.source && (fullUpdate || recordUpdate !== undefined)) {
+						// A record must be a plain object. Reject primitive, string/number, bare-binary,
+						// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
+						// JSON string/number body, or a top-level JSON array. Such roots carry no primary
+						// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
+						// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
+						// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
+						// publish payloads are unaffected.)
+						const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
+						if (
+							recordUpdate === null ||
+							typeof recordUpdate !== 'object' ||
+							isBinaryRoot ||
+							Array.isArray(recordUpdate)
+						) {
+							// Avoid dumping every byte of a large binary body or huge payload into the error.
+							let received: string;
+							if (isBinaryRoot) {
+								received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
+							} else {
+								const full = stringify(recordUpdate) ?? typeof recordUpdate;
+								received = full.length > 200 ? full.slice(0, 200) + '...' : full;
+							}
+							throw new ClientError(
+								`A record must be an object, but received ${received}. To store binary data, put it ` +
+									`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
+							);
+						}
+					}
 					if (tracksInstance) {
 						recordUpdate = collapseChanges(this, instanceChanges);
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
@@ -5617,33 +5646,6 @@ export function makeTable(options): TableResourceClass {
 					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
-							// A record must be a plain object. Reject primitive, string/number, bare-binary,
-							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
-							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
-							// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
-							// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
-							// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
-							// publish payloads are unaffected.)
-							const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
-							if (
-								recordUpdate === null ||
-								typeof recordUpdate !== 'object' ||
-								isBinaryRoot ||
-								Array.isArray(recordUpdate)
-							) {
-								// Avoid dumping every byte of a large binary body or huge payload into the error.
-								let received: string;
-								if (isBinaryRoot) {
-									received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
-								} else {
-									const full = stringify(recordUpdate) ?? typeof recordUpdate;
-									received = full.length > 200 ? full.slice(0, 200) + '...' : full;
-								}
-								throw new ClientError(
-									`A record must be an object, but received ${received}. To store binary data, put it ` +
-										`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
-								);
-							}
 							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
 							// caching relies on it), so mutating in place would corrupt cached/shared state.
 							// validate() coerces values and we stamp created/updated times + the primary key

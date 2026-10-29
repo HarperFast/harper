@@ -458,6 +458,32 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		assert.strictEqual((await Item.get('i1')).legacyCode, 43);
 	});
 
+	it('rejects invalid update roots before combining own instance fields', async () => {
+		for (const sealed of [false, true]) {
+			const Item = defineTable(
+				'InvalidOwnRoot' + sealed,
+				{ id: id.primaryKey, label: string },
+				{ database: EVOLVE_DB, sealed }
+			);
+			await Item.put({ id: 'i1', label: 'original' });
+			for (const root of [Buffer.from('hello'), null, 5, 'text', [], new Uint8Array([1, 2]), new ArrayBuffer(2)]) {
+				await assert.rejects(
+					() =>
+						transaction(async () => {
+							const record = root === null ? await Item.update('i1') : await Item.update('i1', root);
+							if (root === null) record.update('i1', null);
+							Object.defineProperty(record, 'label', { value: 'own edit', enumerable: true, writable: true });
+						}),
+					/A record must be an object/,
+					`sealed=${sealed}, root=${root?.constructor?.name ?? root}`
+				);
+				const stored = await Item.get('i1');
+				assert.strictEqual(stored.label, 'original');
+				assert.strictEqual(stored[0], undefined);
+			}
+		}
+	});
+
 	it('keeps live timestamps and resolvers after a raw expression reload fails', async () => {
 		const Writer = defineTable('FailureWriter', { id: id.primaryKey, name: string }, { database: EVOLVE_DB });
 		const Item = defineTable(
