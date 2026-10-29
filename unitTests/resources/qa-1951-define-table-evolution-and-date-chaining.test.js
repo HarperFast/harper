@@ -1,5 +1,5 @@
 require('../testUtils');
-const assert = require('assert');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { defineTable, types } = require('#src/resources/defineTable');
