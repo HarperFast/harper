@@ -21,6 +21,8 @@ describe('out-of-order patch on an audit:false table', () => {
 	let NoAuditTrackDeletes;
 	let NoAuditSourced;
 	let revalidatedExpiresAt;
+	let sourceGate;
+	let sourceCalled;
 	let nextId = 1;
 
 	before(async () => {
@@ -44,8 +46,10 @@ describe('out-of-order patch on an audit:false table', () => {
 		});
 		NoAuditSourced = table({ table: 'NoAuditOutOfOrderPatchSourced', database: 'test', attributes, audit: false });
 		NoAuditSourced.sourcedFrom({
-			get(id, context) {
+			async get(id, context) {
 				context.expiresAt = revalidatedExpiresAt;
+				sourceCalled?.();
+				await sourceGate;
 				return { status: 304, headers: {} };
 			},
 		});
@@ -465,6 +469,31 @@ describe('out-of-order patch on an audit:false table', () => {
 		});
 		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 2 } }, { timestamp: now + 50 });
 		assert.strictEqual((await NoAuditSourced.get(id)).count, 15);
+	});
+
+	it('a 304 revalidation that raced a merge keeps the list of the body it stored', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAuditSourced.put(id, { tag: 'base', count: 10 });
+		const now = Date.now();
+		await NoAuditSourced.patch(id, { tag: 'expired' }, { timestamp: now + 100, expiresAt: 0 });
+		revalidatedExpiresAt = Date.now() + 60000;
+		let release;
+		sourceGate = new Promise((resolve) => (release = resolve));
+		const called = new Promise((resolve) => (sourceCalled = resolve));
+		try {
+			const read = NoAuditSourced.get(id);
+			await called;
+			await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+			release();
+			await read;
+			await waitFor(() => !NoAuditSourced.primaryStore.hasLock(id), { message: 'the revalidation never settled' });
+		} finally {
+			sourceGate = sourceCalled = undefined;
+		}
+		// whichever wins (RocksDB's merge keeps the version, so the 304's stale body can replace it), the stored
+		// list must describe the stored body, or this re-delivery is skipped against a body that lacks it
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		assert.strictEqual((await NoAuditSourced.get(id)).count, 13);
 	});
 
 	it('a merged increment re-delivered after a newer publish applies once', async () => {
