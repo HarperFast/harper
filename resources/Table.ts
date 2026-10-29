@@ -6200,8 +6200,14 @@ export function makeTable(options): TableResourceClass {
 													earlyOutResidual = rebuildUpdateBefore(earlyOutResidual ?? recordUpdate, newerPatch);
 													if (!earlyOutResidual) fullySuperseded = true;
 												}
-											} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
-												// There is newer full record update, so this incremental update is completely superseded
+											} else if (
+												auditRecord.type === 'put' ||
+												auditRecord.type === 'delete' ||
+												(fullUpdate && auditRecord.type === 'invalidate')
+											) {
+												// There is newer full record update, so this incremental update is completely superseded.
+												// A newer invalidation replaced the record with a stub, which also supersedes an older full
+												// PUT; an older patch still folds into the stub's carried-forward indexed fields.
 												write.skipped = true;
 												return;
 											}
@@ -6231,7 +6237,11 @@ export function makeTable(options): TableResourceClass {
 											}
 											if (precedes < 0) {
 												hasNewerEntryInFrame = true;
-												if (entry.type === 'put' || entry.type === 'delete') {
+												if (
+													entry.type === 'put' ||
+													entry.type === 'delete' ||
+													(fullUpdate && entry.type === 'invalidate')
+												) {
 													write.skipped = true;
 													return;
 												}
@@ -6338,7 +6348,7 @@ export function makeTable(options): TableResourceClass {
 											collectedKeys.add(entry.txnLogKey);
 											const precedes = precedesExistingVersion(txnTime, entry, options?.nodeId);
 											if (precedes < 0 || (precedes === 0 && !identityIsNotKey && entry.txnLogKey > appendedLogKey)) {
-												if (entry.type === 'put' || entry.type === 'delete') {
+												if (entry.type === 'put' || entry.type === 'delete' || entry.type === 'invalidate') {
 													write.skipped = true;
 													return;
 												}
