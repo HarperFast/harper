@@ -262,6 +262,22 @@ describe('REST deferred reads', () => {
 		assert.deepStrictEqual({ stepped, returned }, { stepped: 1, returned: 2 });
 	});
 
+	it('closes the source of a HEAD whose serialized body is empty', async () => {
+		let closed = 0;
+		resources.set(
+			'EmptyBody',
+			class extends Resource {
+				static get() {
+					return { onDone: () => closed++, toString: () => '' };
+				}
+			},
+			{ rest: true }
+		);
+		const response = await request('HEAD', '/EmptyBody/', { accept: 'text/plain' });
+		assert.strictEqual(response.status, 200);
+		assert.strictEqual(closed, 1);
+	});
+
 	it('answers a discarded read even when closing its source fails', async () => {
 		const unhandled = [];
 		const onUnhandled = (reason) => unhandled.push(reason);

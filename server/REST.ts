@@ -638,8 +638,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				deferred && conditionalRead
 					? applyReadPreconditions(response, request, method, lastModification, data)
 					: response;
-			// a 304 or 412 has already discarded its body and source
-			if (request.method === 'HEAD' && conditional.body) {
+			// a 304, from either precondition check, has already discarded the read; a 412 threw
+			if (request.method === 'HEAD' && conditional.status !== 304) {
 				discardReadResponse(conditional, data);
 				if (!(conditional instanceof Response)) conditional.body = undefined;
 			}
@@ -716,7 +716,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		const response = deferredReadConditions
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
-		if (request.method === 'HEAD' && response.body) {
+		if (request.method === 'HEAD' && response === responseObject && responseData !== undefined) {
 			discardReadResponse(response, responseData);
 			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
 		}
