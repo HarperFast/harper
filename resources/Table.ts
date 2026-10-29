@@ -519,6 +519,22 @@ export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
 }
+
+function isRecordOf(id: Id | undefined, target): boolean {
+	return (
+		id !== undefined &&
+		target?.id != null &&
+		!target.isCollection &&
+		!target.property &&
+		!target.select &&
+		writeKeyId(target.id) === writeKeyId(id)
+	);
+}
+
+function declineCondition(condition, message: string): void {
+	if (!condition.optional) throw new ClientError(message, 501);
+	condition.declined = true;
+}
 async function settlePhysicalDrops(rootStore: RocksDatabase, label: string): Promise<boolean> {
 	const deadline = Date.now() + LOCK_TIMEOUT;
 	while ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
@@ -1287,6 +1303,7 @@ interface TableResourceClass {
 	path?: string;
 	directURLMapping: boolean;
 	loadAsInstance: boolean;
+	preconditions?: boolean;
 	requestContract?: Contract;
 	inputSchemas?: {
 		[verb: string]: {
@@ -1951,6 +1968,7 @@ export function makeTable(options): TableResourceClass {
 		const matches =
 			condition?.Resource.primaryStore === primaryStore &&
 			condition.prepared &&
+			!condition.declined &&
 			writeKeyId(id) === writeKeyId(condition.id);
 		if (matches && condition.finished) throw new ClientError('Conditional request already completed', 409);
 		return matches ? condition : undefined;
@@ -2995,23 +3013,34 @@ export function makeTable(options): TableResourceClass {
 			}
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
 			const condition = request?.[WRITE_CONDITION];
-			if (condition?.Resource === this && !condition.prepared) {
+			if (
+				condition &&
+				!condition.prepared &&
+				// an own verb may look up other records first, or delegate through a base table class
+				(condition.optional
+					? condition.Resource.primaryStore === primaryStore && isRecordOf(condition.recordId, target)
+					: condition.Resource === this)
+			) {
 				condition.prepared = true;
+				// the client's validator came from the HTTP class's representation
+				const { Resource: HttpClass } = condition;
 				if (
 					target.id == null ||
 					target.isCollection ||
 					target.property ||
 					target.select ||
-					this.source ||
-					this.get !== Resource.get ||
-					this.prototype.get !== TableResource.prototype.get
-				)
-					throw new ClientError(
-						'Conditional writes require a single local table record with its default representation',
-						501
+					HttpClass.source ||
+					HttpClass.get !== Resource.get ||
+					HttpClass.prototype.get !== TableResource.prototype.get
+				) {
+					declineCondition(
+						condition,
+						'Conditional writes require a single local table record with its default representation'
 					);
-				condition.id = target.id;
-				txnForContext(request);
+				} else {
+					condition.id = target.id;
+					txnForContext(request);
+				}
 			}
 			if (this.loadAsInstance !== false) {
 				return resource._loadRecord(target, request, resourceOptions);
@@ -5262,8 +5291,12 @@ export function makeTable(options): TableResourceClass {
 						}
 						// standard path, handle arrays as multiple updates, and otherwise do a direct update
 						if (Array.isArray(record)) {
-							if (context?.[WRITE_CONDITION]?.Resource.primaryStore === primaryStore)
-								throw new ClientError('Conditional writes require a single record body', 501);
+							const condition = context?.[WRITE_CONDITION];
+							if (
+								condition?.Resource.primaryStore === primaryStore &&
+								(!condition.optional || isRecordOf(condition.id, target))
+							)
+								declineCondition(condition, 'Conditional writes require a single record body');
 							// Capture each element's operation synchronously (before any async `@embed`
 							// hook resolves): `#savingOperation` is a single field that parallel writes
 							// would otherwise clobber, so a deferred `save()` would commit the wrong op

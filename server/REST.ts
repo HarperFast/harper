@@ -186,6 +186,42 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
+function definesOwnVerb(resource, method: string): boolean {
+	return resource[method.toLowerCase()] !== Resource[method.toLowerCase()];
+}
+
+function evaluatesWritePreconditions(resource, method: string): boolean {
+	return (
+		Boolean(resource?.prototype?.getMetadata) &&
+		resource.preconditions !== false &&
+		(['PUT', 'PATCH', 'DELETE'].includes(method) || !definesOwnVerb(resource, method))
+	);
+}
+
+// The record an own verb's optional condition guards, parsed as Resource parses a target: the verb may pass that record
+// on by id rather than by the target object. A target the parse rejects leaves the condition unbound, so the verb
+// still runs and sees the headers.
+function conditionRecordId(resource, target: RequestTarget, request) {
+	if (target.isCollection || target.select || target.id == null) return;
+	if (resource.directURLMapping) return target.toString().slice(1);
+	if (typeof target.id !== 'string') return target.id;
+	// parsePath may read request state, and sets the content type from a `.json` id only for the verb's own parse
+	const { requestedContentType } = request;
+	try {
+		const parsed = resource.parsePath(target.id, request);
+		if (parsed?.property !== undefined || !parsed) return;
+		return resource.coerceId(parsed);
+	} catch {
+		return;
+	} finally {
+		request.requestedContentType = requestedContentType;
+	}
+}
+
+function unapplied(writeCondition): boolean {
+	return Boolean(writeCondition && !writeCondition.consumed && !writeCondition.optional);
+}
+
 function isDeferredRead(data): boolean {
 	return Boolean(
 		data &&
@@ -394,18 +430,17 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			method !== 'TRACE' &&
 			method !== 'CONNECT' &&
 			method !== 'QUERY' &&
-			hasWritePreconditions(headersObject)
+			hasWritePreconditions(headersObject) &&
+			evaluatesWritePreconditions(resource, method)
 		) {
-			const verb = method.toLowerCase();
-			if (
-				!['PUT', 'PATCH', 'DELETE'].includes(method) ||
-				resource?.[verb] !== Resource[verb] ||
-				!(resource?.prototype as any)?.getMetadata
-			)
+			if (!['PUT', 'PATCH', 'DELETE'].includes(method))
 				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
+			const optional = definesOwnVerb(resource, method);
 			writeCondition = {
 				Resource: resource,
 				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
+				optional,
+				recordId: optional ? conditionRecordId(resource, target, request) : undefined,
 				consumed: false,
 				release: undefined,
 				check(entry) {
@@ -529,7 +564,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 							const replyStatus = result?.headers
 								? (result.status ?? request.response.status)
 								: request.response.status;
-							if (!writeCondition.consumed && !(replyStatus >= 400)) {
+							if (unapplied(writeCondition) && !(replyStatus >= 400)) {
 								if (result?.headers) discardSerializedStream(result.body);
 								throw new ClientError('The resource did not apply the write precondition', 501);
 							}
@@ -665,7 +700,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
 		if (error instanceof Response) {
-			if (writeCondition && !writeCondition.consumed && error.status < 400) {
+			if (unapplied(writeCondition) && error.status < 400) {
 				discardSerializedStream(error.body);
 				error = new ClientError('The resource did not apply the write precondition', 501);
 			} else {
@@ -678,7 +713,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
-		if (writeCondition && !writeCondition.consumed && (statusCode || 500) < 400) {
+		if (unapplied(writeCondition) && (statusCode || 500) < 400) {
 			error = new ClientError('The resource did not apply the write precondition', 501);
 			statusCode = 501;
 		}
