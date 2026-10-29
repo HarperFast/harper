@@ -772,7 +772,7 @@ componentRemoved, workerStopped, branchesRemoved }`; `replicated` (`dropPeerResu
 did not say, `error` where one failed. A worker the coming stop or restart replaces is answered first, `null` for what is
 not done (harper#3091), so the owed removal is a durable `` `removal-pending` `` file beside the branches, written before
 the drop changes anything, cleared only by a completed removal or a `keepBranches` drop. Main retries each under its lock
-and marker recheck after every drop, after a start's pool reports, and on capped backoff; redeployed or held ones wait.
+and marker recheck after every drop, after a start's pool reports, when a worker exits or reports its load, and on capped backoff. A redeployed one waits for a drop, a held one (or an unreadable root config) a pass, one main serves as the only worker a start.
 
 ## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
 

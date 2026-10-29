@@ -422,6 +422,49 @@ for (const isolated of [false, true]) {
 					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
 				}
 			);
+
+			test(
+				'with the main thread as the only worker, a drop keeps the fork main serves until the next start',
+				{ timeout: 240000, skip: isolated },
+				async () => {
+					const mainOnly = { ...config, threads: { count: 0 } };
+					await killHarper(ctx);
+					await startHarper(ctx, { config: mainOnly });
+					const deployed = await operation({
+						operation: 'deploy_component',
+						project,
+						package: pkg,
+						host,
+						branchedDatabases: ['data'],
+					});
+					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+					await killHarper(ctx);
+					await startHarper(ctx, { config: mainOnly });
+					const written = await appRequest('/PackageProbe/main-write', 'PUT', { note: 'main' });
+					assert.ok(written.status >= 200 && written.status < 300, written.body);
+
+					// the second drop finds it absent, which main still serves just the same
+					for (const restart of [true, false]) {
+						const dropped = await operation({ operation: 'drop_component', project, restart });
+						assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+						assert.strictEqual(dropped.body.branchesRemoved, false, JSON.stringify(dropped.body));
+						assert.match(dropped.body.message, /main thread serves it/);
+						for (const settled = Date.now() + 2000; Date.now() < settled;) {
+							assert.ok(existsSync(branchRoot()), 'the fork main serves was removed');
+							await new Promise((resolve) => setTimeout(resolve, 100));
+						}
+						assert.strictEqual((await read('/PackageProbe/main-write')).note, 'main');
+					}
+
+					await killHarper(ctx);
+					await startHarper(ctx, { config });
+					await waitFor(() => !existsSync(branchRoot()), {
+						timeout: 60000,
+						interval: 250,
+						message: 'the next start left the fork on disk',
+					});
+				}
+			);
 		}
 	);
 }
