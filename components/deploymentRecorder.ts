@@ -652,11 +652,13 @@ export async function awaitDeploymentRow(
  * slow extraction consumer propagates back to the underlying `Blob.stream()` the same as it
  * did before this wrapper existed.
  *
- * This also bounds *when* a retry is safe: once any chunk has reached the consumer, re-opening
- * from byte 0 would duplicate it, so we only retry while the current attempt has yielded
- * nothing yet — the reported failure mode (no content bytes arrive at all within the
- * no-progress window). A stall after partial content has already been forwarded fails
- * immediately, exactly as an unwrapped read would.
+ * This also bounds *when* a retry is safe: once any byte has reached the consumer, re-opening
+ * from byte 0 would duplicate it, so we only retry while the current attempt has forwarded no
+ * bytes yet — the reported failure mode (no content bytes arrive at all within the no-progress
+ * window). Zero-length chunks are dropped rather than counted: `Blob.stream()`'s first pull over
+ * a file holding only its header (content still replicating in) enqueues one (harper-pro#1185).
+ * A stall after partial content has already been forwarded fails immediately, exactly as an
+ * unwrapped read would.
  *
  * Non-retryable classes — 500 corrupt/incomplete, 404 gone/ENOENT, or anything without a
  * `statusCode` — also fail immediately.
@@ -699,6 +701,7 @@ async function* readPayloadBlobChunks(
 		if (cell.readable?.destroyed) return;
 		try {
 			for await (const chunk of streamFactory() as unknown as AsyncIterable<Buffer>) {
+				if (chunk.length === 0) continue;
 				yield chunk;
 				forwardedAnyBytes = true;
 			}
@@ -709,8 +712,13 @@ async function* readPayloadBlobChunks(
 			}
 			const remaining = deadline - Date.now();
 			if (remaining <= 0) throw error;
+			const delayMs = Math.min(backoffMs, remaining);
+			logger.warn?.(
+				`Deploy payload read is unavailable before any content arrived; retrying in ${delayMs}ms ` +
+					`(${remaining}ms of deployment_timeout left): ${(error as Error).message}`
+			);
 			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, Math.min(backoffMs, remaining));
+				const timer = setTimeout(resolve, delayMs);
 				timer.unref?.();
 			});
 			if (cell.readable?.destroyed) return;
