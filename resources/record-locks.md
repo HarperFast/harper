@@ -758,6 +758,211 @@ disagreement anyone can observe. The routing version therefore rides on the mutu
 `recordLocks` capability that already gates this protocol (§11), so nodes that would hash differently
 cannot both be enabled in one cluster.
 
+#### 4.5 Restart availability: planned, rolling and unplanned (harper#3768)
+
+§4.3's quarantine and the harper#3254 recall are each sound, and together they still leave lock
+failures on every restart, because they answer only half of what a restart raises. A restarting node
+is a **home** for its share of the ring _and_ a **delegate** for keys it locked elsewhere, and a
+restart is **planned** (a deploy, a component reload, a rolling worker restart, an upgrade) or
+**unplanned** (a crash, an OOM, `kill -9`, host loss). central-manager#603 is blocked on the result:
+on harper-pro 5.3.2, which predates the harper#3254 round, every deploy cost about 365 s of immediate
+503s on the restarted node's homed keys, re-armed by each table's first lock and by every
+coordinating-worker move. With the round in place, three gaps remain:
+
+- **G1 — the delegate side.** A home's grant to the restarted node outlives that node's incarnation.
+  A recall reaches the new incarnation, which holds no such token and confirms
+  (`onDelegationRecall`'s unknown-token branch), so the home waits for a release that never comes.
+  Every key the node locked in the last delegation lease, homed elsewhere, is then denied to every
+  other node for up to `DELEGATION_LEASE_MS + skew` — and to the node itself, since a confirmed recall
+  blocks renewal. A rolling worker restart pays this as much as a crash does.
+- **G2 — refusals that will end in seconds fail at once.** `quarantine`, an unreachable home and an
+  ownerless relay each fail the `lock()` immediately. While the round's first pass is in flight a
+  restarted home refuses every key it homes, and every caller fails — although the pass takes about a
+  round trip and the default lock wait is 30 s.
+- **G3 — a per-table clock.** Where the round cannot attest (during a rolling upgrade, a member on a
+  build without the operation), each table's horizon runs from its own coordinator's construction,
+  so a table first locked an hour after the restart still pays 365 s.
+
+**(1) A delegate retires its own dead epochs at its homes (G1).** The unit is a **delegate epoch**,
+per database: the value of the node's durable incarnation counter at the moment this database's
+coordination was last assigned on this node — at process start, or when this database's owner was
+handed off. It is deliberately not the node-wide `homeIncarnation`. A handoff of one database bumps
+that counter for the whole node while every other database's owner stays alive and keeps admitting
+under its delegations, so "below the current incarnation" would name live authority: a node whose
+worker W1 owned database X and died, while W2 still owns Y and holds a delegation for a key homed on
+B, would retire W2's grant at B, and B could grant the key to a third node while W2 still admits.
+
+A delegation request carries the requesting database's epoch (`DelegationRequest.delegateEpoch`,
+supplied per database by `ClusterLockTransport.delegateEpoch?()`); the home records it on the grant
+and refreshes it on renewal. When a database's coordination is assigned at epoch `e`, its harper#3254
+round also asks each member to **retire every grant for this database issued to this node below `e`**
+(`retireDelegateEpoch(database, delegate, below)`, on the member's coordinating thread). Each is
+expired with its lineage dropped, so the key's next holder takes §7.2's barrier: the dead epoch may
+have committed under it and released nothing. The member keeps the bound as a per-database floor for
+that requester: a later request tagged below it is refused, so a request a dead epoch left in flight
+cannot re-create a grant, and a notice at or below the floor is a no-op. The delegate is the
+authenticated principal of the call, never a payload field; a malformed epoch or bound is rejected,
+not read as an untagged legacy request.
+
+It is sound because the statement is the delegate's own, about one database, made only once that
+database's earlier epochs cannot admit. A process restart ended them all. A handoff assigns epoch `e`
+to a database only after its previous owner exited and every worker acknowledged fencing its relayed
+handles for that database (`recordLockOwnerFor` awaits both the bump and `broadcastOwnerlessAndWait`
+before `assignOwner`). That is the precondition the round's own local recall answer already relies
+on, including its open dependency: an exited thread's submitted native commit is not cancelled, and
+exclusion rests on it keeping its submission order (rocksdb-js#865), which this change neither
+strengthens nor claims to. A grant tagged `e` is the new epoch's own and is not below `e`; an
+untagged grant, from an older requester, is never retired, and a member's reply without `retired`
+is not counted as a retirement. The retire runs in the round's recall phase, after every member
+answered the probe: freeing a key while some member is unreachable only moves its failure to the
+recovery barrier, which asks every member.
+
+**(2) A refusal that will end soon is waited out (G2).** Every wait reuses `#acquire`'s existing
+deadline loop — one absolute deadline across every pass and handoff, the last-completed-reply
+classification, late-grant surrender — and only stops treating these outcomes as terminal:
+
+- **A home inside its quarantine** replies with what remains (`quarantineMs`), or `recovering: true`
+  while this incarnation's round is in flight (`ClusterLockTransport.restartRecovering?()`). The
+  requester waits when the home is `recovering` or `quarantineMs` fits its deadline, and otherwise
+  fails fast as today. A home whose incarnation is not yet known (harper-pro, while booting) answers
+  the same `recovering` refusal instead of today's `generation`, which the requester rightly treats as
+  a configuration mismatch.
+- **An unreachable home** and **this node's own withheld home map while it boots** are retried for at
+  most `HOME_RESTART_RIDE_THROUGH_MS` (10 s) of the deadline, each request also bounded by what that
+  window has left — today `#requestRemotely` races one blackholed request against the caller's whole
+  budget.
+- **harper-pro's owner relay** retries an ownerless database, and an acquire failed because its owner
+  departed (`failRelayAcquiresForDatabase`), against the same deadline instead of answering 503.
+
+Retries back off with jitter from `retryAfterMs` (at least 250 ms for these outcomes) rather than the
+contended loop's 25 ms, so a thousand callers parked on a restarting home cost a few thousand
+requests a second at most, not forty thousand. A wait that runs out ends 503 and never `contended`.
+The cached-delegation path, node-scoped locks and ordinary writes reach none of it.
+
+The ride-through is bounded by the **lease** as well as the timeout. `Table.lock()` takes the native
+key, and starts its lease, before the cluster step; a round that lands after that lease expired
+cannot join the handle (`joinClusterRound`) and fails 503 anyway. So core caps the cluster wait at
+what the handle's lease leaves, and the promise is narrowed accordingly: a restart window is ridden
+through only up to `min(timeout, lease)` — 30 s each by default. Holding the key across a longer wait
+would need an acquisition reservation that starts the protected lease at admission, a change to the
+Phase 0 handle this does not make.
+
+**(3) The quarantine runs from the database's ownership epoch, not from the table (G3).**
+`ClusterLockTransport.coordinationStartedMono()` supplies the monotonic instant the database's current
+delegate epoch began on this node: its assignment, or process start. harper-pro reads it on the main
+thread, where `performance.now()` shares one origin with every worker thread, and every earlier
+coordinator of that database on this node had stopped by then — the old process is gone, or the old
+owner exited before the assignment. A coordinator built later anchors both halves of its quarantine
+there instead of at its own construction. A live coordinator that observes a different incarnation, or
+loses and regains ownership, still re-arms from that moment, because core cannot see what coordinated
+in between. Without the hook, or if it throws, construction stays the anchor.
+
+**Planned restarts need no protocol of their own.** The obvious candidate is a shutdown drain that
+stops granting, surrenders and recalls everything, then persists a clean-shutdown marker that lets
+the next incarnation skip its quarantine. It buys nothing that (1)–(3) and the round leave on the
+table, because after a home restart **every** key it homes takes §7.2's recovery barrier
+(`#freshnessFor` answers `null` once `#trustVirginKeys` is lost), and every key the node released
+names it in its successor's lineage. harper-pro's transport asks each named origin — every other
+home-map member for a recovery — for a fresh barrier (`recordLockFreshness.ts`, `awaitBarrier`). So:
+
+- **Every member up:** the round attests in about a round trip, which (2) waits out; a marker saves
+  only that round trip.
+- **A member down:** a marker would end the quarantine, but every lock on the restarted home's keys
+  then fails at the barrier, which needs that member.
+- **Surrendering this node's delegations at shutdown** hands each key back with lineage naming this
+  node, so its successor still waits for this node to return; (1) frees the same grants a round
+  trip after it does.
+- **Recalling this node's grants at shutdown** only moves the round's drain from boot to shutdown,
+  holding the deploy open for any critical section a peer is inside.
+
+A rolling worker restart is therefore an ownership handoff, an incarnation bump, a round, and one
+recovery barrier per key on its next lock, with every refusal in between waited out by (2); a process
+restart adds the process's own downtime.
+
+**What stays unavoidable, and its bound:**
+
+- **A home's keys while the home is not running**: the downtime itself, seconds for a worker handoff
+  and the restart for a process. (2) hides it from a caller whose `min(timeout, lease)` outlasts it,
+  up to the 10 s an unreachable home is retried for.
+  Removing it needs a second arbiter for those keys during the restart — a deputy home — which is the
+  runtime re-homing §4.2 declines; an operator expecting a long outage can re-home through §4.3.
+- **Any key whose freshness needs a stopped member**: unavailable until that member returns. That is
+  every key a restarted home serves while some other member is down (its recovery barrier asks every
+  member), every key whose lineage names the stopped member, and every key a crashed delegate held,
+  once its grant has expired without a release. This bound dominates all the member-down cases below:
+  the quarantine and the delegation lease are not what decides them.
+- **A home restarted while a member is unreachable**: `DELEGATION_LEASE_MS + skew` (365 s) from the
+  database's epoch start, or until the member returns and the round completes. The member may be
+  partitioned and admitting under a delegation this home issued, and nothing tells that apart from
+  dead.
+- **A crashed delegate that has not restarted**: its grants hold their keys until they expire, 365 s
+  after grant or renewal at most, for the same reason. (1) frees them once it restarts.
+- **The first lock on each key after a home restart** pays §7.2's barrier: a round trip to each other
+  member plus its replication backlog.
+
+Shrinking the delegation (sizing it to the requested lease, with a persisted high-water mark bounding
+a restarted home's quarantine) would shorten the 365 s bounds, but under the barrier bound above it
+changes no member-down outcome. The lever for those is the barrier's strictness: §10 permits a
+reachable-member barrier, and harper-pro fails closed instead. That is a freshness decision and out
+of scope here.
+
+**Interactions.**
+
+- **Incarnations.** The delegate epoch draws its numbers from the same durable counter as
+  `homeIncarnation` but advances per database, only when that database's coordination moves; the
+  node-wide counter still orders fencing tokens and still re-arms every database's home-side
+  quarantine on any bump.
+- **Generations.** A retire is generation-agnostic: the epochs it names are dead under every generation. A §4.3 drain that marked a retired grant outstanding loses nothing, since the grant is
+  gone.
+- **Partitions.** The retire is a statement a node makes about its own authority, after the fact it
+  states holds locally, and the waits in (2) grant nothing. A partitioned node is not restarting, so
+  neither applies to it.
+- **Clock skew.** `quarantineMs` is a duration; the anchor in (3) is one process's monotonic clock.
+- **Mixed versions.** Every field is optional and additive. An older home ignores `delegateEpoch` and
+  an older member ignores the retire, so their grants keep their expiry; an older requester sends no tag,
+  so its grants are never retired; an older home's `quarantine` carries neither new field, so a newer
+  requester fails fast as before; and an older requester ignores both and fails fast. Routing and
+  arbitration are unchanged, so the capability level is too.
+
+**Considered, not taken.**
+
+- **A clean-shutdown drain and marker**, above: the barrier bound decides every case it targets.
+- **Hand the grant table and its lineage to the successor** — in memory across a worker handoff,
+  durably across a process restart — instead of recalling. It would spare every key its post-restart
+  barrier, and keep a restarted home's keys available while some other member is down whenever
+  their lineage does not name it. That is the one member-down case anything here could improve, and
+  it is real. The costs are a snapshot that must be exact and complete (a grant issued after it, or
+  missing from it, is a second holder), a release that lands before the successor loads it being
+  dropped (costing that key its lease), and, for a process restart, durable lock state on the
+  shutdown path. Deferred to the §10 measurements, as the planned-restart refinement of this design.
+- **Answer a recall for a token this node holds no state for with a release**, instead of tagging
+  grants. No state is not no authority: a delegation this node's own clock expired (`tick`) is gone
+  from its tables while a write it admitted can still sit in its commit hold (`retainForCommit`),
+  which is the interval the home's skew outwaits. A release there lets the home re-grant inside it.
+  The tag names the dead epoch, which is what the retire needs to know.
+- **Retire by restart notice alone**, without tagging grants: the notice cannot tell a grant to the
+  dead epoch from one the new epoch already took, so it either misses the dead one or clears the live
+  one.
+- **Retire below the node-wide incarnation**: a handoff of one database bumps it for all of them, so
+  it would retire grants other databases' live owners still admit under (the W1/W2 case in (1)).
+- **Delegate heartbeats.** A missed heartbeat cannot tell a crash from a partition, which is the one
+  thing that would let a home re-grant early, so it shortens nothing a lease does not already bound.
+
+**Verification.** Unit, with independent clocks: retire frees a dead epoch's grant and leaves a
+renewed one; a database handed off on one worker does not retire another database's grants on a live
+worker; a request tagged below a retired floor is refused; repeated, reordered and lower notices are
+no-ops; an untagged grant is never retired, and a malformed tag is rejected; two successive restarts;
+a holder that outlives its home's restart stays the only holder until it releases; a peer down when
+the restarting node asks keeps the timer, anchored at the epoch; a table built late in an epoch is not
+re-quarantined; `recovering` is waited out and a long `quarantineMs` is not; an unreachable or
+blackholed home is retried for the ride-through and no longer; the wait stops at the lease; throwing
+or missing hooks keep today's behavior. Integration on two real nodes, RocksDB: requests already
+pending and issued during a rolling worker restart and a rolling process restart succeed when
+`min(timeout, lease)` outlasts the downtime, with changed PID and incarnation checked; `kill -9` of
+one node, timed until its keys grant again; a key the killed node held grants to its peer once it is
+back; holders never overlap and final committed values match a serial run; several databases, with
+HTTP and replication-pool owners; old/new mixed requesters, homes and round members.
+
 ### 5. Exclusion
 
 - **One arbiter.** Within a generation every node derives the same home from the same `homes[]`, and
