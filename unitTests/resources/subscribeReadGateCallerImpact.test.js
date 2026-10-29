@@ -129,7 +129,7 @@ describe('Subscribe read gate: caller impact', () => {
 			assert.strictEqual(listenerCalled, false);
 		});
 
-		it('sync override returning true: one allowRead call, and the request is disarmed afterwards', async function () {
+		it('sync override returning true: one allowRead call, and the caller request is never armed', async function () {
 			let allowReadCalls = 0;
 			class Allowing extends FalseModeRecords {
 				allowRead() {
@@ -140,9 +140,9 @@ describe('Subscribe read gate: caller impact', () => {
 			const request = { omitCurrent: true };
 			await admitted(Allowing.subscribe(request, undefined, armed(nonReader)));
 			assert.strictEqual(allowReadCalls, 1);
-			// v5.1.x leaves checkPermission armed after its gate; main (harper#1915) clears it so a
-			// delegated read with the same request is not authorized twice.
-			assert.strictEqual(request.checkPermission, false);
+			// v5.1.x armed and left armed the caller's own request; harper#1915 cleared it after the gate. The gate
+			// now arms and consumes a dispatch copy, so the caller's object is reusable by another principal.
+			assert.strictEqual(request.checkPermission, undefined);
 		});
 
 		it('async override: the verdict is awaited', async function () {

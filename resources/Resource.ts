@@ -23,7 +23,7 @@ import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
-import { RequestTarget } from './RequestTarget.ts';
+import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
@@ -42,7 +42,6 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 	return Promise.reject(readOnlyModeError());
 }
 
-const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 export const WRITE_CONDITION = Symbol('writeCondition');
 
@@ -972,15 +971,18 @@ function transactional(
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 			}
-			if (context.authorize) {
+			const armTarget = Boolean(context.authorize);
+			if (armTarget) {
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 				context.authorize = false;
-				query.checkPermission = true;
 			}
 			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
 				if (checkPermission) {
+					// false mode leaves an unarmed target to the instance method's own gate
+					if (armTarget || loadAsInstance !== false) query = dispatchTarget(query);
+					if (armTarget) query.checkPermission = true;
 					if (loadAsInstance !== false) {
 						// do permission checks, with allow methods
 						let allowed;
