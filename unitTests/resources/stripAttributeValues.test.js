@@ -8,6 +8,9 @@ const { existsSync } = require('node:fs');
 const { Readable } = require('node:stream');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { VERSION_REUSED, FULL_WRITE_HEAD } = require('#src/resources/RecordEncoder');
+const { transaction } = require('#src/resources/transaction');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { getAuditFloor } = require('#src/resources/auditStore');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 
@@ -26,6 +29,16 @@ describe('Table.stripAttributeValues', () => {
 			...options,
 		});
 	const readEntry = (Table, id) => Table.primaryStore.getEntry(id, { uncachedRead: true });
+	function deliverFromOrigin(Table, id, record, { fullUpdate, version, nodeId }) {
+		const context = { source: {}, sourceApply: true, timestamp: version };
+		return transaction(context, async () =>
+			(await Table.getResource(id, context, { ensureLoaded: false }))._writeUpdate(id, record, fullUpdate, {
+				isNotification: true,
+				nodeId,
+				version,
+			})
+		);
+	}
 
 	it('keeps the version, metadata and local time of each rewritten record', async () => {
 		const Table = makeTable({ expiration: 3600 });
@@ -126,6 +139,38 @@ describe('Table.stripAttributeValues', () => {
 		assert.strictEqual(after.metadataFlags, tombstone.metadataFlags);
 		assert.strictEqual(await Table.get('gone'), null);
 		assert.deepStrictEqual(Buffer.from(Table.primaryStore.getBinary('without')), Buffer.from(untouched));
+	});
+
+	it('a stripped full write still supersedes an older replicated write', async () => {
+		const Table = makeTable();
+		const headOrigin = getIdOfRemoteNode('strip-head-origin', Table.auditStore);
+		const lateOrigin = getIdOfRemoteNode('strip-late-origin', Table.auditStore);
+		const version = Date.now() + 86400 * 1000;
+		await deliverFromOrigin(
+			Table,
+			'late',
+			{ id: 'late', a: 1, keep: 'k' },
+			{ fullUpdate: true, version, nodeId: headOrigin }
+		);
+		await Table.stripAttributeValues(['a']);
+		assert.strictEqual(readEntry(Table, 'late').metadataFlags & FULL_WRITE_HEAD, 0);
+		// above the audit floor, so neither write is discarded before the out-of-order walk
+		assert.ok(version - 2000 > getAuditFloor(Table.auditStore));
+
+		await deliverFromOrigin(
+			Table,
+			'late',
+			{ a: 2, extra: 'patch' },
+			{ fullUpdate: false, version: version - 2000, nodeId: lateOrigin }
+		);
+		await deliverFromOrigin(
+			Table,
+			'late',
+			{ id: 'late', a: 3, extra: 'put' },
+			{ fullUpdate: true, version: version - 1000, nodeId: lateOrigin }
+		);
+
+		assert.deepStrictEqual({ ...readEntry(Table, 'late').value }, { id: 'late', keep: 'k' });
 	});
 
 	it('two concurrent strips of different attributes both take effect', async () => {
