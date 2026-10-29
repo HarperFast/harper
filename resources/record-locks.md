@@ -753,7 +753,8 @@ prove the older interval was safe. Transports without the optional hook retain t
 `homeMap()` fallback.
 
 That quarantine costs availability, and the cost is real: for keys a node homes, the first cluster
-lock after a cold start waits out the interval — per table, from each coordinator's own construction,
+lock after a cold start waits out the interval — per table, from each coordinator's own construction
+(or, where the transport supplies `coordinationStartedMono()`, from the database's ownership epoch, §4.5),
 so a table first locked an hour after the restart still pays it. It does not affect keys homed
 elsewhere — the node acquires those immediately — and it is bounded by the delegation lease, not by
 an operator's response time. A deployment that can prove a previous incarnation issued nothing (a
@@ -1009,7 +1010,47 @@ of scope here.
 - **Delegate heartbeats.** A missed heartbeat cannot tell a crash from a partition, which is the one
   thing that would let a home re-grant early, so it shortens nothing a lease does not already bound.
 
-**Verification.** Unit, with independent clocks: retire frees a dead epoch's grant and leaves a
+**Request identity and the renewal drain (harper#2582, harper#3268), layered on the same messages.**
+
+- `DelegationRequest.requestId` is monotonic per requesting thread and echoed on the reply. The home
+  answers the request that minted its current grant, delivered again, with the _same_ token and the
+  remaining lease, so the delegate's token and the home's never diverge. A request that no longer
+  matches a grant is checked against a 1024-id sliding window per `(database, requester, delegate
+epoch)`: an id already seen, or older than the window, is `stale` — never a fresh grant nobody is
+  waiting for. `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
+  epoch's replay never retries) and ends 503. The requester discards a reply whose echo is not its
+  outstanding request, handing back anything it granted. The window lives on the owner thread like the
+  grants it protects; a replayed id from a _live_ epoch across a home's handoff is bounded by the
+  transport's at-most-once delivery and, failing that, by the recall-and-release path. A malformed
+  request id is refused like a malformed epoch. A same-node request tagged _below_ the grant's epoch
+  is refused (`retired`) rather than renewed: it is a dead epoch's delayed request, and renewing would
+  pull the grant's lifetime under its live holder's.
+- The home renews in place only for the node that holds the key, so a recall naming a token _newer_
+  than the one the delegate holds for that key is a recall of that delegation whose renewal reply is
+  still in flight, or never came. The delegate drains it and surrenders it under the _recalled_ token
+  — the one the home holds — and waits for the in-flight reply to be disposed of
+  (`PendingRequest.settled`, created only when a recall needs it and resolved at every exit of the
+  reply handling) before it confirms, so a recall never confirms ahead of the admissions a renewal
+  inherits, and a lost renewal reply no longer leaves the key held to expiry (§5.2's residue). A drain
+  (`quiesce`) clears `recallRetryAfterMono` before it recalls, so a drain inside a failed contention
+  recall's backoff still sends. Neither touches the epoch: a retire expires a grant whatever its token.
+- A recall carries the grant's `delegateEpoch`. The delegate's unknown-token branch _fails_ a recall
+  tagged below its own epoch — the token belongs to an exited epoch and was never held here — instead
+  of confirming it; the home's `RECALL_RETRY_MS` retry stays in force until the retire frees the key.
+  It is not a release (above, "Considered, not taken"): nothing is handed back, and the retire remains
+  the only thing that frees a dead epoch's grant.
+- A home whose map is withheld answers `generation` with `recovering: true` — it is still hearing from
+  its peers after its restart — and the requester waits that out like a booting home; a map the home
+  has already outgrown stays a terminal `generation`.
+- Every member's answer to the restart probe and recall echoes the _member's_ own delegate epoch. The
+  restarted home records each as that member's floor as the answers arrive, before its re-armed
+  quarantine can let it grant, so a home whose owner thread was replaced rebuilds the floors that
+  thread lost from the members themselves.
+
+**Verification.** The real-node cases below live in harper-pro, which owns the transport they exercise:
+`integrationTests/cluster/recordLockRestartAvailability.test.mjs` (rolling process and worker restarts,
+holders never overlapping under concurrent locked increments, `kill -9`, a member down, a duplicated
+request, a peer on the previous wire) and `recordLockRestart.test.mjs`. Unit, with independent clocks: retire frees a dead epoch's grant and leaves a
 renewed one; a database handed off on one worker does not retire another database's grants on a live
 worker; a request tagged below a retired floor is refused; repeated, reordered and lower notices are
 no-ops; an untagged grant is never retired, and a malformed tag is rejected; two successive restarts;
@@ -1063,13 +1104,12 @@ clock at receipt overlaps the next delegate.
 - Every message carries `(generation, homeIncarnation, delegationCounter, requestId)` and is bound to
   the authenticated replication origin. A reply that does not match the requester's current generation
   and its outstanding request is discarded; a validly authenticated node that the current generation
-  does not name can neither obtain a delegation nor clear one. **The `requestId` half is not
-  implemented** — the wire carries no request identity, correlation is the transport's per-call
-  promise, and the home therefore cannot tell a duplicate or delayed request from a genuine renewal.
-  Core closes the resulting two-holder path by refusing to hand back a grant while any delegation for
-  the key is held; the residue, and the protocol fix, are harper#2582. The generation half **is**
-  implemented: the map is re-read after the round and a grant minted under a superseded generation is
-  handed back rather than installed.
+  does not name can neither obtain a delegation nor clear one. The `requestId` half is §4.5's request
+  identity (harper#2582): the home answers a duplicate with the token it already issued and refuses a
+  replay through a per-requester window, and the requester discards a reply whose echo is not its
+  outstanding request. Core still refuses to hand back a grant while any delegation for the key is
+  held. The generation half: the map is re-read after the round and a grant minted under a superseded
+  generation is handed back rather than installed.
 - **Every local handle is bounded by `min(requested lease, delegation deadline)`** — including
   re-entrant acquisition and the `{hold: true}` upgrade. The branch's
   `upgradeToHold` already clamps to the granted round's deadline rather than extending it

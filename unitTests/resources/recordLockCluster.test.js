@@ -1137,6 +1137,28 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			});
 		});
 
+		it('caps the cluster wait at what the native lease leaves (record-locks.md §4.5)', async function () {
+			if (isLMDB) return this.skip();
+			// A home that is still coming up is waited out — but only for as long as the native lease the
+			// handle already started can still be joined; a round landing after it could only fail.
+			let asked = 0;
+			useSoloTransport({
+				homes: ['elsewhere'],
+				requestDelegation: async () => {
+					asked++;
+					return { granted: false, reason: 'quarantine', recovering: true, retryAfterMs: 250 };
+				},
+			});
+			const startedAt = Date.now();
+			await assert.rejects(
+				() => ClusterLockTest.lock(id(), { lease: 400, timeout: 5000 }),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+			const elapsed = Date.now() - startedAt;
+			assert.ok(elapsed < 2_000, `waited ${elapsed}ms past a 400ms lease`);
+			assert.ok(asked >= 1 && asked <= 4, `${asked} requests inside a 400ms lease`);
+		});
+
 		it('releases the transaction’s other locks when one of them lapses at commit', async function () {
 			if (isLMDB) return this.skip();
 			useSoloTransport();
