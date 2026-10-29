@@ -521,8 +521,9 @@ export async function disablePreviews(req: any) {
 			throw new ServerError(
 				`Previews of ${req.app} are revoked but not removed: ${failed.join('; ')}. The trust policies are gone and ` +
 					`${names.user} is inactive; disable previews again to retry the drops and remove the user and role. ` +
-					'What a failed drop left behind, branched storage or a running worker, is no longer a live release, so a ' +
-					'rerun does not see it: drop_component of that project on that node removes it.'
+					'What a failed drop left behind is no longer a live release, so a rerun does not see it: Harper retries a ' +
+					'branched storage removal the drop recorded as owed, and drop_component of that project on that node ' +
+					'removes anything else its error names.'
 			);
 		}
 		if (user) {
