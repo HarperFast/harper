@@ -784,6 +784,8 @@ type TopicState = {
 	consumed: number;
 	currentCheckpoint?: SubscriptionCheckpoint;
 	checkpointComputedAt?: number;
+	/** At or below this a receipt may be missing (pruned, never kept, or before the topic's start). */
+	prunedThrough?: number;
 };
 
 /** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
@@ -907,6 +909,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Bumped per `advancePositions`, so each topic computes its checkpoint once per pass. */
 	advanceCount = 0;
 	qos1ReceiptsUnsaved = false;
+	receiptsReclaimedAt?: number;
 	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
 	sealing = false;
 	savesStarted = 0;
@@ -1217,33 +1220,49 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const sent = state?.unacked.get(messageId);
 		if (sent?.late) state.lateUnacked--;
 		state?.unacked.delete(messageId);
-		// a replay revisits it only while the position stays below it
-		if (
-			sent &&
-			update.qos === 1 &&
-			this.receivedCount < QOS1_RECEIVED_LIMIT &&
-			this.positionMayStayBelow(state, sent.key)
-		) {
-			this.addReceived(state, [sent.key, sent.ordinal, deliveryId(sent.id)]);
-			this.qos1ReceiptsUnsaved = true;
+		if (sent && update.qos === 1) {
+			if (this.receivedCount >= QOS1_RECEIVED_LIMIT && this.receiptsReclaimedAt !== this.advanceCount)
+				this.reclaimQoS1Receipts();
+			// a checkpoint replay revisits it, and a replay here while the position stays below it
+			const replayed =
+				state.entry.checkpoint !== undefined ||
+				state.currentCheckpoint !== undefined ||
+				this.positionMayStayBelow(state, sent.key);
+			if (replayed && this.receivedCount < QOS1_RECEIVED_LIMIT) {
+				this.addReceived(state, [sent.key, sent.ordinal, deliveryId(sent.id)]);
+				this.qos1ReceiptsUnsaved = true;
+			} else if (!(state.prunedThrough >= sent.key)) state.prunedThrough = sent.key;
 		}
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
 	}
-	/** Mirrors `nextPosition`: whether the next position can stop below `key`. */
+	/** Whether `nextPosition`, by the holds it has now, may stop below `key`; a later late delivery is not foreseen. */
 	positionMayStayBelow(state: TopicState, key: number): boolean {
 		const subscription = state.subscription;
+		if (!state.verified) return true;
 		if (subscription?.progress === undefined) {
 			if (!state.keysPerEntry) return true;
 		} else if (subscription.sentCount !== state.consumed || !(subscription.progress() >= key)) return true;
-		for (const unacked of state.unacked.values()) {
-			if (unacked.key <= key) return true;
+		for (const { previousKey } of state.unacked.values()) {
+			if (!(previousKey >= key)) return true;
 			if (state.lateUnacked === 0) break;
 		}
 		return false;
 	}
 	keepsUnsavedReceipts() {
 		return this.qos1ReceiptsUnsaved && this.receivedCount > 0;
+	}
+	/**
+	 * At the QoS 1 share, receipts at or below a scalar this node saved, which only a checkpoint replay on another
+	 * node reads, give way to ones a replay here reads; once per position pass, which is what can free more.
+	 */
+	reclaimQoS1Receipts() {
+		this.receiptsReclaimedAt = this.advanceCount;
+		for (const state of this.topics.values()) {
+			if (state.entry.qos !== 1 || state.entry.foreignGeneration !== undefined) continue;
+			this.pruneReceipts(state, state.entry.startTime);
+			if (!(state.prunedThrough >= state.entry.startTime)) state.prunedThrough = state.entry.startTime;
+		}
 	}
 	/** Its PUBREL waits for a save that keeps the message from being sent again and records the PUBREL owed. */
 	received(messageId: number, failed: boolean) {
@@ -1496,10 +1515,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
 			state.entry.foreignGeneration = undefined;
-			// a checkpoint replay revisits QoS 2 receipts below the scalar, so once floors certify one only its floor prunes
-			// them; a QoS 1 one below it is read by no replay here, and keeping it would rewrite it with every save
-			if (state.entry.qos === 1 || (this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined)
+			// a checkpoint replay revisits receipts below the scalar, so once one is certified only its floor prunes them
+			if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) {
 				this.pruneReceipts(state, next);
+				state.prunedThrough = next;
+			}
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
 				state.subscription.progress?.() === undefined ? undefined : state.subscription.databaseGeneration;
@@ -1509,9 +1529,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (!(state.entry.qos > 0)) continue;
 			const checkpoint = this.currentCheckpoint(state);
 			if (checkpoint && !sameCheckpoint(checkpoint, state.entry.checkpoint)) {
-				// the scalar watermark was compacted against a position an origin can commit below; from the first
-				// checkpoint on, receipts are bounded by its floor only
-				if (state.entry.checkpoint === undefined) state.receivedThrough = undefined;
+				if (state.entry.checkpoint === undefined) {
+					// a replay from it would resend what lacks a receipt, or what preceded the topic: it waits for floors above
+					if (!(checkpointFloor(checkpoint) > state.prunedThrough)) continue;
+					// compacted against a position an origin can commit below, so a replay must not trust it
+					state.receivedThrough = undefined;
+				}
 				state.entry.checkpoint = checkpoint;
 				this.pruneReceipts(state, positionBefore(checkpointFloor(checkpoint)));
 				changed = true;
@@ -1614,8 +1637,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (startTime !== undefined) saved.startTime = startTime;
 			if ((databaseGeneration ?? foreignGeneration) !== undefined)
 				saved.databaseGeneration = databaseGeneration ?? foreignGeneration;
-			if (state.received?.size > 0) saved.received = [...state.received.values()];
-			if (state.receivedRuns?.size > 0) saved.receivedRuns = [...state.receivedRuns];
+			// QoS 1 receipts at or below the scalar are read only by a checkpoint replay on another node, so, like in-flight
+			// QoS 2 deliveries, only the final save writes them
+			const kept = qos === 1 && !this.terminated ? startTime : undefined;
+			const received = state.received && [...state.received.values()].filter(([key]) => !(key <= kept));
+			if (received?.length > 0) saved.received = received;
+			const runs = state.receivedRuns && [...state.receivedRuns].filter(([key]) => !(key <= kept));
+			if (runs?.length > 0) saved.receivedRuns = runs;
 			if (state.receivedThrough !== undefined) saved.receivedThrough = state.receivedThrough;
 			if (qos === 2) {
 				const inFlight: [...DeliveryIdentity, number, string?][] = [...(state.resend?.values() ?? [])];
@@ -1711,7 +1739,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const changed = this.advancePositions();
 			this.terminated = true;
 			clearInterval(this.checkpointTimer);
-			this.seal(changed || this.dirty || this.hasInFlight() || this.keepsUnsavedReceipts());
+			this.seal(changed || this.dirty || this.hasInFlight() || this.receivedCount > 0);
 			this.closeConnection?.();
 		} else this.seal(false);
 	}
@@ -1730,8 +1758,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (!RESETTING_REFUSALS.has(error?.code)) {
 			// the client can reconnect and resume from what this session saves now
 			this.advancePositions();
-			this.persist().catch(() => {});
 			this.terminated = true;
+			this.persist().catch(() => {});
 			warn(`Closing MQTT session ${this.sessionId}: its subscription to ${subscription.topic} failed`, error);
 			try {
 				this.closeConnection?.(error);
@@ -1767,7 +1795,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.terminated = true;
 		super.disconnect(clientTerminated);
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
-		this.seal((changed || this.dirty || this.hasInFlight() || this.keepsUnsavedReceipts()) && !this.discarded);
+		this.seal((changed || this.dirty || this.hasInFlight() || this.receivedCount > 0) && !this.discarded);
 	}
 }
 
@@ -1795,6 +1823,7 @@ function sameCheckpoint(a: SubscriptionCheckpoint, b: SubscriptionCheckpoint | u
 function newTopicState(entry: DurableEntry): TopicState {
 	return {
 		entry,
+		prunedThrough: entry.startTime,
 		verified: true,
 		unacked: new Map(),
 		ordinal: 0,

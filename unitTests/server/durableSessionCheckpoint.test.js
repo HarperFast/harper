@@ -196,7 +196,11 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await T.put('after', { value: 'after' });
 		await waitFor(() => values(second.received).includes('after'));
 		assert.deepStrictEqual(requests[0].resume, entry.checkpoint, 'resumed from the checkpoint');
-		assert.ok(!values(second.received).includes('a'), 'nothing below the checkpoint is sent again');
+		assert.deepStrictEqual(
+			values(second.received),
+			['late', 'after'],
+			'the acknowledged deliveries are not sent again'
+		);
 		assert.ok(entry.startTime > lateKey, 'the scalar is above the late commit, so only the checkpoint delivers it');
 		second.session.disconnect(true);
 	});
@@ -227,7 +231,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		third.session.disconnect(true);
 	});
 
-	it('beside a checkpoint, keeps only the QoS 1 receipts above the scalar', async () => {
+	it('writes the QoS 1 receipts below the scalar only in the final save, for a checkpoint replay elsewhere', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const clientId = `receipts-${name}`;
@@ -245,7 +249,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 				await first.session.acknowledge(delivery(first.received, i).messageId);
 			}
 			const inOrder = (await stored(clientId)).subscriptions[0];
-			assert.strictEqual(inOrder.receivedRuns, undefined, 'the acknowledged deliveries the scalar passed are not kept');
+			assert.strictEqual(inOrder.receivedRuns, undefined, 'a save while connected writes none the scalar passed');
 			await transaction({}, async (context) => {
 				await T.put('x', { value: 'x' }, context);
 				await T.put('y', { value: 'y' }, context);
@@ -254,13 +258,24 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 			await first.session.acknowledge(delivery(first.received, 'y').messageId);
 			first.session.disconnect(true);
 			await first.session.writes;
-			assert.ok((await stored(clientId)).subscriptions[0].received?.length > 0, 'the one held behind x is kept');
+			const final = (await stored(clientId)).subscriptions[0];
+			assert.ok(final.received?.length > 0, 'the one held behind x is kept');
+			assert.ok(final.receivedRuns?.length >= 50, 'the final save writes the ones a checkpoint replay reads');
 			const second = await connect(clientId);
 			await second.session.resume();
 			await T.put('after', { value: 'after' });
 			await waitFor(() => values(second.received).includes('after'));
 			assert.deepStrictEqual(values(second.received), ['x', 'after'], 'the acknowledged half is not sent again');
+			await ackAll(second.session, second.received);
 			second.session.disconnect(true);
+			await second.session.writes;
+			await fromAnotherGeneration(clientId);
+			const third = await connect(clientId);
+			await third.session.resume();
+			await T.put('later', { value: 'later' });
+			await waitFor(() => values(third.received).includes('later'));
+			assert.deepStrictEqual(values(third.received), ['later'], 'a checkpoint replay sends nothing acknowledged');
+			third.session.disconnect(true);
 		} finally {
 			thaw();
 		}
@@ -272,6 +287,10 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		const clientId = `scalar-${name}`;
 		const first = await connect(clientId);
 		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => values(first.received).includes('a'));
+		await ackAll(first.session, first.received);
+		await storedCheckpoint(T, first.session, clientId);
 		const commitLate = await heldTransaction(T, 'late');
 		await T.put('early', { value: 'early' });
 		await waitFor(() => values(first.received).includes('early'));
@@ -463,11 +482,14 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 			await T.put('a', { value: 'a' });
 			await waitFor(() => values(first.received).includes('a'));
 			await ackAll(first.session, first.received);
-			await waitFor(async () => {
-				first.session.checkpoint();
-				await first.session.writes;
-				return (await stored(clientId))?.subscriptions?.[0]?.checkpoint !== undefined;
-			}, 10_000);
+			await sleep(400);
+			first.session.checkpoint();
+			await first.session.writes;
+			assert.strictEqual(
+				(await stored(clientId)).subscriptions[0].checkpoint,
+				undefined,
+				'a checkpoint from before the SUBSCRIBE is not adopted'
+			);
 			assert.deepStrictEqual(values(first.received), ['a']);
 			first.session.disconnect(true);
 			await first.session.writes;
@@ -488,29 +510,70 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await sleep(2);
 		certify(T);
 		const thaw = freezeFloor(T);
+		let first;
+		const clientId = `unacked-${name}`;
 		try {
 			await T.put('before', { value: 'before' });
-			const clientId = `unacked-${name}`;
-			const first = await connect(clientId);
+			first = await connect(clientId);
 			await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 			await T.put('a', { value: 'a' });
 			await waitFor(() => values(first.received).includes('a'));
-			await waitFor(async () => {
-				first.session.checkpoint();
-				await first.session.writes;
-				return (await stored(clientId))?.subscriptions?.[0]?.checkpoint !== undefined;
-			}, 10_000);
-			first.session.disconnect(true);
-			await first.session.writes;
-			await T.put('b', { value: 'b' });
-			const second = await connect(clientId);
-			await second.session.resume();
-			await waitFor(() => values(second.received).includes('b'));
-			assert.deepStrictEqual(values(second.received), ['a', 'b'], 'the unacknowledged delivery, and nothing before it');
-			second.session.disconnect(true);
 		} finally {
 			thaw();
 		}
+		await sleep(2);
+		certify(T);
+		let entry;
+		await waitFor(async () => {
+			first.session.checkpoint();
+			await first.session.writes;
+			entry = (await stored(clientId)).subscriptions[0];
+			return entry.checkpoint !== undefined;
+		}, 10_000);
+		assert.strictEqual(entry.databaseGeneration, undefined, 'precondition: the start is still unbound');
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('b', { value: 'b' });
+		const second = await connect(clientId);
+		const requests = resumeRequests(second.session);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('b'));
+		assert.strictEqual(requests[0].resume, undefined, 'resumed from the scalar, not the checkpoint beside it');
+		assert.deepStrictEqual(values(second.received), ['a', 'b'], 'the unacknowledged delivery, and nothing before it');
+		second.session.disconnect(true);
+	});
+
+	it('adopts a first checkpoint only once its floor passes what the topic acknowledged without keeping a receipt', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `first-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await waitFor(() => values(first.received).includes('early'));
+		await first.session.acknowledge(delivery(first.received, 'early').messageId);
+		// the open transaction holds this floor below the acknowledged delivery, whose receipt the scalar passed
+		await sleep(2);
+		certify(T);
+		await sleep(400);
+		first.session.checkpoint();
+		await first.session.writes;
+		assert.strictEqual((await stored(clientId)).subscriptions[0].checkpoint, undefined, 'not adopted below it');
+		await commitLate();
+		await waitFor(() => values(first.received).includes('late'));
+		await first.session.acknowledge(delivery(first.received, 'late').messageId);
+		const checkpoint = await storedCheckpoint(T, first.session, clientId);
+		assert.ok(checkpointFloor(checkpoint) > logKeyOf(T, 'early'), 'adopted once the floor passes it');
+		first.session.disconnect(true);
+		await first.session.writes;
+		await fromAnotherGeneration(clientId);
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('after', { value: 'after' });
+		await waitFor(() => values(second.received).includes('after'));
+		assert.deepStrictEqual(values(second.received), ['after'], 'a checkpoint replay sends nothing acknowledged');
+		second.session.disconnect(true);
 	});
 
 	it('checks before CONNACK only the checkpoint a session resumes from, resetting one this node cannot serve', async () => {
