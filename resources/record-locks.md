@@ -222,11 +222,10 @@ not a raw clock sample, which could equal an issued key once the clock catches u
 coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
 before changing modes and can claim a deferred floor.
 
-The floor reaches the write through the existing stamps. An explicit transaction's clock takes it only
-while nothing else would move with it — no log key reserved yet and no unlocked write staged first
-(`hasUnlockedWrite`, one pass over the writes for all of a transaction's locks); otherwise the clock
-stays put and the admitted holder's ordering is best-effort. Likewise a hold saved later in a
-different explicit transaction is stamped by that transaction's clock, not the floor. An
+The floor reaches the write through the existing stamps. An explicit transaction's clock takes it — at
+admission or when a surviving hold saves in a later or mid-scope-rotated explicit transaction — while
+nothing else would move with it (no log key reserved yet and no unlocked write staged first via
+`hasUnlockedWrite`); a hold save whose floor exceeds a fixed transaction clock is refused with a 409. An
 `ImmediateTransaction` uses the handle's per-write stamp and reserves its log key separately. A deferred
 write takes its stamp at its own save. A holder write saved while the same context's previous commit
 is still in flight (awaiting a streamed blob) would join that commit's handle, whose log key is already
@@ -1205,13 +1204,13 @@ feature that has not yet been measured.
 >    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
 >      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
 >      before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects admission; and
->      a hold saved later in a different explicit transaction is
->      stamped by that transaction's clock. Either way the holder writes at that clock on a
->      perfectly clean handoff, and if the admitted state is stamped above it, the holder's write is
+>      a surviving hold saved in an explicit transaction whose clock is already fixed below the hold's
+>      floor is refused with a 409. When a scoped lock in an already-fixed explicit transaction writes
+>      at that clock on a clean handoff and the admitted state is stamped above it, the holder's write is
 >      the older one, silently. What the committed record then holds is whatever ordinary resolution
 >      produces from the pair — which for overlapping plain fields is not the holder's value, and for
 >      disjoint patches or commutative ops may still carry it. The defense is to take the lock first
->      in its own transaction, or write a hold from the context that acquired it.
+>      in its own transaction, or save the held record before unrelated writes.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and

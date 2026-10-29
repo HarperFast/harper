@@ -86,6 +86,8 @@ export interface RecordLockHandle {
 	 * timestamp, or the stamp above the state the lock was admitted on.
 	 */
 	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
+	/** Compute the next holder-write floor without claiming a local key or raising the issuance ratchet. */
+	holderVersionFloor(floor?: number): number;
 	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
@@ -303,19 +305,28 @@ class KeyLockHandle implements RecordLockHandle {
 		if (claimOnWrite) this.#candidateFloorToClaim = Math.max(this.#candidateFloorToClaim ?? version, version);
 	}
 
+	holderVersionFloor(floor?: number): number {
+		return this.#resolveCandidate(floor, false);
+	}
+
 	holderVersionCandidate(floor?: number): number {
+		return this.#resolveCandidate(floor, true);
+	}
+
+	#resolveCandidate(floor: number | undefined, claim: boolean): number {
 		const candidateFloor = Math.max(this.#candidateFloor ?? -Infinity, floor ?? -Infinity);
 		const lastVersion = this.#lastHolderVersion;
 		if (this.#candidateFloorToClaim != null && this.#candidateFloorToClaim > (lastVersion ?? this.acquiredAt)) {
+			const step = timestampAbove(this.#candidateFloorToClaim);
 			const rootStore = this.store.rootStore;
-			if (typeof rootStore?.getUserSharedBuffer === 'function')
-				return Math.max(claimLocalKey(rootStore, timestampAbove(this.#candidateFloorToClaim)), candidateFloor);
+			const claimed =
+				claim && typeof rootStore?.getUserSharedBuffer === 'function' ? claimLocalKey(rootStore, step) : step;
+			return Math.max(claimed, this.acquiredAt, candidateFloor);
 		}
 		return Math.max(
-			lastVersion != null ? this.#stepPast(lastVersion) : this.acquiredAt,
+			lastVersion != null ? (claim ? this.#stepPast(lastVersion) : timestampAbove(lastVersion)) : this.acquiredAt,
 			this.acquiredAt,
-			candidateFloor,
-			floor ?? -Infinity
+			candidateFloor
 		);
 	}
 

@@ -23,7 +23,13 @@ import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
-import { releaseLocalKey, reserveLocalKey, reservedLocalKey, transferLocalKey } from './originClosedFloor.ts';
+import {
+	localIssuanceRatchet,
+	releaseLocalKey,
+	reserveLocalKey,
+	reservedLocalKey,
+	transferLocalKey,
+} from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
@@ -1862,7 +1868,7 @@ export class DatabaseTransaction implements Transaction {
 
 	private noteCommittedLockVersions(committedTransaction?: RocksTransaction): void {
 		const recordLocks = this.recordLocks;
-		if (!recordLocks) return;
+		if (!recordLocks && !this.hasLeaseProtectedWrite) return;
 		const isImmediateCommit = Boolean((committedTransaction as RocksTransactionWithRetry | undefined)?.immediateCommit);
 		const filterByStagedOn = Boolean(committedTransaction || this.hasSiblingCommitInFlight(committedTransaction));
 		for (const write of this.writes) {
@@ -1874,7 +1880,7 @@ export class DatabaseTransaction implements Transaction {
 			)
 				continue;
 			if (write.appliedRecordVersion == null) continue;
-			const handle = write.lockHandle ?? recordLocks.get(write.store)?.get(writeKeyId(write.key));
+			const handle = write.lockHandle ?? recordLocks?.get(write.store)?.get(writeKeyId(write.key));
 			if (handle && !handle.released) handle.noteHolderVersion(write.appliedRecordVersion);
 		}
 	}
@@ -2403,13 +2409,44 @@ export class DatabaseTransaction implements Transaction {
 					409
 				);
 			}
+			const previousTimestamp = this.timestamp;
 			try {
+				if (
+					lockHandle?.hold &&
+					!operation.lockStamp &&
+					!operation.saved &&
+					this.open === TRANSACTION_STATE.OPEN &&
+					!concurrentClosedWrite &&
+					!this.saveCommits &&
+					!this.sourceApply
+				) {
+					const floor = lockHandle.holderVersionFloor();
+					if (floor > lockHandle.acquiredAt && !(this.timestamp && this.timestamp >= floor)) {
+						const rootStore = operation.store.rootStore;
+						const effectiveClock =
+							txnTime ||
+							(typeof rootStore?.getUserSharedBuffer === 'function'
+								? Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
+								: rootStore.getMonotonicTimestamp());
+						if (floor > effectiveClock) {
+							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {
+								txnTime = this.timestamp = lockHandle.holderVersionCandidate();
+							} else {
+								throw new ClientError(
+									'Record lock write cannot advance past its earlier holder version in a transaction whose clock is already fixed; save the held record first or in its own transaction',
+									409
+								);
+							}
+						}
+					}
+				}
 				const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
 				if (!txnTime) {
 					txnTime = key;
 					if (!concurrentClosedWrite) this.timestamp = key;
 				}
 			} catch (error) {
+				if (!concurrentClosedWrite) this.timestamp = previousTimestamp;
 				// A refused write left attached would be staged by the next commit sweep after its caller saw the error.
 				if (!operation.saved) {
 					if (lockHandle) this.refuseLockWrites(lockHandle, operation);
@@ -3202,7 +3239,7 @@ export class DatabaseTransaction implements Transaction {
 										harperLogger.warn?.('Replica sweep notification failed after commit', error);
 									}
 								}
-							if (this.recordLocks) this.noteCommittedLockVersions(committedTransaction);
+							if (this.recordLocks || this.hasLeaseProtectedWrite) this.noteCommittedLockVersions(committedTransaction);
 							releaseTransactionLockHolds(transaction);
 							if (
 								committedImmediate
@@ -3483,7 +3520,7 @@ export class DatabaseTransaction implements Transaction {
 					)
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
-				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
+				if (this.recordLocks || this.hasLeaseProtectedWrite) this.noteCommittedLockVersions(transaction);
 				const committedStagedTxnTime = this.getHandleStagedTxnTime(transaction);
 				this.clearWrites(transaction);
 				if (
