@@ -1524,6 +1524,17 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 			} catch {}
 	}
 }
+// a select() restriction on a to-many relationship, stored in a query's `filtered` map under its name
+class RelationshipSelection {
+	filters: any[];
+	fromRecord: (record: any, sync?: boolean) => any;
+	constructor(filters: any[], fromRecord: (record: any, sync?: boolean) => any) {
+		this.filters = filters;
+		this.fromRecord = fromRecord;
+	}
+}
+// keys the join and selection maps keep for themselves, so a relationship of that name cannot be tracked in them
+const SELECTION_BOOKKEEPING = new Set(['filters', 'fromRecord', 'hasMappings']);
 function someRelatedMatch(entries, match, start: number) {
 	for (let i = start; i < entries.length; i++) {
 		const value = entries[i]?.value;
@@ -1796,15 +1807,74 @@ export function filterByType(
 			}
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
-			const filterMap = filtered?.[firstAttributeName];
-			// a leading join on this relationship (joinTo/joinFrom) filters the related records it scans
+			// own properties only: a relationship name can match an inherited member of the map (`get`, `toString`)
+			const filterMap =
+				filtered && Object.hasOwn(filtered, firstAttributeName) ? filtered[firstAttributeName] : undefined;
 			const join: any = filterMap instanceof Map ? filterMap : undefined;
-			// Every AND-scope condition on a to-many relationship restricts its select() to the related records that
-			// match all of them, registered now so the restriction does not depend on which row is evaluated first.
-			// An OR scope keeps registering lazily below: conjoining its branches would be wrong.
+			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			const loadEntries = resolver?.loadEntries;
+			const getSubObject = (record, entry) => {
+				let subObject, subEntry, subEntries;
+				if (resolver) {
+					if (resolver.returnDirect) {
+						// indicates that the resolver will direct return the value instead of an entry
+						subObject = resolver(record, context, entry);
+						subEntry = lastMetadata;
+					} else {
+						subEntry = resolver(record, context, entry, true);
+						if (Array.isArray(subEntry)) {
+							subEntries = subEntry.filter((related) => related?.value != null);
+							subObject = subEntries.map((related) => related.value);
+							subEntry = null;
+						} else {
+							subObject = subEntry?.value;
+						}
+					}
+				} else subObject = record[firstAttributeName];
+				return { subObject, subEntry, subEntries };
+			};
+			const relatedSelection = (filters: any[]) =>
+				new RelationshipSelection(filters, (record, sync?: boolean) => {
+					// this is called when selecting the fields to include in results
+					if (loadEntries && !sync) {
+						return when(loadEntries(record, context), (loaded) => {
+							if (!resolver.toMany || !loaded) return loaded?.value;
+							const matches = mapSettlingOnThrow(
+								loaded,
+								(entry) => entry?.value != null && matchesFilters(filters, entry.value, entry, false)
+							);
+							const matchingKeys = (matches) =>
+								loaded
+									.filter((_entry, i) => matches[i])
+									.map((entry) => entry.key ?? entry.value[relatedTable.primaryKey]);
+							return matches.some((matches) => matches?.then)
+								? Promise.all(matches).then(matchingKeys)
+								: matchingKeys(matches);
+						});
+					}
+					const { subObject, subEntries } = getSubObject(record, undefined);
+					if (!Array.isArray(subObject)) return subObject;
+					const keys = [];
+					for (let i = 0; i < subObject.length; i++) {
+						const value = subObject[i];
+						const entry = subEntries?.[i];
+						if (filters.every((filter) => filter(value, entry)))
+							keys.push(entry?.key ?? value[relatedTable.primaryKey]);
+					}
+					return keys;
+				});
+			// A to-many relationship's select() keeps the related records its conditions match. In an AND scope every
+			// condition counts and is registered when built, so no row sees a partial set; an OR scope registers
+			// lazily below, since conjoining its branches would be wrong.
+			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
 			let selection;
-			if (!join && filtered && !inUnion && firstAttribute.elements)
-				selection = filterMap ?? (filtered[firstAttributeName] = relatedSelection([]));
+			if (!join && restrictsSelect && !inUnion)
+				selection =
+					filterMap instanceof RelationshipSelection
+						? filterMap
+						: filterMap === undefined
+							? relatedSelection([])
+							: undefined;
 			const nextFilter = filterByType(
 				{
 					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
@@ -1825,34 +1895,17 @@ export function filterByType(
 				join.filters.push(nextFilter);
 				return;
 			}
-			selection?.filters.push(nextFilter);
-			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			if (selection) {
+				filtered[firstAttributeName] = selection;
+				selection.filters.push(nextFilter);
+			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
-			// The shortcut tests this record's `from` (or primary key) against the id filter, so the filter must hold
-			// values of that attribute: related keys for a `from` relationship, but for a `to` relationship only a set
-			// already mapped through `to` (a related primary-key condition alone holds related keys).
+			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
 			const usesIdFilter = () => nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
-			const getSubObject = (record, entry) => {
-				let subObject, subEntry, subEntries;
-				if (resolver) {
-					if (resolver.returnDirect) {
-						// indicates that the resolver will direct return the value instead of an entry
-						subObject = resolver(record, context, entry);
-						subEntry = lastMetadata;
-					} else {
-						subEntry = resolver(record, context, entry, true);
-						if (Array.isArray(subEntry)) {
-							// a dangling foreign key resolves to no entry, which no condition can match
-							subEntries = subEntry.filter((related) => related?.value != null);
-							subObject = subEntries.map((related) => related.value);
-							subEntry = null;
-						} else {
-							subObject = subEntry?.value;
-						}
-					}
-				} else subObject = record[firstAttributeName];
-				return { subObject, subEntry, subEntries };
+			const preserveForSelect = () => {
+				if (inUnion && restrictsSelect && !Object.hasOwn(filtered, firstAttributeName))
+					filtered[firstAttributeName] = relatedSelection([nextFilter]);
 			};
 			const recordFilter = (record, entry) => {
 				if (resolver && usesIdFilter()) {
@@ -1868,7 +1921,6 @@ export function filterByType(
 								attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
 								value: nextFilter.idFilter.onlyId,
 							};
-							// indicate that we can use an index for this
 							subIdFilter = attributeComparator(
 								resolver.from ?? Table.primaryKey,
 								nextFilter.idFilter,
@@ -1885,54 +1937,16 @@ export function filterByType(
 					}
 					const matches = subIdFilter(record);
 					if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
+					if (matches) preserveForSelect();
 					return matches;
 				}
-				const { subObject, subEntry } = getSubObject(record, entry);
+				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
 				preserveForSelect();
-				return subObject.some(nextFilter);
+				return subObject.some((value, i) => nextFilter(value, subEntries?.[i]));
 			};
-			const loadEntries = resolver?.loadEntries;
 			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
-			function relatedSelection(filters: any[]) {
-				return {
-					filters,
-					fromRecord(record, sync?: boolean) {
-						// this is called when selecting the fields to include in results
-						if (loadEntries && !sync) {
-							return when(loadEntries(record, context), (loaded) => {
-								if (!resolver.toMany || !loaded) return loaded?.value;
-								const matches = mapSettlingOnThrow(
-									loaded,
-									(entry) => entry?.value != null && matchesFilters(filters, entry.value, entry, false)
-								);
-								const matchingKeys = (matches) =>
-									loaded
-										.filter((_entry, i) => matches[i])
-										.map((entry) => entry.key ?? entry.value[relatedTable.primaryKey]);
-								return matches.some((matches) => matches?.then)
-									? Promise.all(matches).then(matchingKeys)
-									: matchingKeys(matches);
-							});
-						}
-						const { subObject, subEntries } = getSubObject(record, undefined);
-						if (!Array.isArray(subObject)) return subObject;
-						const keys = [];
-						for (let i = 0; i < subObject.length; i++) {
-							const value = subObject[i];
-							const entry = subEntries?.[i];
-							if (filters.every((filter) => filter(value, entry)))
-								keys.push(entry?.key ?? value[relatedTable.primaryKey]);
-						}
-						return keys;
-					},
-				};
-			}
-			const preserveForSelect = () => {
-				if (inUnion && filtered && !filtered[firstAttributeName])
-					filtered[firstAttributeName] = relatedSelection([nextFilter]);
-			};
 			if (loadEntries) {
 				const matchLoaded = (loaded) => {
 					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
@@ -2130,7 +2144,6 @@ export function filterByType(
 					(recordFilter.idFilter as any).idSet = idSet;
 					// the set holds encoded identities; the singleton relationship lookup needs the key itself
 					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
-					// mapped through `to`, the set holds the referencing table's join values, not this table's keys
 					(recordFilter.idFilter as any).mappedTo = Boolean((recordFilter as any).to);
 				}
 			}

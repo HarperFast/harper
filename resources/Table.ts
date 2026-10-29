@@ -7651,7 +7651,7 @@ export function makeTable(options): TableResourceClass {
 									: when(targetTable.primaryStore.getEntry(candidate, readOptions), freezeRelatedEntry);
 							if (!predicate) return entry;
 							return when(entry, (entry) => {
-								if (!entry?.value) return SKIP;
+								if (stopped || !entry?.value) return SKIP;
 								return when(matchCandidate(entry.value, entry), (matches) => (matches && !stopped ? entry : SKIP));
 							});
 						});
@@ -8348,16 +8348,19 @@ export function makeTable(options): TableResourceClass {
 				// record — a caching table's source revalidation (above) may have replaced the local copy the
 				// query filters evaluated. The predicate sees a frozen view so application code can't
 				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
-				// A nested relationship selection's predicate can read related records, so under asynchronous
-				// iteration its result may be pending; the projection below then waits on it before it is returned.
-				let pendingMatch;
 				if (rowFilter) {
 					const matches = (!this?.isSync && rowFilter.maybeAsync ? rowFilter.maybeAsync : rowFilter)(
 						frozenRecordView(record)
 					);
 					if (!matches) return canSkip ? SKIP : undefined;
-					if (typeof matches.then === 'function') pendingMatch = matches;
+					if (typeof matches.then === 'function')
+						return matches.then((matches) =>
+							matches ? selectRecord.call(this, record, entry) : canSkip ? SKIP : undefined
+						);
 				}
+				return selectRecord.call(this, record, entry);
+			};
+			const selectRecord = function (record, entry) {
 				if (select && !(select[0] === '*' && select.length === 1 && !(select as any).asArray)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -8525,32 +8528,14 @@ export function makeTable(options): TableResourceClass {
 					} catch (error) {
 						// related reads already started for this row would otherwise reject unobserved
 						if (promises) Promise.all(promises).catch(() => {});
-						pendingMatch?.catch(() => {});
 						throw error;
 					}
 					if (promises) {
-						const projected = Promise.all(promises).then(() => selected);
-						return pendingMatch ? afterMatch(pendingMatch, projected) : projected;
+						return Promise.all(promises).then(() => selected);
 					}
-					return pendingMatch ? afterMatch(pendingMatch, selected) : selected;
+					return selected;
 				}
-				return pendingMatch ? afterMatch(pendingMatch, record) : record;
-			};
-			const afterMatch = (pendingMatch: Promise<boolean>, projected) => {
-				const discard = () => {
-					if (typeof projected?.then === 'function') projected.then(undefined, () => {});
-				};
-				return pendingMatch.then(
-					(matches) => {
-						if (matches) return projected;
-						discard();
-						return canSkip ? SKIP : undefined;
-					},
-					(error) => {
-						discard();
-						throw error;
-					}
-				);
+				return record;
 			};
 			(transform as any).return = () => {
 				selectionStopped = true;
@@ -11645,7 +11630,6 @@ export function makeTable(options): TableResourceClass {
 		}
 		return value;
 	}
-	// after a to-many hop, the rest of the path resolves per related record, giving an array of values
 	function relatedPathValue(resolver, loaded, path, start, resolvers, context, sort) {
 		if (!resolver.toMany) return getPathValue(loaded?.value, path, start, resolvers, null, context, sort);
 		if (!loaded) return undefined;
@@ -11657,22 +11641,34 @@ export function makeTable(options): TableResourceClass {
 		}
 		return values;
 	}
-	// bounded like loadRemainingRelatedEntries: each related record's path can read further related records
+	// One RELATED_READS_IN_FLIGHT budget per path: while a deeper to-many hop remains (whose loadEntries reads up
+	// to that many itself), related records are resolved one at a time.
 	async function remainingRelatedPathValues(loaded, start, values, path, pathStart, resolvers, context, sort) {
 		const checkActive = getReadTransactionGuard(txnForContext(context).getReadTxn());
+		const window = reachesToMany(path, pathStart, resolvers) ? 1 : RELATED_READS_IN_FLIGHT;
 		try {
 			for (let i = start; i < loaded.length; i++) {
-				if ((i - start + 1) % RELATED_READS_IN_FLIGHT === 0) {
-					await Promise.all(values.slice(i - RELATED_READS_IN_FLIGHT));
+				if ((i - start + 1) % window === 0) {
+					await Promise.all(values.slice(i - window));
 					checkActive?.();
 				}
 				values.push(getPathValue(loaded[i]?.value, path, pathStart, resolvers, null, context, sort));
 			}
-			return await Promise.all(values);
+			const resolved = await Promise.all(values);
+			checkActive?.();
+			return resolved;
 		} catch (error) {
 			Promise.all(values).catch(() => {});
 			throw error;
 		}
+	}
+	function reachesToMany(path, start, resolvers) {
+		for (let i = start; i < path.length; i++) {
+			const resolver = resolvers?.[path[i]];
+			if (resolver?.toMany) return true;
+			resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+		}
+		return false;
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost

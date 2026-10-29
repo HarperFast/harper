@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setImmediate: nextTick } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { databases } = require('#src/resources/databases');
@@ -79,6 +79,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			type ColdGrandchild @table(database: "relationshipQueryContracts") {
 				id: ID @primaryKey
 				code: String @indexed
+				ownerId: ID @indexed
 			}
 			type ColdChild @table(database: "relationshipQueryContracts") {
 				id: ID @primaryKey
@@ -90,6 +91,8 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 				sortKey: String @indexed
 				grandchildId: ID @indexed
 				grandchild: ColdGrandchild @relationship(from: grandchildId)
+				# named like a key the selection maps keep for themselves
+				filters: [ColdGrandchild] @relationship(to: ownerId)
 			}
 			# no declared primary key: records are stored under a composite key that no record field holds
 			type CompositeChild @table(database: "relationshipQueryContracts") {
@@ -133,6 +136,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 
 		await ColdGrandchild.put({ id: 'gc-1', code: 'gc-alpha' });
 		await ColdGrandchild.put({ id: 'gc-2', code: 'other-beta' });
+		await ColdGrandchild.put({ id: 'gc-flag', code: 'flag-on', ownerId: 'c1' });
 		const coldChildren = [
 			['c1', 'parent-1', 'child-1a', 'match-alpha', 'silver', 10, 'z-ignore', 'gc-2'],
 			['c2', 'parent-1', 'child-1b', 'match-beta', 'gold', 90, 'a-ignore', 'gc-1'],
@@ -159,6 +163,19 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 		await Company.put({ id: 'co-split', group: 'g1' });
 		await Company.put({ id: 'co-match', group: 'g1' });
 		await Department.put({ id: 'dept-split', companyId: 'co-split', name: 'Split Dept' });
+		// two to-many hops wide enough that resolving them together would exceed one read window
+		await Company.put({ id: 'co-wide', group: 'wide-co' });
+		for (let d = 0; d < 3; d++) {
+			await Department.put({ id: `dw-${d}`, companyId: 'co-wide', name: `Wide ${d}` });
+			for (let e = 0; e < 12; e++)
+				await Employee.put({
+					id: `ew-${d}-${e}`,
+					departmentId: `dw-${d}`,
+					role: 'wide',
+					active: true,
+					tag: `w-${d}-${e}`,
+				});
+		}
 		await Department.put({ id: 'dept-match', companyId: 'co-match', name: 'Match Dept' });
 		// co-split has an engineer and an active employee, but no active engineer
 		await Employee.put({ id: 'emp-split-1', departmentId: 'dept-split', role: 'eng', active: false, tag: 'match-tag' });
@@ -223,17 +240,17 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 						select: ['id', 'children'],
 					})
 				);
-				assert.equal(reads.sync, 0);
+				assert.strictEqual(reads.sync, 0);
 				assert.ok(reads.async > 0);
-				assert.deepEqual(
+				assert.deepStrictEqual(
 					rows.map((row) => row.id),
 					['parent-1']
 				);
-				assert.deepEqual(
+				assert.deepStrictEqual(
 					rows[0].children.map((child) => child.id),
 					['c1', 'c2']
 				);
-				for (const child of rows[0].children) assert.equal(Object.isFrozen(child), true);
+				for (const child of rows[0].children) assert.strictEqual(Object.isFrozen(child), true);
 			} finally {
 				reads.restore();
 			}
@@ -247,10 +264,10 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					const rows = await collect(
 						Parent.search({ conditions: [{ attribute: [name, 'name'], value: 'child-1b' }], select: ['id', name] })
 					);
-					assert.equal(reads.sync, 0, name);
+					assert.strictEqual(reads.sync, 0, name);
 					assert.ok(reads.async > 0, name);
-					assert.equal(rows.length, 1, name);
-					assert.deepEqual(
+					assert.strictEqual(rows.length, 1, name);
+					assert.deepStrictEqual(
 						rows[0][name].map((child) => child.name),
 						['child-1b']
 					);
@@ -272,9 +289,9 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 							select: ['id'],
 						})
 					);
-					assert.equal(reads.sync, 0);
+					assert.strictEqual(reads.sync, 0);
 					assert.ok(reads.async > 0);
-					assert.deepEqual(
+					assert.deepStrictEqual(
 						rows.map((row) => row.id),
 						descending ? ['parent-1', 'parent-2'] : ['parent-2', 'parent-1']
 					);
@@ -299,8 +316,8 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 						select: ['id', { name, select: ['id', 'label', 'tier'] }],
 					})
 				);
-				assert.equal(rows.length, 1, name);
-				assert.deepEqual(rows[0][name], [{ id: 'c2', label: 'match-beta', tier: 'gold' }], name);
+				assert.strictEqual(rows.length, 1, name);
+				assert.deepStrictEqual(rows[0][name], [{ id: 'c2', label: 'match-beta', tier: 'gold' }], name);
 			}
 		});
 
@@ -315,7 +332,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'children', select: ['id'] }],
 				})
 			);
-			assert.deepEqual(rows, [{ id: 'parent-3', children: [] }]);
+			assert.deepStrictEqual(rows, [{ id: 'parent-3', children: [] }]);
 		});
 
 		it('branches of an OR group never narrow each other, whichever row is evaluated first', async function () {
@@ -335,11 +352,11 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'children', select: ['id'] }],
 				})
 			);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				rows.map((row) => row.id),
 				['or-a', 'or-b']
 			);
-			assert.deepEqual(rows[1].children, [{ id: 'c8' }]);
+			assert.deepStrictEqual(rows[1].children, [{ id: 'c8' }]);
 		});
 
 		it('a related table without a primary-key field selects matched records by their entry key', async function () {
@@ -349,7 +366,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'compositeChildren', select: ['tenantId', 'itemId', 'label'] }],
 				})
 			);
-			assert.deepEqual(unfiltered[0].compositeChildren, [
+			assert.deepStrictEqual(unfiltered[0].compositeChildren, [
 				{ tenantId: 't1', itemId: 'i1', label: 'keep-me' },
 				{ tenantId: 't1', itemId: 'i2', label: 'drop-me' },
 			]);
@@ -362,9 +379,9 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			};
 			const expected = [{ tenantId: 't1', itemId: 'i1', label: 'keep-me' }];
 			clearValueMap(CompositeChild);
-			assert.deepEqual((await collect(Parent.search(query)))[0].compositeChildren, expected, 'cold');
-			assert.deepEqual((await collect(Parent.search(query)))[0].compositeChildren, expected, 'warm');
-			assert.deepEqual(Array.from(Parent.search(query))[0].compositeChildren, expected, 'sync');
+			assert.deepStrictEqual((await collect(Parent.search(query)))[0].compositeChildren, expected, 'cold');
+			assert.deepStrictEqual((await collect(Parent.search(query)))[0].compositeChildren, expected, 'warm');
+			assert.deepStrictEqual(Array.from(Parent.search(query))[0].compositeChildren, expected, 'sync');
 		});
 	});
 
@@ -385,7 +402,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					enforceExecutionOrder: true,
 				})
 			);
-			assert.deepEqual(rows, [
+			assert.deepStrictEqual(rows, [
 				{
 					id: 'co-match',
 					departments: [{ id: 'dept-match', employees: [{ id: 'emp-match-1', role: 'eng', active: true }] }],
@@ -405,9 +422,22 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'departments', select: ['id', { name: 'employees', select: ['id', 'tag'] }] }],
 				})
 			);
-			assert.deepEqual(rows, [
+			assert.deepStrictEqual(rows, [
 				{ id: 'co-match', departments: [{ id: 'dept-match', employees: [{ id: 'emp-match-1', tag: 'match-tag' }] }] },
 			]);
+		});
+
+		it('a second hop through a relationship named like selection bookkeeping still filters', async function () {
+			const rows = await collect(
+				Parent.search({
+					conditions: [
+						{ attribute: 'group', value: 'g1' },
+						{ attribute: ['children', 'filters', 'code'], value: 'flag-on' },
+					],
+					select: ['id', { name: 'children', select: ['id'] }],
+				})
+			);
+			assert.deepStrictEqual(rows, [{ id: 'parent-1', children: [{ id: 'c1' }] }]);
 		});
 
 		it('an id set of intermediate keys from two hops down is not tested as parent keys', async function () {
@@ -420,13 +450,13 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 				select: ['id'],
 			};
 			const expected = ['idset-1', 'idset-3'];
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				(await collect(Parent.search(query))).map((row) => row.id),
 				expected
 			);
 			// LMDB cannot iterate an index-led filtered search synchronously
 			if (!isLMDB)
-				assert.deepEqual(
+				assert.deepStrictEqual(
 					Array.from(Parent.search(query)).map((row) => row.id),
 					expected
 				);
@@ -444,13 +474,13 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 						select: ['id', { name: 'children', conditions: [{ attribute: 'tier', value: 'gold' }] }],
 					})
 				);
-				assert.deepEqual(
+				assert.deepStrictEqual(
 					rows.map((row) => [row.id, row.children.map((child) => child.id)]),
 					[['parent-1', ['c2']]]
 				);
-				assert.equal(reads.sync, 0);
+				assert.strictEqual(reads.sync, 0);
 				assert.ok(reads.async > 0);
-				assert.equal(Object.isFrozen(rows[0].children[0]), true);
+				assert.strictEqual(Object.isFrozen(rows[0].children[0]), true);
 			} finally {
 				reads.restore();
 			}
@@ -474,8 +504,8 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 						],
 					})
 				);
-				assert.deepEqual(rows, [{ id: 'parent-1', children: [{ id: 'c2' }] }]);
-				assert.equal(reads.sync, 0);
+				assert.deepStrictEqual(rows, [{ id: 'parent-1', children: [{ id: 'c2' }] }]);
+				assert.strictEqual(reads.sync, 0);
 				assert.ok(reads.async > 0);
 			} finally {
 				reads.restore();
@@ -496,7 +526,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					],
 				})
 			);
-			assert.deepEqual(rows, [{ id: 'parent-1', children: [{ id: 'c2' }] }]);
+			assert.deepStrictEqual(rows, [{ id: 'parent-1', children: [{ id: 'c2' }] }]);
 		});
 	});
 
@@ -515,24 +545,24 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			clearValueMap(ColdChild);
 			const reads = spyPrimaryReads(ColdChild);
 			try {
-				assert.deepEqual(await sortedIds(['children', 'sortKey'], false), [
+				assert.deepStrictEqual(await sortedIds(['children', 'sortKey'], false), [
 					'p-sort-2',
 					'p-sort-4',
 					'p-sort-3',
 					'p-sort-1',
 				]);
-				assert.equal(reads.sync, 0);
+				assert.strictEqual(reads.sync, 0);
 				assert.ok(reads.async > 0);
 			} finally {
 				reads.restore();
 			}
-			assert.deepEqual(await sortedIds(['children', 'sortKey'], true), [
+			assert.deepStrictEqual(await sortedIds(['children', 'sortKey'], true), [
 				'p-sort-1',
 				'p-sort-3',
 				'p-sort-4',
 				'p-sort-2',
 			]);
-			assert.deepEqual(await sortedIds(['linkedChildren', 'sortKey'], false), [
+			assert.deepStrictEqual(await sortedIds(['linkedChildren', 'sortKey'], false), [
 				'p-sort-2',
 				'p-sort-4',
 				'p-sort-3',
@@ -552,10 +582,31 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 						select: ['id'],
 					})
 				);
-				assert.deepEqual(rows, [{ id: 'p-wide' }]);
-				assert.equal(reads.sync, 0);
-				assert.equal(reads.async, 40);
+				assert.deepStrictEqual(rows, [{ id: 'p-wide' }]);
+				assert.strictEqual(reads.sync, 0);
+				assert.strictEqual(reads.async, 40);
 				assert.ok(reads.maxInFlight <= 16, `at most 16 grandchild reads in flight, saw ${reads.maxInFlight}`);
+			} finally {
+				reads.restore();
+			}
+		});
+
+		it('a sort through two to-many hops shares one read window', async function () {
+			clearValueMap(Department);
+			clearValueMap(Employee);
+			const reads = spyPrimaryReads(Employee);
+			try {
+				const rows = await collect(
+					Company.search({
+						conditions: [{ attribute: 'group', value: 'wide-co' }],
+						sort: { attribute: ['departments', 'employees', 'tag'] },
+						select: ['id'],
+					})
+				);
+				assert.deepStrictEqual(rows, [{ id: 'co-wide' }]);
+				assert.strictEqual(reads.sync, 0);
+				assert.strictEqual(reads.async, 36);
+				assert.ok(reads.maxInFlight <= 16, `at most 16 employee reads in flight, saw ${reads.maxInFlight}`);
 			} finally {
 				reads.restore();
 			}
