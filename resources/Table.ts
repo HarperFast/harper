@@ -12793,6 +12793,7 @@ export function makeTable(options): TableResourceClass {
 									tableToTrack: tableName,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
+									receivedIdentityRefs: reusedCachedRecord && !audit ? existingEntry?.receivedIdentityRefs : undefined,
 								},
 								'put',
 								Boolean(invalidated),
