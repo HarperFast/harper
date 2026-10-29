@@ -831,7 +831,6 @@ function transactional(
 						if (id.length === 1) id = id[0];
 						if (query.slice) {
 							query = query.slice(id.length, query.length);
-							mintedQuery = Array.isArray(query);
 							if (query.length === 0) {
 								query = new RequestTarget();
 								query.id = id;
@@ -975,19 +974,26 @@ function transactional(
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 			}
-			const armTarget = Boolean(context.authorize);
-			if (armTarget) {
+			let replacePermission = false;
+			if (context.authorize) {
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 				context.authorize = false;
+				// Arming only adds a check, so it stays on the caller's target and keeps a reused target gated;
+				// replacing an explicit permission must not outlive this dispatch, so that happens on a copy.
+				if (query.checkPermission) replacePermission = query.checkPermission !== true;
+				else {
+					try {
+						query.checkPermission = true;
+					} catch (error) {
+						if (typeof data?.then === 'function') data.then(undefined, () => {});
+						throw error;
+					}
+				}
 			}
 			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
 				if (checkPermission) {
-					// Arming only adds a check, so it stays on a caller's unarmed target and keeps it gated on reuse;
-					// replacing an explicit permission must not outlive this dispatch.
-					const replacePermission = armTarget && query.checkPermission && query.checkPermission !== true;
-					if (armTarget && !query.checkPermission) query.checkPermission = true;
 					if (mintedQuery) {
 						if (query instanceof RequestTarget) markDispatchTarget(query);
 					} else if (replacePermission || loadAsInstance !== false) query = dispatchTarget(query);

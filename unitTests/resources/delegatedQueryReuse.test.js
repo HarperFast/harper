@@ -468,6 +468,54 @@ describe('delegated reads reusing one query object', function () {
 		});
 	});
 
+	describe('arming through the context', function () {
+		let Gated;
+		before(function () {
+			Gated = class extends Employee {
+				allowRead(user, target, context) {
+					return user !== restrictedUser && super.allowRead(user, target, context);
+				}
+			};
+		});
+		async function withoutUnhandledRejections(run) {
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				await run();
+				await delay(50);
+				assert.deepStrictEqual(unhandled, []);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+		}
+
+		it('gates a reused target while the arming dispatch still waits for its body, and after it fails', async function () {
+			await withoutUnhandledRejections(async () => {
+				const root = { id: 'e1' };
+				const context = { user: restrictedUser, authorize: true };
+				let rejectBody;
+				const body = new Promise((_resolve, reject) => (rejectBody = reject));
+				const put = Gated.put(root, body, context);
+				await assert.rejects(async () => Gated.get(root, context), AccessViolation);
+				rejectBody(new Error('bad body'));
+				await assert.rejects(put, /bad body/);
+				await assert.rejects(async () => Gated.get(root, context), AccessViolation);
+				assert.strictEqual(root.checkPermission, true);
+			});
+		});
+
+		it('fails on a frozen unarmed target without leaving its pending body unobserved', async function () {
+			await withoutUnhandledRejections(async () => {
+				const body = delay(10).then(() => Promise.reject(new Error('bad body')));
+				await assert.rejects(
+					async () => Gated.put(Object.freeze({ id: 'e1' }), body, { user: broadUser, authorize: true }),
+					TypeError
+				);
+			});
+		});
+	});
+
 	describe('cache disposition', function () {
 		for (const [name, getTable, authorize, armedOnQuery] of [
 			['a false-mode get', () => FalseModeLabel, undefined, true],
