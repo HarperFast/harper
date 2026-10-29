@@ -695,6 +695,80 @@ describe('Test keys module', () => {
 		});
 	});
 
+	describe('createTLSSelector initialized by a request (harper-pro#1189)', () => {
+		let databases;
+		let contextStorage;
+		let systemDescriptor;
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			contextStorage = require('#src/resources/transaction').contextStorage;
+			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
+		});
+
+		afterEach(() => {
+			delete databases.system;
+			Object.defineProperty(databases, 'system', systemDescriptor);
+		});
+
+		it('builds from the certificate table even when an anonymous request triggered it', async function () {
+			this.timeout(5000);
+			// what REST hands a resource for a request with no credentials
+			const anonymousRequest = { authorize: true, user: undefined };
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('replication', undefined, true);
+			await contextStorage.run(anonymousRequest, () => selector.initialize(pseudoServer));
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the selector must see the certificate table');
+			assert.strictEqual(anonymousRequest.authorize, true, "the request's authorization gate is left for the request");
+			assert.throws(
+				() => contextStorage.run(anonymousRequest, () => Array.from(databases.system.hdb_certificate.search([]))),
+				/Must login/,
+				'the request itself still cannot read the certificate table'
+			);
+		});
+
+		it('retries an initialization that rejected', async function () {
+			this.timeout(5000);
+			const searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').throws(new Error('transient read'));
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('replication', undefined, false);
+			const failed = selector.initialize(pseudoServer);
+			await assert.rejects(failed, /transient read/);
+			assert.strictEqual(selector.ready, failed, 'holders reading `.ready` directly still see the failure');
+			searchStub.restore();
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
+		});
+
+		it('retires an attempt that rejected after waiting for the system database', async function () {
+			this.timeout(10000);
+			const certificates = databases.system.hdb_certificate;
+			let ended = false;
+			const subscribe = certificates.subscribe;
+			sandbox.stub(certificates, 'subscribe').callsFake(function (...args) {
+				return subscribe.apply(this, args).then((subscription) => {
+					const end = subscription.end;
+					subscription.end = function () {
+						ended = true;
+						return end.apply(this, arguments);
+					};
+					return subscription;
+				});
+			});
+			const searchStub = sandbox.stub(certificates, 'search').throws(new Error('transient read'));
+			delete databases.system;
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			const failed = selector.initialize(pseudoServer);
+			Object.defineProperty(databases, 'system', systemDescriptor);
+			await assert.rejects(failed, /transient read/);
+			await waitFor(() => ended, { timeout: 2000, message: "the failed attempt's subscription was not ended" });
+			searchStub.restore();
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
+		});
+	});
+
 	describe('createTLSSelector when the system database is not yet loaded on this thread', () => {
 		// A raw-socket listener (e.g. MQTT's securePort) can initialize its own TLS selector before
 		// this thread has loaded the system database — selector creation doesn't control

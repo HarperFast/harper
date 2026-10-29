@@ -25,7 +25,7 @@ import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
 import * as configUtils from '../config/configUtils.ts';
 import { filterArgsAgainstRuntimeConfig } from '../config/harperConfigEnvVars.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
-import { transaction } from '../resources/transaction.ts';
+import { transaction, contextStorage } from '../resources/transaction.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 let logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
@@ -1237,11 +1237,14 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;
+	// `.ready` keeps a rejected attempt for holders that read it directly; only initialize() retries
+	let lastAttemptRejected = false;
 	(SNICallback as any).initialize = (server: any) => {
-		if ((SNICallback as any).ready) return (SNICallback as any).ready;
+		if ((SNICallback as any).ready && !lastAttemptRejected) return (SNICallback as any).ready;
+		lastAttemptRejected = false;
 		if (server) {
 			server.secureContexts = secureContexts;
-			server.secureContextsListeners = [];
+			server.secureContextsListeners ??= [];
 		}
 		let subscribedTable = null;
 		let activeSubscription: Promise<any> | null = null;
@@ -1315,7 +1318,13 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 					failureRetryTimer = undefined;
 				}
 			};
+			let retired = false;
 			function updateTLS() {
+				if (retired) return;
+				// The pass is the selector's own work: inside a request's context its table reads would run that
+				// request's authorization (and consume its one-shot `authorize`), and its timers and
+				// subscription would adopt that context for the selector's lifetime.
+				if (contextStorage.getStore() !== undefined) return contextStorage.exit(updateTLS);
 				try {
 					if (databases === undefined) {
 						settle();
@@ -1662,6 +1671,10 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 						scheduleFailureRetry();
 						return;
 					}
+					retired = lastAttemptRejected = true;
+					clearTimeout(rebuildTimer);
+					clearTimeout(failureRetryTimer);
+					activeSubscription?.then((subscription: any) => subscription?.end?.()).catch(() => {});
 					reject(error);
 				}
 			}
