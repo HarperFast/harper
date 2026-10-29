@@ -725,4 +725,90 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assert.deepEqual(res.structuredContent, { results: [] });
 		assertSpecLegal(res);
 	});
+
+	it('collects an async generator result (read_audit_log timestamp branch) into a JSON array and { results }', async () => {
+		const entries = [
+			{ version: 100, type: 'put', records: [{ id: 'row-1' }] },
+			{ version: 101, type: 'patch', records: [{ id: 'row-1' }] },
+		];
+		async function* generateAuditEntries() {
+			for (const entry of entries) {
+				yield entry;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', generateAuditEntries());
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), entries);
+		assert.deepEqual(res.structuredContent, { results: entries });
+		assertSpecLegal(res);
+	});
+
+	it('collects an async-mapped iterable result (get_analytics ExtendedIterable) awaiting element promises', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const rawMetrics = [
+			{ id: [1000, 'request'], metric: 'request', count: 3 },
+			{ id: [1000, 'connection'], metric: 'connection', count: 5 },
+		];
+		const mapped = new ExtendedIterable(rawMetrics).map(async (item) => {
+			await Promise.resolve();
+			return { id: item.id, metric: item.metric, period: [1000, 2000], count: item.count };
+		});
+
+		const res = await callReturning('get_analytics', mapped);
+
+		const expected = [
+			{ id: [1000, 'request'], metric: 'request', period: [1000, 2000], count: 3 },
+			{ id: [1000, 'connection'], metric: 'connection', period: [1000, 2000], count: 5 },
+		];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('collects a non-array sync iterable yielding promises into a resolved JSON array', async () => {
+		const syncIterableOfPromises = {
+			*[Symbol.iterator]() {
+				yield Promise.resolve({ id: 'a', score: 1 });
+				yield Promise.resolve({ id: 'b', score: 2 });
+			},
+		};
+
+		const res = await callReturning('search_by_conditions', syncIterableOfPromises);
+
+		const expected = [
+			{ id: 'a', score: 1 },
+			{ id: 'b', score: 2 },
+		];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('rejects an iterable result that exceeds the bounded item cap and closes the iterator', async () => {
+		let closed = false;
+		async function* unboundedEntries() {
+			try {
+				let i = 0;
+				while (true) {
+					yield { seq: ++i };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', unboundedEntries());
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when aborting at the cap');
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.match(payload.message, /exceeded.*limit|maximum.*items/i);
+		assertSpecLegal(res);
+	});
 });

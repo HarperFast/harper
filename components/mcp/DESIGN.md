@@ -122,3 +122,16 @@ A handful of design points are non-obvious and easy to break:
   one module for that reason — it was duplicated across the two surfaces, and keeping two copies in
   step is how the original bug survived. Whenever `verifyPerms`' ordering, the `api_name` table, or
   `STRUCTURE_USER_OPS` changes, re-check it.
+
+- **Operations-profile iterable results are collected before `wrapToolResult`.** Several operation
+  handlers return non-array iterables or async iterables that HTTP `POST /` drains through
+  `serialize` (`server/serverHelpers/contentTypes.ts`), whereas `wrapToolResult` calls synchronous
+  `JSON.stringify`: `read_audit_log` (default/`timestamp` branch returns `groupRecordsInHistory`, an
+  `AsyncGenerator` that stringifies to `"{}"`), `get_analytics` (`searchResults.map(async ...)`, an
+  `ExtendedIterable` whose `.toJSON()` yields unawaited `Promise` objects `"[{}]"`), and full-text
+  `search_by_conditions` (an async-only `ExtendedIterable` whose `.toJSON()` throws). In
+  `makeOperationToolHandler` (`tools/operations.ts`), `collectIterableResult` drains any non-array,
+  non-`Readable`, non-`ArrayBufferView` object implementing `Symbol.asyncIterator` or
+  `Symbol.iterator` via `for await`, awaiting each element, up to `MAX_OPERATION_ITERABLE_ITEMS`
+  (10,000) before throwing an explicit error (which returns `isError: true` and closes the iterator
+  via `for await`'s normal `return()` protocol).

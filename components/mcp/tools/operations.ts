@@ -294,6 +294,37 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
 }
 
 /**
+ * Maximum number of items collected from a non-array iterable or async iterable
+ * operation result (`read_audit_log`, `get_analytics`, full-text `search_by_conditions`, etc.).
+ * Exceeding this cap fails with an explicit error rather than silently clipping results
+ * or buffering an unbounded cursor in memory.
+ */
+export const MAX_OPERATION_ITERABLE_ITEMS = 10_000;
+
+function isCollectibleIterable(data: unknown): data is AsyncIterable<unknown> | Iterable<unknown> {
+	if (data === null || typeof data !== 'object') return false;
+	if (Array.isArray(data) || data instanceof Readable || ArrayBuffer.isView(data)) return false;
+	const candidate = data as { [Symbol.asyncIterator]?: unknown; [Symbol.iterator]?: unknown };
+	return typeof candidate[Symbol.asyncIterator] === 'function' || typeof candidate[Symbol.iterator] === 'function';
+}
+
+async function collectIterableResult(
+	operationName: string,
+	iterable: AsyncIterable<unknown> | Iterable<unknown>
+): Promise<unknown[]> {
+	const items: unknown[] = [];
+	for await (const item of iterable) {
+		if (items.length >= MAX_OPERATION_ITERABLE_ITEMS) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; specify a smaller limit or narrower conditions`
+			);
+		}
+		items.push(await item);
+	}
+	return items;
+}
+
+/**
  * Build the dispatch handler for one operation. Returns a function suitable
  * for `ToolDef.handler` that delegates to Harper's normal operation pipeline.
  *
@@ -335,7 +366,10 @@ export function makeOperationToolHandler(operationName: string) {
 				throw new Error('Harper operations runtime unavailable');
 			}
 			const operationFn = chooseOperation(body);
-			const data = await processLocalTransaction({ body }, operationFn);
+			let data = await processLocalTransaction({ body }, operationFn);
+			if (isCollectibleIterable(data)) {
+				data = await collectIterableResult(operationName, data);
+			}
 			if (data instanceof Readable) {
 				// Backstop for an operation outside STREAMING_OPERATIONS unexpectedly returning a
 				// stream (e.g. a future op added without updating that set). JSON.stringify would
