@@ -35,7 +35,12 @@ import {
 // rocksdb-js marks a failed logged attempt aborted in place, so a retry logs (and keys) afresh.
 const LOG_ABORT_MARKERS =
 	(constants as any).TRANSACTION_LOG_ENTRY_ABORTED_FLAG !== undefined && process.env.HARPER_ABORT_MARKERS !== '0';
-if (LOG_ABORT_MARKERS) (RocksDatabase as any).config({ transactionLogAbortMarkers: true });
+if (LOG_ABORT_MARKERS)
+	(RocksDatabase as any).config({
+		transactionLogAbortMarkers: true,
+		// Benchmark switch: write-intent refusal is off by default in rocksdb-js.
+		transactionLogWriteIntents: process.env.HARPER_WRITE_INTENTS === '1',
+	});
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
