@@ -278,7 +278,6 @@ function contractInputSchema(ResourceClass: ResourceClassLike, contractVerb: str
 		for (const key of fragment.required ?? []) if (!required.includes(key)) required.push(key);
 	};
 	merge(input?.query, false, true);
-	// an `.optional` body's own `required` keys bind only when the body is supplied, so they stay off the root
 	merge(input?.body, true, input?.bodyRequired !== false);
 	const schema: { type: string; properties: Record<string, unknown>; required?: string[] } = {
 		type: 'object',
@@ -334,20 +333,16 @@ function contractBody(
 	ResourceClass: ResourceClassLike,
 	contractVerb: string
 ): Record<string, unknown> | undefined {
+	if (!ResourceClass.requestContract) return a;
+	const input = ResourceClass.inputSchemas?.[contractVerb];
+	const exclude = new Set(pathParamNames(ResourceClass.path));
+	if (input?.query?.properties) for (const key of Object.keys(input.query.properties)) exclude.add(key);
 	let body = a;
-	if (ResourceClass.requestContract) {
-		const exclude = new Set(pathParamNames(ResourceClass.path));
-		const queryProps = ResourceClass.inputSchemas?.[contractVerb]?.query?.properties;
-		if (queryProps) for (const key of Object.keys(queryProps)) exclude.add(key);
-		if (exclude.size > 0) {
-			body = {};
-			for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
-		}
+	if (exclude.size > 0) {
+		body = {};
+		for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
 	}
-	if (ResourceClass.inputSchemas?.[contractVerb]?.bodyRequired === false && Object.keys(body).length === 0) {
-		return undefined;
-	}
-	return body;
+	return input?.bodyRequired === false && Object.keys(body).length === 0 ? undefined : body;
 }
 
 /** A compiled parameterised route (e.g. `/widget/:id`), stored outside the base Map. */
