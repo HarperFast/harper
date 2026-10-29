@@ -56,6 +56,7 @@ const allowlisted = (operations) => ({
 });
 
 const writes = { count: 0 };
+let throwingOnDestroyed = false;
 const TEST_OPERATIONS = {
 	test_eo_echo: async (body) => {
 		const { hdb_user, ...received } = body;
@@ -92,6 +93,15 @@ const TEST_OPERATIONS = {
 		pipe() {},
 		destroy() {
 			throw new Error('destroy failed');
+		},
+	}),
+	test_eo_throwing_on: async () => ({
+		pipe() {},
+		on() {
+			throw new Error('on failed');
+		},
+		destroy() {
+			throwingOnDestroyed = true;
 		},
 	}),
 };
@@ -808,10 +818,14 @@ describe('encrypted_operation', function () {
 			assert.strictEqual(writes.count, before + 1);
 		});
 
-		it('answers a discarded result whose destroy throws as a stream that ran', async () => {
-			const { result } = await roundTrip({ operation: 'test_eo_throwing_destroy' });
-			assert.strictEqual(result.status, 406);
-			assert.strictEqual(result.executed, true);
+		it('answers a discarded result whose cleanup throws as a stream that ran, and still destroys it', async () => {
+			throwingOnDestroyed = false;
+			for (const operation of ['test_eo_throwing_destroy', 'test_eo_throwing_on']) {
+				const { result } = await roundTrip({ operation });
+				assert.strictEqual(result.status, 406, operation);
+				assert.strictEqual(result.executed, true, operation);
+			}
+			assert.strictEqual(throwingOnDestroyed, true);
 		});
 	});
 

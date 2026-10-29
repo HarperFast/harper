@@ -329,9 +329,11 @@ async function runSealedOperation(
 	}
 
 	if (result instanceof Readable || typeof result?.pipe === 'function') {
-		result.on?.('error', () =>
-			operationLog.warn(`encrypted_operation: a discarded result stream of '${inner.operation}' errored`)
-		);
+		try {
+			result.on?.('error', () =>
+				operationLog.warn(`encrypted_operation: a discarded result stream of '${inner.operation}' errored`)
+			);
+		} catch {}
 		try {
 			result.destroy?.();
 		} catch {}
