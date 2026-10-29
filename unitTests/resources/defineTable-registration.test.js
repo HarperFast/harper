@@ -370,7 +370,7 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 
 	it('rejects new own fields on sealed tracked updates without rejecting untouched legacy data', async () => {
 		const options = { database: EVOLVE_DB, sealed: true };
-		const shape = { id: id.primaryKey, label: string };
+		const shape = { id: id.primaryKey, label: string, when: date.nullable };
 		const Item = defineTable('SealedRetirement', { ...shape, legacyCode: int.nullable }, options);
 		await Item.put({ id: 'i1', label: 'original', legacyCode: 42 });
 		defineTable('SealedRetirement', shape, options);
@@ -404,6 +404,16 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 			async () => Item.patch('i1', { neverDeclared: 'no' }),
 			/Property neverDeclared is not allowed/
 		);
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'coerced own field';
+			Object.defineProperty(record, 'when', {
+				value: '2026-01-01T00:00:00.000Z',
+				enumerable: true,
+				writable: true,
+			});
+		});
+		assert.strictEqual((await Item.get('i1')).when.toISOString(), '2026-01-01T00:00:00.000Z');
 	});
 
 	it('keeps retired own fields writable on unsealed tracked updates', async () => {
