@@ -5785,9 +5785,10 @@ export function makeTable(options): TableResourceClass {
 					// staged, else the entry before this transaction, so writes sharing a version decide as one. Never
 					// existingEntry for a later write: RocksDB reloads it through the transaction and LMDB does not.
 					write.expiryBase =
-						priorStagedOp && priorStagedOp.recordVersion !== write.recordVersion
+						priorStagedOp && priorStagedOp.stagedVersion !== txnTime
 							? priorStaged
 							: (priorStagedOp?.expiryBase ?? existingEntry);
+					write.stagedVersion = txnTime;
 					let existingRecord =
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
