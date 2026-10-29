@@ -2375,10 +2375,7 @@ function usableIndex(table, attributeName): any {
 	return index?.isIndexing ? undefined : index;
 }
 
-/**
- * Whether searchByIndex answers this condition from an index range or the primary store, rather than with a
- * full scan it filters or an error; it must follow searchByIndex's `needFullScan` and missing-index decisions.
- */
+// must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)
 export function conditionDrivesIndex(table, condition): boolean {
 	if (condition.negated) return false;
 	if (condition.conditions) {
