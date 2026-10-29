@@ -5682,8 +5682,7 @@ export function makeTable(options): TableResourceClass {
 					// round, and must still go through the out-of-order merge below or its changes would be
 					// silently overwritten.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
-					// Unaudited, the tie is never a re-delivery check, only a publish's restamp.
-					if ((priorChange || (priorStaged && !audit)) && precedesExisting >= 0) precedesExisting = 1;
+					if (priorChange && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					let type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
@@ -5801,7 +5800,7 @@ export function makeTable(options): TableResourceClass {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
 							}
-							if (!priorStaged && isRocksDB && !replaying && refBase !== existingEntry) {
+							if (!priorChange && isRocksDB && !replaying && refBase !== existingEntry) {
 								const precedesCommitted = refBase ? precedesExistingVersion(txnTime, refBase, options?.nodeId) : 1;
 								if (precedesCommitted <= 0) {
 									// A same-transaction publish or relocate restamped existingEntry; restore the committed head.
