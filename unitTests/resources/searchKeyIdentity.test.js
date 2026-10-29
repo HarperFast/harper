@@ -171,7 +171,6 @@ describe('search key identity and the "..." between alias', () => {
 			['x', 'tenant'],
 		];
 		const allBut = (...excluded) => all.filter((id) => !excluded.some((other) => compareKeys(id, other) === 0));
-		// the first route is the store's own answer: a key lookup, key range or key scan
 		const routes = (keyRange) => ({
 			'leading': (condition) => ({ conditions: [condition] }),
 			'id filter after an index lead': (condition) => ({
