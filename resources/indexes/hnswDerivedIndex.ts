@@ -131,6 +131,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	async shutdown(_epoch: bigint): Promise<void> {
 		this.#dropQueue();
 		await Promise.allSettled([this.#flushing, this.#resetting]);
+		this.#appliedPastCoverage = false;
 	}
 
 	/**
@@ -261,6 +262,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 					: (own ?? (durable && sameDerivedIndexCursorVector(durable, written) ? durable.coverage : undefined));
 				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...vector, coverage } : vector);
 			}
+			this.#appliedPastCoverage = false;
 		})();
 		this.#flushing.then(
 			() => {
