@@ -209,7 +209,8 @@ function conditionRecordId(resource, target: RequestTarget, request) {
 	// The verb's own dispatch parses this target again (applyContext), so parsePath only sees a copy of the target
 	const { requestedContentType } = request;
 	try {
-		const probe = cloneRequestTarget(target);
+		// the built-in parsePath writes nothing but `property` onto its query
+		const probe: { property?: string } = resource.parsePath === Resource.parsePath ? {} : cloneRequestTarget(target);
 		const parsed = resource.parsePath(target.id, request, probe);
 		const structured = parsed?.id !== undefined;
 		const id = structured ? parsed.id : parsed;
