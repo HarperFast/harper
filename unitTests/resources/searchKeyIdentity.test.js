@@ -326,13 +326,14 @@ describe('search key identity and the "..." between alias', () => {
 			];
 			const identityConditions = [
 				{ attribute: 'id', value: 'solo' },
-				{ attribute: 'id', comparator: 'in', value: [5, 'solo'] },
+				{ attribute: 'id', comparator: 'in', value: [5, -1, 0.1, 'solo'] },
+				{ attribute: 'id', comparator: 'ne', value: -1 },
 				{ attribute: 'id', comparator: 'ne', value: 'solo' },
 			];
 			// [5] decodes as 5 but stores other bytes than 5 does, so only the prefix comparators can agree on it
 			for (const [conditions, keys] of [
 				[prefixConditions, [[5], [5n], ['solo'], [['solo']], ['t', 5n, 'x']]],
-				[identityConditions, [['solo'], [['solo']], ['t', 5n, 'x']]],
+				[identityConditions, [['solo'], [['solo']], [-1], [-1n], [0.1], ['t', 5n, 'x']]],
 			]) {
 				for (const condition of conditions) {
 					const filter = filterByType(condition, Composite, null, null, true);
@@ -384,6 +385,9 @@ describe('search key identity and the "..." between alias', () => {
 				['t', ['t']],
 				['t', [['t']]],
 				[5, [5]],
+				[-1, [-1]],
+				[-1n, [[-1]]],
+				[0.1, [0.1]],
 				['a\x00b', ['a', 'b']],
 				[
 					['a\x00b', 'c'],

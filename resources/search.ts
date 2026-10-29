@@ -478,8 +478,8 @@ export class CandidateKeySet {
 /**
  * The string or number a key is stored as, when the key spells it another way: a BigInt a double holds
  * exactly encodes as that double (an index scan decodes it as the number, a traversal may report the
- * BigInt), and a one-element tuple of a string encodes as the string. A one-element tuple of a number
- * does not: array elements carry a wider number encoding.
+ * BigInt), and a one-element tuple encodes as its element when that is a string, or a number already at
+ * the full width a tuple element takes (negative or fractional ones); other numbers encode shorter alone.
  */
 function storedSpelling(primaryKey: Id): Id {
 	if (typeof primaryKey === 'bigint') {
@@ -488,7 +488,9 @@ function storedSpelling(primaryKey: Id): Id {
 	}
 	let element: unknown = primaryKey;
 	while (Array.isArray(element) && element.length === 1) element = element[0];
-	return typeof element === 'string' ? element : primaryKey;
+	if (typeof element === 'string') return element;
+	if (element === primaryKey || (typeof element !== 'number' && typeof element !== 'bigint')) return primaryKey;
+	return writeKeyId(element as Id) === writeKeyId(primaryKey) ? storedSpelling(element as Id) : primaryKey;
 }
 
 function primaryKeyEquals(value: Id): (primaryKey: Id) => boolean {
