@@ -441,8 +441,7 @@ interface CandidateKeyCollection {
  * encoding the common key shapes, and the stores encode -0 and 0 apart where Set membership does not.
  * The rest go by writeKeyId, the encoder the stores index by — flattenKey joins composite keys with
  * NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'] — kept apart from the values because an encoded
- * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. A key spelled
- * differently from the string or number it is stored as is taken in that spelling first (`storedSpelling`).
+ * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'.
  */
 export class CandidateKeySet {
 	#byValue = new Set<Id>();
