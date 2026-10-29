@@ -45,7 +45,6 @@ describe(`An out-of-order write keeps the newer head's expiry (${ENGINE})`, func
 			if (entry.tableId === Table.tableId && entry.recordId === id && entry.version === version) return entry;
 	}
 
-	// a put at the current time, a patch at t2 = v0 + 100 that is the head, and t1 = v0 + 10 between them
 	async function seedHead(Table, id, headExpiresAt) {
 		await Table.put(id, { id, a: 'init', b: 'init' });
 		const v0 = Table.primaryStore.getEntry(id).version;

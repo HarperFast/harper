@@ -13163,7 +13163,7 @@ export function makeTable(options): TableResourceClass {
 								const backpressure = trackInFlight(repair);
 								if (backpressure) await backpressure;
 							} else if (
-								// reads honor the stored deadline; the field decides only for a row stored without one
+								// reads honor the stored deadline
 								recordEntry.expiresAt != undefined
 									? hasExpired(recordEntry)
 									: recordEntry.value[expiresAtName] < Date.now()
