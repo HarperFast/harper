@@ -471,7 +471,6 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual((await NoAudit.get(id)).count, 15);
 	});
 
-	// on LMDB the merge stores its older version (harper#3388), so the re-delivery compares as newer
 	it("the seed's in-order increment re-delivered after an older merge applies once", async () => {
 		const { id, now } = await seedNewerRecord();
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
@@ -495,6 +494,27 @@ describe('out-of-order patch on an audit:false table', () => {
 		await NoAudit.patch(id, { tag: 'latest' }, { timestamp: now + 150 });
 		await deliver();
 		assert.strictEqual((await NoAudit.get(id)).count, 17);
+	});
+
+	it('a re-delivered transaction that replaces the record applies every increment on the new body', async () => {
+		const id = `noaudit-${nextId++}`;
+		await NoAudit.put(id, { tag: 'base', count: 0 });
+		const now = Date.now();
+		const deliver = () => {
+			const context = { timestamp: now + 100 };
+			return transaction(context, async () => {
+				await NoAudit.put(id, { tag: 'replaced', count: 10 }, context);
+				await NoAudit.patch(id, { count: { __op__: 'add', value: 2 } }, context);
+				await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, context);
+			});
+		};
+		await deliver();
+		await NoAudit.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		assert.strictEqual((await NoAudit.get(id)).count, 16);
+		await deliver();
+		// RocksDB keeps the head version, so the put ties and the transaction is skipped whole; LMDB stored the
+		// merge at its older version (harper#3388), so the put applies again over the merged increment
+		assert.strictEqual((await NoAudit.get(id)).count, process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 15 : 16);
 	});
 
 	it('a full write starts a new identity list', async () => {
