@@ -234,9 +234,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		async () => {
 			const project = 'peer-branch-stalled-payload-application';
 			const stalled = await seedDeployment('peer-branch-stalled-seed-application');
-			// Past the first no-progress window, so only a retried read can see the content, and well inside the
-			// default deployment_timeout (120s), which this deploy uses.
-			const withheldMs = BLOB_READ_TIMEOUT_MS * 2.5;
+			const releasePath = join(fixtureDir, 'release-withheld-payload');
 			const withheld = await fetch(`${ctx.harper.httpURL}/WithholdPayloadBlob`, {
 				method: 'POST',
 				headers: {
@@ -244,18 +242,43 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 					'Authorization':
 						'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64'),
 				},
-				body: JSON.stringify({ path: stalled.payloadBlobPath, delayMs: withheldMs }),
+				body: JSON.stringify({ path: stalled.payloadBlobPath, releasePath }),
 			});
 			strictEqual(withheld.status, 200, `withholding the payload content failed: ${await withheld.text()}`);
 			strictEqual(statSync(stalled.payloadBlobPath).size, 8, 'only the blob header should be on disk');
 
-			const response = await callOperation(ctx, {
+			// The default deployment_timeout (120s) leaves room for many no-progress windows.
+			const deploy = callOperation(ctx, {
 				operation: 'deploy_component',
 				project,
 				restart: false,
 				_deploymentId: stalled.deploymentId,
 			});
+			let settledEarly: Awaited<typeof deploy> | undefined;
+			deploy.then((response) => (settledEarly = response)).catch(() => {});
+			const loggedStallRetry = () =>
+				readHarperLog()
+					.split('\n')
+					.some(
+						(line) =>
+							/payload read is unavailable before any content arrived; retrying in \d+ms/.test(line) &&
+							line.includes(`Blob read stalled for ${stalled.payloadBlobPath}`)
+					);
+			const deadline = Date.now() + 20 * BLOB_READ_TIMEOUT_MS;
+			try {
+				while (!loggedStallRetry()) {
+					ok(
+						!settledEarly,
+						`the deploy settled before retrying the stalled read: ${settledEarly?.status} ${settledEarly?.rawText}`
+					);
+					ok(Date.now() < deadline, `expected the payload read's stall retry in the Harper log`);
+					await sleep(100);
+				}
+			} finally {
+				writeFileSync(releasePath, '');
+			}
 
+			const response = await deploy;
 			strictEqual(
 				response.status,
 				200,
@@ -265,20 +288,6 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 				readFileSync(join(ctx.harper.dataRootDir, 'components', project, 'web', 'index.html'), 'utf8'),
 				'<h1>Hello, Peer Branch!</h1>'
 			);
-			// Success alone would also follow from content landing inside the first window; the retry line rules that out.
-			const loggedStallRetry = () =>
-				readHarperLog()
-					.split('\n')
-					.some(
-						(line) =>
-							/payload read is unavailable before any content arrived; retrying in \d+ms/.test(line) &&
-							line.includes(`Blob read stalled for ${stalled.payloadBlobPath}`)
-					);
-			const deadline = Date.now() + 5000;
-			while (!loggedStallRetry()) {
-				ok(Date.now() < deadline, `expected the payload read's stall retry in the Harper log`);
-				await sleep(100);
-			}
 		}
 	);
 

@@ -949,7 +949,6 @@ describe('readPayloadBlobWithRetry', () => {
 			await decodeFromDatabase(() => saveBlob(blob).saving, store);
 			const filePath = getFilePathForBlob(blob);
 			const lockKey = getFileId(blob) + ':blob';
-			// A replication receive in flight: header on disk, no content, writer lock held.
 			assert.ok(store.tryLock(lockKey), 'the test must hold the blob write lock');
 			const fd = openSync(filePath, 'r+');
 			let landed = false;
