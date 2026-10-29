@@ -751,6 +751,25 @@ describe('readPayloadBlobWithRetry', () => {
 		});
 	}
 
+	it('stops reading a source of only zero-length chunks once the consumer destroys the stream', async () => {
+		let cancelled = false;
+		const streamFactory = () =>
+			new ReadableStream({
+				pull(controller) {
+					controller.enqueue(new Uint8Array(0));
+					return new Promise((resolve) => setTimeout(resolve, 1));
+				},
+				cancel() {
+					cancelled = true;
+				},
+			});
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000 });
+		stream.resume();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		stream.destroy();
+		await waitFor(() => cancelled, { timeout: 1000, message: 'the source was never cancelled after destroy()' });
+	});
+
 	it('does not retry a 503 after content, even when zero-length chunks surround it', async () => {
 		let attempts = 0;
 		const streamFactory = () => {

@@ -701,7 +701,11 @@ async function* readPayloadBlobChunks(
 		if (cell.readable?.destroyed) return;
 		try {
 			for await (const chunk of streamFactory() as unknown as AsyncIterable<Buffer>) {
-				if (chunk.length === 0) continue;
+				if (chunk.length === 0) {
+					// Readable.from() delivers destroy() only at a `yield`, which a skipped chunk never reaches.
+					if (cell.readable?.destroyed) return;
+					continue;
+				}
 				yield chunk;
 				forwardedAnyBytes = true;
 			}
