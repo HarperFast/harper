@@ -833,6 +833,7 @@ function transactional(
 							query = query.slice(id.length, query.length);
 							if (query.length === 0) {
 								query = new RequestTarget();
+								mintedQuery = true;
 								query.id = id;
 							}
 						}
