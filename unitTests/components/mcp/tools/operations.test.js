@@ -5,6 +5,7 @@ const {
 	DEFAULT_ALLOW,
 	DEFAULT_EXCLUDED,
 	MAX_OPERATION_ITERABLE_ITEMS,
+	MAX_OPERATION_ITERABLE_BYTES,
 	_setOperationFunctionMapForTest,
 	_setChooseOperationForTest,
 	_setProcessLocalTransactionForTest,
@@ -811,6 +812,26 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assertSpecLegal(res);
 	});
 
+	it('maps recoverable element errors via .mapError when present on an ExtendedIterable', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const mapped = new ExtendedIterable([{ id: 'ok-1' }, { id: 'bad-2' }, { id: 'ok-3' }]).map(async (item) => {
+			if (item.id === 'bad-2') {
+				const err = new Error('corrupt row');
+				err.partialObject = { id: 'bad-2' };
+				throw err;
+			}
+			return item;
+		});
+
+		const res = await callReturning('search_by_conditions', mapped);
+
+		const expected = [{ id: 'ok-1' }, { error: 'Error', message: 'corrupt row', id: 'bad-2' }, { id: 'ok-3' }];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
 	it('rejects an iterable result that exceeds MAX_OPERATION_ITERABLE_ITEMS and closes the iterator', async () => {
 		let closed = false;
 		let yielded = 0;
@@ -835,6 +856,35 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assert.ok(
 			payload.message.includes(String(MAX_OPERATION_ITERABLE_ITEMS)),
 			`Expected error message to mention ${MAX_OPERATION_ITERABLE_ITEMS}, got: ${payload.message}`
+		);
+		assertSpecLegal(res);
+	});
+
+	it('rejects an iterable result that exceeds MAX_OPERATION_ITERABLE_BYTES and closes the iterator', async () => {
+		let closed = false;
+		let yielded = 0;
+		const chunk = 'x'.repeat(1024 * 1024);
+		async function* largeEntries() {
+			try {
+				while (true) {
+					yield { seq: ++yielded, chunk };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', largeEntries());
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when aborting at the byte cap');
+		assert.ok(yielded <= 11, `Expected byte cap to trip within 11 x 1 MiB rows, got yielded=${yielded}`);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.ok(
+			payload.message.includes(String(MAX_OPERATION_ITERABLE_BYTES)),
+			`Expected error message to mention ${MAX_OPERATION_ITERABLE_BYTES}, got: ${payload.message}`
 		);
 		assertSpecLegal(res);
 	});

@@ -556,13 +556,14 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		assert.deepStrictEqual(userRes.parsed, [{ id: 'pub-1', title: 'welcome' }]);
 	});
 
+	const fullTextCondition = {
+		search_attribute: 'titleSearch',
+		search_type: 'matches',
+		search_value: 'welcome',
+		waitForIndexMilliseconds: 2000,
+	};
+
 	test('M0b: search_by_conditions over MCP with full-text matches condition drains async ExtendedIterable', async () => {
-		const fullTextCondition = {
-			search_attribute: 'titleSearch',
-			search_type: 'matches',
-			search_value: 'welcome',
-			waitForIndexMilliseconds: 2000,
-		};
 		const adminRes = await mcpToolCall(ctx, adminAuth, 'search_by_conditions', {
 			database: 'data',
 			table: 'PublicNote',
@@ -609,17 +610,25 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		);
 	});
 
-	test('M2: search_by_conditions over MCP denies reading an unauthorized table (SecretVault)', async () => {
+	test('M2: search_by_conditions over HTTP and MCP denies reading an unauthorized table (SecretVault)', async () => {
+		const opBody = {
+			database: 'data',
+			table: 'SecretVault',
+			get_attributes: ['*'],
+			conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: 'sec-1' }],
+		};
 		for (const [label, auth] of [
 			['reader_allowlisted', readerAllowlistedAuth],
 			['reader_plain', readerPlainAuth],
 		] as const) {
-			const res = await mcpToolCall(ctx, auth, 'search_by_conditions', {
-				database: 'data',
-				table: 'SecretVault',
-				get_attributes: ['*'],
-				conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: 'sec-1' }],
-			});
+			const httpRes = await ops(ctx, auth, { operation: 'search_by_conditions', ...opBody });
+			assert.notStrictEqual(httpRes.status, 200, `${label} must be denied on SecretVault over HTTP`);
+			assert.ok(
+				!JSON.stringify(httpRes.body).includes(SECRET_CANARY),
+				`Secret canary leaked to ${label} over HTTP: ${JSON.stringify(httpRes.body)}`
+			);
+
+			const res = await mcpToolCall(ctx, auth, 'search_by_conditions', opBody);
 			assert.strictEqual(res.status, 200);
 			assert.strictEqual(
 				res.result?.isError,
@@ -634,22 +643,27 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 	});
 
 	test('M3: search_by_conditions over MCP denies reading or filtering on a restricted attribute', async () => {
-		const starRes = await mcpToolCall(ctx, readerAllowlistedAuth, 'search_by_conditions', {
-			database: 'data',
-			table: 'PublicNote',
-			get_attributes: ['*'],
-			conditions: [{ search_attribute: 'title', search_type: 'equals', search_value: 'welcome' }],
-		});
-		assert.strictEqual(starRes.status, 200);
-		assert.ok(
-			!starRes.result?.isError,
-			`Wildcard get_attributes:['*'] should filter to readable attributes: ${starRes.text}`
-		);
-		assert.deepStrictEqual(starRes.parsed, [{ id: 'pub-1', title: 'welcome', tag: 'greeting' }]);
-		assert.ok(
-			!JSON.stringify(starRes.json).includes(RESTRICTED_NOTES_CANARY),
-			`Restricted attribute 'notes' leaked via get_attributes:['*']: ${JSON.stringify(starRes.json)}`
-		);
+		for (const cond of [
+			{ search_attribute: 'title', search_type: 'equals', search_value: 'welcome' },
+			fullTextCondition,
+		]) {
+			const starRes = await mcpToolCall(ctx, readerAllowlistedAuth, 'search_by_conditions', {
+				database: 'data',
+				table: 'PublicNote',
+				get_attributes: ['*'],
+				conditions: [cond],
+			});
+			assert.strictEqual(starRes.status, 200);
+			assert.ok(
+				!starRes.result?.isError,
+				`Wildcard get_attributes:['*'] should filter to readable attributes (${cond.search_attribute}): ${starRes.text}`
+			);
+			assert.deepStrictEqual(starRes.parsed, [{ id: 'pub-1', title: 'welcome', tag: 'greeting' }]);
+			assert.ok(
+				!JSON.stringify(starRes.json).includes(RESTRICTED_NOTES_CANARY),
+				`Restricted attribute 'notes' leaked via get_attributes:['*'] (${cond.search_attribute}): ${JSON.stringify(starRes.json)}`
+			);
+		}
 
 		const explicitRes = await mcpToolCall(ctx, readerAllowlistedAuth, 'search_by_conditions', {
 			database: 'data',

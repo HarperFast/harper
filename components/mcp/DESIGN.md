@@ -123,18 +123,14 @@ A handful of design points are non-obvious and easy to break:
   step is how the original bug survived. Whenever `verifyPerms`' ordering, the `api_name` table, or
   `STRUCTURE_USER_OPS` changes, re-check it.
 
-- **Operations-profile iterable results are collected before `wrapToolResult`.** Several operation
-  handlers return non-array iterables or async iterables that HTTP `POST /` drains through
-  `serialize` (`server/serverHelpers/contentTypes.ts`), whereas `wrapToolResult` calls synchronous
-  `JSON.stringify`: `read_audit_log` (default/`timestamp` branch returns `groupRecordsInHistory`, an
-  `AsyncGenerator` that stringifies to `"{}"`), `get_analytics` (`searchResults.map(async ...)`, an
-  `ExtendedIterable` whose `.toJSON()` yields unawaited `Promise` objects `"[{}]"`), full-text
-  `search_by_conditions` (an async-only `ExtendedIterable` whose `.toJSON()` throws), and
-  `search_by_id` / `search_by_hash` (`getRecords`, an async-iterator-only object that previously
-  stringified to `"{}"` and left its internal `transaction()` unsettled). In
+- **Operations-profile iterable results are collected before `wrapToolResult`.** Operation handlers
+  that return non-array iterables or async iterables (`read_audit_log`'s `groupRecordsInHistory`
+  generator, `get_analytics`'s async-mapped `ExtendedIterable`, full-text `search_by_conditions`,
+  and `search_by_id` / `search_by_hash`'s `getRecords` cursor) rely on the caller to drain them,
+  because `wrapToolResult` uses synchronous `JSON.stringify` (`tools/results.ts`). In
   `makeOperationToolHandler` (`tools/operations.ts`), `collectIterableResult` drains any non-array,
-  non-`Readable`, non-`ArrayBufferView` object implementing `Symbol.asyncIterator` or
-  `Symbol.iterator` via `for await`, awaiting each element and checking `context.signal` for client
-  cancellation, up to `MAX_OPERATION_ITERABLE_ITEMS` (10,000 items; bounds item count rather than
-  byte size, unlike HTTP `POST /` streaming) before throwing an explicit error (which returns
-  `isError: true` and closes the iterator via `for await`'s normal `return()` protocol).
+  non-`Readable`, non-`ArrayBufferView` iterable via `for await` (wiring `.mapError` when present,
+  awaiting element promises, and checking `context.signal`) up to `MAX_OPERATION_ITERABLE_ITEMS`
+  (10,000 items) and `MAX_OPERATION_ITERABLE_BYTES` (10 MiB), enforced by
+  `unitTests/components/mcp/tools/operations.test.js` and
+  `integrationTests/mcp/operations-iterable-results.test.ts`.

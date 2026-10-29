@@ -294,12 +294,13 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
 }
 
 /**
- * Maximum number of items collected from a non-array iterable or async iterable
- * operation result (`read_audit_log`, `get_analytics`, full-text `search_by_conditions`, etc.).
- * Exceeding this cap fails with an explicit error rather than silently clipping results
- * or buffering an unbounded cursor in memory.
+ * Maximum number of items or serialized bytes collected from a non-array iterable
+ * or async iterable operation result (`read_audit_log`, `get_analytics`, full-text
+ * `search_by_conditions`, etc.). Exceeding either cap fails with an explicit error
+ * rather than silently clipping results or buffering an unbounded cursor in memory.
  */
 export const MAX_OPERATION_ITERABLE_ITEMS = 10_000;
+export const MAX_OPERATION_ITERABLE_BYTES = 10 * 1024 * 1024;
 
 function isCollectibleIterable(data: unknown): data is AsyncIterable<unknown> | Iterable<unknown> {
 	if (data === null || typeof data !== 'object') return false;
@@ -313,17 +314,41 @@ async function collectIterableResult(
 	iterable: AsyncIterable<unknown> | Iterable<unknown>,
 	signal?: AbortSignal
 ): Promise<unknown[]> {
+	const maybeMapError = (
+		iterable as { mapError?: (fn: (error: any) => unknown) => AsyncIterable<unknown> | Iterable<unknown> }
+	).mapError;
+	if (typeof maybeMapError === 'function') {
+		iterable = maybeMapError.call(iterable, (error: any) => ({
+			error: error?.name ?? 'Error',
+			message: error?.message ?? String(error),
+			...error?.partialObject,
+		}));
+	}
 	const items: unknown[] = [];
+	let totalBytes = 0;
 	for await (const item of iterable) {
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		const resolved = await item;
 		if (signal?.aborted) {
 			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
 		}
 		if (items.length >= MAX_OPERATION_ITERABLE_ITEMS) {
 			throw new Error(
-				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; specify a smaller limit or narrower conditions`
+				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
 			);
 		}
-		items.push(await item);
+		totalBytes += Buffer.byteLength(typeof resolved === 'string' ? resolved : (JSON.stringify(resolved) ?? ''));
+		if (totalBytes > MAX_OPERATION_ITERABLE_BYTES) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result byte limit of ${MAX_OPERATION_ITERABLE_BYTES} bytes; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		items.push(resolved);
+	}
+	if (signal?.aborted) {
+		throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
 	}
 	return items;
 }
