@@ -205,6 +205,69 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		second.session.disconnect(true);
 	});
 
+	it('keeps resuming from the checkpoint of another generation until this node moves the scalar', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `twice-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => values(first.received).includes('a'));
+		await ackAll(first.session, first.received);
+		await storedCheckpoint(T, first.session, clientId);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await fromAnotherGeneration(clientId);
+		const { checkpoint } = (await stored(clientId)).subscriptions[0];
+		// connecting rewrites the record before CONNACK; this connection ends before it moves the scalar
+		const second = await connect(clientId);
+		second.session.disconnect(true);
+		await second.session.writes;
+		assert.strictEqual((await stored(clientId)).subscriptions[0].databaseGeneration, ANOTHER_GENERATION);
+		const third = await connect(clientId);
+		const requests = resumeRequests(third.session);
+		await third.session.resume();
+		assert.deepStrictEqual(requests[0].resume, checkpoint, 'still resumed from the checkpoint');
+		third.session.disconnect(true);
+	});
+
+	it('at the QoS 1 receipt limit, keeps the receipts a resume on this node reads', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `limit-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => values(first.received).includes('a'));
+		await ackAll(first.session, first.received);
+		await storedCheckpoint(T, first.session, clientId);
+		const thaw = freezeFloor(T);
+		try {
+			// the frozen checkpoint keeps every receipt above it for a replay on another node
+			for (let i = 0; i < 600; i++) {
+				await T.put(`n${i}`, { value: i });
+				await waitFor(() => values(first.received).includes(i));
+				await first.session.acknowledge(delivery(first.received, i).messageId);
+			}
+			await transaction({}, async (context) => {
+				await T.put('x', { value: 'x' }, context);
+				await T.put('y', { value: 'y' }, context);
+			});
+			await waitFor(() => values(first.received).includes('y'));
+			await first.session.acknowledge(delivery(first.received, 'y').messageId);
+			first.session.disconnect(true);
+			await first.session.writes;
+			const second = await connect(clientId);
+			await second.session.resume();
+			await T.put('after', { value: 'after' });
+			await waitFor(() => values(second.received).includes('after'));
+			assert.deepStrictEqual(values(second.received), ['x', 'after'], 'the acknowledged half is not sent again');
+			second.session.disconnect(true);
+		} finally {
+			thaw();
+		}
+	});
+
 	it('keeps the scalar at what the session reached while the checkpoint holds below an open transaction', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

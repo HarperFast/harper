@@ -746,8 +746,11 @@ type DurableEntry = {
 	 * unavailable, and a resume it can no longer satisfy resets the session (410).
 	 */
 	checkpoint?: SubscriptionCheckpoint;
-	/** In memory only: the restored scalar was bound to another generation, so it names nothing here. */
-	foreignPosition?: boolean;
+	/**
+	 * In memory only: the other generation a restored scalar is bound to, so it names nothing here. It is saved back
+	 * as `databaseGeneration` until this node moves the scalar, so a reconnect still knows the scalar is foreign.
+	 */
+	foreignGeneration?: string;
 };
 function deliveryId(id: unknown) {
 	if (Array.isArray(id)) return keyArrayToString(id);
@@ -879,7 +882,7 @@ function boundToCurrentGeneration(entry: DurableEntry): boolean {
  */
 function resumesFromCheckpoint(entry: DurableEntry): boolean {
 	if (entry.checkpoint === undefined || boundToCurrentGeneration(entry)) return false;
-	return entry.foreignPosition === true || entry.databaseGeneration !== undefined;
+	return (entry.foreignGeneration ?? entry.databaseGeneration) !== undefined;
 }
 
 export class DurableSubscriptionsSession extends SubscriptionsSession {
@@ -929,7 +932,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							startTime,
 							databaseGeneration: boundToCurrentGeneration(entry) ? databaseGeneration : undefined,
 							checkpoint,
-							foreignPosition: databaseGeneration !== undefined && !boundToCurrentGeneration(entry),
+							foreignGeneration: boundToCurrentGeneration(entry) ? undefined : databaseGeneration,
 						}
 					: { qos, topic }
 			);
@@ -1213,10 +1216,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const sent = state?.unacked.get(messageId);
 		if (sent?.late) state.lateUnacked--;
 		state?.unacked.delete(messageId);
-		// a replay behind an older unacknowledged delivery, or from a checkpoint, revisits it; positions prune it
-		if (sent && update.qos === 1 && this.receivedCount < QOS1_RECEIVED_LIMIT) {
-			this.addReceived(state, [sent.key, sent.ordinal, deliveryId(sent.id)]);
-			this.dirty = true;
+		// a replay behind an older unacknowledged delivery, or from a checkpoint, revisits it
+		if (sent && update.qos === 1) {
+			// what only a checkpoint replay on another node would read gives way to what a resume here reads
+			if (this.receivedCount >= QOS1_RECEIVED_LIMIT) this.pruneReceipts(state, state.entry.startTime);
+			if (this.receivedCount < QOS1_RECEIVED_LIMIT) {
+				this.addReceived(state, [sent.key, sent.ordinal, deliveryId(sent.id)]);
+				this.dirty = true;
+			}
 		}
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
@@ -1471,6 +1478,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
+			state.entry.foreignGeneration = undefined;
 			// a checkpoint replay revisits receipts below the scalar, so once floors certify one only its floor prunes them
 			if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) this.pruneReceipts(state, next);
 			// only a certified position may be checked on resume
@@ -1580,10 +1588,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const subscriptions = [];
 		this.inFlightChanged = false;
 		for (const state of this.topics.values()) {
-			const { qos, topic, startTime, databaseGeneration } = state.entry;
+			const { qos, topic, startTime, databaseGeneration, foreignGeneration } = state.entry;
 			const saved: DurableEntry = { qos, topic };
 			if (startTime !== undefined) saved.startTime = startTime;
-			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
+			if ((databaseGeneration ?? foreignGeneration) !== undefined)
+				saved.databaseGeneration = databaseGeneration ?? foreignGeneration;
 			if (state.received?.size > 0) saved.received = [...state.received.values()];
 			if (state.receivedRuns?.size > 0) saved.receivedRuns = [...state.receivedRuns];
 			if (state.receivedThrough !== undefined) saved.receivedThrough = state.receivedThrough;
