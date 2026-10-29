@@ -145,7 +145,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			// different children of parent-3 satisfy different sibling conditions
 			['c5', 'parent-3', 'child-3a', 'match-epsilon', 'silver', 1, 'y-ignore', 'gc-2'],
 			['c6', 'parent-3', 'child-3b', 'other-zeta', 'gold', 1, 'x-ignore', 'gc-2'],
-			// OR group: or-a's only child matches the second branch, or-b's only child the first
+			// OR group: or-a's only child matches the second branch; of or-b's children, c8 matches the first and c9 neither
 			['c7', 'or-a', 'child-or-a', 'B', 'gold', 1, 'w-ignore', 'gc-2'],
 			['c8', 'or-b', 'child-or-b', 'A', 'silver', 1, 'v-ignore', 'gc-2'],
 			['c9', 'or-b', 'child-or-b2', 'Z', 'silver', 1, 'u-ignore', 'gc-2'],
