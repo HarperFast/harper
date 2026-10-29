@@ -774,10 +774,6 @@ export type TransactionWrite = {
 	stagedEntry?: Partial<Entry> & { unchanged?: boolean };
 	// A later attribute patch needs the complete write even when stagedEntry is a local index stub.
 	completeResidencyRecord?: any;
-	// the entry whose expiry an out-of-order write to this key keeps (Table._writeUpdate), and the version the
-	// commit round that chose it ran at; set per round
-	expiryBase?: Partial<Entry>;
-	stagedVersion?: number;
 	// a later write to the same key in this transaction replaced (or deleted) the record this write
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.

@@ -42,6 +42,14 @@ describe(`An out-of-order write keeps the newer head's expiry (${ENGINE})`, func
 			if (entry.tableId === Table.tableId && entry.recordId === id && entry.version === version) return entry;
 	}
 
+	function auditExpiries(Table, id, version) {
+		const expiries = [];
+		for (const entry of Table.auditStore.getRange({ start: 0 }))
+			if (entry.tableId === Table.tableId && entry.recordId === id && entry.version === version)
+				expiries.push(entry.expiresAt);
+		return expiries;
+	}
+
 	async function seedHead(Table, id, headExpiresAt) {
 		await Table.put(id, { id, a: 'init', b: 'init' });
 		const v0 = Table.primaryStore.getEntry(id).version;
@@ -137,7 +145,7 @@ describe(`An out-of-order write keeps the newer head's expiry (${ENGINE})`, func
 		assert.strictEqual(merged.expiresAt, headDeadline);
 	});
 
-	it('two writes to the key in one older transaction decide against the same head on both engines', async function () {
+	it('a second older write in one transaction keeps the expiry the first one left, on both engines', async function () {
 		const Table = newTable([{ name: 'a' }, { name: 'b' }, { name: 'deadline', expiresAt: true, indexed: true }]);
 		const fieldDeadline = Date.now() + 120_000;
 		const explicitExpiresAt = Date.now() + 240_000;
@@ -153,93 +161,162 @@ describe(`An out-of-order write keeps the newer head's expiry (${ENGINE})`, func
 
 		const merged = Table.primaryStore.getEntry('rec');
 		assert.deepEqual([merged.value.deadline, merged.value.b], [fieldDeadline, 'from-t1'], 'precondition: both merged');
-		// the transaction changed the field the head left alone, so the later write's explicit expiry applies;
-		// on RocksDB the second write would otherwise compare against the first one's staged field
-		assert.strictEqual(merged.expiresAt, explicitExpiresAt);
+		assert.strictEqual(merged.expiresAt, fieldDeadline);
+		assert.deepEqual(auditExpiries(Table, 'rec', t1), [fieldDeadline, explicitExpiresAt]);
 	});
 
-	it('an older write in a replicated frame keeps the expiry of the newer write staged before it', async function () {
-		// only a RocksDB apply frame carries a version per write; LMDB applies a frame at one version
-		if (ENGINE === 'lmdb') return this.skip();
+	describe('in a replicated frame', function () {
+		before(function () {
+			// only a RocksDB apply frame carries a version per write; LMDB applies a frame at one version
+			if (ENGINE === 'lmdb') this.skip();
+		});
+
+		function applyFromOrigin(Table, id, writes, { version, nodeId }, afterStage) {
+			const context = { source: {}, sourceApply: true, timestamp: version };
+			return transaction(context, async () => {
+				for (const { update, ...options } of writes)
+					await (
+						await Table.getResource(id, context)
+					)._writeUpdate(id, update, false, { isNotification: true, nodeId, version, ...options });
+				await afterStage?.(context.transaction);
+			});
+		}
+
+		it('an older write keeps the expiry of a newer write staged before it', async function () {
+			const Table = newTable([{ name: 'a' }, { name: 'b' }]);
+			const origin = getIdOfRemoteNode('out-of-order-expiry-origin', Table.auditStore);
+			await Table.put('rec', { id: 'rec', a: 'init', b: 'init' });
+			const v0 = Table.primaryStore.getEntry('rec').version;
+			const liveExpiresAt = Date.now() + 60_000;
+
+			await applyFromOrigin(
+				Table,
+				'rec',
+				[
+					{ update: { a: 'from-t2' }, version: v0 + 100, expiresAt: liveExpiresAt },
+					{ update: { b: 'from-t1' }, version: v0 + 10, expiresAt: Date.now() - 5_000 },
+				],
+				{ version: v0 + 200, nodeId: origin }
+			);
+
+			const merged = Table.primaryStore.getEntry('rec');
+			assert.deepEqual([merged.value.a, merged.value.b], ['from-t2', 'from-t1'], 'precondition: both merged');
+			assert.strictEqual(merged.expiresAt, liveExpiresAt);
+		});
+
+		it('an older write keeps the field expiry a newer write in the frame renewed', async function () {
+			const Table = newTable([{ name: 'a' }, { name: 'b' }, { name: 'deadline', expiresAt: true, indexed: true }]);
+			const origin = getIdOfRemoteNode('out-of-order-expiry-origin', Table.auditStore);
+			const fieldDeadline = Date.now() + 120_000;
+			const { t1, t2 } = await seedHead(Table, 'rec', Date.now() + 60_000);
+
+			await applyFromOrigin(
+				Table,
+				'rec',
+				[
+					{ update: { deadline: fieldDeadline }, version: t1 + 50 },
+					{ update: { b: 'from-t1' }, version: t1, expiresAt: Date.now() - 5_000 },
+				],
+				{ version: t2 + 100, nodeId: origin }
+			);
+
+			const merged = Table.primaryStore.getEntry('rec');
+			assert.deepEqual(
+				[merged.value.deadline, merged.value.b],
+				[fieldDeadline, 'from-t1'],
+				'precondition: both merged'
+			);
+			assert.strictEqual(merged.expiresAt, fieldDeadline, 'the same result as delivering the writes in two frames');
+		});
+
+		it('an older write keeps what the write before it left, whether or not it names its version', async function () {
+			const Table = newTable([{ name: 'a' }, { name: 'b' }, { name: 'deadline', expiresAt: true, indexed: true }]);
+			const origin = getIdOfRemoteNode('out-of-order-expiry-origin', Table.auditStore);
+			const fieldDeadline = Date.now() + 120_000;
+			const { t1 } = await seedHead(Table, 'rec', Date.now() + 60_000);
+
+			await applyFromOrigin(
+				Table,
+				'rec',
+				[
+					{ update: { deadline: fieldDeadline }, version: undefined },
+					{ update: { b: 'from-t1' }, expiresAt: Date.now() + 240_000 },
+				],
+				{ version: t1, nodeId: origin }
+			);
+
+			assert.equal(auditExpiries(Table, 'rec', t1).length, 2, 'precondition: both writes are stored at t1');
+			const merged = Table.primaryStore.getEntry('rec');
+			assert.deepEqual(
+				[merged.value.deadline, merged.value.b],
+				[fieldDeadline, 'from-t1'],
+				'precondition: both merged'
+			);
+			assert.strictEqual(merged.expiresAt, fieldDeadline);
+		});
+
+		it('an older write retried after a commit conflict keeps the expiry of the head that won', async function () {
+			const Table = newTable([{ name: 'a' }, { name: 'b' }, { name: 'deadline', expiresAt: true, indexed: true }]);
+			const older = getIdOfRemoteNode('out-of-order-expiry-older', Table.auditStore);
+			const newer = getIdOfRemoteNode('out-of-order-expiry-newer', Table.auditStore);
+			const winningDeadline = Date.now() + 240_000;
+			const { t1, t2 } = await seedHead(Table, 'rec', Date.now() + 60_000);
+
+			let native;
+			await applyFromOrigin(
+				Table,
+				'rec',
+				[{ update: { deadline: Date.now() + 120_000 } }, { update: { b: 'from-t1' }, expiresAt: Date.now() - 5_000 }],
+				{ version: t1, nodeId: older },
+				async (txn) => {
+					for (const write of txn.writes.filter((write) => write.key === 'rec')) await txn.save(write);
+					native = txn.transaction;
+					await applyFromOrigin(Table, 'rec', [{ update: { deadline: winningDeadline } }], {
+						version: t2 + 1000,
+						nodeId: newer,
+					});
+				}
+			);
+
+			assert.ok(native.retries > 0, 'precondition: RocksDB retried the real conflict');
+			const merged = Table.primaryStore.getEntry('rec');
+			assert.deepEqual([merged.value.deadline, merged.value.b], [winningDeadline, 'from-t1'], 'precondition: merged');
+			// the second write's base is what the first staged in the retry, not in the attempt that conflicted
+			assert.strictEqual(merged.expiresAt, winningDeadline);
+		});
+	});
+
+	it('an older frame from the source dispatcher keeps the newer expiry', async function () {
 		const Table = newTable([{ name: 'a' }, { name: 'b' }]);
 		const origin = getIdOfRemoteNode('out-of-order-expiry-origin', Table.auditStore);
-		await Table.put('rec', { id: 'rec', a: 'init', b: 'init' });
-		const v0 = Table.primaryStore.getEntry('rec').version;
+		const base = Date.now();
+		const [t0, t1, t2, marker] = [base, base + 10, base + 100, base + 200];
 		const liveExpiresAt = Date.now() + 60_000;
-
-		const context = { source: {}, sourceApply: true, timestamp: v0 + 200 };
-		await transaction(context, async () => {
-			const options = { isNotification: true, nodeId: origin };
-			(await Table.getResource('rec', context))._writeUpdate('rec', { a: 'from-t2' }, false, {
-				...options,
-				version: v0 + 100,
-				expiresAt: liveExpiresAt,
-			});
-			(await Table.getResource('rec', context))._writeUpdate('rec', { b: 'from-t1' }, false, {
-				...options,
-				version: v0 + 10,
-				expiresAt: Date.now() - 5_000,
-			});
-		});
-
-		const merged = Table.primaryStore.getEntry('rec');
-		assert.deepEqual([merged.value.a, merged.value.b], ['from-t2', 'from-t1'], 'precondition: both merged');
-		assert.strictEqual(merged.expiresAt, liveExpiresAt);
-	});
-
-	it('an older write in a replicated frame keeps the field expiry a newer write in the frame renewed', async function () {
-		if (ENGINE === 'lmdb') return this.skip();
-		const Table = newTable([{ name: 'a' }, { name: 'b' }, { name: 'deadline', expiresAt: true, indexed: true }]);
-		const origin = getIdOfRemoteNode('out-of-order-expiry-origin', Table.auditStore);
-		const fieldDeadline = Date.now() + 120_000;
-		const { t1, t2 } = await seedHead(Table, 'rec', Date.now() + 60_000);
-
-		const context = { source: {}, sourceApply: true, timestamp: t2 + 100 };
-		await transaction(context, async () => {
-			const options = { isNotification: true, nodeId: origin };
-			(await Table.getResource('rec', context))._writeUpdate('rec', { deadline: fieldDeadline }, false, {
-				...options,
-				version: t1 + 50,
-			});
-			(await Table.getResource('rec', context))._writeUpdate('rec', { b: 'from-t1' }, false, {
-				...options,
-				version: t1,
-				expiresAt: Date.now() - 5_000,
-			});
-		});
-
-		const merged = Table.primaryStore.getEntry('rec');
-		assert.deepEqual([merged.value.deadline, merged.value.b], [fieldDeadline, 'from-t1'], 'precondition: both merged');
-		assert.strictEqual(merged.expiresAt, fieldDeadline, 'the same result as delivering the writes in two frames');
-	});
-
-	it('writes in a replicated frame stored at one version decide as one, whether or not they name it', async function () {
-		if (ENGINE === 'lmdb') return this.skip();
-		const Table = newTable([{ name: 'a' }, { name: 'b' }, { name: 'deadline', expiresAt: true, indexed: true }]);
-		const origin = getIdOfRemoteNode('out-of-order-expiry-origin', Table.auditStore);
-		const fieldDeadline = Date.now() + 120_000;
-		const explicitExpiresAt = Date.now() + 240_000;
-		const { t1 } = await seedHead(Table, 'rec', Date.now() + 60_000);
-
-		const context = { source: {}, sourceApply: true, timestamp: t1 };
-		await transaction(context, async () => {
-			const options = { isNotification: true, nodeId: origin };
-			(await Table.getResource('rec', context))._writeUpdate('rec', { deadline: fieldDeadline }, false, options);
-			(await Table.getResource('rec', context))._writeUpdate('rec', { b: 'from-t1' }, false, {
-				...options,
-				version: t1,
-				expiresAt: explicitExpiresAt,
-			});
-		});
-
-		const versions = [];
-		for (const entry of Table.auditStore.getRange({ start: 0 }))
-			if (entry.tableId === Table.tableId && entry.recordId === 'rec' && entry.version === t1)
-				versions.push(entry.version);
-		assert.deepEqual(versions, [t1, t1], 'precondition: both writes are stored at t1');
-		const merged = Table.primaryStore.getEntry('rec');
-		assert.deepEqual([merged.value.deadline, merged.value.b], [fieldDeadline, 'from-t1'], 'precondition: both merged');
-		assert.strictEqual(merged.expiresAt, explicitExpiresAt);
+		const write = (type, id, value, version, expiresAt) => ({ type, id, value, nodeId: origin, version, expiresAt });
+		const frame = (timestamp, writes) => ({ type: 'transaction', timestamp, writes });
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		Table.sourcedFrom(
+			{
+				subscribeOnThisThread: () => true,
+				async *subscribe() {
+					yield frame(t0, [write('put', 'rec', { id: 'rec', a: 'init', b: 'init' }, t0)]);
+					yield frame(t2, [write('patch', 'rec', { a: 'from-t2' }, t2, liveExpiresAt)]);
+					yield frame(t1, [write('patch', 'rec', { b: 'from-t1' }, t1, Date.now() - 5_000)]);
+					yield frame(marker, [write('put', 'marker', { id: 'marker' }, marker)]);
+					await held;
+				},
+			},
+			{ intermediateSource: true }
+		);
+		try {
+			await waitFor(() => Table.primaryStore.getEntry('marker')?.value, 5_000);
+			const merged = Table.primaryStore.getEntry('rec');
+			assert.deepEqual([merged.value.a, merged.value.b], ['from-t2', 'from-t1'], 'precondition: both applied');
+			assert.strictEqual(merged.expiresAt, liveExpiresAt);
+		} finally {
+			release();
+		}
 	});
 
 	it('eviction skips a record an older write renewed through the @expiresAt field', async function () {

@@ -5781,14 +5781,6 @@ export function makeTable(options): TableResourceClass {
 					// write's audit refs, which the re-delivery check below reads past (identityBase).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
-					// The head an out-of-order write keeps the expiry of: what an earlier write to the key at another version
-					// staged, else the entry before this transaction, so writes sharing a version decide as one. Never
-					// existingEntry for a later write: RocksDB reloads it through the transaction and LMDB does not.
-					write.expiryBase =
-						priorStagedOp && priorStagedOp.stagedVersion !== txnTime
-							? priorStaged
-							: (priorStagedOp?.expiryBase ?? existingEntry);
-					write.stagedVersion = txnTime;
 					let existingRecord =
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
@@ -6824,14 +6816,13 @@ export function makeTable(options): TableResourceClass {
 						const fieldDeadline = fieldExpiresAtMs(recordToStore);
 						expiresAt = Number.isFinite(fieldDeadline) ? fieldDeadline : expirationMs ? expirationMs + Date.now() : -1;
 					}
-					if (
-						precedesExisting < 0 &&
-						Object.is(fieldExpiresAtMs(recordToStore), fieldExpiresAtMs(write.expiryBase.value))
-					) {
-						// Merged under a newer head, this write's expiry is not the record's unless it changed the @expiresAt
-						// field. Its audit entry still logs it: that is what replicas and replay apply.
+					// Merged under a newer head, this write's expiry is not the record's unless it changed the @expiresAt
+					// field. Its audit entry still logs it: that is what replicas and replay apply. The head is what the
+					// write merged onto; not existingEntry once the transaction wrote the key, since RocksDB reloads that
+					// through the transaction and LMDB does not.
+					if (precedesExisting < 0 && Object.is(fieldExpiresAtMs(recordToStore), fieldExpiresAtMs(existingRecord))) {
 						auditExpiresAt = expiresAt;
-						expiresAt = write.expiryBase.expiresAt ?? -1;
+						expiresAt = (priorStaged ?? existingEntry).expiresAt ?? -1;
 					}
 					if (!fullUpdate && type !== 'put') {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
@@ -13164,7 +13155,6 @@ export function makeTable(options): TableResourceClass {
 								const backpressure = trackInFlight(repair);
 								if (backpressure) await backpressure;
 							} else if (
-								// reads honor the stored deadline
 								recordEntry.expiresAt != undefined
 									? hasExpired(recordEntry)
 									: recordEntry.value[expiresAtName] < Date.now()
