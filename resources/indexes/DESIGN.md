@@ -680,7 +680,7 @@ row at a page boundary; an exact boundary between branches can therefore start t
 
 Waiting queries publish no HTTP coverage header: headers precede consumption and cannot certify pending
 work. Consume results and check completion; HTTP 200 alone proves nothing. JSON errors abort without `]`
-after a best-effort diagnostic ([streaming errors](../../server/DESIGN.md#streaming-startup-errors)).
+after a diagnostic ([streaming errors](../../server/DESIGN.md#streaming-startup-errors)).
 `mapError` recovery yields a row with a separate `message`; SSE/NDJSON retain terminal errors. Prefix rows
 can precede later errors. Count pages materialize before headers and can return error status; other first-item
 status deferral remains #2670. Direct custom-index arrays retain `indexCoverage`; ordinary native promises

@@ -490,7 +490,8 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			assert.ok(committed.version >= floorBeforeSave, 'committed version is at or above the holder floor');
 			assert.ok(committed.version >= beforeSave);
 			const auditEntry = [...StampTest.auditStore.getRange({ start: 1 })].find(
-				(entry) => entry.tableId === StampTest.tableId && entry.recordId === lockedId && entry.version === committed.version
+				(entry) =>
+					entry.tableId === StampTest.tableId && entry.recordId === lockedId && entry.version === committed.version
 			);
 			assert.ok(auditEntry && auditEntry.txnLogKey >= floorBeforeSave, 'audit log key covers the holder floor');
 			assert.strictEqual(stampedEntry(otherId).value.n, 2);

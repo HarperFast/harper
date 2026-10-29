@@ -1007,6 +1007,8 @@ export function readLocalIssuanceCeiling(auditStore: any): number {
 	return isValidFloor(ceiling) ? ceiling : 0;
 }
 
+let issuanceCeilingErrorLoggedAt = -Infinity;
+
 export function coverLocalIssuance(auditStore: any, key: number): number {
 	const ceiling = isValidFloor(key + ISSUANCE_CEILING_HEADROOM_MS) ? key + ISSUANCE_CEILING_HEADROOM_MS : key;
 	let stored = ceiling;
@@ -1028,7 +1030,11 @@ export function coverLocalIssuance(auditStore: any, key: number): number {
 		(auditStore.rootStore ?? auditStore).flushSync({ allowWriteStall: true });
 		return stored;
 	} catch (error) {
-		warnContained('Error recording the local issuance ceiling', error);
+		const now = performance.now();
+		if (now - issuanceCeilingErrorLoggedAt >= 60_000) {
+			issuanceCeilingErrorLoggedAt = now;
+			warnContained('Error recording the local issuance ceiling', error);
+		}
 		throw error;
 	}
 }
