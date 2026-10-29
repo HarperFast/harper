@@ -353,6 +353,7 @@ describe('Queries read related records asynchronously', () => {
 			it('a leading many-to-many join with another condition on the same relationship', async function () {
 				const results = await collect(
 					ColdParent.search({
+						enforceExecutionOrder: true,
 						conditions: [
 							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
 							{ attribute: ['children', 'label'], value: 'label 10' },
@@ -368,6 +369,7 @@ describe('Queries read related records asynchronously', () => {
 			it('a leading many-to-many join with a key condition on the same relationship reads no children', async function () {
 				const results = await collect(
 					ColdParent.search({
+						enforceExecutionOrder: true,
 						conditions: [
 							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
 							{ attribute: ['children', 'id'], value: 'child-10' },
