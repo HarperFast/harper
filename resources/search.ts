@@ -1554,16 +1554,16 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 				return;
 			}
 			const entry = iteration.value;
+			const filters = (joined as any).filters;
+			if (idFiltersOnKey && filters?.some((filter) => filter.idFilter && !filter.idFilter(entry.key ?? entry)))
+				continue;
 			let record = readRecord(entry);
 			if (record?.then) {
 				record = await record;
 				if (scanStopped(scan)) return;
 			}
-			const filters = (joined as any).filters;
 			if (filters) {
-				let matches = idFiltersOnKey
-					? matchesRelatedKey(filters, entry.key ?? entry, record)
-					: record != null && matchesFilters(filters, record, undefined, false);
+				let matches = matchesRelatedRecord(filters, record, idFiltersOnKey, scan);
 				if (matches?.then) {
 					matches = await matches;
 					if (scanStopped(scan)) return;
@@ -1618,17 +1618,16 @@ export function matchesFilters(filters, record, entry, any: boolean, start = 0) 
 	}
 	return !any;
 }
-// as in transformToEntries, an idFilter is answered by the whole key, so a null cache stub passes when every filter has one
-function matchesRelatedKey(filters, key, record, start = 0) {
+function matchesRelatedRecord(filters, record, skipIdFilters: boolean, scan: JoinScan, start = 0) {
 	for (let i = start; i < filters.length; i++) {
 		const filter = filters[i];
-		if (filter.idFilter) {
-			if (!filter.idFilter(key)) return false;
-			continue;
-		}
+		if (skipIdFilters && filter.idFilter) continue;
 		if (record == null) return false;
 		const matches = (filter.maybeAsync ?? filter)(record);
-		if (matches?.then) return matches.then((matches) => matches && matchesRelatedKey(filters, key, record, i + 1));
+		if (matches?.then)
+			return matches.then(
+				(matches) => matches && !scanStopped(scan) && matchesRelatedRecord(filters, record, skipIdFilters, scan, i + 1)
+			);
 		if (!matches) return false;
 	}
 	return true;
@@ -1725,15 +1724,11 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						const id = entry.key ?? entry;
 						const filters = (joined as any).filters;
 						if (filters) {
-							let record;
-							if (
-								filters.some((filter) =>
-									filter.idFilter
-										? !filter.idFilter(id)
-										: (record ??= entry.value ?? store.getSync(id, readOptions)) == null || !filter(record)
-								)
-							)
-								continue;
+							if (filters.some((filter) => filter.idFilter && !filter.idFilter(id))) continue;
+							if (filters.some((filter) => !filter.idFilter)) {
+								const record = entry.value ?? store.getSync(id, readOptions);
+								if (record == null || filters.some((filter) => !filter.idFilter && !filter(record))) continue;
+							}
 						}
 						ids.add(id);
 						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration

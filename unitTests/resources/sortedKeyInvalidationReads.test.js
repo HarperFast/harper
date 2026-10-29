@@ -362,6 +362,7 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 			[[(record) => record.name !== 'x'], ['p2']],
 			[[keyNot('x')], ['p1', 'p2']],
 			[[keyNot('c2')], ['p2']],
+			[[(record) => record.name !== 'x', keyNot('c3')], []],
 		]) {
 			const synchronous = [];
 			for (const id of scan(filters)) synchronous.push(id);
