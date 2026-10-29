@@ -3,7 +3,13 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
-const { Resource, NOT_HANDLED, primitiveIdGetFor, registerPrimitiveIdGet } = require('#src/resources/Resource');
+const {
+	Resource,
+	NOT_HANDLED,
+	WRITE_CONDITION,
+	primitiveIdGetFor,
+	registerPrimitiveIdGet,
+} = require('#src/resources/Resource');
 const { transaction } = require('#src/resources/transaction');
 const { suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction');
 const {
@@ -324,6 +330,25 @@ describe('Table.get by a primitive id', function () {
 			}
 			assert.deepStrictEqual([...calls], []);
 			await assertNotHandled(Records, async () => assert.strictEqual((await Records.get('a')).name, 'A'));
+		});
+
+		// a verb reading the record it is about to write conditionally: skipping getResource would leave the
+		// condition unprepared, so the write would go through unchecked
+		it('for a pending write condition, which getResource then prepares', async () => {
+			for (const condition of [{ Resource: Records }, { Resource: Records, optional: true, recordId: 'a' }]) {
+				const calls = countPrimitiveGets(Records);
+				try {
+					await inTransaction(async (context) => {
+						context[WRITE_CONDITION] = condition;
+						assert.strictEqual((await Records.get('a')).name, 'A');
+					});
+				} finally {
+					calls.restore();
+				}
+				assert.deepStrictEqual([...calls], ['not-handled']);
+				assert.strictEqual(condition.prepared, true);
+				assert.strictEqual(condition.id, 'a');
+			}
 		});
 
 		it('when the resolved context is itself a context provider', async () => {
