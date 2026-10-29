@@ -27,6 +27,8 @@ const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 export const RECEIVE_MAXIMUM = 1000;
 /** Past this many receipts kept for a session, more are not kept: a replay resends those deliveries instead. */
 const RECEIVED_LIMIT = 1000;
+/** QoS 1 receipts stop here, so they never take the share QoS 2 needs for exactly-once. */
+const QOS1_RECEIVED_LIMIT = RECEIVED_LIMIT / 2;
 let _DurableSession: any;
 function getDurableSession() {
 	if (!_DurableSession) {
@@ -744,6 +746,8 @@ type DurableEntry = {
 	 * unavailable, and a resume it can no longer satisfy resets the session (410).
 	 */
 	checkpoint?: SubscriptionCheckpoint;
+	/** In memory only: the restored scalar was bound to another generation, so it names nothing here. */
+	foreignPosition?: boolean;
 };
 function deliveryId(id: unknown) {
 	if (Array.isArray(id)) return keyArrayToString(id);
@@ -870,11 +874,12 @@ function boundToCurrentGeneration(entry: DurableEntry): boolean {
 }
 
 /**
- * A scalar bound to the current generation is this node's own position and covers what the session reached; a
- * checkpoint trails it by the floor cadence, so it is resumed from only where the scalar cannot be checked.
+ * A scalar saved in this generation covers what the session reached, and the checkpoint trails it by the floor
+ * cadence; only a scalar bound to another generation, which names nothing here, defers to the checkpoint.
  */
 function resumesFromCheckpoint(entry: DurableEntry): boolean {
-	return entry.checkpoint !== undefined && !boundToCurrentGeneration(entry);
+	if (entry.checkpoint === undefined || boundToCurrentGeneration(entry)) return false;
+	return entry.foreignPosition === true || entry.databaseGeneration !== undefined;
 }
 
 export class DurableSubscriptionsSession extends SubscriptionsSession {
@@ -924,6 +929,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							startTime,
 							databaseGeneration: boundToCurrentGeneration(entry) ? databaseGeneration : undefined,
 							checkpoint,
+							foreignPosition: databaseGeneration !== undefined && !boundToCurrentGeneration(entry),
 						}
 					: { qos, topic }
 			);
@@ -1190,7 +1196,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state.unacked.set(messageId, {
 				key,
 				ordinal: state.ordinal,
-				id: deliveryId(update.id),
+				id: qos === 2 ? deliveryId(update.id) : update.id,
 				previousKey: state.keyBefore,
 				late,
 				origin: typeof update[ORIGIN_ID] === 'number' ? update[ORIGIN_ID] : undefined,
@@ -1207,13 +1213,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const sent = state?.unacked.get(messageId);
 		if (sent?.late) state.lateUnacked--;
 		state?.unacked.delete(messageId);
-		// a PUBREC'd QoS 2 delivery is kept by `received`; a PUBACK'd one is kept here, so a replay that revisits it
-		// (behind an older unacknowledged delivery, or from a checkpoint) skips it
-		if (sent && update.qos === 1) {
-			const floor = state.entry.checkpoint === undefined ? undefined : checkpointFloor(state.entry.checkpoint);
-			this.compactReceived(state, floor);
-			this.addReceived(state, [sent.key, sent.ordinal, sent.id]);
-			this.compactReceived(state, floor);
+		// a replay behind an older unacknowledged delivery, or from a checkpoint, revisits it; positions prune it
+		if (sent && update.qos === 1 && this.receivedCount < QOS1_RECEIVED_LIMIT) {
+			this.addReceived(state, [sent.key, sent.ordinal, deliveryId(sent.id)]);
 			this.dirty = true;
 		}
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
@@ -1469,8 +1471,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			// a checkpoint resume replays from its boundaries, below the scalar: once floors certify a boundary, the
-			// receipts above it are kept, from the very call that establishes the token
+			// a checkpoint replay revisits receipts below the scalar, so once floors certify one only its floor prunes them
 			if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) this.pruneReceipts(state, next);
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
@@ -1481,13 +1482,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (!(state.entry.qos > 0)) continue;
 			const checkpoint = this.currentCheckpoint(state);
 			if (checkpoint && !sameCheckpoint(checkpoint, state.entry.checkpoint)) {
-				if (state.entry.checkpoint === undefined) {
-					// the scalar watermark was compacted against a position an origin can commit below; from the first
-					// checkpoint on, receipts are bounded by its floor only
-					state.receivedThrough = undefined;
-					// a fresh topic's start names this generation's keys, so the token beside it does not replace it here
-					state.entry.databaseGeneration ??= state.subscription.databaseGeneration;
-				}
+				// the scalar watermark was compacted against a position an origin can commit below; from the first
+				// checkpoint on, receipts are bounded by its floor only
+				if (state.entry.checkpoint === undefined) state.receivedThrough = undefined;
 				state.entry.checkpoint = checkpoint;
 				this.pruneReceipts(state, positionBefore(checkpointFloor(checkpoint)));
 				changed = true;

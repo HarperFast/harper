@@ -296,6 +296,31 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		second.session.disconnect(true);
 	});
 
+	it('keeps a QoS 1 topic’s receipts when a SUBSCRIBE replaces it at QoS 1', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `replace-${name}`;
+		const { session, received } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('before', { value: 'before' });
+		await waitFor(() => received.length >= 1);
+		await ackAll(session, received);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		await transaction({}, async (context) => {
+			await T.put('x', { value: 'x' }, context);
+			await T.put('y', { value: 'y' }, context);
+		});
+		await waitFor(() => values(received).includes('y'));
+		await session.acknowledge(delivery(received, 'y').messageId);
+		const replacedAt = received.length;
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => values(received).includes('after'));
+		assert.deepStrictEqual(values(received.slice(replacedAt)), ['x', 'after'], 'the acknowledged message is skipped');
+		session.disconnect(true);
+	});
+
 	it('keeps a delivered transaction that committed after a higher key until it is acknowledged', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

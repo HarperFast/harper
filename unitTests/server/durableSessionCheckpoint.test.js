@@ -67,12 +67,10 @@ async function connect(clientId) {
 	return { session, received, closed };
 }
 
-/** The lowest boundary a checkpoint certifies. */
 function checkpointFloor(checkpoint) {
 	return Math.min(checkpoint.time - checkpoint.overlap, ...Object.values(checkpoint.exceptions));
 }
 
-/** The requests each resumed subscription was made with, in order. */
 function resumeRequests(session) {
 	const requests = [];
 	const resumeSubscription = session.resumeSubscription;
