@@ -107,6 +107,20 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		});
 	});
 
+	describe('conditionDrivesIndex for full-text', () => {
+		const drives = (fullTextIndexes, fullTextQueryIndexes) =>
+			conditionDrivesIndex(
+				{ primaryKey: 'id', primaryStore: {}, attributes: [], indices: {}, fullTextIndexes, fullTextQueryIndexes },
+				{ attribute: 'body', comparator: 'matches', value: 'word' }
+			);
+
+		it('drives only by a declared full-text index that is ready', () => {
+			assert.strictEqual(drives([{ name: 'body' }], { body: { customIndex: {} } }), true);
+			assert.strictEqual(drives([{ name: 'body' }], { body: {} }), false);
+			assert.strictEqual(drives([], {}), false);
+		});
+	});
+
 	describe('against real tables', function () {
 		this.timeout(60000);
 

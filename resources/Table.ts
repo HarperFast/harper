@@ -7537,9 +7537,9 @@ export function makeTable(options): TableResourceClass {
 				// order for their query.
 				if (conditions.length > 1 && operator !== 'or') {
 					const ordered = sortBy(conditions, estimateCondition(TableResource));
-					// Only the first condition is executed as an index scan; the rest filter its rows in estimate order. Some
-					// conditions that full-scan estimate a finite count, so lead with the narrowest that can drive an index
-					// scan. A leading synthetic sort keeps its place: it full-scans but streams a sorted page.
+					// Some full-scan conditions estimate a finite count, so lead with the narrowest that can drive an index
+					// scan; the rest stay in estimate order as filters. A leading synthetic sort keeps its place: it full-scans
+					// but streams a sorted page.
 					if (ordered[0] !== syntheticOrderCondition) {
 						const lead = ordered.findIndex((condition) => conditionDrivesIndex(TableResource, condition));
 						if (lead > 0) ordered.unshift(ordered.splice(lead, 1)[0]);

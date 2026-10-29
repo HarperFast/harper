@@ -2404,7 +2404,12 @@ export function conditionDrivesIndex(table, condition): boolean {
 		}
 		attributeName = attributeName[0];
 	}
-	if (fullTextComparatorMode(comparator)) return true;
+	if (fullTextComparatorMode(comparator))
+		return (
+			typeof attributeName === 'string' &&
+			Boolean(table.fullTextIndexes?.some(({ name }) => name === attributeName)) &&
+			Boolean(table.fullTextQueryIndexes?.[attributeName]?.customIndex)
+		);
 	switch (comparator) {
 		case 'in':
 		case 'contains':
