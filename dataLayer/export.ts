@@ -272,13 +272,8 @@ export async function export_to_s3(exportObject: any) {
 
 	if (exportObject.format === CSV) {
 		s3Name = exportObject.s3.key + '.csv';
-		// Create a read stream with the data using a CSV transform stream.
-		const csvStream = toCsvStream(data, data.getColumns?.());
-		csvStream.on('error', (err) => {
-			throw err;
-		});
-		// Pipe the data read stream through json2csv which converts it and then pipes it to a pass through which sends it to S3 upload method.
-		csvStream.pipe(passThrough);
+		// A row that fails destroys the pass through with its error, which rejects the upload reading it.
+		stream.pipeline(toCsvStream(data, data.getColumns?.()), passThrough, () => {});
 	} else if (exportObject.format === JSON_TEXT) {
 		s3Name = exportObject.s3.key + '.json';
 		// Initialize an empty read stream.

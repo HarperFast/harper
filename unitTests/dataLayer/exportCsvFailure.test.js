@@ -16,7 +16,7 @@ describe('CSV export to a local file when its source fails', function () {
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'export-csv-failure-'));
 	});
 	afterEach(function () {
-		fs.rmSync(dir, { recursive: true, force: true });
+		if (dir) fs.rmSync(dir, { recursive: true, force: true });
 	});
 
 	it('rejects with the source error instead of never finishing', async function () {
