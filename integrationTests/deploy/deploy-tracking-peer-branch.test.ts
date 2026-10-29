@@ -21,7 +21,7 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
 	existsSync,
 	mkdtempSync,
@@ -39,12 +39,15 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { request } from 'node:http';
 import { Readable } from 'node:stream';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 import { streamPackagedDirectory } from '../../dist/components/packageComponent.js';
 import { buildMultipartBody } from '../../dist/bin/multipartBuilder.js';
 
 const PEER_PROJECT = 'peer-branch-replay-application';
+const STALL_FIXTURE_PATH = resolve(import.meta.dirname, 'peer-payload-stall-fixture');
+// storage.blobReadTimeout below: the no-progress window after which one Blob.stream() read gives up with a 503
+const BLOB_READ_TIMEOUT_MS = 2000;
 
 function filesUnder(directory: string): string[] {
 	if (!existsSync(directory)) return [];
@@ -114,7 +117,10 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 	let seedDeploymentId: string;
 
 	before(async () => {
-		await startHarper(ctx, { config: { storage: { blobReadTimeout: 2000 } }, env: {} });
+		await setupHarperWithFixture(ctx, STALL_FIXTURE_PATH, {
+			config: { storage: { blobReadTimeout: BLOB_READ_TIMEOUT_MS } },
+			env: {},
+		});
 		fixtureDir = mkdtempSync(join(tmpdir(), 'peer-branch-fixture-'));
 		writeFileSync(join(fixtureDir, 'config.yaml'), 'graphqlSchema:\n  files: schema.graphql\nrest: true\n');
 		writeFileSync(join(fixtureDir, 'schema.graphql'), 'type Query { hello: String }\n');
@@ -211,6 +217,70 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 				fetched.status === 404 || fetched.status === 200,
 				`expected component to be reachable (any 200/404 from the loaded component), got ${fetched.status}`
 			);
+		}
+	);
+
+	function readHarperLog(): string {
+		const paths = [join(ctx.harper.dataRootDir, 'log', 'hdb.log')];
+		if (ctx.harper.logDir) paths.push(join(ctx.harper.logDir, 'hdb.log'));
+		return paths
+			.filter((path) => existsSync(path))
+			.map((path) => readFileSync(path, 'utf8'))
+			.join('\n');
+	}
+
+	test(
+		'peer-side branch: payload content that arrives after the first no-progress window still installs',
+		{ skip: skipOnBun, timeout: 60_000 },
+		async () => {
+			const project = 'peer-branch-stalled-payload-application';
+			const stalled = await seedDeployment('peer-branch-stalled-seed-application');
+			// Past the first no-progress window, so only a retried read can see the content, and well inside the
+			// default deployment_timeout (120s), which this deploy uses.
+			const withheldMs = BLOB_READ_TIMEOUT_MS * 2.5;
+			const withheld = await fetch(`${ctx.harper.httpURL}/WithholdPayloadBlob`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization':
+						'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64'),
+				},
+				body: JSON.stringify({ path: stalled.payloadBlobPath, delayMs: withheldMs }),
+			});
+			strictEqual(withheld.status, 200, `withholding the payload content failed: ${await withheld.text()}`);
+			strictEqual(statSync(stalled.payloadBlobPath).size, 8, 'only the blob header should be on disk');
+
+			const response = await callOperation(ctx, {
+				operation: 'deploy_component',
+				project,
+				restart: false,
+				_deploymentId: stalled.deploymentId,
+			});
+
+			strictEqual(
+				response.status,
+				200,
+				`peer-side deploy should wait out the stall; got ${response.status}: ${response.rawText}`
+			);
+			strictEqual(
+				readFileSync(join(ctx.harper.dataRootDir, 'components', project, 'web', 'index.html'), 'utf8'),
+				'<h1>Hello, Peer Branch!</h1>'
+			);
+			// The deploy succeeding proves only that the content was read. The retry's log line proves a read gave up on
+			// its no-progress window first, so the content could not have arrived inside the first window.
+			const loggedStallRetry = () =>
+				readHarperLog()
+					.split('\n')
+					.some(
+						(line) =>
+							/payload read is unavailable before any content arrived; retrying in \d+ms/.test(line) &&
+							line.includes(`Blob read stalled for ${stalled.payloadBlobPath}`)
+					);
+			const deadline = Date.now() + 5000;
+			while (!loggedStallRetry()) {
+				ok(Date.now() < deadline, `expected the payload read's stall retry in the Harper log`);
+				await sleep(100);
+			}
 		}
 	);
 
