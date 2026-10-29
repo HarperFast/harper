@@ -26,6 +26,23 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 	const forksOf = (app) => path.dirname(resolveBranchPath(BASE, app));
 	const releases = [];
 
+	/** A pool worker that reports nothing until told to. */
+	function idleHttpWorker() {
+		// a start outside safe mode resolves threads.preload for the rest of the process
+		const safeMode = process.env.HARPER_SAFE_MODE;
+		process.env.HARPER_SAFE_MODE = '1';
+		try {
+			return startWorker(path.join(__dirname, 'fixtures', 'idleWorker.js'), {
+				name: THREAD_TYPES.HTTP,
+				workerIndex: 1,
+				autoRestart: false,
+			});
+		} finally {
+			if (safeMode === undefined) delete process.env.HARPER_SAFE_MODE;
+			else process.env.HARPER_SAFE_MODE = safeMode;
+		}
+	}
+
 	/**
 	 * A fork of `app`, as its worker left it, and a reference to it the drop does not own, standing in for a worker that
 	 * has not let go yet: the removal refuses before it touches anything, until that is released.
@@ -167,12 +184,7 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		operations.setBranchRemovalRetryDelayForTests?.(60 * 60_000);
 		const branch = await getOrCreateBranch(BASE, 'reported-app');
 		await branch.tables.Rows.put({ id: 'kept' });
-		const worker = startWorker(path.join(__dirname, 'fixtures', 'idleWorker.js'), {
-			name: THREAD_TYPES.HTTP,
-			workerIndex: 1,
-			threadCount: 2,
-			autoRestart: false,
-		});
+		const worker = idleHttpWorker();
 		try {
 			const dropped = await drop({ project: 'reported-app' });
 			assert.match(dropped.message, /workers may still have it loaded/);
@@ -195,12 +207,7 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		operations.setBranchRemovalRetryDelayForTests?.(60 * 60_000);
 		const branch = await getOrCreateBranch(BASE, 'pooled-app');
 		await branch.tables.Rows.put({ id: 'kept' });
-		const worker = startWorker(path.join(__dirname, 'fixtures', 'idleWorker.js'), {
-			name: THREAD_TYPES.HTTP,
-			workerIndex: 1,
-			threadCount: 2,
-			autoRestart: false,
-		});
+		const worker = idleHttpWorker();
 		try {
 			const dropped = await drop({ project: 'pooled-app' });
 			assert.match(dropped.message, /workers may still have it loaded/);
