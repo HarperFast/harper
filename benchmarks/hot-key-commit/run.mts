@@ -27,6 +27,8 @@ const WORKLOADS: Record<string, { hot: boolean; recordsPerTxn: number; keys?: nu
 	hot4: { hot: true, recordsPerTxn: 4 },
 	cold1: { hot: false, recordsPerTxn: 1 },
 	cold4: { hot: false, recordsPerTxn: 4 },
+	cold50: { hot: false, recordsPerTxn: 50 },
+	cold500: { hot: false, recordsPerTxn: 500 },
 };
 
 interface Options {
@@ -88,7 +90,7 @@ function parseOptions(): Options {
 		throw new Error(`--warmup must be a finite number >= 0 (got "${values.warmup}")`);
 	}
 	const maxRecordsPerTxn = Math.max(
-		...workloads.filter((name) => !WORKLOADS[name].keys).map((name) => WORKLOADS[name].recordsPerTxn),
+		...workloads.filter((name) => WORKLOADS[name].hot).map((name) => WORKLOADS[name].recordsPerTxn),
 		1
 	);
 	if (hotKeys < maxRecordsPerTxn || coldKeys < hotKeys) {
