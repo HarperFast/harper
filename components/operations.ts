@@ -1981,6 +1981,7 @@ function retryPendingBranchRemovals(): Promise<void> {
 	if (!workerReleasesWatched) {
 		workerReleasesWatched = true;
 		manageThreads.onWorkerRelease(() => {
+			if (manageThreads.isProcessShuttingDown()) return;
 			if (branchRemovalRetryTimer || branchRemovalPassRunning) void retryPendingBranchRemovals();
 		});
 	}
