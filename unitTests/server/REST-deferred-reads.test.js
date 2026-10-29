@@ -208,4 +208,95 @@ describe('REST deferred reads', () => {
 		pending.resolve({ id: 1 });
 		await waitFor(() => closed);
 	});
+
+	it('disposes a discarded source once, through onDone or an unstepped iterator', async () => {
+		let onDone = 0;
+		let stepped = 0;
+		let returned = 0;
+		resources.set(
+			'DisposedOnce',
+			class extends Resource {
+				static get(_target, context) {
+					const source = versionedAtStartup(context);
+					source.onDone = () => onDone++;
+					return source;
+				}
+			},
+			{ rest: true }
+		);
+		resources.set(
+			'ClosedUnstepped',
+			class extends Resource {
+				static get() {
+					return {
+						[Symbol.asyncIterator]() {
+							return {
+								next() {
+									stepped++;
+									return Promise.resolve({ done: true, value: undefined });
+								},
+								return() {
+									returned++;
+									return Promise.resolve({ done: true, value: undefined });
+								},
+							};
+						},
+					};
+				}
+			},
+			{ rest: true }
+		);
+		const notModified = await request('HEAD', '/DisposedOnce/', {
+			...ndjson,
+			'if-none-match': versionToEtag(AT_STARTUP),
+		});
+		assert.strictEqual(notModified.status, 304);
+		assert.strictEqual(onDone, 1, 'the HEAD discard and the 304 discard close the source once');
+		const head = await request('HEAD', '/ClosedUnstepped/', { accept: 'application/json' });
+		assert.strictEqual(head.status, 200);
+		assert.deepStrictEqual({ stepped, returned }, { stepped: 0, returned: 1 });
+	});
+
+	it('answers a discarded read even when closing its source fails', async () => {
+		resources.set(
+			'FailsToClose',
+			class extends Resource {
+				static get(_target, context) {
+					context.responseHeaders.set('ETag', '"own"');
+					const source = versionedAtStartup(context);
+					source.onDone = () => {
+						throw new Error('close failed');
+					};
+					return source;
+				}
+			},
+			{ rest: true }
+		);
+		resources.set(
+			'RejectsOnClose',
+			class extends Resource {
+				static get() {
+					return {
+						[Symbol.asyncIterator]() {
+							return {
+								next: () => Promise.resolve({ done: true, value: undefined }),
+								return: () => Promise.reject(new Error('close failed')),
+							};
+						},
+					};
+				}
+			},
+			{ rest: true }
+		);
+		for (const method of ['GET', 'HEAD']) {
+			const cached = await request(method, '/FailsToClose/', {
+				'accept': 'application/json',
+				'if-none-match': '"own"',
+			});
+			assert.strictEqual(cached.status, 304, method);
+		}
+		assert.strictEqual((await request('HEAD', '/FailsToClose/', { accept: 'application/json' })).status, 200);
+		assert.strictEqual((await request('HEAD', '/RejectsOnClose/', { accept: 'application/json' })).status, 200);
+		await new Promise((resolve) => setImmediate(resolve));
+	});
 });

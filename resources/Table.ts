@@ -7073,7 +7073,7 @@ export function makeTable(options): TableResourceClass {
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
-								return { allowed: true, results: await self.search(target) };
+								return { allowed: true, results: await self.search(target), gate: gatedResults };
 							} catch (error) {
 								return { allowed: true, error };
 							}
@@ -7100,7 +7100,9 @@ export function makeTable(options): TableResourceClass {
 								const results = state.results;
 								return results.iterate
 									? results.iterate(iterationOptions)
-									: results[Symbol.asyncIterator](iterationOptions);
+									: results[Symbol.asyncIterator]
+										? results[Symbol.asyncIterator](iterationOptions)
+										: results[Symbol.iterator]();
 							}));
 						return {
 							next(value?: any) {

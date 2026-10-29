@@ -4,3 +4,4 @@ jsResource:
   files: resources.js
 rest:
   lastModified: true
+  exactCount: true

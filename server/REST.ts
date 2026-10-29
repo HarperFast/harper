@@ -233,9 +233,33 @@ function isDeferredRead(data): boolean {
 	);
 }
 
+// HEAD and a later 304/412 can discard the same read
+const discardedReadSources = new WeakSet<object>();
+
 function discardReadResponse(response, sourceData) {
-	if (typeof sourceData?.onDone === 'function') sourceData.onDone();
-	discardSerializedStream(response.body);
+	try {
+		if (sourceData && typeof sourceData === 'object' && !discardedReadSources.has(sourceData)) {
+			discardedReadSources.add(sourceData);
+			if (typeof sourceData.onDone === 'function') sourceData.onDone();
+			else if (isDeferredRead(sourceData)) {
+				// A serializer that never started never opened the source; return() on a fresh iterator is how a
+				// lazy source without onDone (a transform of search results) releases what it holds.
+				const iterator = sourceData[Symbol.asyncIterator]
+					? sourceData[Symbol.asyncIterator]()
+					: sourceData[Symbol.iterator]();
+				const returned = iterator?.return?.();
+				if (typeof returned?.then === 'function') returned.then(null, logDiscardError);
+			}
+		}
+	} catch (error) {
+		logDiscardError(error);
+	} finally {
+		discardSerializedStream(response.body);
+	}
+}
+
+function logDiscardError(error) {
+	harperLogger.warn('Error closing a discarded read source', error);
 }
 
 const VALIDATOR_HEADERS = ['ETag', 'Last-Modified'];
@@ -613,7 +637,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				setReadValidators(response.headers, lastModification, httpOptions);
 			}
 			if (request.method === 'HEAD') {
-				discardSerializedStream(response.body);
+				discardReadResponse(response, data);
 				if (!(response instanceof Response)) response.body = undefined;
 			}
 			return deferred && conditionalRead
@@ -684,7 +708,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				setReadValidators(headers, lastModification, httpOptions);
 			}
 			if (request.method === 'HEAD') {
-				discardSerializedStream(responseObject.body);
+				discardReadResponse(responseObject, responseData);
 				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
 			}
 		}
