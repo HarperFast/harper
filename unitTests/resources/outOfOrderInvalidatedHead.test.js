@@ -66,11 +66,22 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 		});
 	});
 
-	async function idsWithTag(value) {
+	async function idsWithTag(Table, value) {
 		const ids = [];
-		for await (const record of T.search({ conditions: [{ attribute: 'indexedTag', comparator: 'equals', value }] }))
+		for await (const record of Table.search({ conditions: [{ attribute: 'indexedTag', comparator: 'equals', value }] }))
 			ids.push(record.id);
 		return ids;
+	}
+
+	async function assertStub(Table, id, value) {
+		const entry = Table.primaryStore.getEntry(id);
+		assert.notStrictEqual(entry.metadataFlags & INVALIDATED, 0, 'an older PUT must not clear INVALIDATED');
+		assert.deepStrictEqual({ ...entry.value }, value);
+		assert.deepStrictEqual(
+			await idsWithTag(Table, 'tag-100'),
+			[],
+			"the older PUT's indexed value is not added to the stub's index"
+		);
 	}
 
 	for (const { name, before: staged, headVersion, headTag } of arms) {
@@ -89,15 +100,8 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 				{ timestamp: base + 100 }
 			);
 
-			entry = T.primaryStore.getEntry(id);
-			assert.notStrictEqual(entry.metadataFlags & INVALIDATED, 0, 'an older PUT must not clear INVALIDATED');
-			assert.deepStrictEqual({ ...entry.value }, { id, indexedTag: headTag });
-			assert.strictEqual(entry.version, base + headVersion, 'the head version is not rewound');
-			assert.deepStrictEqual(
-				await idsWithTag('tag-100'),
-				[],
-				"the older PUT's indexed value is not added to the stub's index"
-			);
+			await assertStub(T, id, { id, indexedTag: headTag });
+			assert.strictEqual(T.primaryStore.getEntry(id).version, base + headVersion, 'the head version is not rewound');
 		});
 	}
 
@@ -128,8 +132,8 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 		await T.put(id, { indexedTag: 'tag-100', secretBody: 'body-100' }, { timestamp: base + 100 });
 
 		assert.strictEqual(T.primaryStore.getEntry(id).value.secretBody, 'body-100');
-		assert.deepStrictEqual(await idsWithTag('tag-1010'), [id]);
-		assert.deepStrictEqual(await idsWithTag('tag-100'), []);
+		assert.deepStrictEqual(await idsWithTag(T, 'tag-1010'), [id]);
+		assert.deepStrictEqual(await idsWithTag(T, 'tag-100'), []);
 	});
 
 	for (const order of [
@@ -152,9 +156,7 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 
 			await T.put(id, { indexedTag: 'tag-100', secretBody: 'resurrected-body-100' }, { timestamp: base + 100 });
 
-			const entry = T.primaryStore.getEntry(id);
-			assert.notStrictEqual(entry.metadataFlags & INVALIDATED, 0);
-			assert.strictEqual(entry.value.secretBody, undefined);
+			await assertStub(T, id, { id, indexedTag: 'tag-150' });
 		});
 	}
 
@@ -181,9 +183,7 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 		});
 		await apply(put, base + 100, older, { id, indexedTag: 'tag-100', secretBody: 'resurrected-body-100' });
 
-		const entry = T.primaryStore.getEntry(id);
-		assert.notStrictEqual(entry.metadataFlags & INVALIDATED, 0);
-		assert.deepStrictEqual({ ...entry.value }, { id, indexedTag: 'tag-150' });
+		await assertStub(T, id, { id, indexedTag: 'tag-150' });
 	});
 
 	it('keeps the stub when source frames deliver the PUT after the invalidation and a later patch', async () => {
@@ -226,9 +226,7 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 				timeout: 5000,
 				message: 'the frames should apply',
 			});
-			const entry = Dispatched.primaryStore.getEntry(id);
-			assert.notStrictEqual(entry.metadataFlags & INVALIDATED, 0);
-			assert.deepStrictEqual({ ...entry.value }, { id, indexedTag: 'tag-200' });
+			await assertStub(Dispatched, id, { id, indexedTag: 'tag-200' });
 		} finally {
 			release();
 		}
