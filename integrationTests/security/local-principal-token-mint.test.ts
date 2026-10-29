@@ -5,11 +5,13 @@
  * active super user instead, so the token authenticates over TCP as that user and stays revocable. With
  * no such user the socket still administers the instance, and minting fails with a clear error.
  *
- * `authorizeLocal` is off so a TCP request from the harness's loopback address is not trusted itself:
- * only the Bearer token can authenticate it, which the unauthenticated control proves.
+ * The first suite turns `authorizeLocal` off so a TCP request from the harness's loopback address is
+ * not trusted itself: only the Bearer token can authenticate it, which the unauthenticated control
+ * proves. The second keeps the harness default (on), where that loopback request is the principal.
  *
- * Skipped on Bun: the operations API there is served through Fastify inject(), whose auth shim has no
- * `_nodeRequest`, so the domain-socket trust this exercises does not apply (server/operationsServer.ts).
+ * The first suite is skipped on Bun: the operations API there is served through Fastify inject(), whose
+ * auth shim has no `_nodeRequest`, so the domain-socket trust it exercises does not apply
+ * (server/operationsServer.ts).
  *
  * Run:
  *   npm run test:integration -- "integrationTests/security/local-principal-token-mint.test.ts"
@@ -141,5 +143,25 @@ suite('the operations domain socket runs as the local principal', { skip: skipSu
 		// a token naming a deleted user resolves to a principal with no role
 		const asBearer = await overTcp(ctx, { operation: 'user_info' }, `Bearer ${operationToken}`);
 		equal(asBearer.status, 403, JSON.stringify(asBearer.body));
+	});
+});
+
+suite('a loopback request under authorizeLocal runs as the local principal', (ctx: ContextWithHarper) => {
+	before(async () => {
+		await startHarper(ctx);
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('a credential-free TCP request is the local principal, and mints for the stored admin', async () => {
+		const principal = await overTcp(ctx, { operation: 'user_info' });
+		equal(principal.status, 200, JSON.stringify(principal.body));
+		equal(principal.body.username, 'local');
+
+		const minted = await overTcp(ctx, { operation: 'create_authentication_tokens' });
+		equal(minted.status, 200, JSON.stringify(minted.body));
+		equal(claimsOf(minted.body.operation_token).username, ctx.harper.admin.username);
 	});
 });

@@ -552,11 +552,7 @@ const LOCAL_ROLE_RECORD = deepFreeze({
 } as UserRole);
 let localRole: UserRole | undefined;
 
-/**
- * The principal of a request trusted by its transport (authorizeLocal, the operations domain socket): a
- * fixed super user that no stored record backs, so nothing a user or role change does can revoke it, and
- * no lookup by name can produce it. Each call is a separate view, like `userView`'s.
- */
+/** The principal of a request trusted by its transport; security/DESIGN.md has its rules. */
 function localPrincipal(): User {
 	if (!localRole) {
 		localRole = withSystemTablePermissions(LOCAL_ROLE_RECORD);
@@ -682,7 +678,6 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	return user;
 }
 
-/** The first active stored user whose role grants super_user, by the permission flag, not the role's name. */
 async function getSuperUser(): Promise<User | undefined> {
 	for (const [username, user] of (await listUsers()) ?? []) {
 		if (user.active === true && user.role?.permission?.super_user === true) return getUserWithRole(username);

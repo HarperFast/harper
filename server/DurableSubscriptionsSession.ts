@@ -667,6 +667,7 @@ class SubscriptionsSession {
 					// A scoped will authorizes under its own embedded role, never the disconnecting
 					// session's user (which may be a later same-clientId reconnect).
 					if (will.user?._scopedToken) context.user = will.user;
+					else if (isLocalPrincipal(will.user)) context.user = localPrincipal();
 					await publishMessage(will, will.data, context);
 				}
 			}

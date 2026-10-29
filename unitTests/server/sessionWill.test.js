@@ -168,6 +168,17 @@ describe('MQTT last will authorization', function () {
 		assert.deepStrictEqual(await willRows('local-will'), []);
 	});
 
+	it('publishes a local connection’s will on an abnormal disconnect under the local principal, whatever the session’s user became', async () => {
+		const { T, name, reader } = topicTable();
+		const session = await connectWithWill(name, localPrincipal(), 'local-live-will', 10);
+		session.user = reader;
+		session.disconnect(false);
+		await waitFor(async () => (await T.get('local-live-will'))?.value === 10, { message: 'the will was published' });
+		await waitFor(async () => (await willRows('local-live-will')).length === 0, {
+			message: 'the will row was deleted',
+		});
+	});
+
 	it('settles the will row the same under an ambient context that requests authorization', async () => {
 		const { T, name, publisher, reader } = topicTable();
 		const session = await connectWithWill(name, publisher, 'ambient', 8);

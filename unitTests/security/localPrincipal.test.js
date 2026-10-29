@@ -2,7 +2,6 @@
 
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
-const rewire = require('rewire');
 const jwt = require('jsonwebtoken');
 const { generate, parser: mqttParser } = require('mqtt-packet');
 const testUtils = require('../testUtils.js');
@@ -13,6 +12,7 @@ const { Headers } = require('#src/server/serverHelpers/Headers');
 const user = require('#src/security/user');
 const tokenAuthentication = require('#src/security/tokenAuthentication');
 const { authentication } = require('#src/security/auth');
+const mqtt = require('#src/server/mqtt');
 const { runStartup } = require('#src/utility/lifecycle');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { _liveSubscriptionCount, _sweepNow, _tickNow } = require('#src/server/liveSubscriptionAuth');
@@ -181,20 +181,26 @@ describe('the local principal of a request trusted by its transport', function (
 			assert.strictEqual(user.isLocalPrincipal((await authenticate(domainSocketRequest())).user), true);
 		});
 
-		it('keeps the principal out of the session row, so its cookie authenticates nobody elsewhere', async () => {
-			const { user: principal, response } = await authenticate(domainSocketRequest(), (request) =>
-				request.session.update({ user: request.user.username, cart: ['widget'] })
-			);
-			assert.strictEqual(user.isLocalPrincipal(principal), true);
-			const cookie = response.headers.get('Set-Cookie').split(';')[0];
-			const sessionId = cookie.slice(cookie.indexOf('=') + 1);
-			const session = await databases.system.hdb_session.get(sessionId);
-			assert.deepStrictEqual(session.cart, ['widget'], 'the rest of the session is kept');
-			assert.strictEqual(session.user, undefined);
-			const replayed = await authenticate(remoteRequest({ cookie }));
-			assert.strictEqual(replayed.user, undefined);
-			await databases.system.hdb_session.delete(sessionId);
-		});
+		for (const [what, sessionUser] of [
+			['its username', (request) => request.user.username],
+			['a copy of it', (request) => JSON.parse(JSON.stringify(request.user))],
+		])
+			it(`keeps the principal out of the session row given ${what}, so the cookie authenticates nobody elsewhere`, async () => {
+				const { user: principal, response } = await authenticate(domainSocketRequest(), (request) =>
+					request.session.update({ user: sessionUser(request), cart: ['widget'] })
+				);
+				assert.strictEqual(user.isLocalPrincipal(principal), true);
+				const cookie = response.headers.get('Set-Cookie').split(';')[0];
+				const sessionId = cookie.slice(cookie.indexOf('=') + 1);
+				const session = await databases.system.hdb_session.get(sessionId);
+				assert.deepStrictEqual(session.cart, ['widget'], 'the rest of the session is kept');
+				assert.strictEqual(session.user, undefined);
+				const replayed = await authenticate(remoteRequest({ cookie }));
+				assert.strictEqual(replayed.user, undefined);
+				const local = await authenticate(domainSocketRequest({ cookie }));
+				assert.strictEqual(user.isLocalPrincipal(local.user), true, 'the cookie does not displace local trust');
+				await databases.system.hdb_session.delete(sessionId);
+			});
 
 		it('still persists a stored user who logs in over a local connection', async () => {
 			const { response } = await authenticate(domainSocketRequest(), (request) => request.login('admin', 'password'));
@@ -356,43 +362,47 @@ describe('the local principal of a request trusted by its transport', function (
 		});
 	});
 
-	describe('MQTT over TCP from a loopback address', () => {
-		it('connects with no credentials as the local principal', async () => {
-			const mqtt = rewire('#js/server/mqtt');
-			// startup has run, so the module's onStartup reload of AUTHORIZE_LOCAL fires on a later microtask
-			await new Promise((resolve) => setImmediate(resolve));
-			mqtt.__set__('AUTHORIZE_LOCAL', true);
+	describe('MQTT over TCP', () => {
+		// test mode's switch; no other unit test drives the raw TCP listener this enables local trust on
+		before(() => mqtt.bypassAuth());
+
+		async function connectOverTcp(remoteAddress, clientId) {
 			let listener;
 			const server = { socket: (fn) => ((listener = fn), {}) };
 			mqtt.handleApplication({
 				options: { getAll: () => ({ network: { port: 1883 }, requireAuthentication: true }) },
 				server,
 			});
-			const connected = new Promise((resolve) => server.mqtt.events.once('connected', resolve));
+			let session;
+			server.mqtt.events.once('connected', (connected) => (session = connected));
 			const socket = new EventEmitter();
-			socket.remoteAddress = '127.0.0.1';
+			socket.remoteAddress = remoteAddress;
 			socket.sends = [];
 			socket.write = (message) => socket.sends.push(message);
 			socket.end = socket.destroy = () => {};
 			await listener(socket);
-			socket.emit(
-				'data',
-				generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId: 'local-tcp', clean: true })
-			);
-			const session = await connected;
-			try {
-				assert.strictEqual(user.isLocalPrincipal(session.user), true);
-				const connack = await waitFor(() => {
-					const packets = [];
-					const parser = mqttParser({ protocolVersion: 5 });
-					parser.on('packet', (packet) => packets.push(packet));
-					for (const sent of socket.sends) parser.parse(sent);
-					return packets.find((packet) => packet.cmd === 'connack');
-				});
-				assert.strictEqual(connack.reasonCode, 0);
-			} finally {
-				socket.emit('close');
-			}
+			socket.emit('data', generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean: true }));
+			const connack = await waitFor(() => {
+				const packets = [];
+				const parser = mqttParser({ protocolVersion: 5 });
+				parser.on('packet', (packet) => packets.push(packet));
+				for (const sent of socket.sends) parser.parse(sent);
+				return packets.find((packet) => packet.cmd === 'connack');
+			});
+			socket.emit('close');
+			return { connack, session };
+		}
+
+		it('connects from a loopback address with no credentials as the local principal', async () => {
+			const { connack, session } = await connectOverTcp('127.0.0.1', 'local-tcp');
+			assert.strictEqual(connack.reasonCode, 0);
+			assert.strictEqual(user.isLocalPrincipal(session.user), true);
+		});
+
+		it('refuses the same CONNECT from any other address', async () => {
+			const { connack, session } = await connectOverTcp('203.0.113.7', 'remote-tcp');
+			assert.notStrictEqual(connack.reasonCode, 0);
+			assert.strictEqual(session, undefined);
 		});
 	});
 });

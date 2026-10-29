@@ -483,8 +483,8 @@ export async function authentication(request, nextHandler) {
 				updatedSession.id = sessionId;
 				// trust in the transport must not become a cookie that works from anywhere else
 				if (
-					isLocalPrincipal(request.user) &&
-					(updatedSession.user === request.user || updatedSession.user === request.user.username)
+					isLocalPrincipal(updatedSession.user) ||
+					(isLocalPrincipal(request.user) && updatedSession.user === request.user.username)
 				)
 					delete updatedSession.user;
 				return getSessionTable().put(updatedSession, {

@@ -222,7 +222,6 @@ async function refreshSessionUser(record: RegisteredSession): Promise<void> {
 	// A scoped token's username is attribution only — re-resolving it against hdb_user could
 	// substitute a real principal (created later with that name) and advertise a surface the token
 	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh.
-	// Nor is there for the local principal, which no record backs.
 	if (record.user?._scopedToken || userRuntimeModule.isLocalPrincipal(record.user)) return;
 	const fresh = await resolveUser(record.user?.username);
 	if (fresh) record.user = fresh;

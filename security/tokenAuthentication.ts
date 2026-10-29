@@ -184,9 +184,8 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	}
 
 	const credentialFree = !authObj?.username && !authObj?.password;
-	// The local principal has no stored record, and a token naming it would be a root credential
-	// nothing can revoke, so it mints for a stored super user. Outside the try below, which would
-	// report a missing user as invalid credentials.
+	// A token naming the local principal would be a root credential nothing can revoke. Outside the
+	// try below, which would report a missing user as invalid credentials.
 	let localMintUsername: string | undefined;
 	if (credentialFree && isLocalPrincipal(authObj?.hdb_user)) {
 		localMintUsername = (await getSuperUser())?.username;
