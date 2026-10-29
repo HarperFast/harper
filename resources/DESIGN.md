@@ -892,6 +892,8 @@ owns its working set; the cache cannot know about it.
 
 `transformToOrderedSelect` consumes SKIP before pagination or counts. Top-level `Table.search` enables its local-only invalidation filter before grouping or sort-key resolution, so computed resolvers never receive these incomplete entries and an interleaved stub cannot split an indexed group. Nested callers leave that filter disabled. The materializer still checks flags after lazy primary loading. `getAttributeValue` treats missing record fields as absent keys while preserving entry-metadata resolvers for ordinary reads. Closing the iterator stops further materialization and delivery, including a pending source load resolving to either SKIP or a record; source rejections retain their existing behavior.
 
+A null `INVALIDATED`/`EVICTED` stub reaches the materializer whenever no predicate needs record content, so sorted, unsorted, range and filtered reads over the same keys return the same rows. `searchByIndex`'s primary-key scan yields entries under `hasEntries` for every comparator, evaluating a primary-key filter on a stub against `{ [primaryKey]: key }`. `transformToEntries` runs each `idFilter` on the whole key for entries as well as ids, and admits a stub only when id filters answered every filter, so a record guard or non-key condition still drops it. `searchByIndex` results mix ids and entries, so a consumer reads `entry.key ?? entry` (`joinFrom`, `joinTo`, `distinctKeys`).
+
 ## Each hop of a multi-store commit cascade starts with a full idle window (`DatabaseTransaction`)
 
 Once a chain enters `commit()` its write set is sealed and the caller is awaiting the commit; the

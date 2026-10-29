@@ -1200,34 +1200,32 @@ export function searchByIndex(
 		reverse,
 	};
 	if (isPrimaryKey) {
-		const results = index.getRange(rangeOptions).map(
-			filter
-				? function ({ key, value }) {
-						if (this?.isSync) return value && filter(value) ? key : SKIP;
-						// for filter operations, we intentionally yield the event turn so that scanning queries
-						// do not hog resources
-						return new Promise((resolve, reject) =>
-							setImmediate(() => {
-								try {
-									resolve(value && filter(value) ? key : SKIP);
-								} catch (error) {
-									reject(error);
-								}
-							})
-						);
+		const primaryKey = Table.primaryKey;
+		// A null INVALIDATED/EVICTED stub is kept for the materializer to revalidate; a primary-key filter
+		// reads only the key, so a key-only record answers it.
+		const admits = filter
+			? ({ key, value, metadataFlags }) =>
+					value == null ? metadataFlags & (INVALIDATED | EVICTED) && filter({ [primaryKey]: key }) : filter(value)
+			: ({ value, metadataFlags }) => value != null || metadataFlags & (INVALIDATED | EVICTED);
+		const toEntry = (entry) => {
+			if (!admits(entry)) return SKIP;
+			freezeRecord(entry.value);
+			recordRead(entry);
+			return entry;
+		};
+		const results = index.getRange(rangeOptions).map(function (entry) {
+			if (this?.isSync) return toEntry(entry);
+			// we intentionally yield the event turn so that scanning queries do not hog resources
+			return new Promise((resolve, reject) =>
+				setImmediate(() => {
+					try {
+						resolve(toEntry(entry));
+					} catch (error) {
+						reject(error);
 					}
-				: function (entry) {
-						let result: any;
-						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) result = SKIP;
-						else {
-							freezeRecord(entry.value);
-							recordRead(entry);
-							result = entry;
-						}
-						if (this.isSync) return result;
-						return new Promise((resolve) => setImmediate(() => resolve(result)));
-					}
-		);
+				})
+			);
+		});
 		results.hasEntries = true;
 		return results;
 	} else if (index && !skipIndex) {
@@ -1688,9 +1686,12 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					defineFromRecord();
 					scanned = scanRelated(
 						rightIterable,
-						(id) => ((joined as any).filters ? when(store.getEntry(id, readOptions), entryValue) : undefined),
+						(entry) =>
+							(joined as any).filters
+								? (entry.value ?? when(store.getEntry(entry.key ?? entry, readOptions), entryValue))
+								: undefined,
 						joined,
-						(id) => ids.add(id),
+						(entry) => ids.add(entry.key ?? entry),
 						scan
 					).then(() => {
 						idIterator = (scanStopped(scan) ? new Set() : ids)[Symbol.iterator]();
@@ -1705,10 +1706,11 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					defineFromRecord();
 					//let i = 0;
 					// get all the ids of the related records
-					for (const id of rightIterable) {
+					for (const entry of rightIterable) {
+						const id = entry.key ?? entry;
 						if ((joined as any).filters) {
 							// if additional filters are defined, we need to check them
-							const record = store.getSync(id, readOptions);
+							const record = entry.value ?? store.getSync(id, readOptions);
 							if ((joined as any).filters.some((filter) => !filter(record))) continue;
 						}
 						ids.add(id);

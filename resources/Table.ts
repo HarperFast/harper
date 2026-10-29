@@ -12109,7 +12109,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
-		const filtersLength = filters?.length;
+		const filtersLength = filters?.length ?? 0;
 		const loadOptions = {
 			transaction: readTxn,
 			lazy: filtersLength > 0 || typeof select === 'string' || select?.length < 4,
@@ -12122,9 +12122,14 @@ export function makeTable(options): TableResourceClass {
 		const matchers = filters?.some((filter) => filter.maybeAsync)
 			? filters.map((filter) => filter.maybeAsync ?? filter)
 			: undefined;
+		// An invalidated/evicted stub has no record for a record filter to read, so it goes on to be revalidated
+		// only when id filters answered every filter
+		function admitsStub(entry: Entry) {
+			return entry?.metadataFlags & (INVALIDATED | EVICTED) && (idFiltersApplied?.length ?? 0) === filtersLength;
+		}
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
+			if (!record && !admitsStub(entry)) return SKIP;
 			// apply the record-level filters
 			for (let i = 0; i < filtersLength; i++) {
 				if (idFiltersApplied?.includes(i)) continue; // already applied
@@ -12135,7 +12140,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		function processEntryMaybeAsync(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
+			if (!record && !admitsStub(entry)) return SKIP;
 			return applyFilters(record, entry, id, idFiltersApplied, 0);
 		}
 		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
@@ -12152,23 +12157,25 @@ export function makeTable(options): TableResourceClass {
 		if (filtersLength > 0 || !ids.hasEntries) {
 			let results = ids.map(function (this: any, idOrEntry) {
 				idFiltersApplied = null;
-				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
-				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
-					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {
 					return SKIP;
 				}
-				// it is an id, so we can try to use id any filters that are available (note that these can come into existence later, during the query)
+				const isEntry = typeof idOrEntry === 'object' && idOrEntry.key !== undefined;
+				if (isEntry && !filtersLength) return idOrEntry;
+				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
+				const id = isEntry ? idOrEntry.key : idOrEntry;
+				// apply any id filters that are available (note that these can come into existence later, during the
+				// query); they compare the whole key, where a record filter tests each element of an array key
 				for (let i = 0; i < filtersLength; i++) {
 					const filter = filters[i];
 					const idFilter = filter.idFilter;
 					if (idFilter) {
-						if (!idFilter(idOrEntry)) return SKIP; // didn't match filters
+						if (!idFilter(id)) return SKIP; // didn't match filters
 						if (!idFiltersApplied) idFiltersApplied = [];
 						idFiltersApplied.push(i);
 					}
 				}
-				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
+				return isEntry ? process(idOrEntry) : loadLocalRecord(idOrEntry, context, loadOptions, false, process);
 			});
 			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);
 			results.hasEntries = true;
