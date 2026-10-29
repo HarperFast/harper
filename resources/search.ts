@@ -157,6 +157,10 @@ export function executeConditions(
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
+			holderTable: table,
+			holderReadTxn: txn,
+			disableSnapshot: request.snapshot === false,
+			leaseHost: filtered,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
@@ -856,6 +860,26 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 	return distinct as any;
 }
 
+const RELATED_LEASES = Symbol('relatedLeases');
+
+// The join scans another database's index after the request commits, so it leases that link's handle;
+// the leases live on the search's `filtered` object until `Table.search` releases them.
+function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, disableSnapshot, leaseHost) {
+	if (!holderReadTxn || !leaseHost || !context) return;
+	const holder = holderTable._txnForContext(context);
+	const link = relatedTable._txnForContext(context);
+	if (link === holder) return holderReadTxn;
+	const leases = (leaseHost[RELATED_LEASES] ??= new Map());
+	let lease = leases.get(link);
+	if (!lease) leases.set(link, (lease = link.leaseReadTxn(holder, disableSnapshot)));
+	return lease.readTxn;
+}
+
+export function releaseRelatedLeases(leaseHost) {
+	const leases = leaseHost[RELATED_LEASES];
+	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
 /**
  * Search for records or keys, based on the search condition, using an index if available. The four
  * leading parameters are required at every call site; everything optional is named, so a new
@@ -881,13 +905,31 @@ export function searchByIndex(
 		minResults?: number;
 		// Rows before this offset are needed for correct paging but do not need highlight metadata.
 		resultOffset?: number;
+		// What a join into another database needs to lease that database's read handle for the search
+		// (see leaseRelatedReadTxn); without them it reads that database's latest committed state.
+		holderTable?: any;
+		holderReadTxn?: any;
+		disableSnapshot?: boolean;
+		leaseHost?: any;
+		leaseContext?: any;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults, resultOffset } = options;
+	const {
+		allowFullScan,
+		filtered,
+		context,
+		minResults,
+		resultOffset,
+		holderTable,
+		holderReadTxn,
+		disableSnapshot,
+		leaseHost,
+	} = options;
+	const leaseContext = options.leaseContext ?? context;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -914,6 +956,10 @@ export function searchByIndex(
 				);
 			const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
 			const joined = new Map();
+			const relatedTxn =
+				relatedTable.primaryStore.path === Table.primaryStore.path
+					? transaction
+					: leaseRelatedReadTxn(relatedTable, leaseContext, holderTable, holderReadTxn, disableSnapshot, leaseHost);
 			// search the related table
 			let results = searchByIndex(
 				{
@@ -922,17 +968,17 @@ export function searchByIndex(
 					comparator,
 					negated: searchCondition.negated,
 				},
-				transaction,
+				relatedTxn,
 				reverse,
 				relatedTable,
-				{ allowFullScan, filtered: joined }
+				{ allowFullScan, filtered: joined, holderTable, holderReadTxn, disableSnapshot, leaseHost, leaseContext }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
 				filtered[attribute_name[0]] = joined;
 				// Use the joinTo to join the results of the related table to the current table (can be one-to-many or many-to-many)
 				const isManyToMany = Boolean(findAttribute(relatedTable.attributes, attribute.relationship.to)?.elements);
-				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined, transaction);
+				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined, relatedTxn);
 			}
 			if (attribute.relationship.from) {
 				const searchEntry = (relatedEntry) => {
@@ -948,7 +994,7 @@ export function searchByIndex(
 				if (attribute.elements) {
 					filtered[attribute_name[0]] = joined;
 					// many-to-many relationship (forward), get all the ids first
-					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, transaction);
+					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
 					results = (results as any).flatMap(searchEntry);
@@ -1378,7 +1424,7 @@ export function findAttribute(attributes, attribute_name) {
  * @param store
  * @param isManyToMany
  * @param joined
- * @param transaction
+ * @param transaction the read handle the right side was scanned with
  * @returns
  */
 function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>, transaction) {
@@ -1428,13 +1474,14 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 				},
 			};
 		}
+		const readOptions = { transaction };
 		return {
 			next() {
 				if (!joinedIterator) {
 					//let i = 0;
 					// get all the ids of the related records
 					for (const entry of rightIterable) {
-						const record = entry.value ?? store.getSync(entry.key ?? entry);
+						const record = entry.value ?? store.getSync(entry.key ?? entry, readOptions);
 						if (record != null && (joined as any).filters?.some((filter) => !filter(record))) continue;
 						addRelated(entry, record);
 						// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
@@ -1547,7 +1594,7 @@ function matchesFilters(filters, record, entry, any: boolean, start = 0) {
  * @param store
  * @param joined
  * @param searchEntry
- * @param transaction
+ * @param transaction the read handle the right side was scanned with
  * @returns
  */
 function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry, transaction) {
@@ -1617,6 +1664,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 				return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : nextJoined()));
 			};
 		} else {
+			const readOptions = { transaction };
 			iterator.next = () => {
 				if (!idIterator) {
 					defineFromRecord();
@@ -1625,7 +1673,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					for (const id of rightIterable) {
 						if ((joined as any).filters) {
 							// if additional filters are defined, we need to check them
-							const record = store.getSync(id);
+							const record = store.getSync(id, readOptions);
 							if ((joined as any).filters.some((filter) => !filter(record))) continue;
 						}
 						ids.add(id);

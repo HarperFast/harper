@@ -167,6 +167,7 @@ import {
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
 	searchByIndex,
+	releaseRelatedLeases,
 	findAttribute,
 	estimateCondition,
 	estimatedEntryCount,
@@ -1301,6 +1302,7 @@ interface TableResourceClass {
 		isDone?: boolean;
 		isCommitted?: boolean;
 	};
+	_txnForContext(context: any): DatabaseTransaction;
 	transactions: DatabaseTransactionRecord[] & {
 		timestamp: number;
 	};
@@ -7436,7 +7438,11 @@ export function makeTable(options): TableResourceClass {
 							try {
 								(transformToRecord as any).return?.();
 							} finally {
-								if (readTxn) txn.doneReadTxn(readTxnGeneration);
+								try {
+									if (readTxn) txn.doneReadTxn(readTxnGeneration);
+								} finally {
+									releaseRelatedLeases(filtered);
+								}
 							}
 						}
 						let total: number | null;
@@ -7476,9 +7482,13 @@ export function makeTable(options): TableResourceClass {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
-					(transformToRecord as any).return?.();
-					txn.unregisterReadIterator(results);
-					if (readTxn) txn.doneReadTxn(readTxnGeneration);
+					try {
+						(transformToRecord as any).return?.();
+						txn.unregisterReadIterator(results);
+						if (readTxn) txn.doneReadTxn(readTxnGeneration);
+					} finally {
+						releaseRelatedLeases(filtered);
+					}
 				};
 				// Recorded ownership: if the request dies before anything consumes these results, the
 				// transaction closes them itself rather than leaving its read snapshot pinned.
@@ -7487,7 +7497,11 @@ export function makeTable(options): TableResourceClass {
 				results.getColumns = getColumns;
 				return results;
 			} catch (error) {
-				if (readTxn) txn.doneReadTxn(readTxnGeneration);
+				try {
+					if (readTxn) txn.doneReadTxn(readTxnGeneration);
+				} finally {
+					releaseRelatedLeases(filtered);
+				}
 				throw error;
 			}
 		}
@@ -10191,10 +10205,14 @@ export function makeTable(options): TableResourceClass {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
-							const searchRelated = (object, context) =>
+							const searchRelated = (
+								object,
+								context,
+								transaction = attribute.elements.definition.tableClass._readTxnForContext(context)
+							) =>
 								searchByIndex(
 									{ attribute: relationship.to, value: object[relationship.from ? relationship.from : primaryKey] },
-									txnForContext(context).getReadTxn(),
+									transaction,
 									false,
 									attribute.elements.definition.tableClass,
 									{ allowFullScan: false }
@@ -10210,11 +10228,10 @@ export function makeTable(options): TableResourceClass {
 							) => {
 								const relatedTable = attribute.elements.definition.tableClass;
 								if (returnEntry) {
-									const candidates = searchRelated(object, context).map((entry) => {
+									const transaction = relatedTable._readTxnForContext(context);
+									const candidates = searchRelated(object, context, transaction).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
-										return relatedTable.primaryStore.getEntry(entry, {
-											transaction: txnForContext(context).getReadTxn(),
-										});
+										return relatedTable.primaryStore.getEntry(entry, { transaction });
 									});
 									return lazy ? candidates : candidates.asArray;
 								}
@@ -10271,7 +10288,7 @@ export function makeTable(options): TableResourceClass {
 									// intermittent MaybePromise into user code
 									const store = definition.tableClass.primaryStore;
 									const method = returnEntry ? 'getEntry' : 'getSync';
-									const options = { transaction: txnForContext(context).getReadTxn() };
+									const options = { transaction: definition.tableClass._readTxnForContext(context) };
 									const results = (lazy ? new ExtendedIterable(normalizedIds) : normalizedIds).map((id) => {
 										const value = store[method](id, options);
 										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
@@ -10281,7 +10298,7 @@ export function makeTable(options): TableResourceClass {
 								}
 								markRelatedReadUncacheable(context);
 								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'getSync'](ids, {
-									transaction: txnForContext(context).getReadTxn(),
+									transaction: definition.tableClass._readTxnForContext(context),
 								});
 								if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 								return value;
@@ -10803,6 +10820,9 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
+		}
+		static _txnForContext(context) {
+			return txnForContext(context);
 		}
 	}
 	type _TableResourceMatchesItsDeclaredTypes = [
@@ -11599,7 +11619,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	// must settle to what the relationship resolver returns with returnEntry
 	function loadRelatedEntries(keys: any[], relatedTable: any, context: Context, filterMissing?: boolean) {
-		const options = { transaction: txnForContext(context).getReadTxn(), async: true };
+		const options = { transaction: relatedTable._readTxnForContext(context), async: true };
 		const entries = [];
 		for (let i = 0; i < keys.length; i++) {
 			const key = keys[i];
@@ -11643,7 +11663,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function loadRelatedEntry(key: any, relatedTable: any, context: Context) {
 		const entry = relatedTable.primaryStore.getEntry(key, {
-			transaction: txnForContext(context).getReadTxn(),
+			transaction: relatedTable._readTxnForContext(context),
 			async: true,
 		});
 		return entry?.then ? entry.then(freezeRelatedEntry) : freezeRelatedEntry(entry);

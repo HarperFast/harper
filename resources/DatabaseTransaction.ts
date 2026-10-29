@@ -665,6 +665,12 @@ type MaybePromise<T> = T | Promise<T>;
  */
 export type OwnedReadIterator = { onDone?: (() => void) | null };
 
+export type ReadLease = OwnedReadIterator & {
+	holder: DatabaseTransaction;
+	link: DatabaseTransaction;
+	readTxn: ReadTransaction;
+};
+
 export type CommitOptions = {
 	doneWriting?: boolean;
 	timestamp?: number;
@@ -1056,6 +1062,12 @@ export class DatabaseTransaction implements Transaction {
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
+	// Leases held on this link for searches on other links, and leases this link's searches hold.
+	declare readLeases?: Set<ReadLease>;
+	declare heldLeases?: Set<ReadLease>;
+	declare rangeActiveTick?: number;
+	declare searchScannedTick?: number;
+	declare searchScanning?: boolean;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
 	declare private activeCommitHandle?: RocksTransaction;
@@ -1244,6 +1256,28 @@ export class DatabaseTransaction implements Transaction {
 
 	unregisterReadIterator(iterator: OwnedReadIterator): void {
 		this.ownedReadIterators?.delete(iterator);
+	}
+
+	leaseReadTxn(holder: DatabaseTransaction, disableSnapshot?: boolean): ReadLease {
+		const readTxn = this.useReadTxn(disableSnapshot);
+		if (!readTxn) return { holder, link: this, readTxn };
+		const generation = this.readTxnGeneration;
+		const lease: ReadLease = {
+			holder,
+			link: this,
+			readTxn,
+			onDone: () => {
+				lease.onDone = null;
+				this.readLeases.delete(lease);
+				holder.heldLeases.delete(lease);
+				this.unregisterReadIterator(lease);
+				this.doneReadTxn(generation);
+			},
+		};
+		(this.readLeases ??= new Set()).add(lease);
+		(holder.heldLeases ??= new Set()).add(lease);
+		this.registerReadIterator(lease);
+		return lease;
 	}
 
 	/**
@@ -4325,6 +4359,32 @@ export function deferForCommitInFlight(
 	return true;
 }
 
+// A partner's walk calls this too: a link whose handle save() adopted is never walked itself.
+function consumeRangeActivity(txn: DatabaseTransaction): boolean {
+	if (txn.rangeReadActive) {
+		txn.rangeReadActive = false;
+		txn.rangeActiveTick = monitorTick;
+	}
+	return txn.rangeActiveTick >= monitorTick - 1;
+}
+
+// Only range activity counts, never a renewal, or two abandoned leases in opposite directions would
+// keep each other alive.
+function searchScanning(holder: DatabaseTransaction): boolean {
+	if (holder.searchScannedTick === monitorTick) return holder.searchScanning;
+	let scanning = consumeRangeActivity(holder);
+	for (const { link } of holder.heldLeases) if (consumeRangeActivity(link)) scanning = true;
+	holder.searchScannedTick = monitorTick;
+	return (holder.searchScanning = scanning);
+}
+
+function leasePartnerScanning(txn: DatabaseTransaction): boolean {
+	let scanning = false;
+	if (txn.readLeases?.size) for (const { holder } of txn.readLeases) if (searchScanning(holder)) scanning = true;
+	if (txn.heldLeases?.size && searchScanning(txn)) scanning = true;
+	return scanning;
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		monitorTick++;
@@ -4350,10 +4410,9 @@ function startMonitoringTxns() {
 		reportNow: number,
 		reportBudget: LongLivedHolderReportBudget
 	) {
-		if (txn.rangeReadActive) {
-			txn.rangeReadActive = false;
-			txn.renewReadTimeout();
-		}
+		consumeRangeActivity(txn);
+		const partnerScanning = leasePartnerScanning(txn);
+		if (txn.rangeActiveTick === monitorTick || partnerScanning) txn.renewReadTimeout();
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;

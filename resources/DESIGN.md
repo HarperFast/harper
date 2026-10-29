@@ -899,6 +899,10 @@ remainder the pre-commit phase or an earlier hop happened to leave (harper#2675)
 hop: a native commit that stalls for a whole window still lets the monitor reap the waiting links,
 and the cascade gains no crash or cross-store atomicity from this.
 
+## A related-table read uses the related table's own database link (`Table.ts` relationship resolvers, `search.ts` join)
+
+A native read transaction belongs to one database (RocksDB rejects a foreign one; LMDB reads the wrong data), so every read of a related table takes its transaction from that table (`_readTxnForContext` / `_txnForContext`), never from the declaring table's `txnForContext`. A join into another database scans after REST commits the request, so it leases that link's handle when it runs (`search.ts` `leaseRelatedReadTxn`, `DatabaseTransaction.leaseReadTxn`); the leases live on the search's `filtered` object and `Table.search` releases them with its own handle. Either side of a search can scan for ticks with the other idle (a drained join map, a filtered or sorted source, a related scan yielding per rejected entry, the middle hop of a multi-hop join), so the RocksDB monitor renews a search's holder and leased links together while any of them showed its own range activity this tick or the last, consuming the flag of a link it never walks (a `save()`-adopted handle). Renewals never count, so abandoned opposite-direction leases are reaped. LMDB snapshots are reference-counted and need none of this. A related read after commit takes a handle-free transaction and sees the latest state (harper#3603); each database is read at its own snapshot.
+
 ## `enc:v1:` env values decrypt through a registered decryptor, and skip non-fatally without one (`resources/loadEnv.ts`, `resources/secretDecryptor.ts`, `utility/envFile.ts`)
 
 Core recognises the `enc:v1:` value prefix (`isEncryptedEnvValue`), exposes a decryptor registration
