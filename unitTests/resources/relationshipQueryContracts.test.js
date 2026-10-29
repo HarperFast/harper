@@ -148,6 +148,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			// OR group: or-a's only child matches the second branch, or-b's only child the first
 			['c7', 'or-a', 'child-or-a', 'B', 'gold', 1, 'w-ignore', 'gc-2'],
 			['c8', 'or-b', 'child-or-b', 'A', 'silver', 1, 'v-ignore', 'gc-2'],
+			['c9', 'or-b', 'child-or-b2', 'Z', 'silver', 1, 'u-ignore', 'gc-2'],
 		];
 		for (const [id, parentId, name, label, tier, score, sortKey, grandchildId] of coldChildren)
 			await ColdChild.put({ id, parentId, name, label, tier, score, sortKey, grandchildId });
@@ -357,6 +358,26 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 				['or-a', 'or-b']
 			);
 			assert.deepStrictEqual(rows[1].children, [{ id: 'c8' }]);
+		});
+
+		it('a nested selection with a limit sees an OR-scope restriction registered while rows are filtered', async function () {
+			const rows = await collect(
+				Parent.search({
+					conditions: [
+						{ attribute: 'group', value: 'or-grp' },
+						{
+							operator: 'or',
+							conditions: [
+								{ attribute: ['children', 'label'], value: 'A' },
+								{ attribute: ['children', 'tier'], value: 'gold' },
+							],
+						},
+					],
+					enforceExecutionOrder: true,
+					select: ['id', { name: 'children', limit: 10, select: ['id'] }],
+				})
+			);
+			assert.deepStrictEqual(rows[1], { id: 'or-b', children: [{ id: 'c8' }] });
 		});
 
 		it('a related table without a primary-key field selects matched records by their entry key', async function () {
