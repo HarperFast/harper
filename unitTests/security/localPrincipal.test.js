@@ -382,15 +382,18 @@ describe('the local principal of a request trusted by its transport', function (
 			socket.end = socket.destroy = () => {};
 			await listener(socket);
 			socket.emit('data', generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean: true }));
-			const connack = await waitFor(() => {
-				const packets = [];
-				const parser = mqttParser({ protocolVersion: 5 });
-				parser.on('packet', (packet) => packets.push(packet));
-				for (const sent of socket.sends) parser.parse(sent);
-				return packets.find((packet) => packet.cmd === 'connack');
-			});
-			socket.emit('close');
-			return { connack, session };
+			try {
+				const connack = await waitFor(() => {
+					const packets = [];
+					const parser = mqttParser({ protocolVersion: 5 });
+					parser.on('packet', (packet) => packets.push(packet));
+					for (const sent of socket.sends) parser.parse(sent);
+					return packets.find((packet) => packet.cmd === 'connack');
+				});
+				return { connack, session };
+			} finally {
+				socket.emit('close');
+			}
 		}
 
 		it('connects from a loopback address with no credentials as the local principal', async () => {
