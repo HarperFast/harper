@@ -97,6 +97,13 @@ export function commutativeOpsOf(update: any) {
 	return ops;
 }
 
+export function hasCommutativeOp(update: any): boolean {
+	for (const key in update) {
+		if (update[key]?.__op__) return true;
+	}
+	return false;
+}
+
 /**
  * What an out-of-order `update` still contributes to a materialized `record` that already includes
  * newer writes: commutative operations and keys the record lacks. Null when nothing remains, `update`

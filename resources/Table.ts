@@ -273,7 +273,13 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
-import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
+import {
+	commutativeOpsOf,
+	hasCommutativeOp,
+	operations as crdtOperations,
+	rebuildUpdateBefore,
+	remainingAgainstRecord,
+} from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -5945,16 +5951,13 @@ export function makeTable(options): TableResourceClass {
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 					// Without a log, a listed identity is the only sign a patch was already applied, whatever the version
 					// order says: an LMDB merge stores the older version (#3388), so an applied write can compare as newer.
-					// Not after an earlier write of this transaction, which shares the identity.
-					if (
-						!audit &&
-						!fullUpdate &&
-						existingEntry?.receivedIdentityRefs &&
-						!followsAppliedWrite(write) &&
-						auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0
-					) {
-						write.skipped = true;
-						return writeCommit(false);
+					// Only a committed list counts; an earlier write of this transaction shares the identity.
+					if (!audit && !fullUpdate) {
+						const committedRefs = identityBase(write, existingEntry, committedBy)?.receivedIdentityRefs;
+						if (committedRefs && auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0) {
+							write.skipped = true;
+							return writeCommit(false);
+						}
 					}
 
 					if (
@@ -6699,8 +6702,8 @@ export function makeTable(options): TableResourceClass {
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
-							// Without a log, a tie with the head (or a listed identity, checked above) is the only sign this
-							// write was already applied, and an older write must not give a deleted or publish-only head a record.
+							// A tie with the head is a re-delivery, and an older write must not give a deleted or publish-only
+							// head a record.
 							if (precedesExisting === 0 || existingRecord == null) {
 								write.skipped = true;
 								return writeCommit(false);
@@ -6718,13 +6721,11 @@ export function makeTable(options): TableResourceClass {
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
-					// An audit:false patch, in order or merged, keeps the identities of the record it applies to and lists
-					// its own when it applied a commutative op, the only part that would apply again on re-delivery. A
-					// full write starts over. Copied only to append: the base may be committed or an earlier staged list.
+					// Copied only to append: the base list may be committed or an earlier write's staged one.
 					if (!audit && !applyAsReplacement) {
 						receivedIdentityRefs = (priorStaged ?? existingEntry)?.receivedIdentityRefs;
 						if (
-							commutativeOpsOf(incrementalUpdateToApply ?? recordUpdate) &&
+							hasCommutativeOp(incrementalUpdateToApply ?? recordUpdate) &&
 							!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
 						)
 							receivedIdentityRefs = [

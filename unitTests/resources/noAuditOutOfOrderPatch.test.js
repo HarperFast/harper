@@ -249,6 +249,20 @@ describe('out-of-order patch on an audit:false table', () => {
 			assert.strictEqual((await NoAudit.get(id)).count, 14);
 		});
 
+		itUnlessLmdb(
+			`a ${order} source transaction re-delivered after a newer patch applies its increment once`,
+			async () => {
+				const id = `noaudit-${nextId++}`;
+				await NoAudit.put(id, { tag: 'base', count: 10 });
+				const nodeId = getIdOfRemoteNode(`origin-${order}-before-newer`, NoAudit.auditStore);
+				const version = Date.now() + 1000;
+				await applySource(id, nodeId, version, publishFirst);
+				await NoAudit.patch(id, { tag: 'latest' }, { timestamp: version + 500 });
+				await applySource(id, nodeId, version, publishFirst);
+				assert.strictEqual((await NoAudit.get(id)).count, 14);
+			}
+		);
+
 		itUnlessLmdb(`a replicated ${order} source transaction older than the head merges only its ops`, async () => {
 			const id = `noaudit-${nextId++}`;
 			const newer = Date.now() + 2000;
@@ -456,8 +470,8 @@ describe('out-of-order patch on an audit:false table', () => {
 		assert.strictEqual((await NoAudit.get(id)).count, 15);
 	});
 
-	// LMDB stores the merge at its older version (harper#3388), so there the re-delivery compares as newer
-	it('an in-order increment re-delivered after an older merge applies once', async () => {
+	// on LMDB the merge stores its older version (harper#3388), so the re-delivery compares as newer
+	it("the seed's in-order increment re-delivered after an older merge applies once", async () => {
 		const { id, now } = await seedNewerRecord();
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 2 } }, { timestamp: now + 100 });
