@@ -568,10 +568,12 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			try {
 				response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
 					headers: { Authorization: authorization },
-					signal: AbortSignal.timeout(10_000),
+					signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
 				});
 				body = await response.text();
 			} catch (error) {
+				if (error.name === 'TimeoutError')
+					assert.fail('upgraded public search did not become ready before the deadline');
 				assert.ok(!response || response.status === 200, String(error));
 				assert.ok(
 					error.name === 'TypeError' && ['UND_ERR_SOCKET', 'ECONNRESET'].includes(error.cause?.code),
@@ -589,7 +591,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			} else assert.ok(body.length > 0);
 			if (!ready) await delay(25);
 		} while (!ready && Date.now() < deadline);
-		assert.ok(ready, 'upgraded public search did not become ready');
+		assert.ok(ready, 'upgraded public search did not become ready before the deadline');
 		await waitForReady('LifecycleProduct');
 		const mismatch = /fulltext:LifecycleProduct\/catalogSearch.*is incompatible \(E_IDENTITY_MISMATCH\); rebuilding/;
 		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
