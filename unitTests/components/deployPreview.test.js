@@ -11,7 +11,12 @@ testUtils.preTestPrep();
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const validator = require('#js/components/operationsValidation');
-const { deployComponent, dropComponent, getComponents } = require('#js/components/operations');
+const {
+	deployComponent,
+	dropComponent,
+	getComponents,
+	retryPendingBranchRemovals,
+} = require('#js/components/operations');
 const { handleListDeployments, handleGetDeployment } = require('#src/components/deploymentOperations');
 const { stagingRetentionMaxCountOf } = require('#src/components/Application');
 const {
@@ -261,6 +266,51 @@ describe('PR preview metadata (harper#3048)', () => {
 			const dropped = await drop('shop-pr-13', renewed.deployment_id);
 			assert.strictEqual(dropped.componentRemoved, true);
 			assert.ok(!(await listLocalPreviews()).some((live) => live.component === 'shop-pr-13'));
+		});
+
+		it('discards the fork of a swept preview past a removal that failed, without dropping that preview again (harper#3463)', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0 || process.env.HARPER_STORAGE_ENGINE === 'lmdb') {
+				return this.skip(); // forks are RocksDB-only, and root ignores the permission that makes the removal fail
+			}
+			const { existsSync, chmodSync, mkdirSync, writeFileSync } = require('node:fs');
+			const { table, resolveBranchPath } = require('#src/resources/databases');
+			const { getOrCreateBranch } = require('#src/resources/branchDatabase');
+			const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+			const { waitFor } = require('../waitFor.js');
+			table({ database: 'previewbase', table: 'Rows', attributes: [{ name: 'id', isPrimaryKey: true }] });
+			await deploy({ project: 'shop-pr-14', preview: preview(14, { expiresAt: '2000-01-01T00:00:00.000Z' }) });
+			const mainWasWorker = getWorkerIndex() === 0;
+			setMainIsWorker(true);
+			try {
+				await (await getOrCreateBranch('previewbase', 'shop-pr-14')).close();
+			} finally {
+				setMainIsWorker(mainWasWorker);
+			}
+			const branchPath = resolveBranchPath('previewbase', 'shop-pr-14');
+			const forks = path.dirname(branchPath);
+			const hold = path.join(branchPath, 'hold');
+			mkdirSync(hold);
+			writeFileSync(path.join(hold, 'keep'), '');
+			chmodSync(hold, 0o555);
+			const drop = (project, ifDeploymentId) => dropComponent({ operation: 'drop_component', project, ifDeploymentId });
+			try {
+				assert.deepStrictEqual(await sweepExpiredPreviews(drop, Date.now()), ['shop-pr-14']);
+				assert.ok(
+					!(await listLocalPreviews()).some((live) => live.component === 'shop-pr-14'),
+					'no sweep lists it again'
+				);
+				assert.ok(existsSync(forks), 'its fork is still on disk');
+				assert.ok(existsSync(path.join(forks, '`removal-pending`')), "the sweep's drop recorded the removal it owes");
+				await retryPendingBranchRemovals?.();
+				assert.ok(existsSync(forks), 'a pass cannot remove it either');
+			} finally {
+				for (const dir of [hold, path.join(`${branchPath}\`removing\``, 'hold')]) {
+					if (existsSync(dir)) chmodSync(dir, 0o755);
+				}
+			}
+
+			await drop('never-here');
+			await waitFor(() => !existsSync(forks), { timeout: 10000, interval: 50, message: 'the fork was left on disk' });
 		});
 
 		it('is not shown for a deploy that carried none', async () => {

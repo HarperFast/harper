@@ -766,13 +766,13 @@ that has no directory and no root-config entry is not on this node: nothing is r
 `restart` says, but a dedicated worker a failed earlier drop left running is still stopped. An isolated application's
 worker is stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
 mirrors, once the peers have answered; the pool restarts only when asked and only when it may hold the application.
-Branched databases go last, once nothing holds them, unless `keepBranches` keeps them; they also stay while the pool
-may still have them open, and a later drop of the now-absent application discards them. `keepBranches` is refused with
-`restart: true`: a peer on an earlier version ignores it, and its restart path removes the branches. Each node answers
-`{ node, componentRemoved, workerStopped, branchesRemoved }`, and the origin returns its peers' in `replicated`
-(`dropPeerResults`), where `null` is a peer that did not say and `error` a peer that failed. A worker the coming stop or
-restart replaces is answered just before it, with any retention already decided and `null` for what is not done yet;
-a later failure to remove branches is only logged, and a second drop retries it (harper#3091).
+Branched databases go last, once nothing holds them, unless `keepBranches` keeps them (refused with `restart: true`: an
+earlier peer ignores it and its restart removes them), or while the pool may hold them. Each node answers `{ node,
+componentRemoved, workerStopped, branchesRemoved }`; `replicated` (`dropPeerResults`) has its peers', `null` where one
+did not say, `error` where one failed. A worker the coming stop or restart replaces is answered first, `null` for what is
+not done (harper#3091), so the owed removal is a durable `` `removal-pending` `` file beside the branches, written before
+the drop changes anything, cleared only by a completed removal or a `keepBranches` drop. Main retries each under its lock
+and marker recheck after every drop, after a start's pool reports, and on capped backoff; redeployed or held ones wait.
 
 ## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
 
