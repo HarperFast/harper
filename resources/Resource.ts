@@ -1109,7 +1109,7 @@ function authorizeSearchResult(result: any, user: any) {
 		: result;
 }
 
-function cloneRequestTarget(source: any): RequestTarget {
+export function cloneRequestTarget(source: any): RequestTarget {
 	const clone = new RequestTarget(source instanceof URLSearchParams ? source.toString() : undefined);
 	const seen = new WeakMap<object, any>();
 	const cloneValue = (value: any): any => {
