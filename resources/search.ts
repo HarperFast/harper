@@ -1538,7 +1538,7 @@ function scanStopped(scan: JoinScan) {
 	return scan.transaction?.isDone;
 }
 type JoinScan = { closed: boolean; transaction: any; checkActive?: () => void };
-async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinScan) {
+async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinScan, idFiltersOnKey?: boolean) {
 	// a custom index search can return a plain array
 	const iterator = (rightIterable[Symbol.asyncIterator] ?? rightIterable[Symbol.iterator]).call(rightIterable);
 	let done = false;
@@ -1561,8 +1561,9 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 			}
 			const filters = (joined as any).filters;
 			if (filters) {
-				if (record == null) continue;
-				let matches = matchesFilters(filters, record, undefined, false);
+				let matches = idFiltersOnKey
+					? matchesRelatedKey(filters, entry.key ?? entry, record)
+					: record != null && matchesFilters(filters, record, undefined, false);
 				if (matches?.then) {
 					matches = await matches;
 					if (scanStopped(scan)) return;
@@ -1616,6 +1617,21 @@ export function matchesFilters(filters, record, entry, any: boolean, start = 0) 
 		if (any ? matches : !matches) return any;
 	}
 	return !any;
+}
+// as in transformToEntries, an idFilter is answered by the whole key, so a null cache stub passes when every filter has one
+function matchesRelatedKey(filters, key, record, start = 0) {
+	for (let i = start; i < filters.length; i++) {
+		const filter = filters[i];
+		if (filter.idFilter) {
+			if (!filter.idFilter(key)) return false;
+			continue;
+		}
+		if (record == null) return false;
+		const matches = (filter.maybeAsync ?? filter)(record);
+		if (matches?.then) return matches.then((matches) => matches && matchesRelatedKey(filters, key, record, i + 1));
+		if (!matches) return false;
+	}
+	return true;
 }
 /**
  * This is used to join the results of a query where the right side is a set of ids and the left side is a set of records
@@ -1685,12 +1701,13 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					scanned = scanRelated(
 						rightIterable,
 						(entry) =>
-							(joined as any).filters
+							(joined as any).filters?.some((filter) => !filter.idFilter)
 								? (entry.value ?? when(store.getEntry(entry.key ?? entry, readOptions), entryValue))
 								: undefined,
 						joined,
 						(entry) => ids.add(entry.key ?? entry),
-						scan
+						scan,
+						true
 					).then(() => {
 						idIterator = (scanStopped(scan) ? new Set() : ids)[Symbol.iterator]();
 					});
@@ -1706,10 +1723,17 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					// get all the ids of the related records
 					for (const entry of rightIterable) {
 						const id = entry.key ?? entry;
-						if ((joined as any).filters) {
-							// if additional filters are defined, we need to check them
-							const record = entry.value ?? store.getSync(id, readOptions);
-							if (record == null || (joined as any).filters.some((filter) => !filter(record))) continue;
+						const filters = (joined as any).filters;
+						if (filters) {
+							let record;
+							if (
+								filters.some((filter) =>
+									filter.idFilter
+										? !filter.idFilter(id)
+										: (record ??= entry.value ?? store.getSync(id, readOptions)) == null || !filter(record)
+								)
+							)
+								continue;
 						}
 						ids.add(id);
 						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration

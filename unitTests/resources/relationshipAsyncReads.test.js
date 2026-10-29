@@ -354,7 +354,7 @@ describe('Queries read related records asynchronously', () => {
 					ColdParent.search({
 						conditions: [
 							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
-							{ attribute: ['children', 'id'], value: 'child-10' },
+							{ attribute: ['children', 'label'], value: 'label 10' },
 						],
 						select: ['id'],
 					})
@@ -362,6 +362,20 @@ describe('Queries read related records asynchronously', () => {
 				assert.deepEqual(results, [{ id: 'parent-2' }]);
 				assert.equal(childReads.sync, 0);
 				assert(childReads.promised > 0, 'the joined children were read in the background');
+			});
+
+			it('a leading many-to-many join with a key condition on the same relationship reads no children', async function () {
+				const results = await collect(
+					ColdParent.search({
+						conditions: [
+							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
+							{ attribute: ['children', 'id'], value: 'child-10' },
+						],
+						select: ['id'],
+					})
+				);
+				assert.deepEqual(results, [{ id: 'parent-2' }]);
+				assert.equal(childReads.sync + childReads.async, 0);
 			});
 		});
 

@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { searchByIndex } = require('#src/resources/search');
+const { searchByIndex, filterByType } = require('#src/resources/search');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { INVALIDATED } = require('#src/resources/Table');
@@ -342,19 +342,33 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'name'], comparator: 'ne', value: 'x' }]), [
 			'p2',
 		]);
+		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'id'], comparator: 'ne', value: 'x' }]), [
+			'p1',
+			'p2',
+		]);
+		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'id'], comparator: 'ne', value: 'c2' }]), [
+			'p2',
+		]);
 
 		const readTxn = Parent._readTxnForContext({});
-		const scan = () => {
+		const scan = (filters) => {
 			const filtered = {};
 			const results = searchByIndex(byId, readTxn, false, Parent, { filtered });
-			filtered.children.filters = [(record) => record.name !== 'x'];
+			filtered.children.filters = filters;
 			return results;
 		};
-		const synchronous = [];
-		for (const id of scan()) synchronous.push(id);
-		const asynchronous = [];
-		for await (const id of scan()) asynchronous.push(id);
-		assert.deepStrictEqual(synchronous, ['p2']);
-		assert.deepStrictEqual(asynchronous, ['p2']);
+		const keyNot = (value) => filterByType({ attribute: 'id', comparator: 'ne', value }, Child, {}, null, true);
+		for (const [filters, expected] of [
+			[[(record) => record.name !== 'x'], ['p2']],
+			[[keyNot('x')], ['p1', 'p2']],
+			[[keyNot('c2')], ['p2']],
+		]) {
+			const synchronous = [];
+			for (const id of scan(filters)) synchronous.push(id);
+			const asynchronous = [];
+			for await (const id of scan(filters)) asynchronous.push(id);
+			assert.deepStrictEqual(synchronous, expected);
+			assert.deepStrictEqual(asynchronous, expected);
+		}
 	});
 });
