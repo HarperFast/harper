@@ -97,6 +97,7 @@ export function commutativeOpsOf(update: any) {
 	return ops;
 }
 
+/** Whether `commutativeOpsOf(update)` would return any operation, without building them. */
 export function hasCommutativeOp(update: any): boolean {
 	for (const key in update) {
 		if (update[key]?.__op__) return true;
