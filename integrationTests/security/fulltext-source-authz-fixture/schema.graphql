@@ -1,0 +1,16 @@
+type Product @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	description: String
+	tags: [String]
+	category: String @indexed
+	owner: String
+	catalogSearch: FullText
+		@fullText(
+			fields: [
+				{ name: "title", weight: 3, highlight: true }
+				{ name: "description", highlight: true }
+				{ name: "tags" }
+			]
+		)
+}
