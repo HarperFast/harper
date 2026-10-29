@@ -1201,7 +1201,6 @@ export function searchByIndex(
 	};
 	if (isPrimaryKey) {
 		const primaryKey = Table.primaryKey;
-		// a primary-key filter reads only the key, so a key-only record answers it for a null stub
 		const admits = filter
 			? ({ key, value, metadataFlags }) =>
 					value == null ? metadataFlags & (INVALIDATED | EVICTED) && filter({ [primaryKey]: key }) : filter(value)

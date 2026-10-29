@@ -12121,8 +12121,7 @@ export function makeTable(options): TableResourceClass {
 		const matchers = filters?.some((filter) => filter.maybeAsync)
 			? filters.map((filter) => filter.maybeAsync ?? filter)
 			: undefined;
-		// An id filter compares the whole key, where a record filter tests each element of an array key. An
-		// invalidated/evicted stub has no record, so only id filters can admit it (to be revalidated).
+		// an id filter compares the whole key, where a record filter tests each element of an array key
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
 			if (!record && !(entry?.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;

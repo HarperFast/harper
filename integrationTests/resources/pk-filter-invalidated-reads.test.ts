@@ -1,7 +1,3 @@
-/**
- * Primary-key filtered reads (`id=in=`, `id=ne=`) over REST: a sorted read must not fail, and a row a
- * cache invalidation emptied must be revalidated from source, as a range read over the same keys does.
- */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';

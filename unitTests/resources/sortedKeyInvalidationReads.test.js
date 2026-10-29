@@ -172,7 +172,6 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 			assert.strictEqual(source.loads, 1);
 		}
 
-		// a condition or row filter that reads record content can not be evaluated on the stub
 		for (const query of [
 			{ conditions: [leads[0], { attribute: 'body', comparator: 'ne', value: 'bravo' }] },
 			{ conditions: [leads[0]], rowFilter: () => true },
@@ -344,7 +343,6 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 			'p2',
 		]);
 
-		// the same joined filter, applied by the synchronous and asynchronous join scans
 		const readTxn = Parent._readTxnForContext({});
 		const scan = () => {
 			const filtered = {};
