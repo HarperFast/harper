@@ -26,7 +26,7 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 		}
 		StampTest = table({
 			table: 'QA5043StampTest',
-			database: 'test',
+			database: 'qa5043_lock_stamp',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'n' },
