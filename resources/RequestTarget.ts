@@ -23,6 +23,9 @@ export class RequestTarget extends URLSearchParams {
 			for (const [name, value] of source) URLSearchParams.prototype.append.call(copy, name, value);
 			copy.#target = source.#target;
 			copy.#dispatchOwned = true;
+			// a subclass's accessors (conditions, select) must still answer on the copy
+			const prototype = Object.getPrototypeOf(source);
+			if (prototype !== RequestTarget.prototype) Object.setPrototypeOf(copy, prototype);
 			return Object.assign(copy, source);
 		};
 	}
