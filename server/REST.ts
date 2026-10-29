@@ -8,6 +8,7 @@ import {
 	isHttpPassThroughEnvelope,
 	waitForStreamStartup,
 	discardSerializedStream,
+	closesSourceOnDiscard,
 } from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
@@ -233,29 +234,26 @@ function isDeferredRead(data): boolean {
 	);
 }
 
-// HEAD and a later 304/412 can discard the same read
-const discardedReadSources = new WeakSet<object>();
-
 function discardReadResponse(response, sourceData) {
 	try {
-		if (sourceData && typeof sourceData === 'object' && !discardedReadSources.has(sourceData)) {
-			discardedReadSources.add(sourceData);
-			if (typeof sourceData.onDone === 'function') sourceData.onDone();
-			else if (isDeferredRead(sourceData)) {
-				// A serializer that never started never opened the source; return() on a fresh iterator is how a
-				// lazy source without onDone (a transform of search results) releases what it holds.
-				const iterator = sourceData[Symbol.asyncIterator]
-					? sourceData[Symbol.asyncIterator]()
-					: sourceData[Symbol.iterator]();
-				const returned = iterator?.return?.();
-				if (typeof returned?.then === 'function') returned.then(null, logDiscardError);
-			}
+		if (typeof sourceData?.onDone === 'function') ownDiscard(sourceData.onDone());
+		else if (!closesSourceOnDiscard(response.body) && isDeferredRead(sourceData)) {
+			// A serializer that never started never opened the source; return() on a fresh iterator is how one
+			// without onDone (a transform of search results) releases what it holds.
+			const iterator = sourceData[Symbol.asyncIterator]
+				? sourceData[Symbol.asyncIterator]()
+				: sourceData[Symbol.iterator]();
+			ownDiscard(iterator?.return?.());
 		}
 	} catch (error) {
 		logDiscardError(error);
 	} finally {
 		discardSerializedStream(response.body);
 	}
+}
+
+function ownDiscard(result) {
+	if (typeof result?.then === 'function') result.then(null, logDiscardError);
 }
 
 function logDiscardError(error) {
@@ -636,13 +634,16 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				lastModification = request.lastModified;
 				setReadValidators(response.headers, lastModification, httpOptions);
 			}
-			if (request.method === 'HEAD') {
-				discardReadResponse(response, data);
-				if (!(response instanceof Response)) response.body = undefined;
+			const conditional =
+				deferred && conditionalRead
+					? applyReadPreconditions(response, request, method, lastModification, data)
+					: response;
+			// a 304 or 412 has already discarded its body and source
+			if (request.method === 'HEAD' && conditional.body) {
+				discardReadResponse(conditional, data);
+				if (!(conditional instanceof Response)) conditional.body = undefined;
 			}
-			return deferred && conditionalRead
-				? applyReadPreconditions(response, request, method, lastModification, data)
-				: response;
+			return conditional;
 		} else {
 			deferredRead = (method === 'GET' || method === 'HEAD') && isDeferredRead(responseData);
 			if (!deferredRead) setReadValidators(headers, lastModification, httpOptions);
@@ -707,18 +708,19 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				lastModification = request.lastModified;
 				setReadValidators(headers, lastModification, httpOptions);
 			}
-			if (request.method === 'HEAD') {
-				discardReadResponse(responseObject, responseData);
-				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
-			}
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
 		// headers to a request that didn't ask, or a cached non-count response to one that did.
 		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
-		return deferredReadConditions
+		const response = deferredReadConditions
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
+		if (request.method === 'HEAD' && response.body) {
+			discardReadResponse(response, responseData);
+			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
+		}
+		return response;
 	} catch (error) {
 		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');

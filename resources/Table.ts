@@ -7112,16 +7112,18 @@ export function makeTable(options): TableResourceClass {
 								if (returned) return Promise.resolve({ value: undefined, done: true });
 								return getIterator().then(
 									(iterator) =>
-										Promise.resolve(iterator.next(value)).then(
-											(result) => {
-												if (result.done) finish();
-												return result;
-											},
-											(error) => {
-												finish();
-												throw error;
-											}
-										),
+										returned
+											? { value: undefined, done: true }
+											: Promise.resolve(iterator.next(value)).then(
+													(result) => {
+														if (result.done) finish();
+														return result;
+													},
+													(error) => {
+														finish();
+														throw error;
+													}
+												),
 									(error) => {
 										finish();
 										throw error;

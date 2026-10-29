@@ -255,9 +255,31 @@ describe('REST deferred reads', () => {
 		const head = await request('HEAD', '/ClosedUnstepped/', { accept: 'application/json' });
 		assert.strictEqual(head.status, 200);
 		assert.deepStrictEqual({ stepped, returned }, { stepped: 0, returned: 1 });
+		// NDJSON startup already opened and stepped it; the stream's own close is the only one
+		const started = await request('HEAD', '/ClosedUnstepped/', ndjson);
+		assert.strictEqual(started.status, 200);
+		await waitFor(() => returned >= 2);
+		assert.deepStrictEqual({ stepped, returned }, { stepped: 1, returned: 2 });
 	});
 
 	it('answers a discarded read even when closing its source fails', async () => {
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		resources.set(
+			'RejectsOnDone',
+			class extends Resource {
+				static get(_target, context) {
+					context.responseHeaders.set('ETag', '"own"');
+					const source = versionedAtStartup(context);
+					source.onDone = async () => {
+						throw new Error('close failed');
+					};
+					return source;
+				}
+			},
+			{ rest: true }
+		);
 		resources.set(
 			'FailsToClose',
 			class extends Resource {
@@ -297,6 +319,12 @@ describe('REST deferred reads', () => {
 		}
 		assert.strictEqual((await request('HEAD', '/FailsToClose/', { accept: 'application/json' })).status, 200);
 		assert.strictEqual((await request('HEAD', '/RejectsOnClose/', { accept: 'application/json' })).status, 200);
+		for (const headers of [{ 'if-none-match': '"own"' }, {}]) {
+			const response = await request('HEAD', '/RejectsOnDone/', { accept: 'application/json', ...headers });
+			assert.strictEqual(response.status, headers['if-none-match'] ? 304 : 200);
+		}
 		await new Promise((resolve) => setImmediate(resolve));
+		process.off('unhandledRejection', onUnhandled);
+		assert.deepStrictEqual(unhandled, []);
 	});
 });

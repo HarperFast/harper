@@ -1035,8 +1035,7 @@ function authorizeSearchResult(result: any, user: any) {
 				if (state && typeof state === 'object') {
 					if (state.error) throw state.error;
 					if (!state.allowed) throw new AccessViolation(user);
-					// The gate itself settles to the search's own value (results, count page or explain plan), as
-					// a synchronous allowRead returns it; a transform derived from the gate must still run.
+					// only the gate itself is replaced: a transform derived from it must still run
 					const { gate } = state;
 					if (gate) {
 						if (result === gate) return state.results;

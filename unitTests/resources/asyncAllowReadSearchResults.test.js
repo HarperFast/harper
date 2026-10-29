@@ -9,8 +9,6 @@ const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 require('#src/server/serverHelpers/serverUtilities');
 
-// A loadAsInstance=false table whose allowRead returns a promise searches through a lazy authorization gate.
-// Once authorized it must answer exactly as the same table with a synchronous allowRead does.
 describe('Search results behind an async allowRead', () => {
 	const database = 'test_async_allow_read';
 	const page = '?category=books&limit(1,3)';
@@ -183,7 +181,7 @@ describe('Search results behind an async allowRead', () => {
 	});
 
 	it('answers Prefer: count with the page and its Content-Range on GET and HEAD', async () => {
-		// a synchronous search's count page is a promise, which an envelope's data does not await
+		// a synchronous count search returns a promise, which REST does not await inside an envelope
 		for (const [mode, shape] of [
 			['Sync', 'Item'],
 			['Async', 'Item'],
@@ -222,6 +220,14 @@ describe('Search results behind an async allowRead', () => {
 		]);
 	});
 
+	it('ends a pending step of a transformed search once it is returned', async () => {
+		const mapped = await classes.AsyncMapped.get(countTarget('exact'), directContext());
+		const iterator = mapped[Symbol.asyncIterator]();
+		const pending = iterator.next();
+		await iterator.return();
+		assert.strictEqual((await pending).done, true);
+	});
+
 	it('serializes an explain plan', async () => {
 		for (const mode of modes) {
 			for (const accept of ['application/json', 'application/x-ndjson']) {
@@ -235,13 +241,15 @@ describe('Search results behind an async allowRead', () => {
 		}
 	});
 
-	it('releases the read snapshot of a HEAD whose serializer never starts', async () => {
+	it('releases the read snapshot of a HEAD', async () => {
 		for (const mode of modes) {
 			for (const shape of ['Item', 'Envelope', 'Mapped']) {
-				const response = await request('HEAD', `/${mode}${shape}/?category=books`, { accept: 'application/json' });
-				assert.strictEqual(response.status, 200);
-				assert.strictEqual(response.body, undefined);
-				await snapshotReleased(`HEAD ${mode}${shape}`);
+				for (const accept of ['application/json', 'application/x-ndjson']) {
+					const response = await request('HEAD', `/${mode}${shape}/?category=books`, { accept });
+					assert.strictEqual(response.status, 200);
+					assert.strictEqual(response.body, undefined);
+					await snapshotReleased(`HEAD ${mode}${shape} ${accept}`);
+				}
 			}
 		}
 	});
