@@ -1237,7 +1237,6 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;
-	// `.ready` keeps a rejected attempt for holders that read it directly; only initialize() retries
 	let lastAttemptRejected = false;
 	let retireRejectedAttempt: (() => void) | undefined;
 	(SNICallback as any).initialize = (server: any) => {
@@ -1259,7 +1258,6 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 			const settle = (value?) => {
 				readySettled = true;
 				if (rejectedReady) {
-					// a live attempt that rejected and then recovered on its own: later initialize() calls see the recovery
 					rejectedReady = lastAttemptRejected = false;
 					retireRejectedAttempt = undefined;
 					(SNICallback as any).ready = Promise.resolve(value);
@@ -1397,11 +1395,12 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 						// resets accumulates one dead Subscription (and its scheduleRebuild closure) per
 						// reset instead of holding just the current one.
 						const previousSubscription = activeSubscription;
-						subscribedTable = databases.system.hdb_certificate;
 						activeSubscription = databases.system.hdb_certificate.subscribe({
 							listener: scheduleRebuild,
 							omitCurrent: true,
 						} as any);
+						// only once subscribe() returned: a synchronous throw must leave the next pass to retry it
+						subscribedTable = databases.system.hdb_certificate;
 						activeSubscription.catch((error) => {
 							// Don't leave subscribedTable pointing at a table we failed to subscribe to —
 							// otherwise this selector never retries the subscription and silently loses live

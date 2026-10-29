@@ -775,6 +775,26 @@ describe('Test keys module', () => {
 			assert.ok(await selector.ready, '`.ready` now reports the recovery');
 		});
 
+		it('subscribes again on the retry after a subscription that threw', async function () {
+			this.timeout(10000);
+			let calls = 0;
+			replace(
+				'subscribe',
+				(subscribe) =>
+					function (...args) {
+						if (calls++ === 0) throw new Error('table closing');
+						return subscribe.apply(this, args);
+					}
+			);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await assert.rejects(selector.initialize(pseudoServer), /table closing/);
+			await waitFor(() => calls >= 2 && pseudoServer.secureContexts.size > 0, {
+				timeout: 5000,
+				message: 'the retry must subscribe again, or later certificate writes are never seen',
+			});
+		});
+
 		it('replaces a rejected listener attempt when initialize() is called again', async function () {
 			this.timeout(10000);
 			let ended = false;
