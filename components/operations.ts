@@ -2074,11 +2074,12 @@ async function retryBranchRemoval(project: string): Promise<boolean> {
 	}
 }
 
+let applicationsPlacedOnMain: (() => string[]) | undefined;
 /** With `threads.count: 0` main is the only worker, and holds every application it placed until Harper restarts. */
 async function mainServesApplication(project: string): Promise<boolean> {
 	if (!isMainThread || manageThreads.getWorkerIndex() !== 0) return false;
-	const { applicationsPlacedOnThisThread } = await import('./componentLoader.ts');
-	return applicationsPlacedOnThisThread().includes(project);
+	applicationsPlacedOnMain ??= (await import('./componentLoader.ts')).applicationsPlacedOnThisThread;
+	return applicationsPlacedOnMain().includes(project);
 }
 
 /** @internal — testing only */
