@@ -489,8 +489,10 @@ function storedSpelling(primaryKey: Id): Id {
 	let element: unknown = primaryKey;
 	while (Array.isArray(element) && element.length === 1) element = element[0];
 	if (typeof element === 'string') return element;
-	if (element === primaryKey || (typeof element !== 'number' && typeof element !== 'bigint')) return primaryKey;
-	return writeKeyId(element as Id) === writeKeyId(primaryKey) ? storedSpelling(element as Id) : primaryKey;
+	if (typeof element !== 'number' && typeof element !== 'bigint') return primaryKey;
+	const number = element as Id;
+	if (writeKeyId(number) !== writeKeyId(primaryKey)) return primaryKey;
+	return typeof element === 'bigint' ? storedSpelling(number) : number;
 }
 
 function primaryKeyEquals(value: Id): (primaryKey: Id) => boolean {

@@ -161,6 +161,7 @@ describe('search key identity and the "..." between alias', () => {
 		let Composite;
 		let Numeric;
 		const all = [
+			[1, 'x'],
 			['a\x00b', 'c'],
 			['a', 'b\x00c'],
 			['n', 5n, 'x'],
@@ -291,6 +292,7 @@ describe('search key identity and the "..." between alias', () => {
 			[
 				{ attribute: 'id', comparator: 'lt', value: 'b' },
 				[
+					[1, 'x'],
 					['a\x00b', 'c'],
 					['a', 'b\x00c'],
 				],
@@ -304,7 +306,7 @@ describe('search key identity and the "..." between alias', () => {
 			],
 			[{ attribute: 'id', comparator: 'starts_with', value: 'ten' }, [['tenant', 'item']]],
 			[{ attribute: 'id', comparator: 'starts_with', value: 'so' }, [['solo']]],
-			[{ attribute: 'id', comparator: 'starts_with', value: '' }, all],
+			[{ attribute: 'id', comparator: 'starts_with', value: '' }, allBut([1, 'x'])],
 			[{ attribute: 'id', comparator: 'prefix', value: ['solo'] }, []],
 			[{ attribute: 'id', comparator: 'prefix', value: ['n', 5] }, [['n', 5n, 'x']]],
 			[{ attribute: 'id', value: ['n', 5, 'x'] }, [['n', 5n, 'x']]],
@@ -332,7 +334,7 @@ describe('search key identity and the "..." between alias', () => {
 			];
 			// [5] decodes as 5 but stores other bytes than 5 does, so only the prefix comparators can agree on it
 			for (const [conditions, keys] of [
-				[prefixConditions, [[5], [5n], ['solo'], [['solo']], ['t', 5n, 'x']]],
+				[prefixConditions, [[5], [5n], [1, 'x'], ['solo'], [['solo']], ['t', 5n, 'x']]],
 				[identityConditions, [['solo'], [['solo']], [-1], [-1n], [0.1], ['t', 5n, 'x']]],
 			]) {
 				for (const condition of conditions) {
@@ -386,6 +388,7 @@ describe('search key identity and the "..." between alias', () => {
 				['t', [['t']]],
 				[5, [5]],
 				[-1, [-1]],
+				[NaN, [NaN]],
 				[-1n, [[-1]]],
 				[0.1, [0.1]],
 				['a\x00b', ['a', 'b']],
