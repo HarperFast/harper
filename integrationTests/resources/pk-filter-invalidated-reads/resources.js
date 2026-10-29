@@ -11,7 +11,6 @@ class RowOrigin extends Resource {
 }
 CachedRow.sourcedFrom(RowOrigin);
 
-// POST /InvalidateRow/ { id } -> the public invalidate API, committed with this request
 export class InvalidateRow extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
@@ -20,7 +19,6 @@ export class InvalidateRow extends Resource {
 	}
 }
 
-// GET /RowState/<id> -> how many source loads ran, and what the table's own store holds for the id
 export class RowState extends Resource {
 	static loadAsInstance = false;
 	get(target) {

@@ -1,5 +1,5 @@
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { searchByIndex } = require('#src/resources/search');
@@ -30,7 +30,7 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 		});
 		const entry = TableClass.primaryStore.getEntry(id);
 		assert.ok(entry.metadataFlags & INVALIDATED, `premise: ${id} is invalidated`);
-		assert.equal(entry.value, null, `premise: ${id} has no record`);
+		assert.strictEqual(entry.value, null, `premise: ${id} has no record`);
 		return entry;
 	}
 
@@ -74,11 +74,11 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 		const neSorted = await collectRows(
 			Rows.search({ conditions: [{ attribute: 'id', comparator: 'ne', value: 'none' }], sort: { attribute: 'rank' } })
 		);
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			inSorted.map((row) => row.id),
 			['b', 'c', 'a']
 		);
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			neSorted.map((row) => row.id),
 			['b', 'c', 'a']
 		);
@@ -96,18 +96,18 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 			{ attribute: 'id', comparator: 'ne', value: 'none' },
 		]) {
 			const results = searchByIndex(condition, readTxn, false, Rows);
-			assert.equal(results.hasEntries, true);
+			assert.strictEqual(results.hasEntries, true);
 			const synchronous = [];
 			for (const entry of results) synchronous.push(entry);
 			const asynchronous = [];
 			for await (const entry of searchByIndex(condition, readTxn, false, Rows)) asynchronous.push(entry);
 			for (const entries of [synchronous, asynchronous]) {
-				assert.deepEqual(
+				assert.deepStrictEqual(
 					entries.map((entry) => entry.key),
 					['local', 'stub'],
 					condition.comparator
 				);
-				assert.equal(entries[0].value.body, 'alpha');
+				assert.strictEqual(entries[0].value.body, 'alpha');
 				assert.ok(entries[1].metadataFlags & INVALIDATED);
 			}
 		}
@@ -122,25 +122,25 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 		const between = await collectRows(
 			Rows.search({ conditions: [{ attribute: 'id', comparator: 'between', value: ['local', 'stub'] }] })
 		);
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			between.map((row) => row.id),
 			['local', 'stub']
 		);
-		assert.equal(source.loads, 1);
+		assert.strictEqual(source.loads, 1);
 
 		const conditions = [{ attribute: 'id', comparator: 'in', value: ['local', 'stub', 'missing'] }];
 		await invalidateNull(Rows, 'stub');
 		source.loads = 0;
-		assert.deepEqual(await collectRows(Rows.search({ conditions }, { replicateFrom: false })), [
+		assert.deepStrictEqual(await collectRows(Rows.search({ conditions }, { replicateFrom: false })), [
 			{ id: 'local', body: 'alpha' },
 		]);
-		assert.equal(source.loads, 0);
+		assert.strictEqual(source.loads, 0);
 
-		assert.deepEqual(await collectRows(Rows.search({ conditions })), [
+		assert.deepStrictEqual(await collectRows(Rows.search({ conditions })), [
 			{ id: 'local', body: 'alpha' },
 			{ id: 'stub', body: 'beta' },
 		]);
-		assert.equal(source.loads, 1);
+		assert.strictEqual(source.loads, 1);
 	});
 
 	it('keeps an invalidated row when every sibling condition is on the primary key', async () => {
@@ -161,7 +161,7 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 					conditions: [lead, { attribute: 'id', comparator: 'ne', value: 'b' }],
 				})
 			);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				rows,
 				[
 					{ id: 'a', body: 'alpha' },
@@ -169,7 +169,7 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 				],
 				lead.comparator
 			);
-			assert.equal(source.loads, 1);
+			assert.strictEqual(source.loads, 1);
 		}
 
 		// a condition or row filter that reads record content can not be evaluated on the stub
@@ -179,10 +179,10 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 		]) {
 			await invalidateNull(Rows, 'c');
 			source.loads = 0;
-			assert.deepEqual(await collectRows(Rows.search({ enforceExecutionOrder: true, ...query })), [
+			assert.deepStrictEqual(await collectRows(Rows.search({ enforceExecutionOrder: true, ...query })), [
 				{ id: 'a', body: 'alpha' },
 			]);
-			assert.equal(source.loads, 0);
+			assert.strictEqual(source.loads, 0);
 		}
 	});
 
@@ -213,11 +213,11 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 
 		await invalidateNull(Rows, 'stub');
 		const unsorted = await collectRows(Rows.search({ operator: 'or', conditions }));
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			unsorted.map((row) => row.id),
 			['stub', 'local']
 		);
-		assert.equal(source.loads, 1);
+		assert.strictEqual(source.loads, 1);
 
 		const stubEntry = await invalidateNull(Rows, 'stub');
 		assert.ok(stubEntry.version > Rows.primaryStore.getEntry('local').version);
@@ -225,11 +225,11 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 		const sorted = await collectRows(
 			Rows.search({ operator: 'or', conditions, sort: { attribute: '$updatedtime', descending: true } })
 		);
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			sorted.map((row) => row.id),
 			['stub', 'local']
 		);
-		assert.equal(source.loads, 1);
+		assert.strictEqual(source.loads, 1);
 	});
 
 	it('compares a composite primary key whole when a primary-key sibling filters it', async () => {
@@ -251,7 +251,7 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 					conditions: [lead, { attribute: 'id', comparator: 'prefix', value: [2] }],
 				})
 			);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				rows.map((row) => row.id),
 				[[2, 240]],
 				lead.comparator
@@ -303,7 +303,60 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 				select: ['id', 'children'],
 			}))
 				selected[parent.id] = (await parent.children).map((child) => child.id);
-			assert.deepEqual(selected, expected, condition.comparator ?? 'equals');
+			assert.deepStrictEqual(selected, expected, condition.comparator ?? 'equals');
 		}
+	});
+
+	it('joins through an invalidated child by key, unless another joined condition reads its record', async () => {
+		const Child = table({
+			database,
+			table: 'InvalidatedJoinedChild',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', type: 'String' },
+			],
+		});
+		const Parent = table({
+			database,
+			table: 'InvalidatedJoinedParent',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'childIds', elements: { type: 'ID' }, indexed: true },
+				{
+					name: 'children',
+					elements: { type: 'InvalidatedJoinedChild', definition: { tableClass: Child } },
+					relationship: { from: 'childIds' },
+				},
+			],
+		});
+		for (let i = 1; i <= 3; i++) await Child.put('c' + i, { id: 'c' + i, name: 'child ' + i });
+		await Parent.put('p1', { id: 'p1', childIds: ['c1', 'c2'] });
+		await Parent.put('p2', { id: 'p2', childIds: ['c3'] });
+		await invalidateNull(Child, 'c2');
+		const byId = { attribute: ['children', 'id'], comparator: 'in', value: ['c2', 'c3'] };
+		const parentIds = async (conditions) =>
+			(await collectRows(Parent.search({ enforceExecutionOrder: true, conditions, select: ['id'] })))
+				.map((row) => row.id)
+				.sort();
+		assert.deepStrictEqual(await parentIds([byId]), ['p1', 'p2']);
+		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'name'], comparator: 'ne', value: 'x' }]), [
+			'p2',
+		]);
+
+		// the same joined filter, applied by the synchronous and asynchronous join scans
+		const readTxn = Parent._readTxnForContext({});
+		const scan = () => {
+			const filtered = {};
+			const results = searchByIndex(byId, readTxn, false, Parent, { filtered });
+			filtered.children.filters = [(record) => record.name !== 'x'];
+			return results;
+		};
+		const synchronous = [];
+		for (const id of scan()) synchronous.push(id);
+		const asynchronous = [];
+		for await (const id of scan()) asynchronous.push(id);
+		assert.deepStrictEqual(synchronous, ['p2']);
+		assert.deepStrictEqual(asynchronous, ['p2']);
 	});
 });

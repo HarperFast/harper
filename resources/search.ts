@@ -1201,8 +1201,7 @@ export function searchByIndex(
 	};
 	if (isPrimaryKey) {
 		const primaryKey = Table.primaryKey;
-		// A null INVALIDATED/EVICTED stub is kept for the materializer to revalidate; a primary-key filter
-		// reads only the key, so a key-only record answers it.
+		// a primary-key filter reads only the key, so a key-only record answers it for a null stub
 		const admits = filter
 			? ({ key, value, metadataFlags }) =>
 					value == null ? metadataFlags & (INVALIDATED | EVICTED) && filter({ [primaryKey]: key }) : filter(value)
@@ -1711,7 +1710,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						if ((joined as any).filters) {
 							// if additional filters are defined, we need to check them
 							const record = entry.value ?? store.getSync(id, readOptions);
-							if ((joined as any).filters.some((filter) => !filter(record))) continue;
+							if (record == null || (joined as any).filters.some((filter) => !filter(record))) continue;
 						}
 						ids.add(id);
 						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
