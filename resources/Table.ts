@@ -6721,7 +6721,6 @@ export function makeTable(options): TableResourceClass {
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
-					// Copied only to append: the base list may be committed or an earlier write's staged one.
 					if (!audit && !applyAsReplacement) {
 						receivedIdentityRefs = (priorStaged ?? existingEntry)?.receivedIdentityRefs;
 						if (
@@ -12379,6 +12378,8 @@ export function makeTable(options): TableResourceClass {
 
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
+		// a 304 stores existingRecord, so it keeps the list that describes that body, not the commit base's
+		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
 		let sourceTimestamp = inheritedTimestamp;
 		let issuanceFailed = false;
@@ -12793,7 +12794,7 @@ export function makeTable(options): TableResourceClass {
 									tableToTrack: tableName,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
-									receivedIdentityRefs: reusedCachedRecord && !audit ? existingEntry?.receivedIdentityRefs : undefined,
+									receivedIdentityRefs: reusedCachedRecord && !audit ? existingIdentityRefs : undefined,
 								},
 								'put',
 								Boolean(invalidated),
