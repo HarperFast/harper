@@ -35,8 +35,9 @@ A call to the `default` model tries `openai` first; if it fails, the call falls 
 
 A call can require capabilities of the backend it lands on. The router keeps only the candidates whose `capabilities()` satisfy the requirement, in group order.
 
-- **`opts.requires`**: an explicit list of capabilities (`embed`, `generate`, `stream`, `tools`, `adapters`, `decide`, `calibrated`, `scoreChoices`, `structuredOutput`, `noMatch`, `calibratedNoMatch`). For example, `models.decide(state, schema, { requires: ['calibrated'] })` routes to a decision backend that reports calibrated probabilities, and the [generative decision adapter](./backends#generative-decision-adapter) routes its scoring calls on `scoreChoices`.
+- **`opts.requires`**: an explicit list of capabilities (`embed`, `generate`, `stream`, `tools`, `adapters`, `decide`, `calibrated`, `scoreChoices`, `structuredOutput`, `noMatch`, `calibratedNoMatch`, and from v5.4.0 `truncate`). For example, `models.decide(state, schema, { requires: ['calibrated'] })` routes to a decision backend that reports calibrated probabilities, and the [generative decision adapter](./backends#generative-decision-adapter) routes its scoring calls on `scoreChoices`.
 - **Tools auto-require `tools`**: a `generate()` call whose input carries a `tools` array routes to a tools-capable candidate in the group instead of erroring on a backend that can't do tools.
+- **`truncate: true` auto-requires `truncate`**: from v5.4.0, an `embed()` call with [`truncate: true`](./api#truncating-long-inputs) routes only to a candidate that can cut over-long inputs.
 
 ```javascript
 // Tools in the input auto-route to a tools-capable candidate in the group:

@@ -53,6 +53,8 @@ models:
 
 When embedding with `nomic-embed-text`, the `inputType` option (`'document'` / `'query'`) is applied using the model's task prefixes; other models ignore it.
 
+From v5.4.0, the Ollama backend has the `truncate` capability: an `embed()` call with [`truncate: true`](./api#truncating-long-inputs) sends `truncate: true` on `/api/embed`. Ollama cuts each input to the loaded context even without it, so leaving the option unset changes nothing.
+
 The Ollama backend does not advertise tool support — declaring tools against it fails up front.
 
 ## OpenAI
@@ -78,14 +80,30 @@ models:
       model: meta-llama/Llama-3.1-8B-Instruct
 ```
 
-| Field          | Default                     | Description                                                                        |
-| -------------- | --------------------------- | ---------------------------------------------------------------------------------- |
-| `apiKey`       | — (required)                | API key, sent as a bearer token. Use `${VAR}` indirection                          |
-| `baseUrl`      | `https://api.openai.com/v1` | API root; point at any OpenAI-compatible endpoint                                  |
-| `model`        | —                           | Model name, e.g. `gpt-4o`, `text-embedding-3-large`                                |
-| `organization` | —                           | Sent as the `OpenAI-Organization` header, for keys spanning multiple organizations |
+| Field          | Default                     | Description                                                                                                     |
+| -------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `apiKey`       | — (required)                | API key, sent as a bearer token. Use `${VAR}` indirection                                                       |
+| `baseUrl`      | `https://api.openai.com/v1` | API root; point at any OpenAI-compatible endpoint                                                               |
+| `model`        | —                           | Model name, e.g. `gpt-4o`, `text-embedding-3-large`                                                             |
+| `organization` | —                           | Sent as the `OpenAI-Organization` header, for keys spanning multiple organizations                              |
+| `truncation`   | —                           | From v5.4.0, `vllm` on an embedding entry served by vLLM 0.18 or later, so `embed()` can honor `truncate: true` |
 
 `responseFormat: 'json'` maps to OpenAI's JSON mode and `responseFormat: { schema }` to strict structured outputs (`json_schema`); OpenAI-compatible servers vary in their support for these.
+
+<VersionBadge version="v5.4.0" />
+
+`truncation: vllm` lets an embedding entry serve [`embed()` calls with `truncate: true`](./api#truncating-long-inputs). It declares that the endpoint is vLLM 0.18 or later; Harper does not check. With it, a `truncate: true` call sends `truncate_prompt_tokens: -1` (the model's own input limit) and `truncation_side: 'right'` (keep the start). An older vLLM ignores `truncation_side` and may cut the start of the input instead. Without `truncation`, the entry does not advertise the `truncate` capability and never sends those fields, because api.openai.com rejects fields it does not know. `vllm` is the only accepted value, and configuration validation rejects `truncation` on generative entries and on other backends.
+
+```yaml
+models:
+  embedding:
+    default:
+      backend: openai
+      apiKey: ${VLLM_API_KEY}
+      baseUrl: http://vllm.internal:8000/v1
+      model: BAAI/bge-m3
+      truncation: vllm
+```
 
 ## Anthropic
 
@@ -138,6 +156,13 @@ models:
 | `model`  | —            | Bedrock model identifier; the vendor prefix selects the request format |
 
 The model identifier's vendor prefix (`anthropic.`, `meta.`, `amazon.titan-`, `cohere.`, `mistral.`) determines the request/response format Harper uses; an unrecognized prefix is rejected with an error. Tool support depends on the underlying model family. Bedrock embedding APIs accept one text per request, so batch `embed()` calls are issued sequentially.
+
+From v5.4.0, an embedding entry whose `model` is Cohere embed v3 (`cohere.embed-english-v3`, `cohere.embed-multilingual-v3`, and their `-light` variants) or Cohere embed v4 (`cohere.embed-v4`) has the `truncate` capability, for [`embed()` calls with `truncate: true`](./api#truncating-long-inputs):
+
+- Cohere embed v4: Harper sends `truncate: 'RIGHT'`.
+- Cohere embed v3: Harper first cuts each text to 2,048 characters (never splitting a surrogate pair), then sends `truncate: 'END'`. The character cut is needed because Bedrock rejects a text over 2,048 characters before any token truncation. Short prose then uses less than the model's 512-token window. Without `truncate: true`, Harper does not cut: Cohere v3 cuts tokens by default, but Bedrock rejects a text over 2,048 characters.
+
+Titan embedding models have no truncation setting and do not advertise the capability.
 
 ## Generative decision adapter
 
@@ -228,7 +253,7 @@ Custom backends can be added two ways: **registered programmatically** (below), 
 models.defineBackend(spec: DefineBackendSpec): ModelBackend
 ```
 
-A method on `models` (reachable as `models.defineBackend(...)` / `scope.models.defineBackend(...)`). Builds a `ModelBackend` from the methods it implements. `capabilities()` is derived from which of `embed` / `generate` / `generateStream` / `decide` / `scoreChoices` are supplied; `tools`, `adapters`, `calibrated`, `structuredOutput`, `noMatch` and `calibratedNoMatch` cannot be inferred from method presence, so declare them explicitly; a backend that leaves them out is never routed calls that require them. `maxScoredChoices` is a limit rather than a capability: leave it out when `scoreChoices` accepts any number of choices.
+A method on `models` (reachable as `models.defineBackend(...)` / `scope.models.defineBackend(...)`). Builds a `ModelBackend` from the methods it implements. `capabilities()` is derived from which of `embed` / `generate` / `generateStream` / `decide` / `scoreChoices` are supplied; `tools`, `adapters`, `calibrated`, `structuredOutput`, `noMatch`, `calibratedNoMatch` and `truncate` cannot be inferred from method presence, so declare them explicitly; a backend that leaves them out is never routed calls that require them. `maxScoredChoices` is a limit rather than a capability: leave it out when `scoreChoices` accepts any number of choices.
 
 | Field               | Type       | Default | Description                                                                                                                                                          |
 | ------------------- | ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -245,8 +270,11 @@ A method on `models` (reachable as `models.defineBackend(...)` / `scope.models.d
 | `structuredOutput`  | `boolean`  | `false` | Whether `generate` sends `responseFormat: { schema }` as a decoding constraint; selectable with `requires: ['structuredOutput']`                                     |
 | `noMatch`           | `boolean`  | `false` | Whether `decide` returns a no-match score for leaves that set `noMatch: true`; required by such a call                                                               |
 | `calibratedNoMatch` | `boolean`  | `false` | Whether that no-match score is calibrated; required with `calibrated` by an opted-in call that requires `calibrated`                                                 |
+| `truncate`          | `boolean`  | `false` | From v5.4.0, whether `embed` honors `truncate: true`; required by such a call, and ignored unless `embed` is supplied                                                |
 
 `embed`, `generate`, and `decide` return the shape the built-in backends return: `{ status: 'completed', output, usage? }`, where `output` is `Float32Array[]` for `embed`, `{ content, finishReason }` for `generate`, and a distribution (or per-field distributions) for `decide`. `generateStream` is an async generator yielding incremental `{ deltaContent?, deltaToolCalls?, finishReason? }` chunks — the same [`generateStream()`](./api#generatestream) shape, not a wrapped result. At least one method must be supplied. A backend that supplies only `generateStream` still satisfies `generate()`: Harper drains the stream into a single result.
+
+`truncate: true` only declares the capability; Harper does not cut the input for you. An `embed` implementation declared with it must read `opts.truncate` and, when it is `true`, cut each input to what its model accepts, keeping the start, instead of failing.
 
 ### registerBackend()
 

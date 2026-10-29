@@ -381,7 +381,7 @@ The attribute type must be `[Float]`. The attribute is automatically indexed wit
 
 Write semantics:
 
-- Creating a record with the source field, or updating the source field, computes the vector before the write commits (with `inputType: 'document'`). A failure to compute the embedding fails the write.
+- Creating a record with the source field, or updating the source field, computes the vector before the write commits (with `inputType: 'document'`). A failure to compute the embedding fails the write. That includes a source value longer than the model's context window, on a provider that rejects over-long inputs. `@embed` does not pass [`truncate: true`](../models/api#truncating-long-inputs); only `models.embed()` calls can set it.
 - An update that does not touch the source field leaves the vector unchanged.
 - Setting the source field to `null` sets the vector to `null`.
 - Replicated writes and audit-log replays do not re-embed — the vector travels with the record, and only the node that accepted the original write calls the model.
