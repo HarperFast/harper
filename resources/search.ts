@@ -1524,7 +1524,6 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 			} catch {}
 	}
 }
-// a select() restriction on a to-many relationship, stored in a query's `filtered` map under its name
 class RelationshipSelection {
 	filters: any[];
 	fromRecord: (record: any, sync?: boolean) => any;
@@ -1535,6 +1534,12 @@ class RelationshipSelection {
 }
 // keys the join and selection maps keep for themselves, so a relationship of that name cannot be tracked in them
 const SELECTION_BOOKKEEPING = new Set(['filters', 'fromRecord', 'hasMappings']);
+// A query's `filtered` map holds, per relationship name, a leading join's Map or a selection with `fromRecord`.
+// Read it as an own property of that shape: a name can equal an inherited member or the maps' bookkeeping keys.
+export function relationshipRestriction(filtered, name: string) {
+	const restriction = filtered && Object.hasOwn(filtered, name) ? filtered[name] : undefined;
+	return restriction instanceof Map || typeof restriction?.fromRecord === 'function' ? restriction : undefined;
+}
 function someRelatedMatch(entries, match, start: number) {
 	for (let i = start; i < entries.length; i++) {
 		const value = entries[i]?.value;
@@ -1807,9 +1812,7 @@ export function filterByType(
 			}
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
-			// own properties only: a relationship name can match an inherited member of the map (`get`, `toString`)
-			const filterMap =
-				filtered && Object.hasOwn(filtered, firstAttributeName) ? filtered[firstAttributeName] : undefined;
+			const filterMap = relationshipRestriction(filtered, firstAttributeName);
 			const join: any = filterMap instanceof Map ? filterMap : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
 			const loadEntries = resolver?.loadEntries;
@@ -1863,18 +1866,13 @@ export function filterByType(
 					}
 					return keys;
 				});
-			// A to-many relationship's select() keeps the related records its conditions match. In an AND scope every
-			// condition counts and is registered when built, so no row sees a partial set; an OR scope registers
-			// lazily below, since conjoining its branches would be wrong.
+			// AND scope: registered when built, so no row sees a partial set; OR scope: lazily, first branch wins
 			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
 			let selection;
-			if (!join && restrictsSelect && !inUnion)
-				selection =
-					filterMap instanceof RelationshipSelection
-						? filterMap
-						: filterMap === undefined
-							? relatedSelection([])
-							: undefined;
+			if (!join && restrictsSelect && !inUnion) {
+				if (filterMap instanceof RelationshipSelection) selection = filterMap;
+				else if (!Object.hasOwn(filtered, firstAttributeName)) selection = relatedSelection([]);
+			}
 			const nextFilter = filterByType(
 				{
 					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],

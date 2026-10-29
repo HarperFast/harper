@@ -172,6 +172,7 @@ import {
 	resolveComparator,
 	filterByType,
 	matchesFilters,
+	relationshipRestriction,
 	fullTextComparatorMode,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
@@ -7541,7 +7542,7 @@ export function makeTable(options): TableResourceClass {
 				(attribute.limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0))
 			)
 				throw new ClientError('Nested limit and offset must be non-negative safe integers');
-			const filterMap = filtered?.[attribute.name];
+			const filterMap: any = relationshipRestriction(filtered, attribute.name);
 			const childFiltered = Object.assign(Object.create(null), filterMap);
 			const rejectUnsupported = (conditions) => {
 				for (const condition of conditions) {
@@ -7640,6 +7641,7 @@ export function makeTable(options): TableResourceClass {
 						};
 					};
 					const readOptions = isSync ? { transaction: readTxn } : { transaction: readTxn, async: true };
+					const checkActive = getReadTransactionGuard(readTxn);
 					const matchCandidate = predicate && (isSync ? predicate : (predicate.maybeAsync ?? predicate));
 					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
@@ -7652,6 +7654,7 @@ export function makeTable(options): TableResourceClass {
 							if (!predicate) return entry;
 							return when(entry, (entry) => {
 								if (stopped || !entry?.value) return SKIP;
+								checkActive?.();
 								return when(matchCandidate(entry.value, entry), (matches) => (matches && !stopped ? entry : SKIP));
 							});
 						});
@@ -8024,7 +8027,7 @@ export function makeTable(options): TableResourceClass {
 							for (let i = 0; i < clauseCount; i++) {
 								const clause = clauses[i];
 								const keys = orderedKeys[i];
-								const value = getAttributeValue(entry, clause.attribute, context, clause);
+								const value = getAttributeValue(entry, clause.attribute, context, clause, stopped);
 								if (value?.then) {
 									const position = keys.push(undefined) - 1;
 									(pending ??= []).push(
@@ -8108,7 +8111,8 @@ export function makeTable(options): TableResourceClass {
 													entry,
 													dbOrderedAttribute,
 													context,
-													(sort as any).dbOrderedSort
+													(sort as any).dbOrderedSort,
+													stopped
 												);
 												if (groupingValue?.then) {
 													groupingValue = await groupingValue;
@@ -8355,7 +8359,7 @@ export function makeTable(options): TableResourceClass {
 					if (!matches) return canSkip ? SKIP : undefined;
 					if (typeof matches.then === 'function')
 						return matches.then((matches) =>
-							matches ? selectRecord.call(this, record, entry) : canSkip ? SKIP : undefined
+							matches && !selectionStopped ? selectRecord.call(this, record, entry) : canSkip ? SKIP : undefined
 						);
 				}
 				return selectRecord.call(this, record, entry);
@@ -8380,7 +8384,7 @@ export function makeTable(options): TableResourceClass {
 								} else callback(selected, attribute_name);
 								return;
 							}
-							const filterMap = filtered?.[attribute_name];
+							const filterMap: any = relationshipRestriction(filtered, attribute_name);
 							if (filterMap) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
@@ -11593,21 +11597,30 @@ export function makeTable(options): TableResourceClass {
 		if (TableResource.loadAsInstance === false) freezeRecord(entry?.value);
 		return entry;
 	}
-	function getAttributeValue(entry, attribute_name, context, sort?) {
+	function getAttributeValue(entry, attribute_name, context, sort?, stopped?: () => boolean) {
 		if (!entry) {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
-			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort);
+			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort, stopped);
 		}
 		const resolver = propertyResolvers[attribute_name];
 		if (resolver?.loadEntries)
-			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
+			return getPathValue(
+				record,
+				(resolver.path ??= [attribute_name]),
+				0,
+				propertyResolvers,
+				entry,
+				context,
+				sort,
+				stopped
+			);
 		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
 	}
-	function getPathValue(value, path, start, resolvers, entry, context, sort) {
+	function getPathValue(value, path, start, resolvers, entry, context, sort, stopped?: () => boolean) {
 		for (let i = start, l = path.length; i < l; i++) {
 			const attribute = path[i];
 			const resolver = resolvers?.[attribute];
@@ -11616,9 +11629,13 @@ export function makeTable(options): TableResourceClass {
 				const loaded = resolver.loadEntries(value, context);
 				if (loaded?.then) {
 					const nextResolvers = resolvers;
-					return loaded.then((loaded) => relatedPathValue(resolver, loaded, path, i + 1, nextResolvers, context, sort));
+					return loaded.then((loaded) =>
+						stopped?.()
+							? undefined
+							: relatedPathValue(resolver, loaded, path, i + 1, nextResolvers, context, sort, stopped)
+					);
 				}
-				if (resolver.toMany) return relatedPathValue(resolver, loaded, path, i + 1, resolvers, context, sort);
+				if (resolver.toMany) return relatedPathValue(resolver, loaded, path, i + 1, resolvers, context, sort, stopped);
 				value = loaded?.value;
 			} else {
 				value =
@@ -11630,20 +11647,20 @@ export function makeTable(options): TableResourceClass {
 		}
 		return value;
 	}
-	function relatedPathValue(resolver, loaded, path, start, resolvers, context, sort) {
-		if (!resolver.toMany) return getPathValue(loaded?.value, path, start, resolvers, null, context, sort);
+	function relatedPathValue(resolver, loaded, path, start, resolvers, context, sort, stopped) {
+		if (!resolver.toMany) return getPathValue(loaded?.value, path, start, resolvers, null, context, sort, stopped);
 		if (!loaded) return undefined;
 		const values = [];
 		for (let i = 0; i < loaded.length; i++) {
-			const value = getPathValue(loaded[i]?.value, path, start, resolvers, null, context, sort);
+			const value = getPathValue(loaded[i]?.value, path, start, resolvers, null, context, sort, stopped);
 			values.push(value);
-			if (value?.then) return remainingRelatedPathValues(loaded, i + 1, values, path, start, resolvers, context, sort);
+			if (value?.then)
+				return remainingRelatedPathValues(loaded, i + 1, values, path, start, resolvers, context, sort, stopped);
 		}
 		return values;
 	}
-	// One RELATED_READS_IN_FLIGHT budget per path: while a deeper to-many hop remains (whose loadEntries reads up
-	// to that many itself), related records are resolved one at a time.
-	async function remainingRelatedPathValues(loaded, start, values, path, pathStart, resolvers, context, sort) {
+	// one RELATED_READS_IN_FLIGHT budget per path: serial while a deeper to-many hop (with its own window) remains
+	async function remainingRelatedPathValues(loaded, start, values, path, pathStart, resolvers, context, sort, stopped) {
 		const checkActive = getReadTransactionGuard(txnForContext(context).getReadTxn());
 		const window = reachesToMany(path, pathStart, resolvers) ? 1 : RELATED_READS_IN_FLIGHT;
 		try {
@@ -11651,8 +11668,12 @@ export function makeTable(options): TableResourceClass {
 				if ((i - start + 1) % window === 0) {
 					await Promise.all(values.slice(i - window));
 					checkActive?.();
+					if (stopped?.()) {
+						Promise.all(values).catch(() => {});
+						return;
+					}
 				}
-				values.push(getPathValue(loaded[i]?.value, path, pathStart, resolvers, null, context, sort));
+				values.push(getPathValue(loaded[i]?.value, path, pathStart, resolvers, null, context, sort, stopped));
 			}
 			const resolved = await Promise.all(values);
 			checkActive?.();

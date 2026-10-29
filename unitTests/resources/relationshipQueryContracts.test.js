@@ -427,17 +427,17 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			]);
 		});
 
-		it('a second hop through a relationship named like selection bookkeeping still filters', async function () {
+		it('a second hop through a relationship named like selection bookkeeping still filters and projects', async function () {
 			const rows = await collect(
 				Parent.search({
 					conditions: [
 						{ attribute: 'group', value: 'g1' },
 						{ attribute: ['children', 'filters', 'code'], value: 'flag-on' },
 					],
-					select: ['id', { name: 'children', select: ['id'] }],
+					select: ['id', { name: 'children', select: ['id', { name: 'filters', select: ['code'] }] }],
 				})
 			);
-			assert.deepStrictEqual(rows, [{ id: 'parent-1', children: [{ id: 'c1' }] }]);
+			assert.deepStrictEqual(rows, [{ id: 'parent-1', children: [{ id: 'c1', filters: [{ code: 'flag-on' }] }] }]);
 		});
 
 		it('an id set of intermediate keys from two hops down is not tested as parent keys', async function () {
