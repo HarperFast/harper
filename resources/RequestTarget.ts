@@ -210,7 +210,9 @@ export function dispatchTarget<T>(target: T): T {
 	if (prototype === Object.prototype) return { ...target };
 	const descriptors: PropertyDescriptorMap = Object.getOwnPropertyDescriptors(target);
 	// own data properties, so the gate's writes never reach an accessor the caller's class defines
-	for (const name of ['checkPermission', 'select'])
-		descriptors[name] = { value: (target as any)[name], writable: true, enumerable: true, configurable: true };
+	for (const name of ['checkPermission', 'select']) {
+		if (name in (target as any))
+			descriptors[name] = { value: (target as any)[name], writable: true, enumerable: true, configurable: true };
+	}
 	return Object.create(prototype, descriptors);
 }
