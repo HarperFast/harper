@@ -1,22 +1,3 @@
-/**
- * MCP operations profile — iterable result collection & `search_by_conditions` parity.
- *
- * Regression coverage for operations whose handlers return an iterable other than a
- * resolved `Array`:
- *   - `get_analytics` (`resources/analytics/read.ts`) returns `searchResults.map(async ...)`,
- *     an `ExtendedIterable` whose synchronous `.toJSON()` yields unawaited `Promise`
- *     objects (`[{}]`) unless iterated via `for await`.
- *   - `read_audit_log` default / `search_type: 'timestamp'` (`ResourceBridge.ts`) returns
- *     `groupRecordsInHistory(...)`, an `AsyncGenerator` that `JSON.stringify` serializes as
- *     `"{}"` unless drained via `for await`.
- *   - `search_by_conditions` with a full-text `search` condition (`Table.search`) returns
- *     an async-only `ExtendedIterable` whose `.toJSON()` throws
- *     `"Can not serialize async iterables without first calling resolving asArray"` unless
- *     collected via `for await`.
- *
- * Also verifies RBAC enforcement on `search_by_conditions` over MCP (cross-table denial
- * and attribute-level read restriction).
- */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { resolve } from 'node:path';
@@ -150,18 +131,21 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 
 		adminAuth = basic(ctx.harper.admin.username, ctx.harper.admin.password);
 
-		// Wait for the fixture's schema.graphql tables (PublicNote, SecretVault) to be registered before inserting.
+		let tablesReady = false;
 		const schemaDeadline = Date.now() + 15000;
 		while (Date.now() < schemaDeadline) {
 			const [pubDesc, secDesc] = await Promise.all([
 				ops(ctx, adminAuth, { operation: 'describe_table', database: 'data', table: 'PublicNote' }),
 				ops(ctx, adminAuth, { operation: 'describe_table', database: 'data', table: 'SecretVault' }),
 			]);
-			if (pubDesc.status === 200 && secDesc.status === 200) break;
+			if (pubDesc.status === 200 && secDesc.status === 200) {
+				tablesReady = true;
+				break;
+			}
 			await delay(100);
 		}
+		assert.ok(tablesReady, 'Timed out waiting for PublicNote and SecretVault tables to register');
 
-		// Create AuditProbe table and seed rows + update to populate audit log entries.
 		const ct = await ops(ctx, adminAuth, {
 			operation: 'create_table',
 			database: 'data',
@@ -190,7 +174,6 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		});
 		assert.strictEqual(updAudit.status, 200, `update AuditProbe failed: ${JSON.stringify(updAudit.body)}`);
 
-		// Seed PublicNote and SecretVault for search_by_conditions & RBAC arms.
 		const insPub = await ops(ctx, adminAuth, {
 			operation: 'insert',
 			database: 'data',
@@ -226,7 +209,6 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		});
 		assert.strictEqual(insSec.status, 200, `insert SecretVault failed: ${JSON.stringify(insSec.body)}`);
 
-		// Role A: operations allowlist ['search_by_conditions', 'search_by_value'] + read on PublicNote.{id, title, tag} (notes restricted).
 		const r1 = await ops(ctx, adminAuth, {
 			operation: 'add_role',
 			role: 'reader_allowlisted_role',
@@ -270,7 +252,6 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		assert.strictEqual(u1.status, 200, `add_user reader_allowlisted failed: ${JSON.stringify(u1.body)}`);
 		readerAllowlistedAuth = basic('reader_allowlisted', USER_PASS);
 
-		// Role B: standard table-permission role (no operations allowlist) with read on PublicNote (all attrs), no read on SecretVault.
 		const r2 = await ops(ctx, adminAuth, {
 			operation: 'add_role',
 			role: 'reader_plain_role',
@@ -308,26 +289,29 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		assert.strictEqual(u2.status, 200, `add_user reader_plain failed: ${JSON.stringify(u2.body)}`);
 		readerPlainAuth = basic('reader_plain', USER_PASS);
 
-		// Wait for PublicNote's @fullText index to finish building before running full-text search tests.
-		const ftDeadline = Date.now() + 8000;
+		let ftReady = false;
+		const ftDeadline = Date.now() + 15000;
 		while (Date.now() < ftDeadline) {
 			const desc = await ops(ctx, adminAuth, {
 				operation: 'describe_table',
 				database: 'data',
 				table: 'PublicNote',
 			});
-			if (desc.body?.full_text_indexes?.[0]?.readiness?.state === 'ready') break;
+			if (desc.body?.full_text_indexes?.[0]?.readiness?.state === 'ready') {
+				ftReady = true;
+				break;
+			}
 			await delay(100);
 		}
+		assert.ok(ftReady, 'Timed out waiting for PublicNote @fullText index to reach ready state');
 
-		// Generate HTTP traffic on the app port and wait until analytics aggregation flushes at least one time-series metric
-		// (excluding 'database-size' and 'table-size', which use the storageSizeMetrics fast path instead of AnalyticsTable.search().map(async ...)).
 		for (let i = 0; i < 3; i++) {
 			await fetch(`${ctx.harper.httpURL}/health`).catch(() => {});
 		}
 		const storageSizeFastPathMetrics = new Set(['database-size', 'table-size']);
 		const candidateMetrics = ['utilization', 'main-thread-utilization', 'event-loop-delay', 'resource-usage'];
-		const deadline = Date.now() + 8000;
+		let analyticsReady = false;
+		const deadline = Date.now() + 15000;
 		outer: while (Date.now() < deadline) {
 			const listRes = await ops(ctx, adminAuth, { operation: 'list_metrics' });
 			const fromList = Array.isArray(listRes.body)
@@ -339,18 +323,18 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 				const check = await ops(ctx, adminAuth, { operation: 'get_analytics', metric: candidate });
 				if (check.status === 200 && Array.isArray(check.body) && check.body.length > 0) {
 					activeMetric = candidate;
+					analyticsReady = true;
 					break outer;
 				}
 			}
 			await delay(250);
 		}
+		assert.ok(analyticsReady, 'Timed out waiting for a non-storage-size analytics metric to flush');
 	});
 
 	after(async () => {
 		await teardownHarper(ctx);
 	});
-
-	// ── SP-77: Iterable parity between HTTP POST / and MCP tools/call ─────────
 
 	test('A1: get_analytics over MCP resolves async-mapped metric elements matching HTTP POST /', async () => {
 		const httpRes = await ops(ctx, adminAuth, { operation: 'get_analytics', metric: activeMetric });
@@ -413,7 +397,6 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		assert.strictEqual(httpDefault.status, 200);
 		assert.ok(Array.isArray(httpDefault.body) && httpDefault.body.length >= 2);
 
-		// 1. Default (search_type omitted) -> ResourceBridge.readAuditLog default branch (groupRecordsInHistory).
 		const mcpDefault = await mcpToolCall(ctx, adminAuth, 'read_audit_log', {
 			database: 'data',
 			table: 'AuditProbe',
@@ -431,7 +414,6 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		);
 		assert.deepStrictEqual(mcpDefault.parsed, httpDefault.body);
 
-		// 2. Explicit search_type: 'timestamp' -> same default branch in ResourceBridge.readAuditLog.
 		const httpTs = await ops(ctx, adminAuth, {
 			operation: 'read_audit_log',
 			database: 'data',
@@ -532,7 +514,25 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		assert.deepStrictEqual(mcpRes.parsed, httpRes.body);
 	});
 
-	// ── SP-74: search_by_conditions full-text ExtendedIterable & RBAC over MCP ─
+	test('A5: search_by_id over MCP drains getRecords async iterable matching HTTP POST /', async () => {
+		const query = {
+			database: 'data',
+			table: 'AuditProbe',
+			ids: ['row-1', 'row-2'],
+			get_attributes: ['id', 'label'],
+		};
+		const httpRes = await ops(ctx, adminAuth, { operation: 'search_by_id', ...query });
+		assert.strictEqual(httpRes.status, 200);
+		assert.deepStrictEqual(httpRes.body, [
+			{ id: 'row-1', label: 'alpha-updated' },
+			{ id: 'row-2', label: 'beta' },
+		]);
+
+		const mcpRes = await mcpToolCall(ctx, adminAuth, 'search_by_id', query);
+		assert.strictEqual(mcpRes.status, 200);
+		assert.ok(!mcpRes.result?.isError, `MCP search_by_id returned isError: ${mcpRes.text}`);
+		assert.deepStrictEqual(mcpRes.parsed, httpRes.body);
+	});
 
 	test('M0: search_by_conditions over MCP with indexed equals condition returns matching rows', async () => {
 		const adminRes = await mcpToolCall(ctx, adminAuth, 'search_by_conditions', {
@@ -634,7 +634,6 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 	});
 
 	test('M3: search_by_conditions over MCP denies reading or filtering on a restricted attribute', async () => {
-		// Wildcard get_attributes: ['*'] when 'notes' has read: false.
 		const starRes = await mcpToolCall(ctx, readerAllowlistedAuth, 'search_by_conditions', {
 			database: 'data',
 			table: 'PublicNote',
@@ -646,8 +645,14 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 			!JSON.stringify(starRes.json).includes(RESTRICTED_NOTES_CANARY),
 			`Restricted attribute 'notes' leaked via get_attributes:['*']: ${JSON.stringify(starRes.json)}`
 		);
+		if (starRes.result?.isError) {
+			assert.strictEqual(starRes.result.isError, true);
+		} else {
+			assert.ok(Array.isArray(starRes.parsed) && starRes.parsed.length === 1);
+			assert.strictEqual(starRes.parsed[0].id, 'pub-1');
+			assert.strictEqual('notes' in starRes.parsed[0], false);
+		}
 
-		// Explicit get_attributes: ['id', 'notes'] must be denied.
 		const explicitRes = await mcpToolCall(ctx, readerAllowlistedAuth, 'search_by_conditions', {
 			database: 'data',
 			table: 'PublicNote',
@@ -665,7 +670,6 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 			`Restricted attribute 'notes' leaked via explicit get_attributes: ${JSON.stringify(explicitRes.json)}`
 		);
 
-		// Condition filtering on restricted attribute 'notes' must be denied.
 		const condRes = await mcpToolCall(ctx, readerAllowlistedAuth, 'search_by_conditions', {
 			database: 'data',
 			table: 'PublicNote',

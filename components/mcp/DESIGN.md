@@ -128,10 +128,13 @@ A handful of design points are non-obvious and easy to break:
   `serialize` (`server/serverHelpers/contentTypes.ts`), whereas `wrapToolResult` calls synchronous
   `JSON.stringify`: `read_audit_log` (default/`timestamp` branch returns `groupRecordsInHistory`, an
   `AsyncGenerator` that stringifies to `"{}"`), `get_analytics` (`searchResults.map(async ...)`, an
-  `ExtendedIterable` whose `.toJSON()` yields unawaited `Promise` objects `"[{}]"`), and full-text
-  `search_by_conditions` (an async-only `ExtendedIterable` whose `.toJSON()` throws). In
+  `ExtendedIterable` whose `.toJSON()` yields unawaited `Promise` objects `"[{}]"`), full-text
+  `search_by_conditions` (an async-only `ExtendedIterable` whose `.toJSON()` throws), and
+  `search_by_id` / `search_by_hash` (`getRecords`, an async-iterator-only object that previously
+  stringified to `"{}"` and left its internal `transaction()` unsettled). In
   `makeOperationToolHandler` (`tools/operations.ts`), `collectIterableResult` drains any non-array,
   non-`Readable`, non-`ArrayBufferView` object implementing `Symbol.asyncIterator` or
-  `Symbol.iterator` via `for await`, awaiting each element, up to `MAX_OPERATION_ITERABLE_ITEMS`
-  (10,000) before throwing an explicit error (which returns `isError: true` and closes the iterator
-  via `for await`'s normal `return()` protocol).
+  `Symbol.iterator` via `for await`, awaiting each element and checking `context.signal` for client
+  cancellation, up to `MAX_OPERATION_ITERABLE_ITEMS` (10,000 items; bounds item count rather than
+  byte size, unlike HTTP `POST /` streaming) before throwing an explicit error (which returns
+  `isError: true` and closes the iterator via `for await`'s normal `return()` protocol).

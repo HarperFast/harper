@@ -310,10 +310,14 @@ function isCollectibleIterable(data: unknown): data is AsyncIterable<unknown> | 
 
 async function collectIterableResult(
 	operationName: string,
-	iterable: AsyncIterable<unknown> | Iterable<unknown>
+	iterable: AsyncIterable<unknown> | Iterable<unknown>,
+	signal?: AbortSignal
 ): Promise<unknown[]> {
 	const items: unknown[] = [];
 	for await (const item of iterable) {
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
 		if (items.length >= MAX_OPERATION_ITERABLE_ITEMS) {
 			throw new Error(
 				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; specify a smaller limit or narrower conditions`
@@ -334,7 +338,10 @@ async function collectIterableResult(
  * adapt to the failure.
  */
 export function makeOperationToolHandler(operationName: string) {
-	return async function operationToolHandler(args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+	return async function operationToolHandler(
+		args: unknown,
+		context: { user: AuthedUser; signal?: AbortSignal }
+	): Promise<ToolResult> {
 		const body: Record<string, unknown> = {
 			...(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}),
 			operation: operationName,
@@ -368,7 +375,7 @@ export function makeOperationToolHandler(operationName: string) {
 			const operationFn = chooseOperation(body);
 			let data = await processLocalTransaction({ body }, operationFn);
 			if (isCollectibleIterable(data)) {
-				data = await collectIterableResult(operationName, data);
+				data = await collectIterableResult(operationName, data, context?.signal);
 			}
 			if (data instanceof Readable) {
 				// Backstop for an operation outside STREAMING_OPERATIONS unexpectedly returning a

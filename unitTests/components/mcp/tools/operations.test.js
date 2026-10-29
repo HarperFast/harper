@@ -4,6 +4,7 @@ const {
 	registerOperationsTools,
 	DEFAULT_ALLOW,
 	DEFAULT_EXCLUDED,
+	MAX_OPERATION_ITERABLE_ITEMS,
 	_setOperationFunctionMapForTest,
 	_setChooseOperationForTest,
 	_setProcessLocalTransactionForTest,
@@ -653,12 +654,12 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		);
 	}
 
-	async function callReturning(operationName, value) {
+	async function callReturning(operationName, value, extraContext = {}) {
 		_setChooseOperationForTest(() => async () => value);
 		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
 		_setOperationFunctionMapForTest(makeOpMap([[operationName, null]]));
 		registerOperationsTools();
-		return getTool(operationName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+		return getTool(operationName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's', ...extraContext });
 	}
 
 	let envOverrides;
@@ -768,6 +769,28 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assertSpecLegal(res);
 	});
 
+	it('collects an async-only ExtendedIterable whose synchronous toJSON() throws (full-text search_by_conditions)', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const rows = [
+			{ id: 'pub-1', title: 'alpha' },
+			{ id: 'pub-2', title: 'beta' },
+		];
+		const asyncExtended = new ExtendedIterable();
+		asyncExtended.iterate = async function* () {
+			for (const row of rows) {
+				yield row;
+			}
+		};
+		assert.throws(() => JSON.stringify(asyncExtended), /Can not serialize async iterables/);
+
+		const res = await callReturning('search_by_conditions', asyncExtended);
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), rows);
+		assert.deepEqual(res.structuredContent, { results: rows });
+		assertSpecLegal(res);
+	});
+
 	it('collects a non-array sync iterable yielding promises into a resolved JSON array', async () => {
 		const syncIterableOfPromises = {
 			*[Symbol.iterator]() {
@@ -788,13 +811,13 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assertSpecLegal(res);
 	});
 
-	it('rejects an iterable result that exceeds the bounded item cap and closes the iterator', async () => {
+	it('rejects an iterable result that exceeds MAX_OPERATION_ITERABLE_ITEMS and closes the iterator', async () => {
 		let closed = false;
+		let yielded = 0;
 		async function* unboundedEntries() {
 			try {
-				let i = 0;
 				while (true) {
-					yield { seq: ++i };
+					yield { seq: ++yielded };
 				}
 			} finally {
 				closed = true;
@@ -805,10 +828,42 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 
 		assert.equal(res.isError, true);
 		assert.equal(closed, true, 'for-await must close the iterator when aborting at the cap');
+		assert.equal(yielded, MAX_OPERATION_ITERABLE_ITEMS + 1);
 		const payload = JSON.parse(res.content[0].text);
 		assert.equal(payload.kind, 'harper_error');
 		assert.equal(payload.operation, 'read_audit_log');
-		assert.match(payload.message, /exceeded.*limit|maximum.*items/i);
+		assert.ok(
+			payload.message.includes(String(MAX_OPERATION_ITERABLE_ITEMS)),
+			`Expected error message to mention ${MAX_OPERATION_ITERABLE_ITEMS}, got: ${payload.message}`
+		);
+		assertSpecLegal(res);
+	});
+
+	it('aborts draining and closes the iterator when context.signal is aborted mid-iteration', async () => {
+		const ac = new AbortController();
+		let closed = false;
+		let yielded = 0;
+		async function* cancellableEntries() {
+			try {
+				while (true) {
+					yielded++;
+					if (yielded === 2) ac.abort();
+					yield { seq: yielded };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', cancellableEntries(), { signal: ac.signal });
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when context.signal aborts');
+		assert.equal(yielded, 2);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.match(payload.message, /aborted/i);
 		assertSpecLegal(res);
 	});
 });
