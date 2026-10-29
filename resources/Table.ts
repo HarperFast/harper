@@ -5598,6 +5598,21 @@ export function makeTable(options): TableResourceClass {
 						// blobs are found here; before/beforeIntermediate run after validate
 						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
 					}
+					let ownFieldNames: string[];
+					if (
+						writtenHere &&
+						!fullUpdate &&
+						!committedBy.isReplay &&
+						!(context as any)?.source &&
+						(this.constructor as any).loadAsInstance !== false
+					) {
+						const names = Object.keys(this);
+						if (names.length) {
+							ownFieldNames = names;
+							recordUpdate = Object.assign(Object.create(null), recordUpdate);
+							for (const name of names) recordUpdate[name] = this[name];
+						}
+					}
 					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
 					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
 						if (!(context as any)?.source) {
@@ -5640,6 +5655,9 @@ export function makeTable(options): TableResourceClass {
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
 							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
+							if (ownFieldNames) {
+								for (const name of ownFieldNames) this[name] = recordUpdate[name];
+							}
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'

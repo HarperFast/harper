@@ -382,15 +382,16 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 		assert.strictEqual((await Item.get('i1')).legacyCode, 42);
 
 		for (const name of ['legacyCode', 'neverDeclared']) {
-			for (const changeDeclared of [false, true]) {
+			for (const mode of ['empty', 'assigned', 'patch']) {
 				await assert.rejects(
 					async () =>
 						transaction(async () => {
-							const record = await Item.update('i1');
-							if (changeDeclared) record.label = 'rejected';
+							const record = await Item.update('i1', mode === 'patch' ? { label: 'rejected' } : undefined);
+							if (mode === 'assigned') record.label = 'rejected';
 							record[name] = 'new own value';
 						}),
-					(error) => error.name === 'ValidationError' && error.message.includes(`Property ${name} is not allowed`)
+					(error) => error.name === 'ValidationError' && error.message.includes(`Property ${name} is not allowed`),
+					`${name} through ${mode}`
 				);
 				const stored = await Item.get('i1');
 				assert.strictEqual(stored.label, 'permitted');
@@ -414,6 +415,28 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 			});
 		});
 		assert.strictEqual((await Item.get('i1')).when.toISOString(), '2026-01-01T00:00:00.000Z');
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			Object.defineProperty(record, 'when', {
+				value: '2026-02-01T00:00:00.000Z',
+				enumerable: true,
+				writable: true,
+			});
+		});
+		assert.strictEqual((await Item.get('i1')).when.toISOString(), '2026-02-01T00:00:00.000Z');
+		const loadAsInstance = Item.loadAsInstance;
+		Item.loadAsInstance = false;
+		try {
+			await transaction(async () => {
+				const record = await Item.update('i1', { label: 'plain merge' });
+				record.notStored = 'instance metadata';
+			});
+			const stored = await Item.get('i1');
+			assert.strictEqual(stored.label, 'plain merge');
+			assert.strictEqual(stored.notStored, undefined);
+		} finally {
+			Item.loadAsInstance = loadAsInstance;
+		}
 	});
 
 	it('keeps retired own fields writable on unsealed tracked updates', async () => {
@@ -428,6 +451,11 @@ describe('schema re-declaration retires the previous declaration’s accessors',
 			record.legacyCode = 'now untyped';
 		});
 		assert.strictEqual((await Item.get('i1')).legacyCode, 'now untyped');
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.legacyCode = 43;
+		});
+		assert.strictEqual((await Item.get('i1')).legacyCode, 43);
 	});
 
 	it('keeps live timestamps and resolvers after a raw expression reload fails', async () => {
