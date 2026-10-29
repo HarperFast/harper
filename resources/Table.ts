@@ -6753,15 +6753,16 @@ export function makeTable(options): TableResourceClass {
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
 							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
 							if (recordToStore !== undefined) {
-								write.stagedEntry = {
-									value: recordToStore,
-									metadataFlags:
-										(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
-										(options?.localOnly ? LOCAL_ONLY : 0),
-									residencyId: keepWriterReplica ? undefined : residencyId,
-									expiresAt,
-									residencySlot,
-								};
+								// only what a following publish must carry; defaults stay off the common-case entry
+								const staged: Partial<Entry> = { value: recordToStore };
+								const stagedFlags =
+									(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
+									(options?.localOnly ? LOCAL_ONLY : 0);
+								if (stagedFlags) staged.metadataFlags = stagedFlags;
+								if (residencyId !== undefined && !keepWriterReplica) staged.residencyId = residencyId;
+								if (expiresAt >= 0) staged.expiresAt = expiresAt;
+								if (residencySlot !== undefined) staged.residencySlot = residencySlot;
+								write.stagedEntry = staged;
 								// any record an earlier write in this transaction stored is now replaced, so mark those
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
 								// anything older was already superseded by its own staged successor earlier in this round
