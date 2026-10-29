@@ -2423,15 +2423,20 @@ export class DatabaseTransaction implements Transaction {
 					const floor = lockHandle.holderVersionFloor();
 					if (floor > lockHandle.acquiredAt && !(this.timestamp && this.timestamp >= floor)) {
 						const rootStore = operation.store.rootStore;
+						const nativeClock = transaction.getTimestamp();
 						const effectiveClock =
 							txnTime ||
 							(typeof rootStore?.getUserSharedBuffer === 'function'
-								? Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
-								: rootStore.getMonotonicTimestamp());
+								? nativeClock > localIssuanceRatchet(rootStore)
+									? nativeClock
+									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
+								: nativeClock);
 						if (floor > effectiveClock) {
 							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {
-								txnTime = this.timestamp = lockHandle.holderVersionCandidate();
+								txnTime = this.timestamp = lockHandle.holderVersionFloor(undefined, true);
 							} else {
+								operation.dropped = true;
+								this.detachWrite(operation);
 								throw new ClientError(
 									'Record lock write cannot advance past its earlier holder version in a transaction whose clock is already fixed; save the held record first or in its own transaction',
 									409
@@ -2448,7 +2453,7 @@ export class DatabaseTransaction implements Transaction {
 			} catch (error) {
 				if (!concurrentClosedWrite) this.timestamp = previousTimestamp;
 				// A refused write left attached would be staged by the next commit sweep after its caller saw the error.
-				if (!operation.saved) {
+				if (!operation.saved && !operation.dropped) {
 					if (lockHandle) this.refuseLockWrites(lockHandle, operation);
 					else this.detachWrite(operation);
 				}

@@ -389,7 +389,7 @@ export function localIssuanceRatchet(rootStore: RocksDatabase): number {
 }
 
 /**
- * A timestamp no local append on this node is issued: the clock's next one, or the ratchet's while it
+ * A timestamp no local append on this node is issued at: the clock's next one, or the ratchet's while it
  * is ahead. A raw clock sample can equal a key the ratchet issued ahead of the clock once the clock
  * catches up, and an equal version on one record reads as a re-delivery.
  */

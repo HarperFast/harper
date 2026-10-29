@@ -38,10 +38,13 @@ describe('future issuance after unsynced WAL loss', function () {
 		});
 		let stderr = '';
 		child.stderr.on('data', (chunk) => (stderr = (stderr + chunk).slice(-8192)));
-		const exited = new Promise((resolve) => {
-			child.once('exit', (code, signal) => resolve({ code, signal }));
-			child.once('error', (error) => resolve({ error }));
-		});
+		const exited = bounded(
+			new Promise((resolve) => {
+				child.once('exit', (code, signal) => resolve({ code, signal }));
+				child.once('error', (error) => resolve({ error }));
+			}),
+			`issuance child never exited (${mode})`
+		);
 		const reply = bounded(
 			new Promise((resolve, reject) => {
 				child.on('message', (message) => {

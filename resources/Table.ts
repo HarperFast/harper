@@ -4344,7 +4344,7 @@ export function makeTable(options): TableResourceClass {
 				try {
 					result = this.#saveOperation(operation);
 				} catch (error) {
-					if (!operation.saved) this.#savingOperation = operation;
+					if (!operation.saved && !operation.dropped) this.#savingOperation = operation;
 					throw error;
 				}
 				const innerCommit = operation.innerCommit;

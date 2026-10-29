@@ -86,8 +86,8 @@ export interface RecordLockHandle {
 	 * timestamp, or the stamp above the state the lock was admitted on.
 	 */
 	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
-	/** Compute the next holder-write floor without claiming a local key or raising the issuance ratchet. */
-	holderVersionFloor(floor?: number): number;
+	/** Compute the next holder-write floor from committed holder versions without claiming a local key unless requested. */
+	holderVersionFloor(floor?: number, claim?: boolean): number;
 	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
@@ -267,6 +267,7 @@ class KeyLockHandle implements RecordLockHandle {
 	writeRefused = false;
 	acquiredAt: number;
 	clusterTsR: number | undefined;
+	#committedHolderVersion: number | undefined;
 	#lastHolderVersion: number | undefined;
 	#candidateFloor: number | undefined;
 	#candidateFloorToClaim: number | undefined;
@@ -295,6 +296,7 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	noteHolderVersion(version: number): void {
+		this.#committedHolderVersion = Math.max(this.#committedHolderVersion ?? version, version);
 		this.#lastHolderVersion = Math.max(this.#lastHolderVersion ?? version, version);
 		if (this.#candidateFloorToClaim != null && version >= this.#candidateFloorToClaim)
 			this.#candidateFloorToClaim = undefined;
@@ -305,22 +307,25 @@ class KeyLockHandle implements RecordLockHandle {
 		if (claimOnWrite) this.#candidateFloorToClaim = Math.max(this.#candidateFloorToClaim ?? version, version);
 	}
 
-	holderVersionFloor(floor?: number): number {
-		return this.#resolveCandidate(floor, false);
+	holderVersionFloor(floor?: number, claim = false): number {
+		return this.#resolveCandidate(floor, claim, this.#committedHolderVersion);
 	}
 
 	holderVersionCandidate(floor?: number): number {
-		return this.#resolveCandidate(floor, true);
+		return this.#resolveCandidate(floor, true, this.#lastHolderVersion);
 	}
 
-	#resolveCandidate(floor: number | undefined, claim: boolean): number {
+	#resolveCandidate(floor: number | undefined, claim: boolean, lastVersion: number | undefined): number {
 		const candidateFloor = Math.max(this.#candidateFloor ?? -Infinity, floor ?? -Infinity);
-		const lastVersion = this.#lastHolderVersion;
 		if (this.#candidateFloorToClaim != null && this.#candidateFloorToClaim > (lastVersion ?? this.acquiredAt)) {
 			const step = timestampAbove(this.#candidateFloorToClaim);
 			const rootStore = this.store.rootStore;
 			const claimed =
 				claim && typeof rootStore?.getUserSharedBuffer === 'function' ? claimLocalKey(rootStore, step) : step;
+			if (claim) {
+				this.#candidateFloor = Math.max(this.#candidateFloor ?? claimed, claimed);
+				this.#candidateFloorToClaim = undefined;
+			}
 			return Math.max(claimed, this.acquiredAt, candidateFloor);
 		}
 		return Math.max(
@@ -396,6 +401,7 @@ class KeyLockHandle implements RecordLockHandle {
 		if (remaining <= 0) return false;
 		this.clusterTsR = tsR;
 		this.acquiredAt = tsR;
+		this.#committedHolderVersion = undefined;
 		this.#lastHolderVersion = undefined;
 		this.#onRelease = onRelease;
 		this.expiresAt = tsR + leaseMs;

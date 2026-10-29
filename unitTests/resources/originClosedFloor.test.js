@@ -594,6 +594,10 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		for (const key of keys) assert(key >= persisted, `key ${key} below the recovered floor ${persisted}`);
 		assert.equal(new Set(keys).size, keys.length, 'keys issued through the ratchet are unique across threads');
 		assert(certify() >= persisted, 'certification resumes from the recovered floor');
-		while (rootStore.getMonotonicTimestamp() <= persisted) await sleep(10);
+		const catchUpDeadline = Date.now() + 5000;
+		while (rootStore.getMonotonicTimestamp() <= persisted) {
+			assert(Date.now() < catchUpDeadline, 'monotonic clock did not catch up to recovered floor');
+			await sleep(10);
+		}
 	});
 });
