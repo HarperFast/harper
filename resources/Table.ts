@@ -7656,7 +7656,11 @@ export function makeTable(options): TableResourceClass {
 							return when(entry, (entry) => {
 								if (stopped || !entry?.value) return SKIP;
 								checkActive?.();
-								return when(matchCandidate(entry.value, entry), (matches) => (matches && !stopped ? entry : SKIP));
+								return when(matchCandidate(entry.value, entry), (matches) => {
+									if (!matches || stopped) return SKIP;
+									checkActive?.();
+									return entry;
+								});
 							});
 						});
 					let examined = 0;
