@@ -41,7 +41,7 @@ import {
 } from './longLivedTransactions.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-// On the handle, not in a WeakMap: an entry per read transaction slows every scavenge (resources/DESIGN.md)
+// Why not a WeakMap: resources/DESIGN.md, "RocksDB range activity and snapshot expiration"
 const READ_OWNER = Symbol('readOwner');
 type OwnedHandle = { [READ_OWNER]?: DatabaseTransaction };
 // Read options for a rotated generation's native transactions; shared because they never vary.
