@@ -38,8 +38,13 @@ let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? proces
 onStartup(() => {
 	AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 });
-export function bypassAuth() {
+/** Test mode: trust loopback connections. Returns a function that restores the previous setting. */
+export function bypassAuth(): () => void {
+	const previous = AUTHORIZE_LOCAL;
 	AUTHORIZE_LOCAL = true;
+	return () => {
+		AUTHORIZE_LOCAL = previous;
+	};
 }
 
 const authorizeLocal = (remoteAddress: string) =>

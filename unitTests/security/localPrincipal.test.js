@@ -104,7 +104,6 @@ describe('the local principal of a request trusted by its transport', function (
 			assert.strictEqual(principal.username, 'local');
 			assert.strictEqual(principal.active, true);
 			assert.strictEqual(principal.role.role, 'super_user');
-			// published templates authorize on the default install's role id
 			assert.strictEqual(principal.role.id, 'super_user');
 			assert.strictEqual(principal.role.permission.super_user, true);
 			assert.strictEqual(principal.role.permission.system.tables.hdb_user.read, true);
@@ -365,8 +364,9 @@ describe('the local principal of a request trusted by its transport', function (
 	});
 
 	describe('MQTT over TCP', () => {
-		// test mode's switch; no other unit test drives the raw TCP listener this enables local trust on
-		before(() => mqtt.bypassAuth());
+		let restoreAuthorizeLocal;
+		before(() => (restoreAuthorizeLocal = mqtt.bypassAuth()));
+		after(() => restoreAuthorizeLocal());
 
 		async function connectOverTcp(remoteAddress, clientId) {
 			let listener;
@@ -398,11 +398,13 @@ describe('the local principal of a request trusted by its transport', function (
 			}
 		}
 
-		it('connects from a loopback address with no credentials as the local principal', async () => {
-			const { connack, session } = await connectOverTcp('127.0.0.1', 'local-tcp');
-			assert.strictEqual(connack.reasonCode, 0);
-			assert.strictEqual(user.isLocalPrincipal(session.user), true);
-		});
+		for (const address of ['127.0.0.1', '::1']) {
+			it(`connects from ${address} with no credentials as the local principal`, async () => {
+				const { connack, session } = await connectOverTcp(address, `local-tcp-${address}`);
+				assert.strictEqual(connack.reasonCode, 0);
+				assert.strictEqual(user.isLocalPrincipal(session.user), true);
+			});
+		}
 
 		it('refuses the same CONNECT from any other address', async () => {
 			const { connack, session } = await connectOverTcp('203.0.113.7', 'remote-tcp');
