@@ -29,26 +29,23 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 import { awaitJobCompleted } from '../apiTests/utils/operations.mjs';
 
 const ROOT = resolve(import.meta.dirname, 'redeploy-extension-freshness');
-// `restart_service http_workers` crashes the Harper instance on Windows (harper#549), so the two
-// suites that restart skip there. The static suite never restarts, so it runs everywhere.
+// `restart_service http_workers` crashes the Harper instance on Windows (harper#549).
 const skipRestartSuites = process.platform === 'win32';
 
 const REDEPLOY_SETTLE_TIMEOUT_MS = 20_000;
-// Wide on purpose: a contended shard rotates workers slowly, and the sibling that measures the same
-// operation budgets 120s (integrationTests/server/rolling-restart.test.ts).
+// A contended shard rotates workers slowly (integrationTests/server/rolling-restart.test.ts budgets 120s).
 const RESTART_POLL_TIMEOUT_MS = 60_000;
-const RESTART_TEST_TIMEOUT_MS = 120_000;
+// Job completion, convergence and the flag clearing each get their own budget.
+const RESTART_TEST_TIMEOUT_MS = 2 * RESTART_POLL_TIMEOUT_MS + REDEPLOY_SETTLE_TIMEOUT_MS + 10_000;
 const BOOT_TIMEOUT_MS = 60_000;
-// A negative sampled once is only true at that instant, so every "still stale", "still absent" and
-// "no restart requested" claim is held across this window instead. Locally the rescan settles in
-// under 100ms, so this is roughly a 30x margin.
+// Every "still stale", "still absent" and "no restart requested" claim holds across this window
+// rather than one sample; the post-deploy rescan settles in well under a second.
 const QUIET_WINDOW_MS = 3_000;
 
 type ApiClient = ReturnType<typeof createApiClient>;
 
-// A failed assertion inside a predicate is a verdict, not a transient transport error, so it
-// surfaces immediately; anything else is retried until the deadline and then rethrown, rather than
-// reported as an opaque "never happened" (utils/operations.mjs `waitFor`).
+// An AssertionError from a predicate is a verdict and fails at once with its own message; any other
+// error is treated as transient and rethrown only at the deadline.
 async function pollUntil(predicate: () => Promise<boolean>, timeoutMs: number, intervalMs = 250): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
@@ -73,7 +70,7 @@ async function holdInvariant(check: () => Promise<void>, windowMs = QUIET_WINDOW
 
 async function getRestartRequired(client: ApiClient): Promise<boolean> {
 	const res = await client.req().send({ operation: 'get_status' }).timeout(5000);
-	strictEqual(res.status, 200, `get_status failed: ${JSON.stringify(res.body)}`);
+	if (res.status !== 200) throw new Error(`get_status returned ${res.status}: ${JSON.stringify(res.body)}`);
 	strictEqual(
 		typeof res.body?.restartRequired,
 		'boolean',
@@ -118,12 +115,16 @@ async function redeployWithoutRestart(
 	}
 }
 
+function bodyText(res: { text?: string; body: unknown }): string {
+	return (res.text ?? String(res.body)).trim();
+}
+
 async function waitForRoute(client: ApiClient, path: string): Promise<void> {
 	const registered = await pollUntil(async () => {
 		const res = await client.reqRest(path).timeout(2000);
-		return res.status !== 404;
+		return res.status === 200;
 	}, BOOT_TIMEOUT_MS);
-	ok(registered, `route ${path} never registered within ${BOOT_TIMEOUT_MS}ms`);
+	ok(registered, `route ${path} never served a 200 within ${BOOT_TIMEOUT_MS}ms`);
 }
 
 suite(
@@ -142,6 +143,12 @@ suite(
 		});
 		after(async () => teardownHarper(ctx));
 
+		async function assertExistingStillV1(): Promise<void> {
+			const existing = await client.reqRest(EXISTING_ROUTE).timeout(2000);
+			strictEqual(existing.status, 200);
+			strictEqual(existing.body.version, 1, 'the changed file must keep serving the cached v1 module until a restart');
+		}
+
 		test('baseline: v1 is live and no restart is pending', async () => {
 			const res = await client.reqRest(EXISTING_ROUTE).timeout(2000);
 			strictEqual(res.status, 200);
@@ -159,33 +166,22 @@ suite(
 			const flagged = await pollUntil(() => getRestartRequired(client), REDEPLOY_SETTLE_TIMEOUT_MS);
 			ok(flagged, 'a redeploy that leaves a stale loaded module behind must flip restartRequired');
 
+			let lastNew: unknown;
 			const served = await pollUntil(async () => {
 				const res = await client.reqRest(NEW_ROUTE).timeout(2000);
-				return res.status === 200;
+				lastNew = { status: res.status, body: res.body };
+				return res.status === 200 && res.body.version === 2 && res.body.isNew === true;
 			}, REDEPLOY_SETTLE_TIMEOUT_MS);
-			ok(served, 'a genuinely new jsResource file must load without a restart');
+			ok(served, `a genuinely new jsResource file must load without a restart; last: ${JSON.stringify(lastNew)}`);
 
-			const fresh = await client.reqRest(NEW_ROUTE).timeout(2000);
-			strictEqual(fresh.body.version, 2);
-			strictEqual(fresh.body.isNew, true);
-
-			// The changed file's event is delivered independently of the new file's, so the stale
-			// module has to still be there past both.
-			await holdInvariant(async () => {
-				const existing = await client.reqRest(EXISTING_ROUTE).timeout(2000);
-				strictEqual(existing.status, 200);
-				strictEqual(
-					existing.body.version,
-					1,
-					'the changed file must keep serving the cached v1 module until a restart'
-				);
-			});
+			await holdInvariant(() => assertExistingStillV1());
 		});
 
 		test(
 			'restart converges the changed file to v2 and clears restartRequired',
 			{ timeout: RESTART_TEST_TIMEOUT_MS },
 			async () => {
+				await assertExistingStillV1();
 				await restartHttpWorkersAndAwaitJob(client, RESTART_POLL_TIMEOUT_MS);
 				const converged = await pollUntil(async () => {
 					const res = await client.reqRest(EXISTING_ROUTE).timeout(2000);
@@ -215,7 +211,7 @@ suite('Redeploy freshness: static serves from disk (QA-786)', (ctx: ContextWithH
 	test('baseline: V1 is live and no restart is pending', async () => {
 		const res = await client.reqRest(EXISTING_ROUTE).timeout(2000);
 		strictEqual(res.status, 200);
-		strictEqual((res.text ?? res.body).toString().trim(), 'V1');
+		strictEqual(bodyText(res), 'V1');
 		strictEqual(await getRestartRequired(client), false, 'a freshly booted instance must not already need a restart');
 	});
 
@@ -226,28 +222,28 @@ suite('Redeploy freshness: static serves from disk (QA-786)', (ctx: ContextWithH
 			'public/new.txt': 'NEW-V2\n',
 		});
 
-		const changedServed = await pollUntil(async () => {
-			const res = await client.reqRest(EXISTING_ROUTE).timeout(2000);
-			return res.status === 200 && (res.text ?? res.body).toString().trim() === 'V2';
-		}, REDEPLOY_SETTLE_TIMEOUT_MS);
-		ok(changedServed, 'static must serve the changed file without a restart');
+		const serves = async (path: string, expected: string): Promise<boolean> => {
+			const res = await client.reqRest(path).timeout(2000);
+			return res.status === 200 && bodyText(res) === expected;
+		};
+		ok(
+			await pollUntil(() => serves(EXISTING_ROUTE, 'V2'), REDEPLOY_SETTLE_TIMEOUT_MS),
+			'static must serve the changed file without a restart'
+		);
+		ok(
+			await pollUntil(() => serves(NEW_ROUTE, 'NEW-V2'), REDEPLOY_SETTLE_TIMEOUT_MS),
+			'static must serve a brand-new file without a restart'
+		);
 
-		const newServed = await pollUntil(async () => {
-			const res = await client.reqRest(NEW_ROUTE).timeout(2000);
-			return res.status === 200;
-		}, REDEPLOY_SETTLE_TIMEOUT_MS);
-		ok(newServed, 'static must serve a brand-new file without a restart');
-
-		const fresh = await client.reqRest(NEW_ROUTE).timeout(2000);
-		strictEqual((fresh.text ?? fresh.body).toString().trim(), 'NEW-V2');
-
-		await holdInvariant(async () =>
+		await holdInvariant(async () => {
+			ok(await serves(EXISTING_ROUTE, 'V2'), 'the changed static file must keep serving V2');
+			ok(await serves(NEW_ROUTE, 'NEW-V2'), 'the new static file must keep serving NEW-V2');
 			strictEqual(
 				await getRestartRequired(client),
 				false,
 				'static has no cached state to go stale, so it must never request a restart for an add or a change'
-			)
-		);
+			);
+		});
 	});
 });
 
@@ -265,8 +261,7 @@ suite(
 		before(async () => {
 			await setupHarperWithFixture(ctx, resolve(ROOT, PROJECT), { config: {}, env: {} });
 			client = createApiClient(ctx.harper);
-			// A schema-only component has no HTTP route to probe; the operations API is always live, so
-			// poll it until the baseline table is describable, which proves the schema loaded.
+			// A schema-only component has no HTTP route, so readiness is the baseline table being describable.
 			const loaded = await pollUntil(async () => (await describeTable('QA786Widget')).status === 200, BOOT_TIMEOUT_MS);
 			ok(loaded, `QA786Widget never became describable within ${BOOT_TIMEOUT_MS}ms`);
 		});
@@ -320,6 +315,7 @@ suite(
 		});
 
 		test('restart exposes the new table and clears restartRequired', { timeout: RESTART_TEST_TIMEOUT_MS }, async () => {
+			await assertTableMissing('QA786Widget2', 'QA786Widget2 must still be absent just before the restart');
 			await restartHttpWorkersAndAwaitJob(client, RESTART_POLL_TIMEOUT_MS);
 			const converged = await pollUntil(async () => {
 				const { status, attributes } = await describeTable('QA786Widget2');
@@ -339,13 +335,21 @@ suite(
 
 			const flagged = await pollUntil(() => getRestartRequired(client), REDEPLOY_SETTLE_TIMEOUT_MS);
 			ok(flagged, 'a changed schema file alone must flip restartRequired');
-			await holdInvariant(() => assertV1SchemaOnly('while a changed schema file waits for a restart'));
+			await holdInvariant(async () => {
+				await assertV1SchemaOnly('while a changed schema file waits for a restart');
+				strictEqual(
+					(await describeTable('QA786Widget2')).status,
+					200,
+					'a change to schema.graphql must not drop the table schema2.graphql declares'
+				);
+			});
 		});
 
 		test(
 			'restart exposes the changed field and clears restartRequired',
 			{ timeout: RESTART_TEST_TIMEOUT_MS },
 			async () => {
+				await assertV1SchemaOnly('just before the restart');
 				await restartHttpWorkersAndAwaitJob(client, RESTART_POLL_TIMEOUT_MS);
 				const converged = await pollUntil(
 					async () => (await describeTable('QA786Widget')).attributes.includes('noteV2'),
