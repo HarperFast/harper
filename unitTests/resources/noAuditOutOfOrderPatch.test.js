@@ -512,9 +512,13 @@ describe('out-of-order patch on an audit:false table', () => {
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
 		assert.strictEqual((await NoAudit.get(id)).count, 16);
 		await deliver();
-		// RocksDB keeps the head version, so the put ties and the transaction is skipped whole; LMDB stored the
-		// merge at its older version (harper#3388), so the put applies again over the merged increment
-		assert.strictEqual((await NoAudit.get(id)).count, process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 15 : 16);
+		// RocksDB keeps the head version, so the put ties and the transaction is skipped whole
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return assert.strictEqual((await NoAudit.get(id)).count, 16);
+		assert.strictEqual(
+			(await NoAudit.get(id)).count,
+			15,
+			'both increments re-apply on the re-applied put; it erases the merged +1 only because LMDB stored the merge at its older version (harper#3388)'
+		);
 	});
 
 	it('a full write starts a new identity list', async () => {

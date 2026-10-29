@@ -5950,11 +5950,8 @@ export function makeTable(options): TableResourceClass {
 					// (risking a missed dedup), so LMDB falls back to the normal audited apply. Replication targets
 					// RocksDB anyway. (harper-pro#480)
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
-					// Without a log, a listed identity is the only sign a patch was already applied, whatever the version
-					// order says: an LMDB merge stores the older version (#3388), so an applied write can compare as newer.
-					// Only the committed list counts, since an earlier write of this transaction shares the identity. A
-					// re-delivery's patches are skipped here and stage nothing, so an earlier staged write means one that
-					// replaced the body (a re-delivered put can compare as newer too), and this patch builds on it.
+					// Ahead of the version comparison, which an LMDB merge's older stored version (#3388) can invert. Why
+					// only the committed list counts, and only with no earlier staged body: resources/DESIGN.md.
 					if (!audit && !fullUpdate && !priorStaged) {
 						const committedRefs = identityBase(write, existingEntry, committedBy)?.receivedIdentityRefs;
 						if (committedRefs && auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0) {
@@ -7044,6 +7041,7 @@ export function makeTable(options): TableResourceClass {
 								if (residencyId !== undefined && !keepWriterReplica) staged.residencyId = residencyId;
 								if (expiresAt >= 0) staged.expiresAt = expiresAt;
 								if (residencySlot !== undefined) staged.residencySlot = residencySlot;
+								if (!audit && receivedIdentityRefs) staged.receivedIdentityRefs = receivedIdentityRefs;
 								write.stagedEntry = staged;
 								// any record an earlier write in this transaction stored is now replaced, so mark those
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
