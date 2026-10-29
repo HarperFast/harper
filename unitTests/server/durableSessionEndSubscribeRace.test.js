@@ -149,6 +149,37 @@ describe('DurableSubscriptionsSession SUBSCRIBE/UNSUBSCRIBE racing with session 
 			);
 			assert.deepStrictEqual(unhandled, []);
 		});
+
+		await withSession(async ({ session, clientId, first, writes }) => {
+			assert.deepStrictEqual(await savedTopics(clientId), [first]);
+			await startHeldSave(session, writes);
+			session.dirty = true;
+
+			let ended = 0;
+			const subscribed = session.subscribed.bind(session);
+			session.subscribed = function (sub) {
+				const end = sub.end.bind(sub);
+				sub.end = () => {
+					ended++;
+					return end();
+				};
+				subscribed(sub);
+				session.disconnect(true);
+			};
+
+			const resubscribing = session.addSubscription({ topic: first, qos: 2, rh: 2 }, true);
+			await assert.rejects(resubscribing, { name: 'SessionEndedError', statusCode: 409 });
+
+			writes[0].release();
+			await waitFor(() => writes.length === 2);
+			writes[1].release();
+			await session.writes;
+
+			assert.ok(ended > 0, 'started subscription must be ended when the session disconnects during subscribe');
+			assert.strictEqual(session.subscriptions.length, 0);
+			assert.deepStrictEqual(await savedTopics(clientId), [first]);
+			assert.deepStrictEqual(unhandled, []);
+		});
 	});
 
 	it('new durable SUBSCRIBE arriving while the session is sealing (waiting on an uncommitted inbound QoS 2 publish) is refused with SessionEndedError', async () => {
