@@ -1,7 +1,7 @@
 /**
  * Benchmark: per-row cost of a filtered primary-key scan (`id=ne=`, matching every row), read for keys
- * only, through Table.search with a select, through a many-to-many join, and as an id filter beside a
- * secondary-index lead.
+ * only, through Table.search with a select, as an id filter beside a secondary-index lead, and through a
+ * many-to-many join alone or with a second key or content condition.
  *
  * Run via mocha on this file alone, once per build; each case prints one `BENCH {json}` line (median ms
  * per query, ns and CPU ns per row, heap bytes allocated per row, GC ms in the measured window).
@@ -131,13 +131,22 @@ describe('Benchmark: filtered primary-key scan', function () {
 		runCase('index-lead-pk-sibling-async', ROWS / 10, () =>
 			count(selectRows([{ attribute: 'category', value: 'cat-3' }, notMissing]))
 		));
+	const joinParents = (...joinedConditions) =>
+		count(
+			Parent.search({
+				enforceExecutionOrder: true,
+				conditions: [{ attribute: ['children', 'id'], comparator: 'ne', value: 'zzzz' }, ...joinedConditions],
+				select: ['id'],
+			})
+		);
 	it('many-to-many join on the related primary key, async', () =>
-		runCase('join-m2m-async', ROWS / 2, () =>
-			count(
-				Parent.search({
-					conditions: [{ attribute: ['children', 'id'], comparator: 'ne', value: 'zzzz' }],
-					select: ['id'],
-				})
-			)
+		runCase('join-m2m-async', ROWS / 2, () => joinParents()));
+	it('many-to-many join with a second key condition, async', () =>
+		runCase('join-m2m-key-sibling-async', ROWS / 2, () =>
+			joinParents({ attribute: ['children', 'id'], comparator: 'ne', value: 'zzzy' })
+		));
+	it('many-to-many join with a content condition, async', () =>
+		runCase('join-m2m-content-sibling-async', ROWS / 2, () =>
+			joinParents({ attribute: ['children', 'name'], comparator: 'ne', value: 'x' })
 		));
 });
