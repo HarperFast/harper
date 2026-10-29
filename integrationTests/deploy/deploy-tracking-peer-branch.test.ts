@@ -276,6 +276,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 				}
 			} finally {
 				writeFileSync(releasePath, '');
+				await deploy.catch(() => {});
 			}
 
 			const response = await deploy;
