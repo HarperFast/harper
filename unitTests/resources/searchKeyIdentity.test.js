@@ -308,6 +308,8 @@ describe('search key identity and the "..." between alias', () => {
 			[{ attribute: 'id', comparator: 'starts_with', value: 'so' }, [['solo']]],
 			[{ attribute: 'id', comparator: 'starts_with', value: '' }, allBut([1, 'x'])],
 			[{ attribute: 'id', comparator: 'prefix', value: ['solo'] }, []],
+			[{ attribute: 'id', comparator: 'prefix', value: [] }, all],
+			[{ attribute: 'id', comparator: 'prefix', value: [null] }, all],
 			[{ attribute: 'id', comparator: 'prefix', value: ['n', 5] }, [['n', 5n, 'x']]],
 			[{ attribute: 'id', value: ['n', 5, 'x'] }, [['n', 5n, 'x']]],
 		]) {

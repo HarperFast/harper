@@ -1020,6 +1020,12 @@ export function searchByIndex(
 				// start: [prefix, null], end: [prefix, MAXIMUM_KEY]
 				if (!Array.isArray(value)) value = [value, null];
 				else if (value[value.length - 1] != null) value = value.concat(null);
+				if (isPrimaryKey && value.length <= 1) {
+					// no prefix ([] or [null]): every key, from the primary store's floor above its metadata
+					start = openStart;
+					exclusiveStart = openStartExclusive;
+					break;
+				}
 				start = value;
 				end = value.slice(0);
 				end[end.length - 1] = MAXIMUM_KEY;
