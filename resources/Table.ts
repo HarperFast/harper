@@ -5834,9 +5834,10 @@ export function makeTable(options): TableResourceClass {
 					// this the index diff re-removes the values that write already removed and never removes
 					// the ones it added — orphaning them — and an incremental update merges onto the
 					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
-					// record comes from the earlier write. The rest of the entry is the pre-transaction one on
-					// LMDB; RocksDB reloads it through this transaction, so it also carries an earlier same-key
-					// write's audit refs, which the re-delivery check below reads past (identityBase).
+					// record (and an audit:false identity list) comes from the earlier write. The rest of the
+					// entry is the pre-transaction one on LMDB; RocksDB reloads it through this transaction, so it
+					// also carries an earlier same-key write's audit refs, which the re-delivery checks below read
+					// past (identityBase).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					let existingRecord =
@@ -5951,17 +5952,12 @@ export function makeTable(options): TableResourceClass {
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 					// Without a log, a listed identity is the only sign a patch was already applied, whatever the version
 					// order says: an LMDB merge stores the older version (#3388), so an applied write can compare as newer.
-					// The committed list must name it, since an earlier write of this transaction shares the identity, and
-					// so must the body this patch applies to, since an earlier full write of it started a new list.
-					if (!audit && !fullUpdate) {
+					// Only the committed list counts, since an earlier write of this transaction shares the identity. A
+					// re-delivery's patches are skipped here and stage nothing, so an earlier staged write means one that
+					// replaced the body (a re-delivered put can compare as newer too), and this patch builds on it.
+					if (!audit && !fullUpdate && !priorStaged) {
 						const committedRefs = identityBase(write, existingEntry, committedBy)?.receivedIdentityRefs;
-						const baseRefs = priorStaged ? priorStaged.receivedIdentityRefs : committedRefs;
-						if (
-							committedRefs &&
-							baseRefs &&
-							auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0 &&
-							auditRefIndex(baseRefs, receivedLogKey, options?.nodeId) >= 0
-						) {
+						if (committedRefs && auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0) {
 							write.skipped = true;
 							return writeCommit(false);
 						}
