@@ -441,58 +441,61 @@ interface CandidateKeyCollection {
  * encoding the common key shapes, and the stores encode -0 and 0 apart where Set membership does not.
  * The rest go by writeKeyId, the encoder the stores index by — flattenKey joins composite keys with
  * NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'] — kept apart from the values because an encoded
- * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. An index scan
- * decodes an int64 as the number it encodes as when that is exact, while a traversal may report the
- * BigInt, so the two are the same key.
+ * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. A key spelled
+ * differently from the string or number it is stored as is taken in that spelling first (`storedSpelling`).
  */
 export class CandidateKeySet {
 	#byValue = new Set<Id>();
 	#encoded = new Set<unknown>();
 	#zero = false;
 	#negativeZero = false;
-	#holdsBigInt = false;
 	add(primaryKey: Id): void {
+		if (typeof primaryKey !== 'string') primaryKey = storedSpelling(primaryKey);
 		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
 			this.#byValue.add(primaryKey);
 		else if (primaryKey === 0) {
 			if (Object.is(primaryKey, -0)) this.#negativeZero = true;
 			else this.#zero = true;
-		} else {
-			if (typeof primaryKey === 'bigint') this.#holdsBigInt = true;
-			this.#encoded.add(writeKeyId(primaryKey));
-		}
+		} else this.#encoded.add(writeKeyId(primaryKey));
 	}
 	has(primaryKey: Id): boolean {
-		if (typeof primaryKey === 'string') return this.#byValue.has(primaryKey);
-		if (typeof primaryKey === 'number') {
-			if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
-			return this.#byValue.has(primaryKey) || (this.#holdsBigInt && this.#encoded.has(writeKeyId(primaryKey)));
-		}
-		if (typeof primaryKey === 'bigint') {
-			const number = Number(primaryKey);
-			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return true;
-		}
+		if (typeof primaryKey !== 'string') primaryKey = storedSpelling(primaryKey);
+		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
+			return this.#byValue.has(primaryKey);
+		if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
 	addIfAbsent(primaryKey: Id): boolean {
-		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
-			if (this.has(primaryKey)) return false;
-			this.add(primaryKey);
-			return true;
-		}
-		if (typeof primaryKey === 'bigint') {
-			const number = Number(primaryKey);
-			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
-			this.#holdsBigInt = true;
-		}
-		const identity = writeKeyId(primaryKey);
-		if (this.#encoded.has(identity)) return false;
-		this.#encoded.add(identity);
-		return true;
+		const size = this.size;
+		this.add(primaryKey);
+		return this.size !== size;
 	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
+}
+
+/**
+ * The string or number a key is stored as, when the key spells it another way: a BigInt a double holds
+ * exactly encodes as that double (an index scan decodes it as the number, a traversal may report the
+ * BigInt), and a one-element tuple of a string encodes as the string. A one-element tuple of a number
+ * does not: array elements carry a wider number encoding.
+ */
+function storedSpelling(primaryKey: Id): Id {
+	if (typeof primaryKey === 'bigint') {
+		const number = Number(primaryKey);
+		return BigInt(number) === primaryKey ? number : primaryKey;
+	}
+	let element: unknown = primaryKey;
+	while (Array.isArray(element) && element.length === 1) element = element[0];
+	return typeof element === 'string' ? element : primaryKey;
+}
+
+/** Matches a primary key by stored identity, as a primary-store lookup of `value` would. */
+function primaryKeyEquals(value: Id): (primaryKey: Id) => boolean {
+	const keys = new CandidateKeySet();
+	keys.add(value);
+	return (primaryKey) => keys.has(primaryKey);
 }
 
 export function distinctKeys(entries: any): any {
@@ -1753,8 +1756,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	let value = searchCondition[1] ?? searchCondition.value;
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
-		if (attribute.length === 1) attribute = attribute[0];
-		else if (attribute.length > 1) {
+		if (attribute.length === 1) {
+			attribute = attribute[0];
+			isPrimaryKey = attribute === Table?.primaryKey;
+		} else if (attribute.length > 1) {
 			const firstAttributeName = attribute[0];
 			// get the relationship attribute (may be undefined for plain JSON paths)
 			const firstAttribute = findAttribute(Table?.attributes, firstAttributeName);
@@ -1902,7 +1907,11 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 		case SEARCH_TYPES.EQUALS:
 		case undefined:
-			baseFilter = attributeComparator(attribute, (recordValue) => recordValue === value, true);
+			baseFilter = attributeComparator(
+				attribute,
+				isPrimaryKey ? primaryKeyEquals(value) : (recordValue) => recordValue === value,
+				true
+			);
 			break;
 		case 'contains':
 			baseFilter = attributeComparator(attribute, (recordValue) => recordValue?.toString().includes(value));
@@ -1910,13 +1919,22 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'ends_with':
 			baseFilter = attributeComparator(attribute, (recordValue) => recordValue?.toString().endsWith(value));
 			break;
-		case 'starts_with':
+		case 'starts_with': {
+			// a non-string primary key matches by its stored bytes: the set the primary-store prefix scan reads
+			const prefix = String(value);
+			const encodedPrefix = isPrimaryKey && prefix ? (writeKeyId(prefix) as string) : undefined;
 			baseFilter = attributeComparator(
 				attribute,
-				(recordValue) => typeof recordValue === 'string' && recordValue.startsWith(value),
+				(recordValue) =>
+					typeof recordValue === 'string'
+						? recordValue.startsWith(prefix)
+						: encodedPrefix !== undefined &&
+							recordValue != null &&
+							(writeKeyId(recordValue) as string).startsWith(encodedPrefix),
 				true
 			);
 			break;
+		}
 		case 'prefix':
 			if (!Array.isArray(value)) value = [value];
 			else if (value[value.length - 1] == null) value = value.slice(0, -1);
@@ -1960,9 +1978,13 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'in': {
 			if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
 			// Cache the Set on the condition so multi-row evaluation reuses it.
-			let valueSet: Set<any> = (searchCondition as any).cachedSet;
+			let valueSet: Set<any> | CandidateKeySet = (searchCondition as any).cachedSet;
 			if (!valueSet) {
-				valueSet = new Set(value.map((v) => (v instanceof Date ? v.getTime() : v)));
+				const values = value.map((v) => (v instanceof Date ? v.getTime() : v));
+				if (isPrimaryKey) {
+					valueSet = new CandidateKeySet();
+					for (const key of values) valueSet.add(key);
+				} else valueSet = new Set(values);
 				(searchCondition as any).cachedSet = valueSet;
 			}
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
@@ -1993,14 +2015,19 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				(recordValue) => recordValue != null && compareKeys(recordValue, value) <= 0
 			);
 			break;
-		case 'ne':
-			baseFilter = attributeComparator(
-				attribute,
-				(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
-				false,
-				true
-			);
+		case 'ne': {
+			if (isPrimaryKey) {
+				const equals = primaryKeyEquals(value);
+				baseFilter = attributeComparator(attribute, (primaryKey) => !equals(primaryKey));
+			} else
+				baseFilter = attributeComparator(
+					attribute,
+					(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+					false,
+					true
+				);
 			break;
+		}
 		case 'sort':
 			return () => true;
 		default:
@@ -2021,6 +2048,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		allowObjectMatching?: boolean
 	) {
 		let thresholdRemainingMisses: number;
+		// a primary key is one value, so a composite key is never tested element by element
+		allowObjectMatching ||= isPrimaryKey;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys

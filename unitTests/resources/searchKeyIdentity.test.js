@@ -1,8 +1,10 @@
 const assert = require('node:assert');
+const { inspect } = require('node:util');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { executeConditions, CandidateKeySet, distinctKeys } = require('#src/resources/search');
-const { compareKeys } = require('ordered-binary');
+const { executeConditions, CandidateKeySet, distinctKeys, filterByType } = require('#src/resources/search');
+const { writeKeyId } = require('#src/resources/DatabaseTransaction');
+const { compareKeys, fromBufferKey, toBufferKey } = require('ordered-binary');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 async function collect(iterable) {
@@ -153,5 +155,227 @@ describe('search key identity and the "..." between alias', () => {
 		const distinct = distinctKeys(entries);
 		assert.strictEqual(distinct.length, 3);
 		assert.strictEqual(distinctKeys(entries).length, 3, 'each call starts with an empty seen-set');
+	});
+
+	describe('primary-key conditions on every route a plan can take', () => {
+		let Composite;
+		let Numeric;
+		const all = [['a\x00b', 'c'], ['a', 'b\x00c'], ['solo'], ['t', 7], ['t', '7'], ['tenant', 'item'], ['x', 'tenant']];
+		const allBut = (...excluded) => all.filter((id) => !excluded.some((other) => compareKeys(id, other) === 0));
+		// the first route is the store's own answer: a key lookup, key range or key scan
+		const routes = (keyRange) => ({
+			'leading': (condition) => ({ conditions: [condition] }),
+			'id filter after an index lead': (condition) => ({
+				conditions: [{ attribute: 'grp', value: 'g' }, condition],
+				enforceExecutionOrder: true,
+			}),
+			'record filter after a key-range lead': (condition) => ({
+				conditions: [keyRange, condition],
+				enforceExecutionOrder: true,
+			}),
+			'nested group': (condition) => ({
+				conditions: [
+					{ attribute: 'grp', value: 'g' },
+					{ operator: 'or', conditions: [condition, { attribute: 'id', value: 'none' }] },
+				],
+				enforceExecutionOrder: true,
+			}),
+		});
+		const compositeRoutes = routes({ attribute: 'id', comparator: 'gt', value: 'a' });
+		const numericRoutes = routes({ attribute: 'id', comparator: 'ge', value: 0 });
+		// a record reports its id as written or as decoded depending on the route: 5n or 5, ['solo'] or 'solo'
+		const asStored = (keys) => keys.map((key) => fromBufferKey(toBufferKey(key))).sort(compareKeys);
+		async function ids(table, query) {
+			const records = await collect(table.search(query));
+			return asStored(records.map((record) => record.id));
+		}
+
+		before(async () => {
+			Composite = table({
+				table: 'SearchKeyIdentityComposite',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'grp', indexed: true }, { name: 'tags' }],
+			});
+			for (const id of all) await Composite.put(id, { grp: 'g', tags: id[0] === 't' ? ['t', 'u'] : ['v'] });
+			Numeric = table({
+				table: 'SearchKeyIdentityNumeric',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'grp', indexed: true },
+					{ name: 'kind', indexed: true },
+					{ name: 'targetIds' },
+				],
+			});
+			await Numeric.put(0n, { grp: 'g' });
+			await Numeric.put(5n, { grp: 'g', kind: 'five', targetIds: [5, 5n] });
+			await Numeric.put(9, { grp: 'g' });
+		});
+
+		after(() => {
+			Composite?.dropTable();
+			Numeric?.dropTable();
+		});
+
+		for (const [condition, expected] of [
+			[{ attribute: 'id', value: ['t', 7] }, [['t', 7]]],
+			[{ attribute: 'id', value: 't' }, []],
+			[{ attribute: 'id', value: 'solo' }, [['solo']]],
+			[{ attribute: 'id', value: ['solo'] }, [['solo']]],
+			[{ attribute: ['id'], value: ['t', 7] }, [['t', 7]]],
+			[{ attribute: 'id', comparator: 'ne', value: ['t', 7] }, allBut(['t', 7])],
+			[
+				{
+					attribute: 'id',
+					comparator: 'in',
+					value: [
+						['t', 7],
+						['a\x00b', 'c'],
+					],
+				},
+				[
+					['a\x00b', 'c'],
+					['t', 7],
+				],
+			],
+			[{ attribute: 'id', comparator: 'in', value: ['t'] }, []],
+			[{ attribute: 'id', comparator: 'not_in', value: [['t', 7]] }, allBut(['t', 7])],
+			[
+				{
+					attribute: 'id',
+					comparator: 'between',
+					value: [
+						['t', 1],
+						['t', 9],
+					],
+				},
+				[['t', 7]],
+			],
+			[
+				{
+					attribute: 'id',
+					comparator: '...',
+					value: [
+						['t', 1],
+						['t', 9],
+					],
+				},
+				[['t', 7]],
+			],
+			[
+				{
+					attribute: 'id',
+					comparator: 'not_between',
+					value: [
+						['t', 1],
+						['t', 9],
+					],
+				},
+				allBut(['t', 7]),
+			],
+			[
+				{ attribute: 'id', comparator: 'gt', value: ['t', 7] },
+				[
+					['t', '7'],
+					['tenant', 'item'],
+					['x', 'tenant'],
+				],
+			],
+			[
+				{ attribute: 'id', comparator: 'lt', value: 'b' },
+				[
+					['a\x00b', 'c'],
+					['a', 'b\x00c'],
+				],
+			],
+			[
+				{ attribute: 'id', comparator: 'prefix', value: ['t'] },
+				[
+					['t', 7],
+					['t', '7'],
+				],
+			],
+			[{ attribute: 'id', comparator: 'starts_with', value: 'ten' }, [['tenant', 'item']]],
+		]) {
+			it(`${inspect(condition)} matches the same composite keys on every route`, async () => {
+				for (const [route, query] of Object.entries(compositeRoutes)) {
+					assert.deepStrictEqual(await ids(Composite, query(condition)), asStored(expected), route);
+				}
+			});
+		}
+
+		it('still matches an array attribute that is not the key element by element', async () => {
+			for (const [route, query] of Object.entries(compositeRoutes)) {
+				assert.deepStrictEqual(
+					await ids(Composite, query({ attribute: 'tags', value: 't' })),
+					[
+						['t', 7],
+						['t', '7'],
+					],
+					route
+				);
+			}
+		});
+
+		for (const [condition, expected] of [
+			[{ attribute: 'id', value: 5 }, [5n]],
+			[{ attribute: 'id', value: 0 }, [0n]],
+			[{ attribute: 'id', comparator: 'in', value: [0n, 9n] }, [0n, 9]],
+			[{ attribute: 'id', comparator: 'ne', value: 5 }, [0n, 9]],
+		]) {
+			it(`${inspect(condition)} treats a BigInt key and its number as one key`, async () => {
+				for (const [route, query] of Object.entries(numericRoutes)) {
+					assert.deepStrictEqual(await ids(Numeric, query(condition)), asStored(expected), route);
+				}
+			});
+		}
+
+		it('holds one entry per stored key, whichever spelling and method adds it', () => {
+			const spellings = [
+				[5, 5n],
+				[0, 0n],
+				[2 ** 62, 2n ** 62n],
+				[2 ** 62, 2n ** 62n + 1n],
+				[0, -0],
+				['t', ['t']],
+				['t', [['t']]],
+				[5, [5]],
+				['a\x00b', ['a', 'b']],
+				[
+					['a\x00b', 'c'],
+					['a', 'b\x00c'],
+				],
+			];
+			for (const [first, second] of spellings) {
+				const sameKey = writeKeyId(first) === writeKeyId(second);
+				for (const [a, b] of [
+					[first, second],
+					[second, first],
+				]) {
+					const label = inspect([a, b]);
+					const added = new CandidateKeySet();
+					added.add(a);
+					added.add(b);
+					assert.strictEqual(added.size, sameKey ? 1 : 2, `add ${label}`);
+					assert.strictEqual(added.has(a) && added.has(b), true, `has ${label}`);
+					const checked = new CandidateKeySet();
+					assert.strictEqual(checked.addIfAbsent(a), true, `addIfAbsent ${label}`);
+					assert.strictEqual(checked.addIfAbsent(b), !sameKey, `addIfAbsent ${label}`);
+					const single = new CandidateKeySet();
+					single.add(a);
+					assert.strictEqual(single.has(b), sameKey, `has ${label}`);
+				}
+			}
+			assert.deepStrictEqual(distinctKeys([0n, 0]), [0n]);
+			assert.deepStrictEqual(distinctKeys([0, 0n]), [0]);
+		});
+
+		it('keeps a single related id when the adaptive id filter collects it as a number and a BigInt', () => {
+			const relationFilter = filterByType({ attribute: 'kind', value: 'five' }, Numeric, null, null, false, 1000);
+			relationFilter.to = 'targetIds';
+			assert.strictEqual(relationFilter({ kind: 'miss' }), false);
+			assert.strictEqual(relationFilter.idFilter.idSet.size, 1);
+			assert.strictEqual(relationFilter.idFilter.onlyId, 5);
+		});
 	});
 });
