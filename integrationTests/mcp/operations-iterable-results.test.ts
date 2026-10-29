@@ -642,16 +642,14 @@ suite('MCP operations profile: iterable results & search_by_conditions', (ctx: C
 		});
 		assert.strictEqual(starRes.status, 200);
 		assert.ok(
+			!starRes.result?.isError,
+			`Wildcard get_attributes:['*'] should filter to readable attributes: ${starRes.text}`
+		);
+		assert.deepStrictEqual(starRes.parsed, [{ id: 'pub-1', title: 'welcome', tag: 'greeting' }]);
+		assert.ok(
 			!JSON.stringify(starRes.json).includes(RESTRICTED_NOTES_CANARY),
 			`Restricted attribute 'notes' leaked via get_attributes:['*']: ${JSON.stringify(starRes.json)}`
 		);
-		if (starRes.result?.isError) {
-			assert.strictEqual(starRes.result.isError, true);
-		} else {
-			assert.ok(Array.isArray(starRes.parsed) && starRes.parsed.length === 1);
-			assert.strictEqual(starRes.parsed[0].id, 'pub-1');
-			assert.strictEqual('notes' in starRes.parsed[0], false);
-		}
 
 		const explicitRes = await mcpToolCall(ctx, readerAllowlistedAuth, 'search_by_conditions', {
 			database: 'data',
