@@ -236,7 +236,10 @@ suite('a failing row in a streamed collection read', (ctx: ContextWithHarper) =>
 				const capture = await operation('application/json', searchOperation('group', 'h', ['id', 'seq', 'gated'], 2));
 				// Under Bun, Fastify answers 500 when the stream fails before its head reaches the client
 				if (capture.status === 200) assertCutOff(capture, '{"id":"h-1"');
-				else strictEqual(capture.status, 500);
+				else {
+					strictEqual(capture.status, 500);
+					ok(capture.body.includes('response destroyed before completion'), capture.body);
+				}
 			});
 
 			test('REST CSV: the response is cut off and the worker survives', async () => {

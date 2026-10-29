@@ -135,10 +135,9 @@ describe('the operations API serializer hook with a per-row map that throws', fu
 	it('does not close the JSON array when the read snapshot has expired', async function () {
 		await serve(rowsFailingAt2(new ReadSnapshotExpiredError()));
 		const outcome = await post('application/json').then(
-			(res) => res.body,
+			(res) => `${res.statusCode} ${res.body}`,
 			(error) => `rejected: ${error.message}`
 		);
-		assert.ok(!outcome.endsWith(']'), `the array must not be closed: ${outcome}`);
-		assert.ok(!outcome.includes('"id":3'), 'no row is written after the failure');
+		assert.strictEqual(outcome, 'rejected: response destroyed before completion');
 	});
 });
