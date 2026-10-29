@@ -35,17 +35,15 @@ const skipRestartSuites = process.platform === 'win32';
 const REDEPLOY_SETTLE_TIMEOUT_MS = 20_000;
 // A contended shard rotates workers slowly (integrationTests/server/rolling-restart.test.ts budgets 120s).
 const RESTART_POLL_TIMEOUT_MS = 60_000;
-// Job completion, convergence and the flag clearing each get their own budget.
 const RESTART_TEST_TIMEOUT_MS = 2 * RESTART_POLL_TIMEOUT_MS + REDEPLOY_SETTLE_TIMEOUT_MS + 10_000;
 const BOOT_TIMEOUT_MS = 60_000;
-// Every "still stale", "still absent" and "no restart requested" claim holds across this window
-// rather than one sample; the post-deploy rescan settles in well under a second.
+// A negative sampled once is only true at that instant, so every "still stale", "still absent" and
+// "no restart requested" claim holds across this window instead.
 const QUIET_WINDOW_MS = 3_000;
 
 type ApiClient = ReturnType<typeof createApiClient>;
 
-// An AssertionError from a predicate is a verdict and fails at once with its own message; any other
-// error is treated as transient and rethrown only at the deadline.
+// A wrong value is a verdict, so it fails with its own message instead of waiting out the deadline.
 async function pollUntil(predicate: () => Promise<boolean>, timeoutMs: number, intervalMs = 250): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
@@ -278,9 +276,11 @@ suite(
 		async function assertTableMissing(table: string, message: string): Promise<void> {
 			const { status, body } = await describeTable(table);
 			strictEqual(status, 404, `${message} — expected 404, got ${status}: ${JSON.stringify(body)}`);
-			ok(
-				typeof body?.error === 'string' && body.error.includes(table),
-				`${message} — expected a not-found error naming ${table}, got ${JSON.stringify(body)}`
+			// Rules out a 404 for the whole database rather than this table.
+			strictEqual(
+				(await describeTable('QA786Widget')).status,
+				200,
+				`${message} — the baseline table must stay describable`
 			);
 		}
 
