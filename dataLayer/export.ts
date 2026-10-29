@@ -185,7 +185,6 @@ export async function saveToLocal(filePath: string, sourceDataFormat: string, da
 		// Create a write stream to the local export file.
 		let writeStream = fs.createWriteStream(filePath);
 		const columns = data.getColumns?.();
-		// Use the toCsvStream helper to convert data to CSV; rejects if the source or the file fails
 		await pipeline(toCsvStream(data, columns), writeStream);
 
 		return {
@@ -272,7 +271,6 @@ export async function export_to_s3(exportObject: any) {
 
 	if (exportObject.format === CSV) {
 		s3Name = exportObject.s3.key + '.csv';
-		// A row that fails destroys the pass through with its error, which rejects the upload reading it.
 		stream.pipeline(toCsvStream(data, data.getColumns?.()), passThrough, () => {});
 	} else if (exportObject.format === JSON_TEXT) {
 		s3Name = exportObject.s3.key + '.json';

@@ -93,7 +93,6 @@ export class ServerError extends Error {
 	}
 }
 
-/** The read snapshot under a scan was released, so the read cannot continue; unlike a row's own failure, it ends the whole read. */
 export class ReadSnapshotExpiredError extends ServerError {
 	constructor() {
 		super('Read scan snapshot expired; retry the read without replaying previously committed writes', 503);

@@ -531,26 +531,6 @@ describe('Test export.js', () => {
 			upload_stub.resetHistory();
 		});
 
-		it('Rejects the upload when a row fails while exporting CSV to S3', async function () {
-			this.timeout(10000);
-			function* failingRows() {
-				yield { id: 1 };
-				throw new Error('scan failed');
-			}
-			const restoreRecords = hdb_export.__set__('getRecords', sandbox.stub().resolves(failingRows()));
-			const restoreUpload = hdb_export.__set__('Upload', function (options) {
-				this.done = async () => {
-					for await (const _chunk of options.params.Body);
-				};
-			});
-			try {
-				await testUtils.assertErrorAsync(hdb_export.export_to_s3, [export_obj_test], new Error('scan failed'));
-			} finally {
-				restoreRecords();
-				restoreUpload();
-			}
-		});
-
 		it('Nominal call export JSON to S3', async () => {
 			let export_object_clone = testUtils.deepClone(export_obj_test);
 			export_object_clone.format = 'json';

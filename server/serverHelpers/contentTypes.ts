@@ -353,7 +353,6 @@ export function registerContentHandlers(app) {
 	app.addHook('onResponse', releaseUnreadUpload);
 }
 
-/** NDJSON and event streams report a failing source through their own terminal record, so no row is recovered for them. */
 function recoversRowErrors(contentType: string): boolean {
 	return (
 		contentType !== 'application/x-ndjson' &&
@@ -1017,7 +1016,7 @@ export function toCsvStream(data, columns?) {
 		},
 	});
 
-	// a source error must fail the returned stream, which the HTTP layer reports; pipe() forwards none
+	// a source error must fail the returned stream, which is what the HTTP layer reports
 	return stream.pipeline(readStream, csvTransform, () => {});
 }
 
