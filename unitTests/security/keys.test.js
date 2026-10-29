@@ -698,26 +698,23 @@ describe('Test keys module', () => {
 	describe('createTLSSelector initialized by a request (harper-pro#1189)', () => {
 		let databases;
 		let contextStorage;
+		let suspendDatabaseCommits;
 		let systemDescriptor;
 		let certificates;
 		const restores = [];
-		// replaces a method of the real certificate table for one test
-		const replace = (name, implementation) => {
-			const own = Object.getOwnPropertyDescriptor(certificates, name);
-			const original = certificates[name];
-			certificates[name] = implementation(original);
-			restores.push(() => (own ? Object.defineProperty(certificates, name, own) : delete certificates[name]));
-		};
 		const restore = () => {
 			while (restores.length) restores.pop()();
 		};
-		const failingSearch = () => () => {
-			throw new Error('transient read');
+		// a suspended database fails every certificate-table call with DatabaseClosingError
+		const suspendSystemDatabase = () => {
+			const suspension = suspendDatabaseCommits([certificates.primaryStore.rootStore]);
+			restores.push(() => suspension.release());
 		};
 
 		beforeEach(() => {
 			databases = require('#src/resources/databases').databases;
 			contextStorage = require('#src/resources/transaction').contextStorage;
+			({ suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction'));
 			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
 			certificates = databases.system.hdb_certificate;
 		});
@@ -745,27 +742,24 @@ describe('Test keys module', () => {
 
 		it('retries a one-shot initialization that rejected', async function () {
 			this.timeout(5000);
-			replace('search', failingSearch);
+			suspendSystemDatabase();
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
 			const selector = keys.createTLSSelector('replication', undefined, false);
 			const failed = selector.initialize(pseudoServer);
-			await assert.rejects(failed, /transient read/);
+			await assert.rejects(failed, { name: 'DatabaseClosingError' });
 			assert.strictEqual(selector.ready, failed, 'holders reading `.ready` directly still see the failure');
 			restore();
 			await selector.initialize(pseudoServer);
 			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
 		});
 
-		it('keeps a rejected listener selector retrying until it recovers on its own', async function () {
-			this.timeout(10000);
-			replace('search', failingSearch);
-			delete databases.system;
+		it('keeps a rejected listener selector retrying until it recovers, still subscribed', async function () {
+			this.timeout(15000);
+			suspendSystemDatabase();
 			let notified = 0;
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [() => notified++] };
 			const selector = keys.createTLSSelector('mqtt', undefined, true);
-			const failed = selector.initialize(pseudoServer);
-			Object.defineProperty(databases, 'system', systemDescriptor);
-			await assert.rejects(failed, /transient read/);
+			await assert.rejects(selector.initialize(pseudoServer), { name: 'DatabaseClosingError' });
 			restore();
 			await waitFor(() => pseudoServer.secureContexts.size > 0, {
 				timeout: 5000,
@@ -773,31 +767,26 @@ describe('Test keys module', () => {
 			});
 			assert.ok(notified > 0, 'listeners registered before the failure are told about the recovery');
 			assert.ok(await selector.ready, '`.ready` now reports the recovery');
-		});
-
-		it('subscribes again on the retry after a subscription that threw', async function () {
-			this.timeout(10000);
-			let calls = 0;
-			replace(
-				'subscribe',
-				(subscribe) =>
-					function (...args) {
-						if (calls++ === 0) throw new Error('table closing');
-						return subscribe.apply(this, args);
-					}
-			);
-			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
-			const selector = keys.createTLSSelector('mqtt', undefined, true);
-			await assert.rejects(selector.initialize(pseudoServer), /table closing/);
-			await waitFor(() => calls >= 2 && pseudoServer.secureContexts.size > 0, {
+			// the first subscribe() threw; the retry must have subscribed, or certificate writes go unseen
+			const notifiedBeforeWrite = notified;
+			const [record] = Array.from(certificates.search([]));
+			await certificates.put({ ...record });
+			await waitFor(() => notified > notifiedBeforeWrite, {
 				timeout: 5000,
-				message: 'the retry must subscribe again, or later certificate writes are never seen',
+				message: 'a certificate write after recovery must rebuild the selector',
 			});
 		});
 
 		it('replaces a rejected listener attempt when initialize() is called again', async function () {
 			this.timeout(10000);
+			// Suspension fails subscribe() along with search(); this case needs a live subscription to retire,
+			// so only search() is made to fail.
 			let ended = false;
+			const replace = (name, implementation) => {
+				const own = Object.getOwnPropertyDescriptor(certificates, name);
+				certificates[name] = implementation(certificates[name]);
+				restores.push(() => (own ? Object.defineProperty(certificates, name, own) : delete certificates[name]));
+			};
 			replace(
 				'subscribe',
 				(subscribe) =>
@@ -812,7 +801,9 @@ describe('Test keys module', () => {
 						});
 					}
 			);
-			replace('search', failingSearch);
+			replace('search', () => () => {
+				throw new Error('transient read');
+			});
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
 			const selector = keys.createTLSSelector('mqtt', undefined, true);
 			await assert.rejects(selector.initialize(pseudoServer), /transient read/);
