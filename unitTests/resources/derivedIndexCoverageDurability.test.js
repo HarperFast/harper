@@ -15,6 +15,7 @@ const {
 const P0 = Object.freeze({ sequence: 1, offset: 32 });
 const P1 = Object.freeze({ sequence: 1, offset: 64 });
 const P2 = Object.freeze({ sequence: 1, offset: 128 });
+const P3 = Object.freeze({ sequence: 1, offset: 192 });
 
 function audit({ timestamp, recordId, tableId = 1, version = timestamp, type = 'put', endTxn = true }) {
 	return {
@@ -272,138 +273,130 @@ function createRuntime(store, records, options = {}) {
 }
 
 describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anchor recovery', () => {
-	it('Positive Control: publishes coverage for indexed writes and recovers purged anchors to a log floor without rebuilding on HNSW and FullText backends', async () => {
+	it('Positive Control (HNSW): publishes coverage for indexed writes and recovers purged anchors to a log floor without rebuilding', async () => {
 		const initialCursor = { format: 1, logs: { local: 50 }, coverage: { local: P0 } };
+		const store = new TestLogStore({ initialPosition: P0 });
+		const records = new Map([['1:doc-1', { version: 100, value: { vector: [1, 0, 0, 0] } }]]);
+		const hnswIndex = new MemoryHnswIndex(initialCursor);
+		const backend1 = new HnswDerivedIndexBackend('hnsw:positive', hnswIndex);
+		const owner = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
+		owner.register({
+			backend: backend1,
+			projections: new Map([[1, (record) => record.vector]]),
+		});
 
-		// --- 1. HNSW Backend Positive Control ---
-		{
-			const store = new TestLogStore({ initialPosition: P0 });
-			const records = new Map([['1:doc-1', { version: 100, value: { vector: [1, 0, 0, 0] } }]]);
-			const hnswIndex = new MemoryHnswIndex(initialCursor);
-			const backend1 = new HnswDerivedIndexBackend('hnsw:positive', hnswIndex, { flushIntervalMs: 10 });
-			const owner = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
-			owner.register({
-				backend: backend1,
-				projections: new Map([[1, (record) => record.vector]]),
-			});
+		await waitFor(() => owner.getReadiness(backend1.id).state === 'ready');
+		store.append(audit({ timestamp: 100, recordId: 'doc-1', tableId: 1 }), P1);
 
-			await waitFor(() => owner.getReadiness(backend1.id).state === 'ready');
-			store.append(audit({ timestamp: 100, recordId: 'doc-1', tableId: 1 }), P1);
+		await waitFor(() => {
+			const cursor = backend1.getDurableCursor();
+			return cursor?.logs?.local === 100 && cursor?.coverage?.local?.offset === P1.offset;
+		});
+		assert.deepStrictEqual(backend1.getDurableCursor(), {
+			format: 1,
+			logs: { local: 100 },
+			coverage: { local: P1 },
+		});
 
-			await waitFor(() => {
-				const cursor = backend1.getDurableCursor();
-				return cursor?.logs?.local === 100 && cursor?.coverage?.local?.offset === P1.offset;
-			});
-			assert.deepStrictEqual(backend1.getDurableCursor(), {
-				format: 1,
-				logs: { local: 100 },
-				coverage: { local: P1 },
-			});
+		const peerBackend = new HnswDerivedIndexBackend('hnsw:positive', hnswIndex);
+		const peer = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
+		peer.register({
+			backend: peerBackend,
+			projections: new Map([[1, (record) => record.vector]]),
+		});
+		const since = derivedIndexTime(store.rootStore);
+		const started = performance.now();
+		await peer.waitForCoverage(backend1.id, since, 500);
+		assert(performance.now() - started < 500, 'peer waitForCoverage should resolve within 500ms');
 
-			// Non-owner peer waitForCoverage resolves promptly
-			const peerBackend = new HnswDerivedIndexBackend('hnsw:positive', hnswIndex, { flushIntervalMs: 10 });
-			const peer = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
-			peer.register({
-				backend: peerBackend,
-				projections: new Map([[1, (record) => record.vector]]),
-			});
-			const since = derivedIndexTime(store.rootStore);
-			const started = performance.now();
-			await peer.waitForCoverage(backend1.id, since, 500);
-			assert(performance.now() - started < 500, 'peer waitForCoverage should resolve within 500ms');
+		await peer.stop();
+		await owner.stop();
 
-			await peer.stop();
-			await owner.stop();
+		store.purgeSegmentThrough(100, 2);
 
-			// Simulate log retention purging segment 1 (containing timestamp 100)
-			store.purgeSegmentThrough(100, 2);
+		const backend2 = new HnswDerivedIndexBackend('hnsw:positive', hnswIndex);
+		const reopened = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
+		reopened.register({
+			backend: backend2,
+			projections: new Map([[1, (record) => record.vector]]),
+		});
 
-			const backend2 = new HnswDerivedIndexBackend('hnsw:positive', hnswIndex, { flushIntervalMs: 10 });
-			const reopened = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
-			reopened.register({
-				backend: backend2,
-				projections: new Map([[1, (record) => record.vector]]),
-			});
+		await waitFor(() => {
+			const cursor = backend2.getDurableCursor();
+			return cursor?.floors?.local === 2 && cursor?.logs?.local === undefined;
+		});
+		assert.strictEqual(reopened.getReadiness(backend2.id).state, 'ready');
+		assert.strictEqual(reopened.getMetrics(backend2.id).rebuiltRecords, 0);
+		assert.deepStrictEqual(backend2.getDurableCursor(), {
+			format: 1,
+			logs: {},
+			floors: { local: 2 },
+			coverage: { local: P1 },
+		});
+		await reopened.stop();
+	});
 
-			await waitFor(() => {
-				const cursor = backend2.getDurableCursor();
-				return cursor?.floors?.local === 2 && cursor?.logs?.local === undefined;
-			});
-			assert.strictEqual(reopened.getReadiness(backend2.id).state, 'ready');
-			assert.strictEqual(reopened.getMetrics(backend2.id).rebuiltRecords, 0);
-			assert.deepStrictEqual(backend2.getDurableCursor(), {
-				format: 1,
-				logs: {},
-				floors: { local: 2 },
-				coverage: { local: P1 },
-			});
-			await reopened.stop();
-		}
+	it('Positive Control (FullText): publishes coverage for indexed writes and recovers purged anchors to a log floor without rebuilding', async () => {
+		const initialCursor = { format: 1, logs: { local: 50 }, coverage: { local: P0 } };
+		const store = new TestLogStore({ initialPosition: P0 });
+		const records = new Map([['1:doc-1', { version: 100, value: { title: 'hello world' } }]]);
+		const ftState = createSharedFullTextState(initialCursor);
+		const backend1 = new FullTextDerivedIndexBackend({
+			id: 'fulltext:positive',
+			lifecycle: ftState.createLifecycle(),
+		});
+		const owner = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
+		owner.register({
+			backend: backend1,
+			projections: new Map([[1, (record) => ({ title: record.title })]]),
+		});
 
-		// --- 2. FullText Backend Positive Control ---
-		{
-			const store = new TestLogStore({ initialPosition: P0 });
-			const records = new Map([['1:doc-1', { version: 100, value: { title: 'hello world' } }]]);
-			const ftState = createSharedFullTextState(initialCursor);
-			const backend1 = new FullTextDerivedIndexBackend({
-				id: 'fulltext:positive',
-				lifecycle: ftState.createLifecycle(),
-			});
-			const owner = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
-			owner.register({
-				backend: backend1,
-				projections: new Map([[1, (record) => ({ title: record.title })]]),
-			});
+		await waitFor(() => owner.getReadiness(backend1.id).state === 'ready');
+		store.append(audit({ timestamp: 100, recordId: 'doc-1', tableId: 1 }), P1);
 
-			await waitFor(() => owner.getReadiness(backend1.id).state === 'ready');
-			store.append(audit({ timestamp: 100, recordId: 'doc-1', tableId: 1 }), P1);
+		await waitFor(() => {
+			const cursor = backend1.getDurableCursor();
+			return cursor?.logs?.local === 100 && cursor?.coverage?.local?.offset === P1.offset;
+		});
+		assert.deepStrictEqual(normalizeCursor(backend1.getDurableCursor()), {
+			format: 1,
+			logs: { local: 100 },
+			coverage: { local: P1 },
+		});
+		await owner.stop();
 
-			await waitFor(() => {
-				const cursor = backend1.getDurableCursor();
-				return cursor?.logs?.local === 100 && cursor?.coverage?.local?.offset === P1.offset;
-			});
-			assert.deepStrictEqual(normalizeCursor(backend1.getDurableCursor()), {
-				format: 1,
-				logs: { local: 100 },
-				coverage: { local: P1 },
-			});
-			await owner.stop();
+		store.purgeSegmentThrough(100, 2);
 
-			// Simulate log retention purging segment 1 (containing timestamp 100)
-			store.purgeSegmentThrough(100, 2);
+		const backend2 = new FullTextDerivedIndexBackend({
+			id: 'fulltext:positive',
+			lifecycle: ftState.createLifecycle(),
+		});
+		const reopened = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
+		reopened.register({
+			backend: backend2,
+			projections: new Map([[1, (record) => ({ title: record.title })]]),
+		});
 
-			const backend2 = new FullTextDerivedIndexBackend({
-				id: 'fulltext:positive',
-				lifecycle: ftState.createLifecycle(),
-			});
-			const reopened = createRuntime(store, records, { maxFlushAgeMilliseconds: 15 });
-			reopened.register({
-				backend: backend2,
-				projections: new Map([[1, (record) => ({ title: record.title })]]),
-			});
-
-			await waitFor(() => {
-				const cursor = backend2.getDurableCursor();
-				return cursor?.floors?.local === 2 && cursor?.logs?.local === undefined;
-			});
-			assert.strictEqual(reopened.getReadiness(backend2.id).state, 'ready');
-			assert.strictEqual(reopened.getMetrics(backend2.id).rebuiltRecords, 0);
-			assert.strictEqual(ftState.resetCalls, 0);
-			assert.deepStrictEqual(normalizeCursor(backend2.getDurableCursor()), {
-				format: 1,
-				logs: {},
-				floors: { local: 2 },
-				coverage: { local: P1 },
-			});
-			await reopened.stop();
-		}
+		await waitFor(() => {
+			const cursor = backend2.getDurableCursor();
+			return cursor?.floors?.local === 2 && cursor?.logs?.local === undefined;
+		});
+		assert.strictEqual(reopened.getReadiness(backend2.id).state, 'ready');
+		assert.strictEqual(reopened.getMetrics(backend2.id).rebuiltRecords, 0);
+		assert.strictEqual(ftState.resetCalls, 0);
+		assert.deepStrictEqual(normalizeCursor(backend2.getDurableCursor()), {
+			format: 1,
+			logs: {},
+			floors: { local: 2 },
+			coverage: { local: P1 },
+		});
+		await reopened.stop();
 	});
 
 	it('Arm 1: unindexed sibling-table commits must not stamp coverage onto an older durable vector or strip coverage on flush/shutdown', async () => {
 		const initialCursor = { format: 1, logs: { local: 50 }, coverage: { local: P0 } };
 		const failures = [];
 
-		// --- Part A: HnswDerivedIndexBackend ---
 		{
 			const store = new TestLogStore({ initialPosition: P0 });
 			const records = new Map([
@@ -411,7 +404,7 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 				['2:sibling-1', { version: 200, value: { note: 'unindexed table commit' } }],
 			]);
 			const hnswIndex = new MemoryHnswIndex(initialCursor);
-			const backend1 = new HnswDerivedIndexBackend('hnsw:arm1', hnswIndex, { flushIntervalMs: 10 });
+			const backend1 = new HnswDerivedIndexBackend('hnsw:arm1', hnswIndex);
 			const runtime1 = createRuntime(store, records, {
 				flushAfterMutations: 1,
 				maxFlushAgeMilliseconds: 1000,
@@ -428,16 +421,16 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 				return cursor?.logs?.local === 100 && cursor?.coverage?.local?.offset === P1.offset;
 			});
 
-			// Append an unindexed sibling-table commit on tableId: 2 at T2 = 200 (P2) within the coverage throttle window
 			store.append(audit({ timestamp: 200, recordId: 'sibling-1', tableId: 2 }), P2);
 			await waitFor(() => runtime1.getMetrics(backend1.id)?.acceptedBatches >= 1);
-			for (let i = 0; i < 4; i++) await new Promise(setImmediate);
 
-			// An uncommitted write begins before the age flush completes, so #reconcileDurableCursor must publish the bound P2 capture
-			store.nextPosition = { sequence: 1, offset: 192 };
+			// An in-flight write advances nextPosition past committedPosition so the idle pass cannot capture coverage at the barrier.
+			store.nextPosition = P3;
 			await backend1.flush('age');
-			await waitFor(() => backend1.getDurableCursor()?.logs?.local === 200);
-			for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+			await waitFor(
+				() =>
+					backend1.getDurableCursor()?.logs?.local === 200 && runtime1.getMetrics(backend1.id)?.acceptedBatches === 0
+			);
 			await runtime1.stop();
 			store.nextPosition = P2;
 
@@ -448,9 +441,8 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 				);
 			}
 
-			// Simulate log retention purging segment 1 (containing both 100 and 200) and reopen
 			store.purgeSegmentThrough(200, 2);
-			const backend2 = new HnswDerivedIndexBackend('hnsw:arm1', hnswIndex, { flushIntervalMs: 15 });
+			const backend2 = new HnswDerivedIndexBackend('hnsw:arm1', hnswIndex);
 			const runtime2 = createRuntime(store, records, {
 				maxFlushAgeMilliseconds: 15,
 				maxRebuildAttempts: 0,
@@ -475,7 +467,6 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 			await runtime2.stop();
 		}
 
-		// --- Part B: FullTextDerivedIndexBackend ---
 		{
 			const store = new TestLogStore({ initialPosition: P0 });
 			const records = new Map([
@@ -503,16 +494,16 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 				return cursor?.logs?.local === 100 && cursor?.coverage?.local?.offset === P1.offset;
 			});
 
-			// Append an unindexed sibling-table commit on tableId: 2 at T2 = 200 (P2) within the coverage throttle window
 			store.append(audit({ timestamp: 200, recordId: 'sibling-1', tableId: 2 }), P2);
 			await waitFor(() => runtime1.getMetrics(backend1.id)?.acceptedBatches >= 1);
-			for (let i = 0; i < 4; i++) await new Promise(setImmediate);
 
-			// An uncommitted write begins before the age flush completes, so #reconcileDurableCursor must publish the bound P2 capture
-			store.nextPosition = { sequence: 1, offset: 192 };
+			// An in-flight write advances nextPosition past committedPosition so the idle pass cannot capture coverage at the barrier.
+			store.nextPosition = P3;
 			await backend1.flush('age');
-			await waitFor(() => backend1.getDurableCursor()?.logs?.local === 200);
-			for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+			await waitFor(
+				() =>
+					backend1.getDurableCursor()?.logs?.local === 200 && runtime1.getMetrics(backend1.id)?.acceptedBatches === 0
+			);
 			await runtime1.stop();
 			store.nextPosition = P2;
 
@@ -523,7 +514,6 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 				);
 			}
 
-			// Simulate log retention purging segment 1 (containing both 100 and 200) and reopen
 			store.purgeSegmentThrough(200, 2);
 			const backend2 = new FullTextDerivedIndexBackend({
 				id: 'fulltext:arm1',
@@ -556,17 +546,16 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 		assert.deepStrictEqual(failures, []);
 	});
 
-	it('Arm 2: HnswDerivedIndexBackend clears #appliedPastCoverage across flush/shutdown so floor-conversion batches retain their explicit coverage', async () => {
+	it('Arm 2: HnswDerivedIndexBackend retains explicit coverage on floor-conversion batches after a flush and strips it when un-barriered records were applied before shutdown', async () => {
 		let currentEpoch = 1n;
 		const hnswIndex = new MemoryHnswIndex({ format: 1, logs: { local: 50 }, coverage: { local: P0 } });
-		const backend = new HnswDerivedIndexBackend('hnsw:arm2', hnswIndex, { flushIntervalMs: 10 });
+		const backend = new HnswDerivedIndexBackend('hnsw:arm2', hnswIndex);
 		backend.attach({
 			isOwnerEpoch: (epoch) => epoch === currentEpoch,
 			getReadiness: () => ({ state: 'ready', ownerEpoch: currentEpoch, rebuildAttempts: 0 }),
 			publicationChanged: () => {},
 		});
 
-		// Step 1: Deliver a record-bearing batch at T1 = 100 and flush it to durability (without calling publishCoverage)
 		const recordBatch = {
 			ownerEpoch: 1n,
 			transactions: [],
@@ -584,13 +573,8 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 		backend.flush('threshold');
 		await waitFor(() => backend.getDurableCursor()?.logs?.local === 100);
 
-		// Also exercise shutdown between epochs to verify neither #runFlush nor shutdown leaves #appliedPastCoverage latched
-		await backend.shutdown(1n);
-		currentEpoch = 2n;
-
-		// Step 2: Deliver a purged-anchor floor conversion batch (records: []) carrying explicit batch.through.coverage
 		const floorConversionBatch = {
-			ownerEpoch: 2n,
+			ownerEpoch: 1n,
 			transactions: [],
 			records: [],
 			through: {
@@ -605,23 +589,62 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 		backend.flush('age');
 		await waitFor(() => backend.getDurableCursor()?.floors?.local === 2);
 
-		assert.deepStrictEqual(
-			backend.getDurableCursor(),
-			{
+		assert.deepStrictEqual(backend.getDurableCursor(), {
+			format: 1,
+			logs: {},
+			floors: { local: 2 },
+			coverage: { local: P1 },
+		});
+
+		const unbarrieredBatch = {
+			ownerEpoch: 1n,
+			transactions: [],
+			records: [
+				{
+					recordId: 'doc-2',
+					logVersion: 150,
+					state: { kind: 'record', projection: [0, 1, 0, 0], version: 150 },
+				},
+			],
+			bytes: 32,
+		};
+		assert.strictEqual(backend.deliver(unbarrieredBatch), DERIVED_INDEX_ACCEPTED);
+		await waitFor(() => hnswIndex.applied.length === 2);
+		await backend.shutdown(1n);
+
+		currentEpoch = 2n;
+		const postShutdownFloorBatch = {
+			ownerEpoch: 2n,
+			transactions: [],
+			records: [],
+			through: {
 				format: 1,
 				logs: {},
-				floors: { local: 2 },
+				floors: { local: 3 },
 				coverage: { local: P1 },
 			},
-			'explicit batch.through.coverage on a floor-conversion batch must not be stripped by stale #appliedPastCoverage'
-		);
+			bytes: 0,
+		};
+		assert.strictEqual(backend.deliver(postShutdownFloorBatch), DERIVED_INDEX_ACCEPTED);
+		backend.flush('age');
+		await waitFor(() => backend.getDurableCursor()?.floors?.local === 3);
+
+		assert.deepStrictEqual(backend.getDurableCursor(), {
+			format: 1,
+			logs: {},
+			floors: { local: 3 },
+		});
 		await backend.shutdown(2n);
 	});
 
-	it('Arm 3: DerivedIndexRunner.#reconcileDurableCursor publishes bound coverage when offeredIndex > 0 advances the durable cursor', async () => {
+	it('Arm 3: advancing the durable cursor publishes bound coverage for that cursor and refuses stale coverage from before an indexed mutation', async () => {
 		const store = new TestLogStore({ initialPosition: P0 });
 		store.rootStore.getMonotonicTimestamp = () => Date.now();
-		const records = new Map([['1:doc-1', { version: 100, value: { title: 'doc-1' } }]]);
+		const records = new Map([
+			['1:doc-1', { version: 100, value: { title: 'doc-1' } }],
+			['2:sibling-1', { version: 200, value: { note: 'unindexed' } }],
+			['1:doc-2', { version: 300, value: { title: 'doc-2' } }],
+		]);
 
 		const persisted = [];
 		const backend = {
@@ -666,7 +689,6 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 			projections: new Map([[1, (record) => ({ title: record.title })]]),
 		});
 
-		// Wait for initial idle coverage P0 on T0 = 50 to be persisted (setting #lastPersistedCoverageTime > 0n)
 		await waitFor(() => persisted.length === 1);
 		assert.deepStrictEqual(persisted[0].cursor, {
 			format: 1,
@@ -674,29 +696,43 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 			coverage: { local: P0 },
 		});
 
-		// Append indexed write T1 = 100 at P1; runner delivers T1 (mutations: 1) and binds capture(P1) on its idle pass
 		store.append(audit({ timestamp: 100, recordId: 'doc-1', tableId: 1 }), P1);
 		await waitFor(() => runtime.getMetrics(backend.id)?.acceptedMutations === 1);
-		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
 
-		// Simulate an uncommitted write advancing nextLogPosition past lastCommittedPosition when T1's barrier settles,
-		// so #finishIdlePass has capture === undefined and #reconcileDurableCursor must publish the bound capture on offeredCursors[1].
+		// An in-flight write advances nextPosition past committedPosition so the idle pass cannot capture coverage at the barrier.
 		store.nextPosition = { sequence: 1, offset: 96 };
 		backend.cursor = { format: 1, logs: { local: 100 } };
 		backend.stateChange('changed');
 
-		for (let i = 0; i < 6; i++) await new Promise(setImmediate);
-		await runtime.stop();
-
-		assert.strictEqual(
-			persisted.length,
-			2,
-			`#reconcileDurableCursor should persist the bound capture for T1=100 when offeredIndex > 0, but persisted=${safeJson(persisted)}`
-		);
+		await waitFor(() => persisted.length === 2);
 		assert.deepStrictEqual(persisted[1].cursor, {
 			format: 1,
 			logs: { local: 100 },
 			coverage: { local: P1 },
 		});
+
+		store.nextPosition = P1;
+		store.append(audit({ timestamp: 200, recordId: 'sibling-1', tableId: 2 }), P2);
+		await waitFor(() => runtime.getMetrics(backend.id)?.acceptedBatches === 1);
+
+		// An in-flight write keeps T3's idle pass from capturing coverage, leaving only T2's bound P2 capture on the earlier offered cursor.
+		store.entries.push(audit({ timestamp: 300, recordId: 'doc-2', tableId: 1 }));
+		store.committedPosition = P3;
+		store.flushedPosition = P3;
+		store.nextPosition = { sequence: 1, offset: 256 };
+		store.rootStore.emit('committed');
+		await waitFor(
+			() =>
+				runtime.getMetrics(backend.id)?.acceptedBatches === 2 && runtime.getMetrics(backend.id)?.acceptedMutations === 1
+		);
+
+		backend.cursor = { format: 1, logs: { local: 300 } };
+		backend.stateChange('changed');
+		await waitFor(() => runtime.getMetrics(backend.id)?.acceptedBatches === 0);
+
+		assert.strictEqual(persisted.length, 2);
+		assert.strictEqual(backend.cursor.coverage, undefined);
+
+		await runtime.stop();
 	});
 });

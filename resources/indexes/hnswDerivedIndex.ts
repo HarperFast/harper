@@ -131,7 +131,6 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	async shutdown(_epoch: bigint): Promise<void> {
 		this.#dropQueue();
 		await Promise.allSettled([this.#flushing, this.#resetting]);
-		this.#appliedPastCoverage = false;
 	}
 
 	/**
