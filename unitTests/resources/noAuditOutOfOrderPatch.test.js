@@ -230,7 +230,8 @@ describe('out-of-order patch on an audit:false table', () => {
 		['patch-then-publish', false],
 		['publish-then-patch', true],
 	]) {
-		itUnlessLmdb(`a replicated ${order} source transaction applies over an older head`, async () => {
+		const itForOrder = publishFirst ? it : itUnlessLmdb;
+		itForOrder(`a replicated ${order} source transaction applies over an older head`, async () => {
 			const id = `noaudit-${nextId++}`;
 			await NoAudit.put(id, { tag: 'base', count: 10 });
 			await applySource(id, getIdOfRemoteNode(`origin-${order}`, NoAudit.auditStore), Date.now() + 1000, publishFirst);
@@ -239,7 +240,7 @@ describe('out-of-order patch on an audit:false table', () => {
 			assert.strictEqual(record.count, 14);
 		});
 
-		itUnlessLmdb(`a re-delivered ${order} source transaction applies its increment once`, async () => {
+		itForOrder(`a re-delivered ${order} source transaction applies its increment once`, async () => {
 			const id = `noaudit-${nextId++}`;
 			await NoAudit.put(id, { tag: 'base', count: 10 });
 			const nodeId = getIdOfRemoteNode(`origin-${order}-again`, NoAudit.auditStore);
@@ -249,7 +250,7 @@ describe('out-of-order patch on an audit:false table', () => {
 			assert.strictEqual((await NoAudit.get(id)).count, 14);
 		});
 
-		itUnlessLmdb(
+		itForOrder(
 			`a ${order} source transaction re-delivered after a newer patch applies its increment once`,
 			async () => {
 				const id = `noaudit-${nextId++}`;
@@ -263,7 +264,7 @@ describe('out-of-order patch on an audit:false table', () => {
 			}
 		);
 
-		itUnlessLmdb(`a replicated ${order} source transaction older than the head merges only its ops`, async () => {
+		itForOrder(`a replicated ${order} source transaction older than the head merges only its ops`, async () => {
 			const id = `noaudit-${nextId++}`;
 			const newer = Date.now() + 2000;
 			const context = { source: {}, sourceApply: true, timestamp: newer };
