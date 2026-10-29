@@ -443,7 +443,6 @@ for (const isolated of [false, true]) {
 					const written = await appRequest('/PackageProbe/main-write', 'PUT', { note: 'main' });
 					assert.ok(written.status >= 200 && written.status < 300, written.body);
 
-					// the second drop finds it absent, which main still serves just the same
 					for (const restart of [true, false]) {
 						const dropped = await operation({ operation: 'drop_component', project, restart });
 						assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));

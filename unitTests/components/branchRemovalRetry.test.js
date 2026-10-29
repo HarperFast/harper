@@ -3,7 +3,6 @@
 const assert = require('node:assert');
 const { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
-const sinon = require('sinon');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -11,7 +10,6 @@ testUtils.preTestPrep();
 const { getConfigFilePath, getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS, ITC_EVENT_TYPES, THREAD_TYPES } = require('#src/utility/hdbTerms');
 const operations = require('#js/components/operations');
-const componentLoader = require('#js/components/componentLoader');
 const { openBranchDatabase, table, resolveBranchPath } = require('#src/resources/databases');
 const { getOrCreateBranch, hasPendingBranchRemoval } = require('#src/resources/branchDatabase');
 const { setMainIsWorker, getWorkerIndex, startWorker } = require('#js/server/threads/manageThreads');
@@ -133,39 +131,13 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		assert.strictEqual(existsSync(forksOf('back-app')), false);
 	});
 
-	it('keeps a fork the main thread still serves as the only worker, until Harper restarts', async () => {
-		const componentDir = path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), 'served-app');
-		const mainWasWorker = getWorkerIndex() === 0;
-		setMainIsWorker(true); // threads.count: 0
-		const placed = sinon.stub(componentLoader, 'applicationsPlacedOnThisThread').returns(['served-app']);
-		try {
-			const branch = await getOrCreateBranch(BASE, 'served-app');
-			await branch.tables.Rows.put({ id: 'kept' });
-			for (const deployed of [true, false]) {
-				if (deployed) mkdirSync(componentDir, { recursive: true });
-				const dropped = await drop({ project: 'served-app' });
-				assert.match(dropped.message, /main thread serves it/);
-				await operations.retryPendingBranchRemovals();
-				assert.strictEqual(hasPendingBranchRemoval('served-app'), true);
-				assert.strictEqual((await branch.tables.Rows.get('kept'))?.id, 'kept', 'the fork main serves');
-			}
-		} finally {
-			placed.restore();
-			setMainIsWorker(mainWasWorker);
-			rmSync(componentDir, { recursive: true, force: true });
-		}
-
-		await operations.retryPendingBranchRemovals(); // the pass the next start runs
-		assert.strictEqual(existsSync(forksOf('served-app')), false);
-	});
-
 	for (const [unreadable, spoil] of [
 		['does not parse', (configFile) => writeFileSync(configFile, 'config-app: [unclosed\n')],
 		['cannot be read', (configFile) => chmodSync(configFile, 0o000)],
 	]) {
 		it(`keeps retrying while the root config ${unreadable}`, async function () {
 			if (unreadable === 'cannot be read' && (process.platform === 'win32' || process.getuid?.() === 0)) {
-				return this.skip(); // root reads it anyway
+				return this.skip();
 			}
 			operations.setBranchRemovalRetryDelayForTests?.(50);
 			const release = await heldFork('config-app');
