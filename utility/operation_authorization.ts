@@ -637,6 +637,16 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
+		if (!isSuperUser) {
+			const unresolvedColumns = parsedAst.getUnresolvedColumnRefs();
+			if (unresolvedColumns.length > 0) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_COLUMN(unresolvedColumns));
+			}
+			if (parsedAst.getRowAccessors().length > 0) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_ROW_ACCESSOR);
+			}
+		}
+
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);
 		userObject.role.permission = fullRolePerms;
 
