@@ -1,7 +1,8 @@
 /**
  * An MQTT v5 client with no user that is refused by a resource must be told "Not authorized" (0x87),
- * not "Unspecified error" (0x80), on both SUBACK and PUBACK (harper#3298). The sibling suites accept
- * either code as a denial, so this one pins the exact value over a real connection.
+ * not "Unspecified error" (0x80), on both SUBACK and PUBACK (harper#3298). A refused CONNECT must carry
+ * the code of the client's own protocol version: reason codes for v5, return codes for 3.1.1.
+ * The sibling suites accept either code as a denial, so this one pins the exact value over a real connection.
  *
  * `mqtt.requireAuthentication` is off so a CONNECT with no username succeeds, and `authorizeLocal` is
  * off because the harness otherwise elevates every loopback connection to a super user, so the
@@ -22,6 +23,9 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'mqtt-not-authorized');
 
 const NOT_AUTHORIZED = 0x87;
 const UNSPECIFIED_ERROR = 0x80;
+const BAD_CREDENTIALS = 0x86;
+const BAD_CREDENTIALS_311 = 4;
+const NOT_AUTHORIZED_311 = 5;
 const ACK_TIMEOUT_MS = 8_000;
 
 // mqtt.js's WebSocket transport doesn't complete CONNACK on Bun.
@@ -50,6 +54,27 @@ suite('MQTT: a request with no user is refused as Not authorized', { skip: skipS
 
 	function end(client: MqttClient): Promise<void> {
 		return new Promise((resolvePromise) => client.end(true, {}, () => resolvePromise()));
+	}
+
+	/** mqtt.js rejects a refused CONNECT with an error whose `code` is the CONNACK's reason or return code. */
+	function refusedCode(overrides: Partial<IClientOptions>): Promise<number | undefined> {
+		return new Promise((resolvePromise, reject) => {
+			const client = mqtt.connect(mqttURL, options(overrides));
+			const timer = setTimeout(() => {
+				client.end(true);
+				reject(new Error('no CONNACK refusal within the deadline'));
+			}, ACK_TIMEOUT_MS);
+			client.once('error', (error) => {
+				clearTimeout(timer);
+				client.end(true);
+				resolvePromise((error as any).code);
+			});
+			client.once('connect', () => {
+				clearTimeout(timer);
+				client.end(true);
+				reject(new Error('expected a refused CONNECT, got a CONNACK success'));
+			});
+		});
 	}
 
 	/** The connect timeout covers the CONNACK only, so an acknowledgment that never comes needs its own deadline. */
@@ -127,6 +152,24 @@ suite('MQTT: a request with no user is refused as Not authorized', { skip: skipS
 		} finally {
 			await end(client);
 		}
+	});
+
+	const WRONG_PASSWORD = { username: 'nobody', password: 'wrong' };
+
+	test('CONNACK: a v5 client with a wrong password gets 0x86', async () => {
+		strictEqual(await refusedCode(WRONG_PASSWORD), BAD_CREDENTIALS);
+	});
+
+	test('CONNACK: a v3.1.1 client with a wrong password gets return code 4', async () => {
+		strictEqual(await refusedCode({ ...WRONG_PASSWORD, protocolVersion: 4 }), BAD_CREDENTIALS_311);
+	});
+
+	test('CONNACK: a v5 client refused by authorizeClient with a 403 gets 0x87', async () => {
+		strictEqual(await refusedCode({ clientId: 'denied-v5' }), NOT_AUTHORIZED);
+	});
+
+	test('CONNACK: a v3.1.1 client refused by authorizeClient with a 403 gets return code 5', async () => {
+		strictEqual(await refusedCode({ clientId: 'denied-v311', protocolVersion: 4 }), NOT_AUTHORIZED_311);
 	});
 
 	test('control: an authenticated super user is granted the same topic', async () => {

@@ -5,6 +5,7 @@ const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
+const assert = require('node:assert');
 const { expect } = require('chai');
 
 const SYMLINK_FIXTURE = join(__dirname, 'fixtures', 'symlink-test', 'node_modules', 'proxyTransform');
@@ -236,6 +237,184 @@ describe('SES loading', () => {
 	});
 });
 
+const PROBE_PACKAGE_FILES = {
+	'a.js': 'a',
+	'valid.js': 'valid',
+	'index.js': 'index',
+	'x.js': 'x',
+	'node.js': 'node-branch',
+	'generic.js': 'generic-branch',
+	'features/alpha.js': 'alpha',
+	'features/$&.js': 'dollar',
+	'features/private/secret.js': 'secret',
+	'node_modules/dep/index.js': 'nested-dep',
+};
+
+// Each case reaches the exports fallback: its targets sit behind conditions the CommonJS resolver does not
+// match, so createRequire().resolve() rejects it with ERR_PACKAGE_PATH_NOT_EXPORTED first.
+const EXPORTS_CONFORMANCE_CASES = [
+	{
+		title: 'matches conditions in the package key order',
+		exports: { '.': { node: { import: './node.js' }, import: './generic.js' } },
+		expected: 'node-branch',
+	},
+	{
+		title: 'moves past an unmatched nested condition',
+		exports: { '.': { import: { worker: './a.js' }, node: { import: './x.js' } } },
+		expected: 'x',
+	},
+	{
+		title: 'stops at a null condition target',
+		exports: { '.': { node: null, default: './x.js' } },
+		expected: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+	},
+	{
+		title: 'stops at a nested null default',
+		exports: { '.': { import: { worker: './a.js', default: null }, node: { import: './x.js' } } },
+		expected: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+	},
+	{
+		title: 'expands a * subpath pattern',
+		exports: { './features/*': { import: './features/*.js' } },
+		subpath: '/features/alpha',
+		expected: 'alpha',
+	},
+	{
+		title: 'selects the pattern with the longest prefix',
+		exports: { './features/*': { import: './x/*.js' }, './features/private/*': { import: './features/private/*.js' } },
+		subpath: '/features/private/secret',
+		expected: 'secret',
+	},
+	{
+		title: 'lets a longer null pattern block a shorter one',
+		exports: { './features/*': { import: './features/*.js' }, './features/private/*': null },
+		subpath: '/features/private/secret',
+		expected: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+	},
+	{
+		title: 'breaks an equal-prefix tie on the longer pattern',
+		exports: { './f/*': { import: './x/*.js' }, './f/*.js': { import: './features/*.js' } },
+		subpath: '/f/alpha.js',
+		expected: 'alpha',
+	},
+	{
+		title: 'prefers an exact subpath over a pattern',
+		exports: { './features/*': { import: './features/*.js' }, './features/alpha': { import: './a.js' } },
+		subpath: '/features/alpha',
+		expected: 'a',
+	},
+	{
+		title: 'substitutes the pattern match literally',
+		exports: { './f/*': { import: './features/*.js' } },
+		subpath: '/f/$&',
+		expected: 'dollar',
+	},
+	{
+		title: 'rejects a pattern match that leaves its directory',
+		exports: { './features/*': { import: './features/*.js' } },
+		subpath: '/features/../index',
+		expected: 'ERR_INVALID_MODULE_SPECIFIER',
+	},
+	{
+		title: 'rejects a target outside the package',
+		exports: { '.': { import: './../outside.js' } },
+		expected: 'ERR_INVALID_PACKAGE_TARGET',
+	},
+	{
+		title: 'rejects a percent-encoded traversal target',
+		exports: { '.': { import: './%2e%2e/outside.js' } },
+		expected: 'ERR_INVALID_PACKAGE_TARGET',
+	},
+	{ title: 'rejects a bare target', exports: { '.': { import: 'index.js' } }, expected: 'ERR_INVALID_PACKAGE_TARGET' },
+	{
+		title: 'rejects a target inside node_modules',
+		exports: { '.': { import: './node_modules/dep/index.js' } },
+		expected: 'ERR_INVALID_PACKAGE_TARGET',
+	},
+	{
+		title: 'rejects an encoded path separator',
+		exports: { '.': { import: './features%2Falpha.js' } },
+		expected: 'ERR_INVALID_MODULE_SPECIFIER',
+	},
+	{
+		title: 'rejects a directory target',
+		exports: { '.': { import: './features' } },
+		expected: 'ERR_UNSUPPORTED_DIR_IMPORT',
+	},
+	{
+		title: 'rejects numeric condition keys',
+		exports: { '.': { import: { 0: './a.js' } } },
+		expected: 'ERR_INVALID_PACKAGE_CONFIG',
+	},
+	{
+		title: 'rejects a decimal numeric condition key',
+		exports: { '.': { import: { 1.5: './a.js', default: './valid.js' } } },
+		expected: 'ERR_INVALID_PACKAGE_CONFIG',
+	},
+	{
+		title: 'falls back past an invalid array target',
+		exports: { '.': { import: ['index.js', './valid.js'] } },
+		expected: 'valid',
+	},
+	{
+		title: 'falls back past a null array target',
+		exports: { '.': { import: [null, './valid.js'] } },
+		expected: 'valid',
+	},
+	{
+		title: 'ends an array on its last null',
+		exports: { '.': { import: ['index.js', null] } },
+		expected: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+	},
+	{
+		title: 'ends an array on its last invalid target',
+		exports: { '.': { import: [null, 'index.js'] } },
+		expected: 'ERR_INVALID_PACKAGE_TARGET',
+	},
+	{
+		title: 'does not fall back past a target file that is missing',
+		exports: { '.': { import: ['./missing.js', './valid.js'] } },
+		expected: 'ERR_MODULE_NOT_FOUND',
+	},
+	{ title: 'resolves a root array', exports: [{ import: './a.js' }], expected: 'a' },
+	{ title: 'loads a target with a query string', exports: { '.': { import: './a.js?variant=1' } }, expected: 'a' },
+];
+
+function writeProbePackage(exports) {
+	const runtimeRoot = mkdtempSync(join(tmpdir(), 'harper-js-loader-exports-'));
+	const packageRoot = join(runtimeRoot, 'node_modules', 'exports-probe');
+	for (const [file, value] of Object.entries(PROBE_PACKAGE_FILES)) {
+		mkdirSync(dirname(join(packageRoot, file)), { recursive: true });
+		writeFileSync(join(packageRoot, file), `export const value = '${value}';\n`);
+	}
+	writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'exports-probe', type: 'module', exports }));
+	writeFileSync(join(runtimeRoot, 'outside.js'), "export const value = 'outside';\n");
+	return runtimeRoot;
+}
+
+// SES flattens a compartment's load failure into a TypeError that keeps only the underlying message
+const CODE_BY_MESSAGE = [
+	[/No "exports" main defined|is not defined by "exports"/, 'ERR_PACKAGE_PATH_NOT_EXPORTED'],
+	[/Invalid "exports" target/, 'ERR_INVALID_PACKAGE_TARGET'],
+	[/Invalid module "/, 'ERR_INVALID_MODULE_SPECIFIER'],
+	[/Directory import/, 'ERR_UNSUPPORTED_DIR_IMPORT'],
+	[/Invalid package config/, 'ERR_INVALID_PACKAGE_CONFIG'],
+	[/Cannot find module/, 'ERR_MODULE_NOT_FOUND'],
+];
+
+function errorCode(error) {
+	if (error?.code) return error.code;
+	return CODE_BY_MESSAGE.find(([pattern]) => pattern.test(error?.message))?.[1] ?? error?.name;
+}
+
+async function loadOutcome(load) {
+	try {
+		return (await load()).value;
+	} catch (error) {
+		return errorCode(error);
+	}
+}
+
 for (const mode of ['vm-current-context', 'compartment']) {
 	describe(`pure-ESM package resolution (${mode})`, () => {
 		// Regression test for https://github.com/HarperFast/harper/issues/826
@@ -274,11 +453,27 @@ for (const mode of ['vm-current-context', 'compartment']) {
 					})
 				);
 				writeFileSync(join(packageRoot, 'index.mjs'), "export const value = 'bun-esm-only';\n");
-				writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from 'bun-esm-only-pkg';\n");
+				const bunConditionRoot = join(runtimeRoot, 'node_modules', 'bun-condition-pkg');
+				mkdirSync(bunConditionRoot);
+				writeFileSync(
+					join(bunConditionRoot, 'package.json'),
+					JSON.stringify({
+						name: 'bun-condition-pkg',
+						type: 'module',
+						exports: { bun: './bun.mjs', import: './index.mjs' },
+					})
+				);
+				writeFileSync(join(bunConditionRoot, 'bun.mjs'), "export const value = 'bun';\n");
+				writeFileSync(join(bunConditionRoot, 'index.mjs'), "export const value = 'import';\n");
+				writeFileSync(
+					join(runtimeRoot, 'entry.mjs'),
+					"export { value } from 'bun-esm-only-pkg';\nexport { value as bunValue } from 'bun-condition-pkg';\n"
+				);
 				Object.defineProperty(process.versions, 'bun', { configurable: true, value: 'test' });
 
 				const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope(runtimeRoot));
 				expect(result.value).to.equal('bun-esm-only');
+				assert.strictEqual(result.bunValue, 'bun');
 			} finally {
 				if (originalBun) Object.defineProperty(process.versions, 'bun', originalBun);
 				else delete process.versions.bun;
@@ -317,8 +512,103 @@ for (const mode of ['vm-current-context', 'compartment']) {
 				rmSync(runtimeRoot, { recursive: true, force: true });
 			}
 		});
+
+		describe('resolves package exports as native Node import does', () => {
+			for (const { title, exports, subpath = '', expected } of EXPORTS_CONFORMANCE_CASES) {
+				it(title, async () => {
+					const runtimeRoot = writeProbePackage(exports);
+					try {
+						const entry = join(runtimeRoot, 'entry.mjs');
+						writeFileSync(entry, `export * from 'exports-probe${subpath}';\n`);
+						const native = await loadOutcome(() => import(pathToFileURL(entry).href));
+						const loaded = await loadOutcome(() => scopedImport(entry, loaderScope(runtimeRoot)));
+						assert.strictEqual(native, expected, 'native Node import');
+						assert.strictEqual(loaded, expected);
+					} finally {
+						rmSync(runtimeRoot, { recursive: true, force: true });
+					}
+				});
+			}
+		});
 	});
 }
+
+describe('application require() of package exports (vm-current-context)', () => {
+	const writeDualPackage = (runtimeRoot) => {
+		const packageRoot = join(runtimeRoot, 'node_modules', 'dual-probe');
+		mkdirSync(packageRoot, { recursive: true });
+		writeFileSync(
+			join(packageRoot, 'package.json'),
+			JSON.stringify({ name: 'dual-probe', type: 'module', exports: { '.': { import: './a.js', require: './b.cjs' } } })
+		);
+		writeFileSync(join(packageRoot, 'a.js'), "export const value = 'import';\n");
+		writeFileSync(join(packageRoot, 'b.cjs'), "exports.value = 'require';\n");
+	};
+
+	it('keeps the CommonJS verdict for an import-only package, as native require does', async () => {
+		const runtimeRoot = writeProbePackage({ '.': { import: './index.js' } });
+		try {
+			writeDualPackage(runtimeRoot);
+			const entry = join(runtimeRoot, 'app.cjs');
+			writeFileSync(
+				entry,
+				[
+					"const attempt = (load) => { try { load(); return 'loaded'; } catch (error) { return error.code; } };",
+					"exports.requireOutcome = attempt(() => require('exports-probe'));",
+					"exports.resolveOutcome = attempt(() => require.resolve('exports-probe'));",
+					"exports.dualValue = require('dual-probe').value;",
+				].join('\n')
+			);
+			const native = require(entry);
+			const loaded = await scopedImport(entry, { ...vmScope(), runtimeRoot });
+			assert.strictEqual(native.requireOutcome, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(native.resolveOutcome, 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(native.dualValue, 'require');
+			assert.strictEqual(loaded.requireOutcome, native.requireOutcome);
+			assert.strictEqual(loaded.resolveOutcome, native.resolveOutcome);
+			assert.strictEqual(loaded.dualValue, native.dualValue);
+		} finally {
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('surfaces an uncaught require() rejection without re-running the module as ESM', async () => {
+		const runtimeRoot = writeProbePackage({ '.': { import: './index.js' } });
+		const counter = Symbol.for('harper.jsLoader.test.requireRejection');
+		try {
+			const entry = join(runtimeRoot, 'app.cjs');
+			writeFileSync(
+				entry,
+				`globalThis[Symbol.for('harper.jsLoader.test.requireRejection')] = (globalThis[Symbol.for('harper.jsLoader.test.requireRejection')] ?? 0) + 1;\nmodule.exports = require('exports-probe');\n`
+			);
+			const scope = { ...vmScope(), runtimeRoot };
+			assert.strictEqual(await loadOutcome(() => scopedImport(entry, scope)), 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(globalThis[counter], 1);
+			assert.strictEqual(await loadOutcome(() => scopedImport(entry, scope)), 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+			assert.strictEqual(globalThis[counter], 2);
+		} finally {
+			delete globalThis[counter];
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('resolves package exports for import.meta.resolve and a dynamic import() from CommonJS', async () => {
+		const runtimeRoot = writeProbePackage({ './features/*': { node: { import: './features/*.js' } } });
+		try {
+			const esmEntry = join(runtimeRoot, 'meta.mjs');
+			writeFileSync(esmEntry, "export const resolved = import.meta.resolve('exports-probe/features/alpha');\n");
+			const cjsEntry = join(runtimeRoot, 'dynamic.cjs');
+			writeFileSync(cjsEntry, "exports.load = () => import('exports-probe/features/alpha');\n");
+			const nativeResolved = (await import(pathToFileURL(esmEntry).href)).resolved;
+			assert.match(nativeResolved, /\/features\/alpha\.js$/);
+			assert.strictEqual((await scopedImport(esmEntry, { ...vmScope(), runtimeRoot })).resolved, nativeResolved);
+			const dynamic = await scopedImport(cjsEntry, { ...vmScope(), runtimeRoot });
+			assert.strictEqual((await dynamic.load()).value, 'alpha');
+		} finally {
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
+	});
+});
 
 describe('native addon delegation', () => {
 	let runtimeRoot;

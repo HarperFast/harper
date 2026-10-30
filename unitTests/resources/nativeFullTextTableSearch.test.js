@@ -1,5 +1,7 @@
 'use strict';
 
+const { getFullTextTestConfiguration, setFullTextTestConfiguration } = require('./fullTextTestConfiguration');
+
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -10,15 +12,7 @@ const { parseQuery } = require('#src/resources/search');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
-function supportsPublishedBinding() {
-	const glibcVersion =
-		process.platform === 'linux' ? process.report?.getReport().header.glibcVersionRuntime : undefined;
-	return (
-		(process.platform === 'darwin' && process.arch === 'arm64') ||
-		(process.platform === 'linux' && glibcVersion && ['arm64', 'x64'].includes(process.arch)) ||
-		(process.platform === 'win32' && process.arch === 'x64')
-	);
-}
+const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
 async function collect(iterable) {
 	const values = [];
@@ -45,8 +39,8 @@ function definition(name, fields) {
 describe('published native full-text Table.search integration', () => {
 	let Product;
 
-	before(function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !supportsPublishedBinding()) this.skip();
+	before(async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();
 		setupTestDBPath();
 		setMainIsWorker(true);
 	});
@@ -66,6 +60,46 @@ describe('published native full-text Table.search integration', () => {
 		if (runtime) await runtime.close();
 		Product = undefined;
 		setFullTextNativeBindingForTests(undefined);
+	});
+
+	it('keeps custom iterable searches and re-evaluates later offset requests', async () => {
+		Product = table({
+			database: `fulltext-offset-contract-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		await Product.put(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const query = {
+			conditions: [
+				{
+					attribute: 'catalogSearch',
+					comparator: 'matches',
+					value: 'widget',
+					maxIndexLagMilliseconds: 0,
+					waitForIndexMilliseconds: 5000,
+				},
+			],
+			limit: 1,
+		};
+		class Filtered extends Product {
+			search(target) {
+				return super.search({ ...target, rowFilter: (record) => record.id !== 'a' });
+			}
+		}
+		assert.strictEqual(Product.searchPage, undefined);
+		assert.strictEqual(new Product().searchPage, undefined);
+		assert.strictEqual(typeof Filtered.search(query)[Symbol.asyncIterator], 'function');
+		assert.deepStrictEqual(ids(await collect(Filtered.search(query))), ['b']);
+		assert.deepStrictEqual(ids(await collect(Filtered.search({ ...query, offset: 1 }))), ['c']);
+		await Product.delete('b');
+		assert.deepStrictEqual(ids(await collect(Filtered.search(query))), ['c']);
+		assert.deepStrictEqual(await collect(Filtered.search({ ...query, offset: 1 })), []);
 	});
 
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {
@@ -90,7 +124,7 @@ describe('published native full-text Table.search integration', () => {
 		await Product.put('one', { title: 'Waterproof Trail Running Shoes', tags: ['outdoor', 'trail'] });
 		await Product.put('two', { title: 'Waterproof Road Shoes', tags: ['outdoor', 'road'] });
 		await Product.put('three', { title: 'Wireless Headphones', tags: ['electronics'] });
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
 
 		const search = (comparator, value, options = {}) =>
 			collect(
@@ -278,7 +312,7 @@ describe('published native full-text Table.search integration', () => {
 				category: index < 50 ? 'other' : 'target',
 			}))
 		);
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
 
 		const originalGetEntry = Product.primaryStore.getEntry;
 		let sourceReads = 0;
@@ -327,7 +361,7 @@ describe('published native full-text Table.search integration', () => {
 			await Product.put(
 				insertionOrder.slice(start, start + 100).map((id) => ({ id, title: 'identical catalog product' }))
 			);
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
 
 		const search = (limit) =>
 			collect(
@@ -356,5 +390,181 @@ describe('published native full-text Table.search integration', () => {
 			afterDeletes.map(({ id }) => id),
 			expected.slice(0, -5)
 		);
+	});
+	it('keeps native ordinary and traversal prefixes consistent across score, ID and page-size boundaries', async () => {
+		const { mkdtemp, rm } = require('node:fs/promises');
+		const { join } = require('node:path');
+		const binding = await loadFullTextNativeBinding();
+		const info = await binding.runtimeInfo();
+		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'fulltext-prefix-'));
+		const options = {
+			path,
+			indexId: 'prefix-test',
+			generation: '1',
+			fields: [{ name: 'title' }],
+			analyzer: 'english@2',
+			surfaceTerms: true,
+			limits: {
+				indexingThreads: 1,
+				searchThreads: Math.max(2, info.queryClassIsolationMinimumSearchThreads),
+				writerMemoryBytes: 30000000,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 8388608,
+				maxBatchBytes: 8388608,
+			},
+		};
+		let writer, reader;
+		try {
+			writer = await binding.openNativeFullTextIndex(options);
+			for (let start = 0; start < 1024; start += 128) {
+				await writer.applyMutationBatch({
+					upserts: Array.from({ length: 128 }, (_, i) => ({
+						id: `${start + i}-é-😀`,
+						version: String((start + i) % 3),
+						fields: { title: (start + i) % 3 ? 'widget catalog' : 'widget widget catalog' },
+					})),
+				});
+				await writer.commit();
+			}
+			reader = await binding.openNativeFullTextReader(options);
+			for (const query of [
+				{ text: 'widget catalog', mode: 'any' },
+				{ text: 'widg', mode: 'prefix' },
+				{ text: 'widg', mode: 'fuzzy-prefix' },
+				{ operator: 'and', clauses: [{ text: 'widget' }, { operator: 'not', clause: { text: 'absent' } }] },
+			]) {
+				const ordinary = await reader.search({
+					query,
+					limit: query.mode?.includes('prefix') ? info.limits.maxAutocompleteResults : 1024,
+					exactTotal: true,
+				});
+				assert.strictEqual(ordinary.totalRelation, 'exact');
+				assert.deepStrictEqual((await reader.searchPage({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
+				for (const limit of [17, 73, 113, 257]) {
+					const page = await reader.searchPage({ query, limit });
+					const sharedLength = Math.min(ordinary.hits.length, page.hits.length);
+					assert.strictEqual(sharedLength, Math.min(ordinary.hits.length, limit));
+					assert.deepStrictEqual(page.hits.slice(0, sharedLength), ordinary.hits.slice(0, sharedLength));
+				}
+				const first = await reader.searchPage({ query, limit: 73 });
+				const walk = async (limit) => {
+					const hits = [];
+					let continuation = first.continuation;
+					do {
+						const page = await reader.searchPage({ query, limit, continuation });
+						assert.strictEqual(page.total, 1024);
+						hits.push(...page.hits);
+						continuation = page.continuation;
+					} while (continuation);
+					return hits;
+				};
+				const tail = await walk(17);
+				assert.deepStrictEqual(tail, await walk(113));
+				const ordered = [...first.hits, ...tail];
+				for (let n = 1; n < ordered.length; n++) {
+					if (ordered[n - 1].score === ordered[n].score)
+						assert(
+							Buffer.compare(Buffer.from(ordered[n - 1].id), Buffer.from(ordered[n].id)) < 0,
+							'equal-score native hits must advance by document-ID bytes'
+						);
+				}
+				const small = await reader.searchPage({ query, limit: 17, continuation: first.continuation });
+				const large = await reader.searchPage({ query, limit: 113, continuation: first.continuation });
+				assert.deepStrictEqual(small.hits, large.hits.slice(0, 17));
+			}
+		} finally {
+			await reader?.close();
+			await writer?.close();
+			await rm(path, { recursive: true, force: true });
+		}
+	});
+
+	it('fills filtered ordinary and autocomplete pages beyond the native offset and hit windows', async () => {
+		const { toBufferKey } = require('ordered-binary');
+		const info = await (await loadFullTextNativeBinding()).runtimeInfo();
+		const count = info.limits.maxSearchWindow + 25;
+		Product = table({
+			database: `fulltext-native-traversal-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		const keys = Array.from({ length: count }, (_, i) => `product-${String(i).padStart(5, '0')}`);
+		for (let start = 0; start < count; start += 250)
+			await Product.put(keys.slice(start, start + 250).map((id) => ({ id, title: 'widget catalog' })));
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
+		const ordered = keys
+			.slice()
+			.sort((a, b) =>
+				Buffer.compare(
+					Buffer.from(toBufferKey(a).toString('base64url')),
+					Buffer.from(toBufferKey(b).toString('base64url'))
+				)
+			);
+		const search = (comparator, value, options = {}) =>
+			collect(
+				Product.search({
+					conditions: [
+						{
+							attribute: 'catalogSearch',
+							comparator,
+							value,
+							maxIndexLagMilliseconds: 0,
+							waitForIndexMilliseconds: 30_000,
+						},
+					],
+					limit: 25,
+					...options,
+				})
+			);
+		const tail = new Set(ordered.slice(info.limits.maxSearchWindow));
+
+		const previousPolicy = getFullTextTestConfiguration();
+		try {
+			setFullTextTestConfiguration({ ...previousPolicy, maxRawHitsPerRequest: 128 });
+			await assert.rejects(
+				search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) }),
+				(error) => error.statusCode === 400 && error.message.includes('storage.fullText.maxRawHitsPerRequest')
+			);
+		} finally {
+			setFullTextTestConfiguration(previousPolicy);
+		}
+
+		await assert.rejects(
+			search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) }),
+			(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
+		);
+		setFullTextTestConfiguration({
+			...previousPolicy,
+			maxRawHitsPerRequest: count * 3,
+			maxResultsPerRequest: count,
+		});
+		try {
+			assert.deepStrictEqual(
+				(await search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) })).map(({ id }) => id),
+				ordered.slice(info.limits.maxSearchWindow)
+			);
+			assert.deepStrictEqual(
+				(await search('matches', 'widget catalog', { offset: info.limits.maxSearchWindow })).map(({ id }) => id),
+				ordered.slice(info.limits.maxSearchWindow)
+			);
+			const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));
+			for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+				assert.deepStrictEqual(
+					(await search(comparator, 'widg', { rowFilter: (record) => !first.has(record.id) })).map(({ id }) => id),
+					ordered.slice(info.limits.maxAutocompleteResults, info.limits.maxAutocompleteResults + 25)
+				);
+				assert.deepStrictEqual(
+					(await search(comparator, 'widg', { limit: info.limits.maxAutocompleteResults + 25 })).map(({ id }) => id),
+					ordered.slice(0, info.limits.maxAutocompleteResults + 25)
+				);
+			}
+		} finally {
+			setFullTextTestConfiguration(previousPolicy);
+		}
 	});
 });

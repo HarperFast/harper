@@ -370,6 +370,39 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 			.expect(200);
 	});
 
+	test('[rest] list values inside a parenthesized group', () => {
+		return client
+			.reqRest('/Related/?(name=in=(name-1,name-3)|id==5)&sort(id)&select(id,)')
+			.expect((r) => assert.deepEqual(r.body, [{ id: '1' }, { id: '3' }, { id: '5' }], r.text))
+			.expect(200);
+	});
+
+	test('[rest] malformed queries return 400 and leave the server serving', async () => {
+		await client
+			.reqRest('/Related/?(name=in=(name-1,name-3)')
+			.expect((r) => assert.match(r.text, /expected '\)'/, r.text))
+			.expect(400);
+		await client
+			.reqRest('/Related/?name=between=null')
+			.expect((r) => assert.match(r.text, /two-element/, r.text))
+			.expect(400);
+		await client
+			.reqRest('/Related/?name=ge=name-2&=le=name-3&=ge=name-1')
+			.expect((r) => assert.match(r.text, /more than one condition/, r.text))
+			.expect(400);
+		await client
+			.reqRest('/Related/?name=ge=name-2&=le=name-3&sort(id)&select(id,)')
+			.expect((r) => assert.deepEqual(r.body, [{ id: '2' }, { id: '3' }], r.text))
+			.expect(200);
+	});
+
+	test('[rest] select with a single nested argument keeps the parent property', () => {
+		return client
+			.reqRest('/Related/?id==2&select(subObject{id,any})')
+			.expect((r) => assert.deepEqual(r.body, [{ subObject: { id: '2', any: 'any-2' } }], r.text))
+			.expect(200);
+	});
+
 	test('[rest] DELETE with a limit and Prefer: count is not misrouted to the count path', () => {
 		// Regression: the count preference is GET/HEAD-only. A DELETE that also carried limit()+Prefer used
 		// to receive a materialized array from search() and throw instead of deleting.

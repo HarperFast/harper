@@ -278,6 +278,7 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		noMatch = false,
 		calibratedNoMatch = false,
 		maxScoredChoices,
+		truncate = false,
 	} = spec;
 	// Gate on function-ness, not truthiness: a non-function value (`generate: 'oops'`)
 	// must be rejected at definition time, not assigned and crash at call time.
@@ -305,6 +306,7 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		structuredOutput: (hasGenerate || hasStream) && structuredOutput,
 		noMatch: hasDecide && noMatch,
 		calibratedNoMatch: hasDecide && noMatch && calibratedNoMatch,
+		truncate: hasEmbed && truncate,
 		...(hasScore && maxScoredChoices !== undefined ? { maxScoredChoices } : {}),
 	});
 	const backend: ModelBackend = { name, capabilities: () => capabilities };

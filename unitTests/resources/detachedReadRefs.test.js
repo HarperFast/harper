@@ -258,4 +258,206 @@ describe('harper#3308 read references against a detached handle', function () {
 			assert.equal(txn.readTxnsUsed, 0);
 		}
 	);
+
+	it('releases a second-generation snapshot via disregardReadTxn before a slow source fetch resolves', async function () {
+		let resolveSource;
+		let markSourceEntered;
+		let sourceEntered = new Promise((resolve) => {
+			markSourceEntered = resolve;
+		});
+		const SourcedRefs = table({
+			table: 'DetachedReadRefsSourced',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+		});
+		await SourcedRefs.put({ id: 'seeded', v: 1 });
+		SourcedRefs.sourcedFrom({
+			get(id) {
+				markSourceEntered();
+				return new Promise((resolve) => {
+					resolveSource = () => resolve({ id, v: 42 });
+				});
+			},
+		});
+
+		async function assertMissReleasesSnapshotBeforeSourceResolves(context, missId, previousGeneration) {
+			let pendingGet = SourcedRefs.get(missId, context);
+			try {
+				await Promise.race([
+					sourceEntered,
+					pendingGet.then(() => assert.fail('the cache miss never reached the source')),
+				]);
+				let txn;
+				for (txn = context.transaction; txn?.next; txn = txn.next);
+				assert.ok(txn.readTxnGeneration > previousGeneration, 'premise: cache-miss read opened a new generation');
+				assert.equal(
+					txn.readTxn ?? txn.transaction,
+					null,
+					'disregardReadTxn must release the snapshot while the source fetch is still pending'
+				);
+				assert.equal(txn.readTxnsUsed, 0);
+				assert.equal(txn.readTxnRefCount, 0);
+
+				resolveSource();
+				resolveSource = null;
+				const loaded = await pendingGet;
+				pendingGet = null;
+				assert.equal(loaded?.v, 42);
+			} finally {
+				resolveSource?.();
+				await pendingGet?.catch(() => {});
+				sourceEntered = new Promise((resolve) => {
+					markSourceEntered = resolve;
+				});
+			}
+		}
+
+		const releaseContext = {};
+		await transaction(releaseContext, async () => {
+			const seeded = await SourcedRefs.get('seeded', releaseContext);
+			assert.equal(seeded?.v, 1);
+			let txn;
+			for (txn = releaseContext.transaction; txn && !txn.readTxn && !txn.transaction; txn = txn.next);
+			assert.ok(txn, 'premise: first-generation read opened a transaction handle');
+			const firstGeneration = txn.readTxnGeneration;
+			txn.releaseReadTxn();
+			assert.equal(txn.readTxn ?? txn.transaction, null, 'premise: first-generation handle detached');
+			assert.equal(txn.readTxnsUsed, 0);
+
+			await assertMissReleasesSnapshotBeforeSourceResolves(releaseContext, 'cache-miss-after-release', firstGeneration);
+		});
+
+		if (!isLMDB) {
+			const midCommitContext = {};
+			await transaction(midCommitContext, async () => {
+				await Refs.put({ id: 'r0', v: 10 }, midCommitContext);
+				const head = midCommitContext.transaction;
+				const preCommitGeneration = head.readTxnGeneration;
+				const midCommit = head.commit();
+				assert.equal(head.open, TRANSACTION_STATE.CLOSED);
+				assert.equal(head.getReadTxn(), undefined, 'premise: CLOSED with no handle');
+				await midCommit;
+
+				await assertMissReleasesSnapshotBeforeSourceResolves(
+					midCommitContext,
+					'cache-miss-after-mid-commit',
+					preCommitGeneration
+				);
+			});
+		}
+	});
+
+	it('clamps unpaired disregardReadTxn at 0 so a later shared reader cannot close a live snapshot', async function () {
+		const context = {};
+		await transaction(context, async () => {
+			await Refs.get('r0', context);
+			let txn;
+			for (txn = context.transaction; txn && !txn.readTxn && !txn.transaction; txn = txn.next);
+			assert.ok(txn, 'premise: transaction link acquired a read handle');
+			txn.disregardReadTxn();
+			assert.equal(
+				txn.readTxn ?? txn.transaction,
+				null,
+				'premise: paired disregardReadTxn released the first snapshot'
+			);
+			assert.equal(txn.readTxnRefCount, 0);
+
+			txn.disregardReadTxn();
+
+			const snapA = txn.getReadTxn();
+			assert.ok(snapA, 'premise: Reader A acquires a fresh snapshot');
+			const snapB = txn.getReadTxn();
+			assert.equal(snapB, snapA, 'premise: Reader B shares Reader A’s snapshot');
+			assert.equal(txn.readTxnsUsed, 1);
+
+			txn.disregardReadTxn();
+			assert.equal(
+				txn.readTxn ?? txn.transaction,
+				snapA,
+				'Reader B’s disregardReadTxn must not close the snapshot while Reader A still holds it'
+			);
+			assert.equal(txn.readTxnsUsed, 1);
+			assert.equal(txn.readTxnRefCount, 1);
+
+			txn.useReadTxn();
+			assert.equal(txn.readTxnsUsed, 2);
+			assert.equal(txn.readTxnRefCount, 2);
+			txn.disregardReadTxn();
+			txn.disregardReadTxn();
+			txn.disregardReadTxn();
+			assert.equal(txn.readTxnRefCount, 0, 'extra disregardReadTxn while readTxnsUsed > 1 must clamp at 0');
+			txn.doneReadTxn();
+			assert.equal(txn.readTxnsUsed, 1);
+
+			txn.getReadTxn();
+			txn.getReadTxn();
+			txn.disregardReadTxn();
+			assert.equal(
+				txn.readTxn ?? txn.transaction,
+				snapA,
+				'in-generation reuse after clamped disregardReadTxn must keep the snapshot open for the remaining reader'
+			);
+			txn.disregardReadTxn();
+			assert.equal(txn.readTxn ?? txn.transaction, null);
+			assert.equal(txn.readTxnsUsed, 0);
+		});
+	});
+
+	it('detach followed by commit never decrements readTxnsUsed below 0', async function () {
+		for (const detach of [(txn) => txn.releaseReadTxn(), (txn) => txn.disregardReadTxn()]) {
+			const context = {};
+			await transaction(context, async () => {
+				await Refs.get('r0', context);
+				let txn;
+				for (txn = context.transaction; txn && !txn.readTxn && !txn.transaction; txn = txn.next);
+				assert.ok(txn, 'premise: read handle opened');
+				assert.equal(txn.readTxnsUsed, 1);
+				assert.equal(txn.baseReadRefConsumed, false);
+				detach(txn);
+				assert.equal(txn.readTxn ?? txn.transaction, null, 'premise: handle detached before commit');
+				assert.equal(txn.readTxnsUsed, 0);
+				assert.equal(txn.baseReadRefConsumed, true, 'detaching the handle must mark baseReadRefConsumed');
+
+				let current = txn.readTxnsUsed;
+				let minReadTxnsUsed = current;
+				Object.defineProperty(txn, 'readTxnsUsed', {
+					configurable: true,
+					get() {
+						return current;
+					},
+					set(value) {
+						current = value;
+						if (value < minReadTxnsUsed) minReadTxnsUsed = value;
+					},
+				});
+
+				await txn.commit();
+				assert.equal(minReadTxnsUsed, 0, 'performCommit must not drive readTxnsUsed negative after detach');
+				assert.equal(txn.readTxnsUsed, 0);
+				assert.equal(txn.baseReadRefConsumed, true);
+			});
+		}
+
+		if (!isLMDB) {
+			const { txn: untouchedTxn } = newTransaction();
+			assert.equal(Boolean(untouchedTxn.baseReadRefConsumed), false);
+			let current = untouchedTxn.readTxnsUsed ?? 0;
+			let minReadTxnsUsed = current;
+			Object.defineProperty(untouchedTxn, 'readTxnsUsed', {
+				configurable: true,
+				get() {
+					return current;
+				},
+				set(value) {
+					current = value;
+					if (value < minReadTxnsUsed) minReadTxnsUsed = value;
+				},
+			});
+			await untouchedTxn.commit();
+			assert.equal(
+				minReadTxnsUsed,
+				0,
+				'performCommit on a transaction that never attached a handle must not decrement readTxnsUsed'
+			);
+		}
+	});
 });

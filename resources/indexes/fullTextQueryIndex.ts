@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import * as env from '../../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 import { fromBufferKey } from 'ordered-binary';
 import { ClientError, DerivedIndexLagError, IndexRebuildingError, ServerError } from '../../utility/errors/hdbError.ts';
 import {
@@ -20,11 +23,12 @@ import {
 	type NativeFullTextModule,
 	type NativeFullTextReader,
 	type NativeFullTextSearchExpression,
+	type NativeFullTextSearchPageResult,
 	type NativeFullTextSearchMode,
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
-import { fullTextComparatorMode } from './fullTextQueryProtocol.ts';
+import { fullTextComparatorMode, replayFullTextPrefix, fullTextHitsAdvance } from './fullTextQueryProtocol.ts';
 export {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
 	FULL_TEXT_QUERY_RESUME_OPERATION,
@@ -49,10 +53,9 @@ const CANDIDATE_KEYS_PER_SOURCE_READ = 8;
 const MAX_CANDIDATE_KEYS = 4_096;
 // Four key-only reads remain cheaper than loading and decoding the authoritative record they replace.
 const MAX_POINT_PROBE_READS_PER_CANDIDATE = 4;
-const REJECTED_GATE_SAMPLE_SIZE = 8;
 const CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS = 1_000;
-// Fulltext 0.5.0 Query API v3 uses a 13-byte response header and 13 bytes per versioned hit before string data.
-const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
+// Query API v4 reserves 82 traversal response bytes before hits and 13 per versioned hit before strings.
+const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 82;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
@@ -266,7 +269,7 @@ export class FullTextQueryIndex {
 			return result;
 		};
 		const operation = execute().catch((error) => {
-			if (error === context?.signal?.reason) throw error;
+			if (context?.signal?.aborted && error === context.signal.reason) throw error;
 			if (nativeErrorNeedsRebuild(error)) {
 				this.#requestRebuild();
 				void this.#retireAllReaders().catch(() => undefined);
@@ -358,21 +361,10 @@ export class FullTextQueryIndex {
 		}
 	}
 
-	async #search(
-		condition: FullTextCondition,
-		context: any,
-		options: {
-			filter?: (id: unknown, entry?: any) => boolean;
-			minResults?: number;
-			resultOffset?: number;
-			assertTransactionActive?: () => void;
-			candidateKeys?: CandidateKeyPlan;
-		}
-	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
+	async #acquireSearchReader(condition: FullTextCondition, context: any) {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
 		if (!this.#derivedHost) throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
-		if (options.minResults === 0) return [];
 		const publicationGeneration = this.#publicationRevision();
 		const acquisitionTimeout = Math.min(
 			MAX_WAIT_FOR_INDEX_MILLISECONDS,
@@ -403,18 +395,57 @@ export class FullTextQueryIndex {
 		} finally {
 			if (abortListener) context.signal.removeEventListener('abort', abortListener);
 		}
+		return lease;
+	}
+
+	async #search(
+		condition: FullTextCondition,
+		context: any,
+		options: {
+			filter?: (id: unknown, entry?: any) => boolean;
+			minResults?: number;
+			resultOffset?: number;
+			assertTransactionActive?: () => void;
+			candidateKeys?: CandidateKeyPlan;
+		}
+	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
+		if (options.minResults === 0) return [];
+		let policy;
+		try {
+			policy = resolveFullTextSearchLimits({
+				requestBudgetMilliseconds: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS),
+				maxRawHitsPerRequest: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST),
+				maxResultsPerRequest: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_MAX_RESULTS_PER_REQUEST),
+			});
+		} catch (error) {
+			throw new ServerError(
+				`Invalid full-text configuration: ${error instanceof Error ? error.message : String(error)}`,
+				500
+			);
+		}
+		const lease = await this.#acquireSearchReader(condition, context);
 		const reader = lease.reader;
 		try {
-			const deadline = performance.now() + this.#maxSearchBudgetMilliseconds!;
+			const deadline =
+				performance.now() + Math.min(policy.requestBudgetMilliseconds, this.#maxSearchBudgetMilliseconds!);
+			const rawHitLimit = policy.maxRawHitsPerRequest;
+			let rawHitsFetched = 0;
 			const maxSearchWindow = this.#maxSearchWindow!;
 			const query = condition.fullTextQuery ?? leafExpression(condition);
 			const autocomplete = expressionUsesAutocomplete(query);
-			const searchWindow = autocomplete ? this.#maxAutocompleteResults! : maxSearchWindow;
+			const searchWindow = maxSearchWindow;
 			const bounded = options.minResults !== undefined;
-			const target = bounded ? Math.max(1, options.minResults!) : searchWindow;
-			if (target > searchWindow)
+			const target = bounded
+				? Math.max(1, options.minResults!)
+				: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
+			if (!Number.isSafeInteger(target) || target < 0 || target > rawHitLimit)
 				throw new ClientError(
-					`Full-text query exceeds the ${searchWindow}-result ${autocomplete ? 'autocomplete ' : ''}search window; reduce offset or limit`,
+					'Full-text offset and limit exceed storage.fullText.maxRawHitsPerRequest; reduce offset or limit, or increase the work budget',
+					400
+				);
+			if (target > policy.maxResultsPerRequest)
+				throw new ClientError(
+					'Full-text offset and limit exceed storage.fullText.maxResultsPerRequest; reduce offset or limit, or increase the result budget',
 					400
 				);
 			const accepted: Array<{
@@ -425,13 +456,11 @@ export class FullTextQueryIndex {
 				record: Record<string, unknown>;
 				recordEntry: any;
 			}> = [];
-			let offset = 0;
+			let traversal:
+				{ continuation?: string; skip: number; prefix?: NativeFullTextSearchPageResult['hits'] } | undefined;
+			let maxRawPageSize = this.#maxFilteredRawPageSize!;
 			let moreMayExist = false;
-			let staleVersionHits = 0;
-			let expiredHits = 0;
-			let rejectedGateSampleCount = 0;
-			let rejectedGateKeys: Id[] | undefined;
-			let rejectedGateVersions: string[] | undefined;
+			let previousHit: NativeFullTextSearchPageResult['hits'][number] | undefined;
 			let rawPageSize = bounded
 				? Math.min(
 						this.#maxFilteredRawPageSize!,
@@ -444,39 +473,81 @@ export class FullTextQueryIndex {
 			let candidateGate: CandidateGate | undefined;
 			let candidateGatePlanned = false;
 			let candidateProbeFailureEpoch = 0;
-			while (accepted.length < target && offset < searchWindow) {
+			while (accepted.length < target) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
+				const desiredLimit = traversal
+					? Math.min(maxRawPageSize, rawPageSize + traversal.skip)
+					: autocomplete
+						? this.#maxAutocompleteResults!
+						: Math.min(rawPageSize, maxSearchWindow);
+				const remainingHits = rawHitLimit - rawHitsFetched;
+				if (remainingHits <= 0)
+					throw new ClientError(
+						'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
+						400
+					);
+				const limit = Math.min(desiredLimit, remainingHits);
 				const acceptedBeforePage = accepted.length;
-				const result = await reader.search(
-					{
-						query,
-						offset,
-						limit,
-						...(!bounded && offset === 0 ? { exactTotal: true } : null),
-					},
-					{ remainingBudgetMilliseconds: remainingSearchBudget(deadline) }
-				);
-				if (!bounded && !autocomplete && result.totalRelation === 'exact' && result.total > searchWindow)
-					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
-				// Fulltext 0.5.0 Query API v3 only reports lower-bound while a full requested page remains retrievable.
+				let result: NativeFullTextSearchPageResult;
+				try {
+					result = traversal
+						? await reader.searchPage(
+								{ query, limit, continuation: traversal.continuation },
+								{ remainingBudgetMilliseconds: remainingSearchBudget(deadline) }
+							)
+						: await reader.search(
+								{ query, offset: 0, limit, ...(!bounded ? { exactTotal: true } : null) },
+								{ remainingBudgetMilliseconds: remainingSearchBudget(deadline) }
+							);
+				} catch (error) {
+					if (traversal && limit > 1 && error?.code === 'E_RESULT_TOO_LARGE') {
+						maxRawPageSize = Math.max(1, Math.floor(limit / 2));
+						rawPageSize = Math.min(rawPageSize, maxRawPageSize);
+						continue;
+					}
+					throw error;
+				}
+				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+				remainingSearchBudget(deadline);
+				rawHitsFetched += result.hits.length;
+				let replayedHits = 0;
+				if (traversal) {
+					const replay = replayFullTextPrefix(traversal.prefix, traversal.skip, result);
+					traversal.continuation = result.continuation;
+					traversal.skip = replay.remaining;
+					replayedHits = replay.skipped;
+					if (traversal.skip === 0) traversal.prefix = undefined;
+					if (replayedHits > 0) result = { ...result, hits: replay.hits };
+				}
+				if (!bounded && result.totalRelation === 'exact' && result.total > searchWindow)
+					throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
+				if (previousHit && result.hits.length > 0 && !fullTextHitsAdvance(previousHit, result.hits[0]))
+					throw new ServerError('Full-text traversal did not advance past its previous page', 500);
+				if (result.hits.length > 0) previousHit = result.hits[result.hits.length - 1];
+
 				if (
+					!traversal &&
 					result.totalRelation === 'lower-bound' &&
 					result.hits.length < limit &&
-					offset + result.hits.length < result.total
+					result.hits.length < result.total
 				) {
 					if (!this.#incompletePageFailureLogged) {
 						this.#incompletePageFailureLogged = true;
 						logger.error?.(
-							`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset ${offset} with lower-bound total ${result.total}`
+							`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset 0 with lower-bound total ${result.total}`
 						);
 					}
 					throw new ServerError('Full-text index returned an incomplete result page', 500);
 				}
-				// An exact total can safely continue from the returned offset; only a short lower-bound page breaks the v3 contract.
-				moreMayExist =
-					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
-				if (result.hits.length === 0) break;
+				moreMayExist = traversal
+					? result.continuation !== undefined
+					: result.totalRelation === 'exact'
+						? result.hits.length < result.total
+						: result.hits.length === limit;
+				if (result.hits.length === 0) {
+					if (traversal && moreMayExist) continue;
+					break;
+				}
 				if (!candidateGatePlanned) {
 					candidateGatePlanned = true;
 					if (candidatePlan) {
@@ -531,14 +602,7 @@ export class FullTextQueryIndex {
 								this.#candidateProbeFailureWarned = false;
 								this.#candidateProbeRetryAfter = 0;
 							}
-							if (!admitted) {
-								if (rejectedGateSampleCount < REJECTED_GATE_SAMPLE_SIZE) {
-									(rejectedGateKeys ??= [])[rejectedGateSampleCount] = key;
-									(rejectedGateVersions ??= [])[rejectedGateSampleCount] = hit.version;
-									rejectedGateSampleCount++;
-								}
-								continue;
-							}
+							if (!admitted) continue;
 							candidateDecides = candidateGate.complete;
 						} catch (error) {
 							const usedPointProbe = candidateGate.maxReadsPerCandidate > 0;
@@ -563,74 +627,40 @@ export class FullTextQueryIndex {
 							}
 						}
 					}
-					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
-					if (!entry?.value || hit.version !== String(entry.version)) {
-						staleVersionHits++;
-						continue;
-					}
-					if (this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false) {
-						staleVersionHits++;
-						continue;
-					}
-					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) {
-						expiredHits++;
-						continue;
-					}
+					const entry = this.#currentSearchEntry(key, hit.version, transaction);
+					if (!entry) continue;
 					if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
-					if (accepted.length >= target) break;
+					if (accepted.length >= target) {
+						if (!bounded && hitIndex + 1 < result.hits.length) moreMayExist = true;
+						break;
+					}
 				}
-				offset += result.hits.length;
-				if (autocomplete) break;
+				if (!traversal && moreMayExist && accepted.length < target) {
+					const minimumNewHits = Math.min(target - accepted.length, Math.max(0, result.total - result.hits.length));
+					if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
+						throw new ClientError(
+							'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
+							400
+						);
+					traversal = { skip: result.hits.length, prefix: result.hits };
+				}
 				if (!moreMayExist) break;
 				if (accepted.length < target) {
 					if (bounded) {
 						const acceptedThisPage = accepted.length - acceptedBeforePage;
 						rawPageSize = nextFilteredRawPageSize(
-							limit,
+							limit - replayedHits,
 							result.hits.length,
 							acceptedThisPage,
 							target - accepted.length,
-							this.#maxFilteredRawPageSize!
+							maxRawPageSize
 						);
 					}
 					await new Promise((resolve) => setImmediate(resolve));
 				}
 			}
-			if (!bounded && moreMayExist)
-				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
-			if (
-				bounded &&
-				accepted.length < target &&
-				moreMayExist &&
-				staleVersionHits === 0 &&
-				rejectedGateSampleCount > 0
-			) {
-				options.assertTransactionActive?.();
-				for (let sampleIndex = 0; sampleIndex < rejectedGateSampleCount; sampleIndex++) {
-					const entry = this.#options.Table.primaryStore.getEntry(rejectedGateKeys![sampleIndex], { transaction });
-					if (
-						!entry?.value ||
-						rejectedGateVersions![sampleIndex] !== String(entry.version) ||
-						this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false
-					) {
-						staleVersionHits++;
-						break;
-					}
-					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) expiredHits++;
-				}
-			}
-			if (bounded && accepted.length < target && moreMayExist && staleVersionHits > 0)
-				throw new DerivedIndexLagError(
-					`Full-text index '${this.#definition.name}' changed while searching; retry this query`
-				);
-			if (bounded && accepted.length < target && moreMayExist)
-				throw new ClientError(
-					expiredHits > 0
-						? `Expired full-text matches exhausted the ${searchWindow}-result search window; retry after index cleanup or narrow the query`
-						: `Full-text filters exhausted the ${searchWindow}-result search window; narrow the query or reduce offset`,
-					400
-				);
+			if (!bounded && moreMayExist) throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
 			if (condition.includeHighlights && accepted.length > 0)
 				await this.#addHighlights(
 					reader,
@@ -648,6 +678,14 @@ export class FullTextQueryIndex {
 		} finally {
 			await lease.release();
 		}
+	}
+
+	#currentSearchEntry(key: Id, version: string, transaction: any): any {
+		const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
+		if (!entry?.value || version !== String(entry.version)) return;
+		if (this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false) return;
+		if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) return;
+		return entry;
 	}
 
 	async #candidateGate(
@@ -890,6 +928,8 @@ export class FullTextQueryIndex {
 					const binding = await this.#getBinding();
 					reader = await binding.openNativeFullTextReader(this.#nativeOptions);
 					try {
+						if (typeof reader.searchPage !== 'function')
+							throw new TypeError('@harperfast/fulltext/native reader does not support traversal');
 						publication = this.#decodeReaderPublication(reader);
 					} catch (error) {
 						await reader.close().catch((closeError) => this.#warnReaderClose(closeError));
@@ -1068,11 +1108,11 @@ export class FullTextQueryIndex {
 			throw new TypeError('@harperfast/fulltext/native search response limit cannot hold one maximum-size hit');
 		if (responseHitCapacity < info.limits.maxAutocompleteResults)
 			logger.warn?.(
-				`Full-text index '${this.#definition.name}' limits autocomplete to ${responseHitCapacity} results because the native response envelope cannot hold its advertised maximum`
+				`Full-text index '${this.#definition.name}' limits the initial autocomplete batch to ${responseHitCapacity} results because the native response envelope cannot hold its advertised maximum`
 			);
 		this.#maxFilteredRawPageSize = Math.min(
 			MAX_FILTERED_RAW_PAGE_SIZE,
-			info.limits.maxSearchWindow,
+			info.limits.maxSearchPageSize,
 			responseHitCapacity
 		);
 		this.#maxAutocompleteResults = Math.min(info.limits.maxAutocompleteResults, responseHitCapacity);
@@ -1349,6 +1389,19 @@ const REBUILD_REQUIRED_CODES = new Set([
 	'E_SCHEMA_MISMATCH',
 	'E_INDEX_FORMAT_INCOMPATIBLE',
 ]);
+
+function unboundedSearchLimitError(target: number, searchWindow: number, rawHitLimit: number): ClientError {
+	const bound =
+		target < searchWindow
+			? target === rawHitLimit
+				? 'storage.fullText.maxRawHitsPerRequest'
+				: 'storage.fullText.maxResultsPerRequest'
+			: `the ${searchWindow}-result search window`;
+	return new ClientError(
+		`Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
+		400
+	);
+}
 
 function remainingSearchBudget(deadline: number): number {
 	const remaining = Math.floor(deadline - performance.now());

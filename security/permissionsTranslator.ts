@@ -156,6 +156,7 @@ function translateRolePermissions(role, schema) {
 	// verifyPerms still has access after role.permission is replaced with fullRolePerms.
 	finalPermissions.operations = perms.operations;
 	finalPermissions._expandedOperations = perms._expandedOperations;
+	finalPermissions.component_deploy = perms.component_deploy;
 	const structureUser =
 		Array.isArray(role.permission.structure_user) || role.permission.structure_user === true
 			? role.permission.structure_user

@@ -10,7 +10,11 @@ import {
 	teardownHarper,
 	type ContextWithHarper,
 } from '@harperfast/integration-testing';
-import { runtimeInfo } from '@harperfast/fulltext/native';
+import * as native from '@harperfast/fulltext/native';
+import { createHash } from 'node:crypto';
+import { previousFullTextProcess } from '../../unitTests/resources/fixtures/fullTextUpgradeHelpers.cjs';
+
+const { runtimeInfo } = native;
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'full-text-search');
 const OPTIONS = { config: { threads: { count: 2 } }, env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' } };
@@ -148,7 +152,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
 		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
 		assert.strictEqual(info.mutationBatchApiVersion, 5);
-		assert.strictEqual(info.queryApiVersion, 3);
+		assert.strictEqual(info.queryApiVersion, 4);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');
@@ -282,6 +286,43 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			rest.map(({ id }) => id),
 			page.map(({ id }) => id)
 		);
+	});
+
+	test('rejects removed paging functions before a collection delete can run', async () => {
+		for (const option of ['continuation()', 'continuation(token)', 'closeContinuation()']) {
+			for (const method of ['GET', 'DELETE']) {
+				const response = await fetch(`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&${option}`, {
+					method,
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(45000),
+				});
+				assert.strictEqual(response.ok, false);
+				assert.strictEqual((await response.json()).code, 'SyntaxViolation');
+			}
+		}
+		assert.deepStrictEqual(ids(await search(query('pagination'))), PAGE_IDS);
+	});
+
+	test('fills REST autocomplete pages after structured filtering and beyond the first native batch', async () => {
+		const all = await search(query('pagination'));
+		const expected = all
+			.filter(({ category }) => category === 'even')
+			.slice(0, 100)
+			.map(({ id }) => id);
+		for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+			const results = await request(
+				`/Product/?catalogSearch=${comparator}=pagin&category=even&limit(100)&select(id,title)`
+			);
+			assert.deepStrictEqual(
+				results.map(({ id }) => id),
+				expected
+			);
+			const larger = await request(`/Product/?catalogSearch=${comparator}=pagin&limit(150)&select(id,title)`);
+			assert.deepStrictEqual(
+				larger.map(({ id }) => id),
+				all.slice(0, 150).map(({ id }) => id)
+			);
+		}
 	});
 
 	test('preserves source permissions and row filters for non-admin searches', async () => {
@@ -453,6 +494,148 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForIds(query('asteroid'), []);
 	});
 
+	test('upgrades a real 0.5 checkpoint on two workers and recovers after an old-engine refusal', async () => {
+		const records = [
+			{ id: 'upgrade-added', title: 'added waterproof' },
+			{ id: 'upgrade-ad', title: 'ad' },
+			{ id: 'upgrade-deleted', title: 'removed migrationwitness' },
+		];
+		for (const record of records) {
+			await request(`/LifecycleProduct/${record.id}`, { method: 'PUT', body: JSON.stringify(record) }, 204);
+		}
+		await waitForReady('LifecycleProduct');
+		const searchLifecycle = (text: string) =>
+			request('/LifecycleProduct/', { method: 'QUERY', body: JSON.stringify(query(text)) });
+		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
+		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
+		const before = (await request('/FullTextState/')).LifecycleProduct;
+		const previousLogPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const previousLogLength = (await readFile(previousLogPath, 'utf8')).length;
+		await killHarper(ctx);
+		assert.ok(ctx.harper.process.exitCode !== null || ctx.harper.process.signalCode !== null);
+		const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+		const configuration = {
+			path: join(before.storePath, `${digest('LifecycleProduct/catalogSearch')}.fulltext`),
+			indexId: 'fulltext:LifecycleProduct/catalogSearch',
+			generation: digest(`${before.tableId}:${before.generations.catalogSearch}`),
+			fields: [{ name: 'title', weight: 3 }],
+			analyzer: 'english@2',
+			stopWords: true,
+			positions: true,
+			surfaceTerms: true,
+			synonyms: [],
+			limits: {
+				indexingThreads: 2,
+				searchThreads: 2,
+				writerMemoryBytes: 64 * 1024 * 1024,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64 * 1024 * 1024,
+				maxBatchBytes: 8 * 1024 * 1024,
+			},
+		};
+		const checkpoint = native.inspectNativeFullTextIndex(configuration);
+		assert.strictEqual(checkpoint.state, 'checkpointed', 'seed must replace the actual declared index');
+		const reader = await native.openNativeFullTextReader(configuration);
+		const documents = [];
+		try {
+			for (const record of records) {
+				const hits = (await reader.search({ text: record.title, mode: 'all', exactTotal: true })).hits;
+				assert.strictEqual(hits.length, 1, record.id);
+				documents.push({ id: hits[0].id, version: hits[0].version, fields: { title: record.title } });
+			}
+		} finally {
+			await reader.close();
+		}
+		await native.resetNativeFullTextIndex({ path: configuration.path, indexId: configuration.indexId });
+		const seeded = previousFullTextProcess(
+			'seed',
+			configuration,
+			[...documents, { id: 'native-only-ghost', version: '1', fields: { title: 'migrationghost' } }],
+			checkpoint.committedPayload
+		);
+		assert.deepStrictEqual(seeded.inspection, checkpoint);
+		assert.deepStrictEqual(seeded.ghostIds, ['native-only-ghost']);
+		assert.deepStrictEqual(native.inspectNativeFullTextIndex(configuration), {
+			state: 'incompatible',
+			code: 'E_IDENTITY_MISMATCH',
+		});
+		await startHarper(ctx, OPTIONS);
+		const deadline = Date.now() + 30_000;
+		let ready = false;
+		do {
+			let response: Response;
+			let body: string;
+			try {
+				response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+				});
+				body = await response.text();
+			} catch (error) {
+				if (error.name === 'TimeoutError')
+					assert.fail('upgraded public search did not become ready before the deadline');
+				assert.ok(!response || response.status === 200, String(error));
+				assert.ok(
+					error.name === 'TypeError' && ['UND_ERR_SOCKET', 'ECONNRESET'].includes(error.cause?.code),
+					String(error.cause ?? error)
+				);
+				await delay(25);
+				continue;
+			}
+			assert.ok(response.status === 200 || response.status === 503, body);
+			if (response.status === 200) {
+				const records = JSON.parse(body);
+				assert.ok(Array.isArray(records));
+				assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
+				ready = true;
+			} else assert.ok(body.length > 0);
+			if (!ready) await delay(25);
+		} while (!ready && Date.now() < deadline);
+		assert.ok(ready, 'upgraded public search did not become ready before the deadline');
+		await waitForReady('LifecycleProduct');
+		const mismatch = /fulltext:LifecycleProduct\/catalogSearch.*is incompatible \(E_IDENTITY_MISMATCH\); rebuilding/;
+		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const logDeadline = Date.now() + 10_000;
+		let upgradeLog: string;
+		do {
+			upgradeLog = (await readFile(previousLogPath, 'utf8')).slice(previousLogLength);
+			if (logPath !== previousLogPath) upgradeLog += await readFile(logPath, 'utf8');
+			if (mismatch.test(upgradeLog)) break;
+			await delay(25);
+		} while (Date.now() < logDeadline);
+		assert.match(upgradeLog, mismatch);
+		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
+		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
+		await request('/LifecycleProduct/upgrade-deleted', { method: 'DELETE' });
+		assert.deepStrictEqual(await searchLifecycle('migrationwitness'), []);
+		await request(
+			'/LifecycleProduct/upgrade-added',
+			{
+				method: 'PATCH',
+				body: JSON.stringify({ title: 'added waterproof recovered' }),
+			},
+			204
+		);
+		assert.deepStrictEqual(ids(await searchLifecycle('recovered')), ['upgrade-added']);
+		const after = (await request('/FullTextState/')).LifecycleProduct;
+		assert.strictEqual(after.tableId, before.tableId);
+		assert.deepStrictEqual(after.generations, before.generations);
+		await killHarper(ctx);
+		const refused = previousFullTextProcess('inspect', configuration);
+		assert.deepStrictEqual(refused.inspection, { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		assert.strictEqual(refused.openError, 'E_IDENTITY_MISMATCH');
+		assert.strictEqual(previousFullTextProcess('reset', configuration).resetError, 'E_INDEX_CORRUPT');
+		assert.strictEqual(native.inspectNativeFullTextIndex(configuration).state, 'checkpointed');
+		await startHarper(ctx, OPTIONS);
+		await waitForReady('LifecycleProduct');
+		assert.deepStrictEqual(ids(await searchLifecycle('recovered')), ['upgrade-added']);
+		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
+		assert.deepStrictEqual(await searchLifecycle('migrationwitness'), []);
+		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
+		await waitForReady('Product');
+		await waitForIds(query('waterproof'), ['one', 'two']);
+	});
+
 	test('preserves index generation and physical paths and protects declarations after restart', async () => {
 		await request(
 			'/LifecycleProduct/lifecycle',
@@ -578,4 +761,92 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForReady('Product');
 		await waitForIds(query('waterproof'), ['one', 'two']);
 	});
+	test(
+		'applies full-text request limits through set_configuration and worker restart',
+		{ skip: process.platform === 'win32' ? 'HTTP worker restart on Windows: HarperFast/harper#549' : false },
+		async () => {
+			async function restartWorkers() {
+				const { job_id } = await operation({ operation: 'restart_service', service: 'http_workers' });
+				assert(job_id);
+				const deadline = Date.now() + 60000;
+				let status;
+				do {
+					let job;
+					try {
+						[job] = await operation({ operation: 'get_job', id: job_id });
+					} catch (error) {
+						const code = (error as any)?.cause?.code ?? (error as any)?.code;
+						if (!['ECONNREFUSED', 'ECONNRESET', 'UND_ERR_SOCKET'].includes(code)) throw error;
+						assert.strictEqual(
+							ctx.harper.process.exitCode,
+							null,
+							`Harper exited during worker restart: ${ctx.harper.process.exitCode}`
+						);
+						assert.strictEqual(
+							ctx.harper.process.signalCode,
+							null,
+							`Harper stopped during worker restart: ${ctx.harper.process.signalCode}`
+						);
+					}
+					status = job?.status;
+					if (status === 'COMPLETE' || status === 'ERROR') break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 'COMPLETE');
+				await waitForReady('Product');
+			}
+			async function assertBudget(name: string) {
+				let status: number;
+				let body: string;
+				const deadline = Date.now() + 10000;
+				do {
+					const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
+						method: 'POST',
+						headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+						body: JSON.stringify(query('shoe', {}, { limit: 2 })),
+						signal: AbortSignal.timeout(5000),
+					});
+					status = response.status;
+					body = await response.text();
+					if (status === 400 && body.includes(name)) break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 400, body);
+				assert.ok(body.includes(name), body);
+			}
+			const original = (await operation({ operation: 'get_configuration' })).storage.fullText;
+			assert.ok(original, 'Installed configuration must include full-text defaults');
+			try {
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 500,
+					storage_fullText_maxResultsPerRequest: 1,
+					storage_fullText_requestBudgetMilliseconds: 1000,
+				});
+				const updated = (await operation({ operation: 'get_configuration' })).storage.fullText;
+				assert.strictEqual(updated.maxRawHitsPerRequest, 500);
+				assert.strictEqual(updated.maxResultsPerRequest, 1);
+				assert.strictEqual(updated.requestBudgetMilliseconds, 1000);
+				await restartWorkers();
+				await assertBudget('maxResultsPerRequest');
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 1,
+					storage_fullText_maxResultsPerRequest: 500,
+				});
+				await restartWorkers();
+				await assertBudget('maxRawHitsPerRequest');
+			} finally {
+				if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
+					await operation({
+						operation: 'set_configuration',
+						storage_fullText_maxRawHitsPerRequest: original.maxRawHitsPerRequest,
+						storage_fullText_maxResultsPerRequest: original.maxResultsPerRequest,
+						storage_fullText_requestBudgetMilliseconds: original.requestBudgetMilliseconds,
+					});
+					await restartWorkers();
+				}
+			}
+		}
+	);
 });

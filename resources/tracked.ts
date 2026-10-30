@@ -2,6 +2,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { isDeepStrictEqual } from 'node:util';
 
 export const ASSERT_TRACKED_WRITABLE = Symbol('assert-tracked-writable');
 export const GET_TRACKED_WRITE_GENERATION = Symbol('get-tracked-write-generation');
@@ -198,12 +199,14 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					const sourceValue = this.getRecord()?.[name];
 					if (sourceValue && typeof sourceValue === 'object') {
 						const updatedValue = trackObject(sourceValue, attribute, this);
-						if (updatedValue) {
+						// a Date, Bytes or Blob comes back untracked; caching it would make the read a change
+						if (updatedValue !== sourceValue) {
 							if (!changes) {
 								this._setChanges((changes = Object.create(null)));
 							}
 							return (changes[name] = updatedValue);
 						}
+						return readCopy(this, name, sourceValue);
 					}
 					return sourceValue;
 				},
@@ -229,7 +232,8 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 		}
 		const changes = this.getChanges();
 		if (changes?.[name] !== undefined) return changes[name];
-		return this.getRecord()?.[name];
+		const value = this.getRecord()?.[name];
+		return value && typeof value === 'object' ? readCopy(this, name, value) : value;
 	});
 	setMethod('set', function (name, value) {
 		const descriptor = descriptors[name];
@@ -298,7 +302,7 @@ function getProxiedProperty(target, name, receiver) {
 		const sourceValue = receiver.getRecord?.()?.[name];
 		if (sourceValue && typeof sourceValue === 'object') {
 			const updatedValue = trackObject(sourceValue, undefined, receiver);
-			if (updatedValue) {
+			if (updatedValue !== sourceValue) {
 				if (!changes) {
 					changes = Object.create(null);
 					receiver._setChanges(changes);
@@ -306,6 +310,7 @@ function getProxiedProperty(target, name, receiver) {
 				changes[name] = updatedValue;
 				return updatedValue;
 			}
+			return readCopy(receiver, name, sourceValue);
 		}
 		return sourceValue;
 	}
@@ -325,6 +330,26 @@ function setProxiedProperty(target: any, name: string | symbol, value, receiver)
 	return true;
 }
 
+const readCopies = new WeakMap<object, Map<string, { source: any; copy: any }>>();
+/**
+ * A Date or Bytes value read from the record, as a copy: these mutate in place but are not tracked, so
+ * an edit must not reach the stored record (the commit base) without being in the patch. The copy is
+ * kept per instance and property while the record value is the same, so repeated reads return the
+ * same object. Reassigning the value saves it.
+ */
+function readCopy(owner: any, name: string, sourceValue: any) {
+	let copy;
+	const isDate = sourceValue instanceof Date;
+	if (!isDate && !(sourceValue instanceof Uint8Array)) return sourceValue;
+	let copies = readCopies.get(owner);
+	const cached = copies?.get(name);
+	if (cached?.source === sourceValue) return cached.copy;
+	if (isDate) copy = new Date(sourceValue.getTime());
+	else copy = Uint8Array.prototype.slice.call(sourceValue);
+	if (!copies) readCopies.set(owner, (copies = new Map()));
+	copies.set(name, { source: sourceValue, copy });
+	return copy;
+}
 function trackObject(sourceObject: any, typeDef?: any, writableOwner?: any) {
 	// lazily instantiate in case of recursive structures
 	let TrackedObject;
@@ -344,7 +369,12 @@ function trackObject(sourceObject: any, typeDef?: any, writableOwner?: any) {
 			const trackedArray = new TrackedArray(sourceObject.length, sourceObject, writableOwner);
 			for (let i = 0, l = sourceObject.length; i < l; i++) {
 				let element = sourceObject[i];
-				if (element && typeof element === 'object') element = trackObject(element, typeDef?.elements, trackedArray);
+				if (element && typeof element === 'object') {
+					element = trackObject(element, typeDef?.elements, trackedArray);
+					// an element's in-place edit must reach the patch (hasChanges compares these by value), not the record
+					if (element instanceof Date) element = new Date(element.getTime());
+					else if (element instanceof Uint8Array) element = Uint8Array.prototype.slice.call(element);
+				}
 				trackedArray[i] = element;
 			}
 			if (!writableOwner) return trackedArray;
@@ -382,7 +412,7 @@ export class GenericTrackedObject<T extends object = any> {
 	#writableOwner: any;
 	#writableGeneration: any;
 	constructor(sourceObject?: GenericTrackedObject<T> | T, writableOwner?: any) {
-		if ((sourceObject as GenericTrackedObject<T>)?.getRecord)
+		if (isTracked(sourceObject))
 			throw new Error('Can not track an already tracked object, check for circular references');
 		this.#record = sourceObject as any;
 		this.#writableOwner = writableOwner;
@@ -415,11 +445,12 @@ assignTrackedAccessors(GenericTrackedObject, {}, true);
  * @returns
  */
 export function collapseData(target) {
+	if (target.constructor === Array) return collapseArray(target);
 	const changes = target.getChanges?.();
 	let copiedSource;
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!copiedSource) copiedSource = target.getRecord ? { ...target.getRecord() } : {};
+		if (!copiedSource) copiedSource = isTracked(target) ? { ...target.getRecord() } : {};
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -431,22 +462,38 @@ export function collapseData(target) {
 	}
 	const keys = Object.keys(target); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 	if (keys.length > 0) {
-		if (!copiedSource) copiedSource = target.getRecord ? { ...target.getRecord() } : {};
+		if (!copiedSource) copiedSource = isTracked(target) ? { ...target.getRecord() } : {};
 		Object.assign(copiedSource, target);
 	}
-	return copiedSource || target.getRecord?.() || target;
+	return copiedSource || (isTracked(target) ? target.getRecord() : undefined) || target;
+}
+function collapseArray(target: any) {
+	if (isTracked(target) && !hasChanges(target)) return target.getRecord();
+	return materializeArray(target);
+}
+function materializeArray(target) {
+	const collapsed = new Array(target.length);
+	for (let i = 0, l = target.length; i < l; i++) {
+		const element = target[i];
+		collapsed[i] = isTracked(element) ? collapseData(element) : element;
+	}
+	return collapsed;
 }
 const hasOwnProperty = Object.prototype.hasOwnProperty;
+// a data member named getRecord (JSON can carry one) does not make a value a tracked wrapper
+function isTracked(value) {
+	return typeof value?.getRecord === 'function';
+}
 /**
  * Collapse the changed data and source/record data into single object
  * that is frozen and suitable for storage and caching
  * @param target
  * @returns
  */
-export function updateAndFreeze(target, changes = target.getChanges?.()) {
+export function updateAndFreeze(target, changes = target.getChanges?.(), mergeOwnProperties = true) {
 	let mergedUpdatedObject: any;
 	if (!target) return changes;
-	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
+	if (isTracked(target) && target.constructor === Array && !Object.isFrozen(target)) {
 		if (!hasChanges(target)) return (target as any).getRecord();
 		// Materialize a plain array so the stored value retains neither the mutation proxy nor its owner.
 		mergedUpdatedObject = new Array(target.length);
@@ -462,7 +509,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 	// copy the changes into the merged updated object
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!mergedUpdatedObject) mergedUpdatedObject = { ...(target.getRecord ? target.getRecord() : target) };
+		if (!mergedUpdatedObject) mergedUpdatedObject = { ...(isTracked(target) ? target.getRecord() : target) };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -484,7 +531,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 		mergedUpdatedObject[key] = value;
 	}
 	// now copy any properties on the instances itself to the merged updated object
-	if (!Array.isArray(target) && target.getRecord) {
+	if (mergeOwnProperties && !Array.isArray(target) && isTracked(target)) {
 		for (const key in target) {
 			if (hasOwnProperty.call(target, key)) {
 				if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord() };
@@ -492,7 +539,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 			}
 		}
 	}
-	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : target.getRecord ? target.getRecord() : target;
+	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : isTracked(target) ? target.getRecord() : target;
 }
 /**
  * Determine if any changes have been made to this tracked object
@@ -509,7 +556,8 @@ export function hasChanges(target) {
 		for (let i = 0, l = target.length; i < l; i++) {
 			const sourceValue = source[i];
 			const targetValue = target[i];
-			if (sourceValue && targetValue?.getRecord?.() === sourceValue) {
+			if (sameValue(targetValue, sourceValue) || sameCopy(targetValue, sourceValue)) continue;
+			if (sourceValue && isTracked(targetValue) && targetValue.getRecord() === sourceValue) {
 				if (hasChanges(targetValue)) return true;
 			} else return true;
 		}
@@ -517,17 +565,177 @@ export function hasChanges(target) {
 		const changes = target.getChanges?.();
 		if (changes && !source) return true;
 		for (const key in changes) {
+			if (hasOwnChange(target, key)) continue;
 			const value = changes[key];
 			if (value && typeof value === 'object') {
 				const sourceValue = source[key];
 				// could just be a copy, need to check
-				if (sourceValue && value.getRecord?.() === sourceValue) {
+				if (sourceValue && isTracked(value) && value.getRecord() === sourceValue) {
 					if (hasChanges(value)) return true;
 				} else return true;
 			} else return true;
 		}
+		for (const key of Object.keys(target)) {
+			const value = target[key];
+			if (!sameOwnValue(value, source?.[key]) && !atOwnBaseline(target, key, value)) return true;
+		}
 	}
 	return false;
+}
+const ownBaselines = new WeakMap<object, any>();
+const SNAPSHOT = Symbol('snapshot');
+const IDENTITY = Symbol('identity');
+/**
+ * Record the own properties a framework-constructed instance starts with (class fields such as `hits = 0`
+ * on a Table subclass), so they enter a patch only once changed. An object `structuredClone` reproduces (plain
+ * data, a Date) can change in place, so it is kept as a deep copy and compared by content; any other value
+ * (a helper instance, a Buffer, a function) is compared by identity.
+ */
+export function recordOwnBaseline(instance: any) {
+	let baseline;
+	for (const key of Object.keys(instance)) {
+		let value = instance[key];
+		if (typeof value === 'function') value = { [IDENTITY]: value };
+		else if (value !== null && typeof value === 'object') {
+			const copy = contentCopy(value);
+			value = copy === undefined ? { [IDENTITY]: value } : { [SNAPSHOT]: copy };
+		}
+		(baseline ??= Object.create(null))[key] = value;
+	}
+	if (baseline) ownBaselines.set(instance, baseline);
+}
+function atOwnBaseline(target, key: string, value) {
+	const baseline = ownBaselines.get(target);
+	if (baseline === undefined || !(key in baseline)) return false;
+	const initial = baseline[key];
+	if (initial?.[SNAPSHOT]) return isDeepStrictEqual(value, initial[SNAPSHOT]);
+	if (initial?.[IDENTITY]) return value === initial[IDENTITY];
+	return sameValue(value, initial);
+}
+/** After a commit, an own property it wrote is compared with the record, not with its initial value */
+export function releaseOwnBaseline(target, patch) {
+	const baseline = ownBaselines.get(target);
+	if (baseline === undefined) return;
+	for (const key in patch) {
+		if (key in baseline && hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]))
+			delete baseline[key];
+	}
+}
+/** Whether an own property of the instance is data to write, rather than an untouched class field */
+export function hasOwnChange(target, key: string) {
+	return hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]);
+}
+// An own object value is not tracked: the record gets a copy of a Date, Bytes or exactly copyable plain data,
+// so a later in-place edit of the instance's object is a difference in content rather than invisible.
+// Anything else (a Map, data holding a Blob) is stored as it is.
+function plainCopy(value) {
+	if (value === null || typeof value !== 'object') return value;
+	if (value instanceof Date) return new Date(value.getTime());
+	if (value instanceof Uint8Array) return Uint8Array.prototype.slice.call(value);
+	if (!isPlainData(value)) return value;
+	return contentCopy(value) ?? value;
+}
+// by prototype, since `constructor` can be a data member
+function isPlainData(value) {
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === Array.prototype || prototype === null;
+}
+function contentCopy(value) {
+	let copy;
+	try {
+		copy = structuredClone(value);
+	} catch {
+		return;
+	}
+	if (Object.getPrototypeOf(value) === null) Object.setPrototypeOf(copy, null);
+	return isDeepStrictEqual(copy, value) ? copy : undefined;
+}
+function sameOwnValue(value, recordValue) {
+	if (sameValue(value, recordValue) || sameCopy(value, recordValue)) return true;
+	return value !== null && typeof value === 'object' && isPlainData(value) && isDeepStrictEqual(value, recordValue);
+}
+function sameValue(a, b) {
+	return a === b || (a !== a && b !== b); // NaN
+}
+function sameCopy(copy, source) {
+	if (copy instanceof Date) return source instanceof Date && sameValue(copy.getTime(), source.getTime());
+	if (copy instanceof Uint8Array) return source instanceof Uint8Array && Buffer.compare(copy, source) === 0;
+	return false;
+}
+
+/**
+ * The incremental update a tracked instance commits (see resources/DESIGN.md). Returns undefined when
+ * nothing changed on an existing record, and `changes` itself when it needs no normalization; never
+ * mutates `changes`, which is the instance's live tracked state or the caller's update object.
+ */
+export function collapseChanges(target, changes) {
+	// a non-object root (an array, binary data) is not a patch; leave it for the write's root validation
+	if (changes != null && (typeof changes !== 'object' || Array.isArray(changes) || ArrayBuffer.isView(changes)))
+		return changes;
+	const source = target.getRecord?.();
+	const ownKeys = Object.keys(target);
+	let patch = changes;
+	let keyCount = 0;
+	for (const key in changes) {
+		const value = changes[key];
+		let committed = value;
+		if (ownKeys.length > 0 && hasOwnChange(target, key)) committed = OMITTED;
+		else if (isTracked(value)) {
+			if (source && value.getRecord() === source[key] && !hasChanges(value)) committed = OMITTED;
+			else committed = value.constructor === Array ? materializeArray(value) : collapseData(value);
+		}
+		if (committed !== value && patch === changes) {
+			patch = Object.create(null);
+			for (const priorKey in changes) {
+				if (priorKey === key) break;
+				patch[priorKey] = changes[priorKey];
+			}
+		}
+		if (committed === OMITTED) continue;
+		if (patch !== changes) patch[key] = committed;
+		keyCount++;
+	}
+	for (const key of ownKeys) {
+		const value = target[key];
+		if (sameOwnValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
+		if (patch === changes) patch = Object.assign(Object.create(null), changes);
+		patch[key] = isTracked(value) ? collapseData(value) : plainCopy(value);
+		keyCount++;
+	}
+	// with no record to compare against, any update (even an empty one) writes, as hasChanges decides
+	if (keyCount === 0) return source ? undefined : patch;
+	return patch;
+}
+const OMITTED = {};
+
+/**
+ * Add a numeric delta to a property of a tracked object, composing with whatever this transaction
+ * already set for it: a pending addition folds into a single addition, an assigned value becomes the
+ * sum.
+ */
+export function addToChanges(target, property: string, value: number | bigint) {
+	if (hasOwnChange(target, property)) {
+		target[property] = crdtOperations.addValues(target[property], value);
+		return;
+	}
+	const changes = target.getChanges();
+	if (changes && Object.hasOwn(changes, property)) {
+		const prior = changes[property];
+		// a tracked wrapper that was only read is not a prior value
+		if (isTracked(prior) && prior.getRecord() === target.getRecord?.()?.[property] && !hasChanges(prior))
+			target.set(property, new Addition(value));
+		else if (prior?.__op__ === 'add')
+			target.set(property, new Addition(addDeltas(prior.value, value, target.getRecord?.()?.[property])));
+		else target.set(property, crdtOperations.addValues(prior, value));
+	} else target.set(property, new Addition(value));
+}
+
+// Sum two deltas in the stored value's numeric type, so folding them gives what applying them in turn
+// would (a bigint field keeps full precision; a number field accepts a bigint then a fractional delta)
+function addDeltas(first, second, stored) {
+	if (typeof stored === 'bigint') return BigInt(first) + BigInt(second);
+	if (stored == null || isNaN(+stored)) return crdtOperations.addValues(first, second);
+	return Number(first) + Number(second);
 }
 
 const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');

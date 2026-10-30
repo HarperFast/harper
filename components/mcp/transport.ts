@@ -59,6 +59,7 @@ import {
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
+import { corsAccessListAllows } from '../../utility/corsAccessList.ts';
 
 export type McpProfile = 'operations' | 'application';
 
@@ -178,7 +179,7 @@ function isOriginAllowed(request: NormRequest): boolean {
 			? env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST)
 			: env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
 	if (!Array.isArray(list) || list.length === 0) return true;
-	return list.includes(origin) || list.includes('*');
+	return corsAccessListAllows(list, origin);
 }
 
 /**

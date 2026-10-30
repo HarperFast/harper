@@ -114,6 +114,8 @@ export async function alterRole(role: any) {
 	try {
 		updateResponse = await insert.update(updateObject);
 	} catch (err) {
+		const statusCode = (err as any)?.statusCode;
+		if (statusCode >= 400 && statusCode < 500) throw err;
 		throw handleHDBError(err as any, undefined, undefined, undefined, undefined, undefined);
 	}
 

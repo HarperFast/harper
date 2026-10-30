@@ -81,6 +81,11 @@ async function harper() {
 	}
 
 	switch (service) {
+		case SERVICE_ACTIONS_ENUM.PREVIEW: {
+			await initEnv();
+			const { runPreviewCommand } = await import('./preview.ts');
+			return runPreviewCommand();
+		}
 		case SERVICE_ACTIONS_ENUM.HELP:
 			return help();
 		case SERVICE_ACTIONS_ENUM.START: {

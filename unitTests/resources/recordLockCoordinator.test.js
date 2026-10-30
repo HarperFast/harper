@@ -3397,12 +3397,13 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 	 * acquires to the owner exactly as the transport does: the owner mints and registers a revoker that
 	 * fences the caller's handle, the caller records the round under a fresh LOCAL id. `acquire()`
 	 * returns both the local round the handle uses and the owner id the wire's release/revoke name. */
-	function relaySetup(database) {
+	function relaySetup(database, options = {}) {
 		const ownerMap = { generation: 1, homes: ['alpha'], homeIncarnation: 1 };
 		const owner = makeCoordinator(database, {
 			homeMap: () => ownerMap,
 			ownsCoordination: () => true,
-			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			establishLockFreshness:
+				options.establishLockFreshness ?? (async (_d, _t, _k, dependencies) => dependencies ?? []),
 			requestDelegation: () => {
 				throw new Error('a single-node home must not request');
 			},
@@ -3946,6 +3947,93 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 		await assert.rejects(acquiring, /coordinating worker changed/);
 		assert.deepEqual(released, [77], 'the orphaned grant must be handed straight back to the owner');
 		assert.strictEqual(caller.stats.relayedAdmissions, 0, 'no orphaned admission may be installed');
+	});
+
+	it('carries the highest dependency position to first, amortized, renewed and relayed admissions', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta']);
+		const key = cluster.keyHomedOn('beta');
+		const alpha = cluster.node('alpha').coordinator;
+		const beta = cluster.node('beta').coordinator;
+
+		const betaRound = await beta.acquire(key, LEASE, WAIT);
+		beta.release(key, betaRound.admissionId);
+		const futureReleasePos = Date.now() + 120_000;
+		cluster.tsCounter = futureReleasePos - 1;
+
+		const alphaRound1 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			alphaRound1.dependencyFloor,
+			futureReleasePos,
+			'first admission on delegation carries LOCK_RELEASE dependencyFloor'
+		);
+		alpha.release(key, alphaRound1.admissionId);
+
+		const alphaRound2 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			alphaRound2.dependencyFloor,
+			futureReleasePos,
+			'amortized admission on retained delegation preserves dependencyFloor'
+		);
+		alpha.release(key, alphaRound2.admissionId);
+
+		cluster.advanceAll(DELEGATION_LEASE_MS - LEASE + 1_000);
+		const alphaRound3 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			cluster.node('alpha').freshnessCalls.length,
+			1,
+			'continuous in-place renewal skips a second freshness barrier'
+		);
+		assert.strictEqual(
+			alphaRound3.dependencyFloor,
+			futureReleasePos,
+			'continuous in-place delegation renewal preserves dependencyFloor'
+		);
+		alpha.release(key, alphaRound3.admissionId);
+
+		const renewedFloor = futureReleasePos + 20_000;
+		const gammaRound = await beta.acquire(key, LEASE, WAIT);
+		assert.deepEqual(
+			cluster.node('alpha').written.at(-1)?.dependencies,
+			[['beta', futureReleasePos]],
+			'surrender after in-place renewal preserves inherited lineage'
+		);
+		beta.release(key, gammaRound.admissionId);
+		cluster.tsCounter = renewedFloor - 1;
+		const alphaRound4 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			alphaRound4.dependencyFloor,
+			renewedFloor,
+			'subsequent delegation handoff advances dependencyFloor to the newer LOCK_RELEASE position'
+		);
+		alpha.release(key, alphaRound4.admissionId);
+
+		const { owner, caller } = relaySetup('r-dep-floor', {
+			establishLockFreshness: async () => [['alpha', futureReleasePos + 5_000]],
+		});
+		const priorGrant = await owner.onDelegationRequest({
+			key: 'k-relayed',
+			requester: 'alpha',
+			generation: 1,
+			leaseMs: 1000,
+		});
+		owner.applyEntry(
+			{
+				type: 'lockRelease',
+				key: 'k-relayed',
+				requester: 'alpha',
+				token: priorGrant.token,
+				dependencies: null,
+			},
+			'alpha',
+			1
+		);
+		const relayedRound = await caller.acquire('k-relayed', LEASE, WAIT);
+		assert.strictEqual(
+			relayedRound.dependencyFloor,
+			futureReleasePos + 5_000,
+			'relayed admission preserves max dependencyFloor from freshness barrier'
+		);
+		caller.release('k-relayed', relayedRound.admissionId);
 	});
 });
 

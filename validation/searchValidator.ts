@@ -1,16 +1,117 @@
-import filter from 'lodash/filter.js';
-import some from 'lodash/some.js';
 import uniqBy from 'lodash/uniqBy.js';
 import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
 import { hdbSchemaTable, checkValidTable, hdbTable, hdbDatabase } from './common_validators.ts';
-import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
+const MAX_SELECT_DEPTH = 64;
 const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
+
+interface VisitedSelectorState {
+	bySchema?: WeakMap<object, WeakSet<object>>;
+	withoutSchema?: WeakSet<object>;
+}
+
+function getVisitedSet(state: VisitedSelectorState, schema: any): WeakSet<object> {
+	if (!schema || (typeof schema !== 'object' && typeof schema !== 'function')) {
+		return (state.withoutSchema ??= new WeakSet<object>());
+	}
+	state.bySchema ??= new WeakMap<object, WeakSet<object>>();
+	let set = state.bySchema.get(schema);
+	if (!set) {
+		set = new WeakSet<object>();
+		state.bySchema.set(schema, set);
+	}
+	return set;
+}
+
+function findMatchingTableAttribute(tableAttributes: any[], attributeName: any): any {
+	for (let i = 0; i < tableAttributes.length; i++) {
+		const tableAttribute = tableAttributes[i];
+		if (
+			tableAttribute === attributeName ||
+			tableAttribute?.attribute === attributeName ||
+			tableAttribute?.name === attributeName
+		) {
+			return tableAttribute;
+		}
+	}
+	return undefined;
+}
+
+function collectUnknownAttributes(
+	attributesToCheck: any[],
+	currentTableSchema: any,
+	unknownAttributes: any[],
+	depth = 0,
+	visitedState?: VisitedSelectorState
+) {
+	const tableAttributes = currentTableSchema?.attributes || [];
+	let visitedObjects: WeakSet<object> | undefined;
+	for (const attribute of attributesToCheck) {
+		if (
+			attribute === '*' ||
+			(typeof attribute === 'string' && attribute.startsWith('$')) || // meta attributes
+			Array.isArray(attribute)
+		) {
+			continue;
+		}
+		if (attribute && typeof attribute === 'object') {
+			if (typeof attribute.name !== 'string' || attribute.name.length === 0) {
+				unknownAttributes.push(attribute);
+				continue;
+			}
+			visitedObjects ??= getVisitedSet((visitedState ??= {}), currentTableSchema);
+			if (visitedObjects.has(attribute)) continue;
+			visitedObjects.add(attribute);
+			const matchedAttribute = findMatchingTableAttribute(tableAttributes, attribute.name);
+			if (!matchedAttribute) {
+				unknownAttributes.push(attribute.name);
+				continue;
+			}
+			if (attribute.conditions !== undefined) {
+				unknownAttributes.push(`${attribute.name} (conditions are not allowed in get_attributes)`);
+				continue;
+			}
+			if (attribute.offset !== undefined && (!Number.isInteger(attribute.offset) || attribute.offset < 0)) {
+				unknownAttributes.push(`${attribute.name} (invalid offset)`);
+				continue;
+			}
+			if (attribute.limit !== undefined && (!Number.isInteger(attribute.limit) || attribute.limit < 0)) {
+				unknownAttributes.push(`${attribute.name} (invalid limit)`);
+				continue;
+			}
+			if (attribute.select !== undefined) {
+				if (
+					typeof attribute.select !== 'string' &&
+					(!Array.isArray(attribute.select) || attribute.select.length === 0)
+				) {
+					unknownAttributes.push(`${attribute.name} (invalid select)`);
+					continue;
+				}
+				if (depth >= MAX_SELECT_DEPTH) {
+					unknownAttributes.push(`${attribute.name} (select depth exceeded)`);
+					continue;
+				}
+				const targetTable =
+					(matchedAttribute.definition || matchedAttribute.elements?.definition)?.tableClass ??
+					currentTableSchema?.propertyResolvers?.[attribute.name]?.definition?.tableClass;
+				if (targetTable?.attributes) {
+					const nestedSelect = Array.isArray(attribute.select) ? attribute.select : [attribute.select];
+					collectUnknownAttributes(nestedSelect, targetTable, unknownAttributes, depth + 1, visitedState);
+				}
+			}
+			continue;
+		}
+		if (!findMatchingTableAttribute(tableAttributes, attribute)) {
+			unknownAttributes.push(attribute);
+		}
+	}
+}
 const SEARCH_BY_CONDITIONS_COMPARATORS = [
 	'equals',
 	'contains',
@@ -30,7 +131,17 @@ const searchByValueSchema = Joi.object({
 	schema: hdbDatabase,
 	table: hdbTable,
 	attribute: hdbSchemaTable,
-	value: Joi.any().required(),
+	value: Joi.any()
+		.custom((value, helpers) => {
+			if (Array.isArray(value) && value.includes('*')) {
+				return helpers.error('any.invalid');
+			}
+			return value;
+		})
+		.required()
+		.messages({
+			'any.invalid': "{{#label}} must not be an array containing '*'",
+		}),
 	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdbSchemaTable, Joi.object())).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),
@@ -98,8 +209,15 @@ export default function (searchObject: any, type: any) {
 			if (!searchObject.get_attributes) addError(`'get_attributes' is required`);
 			else if (!Array.isArray(searchObject.get_attributes)) addError(`'get_attributes' must be an array`);
 			else if (searchObject.get_attributes.length === 0) addError(`'get_attributes' must contain at least 1 item`);
-			else if (!searchObject.get_attributes.every((value) => typeof value === 'string' || typeof value === 'number'))
-				addError(`'get_attributes' must be strings or numbers`);
+			else if (
+				!searchObject.get_attributes.every(
+					(value) =>
+						typeof value === 'string' ||
+						typeof value === 'number' ||
+						(typeof value === 'object' && value !== null && !Array.isArray(value))
+				)
+			)
+				addError(`'get_attributes' must be strings, numbers, or objects`);
 			function addError(error) {
 				if (errors) errors += '. ' + error;
 				else errors = error;
@@ -123,7 +241,6 @@ export default function (searchObject: any, type: any) {
 		}
 
 		let tableSchema: any = getDatabases()[searchObject.schema][searchObject.table];
-		let allTableAttributes = tableSchema.attributes;
 
 		//this clones the get_attributes array
 		let checkAttributes = searchObject.get_attributes ? [...searchObject.get_attributes] : [];
@@ -132,37 +249,21 @@ export default function (searchObject: any, type: any) {
 			checkAttributes.push(searchObject.attribute);
 		}
 
-		//if search type is conditions add conditions fields to see if the fields exist
-		const addConditions = (searchObject) => {
-			//this is used to validate condition attributes exist in the schema
-			for (const condition of searchObject.conditions) {
-				if (condition.conditions) addConditions(condition);
-				// Table.search resolves full-text names together with source-field authorization.
-				else if (!FULL_TEXT_COMPARATOR_SET.has(condition.comparator)) checkAttributes.push(condition.attribute);
-			}
-		};
 		if (type === 'conditions') {
+			//if search type is conditions add conditions fields to see if the fields exist
+			const addConditions = (condGroup) => {
+				//this is used to validate condition attributes exist in the schema
+				for (const condition of condGroup.conditions) {
+					if (condition.conditions) addConditions(condition);
+					// Table.search resolves full-text names together with source-field authorization.
+					else if (!FULL_TEXT_COMPARATOR_SET.has(condition.comparator)) checkAttributes.push(condition.attribute);
+				}
+			};
 			addConditions(searchObject);
 		}
 
-		let unknownAttributes = filter(
-			checkAttributes,
-			(attribute) =>
-				attribute !== '*' &&
-				!attribute.startsWith?.('$') && // meta attributes
-				attribute.attribute !== '*' && // skip check for asterisk attribute
-				!Array.isArray(attribute) &&
-				!attribute.name && // nested attribute
-				!some(
-					allTableAttributes,
-					(
-						tableAttribute: any // attribute should match one of the attribute in global
-					) =>
-						tableAttribute === attribute ||
-						tableAttribute.attribute === attribute ||
-						tableAttribute.attribute === (attribute as any).attribute
-				)
-		);
+		let unknownAttributes: any[] = [];
+		collectUnknownAttributes(checkAttributes, tableSchema, unknownAttributes);
 
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"
@@ -187,9 +288,11 @@ export default function (searchObject: any, type: any) {
 				}
 			});
 			// return error with proper message - replace last comma with and
-			let errorMsg = unknownAttributes.join(', ');
+			let errorMsg = unknownAttributes
+				.map((attr) => (typeof attr === 'string' || typeof attr === 'number' ? String(attr) : '[object Object]'))
+				.join(', ');
 			errorMsg = errorMsg.replace(/,([^,]*)$/, ' and$1');
-			return new Error(`unknown attribute '${errorMsg}'`);
+			return new ClientError(`unknown attribute '${errorMsg}'`);
 		}
 	}
 

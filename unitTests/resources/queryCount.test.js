@@ -85,7 +85,7 @@ describe('Table.search count (REST pagination total-count)', () => {
 
 	it('a non-finite, negative, or oversized limit falls through to streaming (no count)', function () {
 		// The count page must be a finite, non-negative integer no larger than the max count-page size;
-		// anything else (limit(Infinity)/limit(foo)->NaN, a negative, or an oversized limit) must not
+		// anything else on a programmatic target (Infinity, NaN, a negative, or an oversized limit) must not
 		// materialize a count page.
 		for (const limit of [Infinity, NaN, -1, 20000]) {
 			const results = CountTable.search({ limit, count: 'exact' });

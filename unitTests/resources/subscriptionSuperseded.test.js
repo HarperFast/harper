@@ -244,6 +244,25 @@ describe('Subscription superseded versions', () => {
 		);
 	});
 
+	it('replays a patch without the fields a later patch first wrote', async () => {
+		await T.put('A', { value: 2 });
+		await T.patch('A', { value: 3 });
+		await T.patch('A', { extra: 'later', count: { __op__: 'add', value: 5 } });
+		const { events } = await subscribe({ startTime: 1, id: 'A', includeSuperseded: true });
+		assert.deepStrictEqual(
+			events.map((event) => [
+				event.value.value,
+				Object.hasOwn(event.value, 'extra'),
+				Object.hasOwn(event.value, 'count'),
+			]),
+			[
+				[2, false, false],
+				[3, false, false],
+				[3, true, true],
+			]
+		);
+	});
+
 	it('keeps invalidation typed as invalidate', async () => {
 		await versions();
 		await T.invalidate('A');

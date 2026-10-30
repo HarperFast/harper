@@ -21,7 +21,7 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 	let Records, Unplaced, calls;
 
 	before(function () {
-		// LMDBTransaction keeps its own confirmation registry, which the replication layer never registers
+		// LMDB commits compute no resident lists and run no feasibility check
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		setupTestDBPath();
 		setMainIsWorker(true);

@@ -61,6 +61,16 @@ describe('a replicated drop_component', () => {
 		}
 	});
 
+	it('accepts ifDeploymentId only as a deployment UUID, and only for a whole component', () => {
+		const id = '0f5c4a3e-7b1d-4e2a-9c6f-1a2b3c4d5e6f';
+		assert.equal(dropComponentFileValidator({ project: 'preview', ifDeploymentId: id }), undefined);
+		assert.match(dropComponentFileValidator({ project: 'preview', ifDeploymentId: 'd-1' }).message, /must be a UUID/);
+		assert.match(
+			dropComponentFileValidator({ project: 'preview', file: 'index.js', ifDeploymentId: id }).message,
+			/ifDeploymentId/
+		);
+	});
+
 	it('accepts keepBranches only as a boolean, and never with restart: true', () => {
 		assert.equal(dropComponentFileValidator({ project: 'preview', keepBranches: true }), undefined);
 		assert.equal(dropComponentFileValidator({ project: 'preview', keepBranches: false, restart: true }), undefined);
