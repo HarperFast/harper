@@ -142,7 +142,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		beforeEach(reseed);
 
 		after(() => {
-			Table.primaryStore.estimatedEntryCountExpires = 0;
+			if (Table) Table.primaryStore.estimatedEntryCountExpires = 0;
 			if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 			else process.env.HARPER_SQL_ENGINE = originalEngine;
 		});
