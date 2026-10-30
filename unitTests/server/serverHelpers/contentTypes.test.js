@@ -819,8 +819,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		this.timeout(20_000);
 		const { statuses, nextAnsweredAfterMs } = await uploadOnRawSocket('/ignore', { next: '/slow' });
 		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
-		// Past the 1000ms grace (UNREAD_UPLOAD_GRACE_MS), armed before the upload ended. Not the route's 1500ms sleep:
-		// its timer can fire a millisecond short of the wall-clock interval measured here.
+		// Past the 1000ms grace (UNREAD_UPLOAD_GRACE_MS) armed before the upload ended; the 1500ms sleep can read 1499ms
 		assert.ok(nextAnsweredAfterMs > 1000, `the slow request was answered after ${nextAnsweredAfterMs}ms`);
 	});
 
