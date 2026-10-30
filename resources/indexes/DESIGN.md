@@ -26,8 +26,7 @@ Node ids are the sound source. They are allocated monotonically from a `getUserS
 so the counter (or one reverse seek to the largest id) gives the node count in O(1), unaffected by
 how many times a node has been rewritten. Deletes leave it reading high until a rebuild, which only
 makes ef slightly generous. A file-primary (`nativePlane`) index keeps no node-id keys in its store
-at all — the plane slot carries the primary key — so its count is the plane's id high-water, which
-reads the same way (allocation high-water, generous after deletes until a rebuild).
+— the plane slot carries the primary key — so its count is the plane's id high-water, read the same way.
 
 Note the unit: the JS index store holds two keys per record — the graph node and the primary-key
 mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that
@@ -147,11 +146,10 @@ puts a store lookup back on every query whose `limit` exceeds the table — the 
 whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
 traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
 
-The filter budget deliberately does not follow a limit-derived `ef`. It is computed from the `ef`
-the index resolved for itself, with an automatically scaled `ef` capped at `AUTO_EF_MAX` before it is
-multiplied by `filterExpansion`; explicit schema or per-query `ef` values remain authoritative.
-Multiplying the budget by a caller's `limit` would turn a filtered vector query into a record-loading
-scan wearing an index's clothes.
+The filter budget deliberately does not follow a limit-derived `ef`: it is the index's own resolved
+`ef` (capped as in the [auto-scale note](#efconstruction-and-the-search-ef-ceiling-both-auto-scale-with-the-graph))
+times `filterExpansion`. Multiplying it by a caller's `limit` would turn a filtered vector query into a
+record-loading scan wearing an index's clothes.
 
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
@@ -257,13 +255,12 @@ offered progress. The intended wake for a waiting runner is the lock's own unloc
 waiters the same way. **Temporarily** the lock is taken without one: rocksdb-js before 2.9.1 queued
 that callback as a thread-safe function of the caller's env, and on Node 22 one left behind by a
 worker that was `terminate()`d aborts the process when another thread unlocks (Harper's thread
-manager terminates workers on restart). The pinned 2.10.0 includes the fix
-(HarperFast/rocksdb-js#849, released in 2.9.1), but the workaround is not yet reverted: successors
-are woken by the releasing owner's `notify()` on the `derived-index:<id>:wake` buffer (the readiness
-buffer when the registration has no generation-specific readiness id) and, for an owner that died
-without releasing, by a retry timer (`lockRetryMilliseconds`, 5 s by default); the releasing runner
-ignores the one notification it caused, and a runner already parked on that timer does not re-probe
-the lock on commit wakes. The callback path is simpler and picks up a dead owner immediately.
+manager terminates workers on restart). The pinned rocksdb-js has the fix (HarperFast/rocksdb-js#849),
+but the workaround is not yet reverted: successors are woken by the releasing owner's `notify()` on
+the `derived-index:<id>:wake` buffer (the readiness buffer when the registration has no
+generation-specific readiness id) and, for an owner that died without releasing, by a retry timer
+(`lockRetryMilliseconds`, 5 s by default); the releasing runner ignores the one notification it
+caused, and a runner already parked on that timer does not re-probe the lock on commit wakes.
 
 Configuration-level database aliases can load several table classes over the same physical audit
 store, index column family and plane file. They must not run that backend more than once. Registration
@@ -352,8 +349,7 @@ The contract is `DerivedIndexBackend` and `DerivedIndexBatch` in `derivedIndexRu
 comments state each hook's obligation. Three facts they do not: `records` and `bytes` are
 non-enumerable (a backend that spreads or clones the batch loses them), `bytes` is an estimate, and
 `through` is also absent while a transaction is still open (see Bounded delivery). What an ownership
-handoff has to fence is work
-that survives a method return — a queued apply, a barrier that completes later, a cursor that
+handoff has to fence is work that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
 bounded by the runner's turn budget (the runtime cannot bound work it does not perform): the
@@ -538,11 +534,10 @@ that id's exact-epoch token from surviving readers on the path and remembers tha
 delayed pause for that retired id cannot reinstall its fence on a successor. A readiness id never seen
 on this worker is still accepted, so a successor reset fences a predecessor reader on a worker whose
 schema refresh is late. Closing attachments remain registered until their readers drain, and a duplicate
-attachment for the same readiness id keeps the fence. This closes both handoff directions without
-assuming an ordering between generation-local epochs. Retirement uses an explicit synthetic token that
-still pauses every reader because it is not tied to a generation attachment. If the native
-reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
-rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
+attachment for the same readiness id keeps the fence. Retirement uses an explicit synthetic token that
+still pauses every reader because it is not tied to a generation attachment. If the native reader
+violates its contract by rejecting close, Harper logs the failure and proceeds with reset rather than
+wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 
 Weights and highlighting are query configuration. Changing either refreshes readers without rotating
 the persisted generation. Analyzer behavior, stop words, positions, surface terms, synonyms, source
@@ -689,31 +684,28 @@ expose it before await, waiting promises on resolved arrays, except zero-size pa
 Waiting consumes the ordinary transaction timeout without special monitor renewal. An expired read
 snapshot fails with `ReadSnapshotExpiredError`; timed-out staged writes retain their existing 422
 failure and rollback. The adapter uses the captured snapshot for materialization and guards predicate
-reads, so it never recreates a snapshot after waiting. Dropping an unconsumed iterable starts no work;
-once consuming, close its iterator or abort the request to cancel. Lag rejection never invalidates a
-healthy plane. The default/strict no-wait lag rejection remains HTTP 503.
+reads, so it never recreates a snapshot after waiting. Lag rejection never invalidates a healthy
+plane. The default/strict no-wait lag rejection remains HTTP 503.
 File-primary node-to-record mappings are read from current storage, just like the native graph itself:
 an older record snapshot must not hide mappings published after a record already visible in that snapshot.
 Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
 
-The runner captures the RocksDB process-wide transaction clock (`getMonotonicTimestamp()`) before listing
-physical logs and polling their committed
-prefixes. It synchronously adds discovered logs to the audit store's worker-local map. A capture is
-usable only when each stats snapshot's committed position equals its written head: an earlier unfinished
-transaction can hide later committed transactions behind the readable prefix. The native statistics
-counter alone is insufficient here (it can remain nonzero at an equal head). Positions include both file
-sequence and byte offset; cursor timestamps and origin clocks are never ordered or subtracted to prove
-freshness.
+The runner captures the RocksDB process-wide transaction clock (`getMonotonicTimestamp()`) before
+listing physical logs and polling their committed prefixes. It synchronously adds discovered logs to
+the audit store's worker-local map. A capture is usable only when each stats snapshot's committed
+position equals its written head: an earlier unfinished transaction can hide later committed
+transactions behind the readable prefix. The native statistics counter alone is insufficient here (it
+can remain nonzero at an equal head). Positions include both file sequence and byte offset; cursor
+timestamps and origin clocks are never ordered or subtracted to prove freshness.
 
 After a poll reaches the end with no undelivered records, the capture is associated with its offered
 cursor. Reconciliation publishes it only when that cursor, or a later entry in the ordered offered queue,
 is durable. Unrelated-only progress may publish without a new barrier only if **all** non-durable
 registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
 be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
-optional `coverage` field in the existing durable cursor value, kept by a later cursor write only while
-it keeps the same vector, persisted only from an idle pass's capture or carried onto a purged-anchor floor
-conversion, which reflects the same commits (see the purged-anchor paragraph under cursors), and removed
-with the cursor before reset. No native file format changes.
+optional `coverage` field in the existing durable cursor value, kept and persisted under the binding
+rules in [Ownership and wake-up](#ownership-and-wake-up), and removed with the cursor before reset. No
+native file format changes.
 
 Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic, except
 that a durable vector advance resets the cadence, since the backend dropped the old vector's coverage. The
