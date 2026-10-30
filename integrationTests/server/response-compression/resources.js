@@ -72,7 +72,6 @@ export class SlowCountedRows extends Resource {
 	}
 }
 
-// read and reset
 export class RowCounts extends Resource {
 	static loadAsInstance = false;
 	get() {

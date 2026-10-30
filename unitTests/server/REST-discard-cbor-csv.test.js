@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 const { versionToEtag } = require('#src/server/serverHelpers/preconditions');
@@ -90,9 +90,7 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 			try {
 				it.aborted = true;
 				it.rawIterator?.return?.();
-			} catch {
-				// ignore cleanup errors after assertions are recorded
-			}
+			} catch {}
 		}
 		for (const ctx of state.trackedContexts) {
 			const txn = ctx.transaction;
@@ -365,6 +363,17 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 			}
 		}
 		resources.set('ArrayRows', ArrayRows, { rest: true });
+
+		class PromiseRows extends Resource {
+			static loadAsInstance = false;
+			allowRead() {
+				return true;
+			}
+			static get() {
+				return new Set([Promise.resolve({ id: 'p1' }), { id: 'p2' }]);
+			}
+		}
+		resources.set('PromiseRows', PromiseRows, { rest: true });
 		resources.isListening = true;
 
 		handleApplication({
@@ -478,24 +487,24 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 		const cborGet = await dispatchRequest('GET', '/DiscardProbeRow/?seq=gt=0', {
 			accept: 'application/cbor',
 		});
-		assert.equal(cborGet.statusCode, 200);
+		assert.strictEqual(cborGet.statusCode, 200);
 		const decodedCbor = decode(cborGet.body);
-		assert.equal(Array.isArray(decodedCbor), true);
-		assert.equal(decodedCbor.length, ROW_COUNT);
-		assert.equal(decodedCbor[0].id, 'row-01');
-		assert.equal(decodedCbor[ROW_COUNT - 1].id, 'row-20');
-		assert.equal(cborGet.metrics.readTxnsUsed, 0);
-		assert.equal(cborGet.metrics.hasOpenTxn, false);
+		assert.strictEqual(Array.isArray(decodedCbor), true);
+		assert.strictEqual(decodedCbor.length, ROW_COUNT);
+		assert.strictEqual(decodedCbor[0].id, 'row-01');
+		assert.strictEqual(decodedCbor[ROW_COUNT - 1].id, 'row-20');
+		assert.strictEqual(cborGet.metrics.readTxnsUsed, 0);
+		assert.strictEqual(cborGet.metrics.hasOpenTxn, false);
 
 		resetState();
 		const csvGet = await dispatchRequest('GET', '/DiscardProbeRow/?seq=gt=0', {
 			accept: 'text/csv',
 		});
-		assert.equal(csvGet.statusCode, 200);
+		assert.strictEqual(csvGet.statusCode, 200);
 		const csvLines = csvGet.body.toString('utf8').trim().split(/\r?\n/);
-		assert.equal(csvLines.length, ROW_COUNT + 1);
-		assert.equal(csvGet.metrics.readTxnsUsed, 0);
-		assert.equal(csvGet.metrics.hasOpenTxn, false);
+		assert.strictEqual(csvLines.length, ROW_COUNT + 1);
+		assert.strictEqual(csvGet.metrics.readTxnsUsed, 0);
+		assert.strictEqual(csvGet.metrics.hasOpenTxn, false);
 
 		for (const accept of ['application/json', 'application/x-msgpack']) {
 			for (const kind of ['HEAD', '304', '412']) {
@@ -754,21 +763,26 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 	it('returns the rows of an async @computed selection over msgpack and CBOR as over JSON', async () => {
 		const url = '/AsyncComputedRow/?select(id,name,label)';
 		const json = JSON.parse((await dispatchRequest('GET', url)).body);
-		assert.equal(json.length, 5);
-		assert.equal(json[0].label, 'name-0 label');
+		assert.strictEqual(json.length, 5);
+		assert.strictEqual(json[0].label, 'name-0 label');
 		const msgpack = await dispatchRequest('GET', url, { accept: 'application/x-msgpack' });
-		assert.equal(msgpack.statusCode, 200);
+		assert.strictEqual(msgpack.statusCode, 200);
 		assert.deepStrictEqual(unpackMultiple(msgpack.body), json);
 		const cbor = await dispatchRequest('GET', url, { accept: 'application/cbor' });
 		assert.deepStrictEqual(decode(cbor.body), json);
 	});
 
+	it('awaits the Promise rows of a sync iterable in CSV', async () => {
+		const csv = await dispatchRequest('GET', '/PromiseRows/', { accept: 'text/csv' });
+		assert.deepStrictEqual(csv.body.toString().trim().split(/\r?\n/), ['"id"', '"p1"', '"p2"']);
+	});
+
 	it('streams a CBOR array with a definite length and an iterable as an indefinite one', async () => {
 		const array = await dispatchRequest('GET', '/ArrayRows/', { accept: 'application/cbor' });
-		assert.equal(array.body[0], 0x82);
+		assert.strictEqual(array.body[0], 0x82);
 		assert.deepStrictEqual(decode(array.body), [{ id: 'a' }, { id: 'b' }]);
 		const iterable = await dispatchRequest('GET', '/ClosedUnstepped/', { accept: 'application/cbor' });
-		assert.equal(iterable.body[0], 0x9f);
-		assert.equal(decode(iterable.body).length, ROW_COUNT);
+		assert.strictEqual(iterable.body[0], 0x9f);
+		assert.strictEqual(decode(iterable.body).length, ROW_COUNT);
 	});
 });

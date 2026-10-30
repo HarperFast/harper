@@ -124,7 +124,9 @@ mediaTypes.set('text/plain', {
 		return data.toString();
 	},
 	serializeStream(data: any) {
-		return Readable.from(openOnFirstStep(() => (data.map ? data.map((d) => d.toString()) : data)));
+		return Readable.from(
+			openOnFirstStep(() => (data.map ? data.map((d) => d.toString()) : data), Boolean(data[Symbol.asyncIterator]))
+		);
 	},
 	deserialize(data: Buffer) {
 		return data.toString();
@@ -800,7 +802,7 @@ const CBOR_STREAM_OPTIONS = { ...PUBLIC_ENCODE_OPTIONS, sequential: true };
 function cborStream(data) {
 	// an Encoder per stream: encodeAsAsyncIterable keeps its chunking state on the instance
 	return Readable.from(
-		openOnFirstStep(() => (new Encoder(CBOR_STREAM_OPTIONS) as any).encodeAsAsyncIterable(asyncPreferred(data))),
+		openOnFirstStep(() => (new Encoder(CBOR_STREAM_OPTIONS) as any).encodeAsAsyncIterable(asyncPreferred(data)), true),
 		{ objectMode: false, highWaterMark: 16384 }
 	);
 }
@@ -812,7 +814,6 @@ function msgpackStream(data) {
 	return pack(data);
 }
 
-// A class, not an object literal: cbor-x encodes a plain object as a map.
 class AsyncIterableView {
 	source: any;
 	constructor(source) {
@@ -829,19 +830,24 @@ function asyncPreferred(data) {
 	return data?.[Symbol.asyncIterator] ? new AsyncIterableView(data) : data;
 }
 
-// Readable.from() takes its source's iterator at construction; this one opens the source on the first next().
-function openOnFirstStep(open: () => any) {
+// Readable.from() takes its source's iterator at construction; this one opens the source on the first next(). A sync
+// source keeps the sync protocol, under which Readable.from() awaits a row that is a Promise.
+function openOnFirstStep(open: () => any, async: boolean): Iterable<any> | AsyncIterable<any> {
 	let iterator;
 	let closed = false;
-	return {
-		[Symbol.asyncIterator]() {
+	const deferred: any = {
+		[async ? Symbol.asyncIterator : Symbol.iterator]() {
 			return this;
 		},
 		next() {
 			if (!iterator) {
 				if (closed) return { value: undefined, done: true };
 				const source = open();
-				iterator = source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
+				iterator = async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
+				if (closed) {
+					iterator.return?.();
+					return { value: undefined, done: true };
+				}
 			}
 			return iterator.next();
 		},
@@ -850,11 +856,13 @@ function openOnFirstStep(open: () => any) {
 			return iterator?.return?.(value) ?? { value, done: true };
 		},
 	};
+	return deferred;
 }
 
 // pipe() reads the source on the next tick, past a discard in this one, and pipeline() destroys the source only on a
 // later tick. So connect on the first read, and destroy the source synchronously with the transform.
 function pipelineOnRead(source: Readable, transform: Transform): Transform {
+	source.once('error', (error) => transform.destroy(error));
 	const read = transform._read;
 	transform._read = function (size) {
 		transform._read = read;
@@ -1035,7 +1043,7 @@ function transformIterable(iterable, transform, serializeError, eager) {
  */
 export function toCsvStream(data, columns?) {
 	const source = data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data];
-	const readStream = Readable.from(openOnFirstStep(() => source));
+	const readStream = Readable.from(openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator])));
 
 	let headerWritten = false;
 	let fields = columns || null;
