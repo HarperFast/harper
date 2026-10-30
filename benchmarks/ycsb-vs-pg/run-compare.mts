@@ -804,6 +804,10 @@ export async function createSession(
 		'YCSB_PG_RESTORE',
 	])
 		delete process.env[name];
+	// The loopback pool coordinates through a registry in tmpdir(), which bench-run makes private per
+	// run; a Harper test elsewhere on the host could then claim the same address and co-bind our ports.
+	process.env.HARPER_INTEGRATION_TEST_LOOPBACK_POOL_START ??= '240';
+	process.env.HARPER_INTEGRATION_TEST_LOOPBACK_POOL_COUNT ??= '8';
 	// This process, and the generator shards it forks, run on the generator cores.
 	await pinPid(process.pid, driverCpus);
 	process.env.HARPER_RUNTIME = await writePinnedRuntime(RESULTS_DIR, serverCpus);
