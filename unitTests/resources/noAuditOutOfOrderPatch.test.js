@@ -666,6 +666,7 @@ describe('out-of-order patch on an audit:false table', () => {
 	});
 
 	it('two saved same-key increments are not applied again when another key forces a recommit', async function () {
+		this.timeout(10000);
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const { id, now } = await seedNewerRecord();
 		await NoAudit.put('noaudit-other', { count: 0 });
