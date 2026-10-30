@@ -93,6 +93,19 @@ Consequences that shape the code:
   `DatabaseTransaction.save()`'s guard on `operation.lockHandle`, plus the hold branch's own liveness
   check in `Table.save()` — not duplicated for scoped, since its eagerly-staged write already carries
   `lockHandle` into the same guard.
+- **A write on a locked key carries the lock, whichever instance staged it.** `DatabaseTransaction`
+  applies lock rules (holder stamps, hold floor or 409, lease-expiry 409, `refuseLockWrites`,
+  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` sets it at all four staging sites
+  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`) from the instance's own handle,
+  else from `recordLocks` — so static verbs and other instances on the same context are covered — and
+  `registerRecordLock` binds unsaved writes already staged on the key, so admission's
+  `hasUnlockedWrite(store, keyId)` already discounts them and claims the stamp the clock may then adopt.
+  Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
+  without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
+  been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
+  replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
+  the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
+  into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
   (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
   than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that
@@ -246,6 +259,11 @@ is tracked in harper#3246.
 the acquiring transaction committed is fine (each write auto-commits as an ImmediateTransaction).
 Taking the lock again in a second `transaction()` scope issues a fresh `lock()` call rather than
 relying on the first hold still being re-entrant in that scope.
+On a hold, `addTo()`/`subtractFrom()` stage nothing until the explicit `save()`, like `set()` (no
+eager `update()`); an explicit `holder.update()` stages like any `update()` and commits with its
+transaction. An abort marks the unsaved writes it discards `dropped`, so a holder whose pending
+write (from `holder.update()`) was staged in the aborted transaction restages its changes at its next
+`save()` instead of re-saving an orphan no transaction tracks (`recordLockHoldAddToAbort.test.js`).
 
 An abort during the `acquireRecordKey` wait is covered single-threaded by "a transaction aborted while
 lock() waiters are parked leaves the key unlocked" (`unitTests/resources/recordLock.test.js`), which
