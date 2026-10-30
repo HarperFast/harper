@@ -11,6 +11,9 @@
 // need to control the `.get()` return value or assert side effects.
 
 const assert = require('node:assert');
+const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
+const { closeSync, ftruncateSync, openSync, writeSync } = require('node:fs');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -21,8 +24,11 @@ const {
 	ingestTransactionTimeoutMs,
 	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
 } = require('#src/components/deploymentRecorder');
-const { databases } = require('#src/resources/databases');
+const { databases, table } = require('#src/resources/databases');
+const { createBlob, saveBlob, decodeFromDatabase, getFilePathForBlob, getFileId } = require('#src/resources/blob');
 const { contextStorage } = require('#src/resources/transaction');
+const envMngr = require('#src/utility/environment/environmentManager');
+const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
 const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const terms = require('#src/utility/hdbTerms');
 const { waitFor } = require('../waitFor.js');
@@ -635,6 +641,22 @@ describe('readPayloadBlobWithRetry', () => {
 		});
 	}
 
+	function pullSequenceStream(steps) {
+		let step = 0;
+		return new ReadableStream({
+			pull(controller) {
+				const next = steps[step++];
+				if (next instanceof Error) controller.error(next);
+				else if (next === undefined) controller.close();
+				else controller.enqueue(next);
+			},
+		});
+	}
+
+	function unavailableError(message) {
+		return Object.assign(new Error(message), { statusCode: 503 });
+	}
+
 	async function readAll(stream) {
 		const chunks = [];
 		for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -699,6 +721,131 @@ describe('readPayloadBlobWithRetry', () => {
 		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
 		await assert.rejects(() => readAll(stream), /stalled mid-stream/);
 		assert.strictEqual(attempts, 1, 'a stall after partial content must not be retried');
+	});
+
+	for (const [kind, emptyChunk] of [
+		['Buffer', () => Buffer.alloc(0)],
+		['Uint8Array', () => new Uint8Array(0)],
+	]) {
+		it(`retries a 503 that follows only a zero-length ${kind} chunk, and forwards no empty chunk`, async () => {
+			let attempts = 0;
+			const streamFactory = () => {
+				attempts++;
+				return attempts === 1
+					? pullSequenceStream([emptyChunk(), unavailableError('stalled with 0 bytes readable')])
+					: pullSequenceStream([emptyChunk(), Buffer.from('tarball-bytes')]);
+			};
+			const forwarded = [];
+			const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+			for await (const chunk of stream) forwarded.push(chunk);
+			assert.strictEqual(attempts, 2, 'a zero-length chunk is not content, so the 503 is retried');
+			assert.deepStrictEqual(
+				forwarded.map((chunk) => Buffer.from(chunk).toString()),
+				['tarball-bytes']
+			);
+		});
+	}
+
+	it('stops reading a source of only zero-length chunks once the consumer destroys the stream', async () => {
+		let cancelled = false;
+		const streamFactory = () =>
+			new ReadableStream({
+				pull(controller) {
+					controller.enqueue(new Uint8Array(0));
+					return new Promise((resolve) => setTimeout(resolve, 1));
+				},
+				cancel() {
+					cancelled = true;
+				},
+			});
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000 });
+		stream.resume();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		stream.destroy();
+		await waitFor(() => cancelled, { timeout: 1000, message: 'the source was never cancelled after destroy()' });
+	});
+
+	it('does not retry a 503 after content, even when zero-length chunks surround it', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return pullSequenceStream([
+				Buffer.alloc(0),
+				Buffer.from('partial-'),
+				Buffer.alloc(0),
+				unavailableError('stalled mid-stream'),
+			]);
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+		await assert.rejects(() => readAll(stream), /stalled mid-stream/);
+		assert.strictEqual(attempts, 1);
+	});
+
+	describe('over a real file-backed blob', () => {
+		const HEADER_SIZE = 8;
+		let StallTable;
+		let mainWasWorker;
+
+		before(() => {
+			mainWasWorker = getWorkerIndex() === 0;
+			testUtils.setupTestDBPath();
+			setMainIsWorker(true);
+			StallTable = table({
+				table: 'DeploymentPayloadStall',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			});
+		});
+		after(() => {
+			if (mainWasWorker !== undefined) setMainIsWorker(mainWasWorker);
+		});
+
+		it('retries a blob holding only its header until the content lands', async () => {
+			const store = StallTable.primaryStore.rootStore;
+			const payload = crypto.randomBytes(300_000);
+			const blob = createBlob(Readable.from([payload]), { size: payload.length });
+			await decodeFromDatabase(() => saveBlob(blob).saving, store);
+			const filePath = getFilePathForBlob(blob);
+			const lockKey = getFileId(blob) + ':blob';
+			assert.ok(store.tryLock(lockKey), 'the test must hold the blob write lock');
+			const fd = openSync(filePath, 'r+');
+			let landed = false;
+			const landContent = () => {
+				if (landed) return;
+				landed = true;
+				try {
+					writeSync(fd, payload, 0, payload.length, HEADER_SIZE);
+				} finally {
+					closeSync(fd);
+					store.unlock(lockKey);
+				}
+			};
+			try {
+				ftruncateSync(fd, HEADER_SIZE);
+				envMngr.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+				let attempts = 0;
+				const streamFactory = () => {
+					attempts++;
+					// Only after the first read has stalled out, so success requires a retry.
+					if (attempts === 2) landContent();
+					return blob.stream();
+				};
+				const stream = readPayloadBlobWithRetry(streamFactory, {
+					timeoutMs: 5000,
+					initialBackoffMs: 10,
+					maxBackoffMs: 10,
+				});
+				const result = await readAll(stream);
+				assert.strictEqual(attempts, 2);
+				assert.ok(result.equals(payload), 'the retried read delivers the whole payload exactly once');
+			} finally {
+				landContent();
+				envMngr.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+			}
+		});
 	});
 
 	it('succeeds on the first attempt without waiting when the stream is healthy', async () => {
