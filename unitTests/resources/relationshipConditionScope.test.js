@@ -188,5 +188,19 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		const rows = [];
 		for await (const row of Parent.search({ conditions: grouped, allowFullScan: false })) rows.push(row.id);
 		assert.deepStrictEqual(rows, ['p1']);
+		// an OR holding a relationship branch does not block the indexed outer condition from leading
+		const union = [
+			{ attribute: 'group', value: 'g1' },
+			{
+				operator: 'or',
+				conditions: [
+					{ operator: 'and', conditions: [{ attribute: 'b', comparator: 'in', value: [3] }, conditions[2]] },
+					conditions[1],
+				],
+			},
+		];
+		const unionRows = [];
+		for await (const row of Parent.search({ conditions: union, allowFullScan: false })) unionRows.push(row.id);
+		assert.deepStrictEqual(unionRows, ['p1']);
 	});
 });

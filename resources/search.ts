@@ -1883,7 +1883,7 @@ export function filterByType(
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
 		if (attribute.length === 1) {
-			attribute = attribute[0];
+			attribute = attribute[0] ?? Table?.primaryKey;
 			isPrimaryKey = attribute === Table?.primaryKey;
 		} else if (attribute.length > 1) {
 			const firstAttributeName = attribute[0];
@@ -2373,12 +2373,14 @@ function usableIndex(table, attributeName): any {
 	return index?.isIndexing ? undefined : index;
 }
 
-// An OR runs every branch, an AND runs its first (already ordered) condition first
+// Only an AND's executing lead matters: an OR's branches never share a relationship join with its siblings
 export function leadsByRelationship(table, condition): boolean {
 	if (condition.conditions)
-		return condition.operator === 'or'
-			? condition.conditions.some((branch) => leadsByRelationship(table, branch))
-			: condition.conditions.length > 0 && leadsByRelationship(table, condition.conditions[0]);
+		return (
+			condition.operator !== 'or' &&
+			condition.conditions.length > 0 &&
+			leadsByRelationship(table, condition.conditions[0])
+		);
 	const attribute = condition[0] ?? condition.attribute;
 	return (
 		Array.isArray(attribute) &&
