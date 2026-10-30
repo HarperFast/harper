@@ -672,7 +672,7 @@ function sameCopy(copy, source) {
  * nothing changed on an existing record, and `changes` itself when it needs no normalization; never
  * mutates `changes`, which is the instance's live tracked state or the caller's update object.
  */
-export function collapseChanges(target, changes, includeOwnProperties = true) {
+export function collapseChanges(target, changes, includeOwnProperties: boolean | string[] = true) {
 	// a non-object root (null, a primitive, an array, binary data) is not a patch; leave it for the write's root validation
 	if (
 		changes !== undefined &&
@@ -684,7 +684,11 @@ export function collapseChanges(target, changes, includeOwnProperties = true) {
 	)
 		return changes;
 	const source = target.getRecord?.();
-	const ownKeys = includeOwnProperties ? Object.keys(target) : [];
+	const ownKeys = Array.isArray(includeOwnProperties)
+		? includeOwnProperties
+		: includeOwnProperties
+			? Object.keys(target)
+			: [];
 	let patch = changes;
 	let keyCount = 0;
 	for (const key in changes) {
@@ -719,8 +723,8 @@ export function collapseChanges(target, changes, includeOwnProperties = true) {
 }
 const OMITTED = {};
 
-export function applyOwnChanges(target, patch) {
-	for (const name of Object.keys(target)) {
+export function applyOwnChanges(target, patch, ownKeys = Object.keys(target)) {
+	for (const name of ownKeys) {
 		if (
 			hasOwnChange(target, name) &&
 			Object.hasOwn(patch, name) &&

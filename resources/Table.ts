@@ -5618,11 +5618,13 @@ export function makeTable(options): TableResourceClass {
 							);
 						}
 					}
-					const collapseOwn = (this.constructor as any).loadAsInstance !== false;
+					let ownKeys: string[] | undefined;
 					let ownMerged = false;
 					if (tracksInstance) {
-						recordUpdate = collapseChanges(this, instanceChanges, collapseOwn);
-						ownMerged = collapseOwn && recordUpdate !== instanceChanges;
+						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
+						ownKeys = collapseOwn ? Object.keys(this) : [];
+						recordUpdate = collapseChanges(this, instanceChanges, ownKeys);
+						ownMerged = ownKeys.length > 0 && recordUpdate !== instanceChanges;
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
 						// blobs are found here; before/beforeIntermediate run after validate
 						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
@@ -5643,7 +5645,7 @@ export function makeTable(options): TableResourceClass {
 							// (harper#1316, facet b).
 							if (!committedBy.isReplay) {
 								this.validate(recordUpdate, !fullUpdate);
-								if (ownMerged) applyOwnChanges(this, recordUpdate);
+								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
 							}
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
