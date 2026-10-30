@@ -1,6 +1,6 @@
 'use strict';
 
-import { closeSync, fsyncSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fsyncTolerantSync, isUnsupportedSyncError } from './fsync.ts';
 
@@ -82,6 +82,16 @@ export function writeFileDurably(path: string, contents: string, tempName: strin
 		throw error;
 	}
 	fsyncDirectory(directory);
+}
+
+/** Create a directory and any missing parents, and make the entries naming them durable. */
+export function mkdirDurably(directory: string): void {
+	const firstCreated = mkdirSync(directory, { recursive: true });
+	if (firstCreated === undefined) return;
+	for (let created = directory; ; created = dirname(created)) {
+		fsyncDirectory(dirname(created));
+		if (created === firstCreated) return;
+	}
 }
 
 /** Remove a file and make its removal durable. Missing is success — the goal is that it is gone. */
