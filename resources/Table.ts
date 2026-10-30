@@ -4477,7 +4477,7 @@ export function makeTable(options): TableResourceClass {
 					(this as any).set(property, sum);
 					if (own) delete this[property];
 				} else {
-					if (!this.#savingOperation) (this as any).update();
+					if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
 					addToChanges(this, property, value);
 				}
 			} else {

@@ -259,6 +259,11 @@ is tracked in harper#3246.
 the acquiring transaction committed is fine (each write auto-commits as an ImmediateTransaction).
 Taking the lock again in a second `transaction()` scope issues a fresh `lock()` call rather than
 relying on the first hold still being re-entrant in that scope.
+On a hold, `addTo()`/`subtractFrom()` stage nothing until the explicit `save()`, like `set()` (no
+eager `update()`); an explicit `holder.update()` stages like any `update()` and commits with its
+transaction. An abort marks the unsaved writes it discards `dropped`, so a holder whose pending
+write (from `holder.update()`) was staged in the aborted transaction restages its changes at its next
+`save()` instead of re-saving an orphan no transaction tracks (`recordLockHoldAddToAbort.test.js`).
 
 An abort during the `acquireRecordKey` wait is covered single-threaded by "a transaction aborted while
 lock() waiters are parked leaves the key unlocked" (`unitTests/resources/recordLock.test.js`), which

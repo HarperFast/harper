@@ -1944,6 +1944,7 @@ export class DatabaseTransaction implements Transaction {
 				if (!write || this.isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight, fromAbort))
 					continue;
 				write.releaseResidencyMapFence?.();
+				if (fromAbort && !write.saved) write.dropped = true;
 				this.detachWrite(write);
 			}
 			this.writes = this.writes.filter((write) => write);
@@ -1959,9 +1960,12 @@ export class DatabaseTransaction implements Transaction {
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
 		// context's current transaction as it did before `stagedIn` existed.
 		for (const write of this.writes) {
-			write?.releaseResidencyMapFence?.();
-			if (write?.stagedIn === this) write.stagedIn = undefined;
-			if (write) this.ownedWrites?.delete(write);
+			if (!write) continue;
+			write.releaseResidencyMapFence?.();
+			// a hold instance still pointing at it restages its changes at its next save()
+			if (fromAbort && !write.saved) write.dropped = true;
+			if (write.stagedIn === this) write.stagedIn = undefined;
+			this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
 		if (this.hasExclusiveWrites) this.hasExclusiveWrites = false;
