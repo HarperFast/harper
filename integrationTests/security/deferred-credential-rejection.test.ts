@@ -8,15 +8,26 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/deferred-credential-rejection');
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+// uWS hands a legacy route to Fastify through inject(), which carries no base request, so the
+// deferred decision cannot reach hdbCore.preValidation there and passport decides the credential again.
+const skipOnUws = process.env.HARPER_UWS_HTTP ? 'uWS inject() does not carry the deferred decision' : false;
 
 const WORDPRESS_BASIC = `Basic ${Buffer.from('wordpress:abcd efgh ijkl mnop qrst uvwx').toString('base64')}`;
+const basic = (username: string, password: string) =>
+	`Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 const DOWNSTREAM_BEARER = 'Bearer eyJhbGciOiJIUzI1NiJ9.d29vLXNlc3Npb24.not-a-harper-token';
 
 // must match the fixture's `server.getUser` override (fixtures/deferred-credential-rejection/resources.js)
 const REJECTED_SESSION_USER = 'expired-staff';
 const FAULTING_SESSION_USER = 'faulting-staff';
+const BLOCKED_USER = 'blocked-staff';
+const BLOCKED_PASSWORD = 'blocked-staff-password';
+
+const BASIC_CHALLENGE = 'Basic realm="Harper"';
+const BEARER_CHALLENGE = 'Bearer realm="Harper", error="invalid_token"';
 
 const APP_ROUTE = '/wp-json/wc/v3/products';
+const LEGACY_ROUTE = '/legacy-auth';
 const PROTECTED_ROUTE = '/Ledger/';
 const PUBLIC_ROUTE = '/PublicNotice/';
 
@@ -44,7 +55,8 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: {},
+				// one thread, so the fixture's per-process server.getUser counter sees every call
+				config: { threads: { count: 1 } },
 				env: {
 					HARPER_BUILTIN_COMPONENTS:
 						'deferredAuthAppCatchAll=@/integrationTests/security/fixtures/deferred-credential-rejection/appCatchAll.js',
@@ -238,6 +250,158 @@ suite(
 			const response = await get(PROTECTED_ROUTE, undefined, { Cookie: cookie });
 
 			equal(response.status, 200, `the session user must still authenticate: ${response.text}`);
+		});
+
+		async function postLegacy(authorization?: string, extraHeaders: Record<string, string> = {}) {
+			const response = await fetch(`${restURL}${LEGACY_ROUTE}`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(authorization ? { Authorization: authorization } : {}),
+					...extraHeaders,
+				},
+				body: JSON.stringify({ operation: 'describe_all' }),
+			});
+			const text = await response.text();
+			let body: any;
+			try {
+				body = JSON.parse(text);
+			} catch {
+				body = text;
+			}
+			return { status: response.status, body, text, headers: response.headers };
+		}
+
+		async function getUserCalls(username: string): Promise<number> {
+			const response = await get(`/GetUserCalls/${encodeURIComponent(username)}`, adminAuthorization);
+			equal(response.status, 200, `expected the fixture to report getUser calls: ${response.text}`);
+			return response.body.calls;
+		}
+
+		function assertChallengedUnauthorized(
+			response: { status: number; text: string; headers: Headers },
+			challenge = BASIC_CHALLENGE
+		) {
+			equal(response.status, 401, `expected an unauthorized: ${response.text}`);
+			equal(response.headers.get('www-authenticate'), challenge);
+			equal(response.headers.get('content-type')?.split(';')[0], 'application/json');
+		}
+
+		test('valid Harper Basic credentials authenticate a legacy hdbCore.preValidation route', async () => {
+			const response = await postLegacy(adminAuthorization);
+
+			equal(response.status, 200, `expected the legacy route to answer: ${response.text}`);
+			equal(response.body.servedBy, 'legacy-route');
+			equal(response.body.harperUser, ctx.harper.admin.username);
+		});
+
+		test('a legacy route settles a rejected Basic credential with one getUser call', async () => {
+			const username = 'legacy-unknown-basic';
+			const response = await postLegacy(basic(username, 'wrong'));
+
+			equal(response.status, 401, `expected an unauthorized: ${response.text}`);
+			equal(await getUserCalls(username), 1, 'the credential must be verified once, by the middleware');
+			equal(response.body.error, 'Login failed');
+			assertChallengedUnauthorized(response);
+		});
+
+		test('a legacy route answers an unknown scheme exactly as a REST route does', { skip: skipOnUws }, async () => {
+			const rest = await get(PROTECTED_ROUTE, 'Digest abc', { Accept: 'application/json' });
+			const legacy = await postLegacy('Digest abc');
+
+			equal(legacy.body.error, rest.body.error);
+			assertChallengedUnauthorized(rest);
+			assertChallengedUnauthorized(legacy);
+		});
+
+		test(
+			'a legacy route settles a rejected cookie session with its own message and one getUser call',
+			{ skip: skipOnUws },
+			async () => {
+				const username = `${REJECTED_SESSION_USER}-legacy`;
+				const cookie = await mintSessionCookie(username);
+				const minted = await getUserCalls(username);
+
+				const response = await postLegacy(undefined, { Cookie: cookie });
+
+				equal(response.status, 401, `expected an unauthorized: ${response.text}`);
+				equal((await getUserCalls(username)) - minted, 1, 'the session must be resolved once, by the middleware');
+				equal(response.body.error, 'SSO session expired');
+				assertChallengedUnauthorized(response);
+			}
+		);
+
+		test(
+			"a legacy route keeps a component's rejection of a credential core Harper would accept",
+			{ skip: skipOnUws },
+			async () => {
+				const added = await client.req().send({
+					operation: 'add_user',
+					username: BLOCKED_USER,
+					password: BLOCKED_PASSWORD,
+					role: 'super_user',
+					active: true,
+				});
+				equal(added.status, 200, `expected the suite to create the user: ${added.text}`);
+
+				const response = await postLegacy(basic(BLOCKED_USER, BLOCKED_PASSWORD));
+
+				equal(response.status, 401, `the legacy route must not run for a rejected credential: ${response.text}`);
+				equal(response.body.error, 'Account blocked');
+				assertChallengedUnauthorized(response);
+			}
+		);
+
+		test('a legacy route still accepts a refresh token for refresh_operation_token', async () => {
+			const tokens = await client.req().send({
+				operation: 'create_authentication_tokens',
+				username: ctx.harper.admin.username,
+				password: ctx.harper.admin.password,
+			});
+			equal(tokens.status, 200, `expected tokens: ${tokens.text}`);
+
+			const response = await fetch(`${restURL}${LEGACY_ROUTE}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tokens.body.refresh_token}` },
+				body: JSON.stringify({ operation: 'refresh_operation_token' }),
+			});
+			const body = await response.json();
+
+			equal(response.status, 200, `expected the legacy route to accept the refresh token: ${JSON.stringify(body)}`);
+			equal(body.harperUser, ctx.harper.admin.username);
+		});
+
+		test('a legacy route rejects an invalid Harper Bearer token with a Bearer challenge', async () => {
+			const response = await postLegacy(DOWNSTREAM_BEARER);
+
+			equal(response.body.error, 'invalid token');
+			assertChallengedUnauthorized(response, BEARER_CHALLENGE);
+		});
+
+		test('a REST route challenges a rejected credential in the scheme it presented', async () => {
+			assertChallengedUnauthorized(await get(PROTECTED_ROUTE, WORDPRESS_BASIC, { Accept: 'application/json' }));
+			assertChallengedUnauthorized(
+				await get(PROTECTED_ROUTE, DOWNSTREAM_BEARER, { Accept: 'application/json' }),
+				BEARER_CHALLENGE
+			);
+		});
+
+		test('an in-place 401 for an internal fault carries a challenge and a Content-Type', async () => {
+			const cookie = await mintSessionCookie(FAULTING_SESSION_USER);
+
+			assertChallengedUnauthorized(await get(APP_ROUTE, undefined, { Cookie: cookie, Accept: 'application/json' }));
+		});
+
+		test('the operations API in-place 401 gets a Content-Type but no challenge', async () => {
+			const response = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': WORDPRESS_BASIC, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({ operation: 'describe_all' }),
+			});
+
+			equal(response.status, 401);
+			equal(response.headers.get('www-authenticate'), null);
+			equal(response.headers.get('content-type')?.split(';')[0], 'application/json');
 		});
 
 		test('a throwing middleware renders its class name as the error code', async () => {

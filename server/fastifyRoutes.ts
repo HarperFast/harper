@@ -17,6 +17,7 @@ import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.js';
+import { authenticationChallengeForError } from '../security/deferredAuthentication.ts';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
 import { registerFastifyInstance } from './http.ts';
@@ -192,7 +193,13 @@ async function buildServer(isHttps) {
 
 	//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
 	// can be handled in a coordinated way
-	app.setErrorHandler(serverErrorHandler);
+	app.setErrorHandler((error: any, request, reply) => {
+		if (error?.statusCode === 401 && !reply.hasHeader('WWW-Authenticate')) {
+			const presentedScheme = request.headers.authorization?.split(' ', 1)[0];
+			reply.header('WWW-Authenticate', authenticationChallengeForError(error, presentedScheme));
+		}
+		return serverErrorHandler(error, request, reply);
+	});
 
 	const corsOptions = getCORSOptions();
 	if (corsOptions) {
