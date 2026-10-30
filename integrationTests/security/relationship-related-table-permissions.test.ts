@@ -264,42 +264,54 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			deepStrictEqual(response.body, [{ id: EMP.id, payload: EMP.payload }]);
 		});
 
-		test('a plain JSON sub-selection cannot reach the relationship', async () => {
-			for (const select of ['dept', ['dept']]) {
-				assertRefused(
-					await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
-						get_attributes: ['id', { name: 'payload', select }],
-					}),
-					`payload select ${JSON.stringify(select)}`,
-					'Dept'
-				);
+		test('a plain JSON sub-selection reads stored JSON keys without Dept permission and never resolves Emp.dept', async () => {
+			const idMatch = [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }];
+			for (const as of ['empOnly', 'restricted', 'full'] as const) {
+				const list = await byConditions(as, idMatch, {
+					get_attributes: ['id', { name: 'payload', select: ['dept'] }],
+				});
+				strictEqual(list.status, 200, `${as}: ${JSON.stringify(list.body)}`);
+				deepStrictEqual(list.body, [{ id: EMP.id, payload: {} }], as);
+
+				const scalar = await byConditions(as, idMatch, {
+					get_attributes: ['id', { name: 'payload', select: 'dept' }],
+				});
+				strictEqual(scalar.status, 200, `${as}: ${JSON.stringify(scalar.body)}`);
+				deepStrictEqual(scalar.body, [{ id: EMP.id, payload: null }], as);
+			}
+			await client
+				.req()
+				.send({
+					operation: 'update',
+					table: 'Emp',
+					records: [{ ...EMP, payload: { ...EMP.payload, dept: 'plain-dept' } }],
+				})
+				.expect(200);
+			try {
+				const list = await byConditions('empOnly', idMatch, {
+					get_attributes: ['id', { name: 'payload', select: ['dept'] }],
+				});
+				strictEqual(list.status, 200, JSON.stringify(list.body));
+				deepStrictEqual(list.body, [{ id: EMP.id, payload: { dept: 'plain-dept' } }]);
+
+				const scalar = await byConditions('empOnly', idMatch, {
+					get_attributes: ['id', { name: 'payload', select: 'dept' }],
+				});
+				strictEqual(scalar.status, 200, JSON.stringify(scalar.body));
+				deepStrictEqual(scalar.body, [{ id: EMP.id, payload: 'plain-dept' }]);
+			} finally {
+				await client
+					.req()
+					.send({ operation: 'update', table: 'Emp', records: [EMP] })
+					.expect(200);
 			}
 			assertRefused(
-				await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
-					get_attributes: ['id', { name: 'payload', select: ['dept'] }],
+				await byConditions('restricted', idMatch, {
+					get_attributes: ['id', { name: 'dept', select: [{ name: 'budget', select: ['dept'] }] }],
 				}),
-				'payload.dept',
-				'Dept'
+				'unreadable related attribute with sub-select',
+				'Dept.budget'
 			);
-			const restricted = await byConditions(
-				'restricted',
-				[{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }],
-				{ get_attributes: ['id', { name: 'payload', select: ['dept'] }] }
-			);
-			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));
-			deepStrictEqual(restricted.body, [{ id: EMP.id, payload: { dept: { id: DEPT.id, name: DEPT.name } } }]);
-			for (const [as, dept] of [
-				['full', DEPT],
-				['restricted', { id: DEPT.id, name: DEPT.name }],
-			] as const) {
-				const scalar = await byConditions(
-					as,
-					[{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }],
-					{ get_attributes: ['id', { name: 'payload', select: 'dept' }] }
-				);
-				strictEqual(scalar.status, 200, `${as}: ${JSON.stringify(scalar.body)}`);
-				deepStrictEqual(scalar.body, [{ id: EMP.id, payload: dept }], as);
-			}
 		});
 	});
 
@@ -475,16 +487,37 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));
 			deepStrictEqual(restricted.body, { id: EMP.id, dept: { id: DEPT.id, name: DEPT.name } });
 
-			const collection = await rest('empOnly', '/Emp/?select(id,payload{dept})');
-			strictEqual(collection.status, 200, JSON.stringify(collection.body));
-			deepStrictEqual(collection.body, [{ id: EMP.id, payload: {} }]);
-			const narrowed = await rest('restricted', '/Emp/?select(id,payload{dept})');
-			strictEqual(narrowed.status, 200, JSON.stringify(narrowed.body));
-			deepStrictEqual(narrowed.body, [{ id: EMP.id, payload: { dept: { id: DEPT.id, name: DEPT.name } } }]);
+			for (const as of ['empOnly', 'restricted', 'full'] as const) {
+				const collection = await rest(as, '/Emp/?select(id,payload{dept})');
+				strictEqual(collection.status, 200, `${as}: ${JSON.stringify(collection.body)}`);
+				deepStrictEqual(collection.body, [{ id: EMP.id, payload: {} }], as);
 
-			const json = await rest('empOnly', `/Emp/${EMP.id}?select(id,payload{dept})`);
-			strictEqual(json.status, 200, JSON.stringify(json.body));
-			strictEqual(json.body.payload?.dept, undefined, JSON.stringify(json.body));
+				const json = await rest(as, `/Emp/${EMP.id}?select(id,payload{dept})`);
+				strictEqual(json.status, 200, `${as}: ${JSON.stringify(json.body)}`);
+				deepStrictEqual(json.body, { id: EMP.id, payload: {} }, as);
+			}
+			await client
+				.req()
+				.send({
+					operation: 'update',
+					table: 'Emp',
+					records: [{ ...EMP, payload: { ...EMP.payload, dept: 'plain-dept' } }],
+				})
+				.expect(200);
+			try {
+				const collection = await rest('empOnly', '/Emp/?select(id,payload{dept})');
+				strictEqual(collection.status, 200, JSON.stringify(collection.body));
+				deepStrictEqual(collection.body, [{ id: EMP.id, payload: { dept: 'plain-dept' } }]);
+
+				const json = await rest('empOnly', `/Emp/${EMP.id}?select(id,payload{dept})`);
+				strictEqual(json.status, 200, JSON.stringify(json.body));
+				deepStrictEqual(json.body, { id: EMP.id, payload: { dept: 'plain-dept' } });
+			} finally {
+				await client
+					.req()
+					.send({ operation: 'update', table: 'Emp', records: [EMP] })
+					.expect(200);
+			}
 		});
 		test('a read without select returns, omits or narrows an @enumerable relationship', async () => {
 			const expected = {

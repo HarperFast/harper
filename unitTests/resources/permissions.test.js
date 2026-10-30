@@ -490,6 +490,41 @@ describe('Permissions through Resource API', () => {
 		assert.equal(results.length, 1);
 		assert.equal(results[0].related, undefined);
 	});
+	it('Plain JSON sub-selections read stored keys without related-table permission and keep containing-attribute checks', async function () {
+		await TestTable.put({
+			id: 'id-json-1',
+			name: 'json-1',
+			prop1: { relatedId: 'related-id-1', related: 'stored-value' },
+			relatedId: 'related-id-1',
+		});
+		try {
+			assert.deepStrictEqual(
+				JSON.parse(JSON.stringify(await searchAs(authorized_role, '?id=id-json-1&select(id,prop1{related})'))),
+				[{ id: 'id-json-1', prop1: { related: 'stored-value' } }]
+			);
+			const single = new RequestTarget('/id-json-1?select(id,prop1{related})');
+			single.id = 'id-json-1';
+			single.checkPermission = true;
+			assert.deepStrictEqual(JSON.parse(JSON.stringify(await TestTable.get(single, { user: authorized_role }))), {
+				id: 'id-json-1',
+				prop1: { related: 'stored-value' },
+			});
+			const scalarTarget = new RequestTarget('?id=id-json-1');
+			scalarTarget.select = ['id', { name: 'prop1', select: 'related' }];
+			scalarTarget.checkPermission = true;
+			const scalarResults = [];
+			for await (const result of TestTable.search(scalarTarget, { user: authorized_role })) scalarResults.push(result);
+			assert.deepStrictEqual(JSON.parse(JSON.stringify(scalarResults)), [{ id: 'id-json-1', prop1: 'stored-value' }]);
+			assert.deepStrictEqual(
+				JSON.parse(
+					JSON.stringify(await searchAs(attribute_authorized_role, '?id=id-json-1&select(name,prop1{related})'))
+				),
+				[{ name: 'json-1' }]
+			);
+		} finally {
+			await TestTable.delete('id-json-1');
+		}
+	});
 	it('Can write with permission', async function () {
 		await TestTable.put(
 			'id-2',

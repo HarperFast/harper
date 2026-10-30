@@ -1066,7 +1066,7 @@ function checkRelationshipReads(
 	)
 		return;
 	const state: RelationshipReadCheck = { tableClass, user: requestJson.hdb_user };
-	checkSelectPaths(state, requestJson.get_attributes, undefined, tableClass, false);
+	checkSelectPaths(state, requestJson.get_attributes, undefined, tableClass);
 	checkConditionPaths(state, requestJson.conditions);
 	checkSortPaths(state, requestJson.sort, undefined);
 	if (valueAttribute !== undefined) checkRelationshipPath(state, valueAttribute);
@@ -1153,15 +1153,7 @@ function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[] |
 	}
 }
 
-// A plain JSON sub-selection is projected with the resolvers of the table it belongs to, so it keeps `prefix`, and its
-// own fields are data rather than attributes.
-function checkSelectPaths(
-	state: RelationshipReadCheck,
-	select: any,
-	prefix: any[] | undefined,
-	currentTable: any,
-	inJson: boolean
-) {
+function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any[] | undefined, currentTable: any) {
 	if (select == null) return;
 	for (const property of Array.isArray(select) ? select : [select]) {
 		const name = property?.name ?? property;
@@ -1169,13 +1161,11 @@ function checkSelectPaths(
 		if (relatedTable) {
 			const path = prefix ? [...prefix, name] : [name];
 			checkRelationshipPath(state, path);
-			checkSelectPaths(state, property?.select, path, relatedTable, false);
+			checkSelectPaths(state, property?.select, path, relatedTable);
 			checkSortPaths(state, property?.sort, path);
 			continue;
 		}
-		if (prefix && !inJson) checkRelationshipPath(state, [...prefix, name]);
-		if (property?.select != null && typeof property === 'object')
-			checkSelectPaths(state, property.select, prefix, currentTable, true);
+		if (prefix) checkRelationshipPath(state, [...prefix, name]);
 	}
 }
 

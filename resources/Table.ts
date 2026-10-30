@@ -2278,12 +2278,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
 			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
-			if (!relatedTable) {
-				// transformEntryForSelect projects a plain JSON sub-object with this table's resolvers
-				if (property && typeof property === 'object' && (property.select != null || Array.isArray(property)))
-					return authorizeJsonSelection(property, user, checkPermission, context);
-				return property;
-			}
+			if (!relatedTable) return property;
 			if (!property.name) property = { name: property };
 			// a REST property set (`related{a,b}`) is an Array whose entries are the sub-selection
 			if (Array.isArray(property) && (property as any).select == null) (property as any).select = [...property];
@@ -11869,24 +11864,6 @@ export function makeTable(options): TableResourceClass {
 			if (relationshipPathMatches(sort.attribute, target, user, checkDenial)) return true;
 		}
 		return false;
-	}
-	function authorizeJsonSelection(property: any, user: User, checkPermission: any, context: Context): any {
-		// a REST property set (`payload{dept}`) is a named array that is its own sub-selection
-		if (property.select == null) property.select = [...property];
-		const scalar = !Array.isArray(property.select);
-		const permissionTarget = { checkPermission } as any;
-		const authorized = [];
-		for (const entry of scalar ? [property.select] : property.select) {
-			const name = entry?.name ?? entry;
-			if (propertyResolvers[name]?.definition?.tableClass && TableResource._readDenial([name], user, permissionTarget))
-				continue;
-			const result = TableResource._authorizeRelatedSelection(entry, user, checkPermission, context);
-			if (result !== false) authorized.push(result);
-		}
-		if (!scalar) property.select = authorized;
-		else if (authorized.length === 0) return false;
-		else property.select = authorized[0];
-		return property;
 	}
 	function assertRecordField(name: unknown): void {
 		const field = Array.isArray(name) ? name[0] : name;
