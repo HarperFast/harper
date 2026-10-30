@@ -177,6 +177,11 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 				(res) => {
 					const chunks: Buffer[] = [];
 					res.on('data', (c) => chunks.push(c));
+					res.on('error', reject);
+					res.on(
+						'close',
+						() => res.complete || reject(new Error(`${method} ${path}: connection dropped mid-response`))
+					);
 					res.on('end', () => {
 						const text = Buffer.concat(chunks).toString();
 						let parsed: any = text;
@@ -253,7 +258,7 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 	before(async () => {
 		dir = mkdtempSync(join(tmpdir(), 'sealed-redeclare-'));
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			// held transactions outlive the 30 s default maxTransactionOpenTime if convergence is slow
+			// RocksDB only: held transactions outlive the 30 s default maxTransactionOpenTime if convergence is slow
 			config: {
 				threads: { count: 2 },
 				storage: { maxTransactionOpenTime: 180_000 },
@@ -303,37 +308,44 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 			);
 			heldResp.set(arm.name, r);
 		});
-		await waitFor('all handles held', () => HELD.every((arm) => existsSync(join(dir, `held-${arm.name}`))), 60_000);
-		evidence.heldMarkers = Object.fromEntries(
-			HELD.map((a) => [a.name, Number(readFileSync(join(dir, `held-${a.name}`), 'utf8'))])
-		);
-
-		const redeclare = await onThread(threadB, (t) => qaPost({ op: 'redeclare', thread: t }));
-		strictEqual(redeclare.status, 200, redeclare.text);
-		evidence.redeclare = redeclare.body;
-
-		const gone = (s: { SealedItem: string[]; OpenItem: string[] }) =>
-			!s.SealedItem.includes('legacyCode') && !s.OpenItem.includes('legacyCode');
 		const converged: Record<string, any> = {};
-		for (const [label, t] of [
-			['B', threadB],
-			['A', threadA],
-		] as const) {
-			try {
-				await waitFor(
-					`worker ${label} schema converged`,
-					async () => {
-						const s = await schemaOn(t);
-						converged[label] = { at: Date.now(), ...s };
-						return gone(s);
-					},
-					30_000
-				);
-			} catch (e) {
-				converged[label] = { ...converged[label], failed: String(e) };
+		try {
+			await waitFor('all handles held', () => HELD.every((arm) => existsSync(join(dir, `held-${arm.name}`))), 60_000);
+			evidence.heldMarkers = Object.fromEntries(
+				HELD.map((a) => [a.name, Number(readFileSync(join(dir, `held-${a.name}`), 'utf8'))])
+			);
+
+			const redeclare = await onThread(threadB, (t) => qaPost({ op: 'redeclare', thread: t }));
+			strictEqual(redeclare.status, 200, redeclare.text);
+			evidence.redeclare = redeclare.body;
+
+			const gone = (s: { SealedItem: string[]; OpenItem: string[] }) =>
+				!s.SealedItem.includes('legacyCode') && !s.OpenItem.includes('legacyCode');
+			for (const [label, t] of [
+				['B', threadB],
+				['A', threadA],
+			] as const) {
+				try {
+					await waitFor(
+						`worker ${label} schema converged`,
+						async () => {
+							const s = await schemaOn(t);
+							converged[label] = { at: Date.now(), ...s };
+							return gone(s);
+						},
+						30_000
+					);
+				} catch (e) {
+					converged[label] = { ...converged[label], failed: String(e) };
+				}
 			}
+			evidence.converged = converged;
+		} catch (error) {
+			// release the parked holds so they settle before teardown cuts their sockets
+			writeFileSync(join(dir, 'gate'), String(Date.now()));
+			await Promise.allSettled(holdPromises);
+			throw error;
 		}
-		evidence.converged = converged;
 		evidence.releasedAt = Date.now();
 		writeFileSync(join(dir, 'gate'), String(evidence.releasedAt));
 		await Promise.all(holdPromises);

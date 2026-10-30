@@ -128,6 +128,8 @@ function send(
 				let text = '';
 				res.setEncoding('utf8');
 				res.on('data', (chunk) => (text += chunk));
+				res.on('error', reject);
+				res.on('close', () => res.complete || reject(new Error(`${path}: connection dropped mid-response`)));
 				res.on('end', () => {
 					let json: any;
 					try {
