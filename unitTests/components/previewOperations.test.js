@@ -14,7 +14,8 @@ const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
 const { addRole, alterRole, getRoleByName } = require('#src/security/role');
 const { addUser, getUserWithRole } = require('#src/security/user');
-const { addOidcTrust, listOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
+const { addOidcTrust, dropOidcTrust, listOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
+const { databases } = require('#src/resources/databases');
 const { server } = require('#js/server/Server');
 const { preserveRootConfig, removeDeployedComponents } = require('../rootConfigFixture.js');
 
@@ -205,6 +206,34 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		);
 	});
 
+	it('reports a trust policy that no longer allows what enable gave it', async () => {
+		await enablePreviews(enableRequest('opsscope'));
+		const rewrite = async (id, operations) => {
+			const { id: _id, enabled: _enabled, ...kept } = (await policiesOf('opsscope')).find((p) => p.id === id);
+			await dropOidcTrust({ operation: 'drop_oidc_trust', id, hdb_user: SU });
+			const { issuer, audience, user, claims, description } = kept;
+			await addOidcTrust({
+				operation: 'add_oidc_trust',
+				hdb_user: SU,
+				id,
+				issuer,
+				audience,
+				user,
+				claims,
+				description,
+				operations,
+			});
+		};
+		await rewrite('github-actions-opsscope-preview', ['drop_component']);
+		await rewrite('github-actions-opsscope-preview-cleanup', ['deploy_component', 'drop_component']);
+		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsscope', hdb_user: SU });
+		assert.strictEqual(policy.enabled, false);
+		assert.deepStrictEqual(policy.problems, [
+			'trust policy "github-actions-opsscope-preview" allows ["drop_component"], not deploy_component, drop_component, get_components, get_deployment, registration_info',
+			'trust policy "github-actions-opsscope-preview-cleanup" allows ["deploy_component","drop_component"], not drop_component',
+		]);
+	});
+
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
 		const workflow = '.github/workflows/shared.yaml';
 		const outcomes = await Promise.allSettled([
@@ -339,6 +368,109 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const finished = await disablePreviews({ operation: 'disable_previews', app: 'opsshop', hdb_user: SU });
 			assert.deepStrictEqual(finished.removed.sort(), ['role opsshop-ci-preview', 'user opsshop-ci-preview']);
 			assert.strictEqual(getUserWithRole('opsshop-ci-preview'), undefined);
+		});
+
+		async function disableAgainstNewerRelease(app, newer) {
+			await enablePreviews(enableRequest(app));
+			const { deployment_id } = await deploy(`${app}-pr-3`, metadata(app, 3));
+			await databases.system.hdb_deployment.put(newer.deployment_id, { project: `${app}-pr-3`, ...newer });
+			const releases = [{ project: `${app}-pr-3`, deployment_id }];
+			const peer = withPeer(releases, () => {
+				releases[0] = { project: `${app}-pr-3`, deployment_id: newer.deployment_id };
+				return { value: { componentRemoved: false, message: `Did not drop ${app}-pr-3` } };
+			});
+			try {
+				return await disablePreviews({ operation: 'disable_previews', app, hdb_user: SU });
+			} finally {
+				peer.restore();
+				await databases.system.hdb_deployment.delete(newer.deployment_id);
+			}
+		}
+
+		it('stops with the identity revoked when a drop finds a newer preview release live in its place', async () => {
+			const newer = { deployment_id: 'opsnewer-y', status: 'success', preview: metadata('opsnewer', 3) };
+			await assert.rejects(disableAgainstNewerRelease('opsnewer', newer), {
+				statusCode: 500,
+				message: /revoked but not removed: opsnewer-pr-3 on node-b: release opsnewer-y is still live/,
+			});
+			assert.ok(await getRoleByName('opsnewer-ci-preview'), 'the role is kept until the release is dropped');
+			const finished = await disablePreviews({ operation: 'disable_previews', app: 'opsnewer', hdb_user: SU });
+			assert.deepStrictEqual(finished.removed.sort(), ['role opsnewer-ci-preview', 'user opsnewer-ci-preview']);
+		});
+
+		it('names a release once when its drop failed and another drop removed nothing', async () => {
+			await enablePreviews(enableRequest('opsboth'));
+			const kept = await deploy('opsboth-pr-3', metadata('opsboth', 3));
+			const failing = await deploy('opsboth-pr-4', metadata('opsboth', 4));
+			const peer = withPeer(
+				[
+					{ project: 'opsboth-pr-3', deployment_id: kept.deployment_id },
+					{ project: 'opsboth-pr-4', deployment_id: failing.deployment_id },
+				],
+				(operation) => {
+					if (operation.project === 'opsboth-pr-4') throw new Error('unreachable');
+					return { value: { componentRemoved: false } };
+				}
+			);
+			try {
+				await assert.rejects(
+					disablePreviews({ operation: 'disable_previews', app: 'opsboth', hdb_user: SU }),
+					(error) => {
+						assert.strictEqual(error.message.match(/opsboth-pr-4 on node-b/g).length, 1);
+						assert.match(error.message, /opsboth-pr-3 on node-b: release \S+ is still live/);
+						return true;
+					}
+				);
+			} finally {
+				peer.restore();
+			}
+			await disablePreviews({ operation: 'disable_previews', app: 'opsboth', hdb_user: SU });
+		});
+
+		it('finishes when what a drop finds live in its place is not a preview', async () => {
+			const newer = { deployment_id: 'opsother-y', status: 'success', preview: null };
+			const response = await disableAgainstNewerRelease('opsother', newer);
+			assert.deepStrictEqual(
+				response.dropped.map(({ node, componentRemoved }) => [node, componentRemoved]),
+				[
+					['127.0.0.1', true],
+					['node-b', false],
+				]
+			);
+			assert.ok(response.removed.includes('role opsother-ci-preview'));
+		});
+
+		it('lists as in progress a deploy, or an activation of a staged build, that has not finished', async () => {
+			await enablePreviews(enableRequest('opspending'));
+			const rows = [
+				{
+					deployment_id: 'opspending-a',
+					project: 'opspending-pr-1',
+					status: 'pending',
+					preview: metadata('opspending', 1),
+				},
+				{
+					deployment_id: 'opspending-b',
+					project: 'opspending-pr-2',
+					status: 'staged',
+					preview: metadata('opspending', 2),
+				},
+				{
+					deployment_id: 'opspending-c',
+					project: 'opspending-pr-2',
+					status: 'pending',
+					activated_from: 'opspending-b',
+				},
+				{ deployment_id: 'opspending-d', project: 'opspending-pr-3', status: 'pending', preview: null },
+			];
+			const table = databases.system.hdb_deployment;
+			for (const row of rows) await table.put(row.deployment_id, row);
+			try {
+				const response = await disablePreviews({ operation: 'disable_previews', app: 'opspending', hdb_user: SU });
+				assert.deepStrictEqual(response.inProgress, ['opspending-pr-1', 'opspending-pr-2']);
+			} finally {
+				for (const row of rows) await table.delete(row.deployment_id);
+			}
 		});
 
 		it('stops when a peer holds a release this node has no record of', async () => {

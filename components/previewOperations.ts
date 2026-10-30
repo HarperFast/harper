@@ -26,6 +26,7 @@ import {
 	planIdentityReconcile,
 	policiesOverlap,
 	policyDifferences,
+	sameSet,
 	type DesiredIdentity,
 	type DesiredPolicy,
 } from '../security/ciIdentity.ts';
@@ -322,11 +323,7 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 			problems.push(`role "${names.role}" no longer requires isolated previews under a host suffix`);
 		}
 		const operations = role.permission?.operations;
-		if (
-			!Array.isArray(operations) ||
-			operations.length !== CI_PREVIEW_OPERATIONS.length ||
-			CI_PREVIEW_OPERATIONS.some((operation) => !operations.includes(operation))
-		) {
+		if (!sameSet(operations, CI_PREVIEW_OPERATIONS)) {
 			problems.push(
 				`role "${names.role}" allows ${JSON.stringify(operations ?? null)}, not ${CI_PREVIEW_OPERATIONS.join(', ')}`
 			);
@@ -335,7 +332,11 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	if (!user) problems.push(`user "${names.user}" is missing`);
 	else if (user.active === false) problems.push(`user "${names.user}" is inactive`);
 	else if (user.role?.role !== names.role) problems.push(`user "${names.user}" is in role "${user.role?.role}"`);
-	for (const id of [names.policy, names.cleanupPolicy]) {
+	const policyOperations: [string, string[]][] = [
+		[names.policy, CI_PREVIEW_OPERATIONS],
+		[names.cleanupPolicy, CI_PREVIEW_CLEANUP_OPERATIONS],
+	];
+	for (const [id, operations] of policyOperations) {
 		const policy = trust.find((candidate) => candidate.id === id);
 		if (!policy) problems.push(`trust policy "${id}" is missing`);
 		else if (policy.enabled === false) problems.push(`trust policy "${id}" is disabled`);
@@ -343,6 +344,10 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		else if (policy.user !== names.user) problems.push(`trust policy "${id}" names user "${policy.user}"`);
 		else if (policy.claims?.event_name !== 'pull_request_target' || !policy.claims?.environment) {
 			problems.push(`trust policy "${id}" no longer pins event_name pull_request_target and an environment`);
+		} else if (!sameSet(policy.operations, operations)) {
+			problems.push(
+				`trust policy "${id}" allows ${JSON.stringify(policy.operations ?? null)}, not ${operations.join(', ')}`
+			);
 		}
 	}
 	return {
@@ -450,7 +455,10 @@ async function previewsInProgress(app: string): Promise<string[]> {
 	for await (const row of deployments.search([
 		{ attribute: 'project', comparator: 'starts_with', value: `${app}-pr-` },
 	])) {
-		if (row?.preview?.app === app && !ENDED_DEPLOYMENT_STATUSES.has(row.status)) projects.add(row.project);
+		if (!row || ENDED_DEPLOYMENT_STATUSES.has(row.status)) continue;
+		// An activation's row has no preview metadata of its own: the build it activates does.
+		const preview = row.preview ?? (await deploymentRecord(row.activated_from))?.preview;
+		if (preview?.app === app) projects.add(row.project);
 	}
 	return [...projects].sort();
 }
@@ -515,6 +523,17 @@ export async function disablePreviews(req: any) {
 			} catch (error) {
 				dropped.push({ ...release, error: (error as Error).message });
 				failed.push(`${release.project} on ${release.node}: ${(error as Error).message}`);
+			}
+		}
+		// A drop that removed nothing may have lost to a newer preview release, which that node rightly kept.
+		if (dropped.some((drop) => !drop.error && !drop.componentRemoved)) {
+			const remaining = await livePreviewReleases(req.app);
+			const reported = new Set(dropped.filter((drop) => drop.error).map((drop) => `${drop.project} on ${drop.node}`));
+			for (const node of remaining.unreachable) if (!failed.includes(node)) failed.push(node);
+			for (const { project, node, deploymentId } of remaining.releases) {
+				if (!reported.has(`${project} on ${node}`)) {
+					failed.push(`${project} on ${node}: release ${deploymentId} is still live`);
+				}
 			}
 		}
 		if (failed.length > 0) {

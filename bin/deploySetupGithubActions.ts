@@ -228,36 +228,137 @@ function conjuncts(expression: string): string[] | undefined {
 	return terms.map(withoutEnclosingParentheses);
 }
 
-const PULL_REQUEST_HEAD = /head\.sha|head\.ref|head\.repo|head_ref|merge_commit_sha|refs\/pull\//;
-const PR_HEAD_SHELL_CHECKOUT =
-	/\bgh\s+pr\s+checkout\b|\bgit\b[^\n]*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b[^\n]*(?:head\.sha|head\.ref|head_ref|refs\/pull\/|pull\/)/;
+const PULL_REQUEST_HEAD =
+	/head\.sha|head\.ref|head\.repo|head_ref|GITHUB_HEAD_REF|merge_commit_sha|refs\/pull\/|(?<![\w/])pull\/\S/;
+const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/s;
+const EXPRESSION = String.raw`\$\{\{((?:[^}]|\}(?!\}))*)\}\}`;
+const SHELL_REFERENCE = new RegExp(String.raw`${EXPRESSION}|\$\{?(\w+)|\$\(|` + '`', 'g');
+// Under pull_request_target these describe the base repository and branch, or the runner.
+const BASE_RUN_VARIABLE =
+	/^(?:GITHUB_(?:SHA|REF|REF_NAME|BASE_REF|REPOSITORY|REPOSITORY_OWNER|SERVER_URL|WORKSPACE)|RUNNER_\w+)$/;
+const BASE_EXPRESSION =
+	/^\s*(?:github\.(?:sha|ref|ref_name|base_ref|repository|repository_owner|server_url|workspace|event\.pull_request\.base\.[\w.]+|event\.repository\.[\w.]+)|secrets\.\w+|vars\.\w+|runner\.\w+)\s*$/;
+
+type Naming = 'head' | 'base' | 'unknown';
+
+function worstNaming(namings: Naming[]): Naming {
+	return namings.includes('head') ? 'head' : namings.includes('unknown') ? 'unknown' : 'base';
+}
+
+/** A script split at newlines and `;`, `&` and `|`, none of which separates inside quotes or `${{ }}`. */
+function shellCommands(script: string): string[] {
+	const commands: string[] = [];
+	let command = '';
+	let quote: string | undefined;
+	for (let index = 0; index < script.length; index++) {
+		const character = script[index];
+		if (script.startsWith('${{', index)) {
+			const end = script.indexOf('}}', index);
+			const stop = end < 0 ? script.length : end + 2;
+			command += script.slice(index, stop);
+			index = stop - 1;
+		} else if (quote) {
+			if (character === quote) quote = undefined;
+			command += character;
+		} else if (character === '\n' || character === ';' || character === '&' || character === '|') {
+			commands.push(command);
+			command = '';
+		} else {
+			if (character === '"' || character === "'") quote = character;
+			command += character;
+		}
+	}
+	commands.push(command);
+	return commands;
+}
+
+/** Whether what a job's steps name is the PR's head, from their `env` (nearest scope first) and scripts. */
+function namingsIn(scopes: any[], jobScripts: string) {
+	const resolving = new Set<string>();
+	const variableNaming = (variable: string): Naming => {
+		// A script can set what env says, for itself or (through $GITHUB_ENV) for later steps, in more forms than can be
+		// read here (`printf -v`, `read`, a heredoc), so any bare mention of the name leaves its value unknown; a
+		// `VAR=value` naming the head is the head.
+		const assignments = [
+			...jobScripts.matchAll(
+				new RegExp(String.raw`\b${variable}=((?:"(?:[^"\\]|\\.)*"|'[^']*'|${EXPRESSION}|[^\s;&|"'])*)`, 'g')
+			),
+		];
+		if (assignments.some(([, value]) => PULL_REQUEST_HEAD.test(value))) return 'head';
+		if (new RegExp(String.raw`(?<!\$\{?|env\.)\b${variable}\b`).test(jobScripts)) return 'unknown';
+		const value = scopes.map((scope) => scope?.env?.[variable]).find((candidate) => candidate !== undefined);
+		if (value === undefined) return BASE_RUN_VARIABLE.test(variable) ? 'base' : 'unknown';
+		if (resolving.has(variable)) return 'unknown';
+		resolving.add(variable);
+		const naming = valueNaming(value);
+		resolving.delete(variable);
+		return naming;
+	};
+	const expressionNaming = (expression: string): Naming => {
+		if (PULL_REQUEST_HEAD.test(expression)) return 'head';
+		if (BASE_EXPRESSION.test(expression)) return 'base';
+		const named = [...expression.matchAll(/\benv\.(\w+)/g)].map(([, variable]) => variableNaming(variable));
+		if (named.includes('head')) return 'head';
+		return named.length === 1 && /^\s*env\.\w+\s*$/.test(expression) ? named[0] : 'unknown';
+	};
+	const valueNaming = (value: unknown): Naming => {
+		const text = String(value ?? '');
+		if (PULL_REQUEST_HEAD.test(text)) return 'head';
+		return worstNaming(
+			[...text.matchAll(new RegExp(EXPRESSION, 'g'))].map(([, expression]) => expressionNaming(expression))
+		);
+	};
+	return { variableNaming, expressionNaming, valueNaming };
+}
 
 /** How a job holding an identity token could end up running the PR's own code, as far as its steps show. */
-function checkPullRequestCheckout(name: string, job: any, problems: string[], unsafe: string[]): void {
+function checkPullRequestCheckout(name: string, job: any, workflow: any, problems: string[], unsafe: string[]): void {
 	if (typeof job?.uses === 'string') {
 		unsafe.push(`that the reusable workflow job "${name}" calls never checks out the pull request's head`);
 		return;
 	}
-	for (const step of asList(job?.steps) as any[]) {
+	const steps = asList(job?.steps) as any[];
+	const scripts = steps.map((step) => (typeof step?.run === 'string' ? step.run : '')).join('\n');
+	const headCheckout =
+		`job "${name}" holds an identity token and a step checks out the pull request's head, so a PR's code would ` +
+		'run with the preview identity';
+	for (const step of steps) {
+		const { variableNaming, expressionNaming, valueNaming } = namingsIn([step, job, workflow], scripts);
 		if (typeof step?.uses === 'string' && /^actions\/checkout@/i.test(step.uses.trim())) {
 			for (const field of ['ref', 'repository']) {
 				const value = step.with?.[field];
 				if (value === undefined) continue;
-				if (PULL_REQUEST_HEAD.test(String(value))) {
+				const naming = valueNaming(value);
+				if (naming === 'head') {
 					problems.push(
 						`job "${name}" holds an identity token and checks out the pull request's head (${field}: ${value}), so a ` +
 							`PR's code would run with the preview identity`
 					);
-				} else if (isExpression(value)) {
+				} else if (naming === 'unknown') {
 					unsafe.push(`that job "${name}"'s checkout ${field} (${value}) is not the pull request's head`);
 				}
 			}
 		}
-		if (typeof step?.run === 'string' && PR_HEAD_SHELL_CHECKOUT.test(step.run)) {
-			problems.push(
-				`job "${name}" holds an identity token and a step checks out the pull request's head, so a PR's code would ` +
-					'run with the preview identity'
+		if (typeof step?.run !== 'string') continue;
+		const commands = shellCommands(step.run.replace(/\\\r?\n\s*/g, ' '));
+		if (commands.some((command) => /\bgh\s+pr\s+checkout\b/.test(command))) {
+			problems.push(headCheckout);
+			continue;
+		}
+		for (const command of commands.filter((candidate) => GIT_FETCHING_CODE.test(candidate))) {
+			const naming = worstNaming(
+				[...command.matchAll(SHELL_REFERENCE)].map(([, expression, variable]) => {
+					if (expression !== undefined) return expressionNaming(expression);
+					return variable === undefined ? 'unknown' : variableNaming(variable);
+				})
 			);
+			if (naming === 'head' || PULL_REQUEST_HEAD.test(command)) {
+				problems.push(headCheckout);
+				break;
+			}
+			if (naming === 'unknown') {
+				unsafe.push(`that \`${command.trim()}\` in job "${name}" does not check out the pull request's head`);
+			}
 		}
 	}
 }
@@ -304,6 +405,17 @@ function checkSameRepositoryCondition(
 	);
 }
 
+/** A closed PR's preview lasts until it expires unless a job drops it, and `closed` is not a default event type. */
+function checkCleanupPath(workflow: any, filter: any, cleanupEnvironment: string, unverified: string[]): void {
+	const jobs: any[] = Object.values(workflow?.jobs ?? {});
+	const cleanupJob = jobs.some((job) => environmentName(job) === cleanupEnvironment);
+	if (cleanupJob && asList(filter?.types).includes('closed')) return;
+	const why = cleanupJob
+		? 'its pull_request_target types leave out closed'
+		: `no job here runs in "${cleanupEnvironment}"`;
+	unverified.push(`that a closed pull request's preview is dropped before it expires, since ${why}`);
+}
+
 /**
  * Checks a `pull_request_target` preview workflow against the policies `enable_previews` writes: what can never match
  * them is a problem, and so is what would hand a fork, or a PR's own code, the preview identity.
@@ -335,6 +447,7 @@ export function checkPreviewWorkflowFile(
 		if (asList(filter?.['branches-ignore']).includes(branch)) {
 			problems.push(`its branches-ignore filter leaves out pull requests into "${branch}"`);
 		}
+		checkCleanupPath(workflow, filter, cleanupEnvironment, unverified);
 	}
 	checkEnvironmentJobs(workflow, environment, problems, unverified);
 	const jobs: Record<string, any> = workflow?.jobs ?? {};
@@ -344,7 +457,7 @@ export function checkPreviewWorkflowFile(
 			problems.push(`job "${name}" runs in "${cleanupEnvironment}" without \`permissions: id-token: write\``);
 		}
 		if (!grantsIdToken(job, workflow) && typeof job?.uses !== 'string') continue;
-		checkPullRequestCheckout(name, job, problems, unsafe);
+		checkPullRequestCheckout(name, job, workflow, problems, unsafe);
 		checkSameRepositoryCondition(name, jobs, problems, unsafe);
 	}
 	return { problems, unverified, unsafe };

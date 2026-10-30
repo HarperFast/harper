@@ -35,7 +35,7 @@ export interface IdentityPlan {
 	conflicts: string[];
 }
 
-const sameSet = (left: unknown, right: string[]) =>
+export const sameSet = (left: unknown, right: string[]) =>
 	Array.isArray(left) && left.length === right.length && right.every((entry) => left.includes(entry));
 
 const ROLE_FLAGS = new Set(['super_user', 'structure_user', 'cluster_user', 'operations', 'component_deploy']);
